@@ -8,6 +8,8 @@ pub struct RoomEnvironmentWorkerBinding {
     pub home_public_key: String,
     pub session_id: String,
     pub slice_id: String,
+    // Boot configuration only; never serialized or learned from relay callers.
+    pub(crate) provisioned_slice_id: Option<String>,
 }
 
 impl RoomEnvironmentWorkerBinding {
@@ -28,6 +30,8 @@ impl RoomEnvironmentWorkerBinding {
             home_public_key: key.unwrap_or_default(),
             session_id: session.unwrap_or_default(),
             slice_id: slice.unwrap_or_default(),
+            provisioned_slice_id: super::identity::protected_slice_identity_required()
+                .then(|| std::env::var("CHARIOX_SLICE_ID").unwrap_or_default()),
         })
     }
 
@@ -36,10 +40,9 @@ impl RoomEnvironmentWorkerBinding {
         // Protected boot has already verified the retained machine/kernel keys.
         // Its machine ID is not the legacy slice:<id> alias; the provisioner
         // supplies the slice record ID separately in both fresh and restored boots.
-        let matches_slice = if super::identity::protected_slice_identity_required() {
-            std::env::var("CHARIOX_SLICE_ID").as_deref() == Ok(self.slice_id.as_str())
-        } else {
-            machine_id == format!("slice:{}", self.slice_id)
+        let matches_slice = match self.provisioned_slice_id.as_deref() {
+            Some(slice_id) => slice_id == self.slice_id,
+            None => machine_id == format!("slice:{}", self.slice_id),
         };
         if [&self.home_kernel_id, &self.session_id, &self.slice_id]
             .iter()
@@ -51,7 +54,7 @@ impl RoomEnvironmentWorkerBinding {
             return Err(DaemonError::InvalidConfig {
                 field: "room_environment_worker_binding",
                 message:
-                    "requires a home kernel, public key, Room, and matching slice machine identity",
+                    "requires a home kernel, public key, Room, and matching provisioned slice ID or legacy machine alias",
             });
         }
         Ok(())

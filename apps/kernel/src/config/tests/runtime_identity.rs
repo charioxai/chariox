@@ -114,7 +114,8 @@ fn protected_room_restart_preserves_retained_identity_and_validates_slice_bindin
         "CHARIOX_DAEMON_ID", "CHARIOX_MACHINE_ID", "CHARIOX_DAEMON_ALIAS", "CHARIOX_MACHINE_ALIAS",
         "CHARIOX_SLICE_ID", "CHARIOX_ROOM_ENVIRONMENT_HOME_KERNEL_ID",
         "CHARIOX_ROOM_ENVIRONMENT_HOME_PUBLIC_KEY", "CHARIOX_ROOM_ENVIRONMENT_SESSION_ID",
-        "CHARIOX_ROOM_ENVIRONMENT_SLICE_ID"];
+        "CHARIOX_ROOM_ENVIRONMENT_SLICE_ID", "CHARIOX_RELAY_URL", "CHARIOX_RELAY_TOKEN",
+        "CHARIOX_CLOUD_RELAY_CONFIG_JSON"];
     let _restore = Restore(
         names.into_iter().map(|name| (name, env::var_os(name))).collect(),
         directory.clone(),
@@ -122,6 +123,9 @@ fn protected_room_restart_preserves_retained_identity_and_validates_slice_bindin
     let public = relay_crypto::public_key_from_private_key_base64(&relay_crypto::generate_private_key_base64()).unwrap();
     let foreign_public = relay_crypto::public_key_from_private_key_base64(&relay_crypto::generate_private_key_base64()).unwrap();
     unsafe {
+        env::remove_var("CHARIOX_RELAY_URL");
+        env::remove_var("CHARIOX_RELAY_TOKEN");
+        env::remove_var("CHARIOX_CLOUD_RELAY_CONFIG_JSON");
         env::set_var("HOME", &directory);
         env::set_var("CHARIOX_HOME", &directory);
         env::set_var("CHARIOX_SLICE_PRIVATE_ROOT", "/var/lib/chariox/slice-private");
@@ -161,7 +165,7 @@ fn protected_room_restart_preserves_retained_identity_and_validates_slice_bindin
     assert!(fs::read(&registry).unwrap() == sentinel);
     for config in [&first, &restarted] {
         let binding = config.room_environment_worker_binding.as_ref().unwrap();
-        binding.validate(&config.host_machine_id).expect("retained Room worker identity must boot");
+        config.validate().expect("retained Room worker must pass the boot config gate");
         let key = public.clone();
         assert!(binding.permits("synthetic-home", &key, "synthetic-room", "synthetic-slice"));
         assert!(!binding.permits("foreign-home", &key, "synthetic-room", "synthetic-slice"));
@@ -169,12 +173,19 @@ fn protected_room_restart_preserves_retained_identity_and_validates_slice_bindin
         assert!(!binding.permits("synthetic-home", &key, "foreign-room", "synthetic-slice"));
         assert!(!binding.permits("synthetic-home", &key, "synthetic-room", "foreign-slice"));
     }
-    let binding = restarted.room_environment_worker_binding.as_ref().unwrap();
     for slice in [None, Some("foreign-slice"), Some(" synthetic-slice ")] {
         unsafe { restore_env_var("CHARIOX_SLICE_ID", slice.map(Into::into)); }
-        assert!(binding.validate(&restarted.host_machine_id).is_err());
+        // Validation and cloning use the captured boot scope, not ambient env.
+        restarted.clone().validate().expect("loaded binding must remain stable");
+        assert!(matches!(load().validate(), Err(crate::error::DaemonError::InvalidConfig {
+            field: "room_environment_worker_binding", ..
+        })));
     }
     unsafe { env::remove_var("CHARIOX_SLICE_PRIVATE_ROOT"); }
+    restarted.validate().expect("protected mode was captured at boot");
+    let legacy = load();
+    legacy.validate().expect("legacy provisioned machine alias must still boot");
+    let binding = legacy.room_environment_worker_binding.as_ref().unwrap();
     assert!(binding.validate(&restarted.host_machine_id).is_err());
     assert!(binding.validate("slice:synthetic-slice").is_ok());
     assert!(binding.validate("slice:foreign-slice").is_err());

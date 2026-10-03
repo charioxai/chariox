@@ -85,6 +85,7 @@ fn room_environment_controller_boot_rejects_invalid_binding() {
         let mut config = state.config.clone();
         config.host_machine_id = "slice:slice-1".into();
         let mut binding = crate::config::RoomEnvironmentWorkerBinding {
+            provisioned_slice_id: None,
             home_kernel_id: "home".into(),
             home_public_key: config.relay_public_key.clone(),
             session_id: "room-1".into(),

@@ -192,6 +192,7 @@ impl LiveWorker {
         if browser_controller {
             worker_state.config.room_environment_worker_binding =
                 Some(crate::config::RoomEnvironmentWorkerBinding {
+                    provisioned_slice_id: None,
                     home_kernel_id: home_state.config.daemon_id.clone(),
                     home_public_key: home_state.config.relay_public_key.clone(),
                     session_id: rooms[0].clone(),
