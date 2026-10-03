@@ -240,7 +240,7 @@ test("Claude Chariox-origin prompt carries hidden context only through the hook"
       return { SessionState: { session: state } }
     } } as unknown as import("../ipc.js").LocalIpcClient,
     sessionId: state.id, attachmentId: "attachment", agentId: "agent-1", providerRunId: "run",
-    eventsFile, contextFile, attachmentContextDir: join(root, "attachments"),
+    eventsFile, contextFile, originFile: join(root, "origin.json"), attachmentContextDir: join(root, "attachments"),
     hookContextResponseDir: join(root, "responses"), workspace: root, worktree: root,
     inlineLocalAttachments: false, promptOrigin: { current: null }, debug: () => {},
     submitPrompt: async (text) => {

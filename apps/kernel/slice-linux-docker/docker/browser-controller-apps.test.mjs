@@ -296,6 +296,20 @@ test("a reconnect sweeps App-origin Tabs without waiting for an App command", as
   assert.deepEqual(connection.sent.filter((m) => m.method === "Target.closeTarget").map((m) => m.params.targetId), ["left"]);
 });
 
+test("a real browser client opening its connection sweeps App Tabs without waiting on itself", async () => {
+  const connection = fakeConnection([{ targetId: "left", url: "https://app.a1.invalid/" }]);
+  connection.isOpen = () => true;
+  connection.close = async () => {};
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  new AppTabs(browser);
+  const opened = await Promise.race([
+    browser.ensureConnection(),
+    new Promise((resolve) => setTimeout(() => resolve("deadlocked"), 1000)),
+  ]);
+  assert.equal(opened, connection);
+  assert.deepEqual(connection.sent.filter((m) => m.method === "Target.closeTarget").map((m) => m.params.targetId), ["left"]);
+});
+
 test("App pages lay out beside the panel only when the kernel sizes it", async () => {
   const { browser, connection } = fakeBrowser();
   const metrics = { width: 900, height: 800, deviceScaleFactor: 1, mobile: false, screenWidth: 1280, screenHeight: 800 };

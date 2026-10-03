@@ -121,7 +121,7 @@ export class AppTabs {
     this.browser = browser;
     // Every new CDP connection sweeps App Tabs, even when no App command
     // arrives: interception ends with the old connection.
-    browser.onConnected = () => this.reconcile().catch(() => {});
+    browser.onConnected = (connection) => this.reconcile(connection).catch(() => {});
     this.apps = new Map(); // sessionId -> app
     this.calls = [];
     this.connection = null;
@@ -340,8 +340,10 @@ export class AppTabs {
   // A lost CDP connection ends Fetch interception and the bridge for every
   // App Tab. Forget those Tabs and close any App-origin Tab this controller
   // does not own (including ones left by an earlier controller process).
-  async reconcile() {
-    const connection = await this.browser.ensureConnection();
+  async reconcile(opened) {
+    // The connection hook runs inside the browser's in-flight opening, which
+    // `ensureConnection` would wait on: sweep the connection it hands over.
+    const connection = opened ?? await this.browser.ensureConnection();
     this.listen(connection);
     if (this.swept) return;
     const { targetInfos = [] } = await connection.send("Target.getTargets", {});
