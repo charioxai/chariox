@@ -36,7 +36,7 @@ async fn setup_token_fake_cli_stores_privately_and_preserves_replace_policy() {
         "CHARIOX_LOG_DIR",
         "CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT",
     ];
-    let old: Vec<_> = names.iter().map(|name| std::env::var_os(name)).collect();
+    let old: Vec<_> = names.iter().map(std::env::var_os).collect();
     let _cleanup = FixtureCleanup {
         root: root.clone(),
         environment: names.iter().copied().zip(old).collect(),

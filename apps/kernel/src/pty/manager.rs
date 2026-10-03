@@ -18,6 +18,8 @@ const PTY_DIAGNOSTIC_TAIL_LIMIT: usize = 8 * 1024;
 const PTY_READER_STACK_BYTES: usize = 256 * 1024;
 const PTY_WRITER_STACK_BYTES: usize = 128 * 1024;
 
+type PtyOutputFilter = Box<dyn FnMut(&[u8]) -> Vec<u8> + Send>;
+
 #[cfg(unix)]
 fn disable_pty_input_echo(
     master: &dyn MasterPty,
@@ -387,7 +389,7 @@ impl PtyManager {
         request: PtySpawnRequest,
         credentials: &crate::provider::ProviderCredentialEnvironment,
         scrub_ambient_credentials: bool,
-        mut output_filter: Option<Box<dyn FnMut(&[u8]) -> Vec<u8> + Send>>,
+        mut output_filter: Option<PtyOutputFilter>,
     ) -> Result<(), DaemonError> {
         if let Some(process_key) = self.process_aliases.get(&request.provider_run_id) {
             self.output_signal
