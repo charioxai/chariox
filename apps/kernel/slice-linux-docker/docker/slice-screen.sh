@@ -292,26 +292,40 @@ launch_chromium() (
   return 1
 )
 
+# The lock cannot survive process death or a container restart. Clear stale
+# markers while holding it, so a new owner's marker cannot be removed.
+chromium_supervisor_active() {
+  if flock -n "$LOGS/chromium-supervisor.lock" rm -f -- "$LOGS/chromium-supervisor.pid"; then
+    return 1
+  fi
+  return 0
+}
+
 stop_chromium_supervisor() {
   local supervisor_pid
+  local -a supervisor_args=()
   # Preserve the existing graceful session flush before stopping ownership.
   if process_running "chromium.*$CHROME_PROFILE"; then
     timeout --foreground 3s node "$ROOT/browser-cdp.mjs" close-browser >/dev/null 2>&1 || true
   fi
-  if [[ -f "$LOGS/chromium-supervisor.pid" ]]; then
-    supervisor_pid="$(cat "$LOGS/chromium-supervisor.pid")"
-    if [[ "$supervisor_pid" =~ ^[0-9]+$ ]]; then
-      kill -TERM "$supervisor_pid" 2>/dev/null || true
-      for _ in $(seq 1 50); do
-        [[ -f "$LOGS/chromium-supervisor.pid" ]] || break
-        sleep 0.1
-      done
-      if [[ -f "$LOGS/chromium-supervisor.pid" ]]; then
-        log "Chromium supervisor did not stop"
-        return 1
-      fi
-    fi
+  chromium_supervisor_active || return 0
+  supervisor_pid="$(cat "$LOGS/chromium-supervisor.pid" 2>/dev/null || true)"
+  if [[ ! "$supervisor_pid" =~ ^[1-9][0-9]*$ ]] \
+    || ! mapfile -d '' -t supervisor_args 2>/dev/null <"/proc/$supervisor_pid/cmdline" \
+    || [[ "${#supervisor_args[@]}" -lt 3 ]] \
+    || [[ "${supervisor_args[0]##*/}" != bash || "${supervisor_args[2]:-}" != supervise-browser ]] \
+    || [[ "$(readlink -f -- "${supervisor_args[1]:-}")" != "$(readlink -f -- "${BASH_SOURCE[0]}")" ]]; then
+    chromium_supervisor_active || return 0
+    log "browser supervisor identity could not be verified"
+    return 1
   fi
+  kill -TERM "$supervisor_pid" 2>/dev/null || true
+  for _ in $(seq 1 50); do
+    chromium_supervisor_active || return 0
+    sleep 0.1
+  done
+  log "Chromium supervisor did not stop"
+  return 1
 }
 
 start_desktop() {
@@ -454,17 +468,13 @@ stop_desktop() {
   if [[ "$supervisor_exit" -ne 0 ]]; then
     # Killing a slow browser above can finish the supervisor's TERM trap.
     # Wait for that terminal proof before retaining the earlier stop failure.
-    local supervisor_pid=""
     for attempt in $(seq 1 50); do
-      [[ -f "$LOGS/chromium-supervisor.pid" ]] || break
-      supervisor_pid="$(cat "$LOGS/chromium-supervisor.pid" 2>/dev/null || true)"
-      [[ "$supervisor_pid" =~ ^[0-9]+$ ]] && kill -0 "$supervisor_pid" 2>/dev/null || break
+      chromium_supervisor_active || break
       sleep 0.1
     done
-    if [[ -f "$LOGS/chromium-supervisor.pid" && "$supervisor_pid" =~ ^[0-9]+$ ]] && kill -0 "$supervisor_pid" 2>/dev/null; then
+    if chromium_supervisor_active; then
       return "$supervisor_exit"
     fi
-    rm -f "$LOGS/chromium-supervisor.pid"
   fi
   return "$streamer_exit"
 }
