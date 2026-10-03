@@ -768,6 +768,18 @@ if [ "\${1##*/}" = "managed-kernel-home-migration.mjs" ] \
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ "\${2:-}" = "atomic-symlink" ] \
+  && [ "\${4##*/}" = current ] \
+  && [ -f "$HARNESS_STATE/crash-after-pre-apps-current" ]; then
+  "${process.execPath}" "$@"
+  if [ ! -f "$CHARIOX_MANAGED_UPGRADE_ROOT/usr/lib/chariox/current/usr/libexec/chariox-app-storage" ]; then
+    rm -f "$HARNESS_STATE/crash-after-pre-apps-current"
+    kill -KILL "$PPID"
+    exit 1
+  fi
+  exit 0
+fi
+if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
+  && [ "\${2:-}" = "atomic-symlink" ] \
   && [ -f "$HARNESS_STATE/crash-before-symlink" ]; then
   rm -f "$HARNESS_STATE/crash-before-symlink"
   kill -KILL "$PPID"
@@ -990,6 +1002,26 @@ test("failed release F upgrade disables App links while preserving storage enrol
   }
   assert.match(await readFile(join(harness.state, "systemctl.log"), "utf8"), /disable --now chariox-app-storage.service/)
   assert.equal(await lstat(join(harness.installRoot, "etc/chariox/app-storage.json")).then(() => true, () => false), true)
+})
+
+test("failed pre-Apps rollback resumes after current changed but before App links were removed", async context => {
+  const harness = await makeHarness(context, {currentAppArtifacts: false})
+  await put(join(harness.state, "fail-health-once"), "fail\n")
+  await put(join(harness.state, "crash-after-pre-apps-current"), "crash\n")
+  const interrupted = harness.run()
+  assert.equal(interrupted.signal, "SIGKILL")
+  const unit = join(harness.installRoot, "etc/systemd/system/chariox-app-storage.service")
+  assert.equal((await lstat(unit)).isSymbolicLink(), true)
+  assert.equal(await stat(unit).then(() => true, () => false), false, "current now makes the unit dangle")
+  assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")), `releases/${harness.current.digest.slice(7)}`)
+  // Re-run the same command. It recovers the interrupted rollback first, then
+  // makes a fresh successful upgrade; no operator repairs the dangling link.
+  const recovered = harness.run()
+  assert.equal(recovered.status, 0, recovered.stderr)
+  assert.match(recovered.stderr, /App storage is disabled/)
+  assert.equal((await stat(unit)).isFile(), true)
+  const calls = (await readFile(join(harness.state, "systemctl.log"), "utf8")).split("\n")
+  assert.equal(calls.filter(line => line === "disable --now chariox-app-storage.service").length, 1)
 })
 
 test("Path-1 upgrade rejects effective home or worker drop-ins before recovery or service mutation", async (context) => {

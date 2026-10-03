@@ -367,7 +367,11 @@ prepare_managed_app_release_switch() {
     [ -L "$app_unit_link" ] && [ "$(readlink "$app_unit_link")" = "../../../usr/lib/chariox/current/etc/systemd/system/chariox-app-storage.service" ] || {
       echo "managed App storage release link is obstructed" >&2; return 1;
     }
-    systemctl disable --now chariox-app-storage.service || return 1
+    # A dangling own link means a prior rollback already disabled the helper
+    # before switching current; recovery only needs to remove that link.
+    if [ -e "$app_unit_link" ]; then
+      systemctl disable --now chariox-app-storage.service || return 1
+    fi
   fi
 }
 
