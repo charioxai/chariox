@@ -794,19 +794,24 @@ impl KernelRuntimeState {
             .collect::<Vec<_>>();
         self.owned
             .ensure_agent_owner(agent.id(), caller_user_id, "destroy agent")?;
-        if agent.remote_execution().is_some() {
+        // Relay projection ingestion also owns the app lock. Keep the worker
+        // acknowledgement and home deletion in one critical section so an
+        // already-admitted snapshot cannot revive the run after it is ended.
+        // Local deletion retains its app-lock-independent owned-state path.
+        let destroyed = if agent.remote_execution().is_some() {
             self.with_app_side_effect(|app| {
-                crate::app::KernelSessionService::new(app).destroy_agent_worker_execution(&agent)
+                crate::app::KernelSessionService::new(app)
+                    .destroy_agent_worker_execution(&agent)
+                    .map_err(|error| DaemonError::AgentWorkerCleanup {
+                        agent_id: agent_id.to_string(),
+                        source: Box::new(error),
+                    })?;
+                self.owned.destroy_agent(agent_id, caller_user_id)
             })
-            .await
-            .map_err(|error| DaemonError::AgentWorkerCleanup {
-                agent_id: agent_id.to_string(),
-                source: Box::new(error),
-            })?;
-        }
-        // The app and runtime share the agent store. Delete once, after worker
-        // cleanup, through the owner that also clears prompt and run state.
-        let destroyed = self.owned.destroy_agent(agent_id, caller_user_id)?;
+            .await?
+        } else {
+            self.owned.destroy_agent(agent_id, caller_user_id)?
+        };
         for slice_ref in slice_refs {
             let slice = self.owned.slice_store.detach_agent(
                 &slice_ref,
