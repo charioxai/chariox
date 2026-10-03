@@ -1373,3 +1373,30 @@ test("MP-08 MP-11 broker admits documented nondefault slice tuning", async conte
   for(const value of values) assert.notEqual(validate({kind:"provisioner",action:"recover",environment:{...environment,[name]:value},files:[]},root).status,0,`${name} ${value}`)
  }
 })
+
+test("quota admission uses the retained generation and final evidence uses the prepared restore generation", async () => {
+  const source = await readFile(broker, "utf8")
+  const spawnSource = source.slice(source.indexOf("function spawnBounded("), source.indexOf("\nfunction provisionerQuotaRequest("))
+  const executeSource = source.slice(source.indexOf("async function execute(request)"), source.indexOf("\nfunction errorResponse("))
+  const container = "chariox-slice-generation"
+  const retained = `${container}-home-g${"a".repeat(32)}`
+  const restored = `${container}-home-g${"b".repeat(32)}`
+  const quotas = [], environments = []
+  const execute = runInNewContext(`${spawnSource}\n${executeSource}\nexecute`, {
+    ...archivePolicy, process, Buffer, Set, join,
+    PROVISIONER: "/synthetic/provisioner", DOCKER_HOST: "unix:///synthetic", MAX_OUTPUT_BYTES: 1024,
+    LOCAL_AUTHORITY: undefined, VERIFIED_BUILD_CONTEXT_DIGEST: "", brokerLifetime: new AbortController(), BROKER_OUTPUT_ROOT: "/synthetic",
+    protectedLayouts: {homeVolume: () => retained, complete: () => {}},
+    validateRequest: () => {}, diskQuotaMarkerPresent: () => false,
+    provisionerQuotaRequest: environment => ({identity: {containerName: container, homeVolumeName: environment.CHARIOX_SLICE_HOME_VOLUME}, limits: {persistentHomeBytes: 2048, writableLayerBytes: 1024}}),
+    requestSliceDiskQuota: async request => {quotas.push(request); return {evidence: {checked: true}}},
+    sliceDiskQuotaCoordinator: {withContainerLock: async (_name, run) => run({}), assertBounded: async () => {}},
+    prepareProvisioner: async request => ({environment: {...request.environment, CHARIOX_SLICE_HOME_VOLUME: restored}, handles: new Set(), newHandles: new Set()}),
+    runBrokerCommand: async (_command, _args, options) => {environments.push(options.env); return {status: 0, stdout: Buffer.from("ran"), stderr: Buffer.alloc(0)}},
+    cleanupPrepared: () => {}, removePersistentHandles: () => {},
+  })
+  const result = await execute({kind: "provisioner", action: "restore-state", environment: {CHARIOX_SLICE_NAME: container, CHARIOX_SLICE_HOME_VOLUME: `${container}-home`}})
+  assert.equal(result.status, 0)
+  assert.deepEqual(quotas.map(q => [q.operation, q.identity.homeVolumeName]), [["reserve", retained], ["verify", restored]])
+  assert.equal(environments[0].CHARIOX_SLICE_HOME_VOLUME, restored)
+})

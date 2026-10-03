@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { retireProtectedQuotaHomes } from "./protected-home-retirement.mjs"
 import { recordCapturedImageProof } from "./protected-image-proof.mjs"
 import { requireSafeHomeVolume as requireSafeManagedHomeVolume } from "./protected-home-preflight.mjs"
 import { requireSafeLocalHomeVolume } from "./protected-local-home-scan.mjs"
@@ -1774,6 +1775,7 @@ async function execute(request) {
     return {status: 0, stdoutBase64: "", stderrBase64: ""}
   }
   let releaseDiskQuota = false
+  let retainedQuotaHomes = []
   let unboundedQuotaIdentity
   let unboundedQuotaStatusVerified = false
   if (request.kind === "home_archive_capture") {
@@ -1840,6 +1842,7 @@ async function execute(request) {
   if (quotaCoordinated && request.kind === "provisioner" && request.action === "destroy") {
     const quota = provisionerQuotaRequest(request.environment)
     releaseDiskQuota = diskQuotaMarkerPresent(quota.identity.containerName)
+    if (releaseDiskQuota) retainedQuotaHomes = protectedLayouts.retainedHomeVolumes(quota.identity.containerName)
     try {
       const status = await requestSliceDiskQuota({
         protocolVersion: 1,
@@ -1957,7 +1960,7 @@ async function execute(request) {
             const provisioned = await runPrepared()
             if (provisioned.status === 0 && unboundedQuotaStatusVerified && durableUnboundedState) {
               await rememberBrokerUnboundedQuotaProof(
-                unboundedQuotaIdentity,
+                sliceDiskQuotaIdentityFromEnvironment(prepared.environment),
                 request.environment.CHARIOX_SLICE_NAME,
                 lock,
               )
@@ -1984,6 +1987,8 @@ async function execute(request) {
       releasePersistentHandles(request.environment.CHARIOX_SLICE_NAME)
       if (releaseDiskQuota) {
         const quota = provisionerQuotaRequest(request.environment)
+        retireProtectedQuotaHomes(retainedQuotaHomes, quota.identity,
+          args => spawnControl("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 1024 * 1024}))
         await requestSliceDiskQuota({
           protocolVersion: 1,
           operation: "release",

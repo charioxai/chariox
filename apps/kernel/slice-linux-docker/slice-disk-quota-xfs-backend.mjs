@@ -133,7 +133,8 @@ export function createSystemSliceDiskQuotaBackend({
     }
     if (!value || !labelsMatch(value, identity)) fail("Docker container labels do not match the disk quota reservation")
     const state = value.State?.Paused ? "paused" : value.State?.Running ? "running" : value.State?.Status ?? "unknown"
-    return { state, labels: value.Config?.Labels ?? {} }
+    return { state, labels: value.Config?.Labels ?? {},
+      homeVolumeName: value.Mounts?.find(mount => mount.Type === "volume" && mount.Destination === "/home/slice")?.Name }
   }
 
   function inspectHome(identity) {

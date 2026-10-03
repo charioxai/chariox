@@ -278,7 +278,7 @@ test("release retains a reservation until both Docker objects and quota usage ar
   assert.equal(removed.calls.filter(([kind]) => kind === "clear").length, 2)
 })
 
-test("protected restore applies quota to the new home and keeps retained homes in the same project", () => {
+test("protected restore applies an independent full home cap and preserves the layer project", () => {
   const seen = []
   const f = fixture({backend: {inspectHome: got => {
     seen.push(got.homeVolumeName)
@@ -289,7 +289,8 @@ test("protected restore applies quota to the new home and keeps retained homes i
   f.allocator.handle({protocolVersion: 1, operation: "apply_home", identity: restored})
   assert.equal(seen.at(-1), restored.homeVolumeName)
   const record = f.getState().reservations[sliceDiskQuotaIdentityKey(identity)]
-  assert.deepEqual(record.projectIds, first.projectIds)
+  assert.equal(record.projectIds.writableLayer, first.projectIds.writableLayer)
+  assert.notEqual(record.projectIds.persistentHome, first.projectIds.persistentHome)
   assert.equal(record.identity.homeVolumeName, restored.homeVolumeName)
   f.allocator.handle({protocolVersion: 1, operation: "verify", identity: restored})
   assert.equal(seen.at(-1), restored.homeVolumeName)
@@ -297,4 +298,48 @@ test("protected restore applies quota to the new home and keeps retained homes i
   f.backend.inspectContainer = () => ({state: "running"})
   assert.throws(() => f.allocator.handle({protocolVersion: 1, operation: "apply_home", identity}), /stop the slice/)
   assert.equal(record.identity.homeVolumeName, restored.homeVolumeName)
+})
+
+
+test("failed restore can reserve and reapply the prior home, and start recovers the actual mounted home", () => {
+  const f = fixture()
+  reserve(f.allocator)
+  const generation = {...identity, homeVolumeName: `${identity.containerName}-home-g${"b".repeat(32)}`}
+  f.allocator.handle({protocolVersion: 1, operation: "apply_home", identity: generation})
+  // The archive failed before layout publication; the old container survives.
+  f.allocator.handle({protocolVersion: 1, operation: "reserve", identity, limits})
+  f.allocator.handle({protocolVersion: 1, operation: "apply_home", identity})
+  assert.equal(f.getState().reservations[sliceDiskQuotaIdentityKey(identity)].identity.homeVolumeName, identity.homeVolumeName)
+  f.allocator.handle({protocolVersion: 1, operation: "apply_home", identity: generation})
+  f.backend.inspectContainer = () => ({state: "exited", homeVolumeName: identity.homeVolumeName})
+  assert.equal(f.allocator.handle({protocolVersion: 1, operation: "ensure_before_start", containerName: identity.containerName}).bounded, true)
+  assert.equal(f.getState().reservations[sliceDiskQuotaIdentityKey(identity)].identity.homeVolumeName, identity.homeVolumeName)
+})
+
+test("restore reserves space for a full independent home cap before changing the binding", () => {
+  const f = fixture(); reserve(f.allocator)
+  f.setAvailable(7 * 1024 ** 3)
+  const generation = {...identity, homeVolumeName: `${identity.containerName}-home-g${"c".repeat(32)}`}
+  assert.throws(() => f.allocator.handle({protocolVersion: 1, operation: "apply_home", identity: generation}), /recovery reserve/)
+  assert.equal(f.getState().reservations[sliceDiskQuotaIdentityKey(identity)].identity.homeVolumeName, identity.homeVolumeName)
+})
+
+test("destroy after a protected restore retires every retained home before quota release", async () => {
+  const {retireProtectedQuotaHomes} = await import("./protected-home-retirement.mjs")
+  const generation = {...identity, homeVolumeName: `${identity.containerName}-home-g${"d".repeat(32)}`}
+  const volumes = new Set([identity.homeVolumeName, generation.homeVolumeName])
+  const f = fixture({backend: {confirmContainerAndVolumeRemoved: () => volumes.size === 0}})
+  reserve(f.allocator)
+  f.allocator.handle({protocolVersion: 1, operation: "apply_home", identity: generation})
+  assert.throws(() => f.allocator.handle({protocolVersion: 1, operation: "release", identity: generation}), /removal are verified/)
+  const docker = args => {
+    if (args[1] === "inspect") return {status: 0, stdout: JSON.stringify([{Name: args[2], Driver: "local", Labels: identityLabels(identity)}])}
+    assert.equal(args[1], "rm"); volumes.delete(args[2]); return {status: 0}
+  }
+  retireProtectedQuotaHomes([...volumes], generation, docker)
+  assert.equal(volumes.size, 0)
+  assert.equal(f.allocator.handle({protocolVersion: 1, operation: "release", identity: generation}).released, true)
+  assert.equal(Object.keys(f.getState().reservations).length, 0)
+  assert.throws(() => retireProtectedQuotaHomes([identity.homeVolumeName], generation,
+    () => ({status: 0, stdout: JSON.stringify([{Name: identity.homeVolumeName, Driver: "local", Labels: {}}])})), /ownership is unverified/)
 })
