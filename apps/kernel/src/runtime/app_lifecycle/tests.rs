@@ -874,6 +874,9 @@ fn an_idle_stop_keeps_a_worker_whose_wake_was_admitted_after_its_idle_check() {
     let service = control.lifecycle();
     service.schedule_recovery(runtime.handle().clone());
     wait(|| control.active_app_lease("alice", "installed").is_some());
+    // The lease publishes before the recovery owner's final dormancy write.
+    // Exercise the idle/wake race after start has finished, not during teardown.
+    wait(|| !service.has_pending_owner("alice", "installed"));
     let lease = control.active_app_lease("alice", "installed").unwrap();
     let catalog = lease.catalog().clone();
     // An eviction or idle stop reads the worker as idle, then the wake pump
