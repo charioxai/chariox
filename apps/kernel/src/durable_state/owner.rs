@@ -6,7 +6,26 @@ use std::path::Path;
 
 use crate::error::DaemonError;
 
-pub(super) fn acquire(path: &Path) -> Result<File, DaemonError> {
+/// Shared by every store clone; only the final owning kernel handle releases it.
+#[derive(Debug)]
+pub(super) struct OwnerLease {
+    file: File,
+    process_id: u32,
+}
+
+impl Drop for OwnerLease {
+    fn drop(&mut self) {
+        // Close alone leaves flock held by descriptors inherited across a
+        // concurrent fork until exec. Those children are not kernel owners.
+        // Unlock only at the final Arc drop, before closing this descriptor.
+        // A forked child's copy must not unlock a still-live parent owner.
+        if self.process_id == std::process::id() {
+            let _ = fs2::FileExt::unlock(&self.file);
+        }
+    }
+}
+
+pub(super) fn acquire(path: &Path) -> Result<OwnerLease, DaemonError> {
     let fail = |error: std::io::Error| DaemonError::LocalTransport {
         operation: "durable_state.acquire_owner",
         message: error.to_string(),
@@ -52,7 +71,10 @@ pub(super) fn acquire(path: &Path) -> Result<File, DaemonError> {
     })?;
     // Never unlink the lock file. Replacing its inode would let a second process
     // acquire a different lock while the original owner still holds this one.
-    Ok(file)
+    Ok(OwnerLease {
+        file,
+        process_id: std::process::id(),
+    })
 }
 
 #[cfg(test)]
@@ -92,6 +114,56 @@ mod tests {
         drop(clone);
         assert!(acquire(&path).is_ok());
         drop(other);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn durable_state_owner_release_does_not_wait_for_unrelated_child_exec() {
+        let root = TestRoot::new();
+        let path = root.path().join("state.db");
+        let owner = std::sync::Arc::new(acquire(&path).unwrap());
+        let last = owner.clone();
+        drop(owner);
+        let child = crate::test_support::PreExecChild::pause();
+        assert!(
+            acquire(&path).is_err(),
+            "a live store clone keeps the fence"
+        );
+        drop(last);
+        let reopened = acquire(&path);
+        // Reap even on the red baseline before reporting its failed admission.
+        child.resume_and_wait();
+        let reopened = reopened.expect("an unrelated pre-exec child is not a kernel owner");
+        assert!(
+            acquire(&path).is_err(),
+            "the restarted owner remains exclusive"
+        );
+        drop(reopened);
+        assert!(acquire(&path).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forked_child_cannot_unlock_its_live_parent_durable_owner() {
+        let root = TestRoot::new();
+        let path = root.path().join("state.db");
+        let mut owner = Some(acquire(&path).unwrap());
+        // The child drops its copied guard, while the spawning parent retains
+        // its own copy inside Command until the child is released and reaped.
+        // File close/getpid are signal-safe; there is no Arc/heap destructor.
+        let child = unsafe {
+            crate::test_support::PreExecChild::pause_after_fork(move || {
+                drop(owner.take());
+                Ok(())
+            })
+        };
+        let competing = acquire(&path);
+        child.resume_and_wait();
+        assert!(
+            competing.is_err(),
+            "a child cannot release its parent's fence"
+        );
+        assert!(acquire(&path).is_ok());
     }
 
     #[cfg(unix)]

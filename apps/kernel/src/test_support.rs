@@ -7,8 +7,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod environment;
+#[cfg(unix)]
+mod pre_exec_child;
 mod runtime_mcp;
 pub(crate) use environment::{environment_test_isolated, isolate_environment_test};
+#[cfg(unix)]
+pub(crate) use pre_exec_child::PreExecChild;
 pub(crate) use runtime_mcp::TestRuntimeMcp;
 
 /// Run ambient-environment fixtures outside the parallel test process. A mutex
