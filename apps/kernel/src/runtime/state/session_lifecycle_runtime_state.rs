@@ -419,7 +419,7 @@ impl KernelRuntimeState {
     ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
         let attachment = self.owned.attach(request)?;
         if let Ok(session) = self.owned.session_snapshot(attachment.session_id()) {
-            self.owned.kernel_browser_host.set_focus(attachment.owner_user_id(), session.focused_agent_id());
+            self.owned.kernel_browser_host.set_focus(&self.provider_account_authority_owner_user_id(attachment.owner_user_id()), session.focused_agent_id());
         }
         let runtime_state = self.clone();
         let app = Arc::clone(&self.app);
@@ -461,7 +461,7 @@ impl KernelRuntimeState {
         let agent = self
             .owned
             .focus_agent(session_id, agent_id, caller_user_id)?;
-        self.owned.kernel_browser_host.set_focus(caller_user_id, Some(agent.id()));
+        self.owned.kernel_browser_host.set_focus(&self.provider_account_authority_owner_user_id(caller_user_id), Some(agent.id()));
         // The focus agent gets the App of the Room's focused App Tab.
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.bind_foreground_app(session_id).await;
@@ -529,7 +529,7 @@ impl KernelRuntimeState {
         caller_user_id: &str,
     ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
         let agent = self.owned.cycle_agent_focus(session_id, caller_user_id)?;
-        self.owned.kernel_browser_host.set_focus(caller_user_id, agent.as_ref().map(|agent| agent.id()));
+        self.owned.kernel_browser_host.set_focus(&self.provider_account_authority_owner_user_id(caller_user_id), agent.as_ref().map(|agent| agent.id()));
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.bind_foreground_app(session_id).await;
         Ok(agent)
