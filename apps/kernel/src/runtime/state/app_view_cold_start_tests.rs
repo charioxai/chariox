@@ -222,9 +222,14 @@ async fn inconclusive_identity_check_keeps_drained_live_calls_and_cancels_gone_d
         )])),
         app_panels: false,
     };
-    retain_app_poll_targets(&views, "room", &batch, views.registrations("room"), async {
-        Err::<(), _>("controller_busy")
-    })
+    retain_app_poll_targets(
+        &views,
+        "room",
+        &batch,
+        views.registrations("room"),
+        &mut tokio::time::Instant::now(),
+        async { Err::<(), _>("controller_busy") },
+    )
     .await;
     // The missing binding is not pruned without proof of browser identity.
     assert!(views.binding_state("room", "gone").is_some());
@@ -242,4 +247,66 @@ async fn inconclusive_identity_check_keeps_drained_live_calls_and_cancels_gone_d
     );
     assert!(gone.is_cancelled());
     assert!(!live.is_cancelled());
+}
+
+#[tokio::test(start_paused = true)]
+async fn inconclusive_identity_probes_are_throttled_without_slowing_live_calls() {
+    let views = crate::runtime::app_views::AppViews::default();
+    let binding = AppViewBinding {
+        owner: "local".into(),
+        installation: "todo".into(),
+        generation: 1,
+        panel: Default::default(),
+        logical_tab: None,
+    };
+    views.register("room", "missing", binding.clone());
+    views.register(
+        "room",
+        "live",
+        AppViewBinding {
+            installation: "other".into(),
+            ..binding
+        },
+    );
+    let batch = BrowserAppViewCalls {
+        calls: vec![BrowserAppViewCall {
+            installation_id: "other".into(),
+            target_id: "live".into(),
+            document_id: None,
+            call_id: "call-1".into(),
+            method: "list_todos".into(),
+            params: serde_json::json!({}),
+        }],
+        open_targets: Some(vec!["live".into()]),
+        documents: None,
+        app_panels: false,
+    };
+    let attempts = std::cell::Cell::new(0);
+    let mut probe_after = tokio::time::Instant::now();
+    let began = probe_after;
+    let mut polls = super::super::app_view_poll::AppViewPoll::new();
+    polls.tick().await;
+    for n in 0..=10 {
+        assert_eq!(
+            tokio::time::Instant::now() - began,
+            Duration::from_millis(25) * n
+        );
+        retain_app_poll_targets(
+            &views,
+            "room",
+            &batch,
+            views.registrations("room"),
+            &mut probe_after,
+            async {
+                attempts.set(attempts.get() + 1);
+                Err::<(), _>("controller_busy")
+            },
+        )
+        .await;
+        assert_eq!(attempts.get(), if n < 10 { 1 } else { 2 });
+        // Drains and call handling stay at the active floor throughout.
+        polls.observed_calls(!batch.calls.is_empty());
+        polls.tick().await;
+    }
+    assert!(views.binding_state("room", "missing").is_some());
 }

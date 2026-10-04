@@ -222,6 +222,7 @@ impl KernelRuntimeState {
         let views = self.app_control().views().clone();
         let mut failures = 0;
         let mut polls = super::app_view_poll::AppViewPoll::new();
+        let mut identity_probe_after = tokio::time::Instant::now();
         while views.keep_pumping(&session_id) {
             polls.tick().await;
             if !views.cold_start_views(&session_id).is_empty() {
@@ -284,6 +285,7 @@ impl KernelRuntimeState {
                 &session_id,
                 &batch,
                 polled_up_to,
+                &mut identity_probe_after,
                 self.reconcile_browser_controller_environment(&session_id),
             )
             .await;
@@ -1125,6 +1127,7 @@ async fn retain_app_poll_targets<F, T, E>(
     session: &str,
     batch: &BrowserAppViewCalls,
     up_to: u64,
+    identity_probe_after: &mut tokio::time::Instant,
     reconcile: F,
 ) where
     F: std::future::Future<Output = Result<T, E>>,
@@ -1132,8 +1135,17 @@ async fn retain_app_poll_targets<F, T, E>(
     let Some(open) = &batch.open_targets else {
         return;
     };
-    if views.has_missing_targets(session, open, up_to) && reconcile.await.is_err() {
-        return;
+    if views.has_missing_targets(session, open, up_to) {
+        if tokio::time::Instant::now() < *identity_probe_after {
+            return;
+        }
+        if reconcile.await.is_err() {
+            // Throttle only the identity probe; drained call delivery keeps its
+            // active cadence and always continues after this helper returns.
+            *identity_probe_after =
+                tokio::time::Instant::now() + super::app_view_poll::IDLE_INTERVAL;
+            return;
+        }
     }
     views.retain_open(session, open, up_to);
     views.set_open_tabs(session, open.len());
