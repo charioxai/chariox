@@ -10,6 +10,62 @@ mod support;
 use support::*;
 
 #[test]
+fn drain_waits_for_writer_jobs_to_release_native_worker_pins() {
+    for reject in [true, false] {
+        held_writer_job(reject);
+    }
+}
+
+fn held_writer_job(reject: bool) {
+    let mut fixture = Fixture::new();
+    let group = fixture.group();
+    let admission = Arc::new(tokio::sync::Semaphore::new(1));
+    let cancellation = fixture.runtime.block_on(Cancellation::new());
+    let command = super::super::decode::command(
+        "http.open",
+        serde_json::json!({"url":"https://api.example.com/fixture", "method":"POST",
+            "headers":[], "hasBody":false}),
+    )
+    .unwrap();
+    let (job, reply) = group
+        .job(
+            &fixture.policy,
+            command,
+            budget(),
+            Instant::now() + WAIT,
+            cancellation.token.clone(),
+            admission.clone().try_acquire_owned().unwrap(),
+            &|_, _| Err(HttpError::ProtectedEffect),
+        )
+        .unwrap();
+    fixture.shutdown();
+    assert!(fixture.observed.was_reaped());
+    assert!(!fixture.observed.lease_was_dropped());
+    fixture.runtime.block_on(async {
+        let mut joining = Box::pin(group.join());
+        std::future::poll_fn(|cx| {
+            assert!(joining.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        assert_eq!(admission.available_permits(), 0);
+        if reject {
+            job.reject(HttpError::Cancelled);
+            assert!(matches!(reply.await.unwrap(), Err(HttpError::Cancelled)));
+        } else {
+            drop(job);
+            assert!(reply.await.is_err());
+        }
+        timeout(WAIT, joining).await.unwrap();
+        cancellation.close().await;
+    });
+    drop(group);
+    assert!(fixture.observed.lease_was_dropped());
+    assert_eq!(admission.available_permits(), 1);
+    assert!(fixture.limits.acquire("alice", "installed").is_ok());
+}
+
+#[test]
 fn drain_before_first_task_poll_never_starts_an_exchange() {
     let fixture = Fixture::new();
     let idle = tokio::runtime::Builder::new_current_thread()
