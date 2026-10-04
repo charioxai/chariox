@@ -656,12 +656,12 @@ async fn pending_prompt_protects_its_agents_provider_after_session_focus_moves()
     let runtime = owned_runtime_state(&app).await;
     assert!(runtime
         .owned
-        .provider_run_has_active_prompt(session.id(), &pending_run)
+        .provider_run_has_prompt_work(session.id(), &pending_run)
         .expect("pending prompt should protect its current provider"));
     assert!(app
         .lock()
         .await
-        .provider_run_has_active_prompt(session.id(), &pending_run)
+        .provider_run_has_prompt_work(session.id(), &pending_run)
         .expect("app-side lifecycle must protect the same provider"));
 
     {
@@ -735,4 +735,39 @@ async fn pending_prompt_protects_its_agents_provider_after_session_focus_moves()
         .owned
         .provider_run_has_prompt_work(session.id(), &replacement)
         .expect("queued prompt should protect its replacement provider"));
+
+    // Exit settlement must still recognize an unbound active prompt after its
+    // selected run has ended, even if an older run for this agent remains alive.
+    let session_state = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap();
+    let active = runtime
+        .owned
+        .prompt_state_owner
+        .activate_next_queued_prompt(&session_state, pending_agent.id(), None)
+        .expect("queued prompt should promote")
+        .expect("there should be queued work");
+    assert!(active.durable_delivery_provider_run_id().is_none());
+    runtime
+        .owned
+        .session_store
+        .set_active_provider_run(session.id(), Some(replacement.id().to_string()))
+        .expect("replacement should be the selected provider");
+    let ended = runtime
+        .owned
+        .provider_store
+        .mark_run_ended_provider_only(session.id(), replacement.id())
+        .expect("replacement should end")
+        .into_run();
+    assert!(runtime
+        .owned
+        .provider_run_has_active_prompt(session.id(), &ended)
+        .expect("owned exit settlement must retain pending prompt ownership"));
+    assert!(app
+        .lock()
+        .await
+        .provider_run_has_active_prompt(session.id(), &ended)
+        .expect("app exit settlement must retain the same ownership"));
 }

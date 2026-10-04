@@ -285,14 +285,8 @@ impl DaemonApp {
         else {
             return Ok(false);
         };
-        // Pending delivery belongs to the agent's current run, independently of
-        // the session-wide provider projection other branches can move.
         Ok(prompt.durable_delivery_provider_run_id().map_or_else(
-            || {
-                self.providers
-                    .get_run_for_agent(session_id, agent_id)
-                    .is_some_and(|current| current.id() == provider_run.id())
-            },
+            || session.active_provider_run_id() == Some(provider_run.id()),
             |delivery_run_id| delivery_run_id == provider_run.id(),
         ))
     }
