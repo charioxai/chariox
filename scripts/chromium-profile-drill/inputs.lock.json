@@ -18,7 +18,7 @@
   "docker/browser-controller-permissions.mjs": "f87bc18294a986c44e86f8fbcd83206a27c4ed0595411090cc4c0a6df3584608",
   "docker/browser-controller-snapshot.mjs": "8c16b34d0f3aebdb8f18eeb90cb260c640579d4f9e630071b439910838943af7",
   "docker/browser-controller-upload-staging.mjs": "e4d06a8766473bee125744580b2de281434715f1d0852b5950f1ab816fdd902f",
-  "docker/tint2rc": "44bfe66faa0769967a7a0d32dd5697f9211b31796e89938d245962034344999a",
+  "docker/tint2rc": "e3d74c6480c9746d0b6238de32559dbb90e46e767ba5d84db690efb78a0f8812",
   "chromium-seccomp.json": "9bca667a1e5f4ff084f2784f37d38d69bee86f1a305ec9dc30d3e1c61b5125b5",
   "restore-script": "cdf5891bdf7b36aa80ad74be590a953d3e6d9f6c5656967bdcfeb8dbc3b3fe5c"
 }

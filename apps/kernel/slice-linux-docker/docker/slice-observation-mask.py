@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """MP-08/MP-10/MP-11: fresh captures, field masks, bounded autonomous retries."""
-import io
 import json
 import math
 from pathlib import Path
@@ -109,20 +108,34 @@ def capture_pixels():
 
 def observe(mode, argument, policy, locate=locate_regions, capture=capture_pixels,
             run=subprocess.run, scratch=None):
-    image = capture_masked(policy, locate, capture)
-    if mode == 'screenshot':
-        image.save(argument, format='PNG')
-        return
-    with tempfile.TemporaryDirectory(prefix='chariox-masked-ocr-', dir=scratch) as root:
-        path = Path(root) / 'masked.png'
-        image.save(path, format='PNG')
-        args = [sys.executable, str(Path(__file__).with_name('slice-text-finder.py')), '--image', str(path)]
-        if mode == 'find-text':
-            args.append(argument)
-        # OCR runs only after masking, and never consumes a prior raw/cache path.
-        result = run(args, check=False, timeout=35)
-        if result is not None and result.returncode:
-            raise SystemExit(result.returncode)
+    native_ids = {target['target']['focus_window'] for target in policy.get('targets', [])
+                  if target.get('kind') == 'native'}
+    image = None
+    try:
+        image = capture_masked(policy, locate, capture)
+        if mode == 'screenshot':
+            image.save(argument, format='PNG')
+            return
+        with tempfile.TemporaryDirectory(prefix='chariox-masked-ocr-', dir=scratch) as root:
+            path = Path(root) / 'masked.png'
+            image.save(path, format='PNG')
+            args = [sys.executable, str(Path(__file__).with_name('slice-text-finder.py')), '--image', str(path)]
+            if mode == 'find-text':
+                args.append(argument)
+            # OCR runs only after masking, and never consumes a prior raw/cache path.
+            result = run(args, check=False, timeout=35)
+            if result is not None and result.returncode:
+                raise SystemExit(result.returncode)
+    finally:
+        if image is not None:
+            image.close()
+        remaining = {target['target']['focus_window'] for target in policy.get('targets', [])
+                     if target.get('kind') == 'native'}
+        pruned = sorted(native_ids - remaining)
+        if pruned:
+            # Private helper receipt contains only XIDs, never observation text.
+            print('CHARIOX_OBSERVATION_PRUNED_NATIVE:' + json.dumps(pruned, separators=(',', ':')),
+                  file=sys.stderr)
 
 
 if __name__ == '__main__':

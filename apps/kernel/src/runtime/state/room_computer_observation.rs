@@ -151,6 +151,11 @@ impl KernelRuntimeState {
                 .room_secret_observations
                 .capture_policy(session_id)?,
             capture_guard,
+            |ids| {
+                self.owned
+                    .room_secret_observations
+                    .prune_native_targets(session_id, ids)
+            },
         )
         .await?;
         self.owned

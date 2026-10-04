@@ -1,4 +1,5 @@
 """MP-08/MP-10/MP-11: autonomous masking before pixels/OCR reach an agent."""
+import io
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -34,6 +35,28 @@ class MaskTests(unittest.TestCase):
             window.get_attributes.side_effect = RuntimeError('transport failed')
             with self.assertRaises(RuntimeError):
                 module.locate_regions({'targets': [target]})
+
+    def test_dead_native_targets_are_reported_to_the_kernel_after_capture(self):
+        target = {'kind': 'native', 'target': {'focus_window': 42, 'active_window': 42}}
+        policy = {'targets': [target]}
+        def locate(policy):
+            policy['targets'] = []
+            return []
+        with tempfile.TemporaryDirectory() as root, patch('sys.stderr', new_callable=io.StringIO) as receipt:
+            module.observe('screenshot', str(Path(root) / 'masked.png'), policy, locate,
+                           lambda: Image.new('RGB', (40, 40), 'white'))
+            self.assertEqual(receipt.getvalue(), 'CHARIOX_OBSERVATION_PRUNED_NATIVE:[42]\n')
+
+    def test_dead_native_target_receipt_survives_a_failed_capture(self):
+        target = {'kind': 'native', 'target': {'focus_window': 42, 'active_window': 42}}
+        policy = {'targets': [target]}
+        def locate(policy):
+            policy['targets'] = []
+            return []
+        with patch('sys.stderr', new_callable=io.StringIO) as receipt:
+            with self.assertRaises(module.ObservationRedacted):
+                module.observe('screenshot', None, policy, locate, Mock(side_effect=RuntimeError('capture failed')))
+            self.assertEqual(receipt.getvalue(), 'CHARIOX_OBSERVATION_PRUNED_NATIVE:[42]\n')
 
     def test_only_inserted_region_is_masked_and_benign_pixels_survive(self):
         image = Image.new('RGB', (80, 40), 'white')

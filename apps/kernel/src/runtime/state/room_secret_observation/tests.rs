@@ -755,3 +755,266 @@ fn interrupted_migration_preserves_cutoff_and_room_deletion_removes_it() {
     assert!(!restarted.marker("room").exists());
     assert!(!restarted.registry_path("room").exists());
 }
+
+// MP-08/MP-10/MP-11: empty and revoked Rooms cannot block unrelated Vault writes.
+#[test]
+fn empty_or_revoked_rooms_never_match_vault_keys() {
+    let root = TestRoot::new();
+    let key = crate::transport::relay_crypto::generate_private_key_base64();
+    let path = root.path().join("observations");
+    let store = RoomSecretObservations::new(path.clone(), BTreeSet::new()).with_identity(&key);
+    store
+        .register_credential_source("room", Some("login"))
+        .unwrap();
+    assert!(!store.uses_vault_key("room", "login").unwrap());
+    store.register("room", "synthetic-only").unwrap();
+    store.forget("room").unwrap();
+    for store in [
+        &store,
+        &RoomSecretObservations::new(path, BTreeSet::new()).with_identity(&key),
+    ] {
+        for key in ["login", "unrelated"] {
+            assert!(!store.uses_vault_key("room", key).unwrap());
+        }
+    }
+}
+
+#[test]
+fn fenced_observations_name_the_state_without_retry_or_human_clearance() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    store.register("room", "synthetic-only").unwrap();
+    store.forget("room").unwrap();
+    let error = store
+        .scrub("room", "benign tool result".to_string())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("Room observation state is fenced"),
+        "{error}"
+    );
+    assert!(!error.contains("retrying"));
+    assert!(!error.contains("manage"));
+}
+
+#[tokio::test]
+async fn stopped_or_unreachable_slice_defers_revocation_and_allows_room_deletion() {
+    use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
+    use crate::slice::{CreateSliceInput, SliceBackendKind, SliceDisplayMode, SliceStatus};
+    for (stopped, destroyed) in [(true, false), (false, false), (true, true)] {
+        let room = TestRoom::new("vault-offline-revocation");
+        let slices = &room.runtime.owned.slice_store;
+        let slice = slices
+            .create(
+                "home",
+                "machine",
+                CreateSliceInput {
+                    source_slice_ref: None,
+                    name: "offline".into(),
+                    backend: SliceBackendKind::LocalDocker,
+                    os: "linux".into(),
+                    display_mode: SliceDisplayMode::Headed,
+                    display_backend: Default::default(),
+                    workspace_id: None,
+                    worktree_id: None,
+                    workspace_mount: None,
+                    development: None,
+                    worker_kernel_ref: Some("unreachable-fixture-worker".into()),
+                    display_url: None,
+                    provider_auth: vec![],
+                    from_saved_state: None,
+                    now_ms: 1,
+                },
+            )
+            .unwrap();
+        slices
+            .bind_environment(&room.session_id, &slice.id, 2, |_| Ok(()))
+            .unwrap();
+        if !stopped {
+            slices
+                .set_status(&slice.id, SliceStatus::Running, 3)
+                .unwrap();
+        }
+        // This lane owns the loopback sink: it never completes a worker handshake.
+        let sink = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        slices
+            .set_relay_endpoint(
+                &slice.id,
+                Some(crate::slice::SliceRelayEndpoint {
+                    url: format!("ws://{}", sink.local_addr().unwrap()),
+                    private: false,
+                }),
+                4,
+            )
+            .unwrap();
+        let store = &room.runtime.owned.room_secret_observations;
+        store
+            .register_credential_source(&room.session_id, Some("login"))
+            .unwrap();
+        store.register(&room.session_id, "synthetic-only").unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            room.runtime.revoke_vault_observation_values("login"),
+        )
+        .await
+        .expect("MP-08/MP-10/MP-11: offline revocation is bounded")
+        .expect("MP-08/MP-10/MP-11: offline worker cannot veto a home Vault mutation");
+        assert!(!store.uses_vault_key(&room.session_id, "unrelated").unwrap());
+        assert!(store
+            .restore_registry(&room.session_id)
+            .unwrap()
+            .unwrap()
+            .values
+            .is_empty());
+        assert_eq!(store.pending_revocations(&slice).unwrap().len(), 1);
+        let config = room.runtime.owned.config_projection.snapshot();
+        let restarted = RoomSecretObservations::new(store.root.clone(), BTreeSet::new())
+            .with_identity(&config.relay_private_key);
+        assert_eq!(restarted.pending_revocations(&slice).unwrap().len(), 1);
+        assert!(!restarted.uses_vault_key(&room.session_id, "login").unwrap());
+        let error = room
+            .runtime
+            .guard_slice_execution(
+                Some(&room.session_id),
+                [(Some(slice.id.as_str()), None)],
+                "agent.spawn",
+            )
+            .await
+            .err()
+            .expect("pending revocation must gate the next admission");
+        assert!(
+            error.to_string().contains("revocation is pending"),
+            "{error}"
+        );
+        if destroyed {
+            // Destroyed slices also cannot hold the home Room hostage.
+            slices.delete(&slice.id).unwrap();
+        }
+        room.runtime
+            .delete_session_id(&room.session_id)
+            .await
+            .expect("MP-08/MP-10/MP-11: an offline Room remains deletable");
+        assert!(!store.registry_path(&room.session_id).exists());
+        assert_eq!(
+            store.pending_revocations(&slice).unwrap().len(),
+            1,
+            "Room teardown must retain the worker acknowledgement obligation"
+        );
+    }
+}
+
+#[tokio::test]
+async fn room_deletion_does_not_report_failure_after_observation_cleanup_error() {
+    use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
+    let room = TestRoom::new("vault-delete-cleanup-error");
+    let store = &room.runtime.owned.room_secret_observations;
+    store.require(&room.session_id, false).unwrap();
+    // A synthetic I/O fault during post-commit cleanup, not a Vault secret.
+    std::fs::create_dir(store.registry_path(&room.session_id)).unwrap();
+    let result = room.runtime.delete_session_id(&room.session_id).await;
+    assert!(room
+        .runtime
+        .owned
+        .session_store
+        .get_session(&room.session_id)
+        .is_err());
+    result.expect("MP-08/MP-10/MP-11: committed deletion must report success");
+}
+
+#[tokio::test]
+async fn dead_native_targets_are_pruned_from_the_sealed_kernel_registry() {
+    use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::{TestRoom, TestTools, install_screen_tool};
+    for mode in ["ocr", "screenshot", "failed-ocr"] {
+        let room = TestRoom::new("vault-native-target-pruning");
+        let tools = TestTools::new("native-target-pruning");
+        let exit_code = if mode == "failed-ocr" { 75 } else { 0 };
+        std::fs::write(&tools.screen_tool, format!("#!/bin/sh\ncat >/dev/null\nif [ \"$1\" = protected-screenshot ]; then printf '\\211PNG\\r\\n\\032\\nfixture' > \"$2\"; fi\nprintf 'CHARIOX_OBSERVATION_PRUNED_NATIVE:[42]\\n' >&2\nprintf 'benign observation\\n'\nexit {exit_code}\n")).unwrap();
+        let _environment = install_screen_tool(&tools.screen_tool);
+        let mut config = room.runtime.owned.config_projection.snapshot();
+        config.room_environment_worker_binding =
+            Some(crate::config::RoomEnvironmentWorkerBinding {
+                home_kernel_id: "synthetic-home".into(),
+                home_public_key: config.relay_public_key.clone(),
+                session_id: room.session_id.clone(),
+                slice_id: "synthetic-slice".into(),
+                provisioned_slice_id: None,
+            });
+        room.runtime.owned.config_projection.update(config.clone());
+        let store = &room.runtime.owned.room_secret_observations;
+        store.register(&room.session_id, "synthetic-only").unwrap();
+        {
+            let mut rooms = store.rooms.lock().unwrap();
+            let protection = rooms.get_mut(&room.session_id).unwrap();
+            protection.targets = vec![
+                serde_json::json!({"kind":"native", "target":{"focus_window":42, "active_window":41}}),
+                serde_json::json!({"kind":"native", "target":{"focus_window":43, "active_window":41}}),
+                serde_json::json!({"kind":"browser", "target_id":"tab", "document_id":"doc", "node_ref":"backend:42"}),
+            ];
+            store
+                .persist_registry(&room.session_id, protection)
+                .unwrap();
+        }
+        if mode == "screenshot" {
+            room.runtime
+                .execute_bound_room_screenshot_capture(
+                    "synthetic-home",
+                    &config.relay_public_key,
+                    &room.session_id,
+                    "synthetic-slice",
+                )
+                .await
+                .unwrap();
+        } else {
+            let result = room
+                .runtime
+                .execute_bound_room_computer_observation(
+                    "synthetic-home",
+                    &config.relay_public_key,
+                    &room.session_id,
+                    "synthetic-slice",
+                    crate::transport::relay_peer::RemoteRoomComputerObservationCall::Ocr {
+                        artifact_id: None,
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.ok, mode == "ocr");
+        }
+        let restored = store.restore_registry(&room.session_id).unwrap().unwrap();
+        assert_eq!(
+            restored.targets.len(),
+            2,
+            "MP-08/MP-10/MP-11: dead XIDs must not survive a capture or restart"
+        );
+        assert_eq!(restored.values.len(), 1);
+        assert_eq!(restored.targets[0]["target"]["focus_window"], 43);
+        assert_eq!(restored.targets[1]["kind"], "browser");
+    }
+}
+
+
+#[test]
+fn pending_revocation_does_not_fence_a_new_slice_with_a_reused_local_id() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    let slices = crate::slice::SliceStore::default();
+    let input = crate::slice::CreateSliceInput {
+        source_slice_ref: None, name: "reused".into(), backend: crate::slice::SliceBackendKind::LocalDocker,
+        os: "linux".into(), display_mode: crate::slice::SliceDisplayMode::Headed,
+        display_backend: Default::default(), workspace_id: None, worktree_id: None,
+        workspace_mount: None, development: None, worker_kernel_ref: None,
+        display_url: None, provider_auth: vec![], from_saved_state: None, now_ms: 1,
+    };
+    let original = slices.create("home", "machine", input.clone()).unwrap();
+    store.defer_revocation("deleted-room", &original).unwrap();
+    // The product recovers its local sequence from retained slice records only.
+    slices.delete(&original.id).unwrap();
+    slices.restore_records(Vec::new());
+    let recreated = slices.create("home", "machine", crate::slice::CreateSliceInput {
+        now_ms: 2, ..input
+    }).unwrap();
+    assert_eq!(recreated.id, original.id);
+    assert_ne!(recreated.worker_kernel_ref, original.worker_kernel_ref);
+    assert!(store.pending_revocations(&recreated).unwrap().is_empty(),
+        "MP-08/MP-10/MP-11: an old worker revocation cannot fence a fresh physical slice");
+}

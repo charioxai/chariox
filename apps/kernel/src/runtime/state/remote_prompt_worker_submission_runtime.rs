@@ -847,6 +847,11 @@ impl KernelRuntimeState {
                         ),
                     });
                 }
+                if let Some(slice) = callback_state.owned.slice_store.resolve_execution_worker_kernel_ref(
+                    &remote_execution.worker_kernel_id, "dispatch remote agent prompt",
+                )? {
+                    callback_state.settle_slice_observation_revocations(&slice.id).await?;
+                }
                 let native_provider_run =
                     callback_state.remote_agent_has_native_provider_run(&agent);
                 let required_mcps = if native_provider_run {
@@ -1019,7 +1024,7 @@ pub(super) fn remote_prompt_error_should_retry_transport(error: &DaemonError) ->
             return matches!(
                 *operation,
                 "read relay peer response" | "read temporary relay peer response"
-            )
+            );
         }
         DaemonError::RelayTransport { .. } => return false,
         DaemonError::LocalTransport { operation, message } => (*operation, message.as_str()),

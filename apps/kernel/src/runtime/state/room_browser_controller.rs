@@ -21,6 +21,31 @@ impl KernelRuntimeState {
         request: RelayPeerRequest,
         timeout: std::time::Duration,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        // All Room display/observation routes share worker revocation admission.
+        let slice_id = match &request {
+            RelayPeerRequest::RoomBrowserController {
+                slice_id, command, ..
+            } if !matches!(command, Command::ClearSecretObservation) => Some(slice_id),
+            RelayPeerRequest::ObserveRoomComputer { slice_id, .. }
+            | RelayPeerRequest::CaptureRoomScreenshot { slice_id, .. }
+            | RelayPeerRequest::ReadRoomScreenshotChunk { slice_id, .. }
+            | RelayPeerRequest::OpenRoomDisplay { slice_id, .. } => Some(slice_id),
+            _ => None,
+        };
+        if let Some(slice_id) = slice_id {
+            self.settle_slice_observation_revocations(slice_id).await?;
+        }
+        self.send_room_slice_peer_request_unchecked(config, target, request, timeout)
+            .await
+    }
+
+    pub(super) async fn send_room_slice_peer_request_unchecked(
+        &self,
+        config: &crate::config::DaemonConfig,
+        target: chariox_relay::protocol::ClientTarget,
+        request: RelayPeerRequest,
+        timeout: std::time::Duration,
+    ) -> Result<RelayPeerResponse, DaemonError> {
         let result = match self.connected_relay_state_for_config(config).await {
             Some(relay_state) => {
                 crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
@@ -120,23 +145,20 @@ impl KernelRuntimeState {
         if matches!(&command, Command::ClearSecretObservation) {
             let protection = &self.owned.room_secret_observations;
             let _guard = protection.barrier(session_id)?.write_owned().await;
-            if let Some(slice) = self.owned.slice_store.environment_slice(session_id) {
-                let response = self
-                    .route_room_browser_controller_command(
-                        session_id,
-                        slice,
-                        command.clone(),
-                        false,
-                        None,
-                    )
-                    .await?;
-                if !matches!(response, Response::SecretObservationCleared) {
-                    return Err(controller_route_error(
-                        "worker did not acknowledge Room observation revocation",
-                    ));
-                }
+            let slice = self.owned.slice_store.environment_slice(session_id);
+            if let Some(slice) = &slice {
+                protection.defer_revocation(session_id, slice)?;
             }
             protection.forget(session_id)?;
+            if let Some(slice) =
+                slice.filter(|slice| slice.status == crate::slice::SliceStatus::Running)
+            {
+                // An unavailable worker cannot veto the home mutation. Its durable
+                // receipt remains mandatory at the next admission, including after deletion.
+                let _ = self
+                    .route_room_browser_controller_command(session_id, slice, command, false, None)
+                    .await;
+            }
             return Ok(Response::SecretObservationCleared);
         }
         // Cleanup must remain available while observations are redacted, including
@@ -268,6 +290,10 @@ impl KernelRuntimeState {
                 admission_deadline,
             )
             .await?;
+        if matches!(command, Command::ClearSecretObservation) {
+            self.settle_slice_observation_revocations(&slice.id).await?;
+            return Ok(Response::SecretObservationCleared);
+        }
         let config = self.owned.config_projection.snapshot();
         let slice_relay = config.slice_relay_override(&slice);
         let private_slice_relay = slice_relay.is_some()
@@ -356,7 +382,9 @@ impl KernelRuntimeState {
                 )
             });
         if !permitted {
-            return Err(controller_route_error("browser_controller_scope_denied: peer or Room does not match the provisioned slice binding"));
+            return Err(controller_route_error(
+                "browser_controller_scope_denied: peer or Room does not match the provisioned slice binding",
+            ));
         }
         let protection = &self.owned.room_secret_observations;
         if matches!(&command, Command::ClearSecretObservation) {
@@ -656,9 +684,6 @@ async fn execute_local(
             }
             input_result?;
             return Ok(Response::ComputerInputApplied { action_id });
-        }
-        Command::ClearSecretObservation => {
-            return Err(controller_route_error("observation redacted, retrying"))
         }
         Command::ComputerSecretTarget => {
             let capture_guard = computer_input_executions

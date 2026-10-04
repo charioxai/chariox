@@ -392,6 +392,7 @@ async fn friendly_alias_shares_canonical_admission_without_authorizing_alias() {
             ],
             "agent.spawn",
         )
+        .await
         .unwrap();
     assert_eq!(
         admission.slice_ids,
@@ -414,6 +415,7 @@ async fn friendly_alias_shares_canonical_admission_without_authorizing_alias() {
                 [(None, Some("ordinary-remote-worker"))],
                 "agent.spawn",
             )
+            .await
             .unwrap()
             .slice_ids,
         vec![None]

@@ -644,6 +644,7 @@ pub(in crate::runtime::state) async fn execute_room_computer_observation(
     call: crate::transport::relay_peer::RemoteRoomComputerObservationCall,
     capture_policy: zeroize::Zeroizing<String>,
     capture_guard: tokio::sync::OwnedRwLockReadGuard<()>,
+    prune: impl Fn(&[u64]) -> Result<(), DaemonError>,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
     let args = match &call {
         crate::transport::relay_peer::RemoteRoomComputerObservationCall::ScreenStatus => {
@@ -670,6 +671,7 @@ pub(in crate::runtime::state) async fn execute_room_computer_observation(
         Some(capture_guard),
     )
     .await?;
+    prune_native_target_receipts(&output.stderr, prune)?;
     if output.status_code == Some(75) {
         return Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: false,
@@ -709,6 +711,7 @@ pub(in crate::runtime::state) async fn capture_room_environment_screenshot(
     destination: &std::path::Path,
     capture_policy: zeroize::Zeroizing<String>,
     capture_guard: tokio::sync::OwnedRwLockReadGuard<()>,
+    prune: impl Fn(&[u64]) -> Result<(), DaemonError>,
 ) -> Result<(), DaemonError> {
     let destination = destination
         .to_str()
@@ -725,6 +728,7 @@ pub(in crate::runtime::state) async fn capture_room_environment_screenshot(
         Some(capture_guard),
     )
     .await?;
+    prune_native_target_receipts(&output.stderr, prune)?;
     if output.status_code == Some(75) {
         return Err(DaemonError::LocalTransport {
             operation: "environment.screenshot.capture",
@@ -752,6 +756,24 @@ pub(in crate::runtime::state) async fn capture_room_environment_screenshot(
             operation: "environment.screenshot.capture",
             message: "slice screenshot helper produced an empty capture".to_string(),
         });
+    }
+    Ok(())
+}
+
+// MP-08/MP-10/MP-11: accept only the private mask helper's value-free XID receipt.
+fn prune_native_target_receipts(
+    stderr: &str,
+    prune: impl Fn(&[u64]) -> Result<(), DaemonError>,
+) -> Result<(), DaemonError> {
+    for line in stderr.lines() {
+        if let Some(receipt) = line.strip_prefix("CHARIOX_OBSERVATION_PRUNED_NATIVE:") {
+            let ids: Vec<u64> = serde_json::from_str(receipt)
+                .map_err(|_| super::super::room_secret_observation::protection_error())?;
+            if ids.len() > 256 || ids.iter().any(|id| *id <= 1) {
+                return Err(super::super::room_secret_observation::protection_error());
+            }
+            prune(&ids)?;
+        }
     }
     Ok(())
 }

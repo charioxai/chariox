@@ -9,7 +9,7 @@ pub(crate) struct SliceExecutionAdmission {
 }
 
 impl KernelRuntimeState {
-    pub(crate) fn guard_slice_execution<'a>(
+    pub(crate) async fn guard_slice_execution<'a>(
         &self,
         session_id: Option<&str>,
         targets: impl IntoIterator<Item = (Option<&'a str>, Option<&'a str>)>,
@@ -42,6 +42,9 @@ impl KernelRuntimeState {
             .iter()
             .map(|id| slices.guard_environment_use(id, session_id, operation))
             .collect::<Result<_, _>>()?;
+        for id in unique_ids {
+            self.settle_slice_observation_revocations(&id).await?;
+        }
         Ok(SliceExecutionAdmission {
             slice_ids,
             _guards: guards,

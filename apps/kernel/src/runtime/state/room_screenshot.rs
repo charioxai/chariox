@@ -281,6 +281,11 @@ impl KernelRuntimeState {
                 .room_secret_observations
                 .capture_policy(session_id)?,
             capture_guard,
+            |ids| {
+                self.owned
+                    .room_secret_observations
+                    .prune_native_targets(session_id, ids)
+            },
         )
         .await
         {
@@ -547,7 +552,9 @@ fn validate_observation_artifact(
             .and_then(serde_json::Value::as_u64)
             != Some(revision)
     {
-        return Err(screenshot_error("Screenshot belongs to an earlier observation lifetime and remains withheld. Capture a new redacted image."));
+        return Err(screenshot_error(
+            "Screenshot belongs to an earlier observation lifetime and remains withheld. Capture a new redacted image.",
+        ));
     }
     Ok(())
 }

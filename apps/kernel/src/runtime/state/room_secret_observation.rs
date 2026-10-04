@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 mod lifecycle;
+mod revocation;
 mod storage;
 
 use super::KernelRuntimeState;
@@ -28,6 +29,7 @@ pub(super) struct RoomSecretObservations {
     rooms: Arc<Mutex<BTreeMap<String, Protection>>>,
     barriers: Arc<Mutex<BTreeMap<String, Arc<tokio::sync::RwLock<()>>>>>,
     vault_lifecycle: Arc<tokio::sync::RwLock<()>>,
+    revocation_delivery: Arc<tokio::sync::Mutex<()>>,
     pub(super) epoch: u64,
 }
 
@@ -53,6 +55,7 @@ impl RoomSecretObservations {
             rooms: Default::default(),
             barriers: Default::default(),
             vault_lifecycle: Default::default(),
+            revocation_delivery: Default::default(),
             epoch: crate::session::unix_epoch_ms(),
         };
         store.migration_failed = store.migrate_legacy_rooms(recovered).is_err();
@@ -150,7 +153,7 @@ impl RoomSecretObservations {
         let protection = &rooms[room];
         // Registries from the unshipped predecessor lack provenance. Revoke them
         // conservatively rather than leaving an untracked value on disk.
-        Ok((!protection.values.is_empty() || protection.unknown)
+        Ok(!protection.values.is_empty()
             && (!protection.provenance_known || protection.vault_keys.contains(key)))
     }
 
@@ -231,8 +234,8 @@ impl RoomSecretObservations {
     }
 
     pub(super) fn require(&self, room: &str, pixels: bool) -> Result<(), DaemonError> {
-        if self.blocked(room, pixels)? && !pixels {
-            return Err(protection_error());
+        if self.blocked(room, pixels)? {
+            return Err(fenced_observation_error());
         }
         Ok(())
     }
@@ -301,6 +304,25 @@ impl RoomSecretObservations {
         })).map(Zeroizing::new).map_err(|_| protection_error())
     }
 
+    // Called with the capture/input barrier held; the private helper reports
+    // only confirmed dead native XIDs, never page text or secret values.
+    pub(super) fn prune_native_targets(&self, room: &str, ids: &[u64]) -> Result<(), DaemonError> {
+        let room = self.room_key(room);
+        let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
+        let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
+        let before = protection.targets.len();
+        protection.targets.retain(|target| {
+            target["kind"] != "native"
+                || target["target"]["focus_window"]
+                    .as_u64()
+                    .is_none_or(|id| !ids.contains(&id))
+        });
+        if protection.targets.len() != before {
+            self.persist_registry(room, protection)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn controller_values(
         &self,
         room: &str,
@@ -326,7 +348,7 @@ impl RoomSecretObservations {
                 operation: "room.observation",
                 message,
             },
-            Err(_) => protection_error(),
+            Err(error) => error,
         }
     }
 
@@ -360,7 +382,7 @@ impl RoomSecretObservations {
         let protection = &rooms[room];
         // Recheck under the value lock: another insertion may follow the first require.
         if protection.unknown {
-            return Err(protection_error());
+            return Err(fenced_observation_error());
         }
         if protection.values.is_empty() {
             return Ok(input);
@@ -575,10 +597,18 @@ fn secret_variants(secret: &str) -> Vec<Zeroizing<String>> {
     .collect()
 }
 
+fn fenced_observation_error() -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "room.secret_observation.fenced",
+        message: "Room observation state is fenced: retained values were revoked or their registry is unavailable. Prior echoes remain withheld; capture retries cannot clear this state.".into(),
+    }
+}
+
 pub(super) fn protection_error() -> DaemonError {
     DaemonError::LocalTransport {
         operation: "room.secret_observation",
-        message: "observation redacted, retrying".into(),
+        message: "Room observation protection state is unavailable; observations remain withheld."
+            .into(),
     }
 }
 

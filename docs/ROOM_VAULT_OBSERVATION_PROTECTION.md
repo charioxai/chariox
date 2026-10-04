@@ -36,7 +36,9 @@ X11 control. Browser frame offsets are bound to current document/frame identitie
 An isolated world observes browser visibility and scale without page overrides.
 Confirmed hidden tabs, departed documents, closed tabs, offscreen regions,
 unmapped native controls and Xlib-confirmed destroyed windows contribute no
-desktop pixels. Departed document references become echo-only scans of the
+desktop pixels. The private capture helper returns only confirmed dead native
+XIDs to the kernel, which prunes and seals its target list, including when a
+subsequent capture fails. Dead controls cannot reappear in policy after restart. Departed document references become echo-only scans of the
 current page, including changed isolated frames. Current visible pages are scanned for delayed copies, even
 after the original protected tab closes.
 The helper compares freshly located regions before and after capturing, masks
@@ -63,16 +65,32 @@ Vault-key provenance scopes revocation to affected Rooms and distinguishes
 non-Vault sources. Secret input holds a shared lifecycle fence from resolution
 through insertion; Vault mutation and Room deletion drain those inputs before
 revocation and persistence. Different Rooms can resolve and insert concurrently. Older registries with
-no provenance and unknown home state are revoked conservatively, including possible
-worker values. New credential input cannot narrow that legacy revocation scope. A bound worker must acknowledge
-revocation before the home commits the credential mutation or Room deletion.
-An unreachable worker returns an error and leaves that operation uncommitted.
-Room deletion removes the home registry and marker after runtime teardown;
-workers retain only empty unknown-state protection.
+no provenance are revoked conservatively only while they retain values. New
+credential input cannot narrow that legacy revocation scope. Empty, migrated and
+already-revoked registries match no Vault keys and trigger no further revocation.
+Before deleting home values, the kernel persists a private value-free revocation
+obligation bound to the Room and each slice's creation time and canonical worker
+reference. Reuse of a deleted local slice ID cannot fence a fresh physical slice.
+Running workers receive a bounded immediate
+delivery attempt; a stopped, destroyed or unreachable slice cannot veto the home
+credential mutation or Room deletion. Pending obligations survive restart and
+Room deletion. Before admitting further provider work, prompts, Browser commands,
+Computer observations or display access, the home requires an authenticated
+worker acknowledgement on the same Room/slice binding. Delivery resumes
+automatically; no human recovery action exists. A pending acknowledgement returns
+a distinct `room.secret_observation.revocation_pending` error.
+Room deletion removes the home registry and markers after runtime teardown;
+cleanup faults keep the tombstone fenced and are logged without reporting an
+already-committed deletion as failed. Workers retain only empty unknown-state
+protection after acknowledging revocation.
 
 There is no human observation-recovery interaction or clearance fallback.
 Vault management does not change Room observation protection. Lost or invalid
 secret registries and revoked values still fail closed to protect prior echoes.
+This lasting fence returns `room.secret_observation.fenced`, naming the state and
+explaining that capture retries cannot clear it. Storage failures name unavailable
+protection state. The bounded `observation redacted, retrying` response is reserved
+for transient capture/layout failures, not these lasting fences.
 
 MP-08/MP-11 OCR and find-text always re-capture through this masking helper,
 including requests carrying old artifact IDs. OCR runs only on a fresh masked PNG,
@@ -91,7 +109,9 @@ seeding and sealed registry metadata remain private kernel/controller contracts.
 
 MP-10 focused source and helper checks include false-positive benign observations,
 no human interactions, clean restart, autonomous one-time migration and permanent prior-history fencing,
-Vault revocation on both home and worker, registry Room/identity binding, bounded
+Vault revocation on both home and worker, deferred acknowledgement for stopped
+and unreachable slices, deletion cleanup faults, persistent native-XID pruning,
+registry Room/identity binding, bounded
 retry, old-artifact recapture, trusted Browser geometry, copied text/canvas masking,
 and unchanged native focus checks. Real Chromium/X11 helper runs use synthetic
 values and preserve benign screen content. Evidence and exact commands stay outside Git.

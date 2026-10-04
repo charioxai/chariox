@@ -38,11 +38,13 @@ impl KernelRuntimeState {
                 message: "creating separate metaagents is deprecated; create a regular session and send `/meta <task>` to enter meta mode".to_string(),
             });
         }
-        let slice_admission = self.guard_slice_execution(
-            None,
-            [(slice_ref.as_deref(), kernel_ref.as_deref())],
-            "session.create",
-        )?;
+        let slice_admission = self
+            .guard_slice_execution(
+                None,
+                [(slice_ref.as_deref(), kernel_ref.as_deref())],
+                "session.create",
+            )
+            .await?;
         let [slice_ref] = slice_admission.slice_ids.as_slice() else {
             return Err(DaemonError::InternalInvariant {
                 operation: "session.create",
@@ -676,11 +678,13 @@ impl KernelRuntimeState {
         let local_agent =
             self.owned
                 .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to remote")?;
-        let slice_admission = self.guard_slice_execution(
-            Some(session_id),
-            [(None, Some(machine_ref))],
-            "agent.move_remote",
-        )?;
+        let slice_admission = self
+            .guard_slice_execution(
+                Some(session_id),
+                [(None, Some(machine_ref))],
+                "agent.move_remote",
+            )
+            .await?;
         let [target_slice_id] = slice_admission.slice_ids.as_slice() else {
             return Err(DaemonError::InternalInvariant {
                 operation: "agent.move_remote",
@@ -977,11 +981,25 @@ impl KernelRuntimeState {
                 .unwrap_or((false, None));
             owned.remove_provider_process_tracking_for_run(&provider_run_id, process_key);
         }
-        let detached = self.detach_session_slices(&session).await;
+        if self.detach_session_slices(&session).await.is_err() {
+            tracing::warn!(
+                "MP-08/MP-10/MP-11: Room deleted; slice detachment cleanup remains incomplete"
+            );
+        }
         let protection = &self.owned.room_secret_observations;
-        let _observation_guard = protection.barrier(&session_id)?.write_owned().await;
-        protection.delete_room(&session_id)?;
-        detached?;
+        match protection.barrier(&session_id) {
+            Ok(barrier) => {
+                let _observation_guard = barrier.write_owned().await;
+                if protection.delete_room(&session_id).is_err() {
+                    tracing::warn!(
+                        "MP-08/MP-10/MP-11: Room deleted; observation cleanup remains fenced"
+                    );
+                }
+            }
+            Err(_) => tracing::warn!(
+                "MP-08/MP-10/MP-11: Room deleted; observation cleanup remains fenced"
+            ),
+        }
         Ok(session)
     }
 

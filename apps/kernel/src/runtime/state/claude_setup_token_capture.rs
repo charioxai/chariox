@@ -10,6 +10,7 @@ const CREDENTIAL_PREFIX: &str = "sk-ant-";
 /// Only a Claude Code OAuth token is ever captured for storage.
 const SETUP_TOKEN_PREFIX: &str = "sk-ant-oat01-";
 const MIN_SETUP_TOKEN_BODY_CHARS: usize = 80;
+const MIN_HIDDEN_INPUT_CHARS: usize = 8;
 pub(super) const REDACTED_TOKEN_MARKER: &str = "[setup token captured; hidden]";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -51,7 +52,14 @@ impl ClaudeSetupTokenScreen {
         let rows = self.rows();
         let mut text = rows
             .iter()
-            .map(|row| redact_input_echoes(redact_credentials(row), inputs))
+            .enumerate()
+            .map(|(index, row)| {
+                redact_input_echoes(
+                    redact_credentials(row),
+                    inputs,
+                    index == usize::from(self.parser.screen().cursor_position().0),
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
         text.truncate(text.trim_end().len());
@@ -122,14 +130,20 @@ fn redact_credentials(row: &str) -> String {
     redacted
 }
 
-fn redact_input_echoes(row: String, inputs: &[Zeroizing<String>]) -> String {
+fn redact_input_echoes(row: String, inputs: &[Zeroizing<String>], cursor_row: bool) -> String {
     let mut row = Zeroizing::new(row);
-    for input in inputs {
+    for input in inputs
+        .iter()
+        .filter(|input| input.chars().count() >= MIN_HIDDEN_INPUT_CHARS)
+    {
         let replacement = row.replace(input.as_str(), "[hidden provider response]");
         row.zeroize();
         *row = replacement;
         // An echo can be split across PTY reads. Hide even its partial suffix
         // until the next render, rather than briefly projecting a code prefix.
+        if !cursor_row {
+            continue;
+        }
         if let Some(length) = input
             .char_indices()
             .map(|(index, _)| index)
@@ -187,6 +201,23 @@ mod tests {
                 .redacted_text_with_inputs(&[code.clone()])
                 .contains(code.as_str()));
         }
+    }
+
+    // MP-08/MP-10/MP-11: routine answers and old rows retain readable URLs.
+    #[test]
+    fn short_answers_do_not_redact_urls_and_partial_echoes_only_hide_cursor_row() {
+        let mut screen = ClaudeSetupTokenScreen::default();
+        let url = "https://claude.com/cai/oauth/authorize?code=true&fixture=1";
+        screen.process(format!("{url}\r\nContinue? y\r\nPrior abc\r\nCurrent abc").as_bytes());
+        let inputs = ["y", "1", "abcdef-hidden-code"].map(|s| Zeroizing::new(s.to_string()));
+        let projected = screen.redacted_text_with_inputs(&inputs);
+        assert!(projected.contains(url), "{projected}");
+        assert!(projected.contains("Continue? y"), "{projected}");
+        assert!(projected.contains("Prior abc"), "{projected}");
+        assert!(
+            projected.contains("Current [hidden provider response]"),
+            "{projected}"
+        );
     }
 
     #[test]

@@ -193,11 +193,15 @@ impl SessionRuntimeStore {
             Ok(session) => session,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
         };
-        let slice_admission = match self.state.guard_slice_execution(
-            Some(&request.session_id),
-            [(request.slice_ref.as_deref(), request.kernel_ref.as_deref())],
-            "agent.spawn",
-        ) {
+        let slice_admission = match self
+            .state
+            .guard_slice_execution(
+                Some(&request.session_id),
+                [(request.slice_ref.as_deref(), request.kernel_ref.as_deref())],
+                "agent.spawn",
+            )
+            .await
+        {
             Ok(guards) => guards,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
         };
@@ -391,14 +395,18 @@ impl SessionRuntimeStore {
             Ok(session) => session,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
         };
-        let slice_admission = match self.state.guard_slice_execution(
-            Some(&request.session_id),
-            request
-                .agents
-                .iter()
-                .map(|item| (item.slice_ref.as_deref(), item.kernel_ref.as_deref())),
-            "agents.spawn",
-        ) {
+        let slice_admission = match self
+            .state
+            .guard_slice_execution(
+                Some(&request.session_id),
+                request
+                    .agents
+                    .iter()
+                    .map(|item| (item.slice_ref.as_deref(), item.kernel_ref.as_deref())),
+                "agents.spawn",
+            )
+            .await
+        {
             Ok(guards) => guards,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
         };
