@@ -261,9 +261,6 @@ fn probe_error(message: String) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
 
     #[cfg(unix)]
     #[test]
@@ -280,8 +277,9 @@ mod tests {
         let executable = fixture.join("fake-claude.mjs");
         let observed_environment = fixture.join("environment.json");
         let claude_config_dir = fixture.join("claude-account");
-        let mut file = fs::File::create(&executable).expect("fake Claude executable");
-        file.write_all(
+        let source = fixture.join("fake-claude-source.mjs");
+        fs::write(
+            &source,
             br#"#!/usr/bin/env node
 import { writeFileSync } from "node:fs"
 const expected = ["-p", "/usage", "--output-format", "json", "--no-session-persistence", "--no-chrome", "--tools", ""]
@@ -309,9 +307,16 @@ process.stdout.write(JSON.stringify({
 "#,
         )
         .expect("fake Claude source");
-        drop(file);
-        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))
-            .expect("fake Claude permissions");
+        // A concurrent fork can retain this process's writable descriptors.
+        // Like TestTool, install from a child and wait for it to exit: the
+        // parallel test process never holds the executable open for writing.
+        let installed = Command::new("install")
+            .args(["-m", "700"])
+            .arg(&source)
+            .arg(&executable)
+            .status()
+            .expect("install fake Claude executable");
+        assert!(installed.success(), "install fake Claude: {installed}");
         let inherited_home = std::env::var("HOME").expect("test HOME");
         let environment = BTreeMap::from([
             (
