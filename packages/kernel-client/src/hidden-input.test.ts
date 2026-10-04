@@ -98,3 +98,11 @@ test("noninteractive and concurrent readers fail closed", async () => {
   abort.abort()
   await assert.rejects(first, /cancelled/)
 })
+
+// MP-08/MP-10/MP-11: native terminal keys must not alter a Vault value.
+test("hidden input ignores split SS3 keys and keeps ordinary keys following ESC", async () => {
+  const tty = terminal()
+  const promise = readHiddenInput({ ...tty, input: tty.input as unknown as NodeJS.ReadStream })
+  for (const byte of Buffer.from("s\x1bOA\x1bOP\x1bz!\r")) tty.input.emit("data", Buffer.from([byte]))
+  assert.equal(await promise, "sz!")
+})

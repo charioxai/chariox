@@ -68,12 +68,16 @@ export async function readHiddenInput(options: HiddenInputOptions): Promise<stri
         const text = typeof chunk === "string" ? chunk : decoder.write(chunk)
         for (const char of text) {
           if (escape) {
-            escape += char
-            if (escape === "\x1b[200~") { pasting = true; escape = "" }
-            else if (escape === "\x1b[201~") { pasting = false; escape = "" }
-            else if (escape.length > 64 || (escape.length === 2 && char !== "[")
-              || (escape.length > 2 && /[@-~]/.test(char))) escape = ""
-            continue
+            // CSI and SS3 may arrive one byte at a time. An ordinary key after
+            // ESC is still input; only a recognized control sequence consumes it.
+            if (escape === "\x1b" && char !== "[" && char !== "O") escape = ""
+            else {
+              escape += char
+              if (escape === "\x1b[200~") { pasting = true; escape = "" }
+              else if (escape === "\x1b[201~") { pasting = false; escape = "" }
+              else if (escape.length > 64 || (escape.length > 2 && /[@-~]/.test(char))) escape = ""
+              continue
+            }
           }
           if (char === "\x1b") { escape = char; continue }
           if (!pasting && char === "\x04") { onEnd(); return }
