@@ -21,6 +21,6 @@
   "docker/tint2rc": "e3d74c6480c9746d0b6238de32559dbb90e46e767ba5d84db690efb78a0f8812",
   "chromium-seccomp.json": "9bca667a1e5f4ff084f2784f37d38d69bee86f1a305ec9dc30d3e1c61b5125b5",
   "restore-script": "cdf5891bdf7b36aa80ad74be590a953d3e6d9f6c5656967bdcfeb8dbc3b3fe5c",
-  "docker/browser-controller-text.mjs": "3aafd2add4844d7a7fa84010bc6937e742cb63d7c5f03acb8d7db0343846e818",
+  "docker/browser-controller-text.mjs": "836a18f5b937756fff91f2c76f70ac4d5b4f3a2b02f9becfe953c5a69f8672ec",
   "docker/browser-controller-selection.mjs": "bfabe15972e7c18b58d07cc43c5e3869b7f346c3c3698cf5e744a5c0c4bd43ac"
 }

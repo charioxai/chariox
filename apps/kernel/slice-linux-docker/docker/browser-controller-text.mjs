@@ -1,15 +1,19 @@
-// MP-08 / MP-10 / MP-11: rendered DOM text, never input values or AX duplicates.
+// MP-08 / MP-10 / MP-11: rendered DOM text and read-only panes, no editable values or AX duplicates.
 export class BrowserTextError extends Error {
   constructor(message) { super(message); this.code = "browser_text_invalid"; }
 }
 const EXCLUDED = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "INPUT", "TEXTAREA", "SELECT"]);
-const BLOCKS = new Set(["P", "DIV", "LI", "TR", "PRE", "H1", "H2", "H3", "H4", "H5", "H6", "SECTION", "ARTICLE", "HEADER", "FOOTER", "BLOCKQUOTE"]);
+const BLOCKS = new Set(["P", "DIV", "LI", "TR", "PRE", "H1", "H2", "H3", "H4", "H5", "H6", "SECTION", "ARTICLE", "HEADER", "FOOTER", "BLOCKQUOTE", "TEXTAREA"]);
 export const MAX_TEXT_PAGE_BYTES = 1024;
 
 export function renderedNodes(document, strings) {
   const nodes = document.nodes ?? {};
   const layout = document.layout ?? {};
   const result = new Map();
+  // CDP textValue is the current native textarea value, including values set
+  // after loading. Child DOM text is its initial value and may be obsolete.
+  const paneValues = new Map((nodes.textValue?.index ?? []).map((index, i) =>
+    [index, strings[nodes.textValue.value?.[i]]]));
   const hidden = new Set();
   const invisible = new Set();
   for (let i = 0; i < (layout.nodeIndex?.length ?? 0); i++) {
@@ -31,7 +35,12 @@ export function renderedNodes(document, strings) {
       if (!(next < parent)) break;
       parent = next;
     }
-    if (!excluded) result.set(index, strings[layout.text?.[i]]);
+    if (!excluded) {
+      const attributes = nodes.attributes?.[index] ?? [];
+      const readOnlyPane = strings[nodes.nodeName?.[index]] === "TEXTAREA" &&
+        attributes.some((attribute, position) => position % 2 === 0 && strings[attribute]?.toLowerCase() === "readonly");
+      result.set(index, readOnlyPane ? paneValues.get(index) : strings[layout.text?.[i]]);
+    }
   }
   return result;
 }
@@ -46,8 +55,9 @@ export function renderedSnapshotText(snapshot) {
     let previousCell;
     for (const [index, text] of [...renderedNodes(document, strings)].sort((a, b) => a[0] - b[0])) {
       if (strings[nodes.nodeName?.[index]] === "BR") { output += "\n"; continue; }
-      if (nodes.nodeType?.[index] !== 3 || !text) continue;
-      let parent = nodes.parentIndex?.[index];
+      const readOnlyPane = strings[nodes.nodeName?.[index]] === "TEXTAREA";
+      if ((nodes.nodeType?.[index] !== 3 && !readOnlyPane) || !text) continue;
+      let parent = readOnlyPane ? index : nodes.parentIndex?.[index];
       let block = -1;
       let cell = -1;
       while (Number.isInteger(parent) && parent >= 0) {

@@ -1415,11 +1415,34 @@ test(`MP-08 P3 ${layout} rendered text captures only the bound tab and fences fr
   }), { sameSite: layout === "same-site", nested: layout === "nested-isolated", fieldMarkup: '<p>Frame text</p><script>/* POLLUTION */</script>' });
 });
 }
-async function browserTextObservation(request, target) {
-  const snapshot = await request("browser.snapshot", { ...target, text_request: { offset: 0 } });
+async function browserTextObservation(request, target, textRequest = {}) {
+  const snapshot = await request("browser.snapshot", { ...target, text_request: { offset: 0, ...textRequest } });
   assert.equal(snapshot.ok, true, JSON.stringify(snapshot.error));
   return snapshot.result.text_page;
 }
+
+test("MP-08/MP-10/MP-11 rendered read-only panes expose current public text with paging and redaction", async () => {
+  await withCrossOriginFixture(async (url) => withController(async ({ page, request, browser }) => {
+    await page.goto(`${url}field`);
+    const publicText = "Current public row\n".repeat(300) + "Final public row: 日本 😀\n";
+    const syntheticSecret = "synthetic-protected-pane-value";
+    browser.protectedValues.add(syntheticSecret);
+    await page.locator("#public").evaluate((node, value) => { node.value = value; }, publicText);
+    await page.locator("#protected").evaluate((node, value) => { node.value = value; }, syntheticSecret);
+    const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+    const first = await browserTextObservation(request, target, { offset: 0, max_bytes: 256 });
+    assert.ok(first.text.includes("Current public row"));
+    assert.ok(first.next_offset > 0);
+    const tail = await browserTextObservation(request, target, { query: "Final public row", max_bytes: 256 });
+    assert.ok(tail.text.includes("Final public row: 日本 😀"));
+    const redacted = await browserTextObservation(request, target, { query: "[redacted]" });
+    assert.ok(redacted.text.includes("[redacted]"));
+    for (const excluded of [syntheticSecret, "Hidden pane", "Transparent pane", "Editable draft", "Password fixture", "Old authored row"]) {
+      const observation = await browserTextObservation(request, target, { query: excluded });
+      assert.equal(observation.text, "", `MP-08/MP-10/MP-11 excluded ${excluded === syntheticSecret ? "protected value" : excluded}`);
+    }
+  }), { fieldMarkup: '<textarea readonly id="public">Old authored row</textarea><textarea readonly id="protected"></textarea><textarea readonly hidden>Hidden pane</textarea><div style="opacity:0"><textarea readonly>Transparent pane</textarea></div><textarea>Editable draft</textarea><input type="password" value="Password fixture">' });
+});
 
 test("MP-08 P3 rendered exact-copy text preserves edge newlines and BR boundaries", async () => {
   await withCrossOriginFixture(async (url) => withController(async ({ page, request }) => {

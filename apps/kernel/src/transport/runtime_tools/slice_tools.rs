@@ -280,7 +280,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_BROWSER_TEXT_TOOL.to_string(),
-            description: "Read rendered document text with paragraph, list and table boundaries; excludes scripts, styles, hidden content and input values. Repeated rows remain repeated. Returns valid bounded JSON with next_offset (UTF-8 bytes); pass it as offset to continue. query retrieves matching lines with adjacent context from the complete captured page, including beyond target discovery bounds. Pages bind to returned tab/document_revision; restart paging if the document changes.".to_string(),
+            description: "Read rendered document text with paragraph, list and table boundaries; includes current visible native read-only textareas; excludes scripts, styles, hidden content and editable input values. Defaults to 1024 bytes per page (max_bytes 4..1024). For long documents use query to search the entire rendered capture, or next_offset to continue. Repeated rows remain repeated. Returns valid bounded JSON with next_offset (UTF-8 bytes); pass it as offset to continue. query retrieves matching lines with adjacent context from the complete captured page, including beyond target discovery bounds. Pages bind to returned tab/document_revision; restart paging if the document changes.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
