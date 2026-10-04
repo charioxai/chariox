@@ -378,6 +378,13 @@ fn resume_deadline_keeps_worker_unpublished_and_never_overlaps_shutdown() {
         count == 2 && contains(&observations, 1, "resume")
     });
     assert!(control.active_app_lease("alice", "installed").is_none());
+    // Hold the final write across native reap to pin the cleanup window: the
+    // process observation precedes the owner's durable Failed transition.
+    let mut writer = rusqlite::Connection::open(store.path()).unwrap();
+    writer.busy_timeout(Duration::from_secs(5)).unwrap();
+    let delayed_failure = writer
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
     wait_long(|| observations.lock().unwrap()[1].was_reaped());
     assert!(
         before.elapsed() >= Duration::from_secs(29) && before.elapsed() < Duration::from_secs(35)
@@ -391,8 +398,28 @@ fn resume_deadline_keeps_worker_unpublished_and_never_overlaps_shutdown() {
             .unwrap()
             .unwrap()
             .phase,
-        WorkerPhase::Failed
+        WorkerPhase::Starting
     );
+    delayed_failure.rollback().unwrap();
+    wait(|| {
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .is_some_and(|worker| worker.phase == WorkerPhase::Failed)
+    });
+    let failed = store
+        .app_worker_status("alice", "installed")
+        .unwrap()
+        .unwrap();
+    assert_eq!(failed.phase, WorkerPhase::Failed);
+    assert_eq!(
+        failed.failure.as_deref(),
+        Some("app_lifecycle_notification")
+    );
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    control.lifecycle().shutdown_blocking().unwrap();
+    assert_eq!(names(&frames(&observations, 1)), ["startup", "resume"]);
+    assert!(all_reaped(&observations));
 }
 #[test]
 fn configuration_change_carries_effective_grants_and_skips_idempotent_writes() {
