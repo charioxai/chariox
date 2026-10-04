@@ -7,7 +7,7 @@ import { fixtureUploadBrowser } from "./upload-browser.fixture.mjs";
 
 const [directory, pidFile] = process.argv.slice(2);
 const { BrowserControllerStdioServer } = await import(pathToFileURL(join(directory, "browser-controller.mjs")));
-const { BrowserCdpClient } = await import(pathToFileURL(join(directory, "browser-controller-cdp.mjs")));
+const { BrowserCdpClient, BrowserControllerError } = await import(pathToFileURL(join(directory, "browser-controller-cdp.mjs")));
 // The production supervisor may fence and restart the controller while the
 // external browser remains alive. Keep the current generation convenient for
 // assertions and retain every PID so cleanup can prove that none leaked.
@@ -45,6 +45,15 @@ const chromium = {
     switch (method) {
       case "SystemInfo.getProcessInfo": return (await uploadBrowser.ensure()).processInfo;
       case "Target.getTargets": {
+        const recoveryScene = join(dirname(pidFile), "recovery-blank-and-app-tabs");
+        if (existsSync(recoveryScene)) {
+          unlinkSync(recoveryScene);
+          state.popup = true;
+          state.url = "about:blank";
+          state.documentId = `worker-document-${++state.documentSequence}`;
+          state.focusedTarget = "worker-tab";
+          persist();
+        }
         const externalNavigation = join(dirname(pidFile), "external-browser-navigation");
         if (existsSync(externalNavigation)) {
           unlinkSync(externalNavigation);
@@ -342,6 +351,11 @@ const chromium = {
 };
 const browser = new BrowserCdpClient({
     connectionFactory: async () => chromium,
+    applyCanonicalDisplay: async () => {
+      if (existsSync(join(dirname(pidFile), "unavailable-canonical-capture"))) {
+        throw new BrowserControllerError("viewport_apply_failed", "canonical physical display apply failed");
+      }
+    },
     downloadDirectory: join(dirname(pidFile), "downloads"),
     uploadRoots: [dirname(pidFile)],
     stageUploads: uploadBrowser.stageUploads,

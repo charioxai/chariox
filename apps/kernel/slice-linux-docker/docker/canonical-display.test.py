@@ -133,6 +133,39 @@ class DisplayBoundaryTests(unittest.TestCase):
             self.assertEqual([call.args[1:] for call in refresh.call_args_list], [(1024, 768), (1280, 800)])
             publish.assert_called_once()
 
+    def test_verified_capture_rounding_restores_exact_physical_mode(self):
+        class Lock:
+            def __enter__(self): return "directory", {"master_token": "synthetic"}
+            def __exit__(self, *_): pass
+        with patch.dict(display.os.environ, {"DISPLAY": ":93"}), patch.object(viewers, "locked_state", return_value=Lock()), \
+             patch.object(viewers.lifecycle, "owned_process", return_value=object()), \
+             patch.object(viewers.lifecycle, "healthy", return_value=True), \
+             patch.object(display, "geometry", side_effect=[(1280, 800), (392, 844), (390, 844)]), \
+             patch.object(display, "resize") as resize, \
+             patch.object(display, "refresh_stream", AsyncMock()) as refresh, \
+             patch.object(viewers, "publish") as publish:
+            display.apply(390, 844)
+            self.assertEqual([call.args for call in resize.call_args_list], [(390, 844), (390, 844)])
+            refresh.assert_awaited_once()
+            self.assertEqual(publish.call_args.args[1]["canonical_display"], {"width": 390, "height": 844})
+
+    def test_capture_rounding_that_cannot_be_restored_rolls_back(self):
+        class Lock:
+            def __enter__(self): return "directory", {"master_token": "synthetic"}
+            def __exit__(self, *_): pass
+        with patch.dict(display.os.environ, {"DISPLAY": ":93"}), patch.object(viewers, "locked_state", return_value=Lock()), \
+             patch.object(viewers.lifecycle, "owned_process", return_value=object()), \
+             patch.object(viewers.lifecycle, "healthy", return_value=True), \
+             patch.object(display, "geometry", side_effect=[(1280, 800), (392, 844), (392, 844)]), \
+             patch.object(display, "resize") as resize, \
+             patch.object(display, "refresh_stream", AsyncMock()) as refresh, \
+             patch.object(viewers, "publish") as publish:
+            with self.assertRaisesRegex(display.DisplayError, "physical display changed"):
+                display.apply(390, 844)
+            self.assertEqual([call.args for call in resize.call_args_list], [(390, 844), (390, 844), (1280, 800)])
+            self.assertEqual(refresh.await_count, 2)
+            self.assertNotIn("canonical_display", publish.call_args.args[1])
+
 
 class FramebufferBoundaryTests(unittest.TestCase):
     def observer(self, payload):
