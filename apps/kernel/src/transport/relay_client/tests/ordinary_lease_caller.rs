@@ -8,7 +8,8 @@ fn isolate_test_config(
     let state_root = root.join(name);
     std::fs::create_dir_all(&state_root).expect("isolated daemon state root should be created");
     config.user_config_path = state_root.join("config.toml");
-    config.local_socket_path = state_root.join("daemon.sock");
+    config.local_socket_path =
+        DaemonConfig::default_local_socket_path(&format!("fixture:{}", state_root.display()));
     config.user_config.state.path = Some(state_root.join("state.db").display().to_string());
     config.user_config.history.operational.path = Some(
         state_root

@@ -13,6 +13,8 @@ pub(crate) struct LocalIpcListener {
 
 impl LocalIpcListener {
     pub(crate) fn bind(path: PathBuf) -> io::Result<Self> {
+        // Fail before creating/chmodding directories or removing stale sockets.
+        crate::config::validate_local_socket_path(&path)?;
         let parent = path
             .parent()
             .ok_or_else(|| io::Error::other("socket has no directory"))?;

@@ -2772,7 +2772,8 @@ mod tests {
         config.daemon_id = daemon_id.to_string();
         config.host_machine_id = machine_id.to_string();
         config.daemon_alias = Some(alias.to_string());
-        config.local_socket_path = root.join("run/kernel.sock");
+        config.local_socket_path =
+            DaemonConfig::default_local_socket_path(&format!("fixture:{}", root.display()));
         config = config.with_session_history_root(root.join("sessions"));
         config.kernel_websocket_host = "127.0.0.1".to_string();
         config.kernel_websocket_port = websocket_port;

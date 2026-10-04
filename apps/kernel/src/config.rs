@@ -21,7 +21,9 @@ mod relay_peer_keys;
 mod relay_profile;
 mod room_environment;
 mod slices;
+mod socket_path;
 mod storage;
+pub(crate) use socket_path::validate_local_socket_path;
 mod user_config_mutation;
 mod user_config_schema;
 mod validation;
@@ -304,8 +306,8 @@ impl DaemonConfig {
         // Their global orphan sweep must never terminate the live kernel's providers.
         config.provider_process_orphan_ttl_ms = u64::MAX;
         config.kernel_websocket_write_delay_ms = 0;
-        config.local_socket_path = std::env::temp_dir().join("chariox-tests").join(format!(
-            "daemon-test-{}-{}.sock",
+        config.local_socket_path = Self::default_local_socket_path(&format!(
+            "daemon-test-{}-{}",
             std::process::id(),
             index
         ));

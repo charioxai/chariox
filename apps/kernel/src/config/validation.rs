@@ -108,6 +108,12 @@ impl DaemonConfig {
                 message: "value must not be empty",
             });
         }
+        super::validate_local_socket_path(&self.local_socket_path).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "validate local Unix socket path",
+                message: error.to_string(),
+            }
+        })?;
         validate_non_empty("os_name", &self.os_name)?;
         validate_non_empty("kernel_websocket_host", &self.kernel_websocket_host)?;
         if self.kernel_websocket_port == 0 {
