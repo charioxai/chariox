@@ -979,6 +979,12 @@ fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
     {
         LocalDaemonResponse::PromptCancelled { cancellation } => {
             assert_eq!(cancellation.prompt.target_agent_id(), prompt_agent.id());
+            // The output pump can finish cancellation before a later snapshot.
+            // Assert the committed transition returned by this request.
+            assert_eq!(
+                cancellation.prompt.status(),
+                crate::session::PromptStatus::Cancelling
+            );
             assert!(cancellation.started_next.is_none());
         }
         other => panic!("unexpected local response: {other:?}"),
@@ -991,12 +997,6 @@ fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
             .clone()
     });
     assert_eq!(session_state.focused_agent_id(), Some(default_agent.id()));
-    assert_eq!(
-        session_state
-            .active_prompt_for_agent(prompt_agent.id())
-            .map(|prompt| prompt.status()),
-        Some(crate::session::PromptStatus::Cancelling)
-    );
 }
 
 #[test]
