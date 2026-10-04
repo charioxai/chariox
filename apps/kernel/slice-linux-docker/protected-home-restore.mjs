@@ -21,6 +21,11 @@ export function verifyFreshRestoreTarget(inspect, helper, volume, inventory) {
       || inspect.Mounts[0].Destination !== "/home-dst" || inspect.Mounts[0].RW !== true
       || Buffer.from(inventory).length !== 0) refuse("restore target is not a fresh, empty, owned home volume")
 }
+// Each read reopens the pinned descriptor's own inode, so a destroyed stream closes
+// only its private descriptor and never the caller's pinned one.
+function readPinnedArchive(fd) {
+  return createReadStream(null, {fd: openSync(`/proc/self/fd/${fd}`, constants.O_RDONLY), start: 0})
+}
 function waitForChild(child, label) {
   return new Promise((resolve, reject) => {
     child.once("error", error => reject(new RestoreRefusal(`${label} could not start (${error.code ?? "error"})`)))
@@ -65,7 +70,9 @@ async function streamThroughChildren(children, streams, {deadlineMs, deadlineRea
   const own = failed.find(({child}) => child.signalCode !== "SIGPIPE") ?? failed[0]
   if (own) throw own.result.reason
   if (failure instanceof RestoreRefusal) throw failure
-  refuse(`archive stream to ${children.at(-1).label} failed (${failure?.code ?? "stream error"})`)
+  // streams[i] feeds children[i]; the first broken stream is upstream of the rest.
+  const broken = settled.slice(0, streams.length).findIndex((result) => result.status === "rejected")
+  refuse(`archive stream to ${children[broken >= 0 ? broken : children.length - 1].label} failed (${failure?.code ?? "stream error"})`)
 }
 export async function validateCompressedArchive(fd, helper, environment, abort = () => {}, spawnProcess = spawn) {
   const decoder = spawnProcess("/usr/bin/docker", ["exec", "-i", "-u", "root", helper, "zstd", "-dc"],
@@ -74,7 +81,7 @@ export async function validateCompressedArchive(fd, helper, environment, abort =
     {env: {PATH: "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1"}, stdio: ["pipe", "ignore", "ignore"]})
   await streamThroughChildren(
     [{child: decoder, label: "archive decompression"}, {child: validator, label: "archive validation"}],
-    [pipeline(createReadStream("unused", {fd, autoClose: false, start: 0}), decoder.stdin),
+    [pipeline(readPinnedArchive(fd), decoder.stdin),
       pipeline(decoder.stdout, validator.stdin)],
     {deadlineMs: 10 * 60_000, deadlineReason: "archive validation exceeded 10 minutes", abort})
 }
@@ -102,7 +109,7 @@ export async function extractCompressedArchive(fd, helper, environment, abort, s
   }, 200)
   try {
     await streamThroughChildren([{child, label: "archive extraction"}],
-      [pipeline(createReadStream("unused", {fd, autoClose: false, start: 0}), child.stdin)],
+      [pipeline(readPinnedArchive(fd), child.stdin)],
       {deadlineMs: 10 * 60_000, deadlineReason: "archive extraction exceeded 10 minutes", abort, stopReason: () => stopReason})
   } finally {
     clearInterval(reserve)
