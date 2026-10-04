@@ -402,8 +402,13 @@ impl CommandRouter {
                     .snapshot()
                     .user_config
                     .credential_vault;
-                return execute_capability_registry_request(request.clone(), credential_vault)
-                    .map(Some);
+                return execute_capability_registry_request(
+                    &self.runtime_state,
+                    request.clone(),
+                    credential_vault,
+                )
+                .await
+                .map(Some);
             }
             _ => {}
         }

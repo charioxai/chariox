@@ -117,6 +117,28 @@ impl KernelRuntimeState {
         background_probe: bool,
         admission_deadline: Option<tokio::time::Instant>,
     ) -> Result<Response, DaemonError> {
+        if let Command::ClearSecretObservation { clear_unknown } = &command {
+            let protection = &self.owned.room_secret_observations;
+            let _guard = protection.barrier(session_id)?.write_owned().await;
+            if let Some(slice) = self.owned.slice_store.environment_slice(session_id) {
+                let response = self
+                    .route_room_browser_controller_command(
+                        session_id,
+                        slice,
+                        command.clone(),
+                        false,
+                        None,
+                    )
+                    .await?;
+                if !matches!(response, Response::SecretObservationCleared) {
+                    return Err(controller_route_error(
+                        "worker did not acknowledge Room observation revocation",
+                    ));
+                }
+            }
+            protection.forget(session_id, *clear_unknown)?;
+            return Ok(Response::SecretObservationCleared);
+        }
         // Cleanup must remain available while observations are redacted, including
         // when the durable store cannot establish that execution is safe.
         if !recovery_authority
@@ -337,9 +359,10 @@ impl KernelRuntimeState {
             return Err(controller_route_error("browser_controller_scope_denied: peer or Room does not match the provisioned slice binding"));
         }
         let protection = &self.owned.room_secret_observations;
-        if matches!(&command, Command::ClearSecretObservation) {
+        if let Command::ClearSecretObservation { clear_unknown } = &command {
             let _guard = protection.barrier(session_id)?.write_owned().await;
-            return Err(controller_route_error("observation redacted, retrying"));
+            protection.forget(session_id, *clear_unknown)?;
+            return Ok(Response::SecretObservationCleared);
         }
         let secret_guard = if super::room_secret_observation::command_secret(&command).is_some() {
             Some(protection.barrier(session_id)?.write_owned().await)
@@ -634,7 +657,7 @@ async fn execute_local(
             input_result?;
             return Ok(Response::ComputerInputApplied { action_id });
         }
-        Command::ClearSecretObservation => {
+        Command::ClearSecretObservation { .. } => {
             return Err(controller_route_error("observation redacted, retrying"))
         }
         Command::ComputerSecretTarget => {
@@ -889,8 +912,8 @@ async fn execute_local(
         Command::ComputerInput { .. } => {
             unreachable!("Computer input executes before the blocking controller path")
         }
-        Command::ClearSecretObservation => {
-            unreachable!("retired clearance command executes before controller path")
+        Command::ClearSecretObservation { .. } => {
+            unreachable!("observation revocation executes before controller path")
         }
         Command::ComputerClipboardRead { .. } => {
             unreachable!("Computer clipboard reads execute before the blocking controller path")

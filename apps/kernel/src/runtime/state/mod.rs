@@ -703,11 +703,18 @@ impl KernelRuntimeState {
                 .list_all_sessions()
                 .into_iter()
                 .filter(|session| {
-                    session_store
-                        .room_environment_snapshot(session.id())
-                        .is_ok()
+                    config.room_environment_worker_binding.is_some()
+                        || session_store
+                            .room_environment_snapshot(session.id())
+                            .is_ok()
                 })
-                .map(|session| session.id().to_string())
+                .map(|session| {
+                    config
+                        .room_environment_worker_binding
+                        .as_ref()
+                        .map(|binding| binding.session_id.clone())
+                        .unwrap_or_else(|| session.id().to_string())
+                })
                 .collect(),
         )
         .with_identity(&config.relay_private_key)

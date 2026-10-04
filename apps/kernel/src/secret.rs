@@ -460,6 +460,16 @@ impl RuntimeSecretService {
         self.resolve_secret(credential).map(Zeroizing::new)
     }
 
+    pub(crate) fn credential_vault_key(
+        &self,
+        credential_id: &str,
+    ) -> Result<Option<&str>, DaemonError> {
+        Ok(match &self.credential(credential_id)?.source {
+            UserCredentialSourceConfig::Vault { key } => Some(key.as_str()),
+            _ => None,
+        })
+    }
+
     pub fn set_vault_secret(&self, key: &str, value: &str) -> Result<(), DaemonError> {
         validate_vault_key(key)?;
         if value.is_empty() {

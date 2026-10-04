@@ -1,5 +1,6 @@
 //! MP-08/MP-10/MP-11: Room-scoped observation protection, below every client.
-//! Values live only in zeroizing memory. Durable markers contain no values.
+//! Values use zeroizing memory and a private runtime-identity-sealed registry.
+//! Value-free migration/quarantine markers survive registry revocation.
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -9,6 +10,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
+mod lifecycle;
 mod storage;
 
 use super::KernelRuntimeState;
@@ -22,42 +24,44 @@ pub(super) struct RoomSecretObservations {
     root: PathBuf,
     identity: Option<Arc<Zeroizing<String>>>,
     worker_room: Option<String>,
-    recovered: Arc<BTreeSet<String>>,
+    migration_failed: bool,
     rooms: Arc<Mutex<BTreeMap<String, Protection>>>,
     barriers: Arc<Mutex<BTreeMap<String, Arc<tokio::sync::RwLock<()>>>>>,
+    vault_lifecycle: Arc<tokio::sync::RwLock<()>>,
     pub(super) epoch: u64,
 }
 
 #[derive(Default)]
 struct Protection {
     values: Vec<Zeroizing<String>>,
+    vault_keys: BTreeSet<String>,
+    provenance_known: bool,
     unknown: bool,
     targets: Vec<serde_json::Value>,
     revision: u64,
     recovered_artifacts: bool,
+    history_before_ms: u64,
 }
 
 impl RoomSecretObservations {
     pub(super) fn new(root: PathBuf, recovered: BTreeSet<String>) -> Self {
-        Self {
+        let mut store = Self {
             root,
             identity: None,
             worker_room: None,
-            recovered: Arc::new(recovered),
+            migration_failed: false,
             rooms: Default::default(),
             barriers: Default::default(),
+            vault_lifecycle: Default::default(),
             epoch: crate::session::unix_epoch_ms(),
-        }
+        };
+        store.migration_failed = store.migrate_legacy_rooms(recovered).is_err();
+        store
     }
 
     // A provisioner-bound slice executes only this home Room, even when its
     // provider runs and transcripts carry worker-local session identifiers.
     pub(super) fn with_worker_room(mut self, room: Option<String>) -> Self {
-        if let Some(room) = &room {
-            if !self.recovered.is_empty() {
-                self.recovered = Arc::new(BTreeSet::from([room.clone()]));
-            }
-        }
         self.worker_room = room;
         self
     }
@@ -84,6 +88,9 @@ impl RoomSecretObservations {
     }
 
     fn initial(&self, room: &str) -> Result<Protection, DaemonError> {
+        if self.migration_failed {
+            return Err(protection_error());
+        }
         // Missing is the only clean disk state. Permission and I/O failures close observations.
         let marked = match std::fs::symlink_metadata(self.marker(room)) {
             Ok(_) => true,
@@ -95,13 +102,49 @@ impl RoomSecretObservations {
                 return Ok(restored);
             }
         }
-        let unknown = marked || self.recovered.contains(room);
+        let unknown = marked;
         Ok(Protection {
             unknown,
-
             recovered_artifacts: unknown,
+            history_before_ms: if unknown { self.epoch } else { 0 },
             ..Default::default()
         })
+    }
+
+    pub(super) fn register_credential_source(
+        &self,
+        room: &str,
+        key: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        let room = self.room_key(room);
+        self.blocked(room, false)?;
+        let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
+        let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
+        if let Some(key) = key.map(str::trim).filter(|key| !key.is_empty()) {
+            if protection.vault_keys.len() >= 256 && !protection.vault_keys.contains(key) {
+                return Err(protection_error());
+            }
+            protection.vault_keys.insert(key.to_string());
+        }
+        if protection.values.is_empty() && !protection.unknown {
+            protection.provenance_known = true;
+        }
+        self.persist_marker(room, protection)
+    }
+
+    pub(super) fn uses_vault_key(&self, room: &str, key: &str) -> Result<bool, DaemonError> {
+        let key = key.trim();
+        if key.is_empty() {
+            return Ok(false);
+        }
+        let room = self.room_key(room);
+        self.blocked(room, false)?;
+        let rooms = self.rooms.lock().map_err(|_| protection_error())?;
+        let protection = &rooms[room];
+        // Registries from the unshipped predecessor lack provenance. Revoke them
+        // conservatively rather than leaving an untracked value on disk.
+        Ok((!protection.values.is_empty() || protection.unknown)
+            && (!protection.provenance_known || protection.vault_keys.contains(key)))
     }
 
     pub(super) fn register(&self, room: &str, value: &str) -> Result<(), DaemonError> {
@@ -112,7 +155,6 @@ impl RoomSecretObservations {
         }
         let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
         // Set the memory fence even if persisting the marker fails. Input must then abort.
-
         protection.revision = protection.revision.saturating_add(1);
         let known = protection
             .values
@@ -417,7 +459,13 @@ impl RoomSecretObservations {
                     .lock()
                     .map(|rooms| rooms[room].recovered_artifacts)
                     .unwrap_or(true);
-            if recovered && event.timestamp_ms <= self.epoch {
+            let history_before_ms = self
+                .rooms
+                .lock()
+                .ok()
+                .and_then(|rooms| rooms.get(room).map(|p| p.history_before_ms))
+                .unwrap_or(u64::MAX);
+            if recovered && event.timestamp_ms <= history_before_ms {
                 event.content = Some("[recovered sensitive Room history withheld]".into());
                 event.content_ref = None;
                 event.metadata.clear();
@@ -595,300 +643,4 @@ impl KernelRuntimeState {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct TestRoot(PathBuf);
-    impl TestRoot {
-        fn new() -> Self {
-            use std::sync::atomic::{AtomicU64, Ordering};
-            static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-            let path = std::env::temp_dir().join(format!(
-                "chariox-vaultredact-{}-{}-{}",
-                std::process::id(),
-                crate::session::unix_epoch_ms(),
-                SEQUENCE.fetch_add(1, Ordering::Relaxed)
-            ));
-            std::fs::create_dir(&path).unwrap();
-            Self(path)
-        }
-        fn path(&self) -> &std::path::Path {
-            &self.0
-        }
-    }
-    impl Drop for TestRoot {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    #[tokio::test]
-    async fn room_capture_fence_settles_input_without_blocking_another_room() {
-        let root = TestRoot::new();
-        let store = RoomSecretObservations::new(root.path().to_path_buf(), BTreeSet::new());
-        let capture = store.barrier("room").unwrap().read_owned().await;
-        let pending = store.barrier("room").unwrap().write_owned();
-        tokio::pin!(pending);
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(20), &mut pending)
-                .await
-                .is_err()
-        );
-        assert!(store
-            .barrier("other-room")
-            .unwrap()
-            .try_write_owned()
-            .is_ok());
-        drop(capture);
-        let input = pending.await;
-        store.register("room", "synthetic-only").unwrap();
-        assert!(store.barrier("room").unwrap().try_read_owned().is_err());
-        drop(input);
-        let _after_input = store.barrier("room").unwrap().read_owned().await;
-        assert!(store.require("room", true).is_ok());
-    }
-
-    #[tokio::test]
-    async fn observations_never_create_human_clearance_even_for_false_positives() {
-        use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
-        let root = TestRoot::new();
-        let mut room = TestRoom::new("vault-autonomous-observation");
-        room.runtime.owned.room_secret_observations =
-            RoomSecretObservations::new(root.path().to_path_buf(), BTreeSet::new());
-        room.runtime
-            .owned
-            .room_secret_observations
-            .register(&room.session_id, "synthetic-only")
-            .unwrap();
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            room.runtime
-                .ensure_room_observation_ready(&room.session_id, &room.agent_id, true),
-        )
-        .await;
-        assert!(
-            result.is_ok(),
-            "MP-08/MP-10/MP-11: observation must never wait for a human"
-        );
-        assert!(room
-            .runtime
-            .owned
-            .session_store
-            .get_session(&room.session_id)
-            .unwrap()
-            .active_interactions()
-            .is_empty());
-        assert_eq!(
-            room.runtime
-                .owned
-                .room_secret_observations
-                .scrub_text_or_withhold(&room.session_id, "benign field: synthetic-onl"),
-            "benign field: synthetic-onl"
-        );
-        assert_eq!(
-            room.runtime
-                .owned
-                .room_secret_observations
-                .scrub_text_or_withhold(&room.session_id, "synthetic-only"),
-            "[redacted]"
-        );
-    }
-
-    #[test]
-    fn sealed_registry_recovers_scrubbing_and_masks_without_human_clearance() {
-        let root = TestRoot::new();
-        let path = root.path().join("observations");
-        let key = crate::transport::relay_crypto::generate_private_key_base64();
-        let store = RoomSecretObservations::new(path.clone(), BTreeSet::new()).with_identity(&key);
-        let command = Command::Action {
-            execution_id: "input".into(),
-            target_id: "target".into(),
-            document_id: "document".into(),
-            node_ref: "backend:42".into(),
-            action: crate::runtime::browser_controller_action::BrowserLocatorAction::Fill {
-                text: "synthetic-only".into(),
-                append: false,
-                submit: false,
-                expected_document_url: Some("https://fixture.test".into()),
-            },
-            timeout_ms: 1000,
-        };
-        store.register_command("room", &command).unwrap();
-        let bytes = std::fs::read(store.registry_path("room")).unwrap();
-        assert!(!String::from_utf8_lossy(&bytes).contains("synthetic-only"));
-        let recovered =
-            RoomSecretObservations::new(path, BTreeSet::from(["room".into()])).with_identity(&key);
-        assert_eq!(
-            recovered.scrub_text_or_withhold("room", "synthetic-only and benign"),
-            "[redacted] and benign"
-        );
-        let policy: serde_json::Value =
-            serde_json::from_str(&recovered.capture_policy("room").unwrap()).unwrap();
-        assert_eq!(policy["unknown"], false);
-        assert_eq!(policy["targets"][0]["node_ref"], "backend:42");
-        assert!(recovered
-            .scrub_cached_result("room", "old observation".to_string())
-            .is_err());
-        assert!(recovered.require("room", true).is_ok());
-    }
-
-    #[test]
-    fn registry_cannot_be_replayed_in_another_room_or_runtime_identity() {
-        let root = TestRoot::new();
-        let key = crate::transport::relay_crypto::generate_private_key_base64();
-        let store = RoomSecretObservations::new(root.path().to_path_buf(), BTreeSet::new())
-            .with_identity(&key);
-        store.register("room", "synthetic-only").unwrap();
-        std::fs::copy(store.marker("room"), store.marker("other")).unwrap();
-        std::fs::copy(store.registry_path("room"), store.registry_path("other")).unwrap();
-        assert!(store.require("other", false).is_err());
-        let other_key = crate::transport::relay_crypto::generate_private_key_base64();
-        let other = RoomSecretObservations::new(root.path().to_path_buf(), BTreeSet::new())
-            .with_identity(&other_key);
-        assert!(other.require("room", false).is_err());
-    }
-
-    #[test]
-    fn worker_local_transcripts_share_home_room_registry_and_recovery_fence() {
-        let root = TestRoot::new();
-        let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new())
-            .with_worker_room(Some("home-room".into()));
-        store.register("home-room", "synthetic-only").unwrap();
-        assert_eq!(
-            store.scrub_text_or_withhold("worker-run-session", "synthetic-only"),
-            "[redacted]"
-        );
-        assert!(store.require("worker-run-session", true).is_ok());
-        assert!(Arc::ptr_eq(
-            &store.barrier("home-room").unwrap(),
-            &store.barrier("worker-run-session").unwrap()
-        ));
-
-        assert!(store.require("worker-run-session", true).is_ok());
-        assert_eq!(
-            store
-                .scrub_cached_result("worker-run-session", "synthetic-only".to_string())
-                .unwrap(),
-            "[redacted]"
-        );
-        let restarted =
-            RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new())
-                .with_worker_room(Some("home-room".into()));
-        assert!(restarted.require("worker-run-session", false).is_err());
-
-        assert!(restarted
-            .scrub_cached_result("worker-run-session", "old data".to_string())
-            .is_err());
-    }
-
-    #[test]
-    fn split_terminal_chunks_are_withheld_without_human_clearance() {
-        let root = TestRoot::new();
-        let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
-        assert_eq!(store.protect_unframed_bytes("room", b"normal"), b"normal");
-        store.register("room", "synthetic-only").unwrap();
-
-        for bytes in [b"synthetic".as_slice(), b"-only".as_slice()] {
-            let protected = store.protect_unframed_bytes("room", bytes);
-            assert_eq!(protected, b"[sensitive Room terminal stream withheld]");
-            let entry = crate::history::SessionHistoryEntry::provider_output(
-                "room",
-                "run",
-                None,
-                crate::terminal::TerminalOutputKind::ProviderOutput,
-                None,
-                String::from_utf8_lossy(bytes),
-            );
-            assert_eq!(
-                store.protect_transcript_entry(entry).text,
-                "[sensitive Room terminal stream withheld]"
-            );
-        }
-    }
-
-    #[test]
-    fn vault_echo_scrubs_nested_tool_text_and_simple_transforms_and_room_isolation() {
-        let root = TestRoot::new();
-        let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
-        let secret = "vault-page-copy-regression-value";
-        store.register("room", secret).unwrap();
-        let variants = secret_variants(secret);
-        let input = serde_json::json!({"accessibility": variants.iter().map(|s| s.as_str()).collect::<Vec<_>>(), "dom": {secret: secret}, "ocr": secret});
-        let scrubbed = store.scrub("room", input.clone()).unwrap();
-        assert!(!scrubbed.to_string().contains(secret));
-        assert!(scrubbed["accessibility"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|s| s == "[redacted]"));
-        assert_eq!(store.scrub("other-room", input.clone()).unwrap(), input);
-        assert!(store.require("room", true).is_ok());
-
-        assert!(store.require("room", true).is_ok());
-        assert!(!store
-            .scrub("room", input)
-            .unwrap()
-            .to_string()
-            .contains(secret));
-        store.register("room", "another-input").unwrap();
-        assert!(store.require("room", true).is_ok());
-    }
-
-    #[test]
-    fn legacy_unknown_rooms_drop_observations_without_human_clearance() {
-        let root = TestRoot::new();
-        let path = root.path().join("observations");
-        let store = RoomSecretObservations::new(path.clone(), BTreeSet::new());
-        store.register("room", "synthetic-only").unwrap();
-
-        let restarted = RoomSecretObservations::new(path, BTreeSet::from(["old-G-room".into()]));
-        for room in ["room", "old-G-room"] {
-            assert!(restarted.require(room, false).is_err());
-            assert!(restarted.require(room, true).is_ok());
-
-            assert!(restarted.require(room, true).is_ok());
-        }
-        assert!(restarted.require("fresh", true).is_ok());
-    }
-
-    #[test]
-    fn fresh_capture_never_reauthorizes_unknown_recovered_history() {
-        let root = TestRoot::new();
-        let store = RoomSecretObservations::new(
-            root.path().join("observations"),
-            BTreeSet::from(["old-room".into()]),
-        );
-
-        let entry = crate::history::SessionHistoryEntry::provider_output(
-            "old-room",
-            "run",
-            Some("agent"),
-            crate::terminal::TerminalOutputKind::ProviderOutput,
-            None,
-            "synthetic old observation",
-        );
-        let mut event = crate::history::HistoryEvent::transcript(1, &entry, Default::default());
-        event.timestamp_ms = 0;
-        event.content_ref = Some("old-image".into());
-        event
-            .metadata
-            .insert("observation".into(), "synthetic old observation".into());
-        let protected = store.protect_history_events(vec![event]);
-        assert_eq!(
-            protected[0].content.as_deref(),
-            Some("[recovered sensitive Room history withheld]")
-        );
-        assert!(protected[0].metadata.is_empty());
-        assert!(protected[0].content_ref.is_none());
-    }
-
-    #[test]
-    fn marker_io_failure_aborts_input_and_withholds_capture() {
-        let root = TestRoot::new();
-        let path = root.path().join("file");
-        std::fs::write(&path, b"not a directory").unwrap();
-        let store = RoomSecretObservations::new(path, BTreeSet::new());
-        assert!(store.register("room", "synthetic-only").is_err());
-        assert!(store.require("room", true).is_err());
-    }
-}
+mod tests;

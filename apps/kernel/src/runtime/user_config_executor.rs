@@ -260,6 +260,12 @@ pub(crate) async fn execute_set_credential_secret_request(
         Vec::new(),
         &user_config.credential_vault,
     )?;
+    let _observation_guard = runtime_state.vault_observation_mutation_guard().await;
+    if !request.value.is_empty() {
+        runtime_state
+            .revoke_vault_observation_values(&request.key)
+            .await?;
+    }
     service.set_vault_secret(&request.key, &request.value)?;
     Ok(LocalDaemonResponse::CredentialSecretStored { key: request.key })
 }
@@ -283,6 +289,10 @@ pub(crate) async fn execute_delete_credential_secret_request(
         Vec::new(),
         &user_config.credential_vault,
     )?;
+    let _observation_guard = runtime_state.vault_observation_mutation_guard().await;
+    runtime_state
+        .revoke_vault_observation_values(&request.key)
+        .await?;
     service.delete_vault_secret(&request.key)?;
     Ok(LocalDaemonResponse::CredentialSecretDeleted { key: request.key })
 }

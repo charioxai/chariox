@@ -939,6 +939,16 @@ impl KernelRuntimeState {
         let owned = &self.owned;
         let durable_session = owned.session_end_snapshot(&session_id)?;
         let durable_project_delete = owned.project_removed_by_session_delete(&session_id);
+        let _vault_observation_guard = self.vault_observation_mutation_guard().await;
+        // Revoke the bound worker copy while its Room/slice binding still exists.
+        if self
+            .owned
+            .room_secret_observations
+            .protects_bytes(&session_id)
+        {
+            self.room_browser_controller_command(&session_id,
+                crate::transport::room_browser_controller::RoomBrowserControllerCommand::ClearSecretObservation { clear_unknown: false }).await?;
+        }
         self.append_session_durable_event(
             "session.deleted",
             &durable_session,
@@ -967,7 +977,11 @@ impl KernelRuntimeState {
                 .unwrap_or((false, None));
             owned.remove_provider_process_tracking_for_run(&provider_run_id, process_key);
         }
-        self.detach_session_slices(&session).await?;
+        let detached = self.detach_session_slices(&session).await;
+        let protection = &self.owned.room_secret_observations;
+        let _observation_guard = protection.barrier(&session_id)?.write_owned().await;
+        protection.delete_room(&session_id)?;
+        detached?;
         Ok(session)
     }
 

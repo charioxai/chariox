@@ -58,12 +58,15 @@ impl KernelRuntimeState {
                     provider_run,
                 );
                 let registry = crate::credential::CharioxCredentialRegistry::user()?;
-                let result = service.upsert_vault_backed_credential_with_secret(
-                    &registry,
-                    credential,
-                    secret.as_str(),
-                    args.overwrite,
-                )?;
+                let result = self
+                    .upsert_observed_vault_credential(
+                        &service,
+                        &registry,
+                        credential,
+                        secret.as_str(),
+                        args.overwrite,
+                    )
+                    .await?;
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
@@ -253,12 +256,15 @@ impl KernelRuntimeState {
                     }
                 })?);
                 let registry = crate::credential::CharioxCredentialRegistry::user()?;
-                let result = service.upsert_vault_backed_credential_with_secret(
-                    &registry,
-                    credential,
-                    secret.as_str(),
-                    args.overwrite,
-                )?;
+                let result = self
+                    .upsert_observed_vault_credential(
+                        &service,
+                        &registry,
+                        credential,
+                        secret.as_str(),
+                        args.overwrite,
+                    )
+                    .await?;
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
@@ -647,12 +653,13 @@ impl KernelRuntimeState {
                     Some(&context.worker_provider_run_id),
                 );
                 let registry = crate::credential::CharioxCredentialRegistry::user()?;
-                let result = service.upsert_vault_backed_credential_with_secret(
+                let result = self.upsert_observed_vault_credential(
+                    &service,
                     &registry,
                     credential,
                     secret.as_str(),
                     args.overwrite,
-                )?;
+                ).await?;
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
@@ -967,12 +974,15 @@ impl KernelRuntimeState {
             }
         })?);
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
-        let result = service.upsert_vault_backed_credential_with_secret(
-            &registry,
-            credential,
-            secret.as_str(),
-            args.overwrite,
-        )?;
+        let result = self
+            .upsert_observed_vault_credential(
+                &service,
+                &registry,
+                credential,
+                secret.as_str(),
+                args.overwrite,
+            )
+            .await?;
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({

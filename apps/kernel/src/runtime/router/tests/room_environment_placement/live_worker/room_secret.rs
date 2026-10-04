@@ -92,3 +92,53 @@ pub(super) async fn check(
     std::fs::remove_file(mask).unwrap();
     service.delete_vault_secret("room-regression").unwrap();
 }
+
+// MP-08/MP-10/MP-11: lifecycle revocation reaches both authenticated registry owners.
+pub(super) async fn check_revocation(fixture: &LiveWorker) {
+    use sha2::{Digest, Sha256};
+    let room = &fixture.rooms[0];
+    let marker = format!("{:x}", Sha256::digest(room.as_bytes()));
+    for state in [&fixture.home_state, &fixture._worker_state] {
+        let path = state
+            .config
+            .private_runtime_state_root()
+            .join("room-observation-quarantine")
+            .join(&marker)
+            .with_extension("sealed");
+        assert!(
+            path.exists(),
+            "synthetic Room value was sealed before revocation"
+        );
+    }
+    fixture
+        .home
+        .runtime_state
+        .revoke_vault_observation_values("room-regression")
+        .await
+        .unwrap();
+    for state in [&fixture.home_state, &fixture._worker_state] {
+        let path = state
+            .config
+            .private_runtime_state_root()
+            .join("room-observation-quarantine")
+            .join(&marker)
+            .with_extension("sealed");
+        let sealed = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let plaintext = crate::transport::relay_crypto::decrypt_payload_for_private_key_bound(
+            &state.config.relay_private_key,
+            &sealed,
+            b"room-vault-observation-registry-v1",
+            room.as_bytes(),
+        )
+        .unwrap();
+        let registry: Value = serde_json::from_slice(&plaintext.plaintext).unwrap();
+        assert!(
+            registry["values"].as_array().unwrap().is_empty(),
+            "retired synthetic values must be removed on both home and worker"
+        );
+        assert!(
+            registry["unknown"].as_bool().unwrap(),
+            "old page echoes remain fenced after revocation"
+        );
+    }
+}

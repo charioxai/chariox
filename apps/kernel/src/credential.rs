@@ -41,6 +41,12 @@ impl CharioxCredentialRegistry {
         &self,
         source: &Path,
     ) -> Result<(UserCredentialConfig, PathBuf), DaemonError> {
+        self.upsert(Self::read_registration_file(source)?)
+    }
+
+    pub(crate) fn read_registration_file(
+        source: &Path,
+    ) -> Result<UserCredentialConfig, DaemonError> {
         if !source.is_file() {
             return Err(DaemonError::InvalidConfig {
                 field: "credential file",
@@ -49,18 +55,7 @@ impl CharioxCredentialRegistry {
         }
         let credential = Self::read_yaml(source)?;
         validate_credential_registration(&credential)?;
-        ensure_private_dir(&self.root, "credential.register")?;
-        let path = self.path_for(&credential.id)?;
-        let payload =
-            serde_yaml::to_string(&credential).map_err(|error| DaemonError::LocalTransport {
-                operation: "credential.register",
-                message: format!(
-                    "failed to serialize credential `{}`: {error}",
-                    credential.id
-                ),
-            })?;
-        atomic_write_private(&path, payload.as_bytes(), "credential.register")?;
-        Ok((credential, path))
+        Ok(credential)
     }
 
     pub fn upsert(

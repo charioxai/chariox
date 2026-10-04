@@ -88,6 +88,9 @@ impl KernelRuntimeState {
                     .into(),
             });
         }
+        let _vault_observation_guard = self
+            .track_room_vault_key(session_id, &service, &args.credential_id)
+            .await?;
         let secret = zeroize::Zeroizing::new(service.computer_secret_input(&args.credential_id)?);
         let execution = self
             .execute_computer_input_as_agent_for_generation(
