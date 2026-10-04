@@ -212,7 +212,6 @@ async function run() {
     displayMode: "headed",
     displayBackend: "selkies",
     ...browserStateDrillWorkspaceSliceOptions(workspaceFixture),
-    workerKernelRef: `m20-worker-${process.pid}`,
   })), "SliceCreated").slice
   log("starting slice")
   await client.send(requests.startSliceRequest(slice.id))
