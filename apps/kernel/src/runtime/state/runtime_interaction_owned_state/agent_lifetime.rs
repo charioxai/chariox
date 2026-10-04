@@ -1,4 +1,4 @@
-//! Agent decisions belong to the turn that raised them, without a wall-clock cutoff.
+//! Agent decisions belong to their emitting turn or live provider run.
 use super::*;
 
 impl KernelRuntimeOwnedState {
@@ -72,7 +72,11 @@ impl KernelRuntimeOwnedState {
         if remote.active_worker_provider_run_id.is_none() && lifetime.prompt_id.is_none() {
             if let Some(run) = self
                 .provider_store
-                .get_latest_run_for_agent(session.id(), &lifetime.agent_id)
+                .get_run_for_agent(session.id(), &lifetime.agent_id)
+                .or_else(|| {
+                    self.provider_store
+                        .get_latest_run_for_agent(session.id(), &lifetime.agent_id)
+                })
             {
                 let expected = crate::provider::projected_leased_provider_run_id(
                     &worker.leased_agent_id,
@@ -185,6 +189,23 @@ impl KernelRuntimeOwnedState {
                 &worker.leased_agent_id,
                 &worker.provider_run_id,
             );
+            // MP-08 / MP-10 / MP-11: An idle review cannot outlive replacement
+            // even if the separate active-dispatch binding still names the old run.
+            if lifetime.prompt_id.is_none()
+                && self
+                    .provider_store
+                    .get_run_for_agent(session.id(), &lifetime.agent_id)
+                    .or_else(|| {
+                        self.provider_store
+                            .get_latest_run_for_agent(session.id(), &lifetime.agent_id)
+                    })
+                    .is_some_and(|run| {
+                        run.id() != projected_id
+                            || run.state() != crate::provider::ProviderRunState::Running
+                    })
+            {
+                return false;
+            }
             // No local worker run exists on the home kernel. If a projection is
             // present, it is authoritative for provider exit even before a sweep.
             if self

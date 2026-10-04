@@ -421,6 +421,19 @@ fn project_worker_run(f: &Fixture, worker_run: &str) {
         },
     );
     run.mark_running();
+    // Fixtures represent distinct launches even when constructed in one millisecond.
+    if let Some(previous) = f
+        .runtime
+        .owned
+        .provider_store
+        .get_latest_run_for_agent(&f.session, &f.agent)
+    {
+        let mut value = serde_json::to_value(&run).unwrap();
+        let later = previous.last_activity_at_ms().max(previous.started_at_ms()) + 1;
+        value["started_at_ms"] = serde_json::json!(later);
+        value["last_activity_at_ms"] = serde_json::json!(later);
+        run = serde_json::from_value(value).unwrap();
+    }
     f.runtime
         .owned
         .provider_store
@@ -519,17 +532,86 @@ async fn mp08_mp10_mp11_idle_home_review_expires_on_projected_exit() {
 async fn mp08_mp10_mp11_active_worker_choice_retains_dispatch_pre_ack_allowance() {
     let f = home(Some("previous-worker"), true).await;
     let interaction = crate::session::RuntimeInteraction::new(
-        f.id(), &f.agent, crate::session::RuntimeInteractionKind::Choice,
-        crate::session::RuntimeInteractionLevel::Info, None, "Review setup",
-        vec![crate::session::RuntimeInteractionChoice::new("allow", "Allow", "allow", None)],
-        None, Some(900), None,
-    ).with_native_origin(Some(NativeInteractionOrigin::Prompt {
-        provider_run_id: f.run.clone(), prompt_id: "home-A".into(),
+        f.id(),
+        &f.agent,
+        crate::session::RuntimeInteractionKind::Choice,
+        crate::session::RuntimeInteractionLevel::Info,
+        None,
+        "Review setup",
+        vec![crate::session::RuntimeInteractionChoice::new(
+            "allow", "Allow", "allow", None,
+        )],
+        None,
+        Some(900),
+        None,
+    )
+    .with_native_origin(Some(NativeInteractionOrigin::Prompt {
+        provider_run_id: f.run.clone(),
+        prompt_id: "home-A".into(),
     }));
-    let mut receiver = f.runtime.create_runtime_interaction_with_forwarding(
-        &f.session, interaction, Some(&context(&f, true)),
-    ).await.unwrap();
+    let mut receiver = f
+        .runtime
+        .create_runtime_interaction_with_forwarding(
+            &f.session,
+            interaction,
+            Some(&context(&f, true)),
+        )
+        .await
+        .unwrap();
     assert_pending(&f, &mut receiver);
-    f.runtime.resolve_runtime_interaction(&f.session, &f.id(), "allow", None).await.unwrap();
+    f.runtime
+        .resolve_runtime_interaction(&f.session, &f.id(), "allow", None)
+        .await
+        .unwrap();
+    assert_eq!(receiver.await.unwrap().status, "answered");
+}
+
+#[tokio::test]
+async fn mp08_mp10_mp11_idle_home_review_expires_when_projection_replaces_bound_run() {
+    let f = home(Some("worker-run"), false).await;
+    project_worker_run(&f, &f.run);
+    let mut receiver = register_idle_review(&f).await;
+    assert_pending(&f, &mut receiver);
+    project_worker_run(&f, "replacement");
+    f.runtime.owned.withdraw_stale_agent_interactions();
+    f.assert_withdrawn(&mut receiver).await;
+}
+
+#[tokio::test]
+async fn mp08_mp10_mp11_idle_home_review_prefers_live_projection_over_ended_history() {
+    let f = home(None, false).await;
+    project_worker_run(&f, "old-run");
+    let mut old = f
+        .runtime
+        .owned
+        .provider_store
+        .get_latest_run_for_agent(&f.session, &f.agent)
+        .unwrap();
+    old.mark_ended();
+    f.runtime
+        .owned
+        .provider_store
+        .write()
+        .insert_run_for_test(old.clone());
+    project_worker_run(&f, &f.run);
+    let current = f
+        .runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&f.session, &f.agent)
+        .unwrap();
+    let mut value = serde_json::to_value(&old).unwrap();
+    value["last_activity_at_ms"] = serde_json::json!(current.last_activity_at_ms() + 1);
+    f.runtime
+        .owned
+        .provider_store
+        .write()
+        .insert_run_for_test(serde_json::from_value(value).unwrap());
+    let mut receiver = register_idle_review(&f).await;
+    assert_pending(&f, &mut receiver);
+    f.runtime
+        .resolve_runtime_interaction(&f.session, &f.id(), "allow", None)
+        .await
+        .unwrap();
     assert_eq!(receiver.await.unwrap().status, "answered");
 }

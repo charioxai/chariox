@@ -93,10 +93,12 @@ finally { socket.close(); }
   const previous = process.env.CHARIOX_CODEX_BIN
   process.env.CHARIOX_CODEX_BIN = executable
   try {
-    await runCodexNativeTui(["--workspace", root, "--worktree", root, "--server-in-kernel", "--grant-mcp", "echo", "--model", "fixture"])
-    assert.equal(calls, 1)
-    assert.equal(launches.length, 1)
-    assert.equal(launches[0]!.structured_endpoint, null)
+    for (const compatibilityFlags of [["--server-in-kernel"], []]) {
+      await runCodexNativeTui(["--workspace", root, "--worktree", root, ...compatibilityFlags, "--grant-mcp", "echo", "--model", "fixture"])
+    }
+    assert.equal(calls, 2)
+    assert.equal(launches.length, 2)
+    assert.ok(launches.every((launch) => launch.structured_endpoint === null))
   } finally {
     if (previous === undefined) delete process.env.CHARIOX_CODEX_BIN
     else process.env.CHARIOX_CODEX_BIN = previous
