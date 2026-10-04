@@ -632,3 +632,34 @@ test("navigation keeps the enqueue wait armed and target close cancels it", asyn
   assert.deepEqual((await close).open_targets, []);
   assert.equal(tabs.callWaiters.size, 0);
 });
+
+test("explicit App close is target-bound and drops its queued calls and interception", async () => {
+  const {tabs,connection,result} = await opened();
+  await connection.emit({method:"Runtime.bindingCalled",sessionId:"s1",params:{name:"__charioxAppCall",payload:JSON.stringify({id:"close-pending",method:"echo",params:{text:"queued"}})}});
+  await tabs.close({target_id:result.target_id});
+  assert.equal(tabs.apps.size,0);
+  const drained = await tabs.takeCalls();
+  assert.deepEqual(drained.open_targets,[]);
+  assert.deepEqual(drained.calls,[]);
+  assert(connection.sent.some(c=>c.method==="Target.closeTarget" && c.params.targetId===result.target_id));
+  await assert.rejects(tabs.close({target_id:"foreign-target"}));
+  assert(!connection.sent.some(c=>c.method==="Target.closeTarget" && c.params.targetId==="foreign-target"));
+});
+
+
+test("user-domain instances of one App have independent targets and do not adopt Room placeholders", async () => {
+  const {browser,connection}=fakeBrowser();
+  connection.targets=[{targetId:"restored",type:"page",url:appPlaceholder(appOrigin("a"))}];
+  const tabs=new AppTabs(browser);
+  const params={origin_label:"a",installation_id:"same",assets:[asset("index.html","hi")]};
+  const first=await tabs.open({...params,instance_id:"user-app-a"});
+  const second=await tabs.open({...params,instance_id:"user-app-b"});
+  assert.notEqual(first.target_id,second.target_id);
+  assert.notEqual(first.target_id,"restored");
+  assert.deepEqual(await tabs.open({...params,instance_id:"user-app-a"}),first);
+  await tabs.close({target_id:first.target_id});
+  assert.deepEqual((await tabs.takeCalls()).open_targets,[second.target_id]);
+  for (const instance_id of ["", "../other", {}, "x".repeat(129)]) {
+    await assert.rejects(tabs.open({...params,instance_id}));
+  }
+});

@@ -104,6 +104,12 @@ impl KernelRuntimeState {
         user: String,
         command: KernelBrowserCommand,
     ) -> Result<serde_json::Value, DaemonError> {
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        if matches!(command, KernelBrowserCommand::Stop) {
+            for view in self.app_control().user_views().browser_views(&user) {
+                self.forget_user_app_view(&user, &view.view_id);
+            }
+        }
         let user = self.provider_account_authority_owner_user_id(&user);
         self.kernel_browser_operation(
             &user,
@@ -298,9 +304,12 @@ impl KernelRuntimeState {
         &self,
         user: String,
         request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+        generation: Option<u64>,
     ) -> Result<serde_json::Value, DaemonError> {
         let user = self.provider_account_authority_owner_user_id(&user);
-        self.kernel_browser_operation(&user, None, request.method(), request.params())
+        let mut params = request.params();
+        if let Some(generation) = generation { params["_host_generation"] = generation.into(); }
+        self.kernel_browser_operation(&user, None, request.method(), params)
             .await
     }
     pub(super) fn kernel_browser_agent(

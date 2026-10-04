@@ -117,6 +117,7 @@ impl KernelRuntimeState {
         let request = BrowserAppViewRequest::Open {
             origin_label: origin_label(&owner, installation),
             installation_id: installation.to_owned(),
+            instance_id: None,
             entry,
             assets,
             page: page.map(|(width, height)| AppViewPage { width, height }),
@@ -385,6 +386,7 @@ impl KernelRuntimeState {
                 BrowserAppViewRequest::Open {
                     origin_label: origin_label(&binding.owner, &binding.installation),
                     installation_id: binding.installation.clone(),
+                    instance_id: None,
                     entry,
                     assets,
                     page: page.map(|(width, height)| AppViewPage { width, height }),
@@ -881,7 +883,7 @@ fn coded((code, message): (String, String)) -> BrowserAppViewError {
     view_error(&code, &message)
 }
 
-fn view_error(code: &str, message: &str) -> BrowserAppViewError {
+pub(super) fn view_error(code: &str, message: &str) -> BrowserAppViewError {
     BrowserAppViewError {
         code: code.to_owned(),
         message: message.to_owned(),
@@ -1061,6 +1063,7 @@ mod tests {
         let open = BrowserAppViewRequest::Open {
             origin_label: "a".into(),
             installation_id: "app".into(),
+            instance_id: None,
             entry: "index.html".into(),
             assets: Vec::new(),
             page: None,

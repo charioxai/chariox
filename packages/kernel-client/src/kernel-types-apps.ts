@@ -160,6 +160,7 @@ export type UserAppView = {
   installation_id: string
   generation: string
   origin: string
+  browser?: { tab_id: string; generation: number }
 }
 
 export type AppFrontendBundle = {

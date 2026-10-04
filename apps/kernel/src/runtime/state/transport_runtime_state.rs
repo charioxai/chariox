@@ -430,6 +430,10 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
+        for id in self.app_control().user_views().shutdown() {
+            self.app_control().views().forget_session(&id);
+            self.app_control().views().keep_pumping(&id);
+        }
         let browser_host = self.owned.kernel_browser_host.clone();
         let browser_result = tokio::task::spawn_blocking(move || browser_host.shutdown()).await
             .map_err(|_| DaemonError::LocalTransport { operation: "kernel_browser.shutdown", message: "MD-2: shutdown task failed".into() })
