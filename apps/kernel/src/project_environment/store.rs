@@ -337,3 +337,36 @@ impl ProjectEnvironmentStore {
         Ok(ProjectEnvironmentLock { _file: file })
     }
 }
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn dropping_adjustment_releases_lock_with_an_inherited_descriptor() {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(std::env::temp_dir().join(format!(
+            "chariox-inherited-project-lock-{:032x}",
+            rand::random::<u128>()
+        )));
+        let store = ProjectEnvironmentStore::new(&scratch.0);
+        let first = store.try_lock("project").unwrap();
+        // dup, like fork before exec, retains the same open file description.
+        // O_CLOEXEC cannot release that reference until the child execs.
+        let inherited = first._file.try_clone().unwrap();
+        assert!(store.try_lock("project").is_err());
+        drop(first);
+        let next = store.try_lock("project").unwrap();
+        assert!(store.try_lock("project").is_err());
+        drop(inherited);
+        // Closing the old inherited descriptor cannot release the new owner.
+        assert!(store.try_lock("project").is_err());
+        drop(next);
+        assert!(store.try_lock("project").is_ok());
+    }
+}

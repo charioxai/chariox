@@ -184,6 +184,16 @@ pub(super) fn serve(
                             .idle_requested
                             .store(false, Ordering::Release);
                         let _ = request.reply.send(Err(LifecycleError::Busy));
+                        #[cfg(test)]
+                        if let Some(checkpoint) = context
+                            .control
+                            .idle_refusal_checkpoint
+                            .lock()
+                            .unwrap()
+                            .clone()
+                        {
+                            checkpoint();
+                        }
                         continue;
                     }
                     Some(reservation)

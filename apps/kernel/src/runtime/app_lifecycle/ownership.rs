@@ -27,6 +27,8 @@ impl Control {
             idle_requested: AtomicBool::new(false),
             #[cfg(test)]
             completion_checkpoint: Mutex::new(None),
+            #[cfg(test)]
+            idle_refusal_checkpoint: Mutex::new(None),
         }
     }
     pub(super) fn cancel_idle(&self) -> Result<()> {
