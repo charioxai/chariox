@@ -171,7 +171,8 @@ impl KernelRuntimeState {
                 ),
             )
             .await;
-        self.authorize_current_external_command()?;
+        // Terminal bookkeeping belongs to the kernel even if the grant was
+        // revoked while input was in flight. It must release the target.
         let terminal = match &execution {
             Ok(RoomBrowserControllerResult::ComputerInputApplied {
                 action_id: returned_action_id,
@@ -191,7 +192,10 @@ impl KernelRuntimeState {
             }) if returned_action_id == action_id => {
                 // Agent Computer input may navigate the physical browser too.
                 // Reconcile after completion so Browser clients share its tab.
-                if self.should_reconcile_browser_controller_after_input(session_id, &environment) {
+                if self.authorize_current_external_command().is_ok()
+                    && self
+                        .should_reconcile_browser_controller_after_input(session_id, &environment)
+                {
                     let _ = self
                         .reconcile_browser_controller_environment(session_id)
                         .await;
@@ -380,21 +384,14 @@ impl KernelRuntimeState {
             }
             None => execution.await,
         };
-        self.authorize_current_external_command()?;
+        // Settle the dispatched result before authorizing any new recovery
+        // effects. Revocation cannot leave a Running action reserving input.
         let controller_restart_generation = match &result {
             Err(DaemonError::BrowserControllerRecoveryRequired { runtime_generation }) => {
                 Some(*runtime_generation)
             }
             _ => None,
         };
-        if let Some(runtime_generation) = controller_restart_generation {
-            self.recover_browser_controller_after_restart(session_id, runtime_generation)
-                .await?;
-            return Err(DaemonError::LocalTransport {
-                operation: "browser_controller.route",
-                message: CONTROLLER_RESTARTED_BEFORE_OPERATION.to_string(),
-            });
-        }
         let controller_fenced = matches!(
             &result,
             Err(DaemonError::BrowserControllerActionCancelled {
@@ -433,7 +430,17 @@ impl KernelRuntimeState {
                     }) => {}
             Err(error) => return Err(action_environment_error(error)),
         }
+        if let Some(runtime_generation) = controller_restart_generation {
+            self.authorize_current_external_command()?;
+            self.recover_browser_controller_after_restart(session_id, runtime_generation)
+                .await?;
+            return Err(DaemonError::LocalTransport {
+                operation: "browser_controller.route",
+                message: CONTROLLER_RESTARTED_BEFORE_OPERATION.to_string(),
+            });
+        }
         if controller_fenced {
+            self.authorize_current_external_command()?;
             if let Err(recovery_error) = self
                 .recover_browser_controller_after_fence(session_id)
                 .await
@@ -1565,3 +1572,6 @@ mod tests {
         )
     }
 }
+
+#[cfg(test)]
+mod grant_revocation_tests;
