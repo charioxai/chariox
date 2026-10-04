@@ -365,6 +365,13 @@ mod tests {
     }
 
     #[test]
+    fn attachment_ids_do_not_alias_after_a_service_restart() {
+        let previous = AttachmentService::new().next_attachment_id();
+        let current = AttachmentService::new().next_attachment_id();
+        assert_ne!(previous, current, "a stale client attachment must not identify a new client");
+    }
+
+    #[test]
     fn supports_multiple_attachments_on_one_session() {
         let mut sessions = session_service();
         let session_id = create_session(&mut sessions);
