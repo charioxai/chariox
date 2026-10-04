@@ -73,7 +73,7 @@ impl KernelRuntimeState {
     /// session. Like a provider-native approval, it is bound to the worker turn
     /// that raised it, so the home withdraws it with that turn. Without a live
     /// turn there is nothing to bind and the interaction stays local.
-    async fn leased_interaction_home_target(
+    pub(super) async fn leased_interaction_home_target(
         &self,
         session_id: &str,
         agent_id: &str,

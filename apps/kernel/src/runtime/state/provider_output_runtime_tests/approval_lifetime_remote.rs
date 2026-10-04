@@ -343,3 +343,47 @@ async fn approval_lifetime_remote_cleared_binding_cannot_reopen_pre_ack_allowanc
         .is_err());
     f.assert_withdrawn(&mut rx).await;
 }
+
+// MP-08 / MP-10 / MP-11: Environment Adjust belongs to the home even when idle.
+#[tokio::test]
+async fn mp08_mp10_mp11_idle_worker_review_has_home_target() {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let lease = crate::app::RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease("home-kernel", "home-room", "home-agent", false, "home-user").unwrap();
+    let leased = crate::app::RemoteLeaseRuntime::new(&mut app).create_leased_agent(
+        &lease.id, "managed-dev-stub", "default", Some("native-tui-idle".into()), None, None, None, None, None, None,
+    ).unwrap();
+    let (run, _) = crate::app::RemoteLeaseRuntime::new(&mut app).submit_leased_prompt(&leased.id, "fixture task", Vec::new()).unwrap();
+    let runtime = owned_runtime_state(&Arc::new(Mutex::new(app))).await;
+    runtime.owned.complete_local_prompt_without_advance(&leased.backing_session_id, &leased.backing_agent_id, Some(&run)).unwrap();
+    runtime.owned.active_turns.clear(&run);
+    let target = runtime.leased_interaction_home_target(&leased.backing_session_id, &leased.backing_agent_id, None).await.unwrap();
+    let (_, home, context, _) = target.expect("idle kernel review must reach the home");
+    assert_eq!(home, "home-kernel");
+    assert_eq!(context.worker_provider_run_id, run);
+    runtime.owned.provider_store.terminate_run_provider_only(&leased.backing_session_id, &run).unwrap();
+    assert!(runtime.leased_interaction_home_target(&leased.backing_session_id, &leased.backing_agent_id, None).await.unwrap().is_none());
+}
+
+fn project_worker_run(f: &Fixture, worker_run: &str) {
+    use crate::provider::{RuntimeProviderRun, LaunchProviderRequest, ProviderLaunchResult, AgentEndpointMode};
+    let request = LaunchProviderRequest::new(&f.session, "codex", "codex", "default", "fixture").with_agent_id(&f.agent);
+    let mut run = RuntimeProviderRun::new(crate::provider::projected_leased_provider_run_id("leased-agent", worker_run), &request, ProviderLaunchResult {
+        endpoint_mode:AgentEndpointMode::External, process_label:"projection fixture".into(), pty_target:None, pty_program:None, pty_args:vec![], pty_env:Default::default(),pty_env_remove:vec![],working_directory:None,structured_endpoint:None,
+    });
+    run.mark_running();
+    f.runtime.owned.provider_store.write().insert_run_for_test(run);
+}
+
+#[tokio::test]
+async fn mp08_mp10_mp11_idle_home_review_expires_on_projected_run_replacement() {
+    let f = home(None, false).await;
+    project_worker_run(&f, &f.run);
+    let mut receiver = register(&f, false).await;
+    assert_pending(&f, &mut receiver);
+    project_worker_run(&f, "replacement");
+    f.runtime.owned.withdraw_stale_agent_interactions();
+    f.assert_withdrawn(&mut receiver).await;
+}
