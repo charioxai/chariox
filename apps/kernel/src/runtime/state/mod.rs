@@ -112,6 +112,7 @@ mod publication_activation;
 mod room_browser_controller;
 mod room_browser_controller_admission;
 mod room_browser_manifest_sync;
+mod room_browser_start_failure;
 mod room_computer_observation;
 mod room_display;
 mod room_environment_health;

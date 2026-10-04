@@ -4,6 +4,10 @@ use std::time::Instant;
 #[cfg(all(not(test), not(debug_assertions)))]
 const _: () = chariox_app_runtime::assert_production_build();
 
+// The kernel clones sessions, snapshots and history pages on every pump and
+// request. The system allocators keep that freed memory in per-thread arenas or
+// zones, so a home kernel serving leased agents grew far past its live heap.
+// mimalloc returns freed pages to the OS and keeps RSS near the live heap.
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
