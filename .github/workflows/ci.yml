@@ -106,7 +106,7 @@ jobs:
               echo "::error file=$test_file::exited with status $status"
               failed+=("$test_file")
             fi
-          done < <(git ls-files -- '*.test.py' '*_test.py' 'test_*.py' '*/test_*.py')
+          done < <(git ls-files -- ':(glob)**/*.test.py' ':(glob)**/*_test.py' ':(glob)**/test_*.py')
           test "$count" -gt 0
           echo "Ran $count Python test files; ${#failed[@]} failed."
           if [ "${#failed[@]}" -gt 0 ]; then
