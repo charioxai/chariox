@@ -105,12 +105,16 @@ export class BrowserPassiveCapture {
     let record = this.requests.get(key);
     if (message.method === "Network.requestWillBeSent") {
       if (this.entries.length === 500) { this.entries.shift(); this.dropped++; }
-      if (p.redirectResponse && record?.current) this.response(record.current, p.redirectResponse);
+      if (p.redirectResponse && record?.current) {
+        this.response(record.current, p.redirectResponse);
+        record.current.extra_expected = typeof p.redirectHasExtraInfo === "boolean" ? p.redirectHasExtraInfo : undefined;
+      }
       const entry = { target_id: targetId, document_id: p.loaderId || documentId, request_id: p.requestId,
         startedDateTime: Number.isFinite(p.wallTime) ? new Date(p.wallTime * 1000).toISOString() : null,
         request: { method: String(p.request?.method ?? "").slice(0, 16), url: publicUrl(p.request?.url), headers: headers(p.request?.headers) },
         response: { status: 0, headers: [], content: { size: 0, mimeType: "" } },
         bodies_redacted: true };
+      Object.defineProperty(entry, "extra_expected", { writable: true, value: undefined });
       record ??= { hops: [], extra: [], current: null };
       record.current = entry; record.hops.push(entry);
       this.requests.set(key, record); this.entries.push(entry);
@@ -118,15 +122,24 @@ export class BrowserPassiveCapture {
     } else if (message.method === "Network.requestWillBeSentExtraInfo") {
       record ??= { hops: [], extra: [], current: null };
       record.extra.push(headers(p.headers)); this.requests.set(key, record); this.mergeExtra(record);
-    } else if (message.method === "Network.responseReceived" && record?.current) this.response(record.current, p.response);
+    } else if (message.method === "Network.responseReceived" && record?.current) {
+      this.response(record.current, p.response);
+      record.current.extra_expected = typeof p.hasExtraInfo === "boolean" ? p.hasExtraInfo : undefined;
+      this.mergeExtra(record);
+    }
     else if (message.method === "Network.loadingFinished" && record?.current && Number.isFinite(p.encodedDataLength)) record.current.response.content.size = Math.max(0, p.encodedDataLength);
     if (this.requests.size > 500) { this.requests.delete(this.requests.keys().next().value); this.dropped++; }
     if (record?.hops.length > 20 || record?.extra.length > 20) { this.requests.delete(key); this.dropped++; }
   }
   mergeExtra(record) {
-    for (let i = 0; i < Math.min(record.hops.length, record.extra.length); i++) {
-      const entry = record.hops[i];
-      entry.request.headers = [...new Map([...entry.request.headers, ...record.extra[i]].map(header => [header.name, header])).values()];
+    let index = 0;
+    for (const entry of record.hops) {
+      // MP-08/MP-10/MP-11: CDP may omit extra info for individual hops.
+      // Wait for its explicit flag before attributing any queued headers.
+      if (entry.extra_expected === undefined) break;
+      if (!entry.extra_expected) continue;
+      if (index >= record.extra.length) break;
+      entry.request.headers = [...new Map([...entry.request.headers, ...record.extra[index++]].map(header => [header.name, header])).values()];
       entry.request.extra_info_observed = true;
     }
   }
