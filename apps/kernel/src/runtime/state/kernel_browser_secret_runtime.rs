@@ -71,15 +71,15 @@ impl KernelRuntimeState {
             Value::Null
         };
         let host = self.owned.kernel_browser_host.clone();
-        let (user, agent, method) = (
-            user.to_string(),
-            agent.map(str::to_string),
-            method.to_string(),
-        );
+        let admission = agent
+            .map(|agent| host.admit(user, agent))
+            .transpose()
+            .map_err(host_error)?;
+        let (user, method) = (user.to_string(), method.to_string());
         let pixels =
             method == "host.browser" && (params["op"] == "screenshot" || params["op"] == "poll");
         let mut result = tokio::task::spawn_blocking(move || {
-            host.protected_request(&user, agent.as_deref(), &method, params, policy)
+            host.protected_request_admitted(&user, admission.as_ref(), &method, params, policy)
         })
         .await
         .map_err(|_| host_error("MD-5: browser task failed".into()))?
