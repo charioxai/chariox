@@ -2,7 +2,7 @@
   "docker/slice-screen.sh": "f64fb9d8a1df0e703245073d836a417863fd6c52ab5107294322a6edd5d238e6",
   "docker/browser-app-restore.mjs": "f03191db5373897b2db21d5cf2169b0ac612e98eb2fa6bdd0ca857759fd463e3",
   "docker/browser-cdp.mjs": "99f0663a193370ead9ca134949cca09a74a7617b2e47db39f09bc868371ec956",
-  "docker/browser-lifecycle.py": "775c0e9d22d57afaf9ef9e05cbbdc6c5686c1c3d54d5027d2972b9b047b8b7d1",
+  "docker/browser-lifecycle.py": "a54c3ca226d8816f84deca253edca578107ff68602eccc0c1a0892c986bdbbc5",
   "docker/browser-upload-store.py": "68112d4f4143f76f1544bb26f363a4ad7bc1d6c105d07ddcf790c3856ad39c88",
   "docker/browser-controller-actions.mjs": "785eaf7433d56c0a85b217f52f54d14f5b3febce5238dd8057da070dc09a331b",
   "docker/browser-controller-bar.mjs": "d106b12397f4f41ba9d96ef56af4854facd7a88d42e0bcda6762dc1a5626f5fe",
