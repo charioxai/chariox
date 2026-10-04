@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createHash } from "node:crypto";
 import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
+import { blackPng } from "./browser-controller-image.mjs";
 import { handleBrowserControllerRequest } from "./browser-controller.mjs";
 import { BrowserUploadStaging } from "./browser-controller-upload-staging.mjs";
 import { controllerfilesSamples, assertControllerfilesReceipt, startControllerfilesFixture } from "../../../cli/scripts/lib/browser-controllerfiles-fixture.mjs";
@@ -52,7 +53,7 @@ test("MP-08/MP-10/MP-11 actual CDP upload/download and passive capture fixture",
   });
   execFileSync("python3", [lifecycle, "start", profile, path.join(root, "browser.log"),
     process.env.CHARIOX_TEST_CHROMIUM, "--headless=new", "--remote-debugging-port=0",
-    `--user-data-dir=${profile}`, "--disable-dev-shm-usage", "--no-first-run", "about:blank"],
+    `--user-data-dir=${profile}`, "--disable-dev-shm-usage", "--no-first-run", "--site-per-process", "about:blank"],
   { timeout: 10000, stdio: "pipe" });
   launched = true;
   const port = await until(async () => {
@@ -202,9 +203,28 @@ test("MP-08/MP-10/MP-11 actual CDP upload/download and passive capture fixture",
   assert.equal((await request("browser.action", { ...current, node_ref: send.node_ref, action: { kind: "click" } })).ok, true);
   await until(async () => fixture.receipts[1]);
   assertControllerfilesReceipt(fixture.receipts[1], expected);
+  // MP-08/MP-10/MP-11: no Vault registration, real separate renderer, actual
+  // composited bytes. A top-session DOM snapshot cannot see this password.
+  const iframeUrl = new URL("/isolated-login", fixture.origin); iframeUrl.hostname = "localhost";
+  await evaluate(`new Promise(resolve => { const frame = document.createElement('iframe'); frame.id = 'isolated-login'; frame.onload = () => resolve(true); frame.src = ${JSON.stringify(iframeUrl.href)}; document.body.prepend(frame); })`);
+  const isolated = await until(async () => (await connection.send("Target.getTargets")).targetInfos.find(target => target.type === "iframe" && target.url === iframeUrl.href));
+  assert.ok(isolated, "password frame must run in an isolated renderer");
+  const topSnapshot = await connection.send("DOMSnapshot.captureSnapshot", { computedStyles: [] }, sessionId);
+  assert.ok(!topSnapshot.strings.includes("password"), "the top renderer must not contain the isolated password input");
+  assert.equal(browser.protectedValues.size, 0, "no registered Vault value can mask the regression");
+  const rawComposite = Buffer.from((await connection.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false }, sessionId)).data, "base64");
+  const maskedComposite = blackPng(viewport.css_width, viewport.css_height);
+  assert.notDeepEqual(rawComposite, maskedComposite);
+  const isolatedImage = await request("browser.artifact", { ...current, browser_generation: browser.browserGeneration, viewport, kind: "image" });
+  assert.equal(isolatedImage.ok, true, isolatedImage.error?.code);
+  assert.equal(isolatedImage.result.redaction, "full_viewport");
+  assert.deepEqual(Buffer.from(isolatedImage.result.data_base64, "base64"), maskedComposite, "no visible isolated renderer bytes escape the protected artifact");
+  assert.equal(isolatedImage.result.document_id, current.document_id);
+  assert.equal(isolatedImage.result.target_id, current.target_id);
+  await evaluate("document.querySelector('#isolated-login').remove(); true");
   const result = { mp: ["MP-08", "MP-10", "MP-11"], scope: "controller/Chromium fixture only",
     inputUpload: true, missingDenied: true, cancelNoPartialReuse: true, downloadExactBytes: true,
-    downloadCancelNoPartialReuse: true,
+    downloadCancelNoPartialReuse: true, isolatedIframePasswordMask: true,
     capture: { sha256: createHash("sha256").update(image).digest("hex"), sizeBytes: image.length,
       targetId: current.target_id, documentId: before, viewport }, passiveEventsRedacted: true, controllerImageArtifact: true, controllerDownloadArtifact: true, controllerPassiveHar: true,
     chooser: { ok: chosen.ok, diagnostic: chosen.error?.code ?? null },

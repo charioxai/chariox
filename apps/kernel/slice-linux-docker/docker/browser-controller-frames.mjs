@@ -222,14 +222,20 @@ export async function captureBrowserFrames(options) {
       result.dom_documents.push(...snapshot.dom_documents.map((document) => ({ ...document, document_index: document.document_index + offset, owner_node_ref: document.owner_node_ref ? ref(document.owner_node_ref) : `${entry.parent.prefix}backend:${owner.backendNodeId}` })));
       result.shadow_roots.push(...snapshot.shadow_roots.map((node) => ({ ...node, node_ref: ref(node.node_ref) })));
     }
-    for (const entry of frames) {
-      const current = await connection.send("Page.getFrameTree", {}, entry.sessionId);
-      if (frameIdentity(current.frameTree) !== frameIdentity(entry.tree)) {
-        throw new BrowserSnapshotError("stale_document_reference", "browser frame tree changed during snapshot capture");
-      }
-    }
+    await assertBrowserFramesUnchanged(connection, frames);
     return result;
   });
+}
+
+// MP-08/MP-10/MP-11: composited images and semantic snapshots share the same
+// document fence, including local descendants and isolated renderer parents.
+export async function assertBrowserFramesUnchanged(connection, frames) {
+  for (const entry of frames) {
+    const current = await connection.send("Page.getFrameTree", {}, entry.sessionId);
+    if (frameIdentity(current.frameTree) !== frameIdentity(entry.tree)) {
+      throw new BrowserSnapshotError("stale_document_reference", "browser frame tree changed during capture");
+    }
+  }
 }
 
 export async function withBrowserActionFrame(options, run) {

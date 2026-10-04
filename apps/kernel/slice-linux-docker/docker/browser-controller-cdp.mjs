@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { artifactBytes, BrowserArtifactError, BrowserPassiveCapture, readCompletedDownload, withUploadArtifacts } from "./browser-controller-artifacts.mjs";
-import { blackPng } from "./browser-controller-image.mjs";
+import { captureProtectedBrowserImage } from "./browser-controller-image.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { BrowserInputCapture } from "./browser-controller-input.mjs";
 import {
@@ -917,21 +917,9 @@ export class BrowserCdpClient {
       if (request.kind === "identity") {
         artifact = artifactBytes(Buffer.from(JSON.stringify(geometry)), "browser-identity.json", "application/json");
       } else if (request.kind === "image") {
-        const snapshot = await connection.send("DOMSnapshot.captureSnapshot", { computedStyles: [] }, sessionId);
-        const hasPassword = (snapshot.documents ?? []).some(doc => {
-          const attrs = doc.nodes?.attributes ?? [];
-          const strings = snapshot.strings ?? [];
-          return attrs.some(pairs => pairs.some((value, i) => i % 2 === 0 && strings[value]?.toLowerCase() === "type" && strings[pairs[i + 1]]?.toLowerCase() === "password"));
-        });
-        const protectedFrame = this.protectedValues.size > 0 || hasPassword;
-        const captured = await connection.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false, fromSurface: true }, sessionId);
-        const bytes = Buffer.from(captured.data ?? "", "base64");
-        if (bytes.length < 24 || !bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))
-            || bytes.readUInt32BE(16) !== viewport.css_width * viewport.device_scale_factor
-            || bytes.readUInt32BE(20) !== viewport.css_height * viewport.device_scale_factor)
-          throw new BrowserControllerError("browser_artifact_invalid", "Browser capture dimensions differ from the canonical viewport");
-        artifact = artifactBytes(protectedFrame ? blackPng(bytes.readUInt32BE(16), bytes.readUInt32BE(20)) : bytes, "browser-tab.png", "image/png");
-        redaction = protectedFrame ? "full_viewport" : "none";
+        const captured = await captureProtectedBrowserImage({ connection, sessionId, targetId, documentId, viewport, protectedValues: this.protectedValues });
+        artifact = artifactBytes(captured.bytes, "browser-tab.png", "image/png");
+        redaction = captured.redaction;
       } else if (request.kind === "network") {
         const captured = this.passiveCapture.capture(targetId, documentId);
         const redacted = redactObservation(JSON.parse(Buffer.from(captured.data_base64, "base64")), this.protectedValues);
@@ -948,7 +936,7 @@ export class BrowserCdpClient {
         document_id: documentId, browser_generation: generation, viewport: request.viewport, redaction,
         browser_id: `browser-${createHash("sha256").update(connection.browserInstanceId).digest("hex")}` };
     } catch (error) {
-      if (error instanceof BrowserControllerError || error instanceof BrowserArtifactError) throw normalizeControllerError(error);
+      if (error instanceof BrowserControllerError || error instanceof BrowserArtifactError || error instanceof BrowserSnapshotError) throw normalizeControllerError(error);
       throw new BrowserControllerError("browser_artifact_unavailable", "Browser artifact bytes are unavailable");
     }
   }
