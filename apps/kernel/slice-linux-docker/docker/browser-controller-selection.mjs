@@ -45,28 +45,28 @@ export function selectFunction(text) {
   return { ok: true };
 }
 
-// MP-08/MP-10/MP-11: segmented native controls cannot consume Input.insertText.
-export async function fillNativeTemporal(connection, sessionId, objectId, action) {
+// MP-08/MP-10/MP-11: native segmented and range controls need validated values.
+export async function fillNativeValue(connection, sessionId, objectId, action) {
   if (action.append || action.expectedDocumentUrl !== null) {
-    throw selectionError("browser_fill_invalid", "native date/time fill replaces the complete value; append and secret fill are unsupported");
+    throw selectionError("browser_fill_invalid", "native value fill replaces the complete value; append and secret fill are unsupported");
   }
   const response = await connection.send("Runtime.callFunctionOn", {
     objectId,
-    functionDeclaration: temporalFunction.toString(),
+    functionDeclaration: nativeValueFunction.toString(),
     arguments: [{ value: action.text }],
     returnByValue: true,
   }, sessionId);
   const outcome = response?.result?.value;
   if (response?.exceptionDetails || outcome?.ok !== true) {
     const reason = outcome?.reason ?? "failed";
-    throw selectionError(`browser_fill_${reason}`, `native date/time fill ${reason}; capture a fresh snapshot before retrying`);
+    throw selectionError(`browser_fill_${reason}`, `native value fill ${reason}; capture a fresh snapshot before retrying`);
   }
 }
 
-export function temporalFunction(text) {
+export function nativeValueFunction(text) {
   const ownerWindow = this.ownerDocument?.defaultView;
   const prototype = ownerWindow?.HTMLInputElement?.prototype;
-  const types = ["date", "time", "datetime-local", "month", "week"];
+  const types = ["date", "time", "datetime-local", "month", "week", "range"];
   if (!this.isConnected) return { ok: false, reason: "stale" };
   if (!prototype || !prototype.isPrototypeOf(this) || !types.includes(this.type)) return { ok: false, reason: "not_editable" };
   if (this.matches(":disabled") || this.closest("[inert]") || this.getAttribute("aria-disabled") === "true") return { ok: false, reason: "disabled" };
@@ -75,9 +75,18 @@ export function temporalFunction(text) {
   // Chromium validates syntax on a detached control before any visible effect.
   const probe = this.ownerDocument.createElement("input");
   probe.type = this.type;
+  if (this.type === "range") {
+    for (const name of ["min", "max", "step", "value"]) {
+      if (this.hasAttribute(name)) probe.setAttribute(name, this.getAttribute(name));
+    }
+  }
   nativeValue.set.call(probe, text);
   const value = nativeValue.get.call(probe);
-  if (text !== "" && value === "") return { ok: false, reason: "invalid_value" };
+  if (this.type === "range") {
+    // Refuse silent range clamping/step rounding, including an empty value.
+    const number = Number(text);
+    if (!/^-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(text) || !Number.isFinite(number) || probe.valueAsNumber !== number) return { ok: false, reason: "invalid_value" };
+  } else if (text !== "" && value === "") return { ok: false, reason: "invalid_value" };
   const type = this.type;
   if (nativeValue.get.call(this) !== value) {
     // Bypass framework instance value tracking, then notify it exactly once.

@@ -1372,7 +1372,7 @@ test("MP-08/MP-10/MP-11 P2 temporal event rejection and lost acknowledgements ne
     let mutationCalls = 0;
     browser.connection.send = async (method, params, sessionId) => {
       const result = await send(method, params, sessionId);
-      if (method === "Runtime.callFunctionOn" && params.functionDeclaration.includes("function temporalFunction(")) {
+      if (method === "Runtime.callFunctionOn" && params.functionDeclaration.includes("function nativeValueFunction(")) {
         mutationCalls++;
         throw new BrowserControllerError("browser_cdp_timeout", "fixture acknowledgement lost after temporal mutation");
       }
@@ -1407,6 +1407,28 @@ test(`MP-08/MP-10/MP-11 P2 native temporal fills stay bound to the observed ${la
     fieldMarkup: `<label>Time<input id="time" type="time"></label><script>window.effects=[];for(const kind of ['input','change'])document.querySelector('input').addEventListener(kind,()=>effects.push(kind))</script>`});
 });
 }
+
+test("MP-08/MP-10/MP-11 P2/P6 native range fill respects bounds and step before events", async () => {
+  await withController(async ({page, request}) => {
+    await page.setContent(`<label>Level<input id="range" type="range" min="-1" max="1" step="0.2" value="0"></label>
+      <script>window.effects=[];for(const kind of ['input','change'])range.addEventListener(kind,()=>effects.push([kind,range.value]));</script>`);
+    const target = (await request("browser.reconcile", {viewport})).result.tabs[0];
+    const node = (await request("browser.snapshot", target)).result.dom_nodes.find(n => n.attributes.id === "range");
+    const fill = text => request("browser.action", {...target, node_ref: node.node_ref, action: {kind: "fill", text}, timeout_ms: 100});
+    const applied = await fill("0.6");
+    assert.equal(applied.ok, true, JSON.stringify(applied.error));
+    assert.equal(await page.locator("#range").inputValue(), "0.6");
+    assert.equal((await fill("6e-1")).ok, true, "equivalent numeric syntax is idempotent");
+    for (const value of ["", "invalid", "Infinity", "1.1", "-2", "0.5", "0x0", "+0", "0.", " 0 "]) {
+      assert.equal((await fill(value)).error?.code, "browser_fill_invalid_value", "invalid/out-of-range/off-step values must not be silently rounded or clamped");
+      assert.equal(await page.locator("#range").inputValue(), "0.6");
+    }
+    assert.deepEqual(await page.evaluate(() => effects), [["input", "0.6"], ["change", "0.6"]]);
+    await page.locator("#range").evaluate(n => n.disabled = true);
+    assert.equal((await fill("0.8")).error?.code, "browser_element_disabled");
+    assert.deepEqual(await page.evaluate(() => effects), [["input", "0.6"], ["change", "0.6"]]);
+  });
+});
 
 test("MP-08 P2 native selects fill unique labels and values with one event pair", async () => {
   await withCrossOriginFixture(async (url) => withController(async ({ page, request }) => {

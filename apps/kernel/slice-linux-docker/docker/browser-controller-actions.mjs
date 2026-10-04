@@ -1,4 +1,4 @@
-import { fillNativeSelect, fillNativeTemporal } from "./browser-controller-selection.mjs";
+import { fillNativeSelect, fillNativeValue } from "./browser-controller-selection.mjs";
 const DEFAULT_ACTION_TIMEOUT_MS = 5_000;
 const MAX_ACTION_TIMEOUT_MS = 5_000;
 const MIN_ACTION_TIMEOUT_MS = 100;
@@ -323,7 +323,7 @@ export function actionabilityFunction() {
     height: rect.height,
     editable,
     nativeSelect: this.tagName === "SELECT",
-    nativeTemporal: ["date", "time", "datetime-local", "month", "week"].includes(inputType),
+    nativeValue: !this.readOnly && ["date", "time", "datetime-local", "month", "week", "range"].includes(inputType),
     ...(crossOriginFrame ? { crossOriginFrame: true } : {}),
   };
 }
@@ -332,7 +332,7 @@ function readyGeometry(actionability, action) {
   if (actionability.state !== "ready") {
     return null;
   }
-  if (action.kind === "fill" && actionability.editable !== true && actionability.nativeSelect !== true) {
+  if (action.kind === "fill" && actionability.editable !== true && actionability.nativeSelect !== true && actionability.nativeValue !== true) {
     actionability.state = "not_editable";
     return null;
   }
@@ -344,7 +344,7 @@ function readyGeometry(actionability, action) {
   };
   if (!Object.values(geometry).every(Number.isFinite)) return null;
   return { ...geometry, nativeSelect: actionability.nativeSelect === true,
-    nativeTemporal: actionability.nativeTemporal === true };
+    nativeValue: actionability.nativeValue === true };
 }
 
 function sameGeometry(left, right) {
@@ -381,9 +381,9 @@ async function executeAction(
     }
     return { dialogOpened: false };
   }
-  if (geometry.nativeTemporal) {
+  if (geometry.nativeValue) {
     try {
-      await fillNativeTemporal(connection, sessionId, objectId, action);
+      await fillNativeValue(connection, sessionId, objectId, action);
     } catch (error) {
       throw new BrowserActionError(error.code ?? "browser_fill_failed", error.message);
     }

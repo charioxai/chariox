@@ -163,7 +163,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_BROWSER_FILL_TOOL.to_string(),
-            description: "Fill an observed input, textarea or contenteditable field by opaque field_id. Native date/time controls replace the whole value using browser-native formats: date YYYY-MM-DD, time HH:mm (optional seconds), datetime-local YYYY-MM-DDTHH:mm, month YYYY-MM, week YYYY-Www. Invalid formats fail before changing the field. For native select, text matches an exact option value or unique label and replaces the choice, including multi-select. Ambiguous or disabled choices fail. For custom comboboxes, click to open, fill the observed search field if present, then find(kind=any) and click the observed option.".to_string(),
+            description: "Fill an observed input, textarea or contenteditable field by opaque field_id. Native date/time controls replace the whole value using browser-native formats: date YYYY-MM-DD, time HH:mm (optional seconds), datetime-local YYYY-MM-DDTHH:mm, month YYYY-MM, week YYYY-Www. Invalid formats fail before changing the field. Native range sliders accept a numeric value within the declared bounds and step; clamping or rounding is rejected before changing the field. For native select, text matches an exact option value or unique label and replaces the choice, including multi-select. Ambiguous or disabled choices fail. For custom comboboxes, click to open, fill the observed search field if present, then find(kind=any) and click the observed option.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["text"],
