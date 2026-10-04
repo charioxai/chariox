@@ -1,5 +1,7 @@
 use super::*;
 
+mod lifecycle;
+
 // MP-08/MP-10/MP-11: even non-Vault peer requests construct these shared
 // futures. Keep relay delivery out of their inline state on kernel stacks.
 #[tokio::test]
@@ -582,26 +584,16 @@ async fn vault_mutation_drains_inputs_and_blocks_new_resolutions_across_rooms() 
     let mut room = TestRoom::new("vault-lifecycle-fence");
     room.runtime.owned.room_secret_observations =
         RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
-    let credential = crate::config::UserCredentialConfig {
-        id: "login".into(),
-        description: None,
-        source: crate::config::UserCredentialSourceConfig::Vault {
-            key: "login".into(),
-        },
-        allowed_hosts: vec!["fixture.test".into()],
-        allowed_uses: vec![crate::config::UserCredentialUse::Browser],
-        injection: crate::config::UserCredentialInjectionConfig::Browser,
-        metadata: None,
-    };
-    let service = crate::secret::RuntimeSecretService::with_vault_config(
-        vec![credential],
-        &crate::config::UserCredentialVaultConfig::default(),
-    )
-    .unwrap();
+    let _environment = crate::env_lock::lock();
+    let _home = lifecycle::IsolatedHome::new(root.path());
+    crate::credential::CharioxCredentialRegistry::user()
+        .unwrap()
+        .upsert(browser_credential("login", "login"))
+        .unwrap();
     let mutation = room.runtime.vault_observation_mutation_guard().await;
     let input = room
         .runtime
-        .track_room_vault_key(&room.session_id, &service, "login");
+        .room_secret_input_service(&room.session_id, "login");
     tokio::pin!(input);
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(20), &mut input)
@@ -609,11 +601,11 @@ async fn vault_mutation_drains_inputs_and_blocks_new_resolutions_across_rooms() 
             .is_err()
     );
     drop(mutation);
-    let first = input.await.unwrap();
-    let second = tokio::time::timeout(
+    let (_service, first) = input.await.unwrap();
+    let (_service, second) = tokio::time::timeout(
         std::time::Duration::from_secs(1),
         room.runtime
-            .track_room_vault_key("other-room", &service, "login"),
+            .room_secret_input_service("other-room", "login"),
     )
     .await
     .unwrap()
@@ -691,18 +683,7 @@ async fn credential_removal_and_metadata_replacement_revoke_sealed_values() {
         room.runtime.owned.room_secret_observations =
             RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new())
                 .with_identity(&config.relay_private_key);
-        struct RestoreHome(Option<std::ffi::OsString>);
-        impl Drop for RestoreHome {
-            fn drop(&mut self) {
-                if let Some(value) = &self.0 {
-                    std::env::set_var("CHARIOX_HOME", value);
-                } else {
-                    std::env::remove_var("CHARIOX_HOME");
-                }
-            }
-        }
-        let _home = RestoreHome(std::env::var_os("CHARIOX_HOME"));
-        std::env::set_var("CHARIOX_HOME", root.path().join("home"));
+        let _home = lifecycle::IsolatedHome::new(root.path());
         let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
         let store = &room.runtime.owned.room_secret_observations;
         registry

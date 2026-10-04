@@ -47,12 +47,17 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    pub(in crate::runtime::state) async fn track_room_vault_key(
+    pub(in crate::runtime::state) async fn room_secret_input_service(
         &self,
         room: &str,
-        service: &crate::secret::RuntimeSecretService,
         credential: &str,
-    ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, DaemonError> {
+    ) -> Result<
+        (
+            crate::secret::RuntimeSecretService,
+            tokio::sync::OwnedRwLockReadGuard<()>,
+        ),
+        DaemonError,
+    > {
         let guard = self
             .owned
             .room_secret_observations
@@ -60,10 +65,13 @@ impl KernelRuntimeState {
             .clone()
             .read_owned()
             .await;
+        // Metadata and Vault configuration must be authoritative after every
+        // unlock, approval and lifecycle wait. Keep this guard through insertion.
+        let service = self.home_runtime_secret_service()?;
         self.owned
             .room_secret_observations
             .register_credential_source(room, service.credential_vault_key(credential)?)?;
-        Ok(guard)
+        Ok((service, guard))
     }
 
     pub(crate) async fn vault_observation_mutation_guard(

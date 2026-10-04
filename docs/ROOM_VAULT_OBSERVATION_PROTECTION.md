@@ -18,7 +18,14 @@ first upgraded boot. Its persisted history cutoff stays fixed across restarts.
 These legacy Rooms immediately permit fresh text, terminal and pixel observations
 autonomously, without unknown state or any human action. Rooms created afterward
 remain clean across restarts until a secret is inserted.
-Unavailable or invalid registries retain their unknown-state fence. No private material is put into diagnostics.
+Unreadable registries recover as retired-unknown state scoped to that Room. The
+kernel logs the recovery without private material, replaces the damaged seal
+when storage permits, and withholds its prior history. Unavailable provenance
+matches no Vault key, so it cannot veto another Room's Vault mutation. Public
+Room deletion remains available. Because lost values cannot redact prior live
+echoes, pixels and terminal observations retain their fence until the existing
+verified fresh-environment provisioner clears it autonomously; fresh observations
+then flow normally while prior history stays withheld. No human step is added.
 
 MP-08/MP-11 text scrubbing retains exact values, case variants, URI/JSON/HTML
 escaping, Base64/Base64url and hexadecimal forms. The kernel seeds its known
@@ -68,8 +75,10 @@ returns its normal scrubbed result. Room deletion removes both active and retire
 values. Controller seeds are Room-scoped and released with their controller lease.
 
 Vault-key provenance scopes retirement to affected Rooms and distinguishes
-non-Vault sources. Secret input holds a shared lifecycle fence from resolution
-through insertion; Vault mutation and Room deletion drain those inputs before
+non-Vault sources. Secret input acquires the shared lifecycle fence after approval/unlock waits,
+then reloads authoritative credential metadata and Vault configuration, validates
+current authorization, and registers current source provenance. It keeps the
+fence through resolution and physical insertion; Vault mutation and Room deletion drain those inputs before
 retirement and persistence. Different Rooms can resolve and insert concurrently.
 Older registries with no provenance retire conservatively only while they have
 active values. New input cannot narrow that legacy scope. Empty, migrated and
@@ -135,7 +144,9 @@ no human interactions, clean restart, autonomous one-time migration and permanen
 Vault retirement on both home and worker, deferred acknowledgement for stopped
 and unreachable slices, deleted-Room wipe on slice start, per-slice parse/lock
 isolation and garbage collection, autonomous fresh-environment reset, deletion
-cleanup faults, persistent native-XID pruning,
+cleanup faults, corrupt-registry recovery through public credential removal and
+Room deletion, post-lock metadata removal/host/source/use interleavings,
+persistent native-XID pruning,
 registry Room/identity binding, bounded
 retry, old-artifact recapture, trusted Browser geometry, copied text/canvas masking,
 and unchanged native focus checks. Real Chromium/X11 helper runs use synthetic

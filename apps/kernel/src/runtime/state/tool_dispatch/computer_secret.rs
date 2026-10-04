@@ -44,13 +44,8 @@ impl KernelRuntimeState {
             operation: "runtime_tool_paste_secret_to_computer",
             message: format!("invalid tool arguments: {error}"),
         })?;
-        let user_config = self.owned.config_projection.snapshot().user_config;
-        let credentials = crate::credential::load_user_credentials()?;
-        let service = crate::secret::RuntimeSecretService::with_vault_config(
-            credentials,
-            &user_config.credential_vault,
-        )?;
-        service.validate_computer_secret_input(&args.credential_id)?;
+        self.home_runtime_secret_service()?
+            .validate_computer_secret_input(&args.credential_id)?;
         let approved_generation = self
             .reconcile_room_environment_actors(session_id, None)
             .map_err(|error| DaemonError::LocalTransport {
@@ -88,8 +83,8 @@ impl KernelRuntimeState {
                     .into(),
             });
         }
-        let _vault_observation_guard = self
-            .track_room_vault_key(session_id, &service, &args.credential_id)
+        let (service, _vault_observation_guard) = self
+            .room_secret_input_service(session_id, &args.credential_id)
             .await?;
         let secret = zeroize::Zeroizing::new(service.computer_secret_input(&args.credential_id)?);
         let execution = self

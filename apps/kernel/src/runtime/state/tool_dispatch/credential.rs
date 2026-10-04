@@ -1003,7 +1003,7 @@ impl KernelRuntimeState {
         )
     }
 
-    pub(super) fn home_runtime_secret_service(
+    pub(in crate::runtime::state) fn home_runtime_secret_service(
         &self,
     ) -> Result<crate::secret::RuntimeSecretService, DaemonError> {
         let user_config = self.owned.config_projection.snapshot().user_config;

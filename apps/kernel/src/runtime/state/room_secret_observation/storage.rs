@@ -95,6 +95,31 @@ impl RoomSecretObservations {
         result
     }
 
+    // Lost values cannot scrub prior live echoes. Retire only this Room's
+    // unavailable provenance; fresh provisioning clears the observation fence.
+    // Replacing the damaged seal lets lifecycle operations recover without a
+    // human and preserves the historical boundary across restarts.
+    pub(super) fn retire_unreadable_registry(&self, room: &str) -> Protection {
+        let protection = Protection {
+            unknown: true,
+            provenance_known: true,
+            recovered_artifacts: true,
+            history_before_ms: self.epoch,
+            revision: self.epoch,
+            ..Default::default()
+        };
+        tracing::warn!(room, "MP-08/MP-10/MP-11: unreadable Room observation registry retired; prior observations withheld");
+        if self.persist_marker(room, &protection).is_err() {
+            // The original marker/corrupt seal still fences observations after
+            // restart. A storage fault must not veto another Room's Vault write.
+            tracing::warn!(
+                room,
+                "MP-08/MP-10/MP-11: retired-unknown observation registry could not be persisted"
+            );
+        }
+        protection
+    }
+
     pub(super) fn restore_registry(&self, room: &str) -> Result<Option<Protection>, DaemonError> {
         let Some(key) = &self.identity else {
             return Ok(None);
@@ -264,6 +289,15 @@ impl RoomSecretObservations {
         self.blocked(room, false)?;
         let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
         let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
+        if protection.unknown
+            && protection.values.is_empty()
+            && protection.retired_values.is_empty()
+            && protection.vault_keys.is_empty()
+        {
+            // Nothing remains to retire; retain the existing missing-value fence.
+            // This also keeps public deletion available during storage faults.
+            return Ok(());
+        }
         protection.retired_values.append(&mut protection.values);
         protection.vault_keys.clear();
         protection.provenance_known = true;

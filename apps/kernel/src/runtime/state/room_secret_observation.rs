@@ -104,8 +104,10 @@ impl RoomSecretObservations {
             Err(_) => return Err(protection_error()),
         };
         if marked {
-            if let Some(restored) = self.restore_registry(room)? {
-                return Ok(restored);
+            match self.restore_registry(room) {
+                Ok(Some(restored)) => return Ok(restored),
+                Ok(None) => {}
+                Err(_) => return Ok(self.retire_unreadable_registry(room)),
             }
         } else if let Some(history_before_ms) = self.legacy_history_cutoff(room)? {
             // Migration withholds old artifacts, without blocking fresh observations.
