@@ -3,8 +3,8 @@
 import assert from 'node:assert/strict'
 import {spawn,execFile} from 'node:child_process'
 import {randomUUID,createHash} from 'node:crypto'
-import {createWriteStream} from 'node:fs'
-import {readFile,writeFile,appendFile,mkdir,mkdtemp,readdir,rm,stat} from 'node:fs/promises'
+import {createWriteStream,constants as fsConstants} from 'node:fs'
+import {readFile,writeFile,appendFile,mkdir,mkdtemp,readdir,rm,stat,chmod,open} from 'node:fs/promises'
 import http from 'node:http'
 import net from 'node:net'
 import path from 'node:path'
@@ -31,6 +31,26 @@ await mkdir(evidence,{recursive:true,mode:0o700});await mkdir(lane,{recursive:tr
 const root=await mkdtemp(`${lane}/runtime-`),owned=[],slices=[],savedImages=new Set(),observedPids=new Map(),ownedPorts=new Set(),failures=[],gates={}
 let local,session,slice,environment,relayChild,kernelChild,fixture,webServer,webContainer,monitor,stage='provenance',interrupted=false,ocrRun=null
 const activeTuis=new Map()
+// The Web viewer container runs Chromium sandboxed as the slice image's non-root
+// user (uid 1001) and gets only its own runtime and evidence-staging directories.
+// Both live in the mkdtemp runtime root, which is owner-only, so modes alone give
+// uid 1001 access without host chown; the host still reads and removes its files.
+// Staged evidence is copied to the evidence root only after the viewer is gone.
+const WEB_UID=1001,webRoot=`${root}/web`,webStaging=`${root}/web-evidence`,webEvidence=`${evidence}/web`
+async function publishWebEvidence(){
+ if(webContainer)return
+ const staged=await readdir(webStaging).catch(()=>[])
+ if(!staged.length)return
+ await mkdir(webEvidence,{recursive:true,mode:0o700})
+ // Never follow a staged symlink, even if the viewer could still change the directory.
+ for(const name of staged){
+  // O_NONBLOCK: a staged FIFO must not block the drill; the isFile check skips it.
+  const handle=await open(path.join(webStaging,name),fsConstants.O_RDONLY|fsConstants.O_NOFOLLOW|fsConstants.O_NONBLOCK).catch(()=>null)
+  if(!handle)continue
+  try{if((await handle.stat()).isFile())await writeFile(path.join(webEvidence,name),await handle.readFile(),{mode:0o600})}finally{await handle.close()}
+ }
+}
+const writeWeb=async(name,value)=>{await writeFile(`${webRoot}/${name}`,JSON.stringify(value));await chmod(`${webRoot}/${name}`,0o644)}
 const write=(name,value)=>writeFile(`${evidence}/${name}.json`,JSON.stringify({mpItems,...value},null,2)+'\n',{mode:0o600})
 const cmd=async(program,args,timeout=120000)=>{
  const started=Date.now()
@@ -141,7 +161,7 @@ async function startTui(kind,env,url,daemonId){
  return state
 }
 async function stopTui(kind){const state=activeTuis.get(kind);if(!state)return;await stopProcessGroup(state.child.pid,state.child);if(state.attachmentId)await detachOwnedAttachment(send,r.detachFromSessionRequest(state.attachmentId),state.attachmentId);await rm(state.automationSocket,{force:true});activeTuis.delete(kind)}
-async function webCommand(action,sequence){await writeFile(`${root}/web-command.json`,JSON.stringify({action,sequence}),{mode:0o600});return await wait(async()=>{const error=await readFile(`${root}/web-error.json`,'utf8').catch(()=>null);if(error)throw Error(JSON.parse(error).message);const value=JSON.parse(await readFile(`${root}/web-result.json`,'utf8').catch(()=>'{}'));return value.sequence===sequence?value:false},`Web ${action}`,90000)}
+async function webCommand(action,sequence){await writeWeb('web-command.json',{action,sequence});return await wait(async()=>{const error=await readFile(`${webRoot}/web-error.json`,'utf8').catch(()=>null);if(error)throw Error(JSON.parse(error).message);const value=JSON.parse(await readFile(`${webRoot}/web-result.json`,'utf8').catch(()=>'{}'));return value.sequence===sequence?value:false},`Web ${action}`,90000)}
 async function gate(name,fn){const phase=process.env.LOOPS_PHASE??'all';if(phase!=='all'&&name!=='ocr-tools-list'&&!({'reconnect':'concurrent-and-reconnect','persistence':'save-restart','create-delete':'create-delete'}[phase]===name)){gates[name]={status:'NOT_RUN'};return}stage=name;try{if(interrupted)throw Error('MP-10 interrupted');await fn();gates[name]={status:'GREEN'}}catch(error){gates[name]={status:'RED',firstFailingSeam:stage,error:error.message};failures.push({gate:name,stage,error:error.message});await write(`failure-${name}`,{gate:name,stage,error:error.stack});await captureRoomRepetitionFailure({docker,write,sliceContainer:slice&&cname(slice),webContainer,privateRelayProbe:process.env.LOOPS_PRIVATE_RELAY_PROBE==='1'});console.log(`MP-08 MP-10 ${name} RED ${error.message}`)}await write('progress',{runId,gates,failures,stage})}
 process.on('SIGTERM',()=>{interrupted=true});process.on('SIGINT',()=>{interrupted=true})
 try{
@@ -216,10 +236,18 @@ try{
    res.setHeader('content-type',file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':file.endsWith('.html')?'text/html':file.endsWith('.svg')?'image/svg+xml':'application/octet-stream');res.end(await readFile(file))
   }catch{res.statusCode=500;res.end('loop fixture failed')}})
   const webPort=await freePort();await new Promise(resolve=>webServer.listen(webPort,'127.0.0.1',resolve))
-  await writeFile(`${root}/web-config.json`,JSON.stringify({baseUrl:`http://127.0.0.1:${webPort}`,relayUrl:env.CHARIOX_RELAY_URL,daemonId,machineId,environmentId:environment.environment_id,target:`${session.id}:${session.agents[0].id}:${slice.id}`}),{mode:0o600})
-  webContainer=`${runId}-web`;await docker(['run','-d','--name',webContainer,'--user','0:0','--label',`io.chariox.drill-run=${runId}`,'--network','host','--memory','1536m','--memory-swap','1536m','--cpus',process.env.LOOPS_WEB_CPUS??'1','--pids-limit','256','--mount',`type=bind,src=${cloud},dst=/cloud,readonly`,'--mount',`type=bind,src=${root},dst=/runtime`,'--mount',`type=bind,src=${evidence},dst=/evidence`,'--mount',`type=bind,src=${repo}/apps/cli/scripts/lib/room-repetition-web.mjs,dst=/web.mjs,readonly`,'--mount',`type=bind,src=${repo}/apps/cli/scripts/lib/room-repetition-gates.mjs,dst=/room-repetition-gates.mjs,readonly`,'--entrypoint','node',image,'/web.mjs'])
-  await wait(async()=>{const error=await readFile(`${root}/web-error.json`,'utf8').catch(()=>null);if(error){const e=Error(JSON.parse(error).message);e.fatal=true;throw e}return JSON.parse(await readFile(`${root}/web-ready.json`,'utf8').catch(()=>'null'))},'two Web viewers',120000)
-  await write('concurrent',{room:await roomSnapshot(),worker:await observeWorker(),web:JSON.parse(await readFile(`${root}/web-ready.json`,'utf8')),tuis:await Promise.all([...activeTuis.values()].map(t=>readAutomationSnapshot(t.automationSocket)))})
+  for(const directory of [webRoot,webStaging]){await mkdir(directory,{recursive:true});await chmod(directory,0o777)}
+  await writeWeb('web-config.json',{baseUrl:`http://127.0.0.1:${webPort}`,relayUrl:env.CHARIOX_RELAY_URL,daemonId,machineId,environmentId:environment.environment_id,target:`${session.id}:${session.agents[0].id}:${slice.id}`})
+  webContainer=`${runId}-web`;await docker(['run','-d','--name',webContainer,'--user',`${WEB_UID}:${WEB_UID}`,'--security-opt',`seccomp=${repo}/apps/kernel/slice-linux-docker/chromium-seccomp.json`,'--label',`io.chariox.drill-run=${runId}`,'--network','host','--memory','1536m','--memory-swap','1536m','--cpus',process.env.LOOPS_WEB_CPUS??'1','--pids-limit','256','--mount',`type=bind,src=${cloud},dst=/cloud,readonly`,'--mount',`type=bind,src=${webRoot},dst=/runtime`,'--mount',`type=bind,src=${webStaging},dst=/evidence`,'--mount',`type=bind,src=${repo}/apps/cli/scripts/lib/room-repetition-web.mjs,dst=/web.mjs,readonly`,'--mount',`type=bind,src=${repo}/apps/cli/scripts/lib/room-repetition-gates.mjs,dst=/room-repetition-gates.mjs,readonly`,'--entrypoint','node',image,'/web.mjs'])
+  // The viewer runs as uid 1001, so /cloud and the two mounted scripts must be world-readable
+  // (an ordinary umask-022 checkout). A viewer that exits before reporting is fatal at once.
+  await wait(async()=>{const error=await readFile(`${webRoot}/web-error.json`,'utf8').catch(()=>null);if(error){const e=Error(JSON.parse(error).message);e.fatal=true;throw e}
+   const ready=JSON.parse(await readFile(`${webRoot}/web-ready.json`,'utf8').catch(()=>'null'));if(ready)return ready
+   // A direct probe keeps these frequent polls out of commands.jsonl.
+   const state=await exec('docker',['inspect','--format','{{.State.Status}} {{.State.ExitCode}}',webContainer],{env:{...process.env,DOCKER_HOST:'unix:///var/run/docker.sock',DOCKER_CONFIG:`${root}/docker-config`}}).then(r=>r.stdout.trim(),()=>'')
+   if(state.startsWith('exited')||state.startsWith('dead')){const logs=await cmd('sh',['-c','docker logs --tail 40 "$1" 2>&1','drill',webContainer]).catch(e=>e.message);const e=Error(`Web viewer stopped before it was ready (${state}): ${String(logs).slice(-1500)}`);e.fatal=true;throw e}
+   return null},'two Web viewers',120000)
+  await write('concurrent',{room:await roomSnapshot(),worker:await observeWorker(),web:JSON.parse(await readFile(`${webRoot}/web-ready.json`,'utf8')),tuis:await Promise.all([...activeTuis.values()].map(t=>readAutomationSnapshot(t.automationSocket)))})
   // Generate an active browser/stream workload through a fixture-only CDP setup.
   await docker(['exec',cname(slice),'node','--input-type=module','-e',`const targets=await(await fetch('http://127.0.0.1:9222/json/list')).json();const target=targets.find(t=>t.type==='page');const ws=new WebSocket(target.webSocketDebuggerUrl);await new Promise(r=>ws.onopen=r);const reply=new Promise(r=>ws.onmessage=e=>r(JSON.parse(e.data)));ws.send(JSON.stringify({id:1,method:'Runtime.evaluate',params:{expression:"window.loopsTicks=0;setInterval(()=>{document.querySelector('h1').textContent='MP-08 MP-10 active browser tick '+(++window.loopsTicks)},250)",returnByValue:true}}));await reply;ws.close()`])
   const before=await roomSnapshot()
@@ -235,7 +263,7 @@ try{
  })
  if(slice){try{const log=await docker(['exec',cname(slice),'sh','-c',"cat /home/slice/.local/state/chariox/logs/*daemon*.ndjson /home/slice/.chariox/logs/*daemon*.ndjson /opt/chariox-slice/logs/*daemon*.ndjson 2>/dev/null; true"]);await writeFile(`${evidence}/worker-forwarder.log`,log.split('\n').filter(line=>line.includes('\"component\":\"display.')).join('\n')+'\n',{mode:0o600})}catch{}}
  await Promise.all([...activeTuis.keys()].map(stopTui))
- if(webContainer){await docker(['rm','-f',webContainer]);webContainer=null}
+ if(webContainer){await docker(['rm','-f',webContainer]);webContainer=null;await publishWebEvidence()}
  if(webServer){await new Promise(resolve=>webServer.close(resolve));webServer=null}
  await gate('save-restart',async()=>{
   let portsBefore=structuredClone(slice.local_docker_ports),idBefore=(await docker(['exec',cname(slice),'cat','/etc/machine-id'])).trim()
@@ -288,7 +316,9 @@ finally{
  if(slice){try{const log=await docker(['exec',cname(slice),'sh','-c',"cat /home/slice/.local/state/chariox/logs/*daemon*.ndjson /home/slice/.chariox/logs/*daemon*.ndjson /opt/chariox-slice/logs/*daemon*.ndjson 2>/dev/null; true"]);await writeFile(`${evidence}/worker-forwarder.log`,log.split('\n').filter(line=>line.includes('\"component\":\"display.')).join('\n')+'\n',{mode:0o600})}catch{}}
  clearInterval(monitor)
  for(const kind of [...activeTuis.keys()])await stopTui(kind).catch(e=>failures.push({stage:'cleanup-tui',error:e.message}))
- if(webContainer)await docker(['rm','-f',webContainer]).catch(e=>failures.push({stage:'cleanup-web',error:e.message}))
+ if(webContainer)await docker(['rm','-f',webContainer]).then(()=>{webContainer=null},e=>failures.push({stage:'cleanup-web',error:e.message}))
+ // Staged evidence is published only once the viewer container is gone.
+ await publishWebEvidence().catch(e=>failures.push({stage:'cleanup-web-evidence',error:e.message}))
  if(webServer)await new Promise(resolve=>webServer.close(resolve))
  await fixture?.close().catch(()=>{})
  for(const s of slices){const exists=await docker(['inspect',cname(s)]).catch(()=>null);if(exists&&local)await deleteSlice(s).catch(e=>failures.push({stage:'cleanup-slice',error:e.message}))}
