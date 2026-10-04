@@ -52,6 +52,8 @@ pub(crate) mod browser_controller_permission;
 pub(crate) mod browser_controller_process;
 pub(crate) mod browser_controller_snapshot;
 pub(crate) mod browser_controller_tab;
+pub(crate) mod kernel_browser_host;
+mod kernel_browser_assets;
 pub(crate) mod browser_import_admission;
 pub(crate) mod browser_import_payload;
 pub mod capability_executor;
