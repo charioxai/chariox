@@ -529,11 +529,16 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
       deps.updateSessionChrome()
     },
     onStateLookupFailed: (sessionId, message, error) => {
-      deps.appLogger?.debug?.("session unavailable confirmed by state lookup failure", {
+      deps.appLogger?.debug?.("session unavailable recovery lookup failed", {
         session_id: sessionId,
         message,
         error: deps.formatError(error),
       })
+    },
+    isSessionUnavailableError,
+    onTransientFailure: () => {
+      deps.setDaemonDisconnected(true)
+      deps.recoverAttachedSessionAfterKernelRestart()
     },
     transitionToNoSession: deps.transitionToNoSession,
   })
@@ -578,9 +583,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     formatError: deps.formatError,
     isSessionUnavailableError,
     getPollRecoveryDecision,
-    onSessionUnavailable: () => {
-      deps.transitionToNoSession("Current session is no longer available.")
-    },
+    onSessionUnavailable: () => handleKernelSessionUnavailable("Current session is no longer available."),
     onMarkRecovered: markPollerRecovered,
     onMarkDegraded: markPollerDegraded,
     onFatalError: (error) => {
