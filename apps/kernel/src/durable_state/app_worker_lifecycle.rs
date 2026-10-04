@@ -44,7 +44,11 @@ pub(crate) enum StartGate {
     Allowed,
     /// The user stopped this generation; use waits for an explicit start.
     UserStopped,
-    /// Failed generation, revoked publisher, or inactive/paused installation.
+    /// Restart backoff: accepted work waits for recovery.
+    RestartDeferred,
+    /// Crash-loop quarantine: only an explicit Start can recover it.
+    Quarantined,
+    /// Revoked publisher or inactive/paused installation.
     Refused,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -282,7 +286,7 @@ impl DurableKernelStateStore {
     }
     /// Whether use may start this App now. It mirrors the start claim: the
     /// installation must be active with current publisher trust, and the
-    /// current generation must be neither user-stopped nor Failed.
+    /// current generation must be neither user-stopped nor held by its restart policy.
     pub(crate) fn app_worker_start_gate(
         &self,
         owner: &str,
