@@ -197,8 +197,19 @@ pub(super) fn validate_slice_snapshot_disk_admission(
     let demand = SliceSnapshotDiskDemand {
         home_bytes: measurement.home_bytes,
         entry_count: measurement.entry_count,
+        // A flattening capture writes the container's whole root filesystem.
         writable_layer_bytes: docker_numeric_output(
-            &["inspect", "--size", "--format", "{{.SizeRw}}", &container],
+            &[
+                "inspect",
+                "--size",
+                "--format",
+                if super::capture_depth::capture_will_flatten(&container) {
+                    "{{.SizeRootFs}}"
+                } else {
+                    "{{.SizeRw}}"
+                },
+                &container,
+            ],
             "measure slice writable layer",
         )?,
     };

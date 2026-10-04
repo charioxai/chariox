@@ -1004,23 +1004,8 @@ fn docker_commit_container(
 ) -> Result<(), DaemonError> {
     super::capture_preflight::require_verified_layout(record, operation)?;
     let container = local_docker_container_name(record);
-    let status = docker_command()
-        .args(["commit", &container, image_ref])
-        .status()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation,
-            message: format!("failed to commit slice container `{container}`: {error}"),
-        })?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(DaemonError::LocalTransport {
-            operation,
-            message: format!(
-                "docker commit `{container}` to `{image_ref}` failed with status {status}"
-            ),
-        })
-    }
+    // Saved images stay below Docker's layer limit across restore/clone and save cycles.
+    super::capture_depth::commit_container_bounded(&container, image_ref, operation)
 }
 
 fn archive_local_docker_home_volume(

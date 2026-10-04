@@ -5,7 +5,12 @@ import {readFile, writeFile} from 'node:fs/promises'
 import {createLocalIdleBrowserWebHarness} from '/cloud/scripts/lib/local-idle-browser-web-harness.mjs'
 import {chromium} from '/cloud/node_modules/playwright-core/index.mjs'
 const config=JSON.parse(await readFile('/runtime/web-config.json','utf8'))
-const browser=await chromium.launch({headless:true,executablePath:'/usr/bin/chromium',args:['--no-sandbox','--disable-dev-shm-usage']})
+// Keep Chromium's renderer sandbox: the drill runs this container as the image's
+// non-root user under the production Chromium seccomp profile. A sandbox that
+// cannot start is reported to the drill as a fatal viewer error.
+let browser
+try{browser=await chromium.launch({headless:true,executablePath:'/usr/bin/chromium',chromiumSandbox:true,args:['--disable-dev-shm-usage']})}
+catch(error){await writeFile('/runtime/web-error.json',JSON.stringify({mpItems:['MP-07','MP-08','MP-10'],message:`sandboxed Chromium did not start: ${error.message}`,stack:error.stack}));throw error}
 const context=await browser.newContext({viewport:{width:1440,height:1000}})
 const harness=createLocalIdleBrowserWebHarness({context,slowClientMessageDelayMs:0,useCloudApiServer:false,browserSessionToken:'loops-synthetic-session',userId:'local',accountId:'local-dev-account',relayUrl:config.relayUrl,relayToken:'fixture',daemonId:config.daemonId,daemonAlias:config.daemonId,machineId:config.machineId,networkEvents:[],networkRequests:new Map(),websocketFrames:[],transportLogs:[]})
 await harness.installLocalWebRoutes()
