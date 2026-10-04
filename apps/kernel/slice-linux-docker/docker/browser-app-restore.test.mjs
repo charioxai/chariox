@@ -58,3 +58,35 @@ test("a crash-truncated tail preserves and protects preceding complete App recor
     assert.deepEqual(blockAppRestores(Buffer.concat([complete, tail])), blockAppRestores(complete));
   }
 });
+
+test("the owned offline launcher restores after a crash without changing other preferences", async () => {
+  const profile = await mkdtemp(path.join(os.tmpdir(), "chariox-crash-restore-"));
+  try {
+    const directory = path.join(profile, "Default");
+    await mkdir(path.join(directory, "Sessions"), { recursive: true });
+    await writeFile(path.join(directory, "Sessions", "Session_1"), Buffer.concat([header, navigation("https://example.test/")]));
+    const preferences = { profile: { exit_type: "Crashed", exited_cleanly: false, other: 42 }, session: { restore_on_startup: 5 }, other: { keep: true } };
+    const file = path.join(directory, "Preferences");
+    await writeFile(file, JSON.stringify(preferences));
+    const { prepareChromiumLaunch } = await import("./browser-app-restore.mjs");
+    assert.equal(await prepareChromiumLaunch(profile), "restore");
+    preferences.profile.exit_type = "Normal";
+    preferences.profile.exited_cleanly = true;
+    assert.deepEqual(JSON.parse(await readFile(file, "utf8")), preferences);
+  } finally { await rm(profile, { recursive: true, force: true }); }
+});
+
+test("unsupported sessions stay fenced on a crashed profile", async () => {
+  const profile = await mkdtemp(path.join(os.tmpdir(), "chariox-crash-fenced-"));
+  try {
+    const directory = path.join(profile, "Default");
+    await mkdir(path.join(directory, "Sessions"), { recursive: true });
+    await writeFile(path.join(directory, "Sessions", "Session_1"), Buffer.from("unknown session"));
+    const file = path.join(directory, "Preferences");
+    const bytes = JSON.stringify({ profile: { exit_type: "Crashed", exited_cleanly: false } });
+    await writeFile(file, bytes);
+    const { prepareChromiumLaunch } = await import("./browser-app-restore.mjs");
+    assert.equal(await prepareChromiumLaunch(profile), "fresh");
+    assert.equal(await readFile(file, "utf8"), bytes);
+  } finally { await rm(profile, { recursive: true, force: true }); }
+});

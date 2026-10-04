@@ -3,7 +3,7 @@
 use std::time::Duration;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 
-const IDLE_INTERVAL: Duration = Duration::from_millis(250);
+pub(super) const IDLE_INTERVAL: Duration = Duration::from_millis(250);
 const ACTIVE_INTERVAL: Duration = Duration::from_millis(25);
 const ACTIVE_WINDOW: Duration = Duration::from_secs(1);
 
