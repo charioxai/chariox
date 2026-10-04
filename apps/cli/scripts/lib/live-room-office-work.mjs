@@ -23,7 +23,7 @@ export async function runRoomOfficeWork(input) {
   const actorId = `agent:${agentId}`
   const fixture = await startBrowserComputerFixture({ host: "0.0.0.0", account, password })
   const origin = `http://host.docker.internal:${new URL(fixture.origin).port}`
-  const report = { document, subject, agentId, provider: options.provider, model: options.model }
+  const report = { document, subject, agentId, provider: options.provider, model: options.model, prompts: [] }
   const command = async (args) => (await docker(["exec", "-u", "slice", containerName, ...args])).stdout
   const actions = async () => unwrap(await client.send(requests.listRoomEnvironmentActionHistoryRequest(
     sessionId, null, 100)), "RoomEnvironmentActionHistoryListed").page.actions
@@ -47,6 +47,8 @@ export async function runRoomOfficeWork(input) {
     }
     const promptId = (submitted.outcome?.Started ?? submitted.outcome?.Queued)?.prompt?.id
     assert.ok(promptId, "office prompt lacks an identity")
+    const receipt = { promptId, admission: submitted.outcome.Started ? "Started" : "Queued" }
+    report.prompts.push(receipt)
     const completed = await input.waitFor(async () => {
       if (await finished(fresh(await actions()))) return true
       const outline = unwrap(await input.withTimeout(client.send(requests.getSessionHistoryOutlineRequest(
@@ -75,7 +77,9 @@ export async function runRoomOfficeWork(input) {
     }, 300_000, "office provider did not complete its task")
     if (completed.providerFailed) throw new Error("office provider failed before the required physical result")
     assert.equal(completed, true, "office provider completed without the required physical result")
-    return waitForRoomProviderSettlement(input, agentId, promptId)
+    const settlement = await waitForRoomProviderSettlement(input, agentId, promptId)
+    Object.assign(receipt, settlement)
+    return settlement
   }
 
   try {

@@ -14,6 +14,7 @@ for (const boundary of ["office-installing", "office-mailing", "web-office-maili
     let submitted = 0
     let loggedIn = false
     let typed = false
+    let lastReport
     const contents = "Chariox office document\nPrepared through the graphical editor.\nGrüße from the Room.\n"
     const stop = new Error("second prompt reached kernel")
     const polling = new Error("provider remains pending")
@@ -24,6 +25,7 @@ for (const boundary of ["office-installing", "office-mailing", "web-office-maili
     const input = {
       requests, sessionId: "room", agentId: "agent", options: { provider: "codex", model: "fixture" },
       checkpoint: async ({ phase, office }) => {
+        lastReport = office
         // The standard slice controller permits /workspace and Downloads,
         // not arbitrary files under the user's home directory.
         assert.ok(office.document.startsWith("/workspace/"), "office document must stay in the authorized upload workspace")
@@ -116,6 +118,11 @@ for (const boundary of ["office-installing", "office-mailing", "web-office-maili
       ? error.message === "office provider failed before the required physical result"
       : error === (pending ? polling : stop))
     assert.equal(submitted, terminalError || pending ? 1 : 2)
+    assert.equal(lastReport.prompts.length, 1)
+    assert.equal(lastReport.prompts[0].promptId, "prompt")
+    assert.equal(lastReport.prompts[0].admission, "Started")
+    if (!terminalError && !pending) assert.equal(lastReport.prompts[0].turnId, "turn")
+    assert.equal(JSON.stringify(lastReport).includes("synthetic-private-provider-detail-must-not-escape"), false)
     assert.equal(live.size, 0, "prompt attachments must be released even when submission fails")
   })
 }
