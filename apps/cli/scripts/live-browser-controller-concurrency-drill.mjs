@@ -9,11 +9,13 @@ import { mkdir, mkdtemp, readFile, realpath, rm, statfs, symlink, writeFile } fr
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
+import { assertConcurrencyArtifact, assertConcurrencyResources, concurrencyTestSymbol } from "./lib/browser-controller-concurrency-preflight.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const options = {};
 for (let i = 2; i < process.argv.length; i += 2) {
-  assert.ok(["--test-binary", "--image", "--output"].includes(process.argv[i]), "MP-08/MP-10 unknown option");
+  assert.ok(["--test-binary", "--image", "--output", "--test-binary-sha256", "--memory-floor-gib"].includes(process.argv[i]), "MP-08/MP-10 unknown option");
+  assert.ok(process.argv[i + 1] && !process.argv[i + 1].startsWith("--"), "MP-08/MP-10 missing option value");
   options[process.argv[i].slice(2)] = process.argv[i + 1];
 }
 for (const key of ["test-binary", "image", "output"]) assert.ok(options[key], `MP-08/MP-10 --${key} is required`);
@@ -23,8 +25,9 @@ assert.match(options.image, /^sha256:[a-f0-9]{64}$/, "MP-08/MP-10 pin the engine
 await mkdir(options.output, { recursive: true, mode: 0o700 });
 const container = `chariox-ctlconc-${process.pid}-${Date.now()}`;
 const mp_items = ["MP-08", "MP-10"];
+const memoryFloorGiB = Number(options["memory-floor-gib"] ?? 4);
 const receipt = { mp_items, startedAt: new Date().toISOString(), command: process.argv,
-  image: options.image, container, controllerBoundMs: 5000, commands: [], resources: [], cleanup: null,
+  image: options.image, container, controllerBoundMs: 5000, memoryFloorGiB, commands: [], resources: [], cleanup: null,
   limitations: ["Local synthetic kernel clients and real headed controller; no provider, Web, hosted relay, signed release or fresh Path-1 acceptance."] };
 const owned = new Set();
 let interrupted = false;
@@ -52,8 +55,7 @@ async function resources() {
   const sample = { atMs: Date.now(), diskBytes: disk.bavail * disk.bsize,
     memAvailableKiB: Number(memory.match(/^MemAvailable:\s+(\d+)/m)?.[1]) };
   receipt.resources.push(sample);
-  assert.ok(sample.diskBytes >= 10 * 1024 ** 3 && sample.memAvailableKiB >= 4 * 1024 ** 2,
-    "MP-08/MP-10 resource floor reached");
+  assertConcurrencyResources(sample, memoryFloorGiB);
 }
 let watchdog;
 let started = false;
@@ -67,6 +69,10 @@ try {
   const digest = createHash("sha256");
   for await (const chunk of createReadStream(options["test-binary"])) digest.update(chunk);
   receipt.testBinarySha256 = digest.digest("hex");
+  const listing = (await command(options["test-binary"], [concurrencyTestSymbol, "--exact", "--ignored", "--list"])).stdout;
+  assertConcurrencyArtifact({ sha256: receipt.testBinarySha256, expectedSha256: options["test-binary-sha256"], listing });
+  receipt.testSymbol = concurrencyTestSymbol;
+  receipt.testBinaryDigestPinned = options["test-binary-sha256"] !== undefined;
   await docker(["run", "-d", "--name", container, "--label", "io.chariox.drill=controller-concurrency",
     "--label", "io.chariox.lane=ctlconc", "--cpus=1", "--memory=2g", "--memory-swap=2g", "--pids-limit=512",
     "--security-opt", `seccomp=${path.join(root, "apps/kernel/slice-linux-docker/chromium-seccomp.json")}`,
@@ -92,7 +98,7 @@ try {
     path.join(transportDirectory, "docker"));
   const realDocker = await realpath((await command("which", ["docker"])).stdout.trim());
   const test = await command(options["test-binary"], [
-    "runtime::state::tool_dispatch::slice::controller_browser::concurrency_drill::headed_controller_concurrency_acceptance",
+    concurrencyTestSymbol,
     "--exact", "--ignored", "--nocapture"], { timeout: 60000, log: path.join(options.output, "test.log"),
     env: { ...process.env, PATH: transportDirectory + path.delimiter + process.env.PATH,
       CHARIOX_CONCURRENCY_REAL_DOCKER: realDocker,
