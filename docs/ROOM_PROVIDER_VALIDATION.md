@@ -196,6 +196,14 @@ confusing a CDP reconnect with a browser crash. Component health and the
 Room aggregate settle under the same state owner: a running Room stays degraded
 while a component is unavailable or controller reconciliation is pending, and
 becomes ready as soon as both conditions clear.
+MCP browser status uses the Room-owned controller and the existing observation
+admission gate. It may reconcile a restarted controller but still return
+`environment_not_ready` with lifecycle `Degraded` while another Room component
+is unavailable. Browser reconciliation does not establish desktop or streamer
+health. Retry after their health receipts arrive; the last ready component
+settles the aggregate immediately, and status returns the same logical Tab with
+fresh element references. Synthetic headed-worker tests must provide those
+component receipts rather than assuming browser recovery proves all health.
 
 Run the real-Chrome controller request tests before the live provider drill:
 
