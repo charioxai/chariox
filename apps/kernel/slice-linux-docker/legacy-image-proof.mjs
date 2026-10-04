@@ -5,13 +5,17 @@ function key(image) {
   if (!/^sha256:[a-f0-9]{64}$/.test(image ?? "")) throw new Error("Legacy saved image identity is unavailable")
   return image.slice(7)
 }
-export function recordLegacyImageProof(root, layout, parent, container, captured) {
+export function recordLegacyImageProof(root, layout, parent, container, captured, {flattened = false} = {}) {
   verifyPrivateHostDirectory(root, process.getuid())
-  if (container?.Image !== parent?.Id || captured?.Parent !== parent?.Id || captured.Config?.User !== "slice"
+  // A flattened capture (captured-image-depth.mjs) is one layer with no parent.
+  const lineage = flattened
+    ? !captured?.Parent && captured?.RootFS?.Layers?.length === 1
+    : captured?.Parent === parent?.Id && Array.isArray(captured?.RootFS?.Layers)
+      && captured.RootFS.Layers.length === parent.RootFS.Layers.length + 1
+      && parent.RootFS.Layers.every((layer, i) => captured.RootFS.Layers[i] === layer)
+  if (container?.Image !== parent?.Id || !lineage || captured.Config?.User !== "slice"
       || JSON.stringify(captured.Config?.Env) !== JSON.stringify(container.Config?.Env)
       || !Array.isArray(parent.RootFS?.Layers) || !Array.isArray(captured.RootFS?.Layers)
-      || captured.RootFS.Layers.length !== parent.RootFS.Layers.length + 1
-      || parent.RootFS.Layers.some((layer, i) => captured.RootFS.Layers[i] !== layer)
       || captured.RootFS.Layers.some(layer => !/^sha256:[a-f0-9]{64}$/.test(layer))) {
     throw new Error("Legacy captured image lineage is unverified")
   }

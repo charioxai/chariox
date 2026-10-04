@@ -26,6 +26,7 @@ use super::ports::{busy_published_ports_for_slice, LocalDockerSlicePorts};
 #[cfg(unix)]
 mod admission_lock;
 mod broker;
+mod capture_depth;
 mod capture_preflight;
 mod disk_admission;
 mod extension_build;

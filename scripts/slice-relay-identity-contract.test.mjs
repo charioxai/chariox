@@ -9,6 +9,8 @@ const root = new URL("../", import.meta.url)
 const runtime = await readFile(new URL("apps/kernel/slice-linux-docker/docker/start-runtime.sh", root), "utf8")
 const start = runtime.match(/start_slice_kernel\(\) \{[\s\S]*?\n\}/)?.[0]
 assert.ok(start, "slice runtime has one kernel launch function")
+const waitForAuth = runtime.match(/wait_for_kernel_auth_consumption\(\) \{[\s\S]*?\n\}/)?.[0]
+assert.ok(waitForAuth, "slice runtime waits for local auth consumption")
 
 const vectors = JSON.parse(await readFile(new URL("fixtures/slice-worker-identity.json", root), "utf8")).cases
 
@@ -24,6 +26,7 @@ async function launch(identity, extraArguments = []) {
       "sleep() { :; }",
       "wait_for_screen_session() { :; }",
       "screen() { for argument in \"$@\"; do case \"$argument\" in CHARIOX_DAEMON_ID=*|CHARIOX_DAEMON_ALIAS=*|CHARIOX_MACHINE_ID=*) printf '%s\\n' \"$argument\" ;; esac; done; rm \"$KERNEL_LOCAL_AUTH_FILE\"; }",
+      waitForAuth,
       start,
       `start_slice_kernel ${extraArguments.join(" ")}`,
     ].join("\n")

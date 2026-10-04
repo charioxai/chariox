@@ -3024,3 +3024,127 @@ fn mp08_mp11_inherited_tuning_is_explicit_in_both_adapters() {
             .any(|(key, actual)| key == name && actual == Some(std::ffi::OsStr::new(value))));
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn deep_saved_images_flatten_and_admit_their_whole_root_filesystem() {
+    crate::test_support::isolated_env_test!();
+    use std::os::unix::fs::PermissionsExt;
+
+    let _environment = crate::env_lock::lock();
+    let root = test_root("capture-depth");
+    let bin = root.join("bin");
+    let log = root.join("calls.log");
+    let depth = root.join("parent-depth");
+    std::fs::create_dir_all(&bin).expect("fake tool directory should create");
+    for (name, script) in [
+        (
+            "docker",
+            r#"#!/bin/sh
+printf 'docker %s\n' "$*" >> "$CALL_LOG"
+case "$*" in
+  "inspect --format {{.Image}} chariox-slice-dev") printf 'sha256:%064d\n' 7 ;;
+  "image inspect --format {{len .RootFS.Layers}} sha256:"*) cat "$PARENT_DEPTH" ;;
+  "ps --format {{.Names}}") printf 'chariox-slice-dev\n' ;;
+  "inspect --format {{.State.Running}} {{.State.Status}} chariox-slice-dev") printf 'false exited\n' ;;
+  "info --format {{.DockerRootDir}}") printf '/tmp\n' ;;
+  "inspect --size --format {{.SizeRw}} chariox-slice-dev") printf '1048576\n' ;;
+  "inspect --size --format {{.SizeRootFs}} chariox-slice-dev") printf '8589934592\n' ;;
+  *" du -sb /home-src") printf '1048576 /home-src\n' ;;
+  *" find /home-src -printf . | wc -c") printf '1\n' ;;
+  *" df -B1 --output=avail /tmp") printf '5368709120\n' ;;
+esac
+exit 0
+"#,
+        ),
+        (
+            "node",
+            "#!/bin/sh\nprintf 'node %s\\n' \"$*\" >> \"$CALL_LOG\"\nexit 0\n",
+        ),
+    ] {
+        let path = bin.join(name);
+        std::fs::write(&path, script).expect("fake tool should write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+            .expect("fake tool should become executable");
+    }
+    let previous_path = std::env::var_os("PATH");
+    let mut paths = vec![bin.clone()];
+    if let Some(path) = &previous_path {
+        paths.extend(std::env::split_paths(path));
+    }
+    std::env::set_var(
+        "PATH",
+        std::env::join_paths(paths).expect("PATH should join"),
+    );
+    std::env::set_var("CALL_LOG", &log);
+    std::env::set_var("PARENT_DEPTH", &depth);
+    assert!(!broker::configured());
+
+    let mut options = test_options();
+    options.root = root.clone();
+    let mut record = test_record();
+    record.display_mode = SliceDisplayMode::Headless;
+    let admit = || {
+        snapshot_pause::begin(&record, &options, false)
+            .expect("measurement obligation should persist");
+        let result = disk_admission::with_slice_snapshot_disk_admission(|guard| {
+            disk_admission::validate_slice_snapshot_disk_admission(&record, &options, guard)
+        });
+        snapshot_pause::recover(&record, &options).expect("measurement obligation should retire");
+        result
+    };
+    let image = "chariox-slice-state:dev-depth";
+    let calls = |depth_value: &str| {
+        std::fs::write(&depth, depth_value).expect("parent depth should write");
+        std::fs::write(&log, "").expect("call log should reset");
+        capture_depth::commit_container_bounded("chariox-slice-dev", image, "slice.state.save")
+            .expect("bounded capture should succeed");
+        std::fs::read_to_string(&log).expect("call log should read")
+    };
+
+    // Below the bound: the ordinary one-layer commit, measured by its writable layer.
+    let shallow = calls("99\n");
+    assert!(
+        shallow.contains(&format!("docker commit chariox-slice-dev {image}")),
+        "{shallow}"
+    );
+    assert!(!shallow.contains("node "), "{shallow}");
+    admit().expect("a 1 MiB writable layer fits the 5 GiB fixture capacity");
+
+    // At the bound: flatten instead of a 101st layer, and admit the whole root filesystem.
+    let deep = calls("100\n");
+    assert!(
+        deep.lines().any(|call| call.starts_with("node ")
+            && call.ends_with(&format!(
+                "captured-image-depth.mjs flatten chariox-slice-dev {image}"
+            ))),
+        "{deep}"
+    );
+    assert!(
+        !deep.lines().any(|call| call.starts_with("docker commit")),
+        "{deep}"
+    );
+    std::fs::write(&depth, "100\n").unwrap();
+    let rejected = admit().expect_err("an 8 GiB flatten must not pass a 5 GiB admission");
+    assert!(
+        rejected
+            .to_string()
+            .contains("slice snapshot needs more disk headroom"),
+        "{rejected}"
+    );
+
+    // Unknown depth keeps the ordinary commit.
+    let unknown = calls("");
+    assert!(
+        unknown.contains(&format!("docker commit chariox-slice-dev {image}")),
+        "{unknown}"
+    );
+
+    match previous_path {
+        Some(path) => std::env::set_var("PATH", path),
+        None => std::env::remove_var("PATH"),
+    }
+    std::env::remove_var("CALL_LOG");
+    std::env::remove_var("PARENT_DEPTH");
+    let _ = std::fs::remove_dir_all(root);
+}

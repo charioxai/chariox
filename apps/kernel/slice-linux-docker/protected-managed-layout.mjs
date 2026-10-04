@@ -177,11 +177,11 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
       return [...new Set([record.homeVolume, pending?.oldHomeVolume, pending?.newHomeVolume,
         pending?.failedHomeVolume, ...(pending?.retainedPreviousHomes ?? [])].filter(Boolean))]
     },
-    recordLegacyImage(container, parent, source, captured) {
+    recordLegacyImage(container, parent, source, captured, options) {
       const layout = legacyReceipt(container)
       const directory = join(root, "legacy-images")
       try { mkdirSync(directory, {mode: 0o700}) } catch (error) { if (error.code !== "EEXIST") throw error }
-      recordLegacyImageProof(directory, layout, parent, source, captured)
+      recordLegacyImageProof(directory, layout, parent, source, captured, options)
     },
     recordCapture(container, digest) {
       const record = receipt(container)
