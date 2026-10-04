@@ -1,3 +1,4 @@
+use super::claude_setup_token_login;
 use crate::error::DaemonError;
 use crate::local::{
     DeleteCredentialSecretRequest, GetCredentialVaultStatusRequest, GetUserConfigRequest,
@@ -85,13 +86,7 @@ pub(crate) async fn execute_set_provider_account_credential_request(
     request: SetProviderAccountCredentialRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     if request.run {
-        return super::provider_setup_token::start(
-            config_projection,
-            runtime_state,
-            command,
-            request,
-        )
-        .await;
+        return claude_setup_token_login::start(runtime_state, command, request).await;
     }
     let owner_user_id =
         runtime_state.provider_account_authority_owner_user_id(&command_caller_user_id(command));

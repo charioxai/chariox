@@ -97,6 +97,7 @@ async fn start_terminal_provider_auth(
     account_profile: String,
     operation: crate::runtime::state::ProviderAuthProcessOperation,
     method: Option<String>,
+    overwrite: bool,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let provider = crate::provider::canonical_provider_family(&provider)
         .ok_or_else(|| provider_login_error("unsupported provider"))?;
@@ -158,9 +159,6 @@ async fn start_terminal_provider_auth(
                 "terminal_setup_token".to_string()
             }
             crate::runtime::state::ProviderAuthProcessOperation::Login => "terminal".to_string(),
-            crate::runtime::state::ProviderAuthProcessOperation::SetupToken => {
-                "terminal_setup_token".to_string()
-            }
             crate::runtime::state::ProviderAuthProcessOperation::Logout => {
                 "terminal_logout".to_string()
             }
@@ -173,9 +171,6 @@ async fn start_terminal_provider_auth(
     let auth_label = match operation {
         crate::runtime::state::ProviderAuthProcessOperation::Login => {
             format!("{provider}:auth-login")
-        }
-        crate::runtime::state::ProviderAuthProcessOperation::SetupToken => {
-            "claude:setup-token".to_string()
         }
         crate::runtime::state::ProviderAuthProcessOperation::Logout => {
             format!("{provider}:auth-logout")
@@ -199,6 +194,11 @@ async fn start_terminal_provider_auth(
     let program = launch
         .pty_program
         .ok_or_else(|| provider_login_error("provider login launch has no executable"))?;
+    let setup_login = setup_token.then(|| {
+        let mut login = crate::runtime::state::ClaudeSetupTokenLogin::default();
+        login.overwrite = overwrite;
+        login
+    });
     runtime_state.provider_login_process_store().insert(
         crate::runtime::state::ProviderLoginProcessRecord {
             owner_user_id: owner_user_id.to_string(),
@@ -210,7 +210,7 @@ async fn start_terminal_provider_auth(
             state: ProviderLoginProcessState::Running,
             backend: crate::runtime::state::ProviderLoginProcessBackend::Terminal,
             operation,
-            setup_token: setup_token.then(crate::runtime::state::ClaudeSetupTokenLogin::default),
+            setup_token: setup_login.clone(),
             output: Vec::new(),
             started_at_ms: now_ms,
             updated_at_ms: now_ms,
@@ -218,25 +218,33 @@ async fn start_terminal_provider_auth(
     )?;
     let spawn = runtime_state
         .with_app_side_effect(|app| {
-            app.pty_mut().spawn(PtySpawnRequest {
-                process_key: login_id.clone(),
-                provider_run_id: login_id.clone(),
-                program,
-                args: launch.pty_args,
-                env: launch.pty_env,
-                env_remove,
-                working_directory: launch.working_directory,
-                cols: if setup_token {
-                    crate::runtime::state::CLAUDE_SETUP_TOKEN_COLUMNS
-                } else {
-                    120
+            app.pty_mut().spawn_with_output_filter(
+                PtySpawnRequest {
+                    process_key: login_id.clone(),
+                    provider_run_id: login_id.clone(),
+                    program,
+                    args: launch.pty_args,
+                    env: launch.pty_env,
+                    env_remove,
+                    working_directory: launch.working_directory,
+                    cols: if setup_token {
+                        crate::runtime::state::CLAUDE_SETUP_TOKEN_COLUMNS
+                    } else {
+                        120
+                    },
+                    rows: if setup_token {
+                        crate::runtime::state::CLAUDE_SETUP_TOKEN_ROWS
+                    } else {
+                        40
+                    },
                 },
-                rows: if setup_token {
-                    crate::runtime::state::CLAUDE_SETUP_TOKEN_ROWS
-                } else {
-                    40
-                },
-            })
+                &crate::provider::ProviderCredentialEnvironment::default(),
+                true,
+                setup_login.map(|login| {
+                    Box::new(move |bytes: &[u8]| login.read_private_output(bytes))
+                        as Box<dyn FnMut(&[u8]) -> Vec<u8> + Send>
+                }),
+            )
         })
         .await;
     if let Err(error) = spawn {
@@ -292,9 +300,6 @@ fn terminal_provider_auth_args(
         ],
         (_, crate::runtime::state::ProviderAuthProcessOperation::Login, _) => {
             vec!["auth".to_string(), "login".to_string()]
-        }
-        (_, crate::runtime::state::ProviderAuthProcessOperation::SetupToken, _) => {
-            vec!["setup-token".to_string()]
         }
         (_, crate::runtime::state::ProviderAuthProcessOperation::Logout, _) => {
             vec!["auth".to_string(), "logout".to_string()]
@@ -458,15 +463,11 @@ pub(crate) async fn execute_get_provider_login_status_request(
             runtime_state,
             owner_user_id,
             &record,
-            process_state.is_exited(),
+            &process_state,
             status,
         )
         .await?;
         return Ok(LocalDaemonResponse::ProviderLoginStatus { login });
-    }
-    // The private collector commits the credential before publishing success.
-    if record.operation == crate::runtime::state::ProviderAuthProcessOperation::SetupToken {
-        return Ok(LocalDaemonResponse::ProviderLoginStatus { login: status });
     }
     if process_state.is_exited() && status.state == ProviderLoginProcessState::Running {
         let registry = runtime_state.provider_account_profile_registry().clone();
@@ -671,6 +672,9 @@ pub(crate) async fn execute_send_provider_login_input_request(
             byte_count: data.len(),
         });
     }
+    if let Some(login) = record.setup_token.as_ref() {
+        login.hide_input(&data)?;
+    }
     runtime_state
         .with_app_side_effect(|app| app.pty_mut().write_input(&request.login_id, &data))
         .await?;
@@ -746,6 +750,15 @@ pub(crate) async fn execute_start_provider_login_request(
     owner_user_id: &str,
     request: StartProviderLoginRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    execute_start_provider_login_with_overwrite(runtime_state, owner_user_id, request, true).await
+}
+
+pub(super) async fn execute_start_provider_login_with_overwrite(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    request: StartProviderLoginRequest,
+    overwrite: bool,
+) -> Result<LocalDaemonResponse, DaemonError> {
     crate::account_profile::validate_provider_enrollment_method(
         &request.provider,
         request.method.as_deref(),
@@ -758,6 +771,7 @@ pub(crate) async fn execute_start_provider_login_request(
             request.account_profile,
             crate::runtime::state::ProviderAuthProcessOperation::Login,
             request.method,
+            overwrite,
         )
         .await;
     }
@@ -873,6 +887,7 @@ pub(crate) async fn execute_logout_provider_request(
             request.account_profile,
             crate::runtime::state::ProviderAuthProcessOperation::Logout,
             None,
+            true,
         )
         .await;
     }

@@ -22,6 +22,7 @@ impl Drop for FixtureCleanup {
 
 #[tokio::test]
 async fn setup_token_fake_cli_stores_privately_and_preserves_replace_policy() {
+    crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-setuptok-{}-{}",
@@ -56,13 +57,15 @@ async fn setup_token_fake_cli_stores_privately_and_preserves_replace_policy() {
         .provider_account_profiles
         .create_managed("local", "claude", "fixture")
         .unwrap();
-    let token = format!("sk-ant-oat01-{}", "A".repeat(64));
+    let token = format!("sk-ant-oat01-{}", "A".repeat(96));
     let mut stored = false;
     for (mode, replace, expected) in [
         ("ok", false, "succeeded"),
         ("ok", false, "failed"),
         ("ok", true, "succeeded"),
         ("multiple", true, "failed"),
+        ("short", true, "failed"),
+        ("probe-error", true, "failed"),
         ("error", true, "failed"),
         ("missing", true, "failed"),
         ("cancel", true, "cancelled"),
@@ -70,20 +73,28 @@ async fn setup_token_fake_cli_stores_privately_and_preserves_replace_policy() {
         let script = format!(
             r#"#!/bin/sh
 if [ "$1" = --version ]; then echo 2.2.0; exit 0; fi
+if [ "$1" = -p ]; then
+  printf probe >> '{probe_marker}'
+  [ '{mode}' = probe-error ] && exit 3
+  printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"duration_api_ms":0,"num_turns":0,"total_cost_usd":0,"usage":{{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}},"result":"Current session: 17% used\nCurrent week (all models): 41% used"}}'
+  exit 0
+fi
 [ "$1" = setup-token ] || exit 90
-printf '%s\n' 'https://claude.ai/oauth/authorize?client_id=fixture&code=true'
+printf '%s\n' 'https://claude.com/cai/oauth/authorize?code=true&client_id=fixture'
 printf 'Paste code: '
 IFS= read -r response
 printf '%s\n' "$response"
 [ '{mode}' = cancel ] && sleep 20
 [ '{mode}' = missing ] && exit 0
 printf 'sk-ant-'; sleep 0.01; printf 'oat01-'
-i=0; while [ "$i" -lt 64 ]; do printf A; i=$((i+1)); done
+limit=96; [ '{mode}' = short ] && limit=64
+i=0; while [ "$i" -lt "$limit" ]; do printf A; i=$((i+1)); done
 printf '\n'
-if [ '{mode}' = multiple ]; then printf 'sk-ant-oat01-'; i=0; while [ "$i" -lt 64 ]; do printf B; i=$((i+1)); done; printf '\n'; fi
+if [ '{mode}' = multiple ]; then printf 'sk-ant-oat01-'; i=0; while [ "$i" -lt 96 ]; do printf B; i=$((i+1)); done; printf '\n'; fi
 [ '{mode}' = error ] && exit 3
 exit 0
-"#
+"#,
+            probe_marker = root.join("probe-marker").display(),
         );
         std::fs::write(&binary, script).unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -120,8 +131,27 @@ exit 0
         let LocalDaemonResponse::ProviderLoginStarted { login } = response else {
             panic!("expected login workflow")
         };
+        assert_eq!(
+            login.login_kind, "terminal_setup_token",
+            "MP-08 --run must reuse StartProviderLogin setup_token"
+        );
         let id = login.login_id.unwrap();
+        assert!(
+            router
+                .runtime_state
+                .provider_login_process_store()
+                .record_for_owner("local", &id)
+                .unwrap()
+                .setup_token
+                .is_some(),
+            "MP-08 --run must reuse vt100 capture"
+        );
         let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        let mut sent_input = false;
+        let mut saw_real_url = false;
+        let probes_before = std::fs::read(root.join("probe-marker"))
+            .unwrap_or_default()
+            .len();
         let status = loop {
             let response =
                 crate::runtime::provider_auth_control::execute_get_provider_login_status_request(
@@ -153,10 +183,16 @@ exit 0
                 !serde_json::to_string(&status).unwrap().contains(&token),
                 "token in serialized status"
             );
+            if String::from_utf8_lossy(&output)
+                .contains("https://claude.com/cai/oauth/authorize?code=true")
+            {
+                saw_real_url = true;
+            }
             if status.state != crate::local::ProviderLoginProcessState::Running {
                 break status;
             }
-            if String::from_utf8_lossy(&output).contains("hidden provider response") {
+            if !sent_input && String::from_utf8_lossy(&output).contains("Paste code:") {
+                sent_input = true;
                 if mode == "cancel" {
                     crate::runtime::provider_auth_control::execute_cancel_provider_login_request(
                         &router.runtime_state,
@@ -177,9 +213,22 @@ exit 0
             );
             tokio::time::sleep(Duration::from_millis(80)).await;
         };
+        assert!(
+            saw_real_url,
+            "MP-08 real Claude authorization URL must be projected"
+        );
+        let probes_after = std::fs::read(root.join("probe-marker"))
+            .unwrap_or_default()
+            .len();
+        assert_eq!(
+            probes_after > probes_before,
+            matches!(mode, "ok" | "probe-error"),
+            "MP-08 complete successful captures must use the existing Claude usage probe"
+        );
         assert_eq!(
             serde_json::to_value(status.state).unwrap(),
-            serde_json::json!(expected)
+            serde_json::json!(expected),
+            "MP-08 fixture mode {mode} replacement {replace}"
         );
         if expected == "succeeded" {
             stored = true;

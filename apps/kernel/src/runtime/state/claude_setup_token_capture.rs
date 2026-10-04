@@ -1,4 +1,4 @@
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 /// The PTY `claude setup-token` runs in. Ink wraps at the terminal width, so
 /// the sign-in URL and the token each stay on one row at this width.
@@ -42,11 +42,16 @@ impl ClaudeSetupTokenScreen {
         self.parser.process(bytes);
     }
 
+    #[cfg(test)]
     pub fn redacted_text(&self) -> String {
+        self.redacted_text_with_inputs(&[])
+    }
+
+    pub fn redacted_text_with_inputs(&self, inputs: &[Zeroizing<String>]) -> String {
         let rows = self.rows();
         let mut text = rows
             .iter()
-            .map(|row| redact_credentials(row))
+            .map(|row| redact_input_echoes(redact_credentials(row), inputs))
             .collect::<Vec<_>>()
             .join("\n");
         text.truncate(text.trim_end().len());
@@ -117,6 +122,29 @@ fn redact_credentials(row: &str) -> String {
     redacted
 }
 
+fn redact_input_echoes(row: String, inputs: &[Zeroizing<String>]) -> String {
+    let mut row = Zeroizing::new(row);
+    for input in inputs {
+        let replacement = row.replace(input.as_str(), "[hidden provider response]");
+        row.zeroize();
+        *row = replacement;
+        // An echo can be split across PTY reads. Hide even its partial suffix
+        // until the next render, rather than briefly projecting a code prefix.
+        if let Some(length) = input
+            .char_indices()
+            .map(|(index, _)| index)
+            .filter(|length| *length > 0)
+            .rev()
+            .find(|length| row.ends_with(&input[..*length]))
+        {
+            let replacement = format!("{}[hidden provider response]", &row[..row.len() - length]);
+            row.zeroize();
+            *row = replacement;
+        }
+    }
+    row.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,6 +171,22 @@ mod tests {
         let mut bytes = RECORDED_START.to_vec();
         bytes.extend(recorded_finish());
         bytes
+    }
+
+    #[test]
+    fn hidden_authorization_code_echo_is_redacted_at_every_chunk_boundary() {
+        let code = Zeroizing::new("fixture-hidden-code".to_string());
+        for split in 1..code.len() {
+            let mut screen = ClaudeSetupTokenScreen::default();
+            screen.process(&code.as_bytes()[..split]);
+            assert!(!screen
+                .redacted_text_with_inputs(&[code.clone()])
+                .contains(&code[..split]));
+            screen.process(&code.as_bytes()[split..]);
+            assert!(!screen
+                .redacted_text_with_inputs(&[code.clone()])
+                .contains(code.as_str()));
+        }
     }
 
     #[test]
