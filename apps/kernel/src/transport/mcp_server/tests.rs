@@ -1117,3 +1117,26 @@ async fn mcp_script_string_result_remains_available_to_strict_clients() {
         serde_json::from_str(value["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(text, value["result"]["structuredContent"]);
 }
+
+// MP-08/MP-10/MP-11: native MCP carries the identical image bytes and identity.
+#[test]
+fn mp08_mp10_mp11_browser_artifact_native_image_attachment() {
+    use base64::Engine as _;
+    let bytes = b"\x89PNG\r\n\x1a\nsynthetic-controller-pixels";
+    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let (content, metadata) = super::runtime_tool_content(serde_json::json!({
+        "source":"browser_controller","artifact_id":"art-1","mime_type":"image/png","image_base64":data,
+        "identity":{"tab_id":"tab-1","document_id":"document-1","browser_generation":1,"runtime_generation":2}
+    }));
+    assert_eq!(content[0]["type"], "image");
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(content[0]["data"].as_str().unwrap())
+            .unwrap(),
+        bytes
+    );
+    assert_eq!(content[0]["mimeType"], "image/png");
+    assert_eq!(metadata["identity"]["document_id"], "document-1");
+    assert!(metadata.get("image_base64").is_none());
+    assert_eq!(content[1]["text"], metadata.to_string());
+}

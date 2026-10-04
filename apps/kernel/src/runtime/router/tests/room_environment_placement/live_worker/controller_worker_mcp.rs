@@ -7,6 +7,8 @@ use futures_util::FutureExt;
 
 mod capability_request_grant;
 mod capability_response_ordering;
+#[path = "controller_artifacts.rs"]
+mod controller_artifacts;
 mod meta_forwarding_lock;
 
 fn install_room_pointer_screen_tool(

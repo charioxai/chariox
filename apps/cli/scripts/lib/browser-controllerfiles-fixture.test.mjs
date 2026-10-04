@@ -63,9 +63,9 @@ test("network fixture records real cookie/auth presence and returns only bounded
   const fixture = await startControllerfilesFixture();
   t.after(() => fixture.close());
   const response = await fetch(`${fixture.origin}/network-proof?private=synthetic`, {
-    headers: { cookie: "fixture_private=synthetic", authorization: "Bearer synthetic" },
+    headers: { cookie: "fixture_private=synthetic", authorization: "Bearer synthetic", accept: "application/json" },
   });
   assert.equal(response.status, 200);
-  assert.deepEqual(fixture.network, [{ method: "GET", path: "/network-proof", cookiePresent: true, authPresent: true }]);
+  assert.deepEqual(fixture.network, [{ method: "GET", path: "/network-proof", cookiePresent: true, authPresent: true, accept: "application/json" }]);
   assert.deepEqual(await response.json(), { observed: true });
 });

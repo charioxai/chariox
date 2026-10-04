@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 #[path = "artifacts/blob.rs"]
 mod blob;
+pub(crate) mod inspect;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactRecord {
@@ -171,7 +172,7 @@ impl OperationalArtifactStore {
         }
         let remaining = record.size_bytes - offset;
         let read_len = remaining.min(max_bytes as u64) as usize;
-        let mut file = fs::File::open(self.blob_path(&record.sha256))
+        let mut file = blob::open_regular(&self.blob_path(&record.sha256))
             .map_err(|error| artifact_error("open artifact blob", error))?;
         file.seek(SeekFrom::Start(offset))
             .map_err(|error| artifact_error("seek artifact blob", error))?;
@@ -580,6 +581,28 @@ mod tests {
         assert!(store.insert_record(&record, true).is_err());
         assert!(store.load_artifact(&record.artifact_id).unwrap().is_none());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    // MP-08/MP-10/MP-11: a blob substitution must never read another file.
+    #[cfg(unix)]
+    #[test]
+    fn mp08_mp10_mp11_browser_artifact_read_rejects_symlinked_blob() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-b207-blob-read-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let _cleanup = TestRootCleanup(root.clone());
+        let source = root.join("fixture.txt");
+        fs::write(&source, b"approved bytes").unwrap();
+        let store =
+            OperationalArtifactStore::open(root.join("store"), root.join("index.db")).unwrap();
+        let record = store
+            .store_existing_file(test_request(source.clone(), "room-a"))
+            .unwrap();
+        fs::remove_file(&record.operational_path).unwrap();
+        std::os::unix::fs::symlink(&source, &record.operational_path).unwrap();
+        assert!(store.read_artifact_chunk(&record, 0, 1).is_err());
     }
 
     struct TestRootCleanup(PathBuf);

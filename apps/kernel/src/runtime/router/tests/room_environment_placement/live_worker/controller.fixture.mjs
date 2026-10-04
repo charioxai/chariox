@@ -1,7 +1,8 @@
 // Run the production Chariox controller. Only external Chromium/CDP responses
 // are synthetic; kernel routing, relay encryption and controller stdio are real.
 import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { fixtureUploadBrowser } from "./upload-browser.fixture.mjs";
 
@@ -34,7 +35,10 @@ const emit = (message) => {
   for (const subscriber of subscribers) subscriber(message);
 };
 persist();
+// MP-08/MP-10/MP-11: synthetic CDP pixels; runtime routing stays production.
+const { blackPng } = await import(pathToFileURL(join(directory, "browser-controller-image.mjs")));
 const chromium = {
+  browserInstanceId: "fixture-physical-browser",
   isOpen: () => state.open,
   subscribe(listener) {
     subscribers.add(listener);
@@ -72,6 +76,8 @@ const chromium = {
         ] };
       }
       case "Target.attachToTarget": return { sessionId: params.targetId === "worker-popup" ? "worker-popup-session" : "worker-cdp-session" };
+      case "Page.getLayoutMetrics": return { cssVisualViewport: { pageX:0, pageY:0, clientWidth:1280, clientHeight:800, scale:1 } };
+      case "Page.captureScreenshot": return { data: blackPng(1280, 800).toString("base64") };
       case "Page.getFrameTree": return { frameTree: { frame: {
         id: sessionId === "worker-popup-session" ? "worker-popup-frame" : "worker-frame",
         loaderId: sessionId === "worker-popup-session" ? "worker-popup-document" : state.documentId,
@@ -294,7 +300,10 @@ const chromium = {
         persist();
         emit({ method: "Browser.downloadProgress", params: { guid: params.guid, state: "canceled", receivedBytes: 4, totalBytes: 100 } });
         return {};
-      case "DOM.setFileInputFiles": state.uploadCount = (state.uploadCount ?? 0) + 1; state.upload = { backendNodeId: params.objectId === "worker-note" ? 104 : params.backendNodeId, fileCount: params.files.length }; persist(); return {};
+      case "DOM.setFileInputFiles": state.uploadCount = (state.uploadCount ?? 0) + 1; state.upload = { backendNodeId: params.objectId === "worker-note" ? 104 : params.backendNodeId, fileCount: params.files.length, receipts: params.files.map(file => {
+        const bytes = readFileSync(file);
+        return { filename: basename(file), size_bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+      }) }; persist(); return {};
       case "Browser.setPermission":
         state.permissionCount = (state.permissionCount ?? 0) + 1;
         state.permission = params;

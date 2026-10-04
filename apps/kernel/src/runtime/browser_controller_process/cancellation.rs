@@ -428,8 +428,11 @@ impl BrowserControllerProcessStore {
         files: &BrowserUploadFiles,
     ) -> ExecutionOutcome {
         let fingerprint = upload_fingerprint(target_id, document_id, node_ref, files)?;
-        let controller_paths = files.controller_paths();
-        let file_count = controller_paths.len();
+        let file_count = files.file_count();
+        let mut params = files.controller_params();
+        params["target_id"] = target_id.into();
+        params["document_id"] = document_id.into();
+        params["node_ref"] = node_ref.into();
         self.perform_cancellable_tab_mutation(
             session_id,
             execution_id,
@@ -437,12 +440,7 @@ impl BrowserControllerProcessStore {
             Response::Upload { result: None },
             target_id,
             "browser.upload",
-            serde_json::json!({
-                "target_id": target_id,
-                "document_id": document_id,
-                "node_ref": node_ref,
-                "file_paths": controller_paths,
-            }),
+            params,
             move |response| {
                 let result =
                     response.into_result::<BrowserControllerUploadResult>("browser.upload")?;

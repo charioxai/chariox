@@ -127,6 +127,10 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("environment.tab.accessibility.get", Normal)
                 .session(&request.session_id)
         }
+        LocalDaemonRequest::RoomBrowserArtifact(request) => {
+            LocalRequestMetadata::new("environment.browser.artifact", Normal)
+                .session(&request.session_id)
+        }
         LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(request) => {
             LocalRequestMetadata::new("environment.screenshot.capture", Normal)
                 .session(&request.session_id)
@@ -640,6 +644,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
             "environment.tab.accessibility.get"
         }
         LocalDaemonRequest::BindRoomEnvironmentSlice(_) => "environment.slice.bind",
+        LocalDaemonRequest::RoomBrowserArtifact(_) => "environment.browser.artifact",
         LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(_) => "environment.screenshot.capture",
         LocalDaemonRequest::ReadRoomEnvironmentScreenshotChunk(_) => "environment.screenshot.read",
         LocalDaemonRequest::GetRoomEnvironmentEvents(_) => "environment.events.get",

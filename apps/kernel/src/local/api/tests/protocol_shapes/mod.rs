@@ -11,6 +11,7 @@ mod app_fetch;
 mod app_install;
 mod app_publisher;
 mod apps;
+mod browser_artifact;
 mod browser_import;
 mod cloud_relay;
 mod core;

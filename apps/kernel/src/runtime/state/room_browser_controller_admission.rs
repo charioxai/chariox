@@ -37,6 +37,7 @@ impl KernelRuntimeState {
                 | Command::Acquire
                 | Command::Reconcile { .. }
                 | Command::Snapshot { .. }
+                | Command::Artifact { .. }
                 | Command::Wait { .. }
                 | Command::PollEvents { .. }
         ) {

@@ -238,6 +238,9 @@ pub(crate) enum RoomBrowserControllerCommand {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         browser_bar_visible: bool,
     },
+    Artifact {
+        request: crate::runtime::browser_artifact::BrowserArtifactRequest,
+    },
     Snapshot {
         target_id: String,
         document_id: String,
@@ -426,6 +429,7 @@ pub(crate) enum RoomBrowserControllerResult {
     SecretObservationCleared,
     CookieImportRecovered,
     CookieImportRolledBack,
+    Artifact { capture: Option<crate::runtime::browser_artifact::BrowserArtifactCapture> },
     Snapshot {
         snapshot: Option<
             crate::runtime::browser_controller_snapshot::BrowserControllerStructuredSnapshot,

@@ -1,6 +1,6 @@
 import { mkdir, realpath, stat, statfs } from "node:fs/promises";
 import path from "node:path";
-import { assertNotCancelled } from "./browser-controller-actions.mjs";
+import { assertNotCancelled, performBrowserAction } from "./browser-controller-actions.mjs";
 import { stageBrowserUploadFiles } from "./browser-controller-upload-staging.mjs";
 
 const MAX_UPLOAD_FILES = 20;
@@ -166,6 +166,7 @@ export async function uploadBrowserFiles({
   assertContext = async () => {},
   signal,
   stageUploads = stageBrowserUploadFiles,
+  clickChooser = performBrowserAction,
 }) {
   assertNotCancelled(signal);
   await assertCurrentDocument(connection, sessionId, targetId, documentId);
@@ -225,6 +226,8 @@ export async function uploadBrowserFiles({
       error?.code === "browser_upload_staging_unavailable" ? error.message : "upload staging could not prepare private files");
   });
   let objectId;
+  let chooserIntercepted = false;
+  let chooserWait;
   try {
     await assertContext();
     await assertCurrentDocument(connection, sessionId, targetId, documentId);
@@ -242,8 +245,43 @@ export async function uploadBrowserFiles({
       awaitPromise: false,
     }, sessionId);
     if (inspected?.exceptionDetails || inspected?.result?.value !== "file") {
-      if (inspected?.result?.value === "invalid") throw invalidUpload("browser upload requires a file input");
+      if (inspected?.result?.value === "invalid") {
+        // MP-08/MP-10/MP-11: only a real chooser opened by the observed,
+        // actionable control can bind its hidden input. Never guess a selector.
+        await connection.send("Runtime.releaseObject", { objectId }, sessionId);
+        objectId = undefined;
+        await assertContext();
+        const tree = await connection.send("Page.getFrameTree", {}, sessionId);
+        if (tree?.frameTree?.frame?.loaderId !== documentId) throw staleFileInput();
+        await connection.send("Page.setInterceptFileChooserDialog", { enabled: true }, sessionId);
+        chooserIntercepted = true;
+        const abort = () => chooserWait?.cancel();
+        signal?.addEventListener("abort", abort, { once: true });
+        let event;
+        try {
+          await clickChooser({ connection, sessionId, targetId, documentId, nodeRef,
+            action: { kind: "click" }, assertContext, signal,
+            withInput: operation => {
+              chooserWait = connection.waitForEvent("Page.fileChooserOpened", 5_000, sessionId);
+              return operation();
+            } });
+          event = await chooserWait?.promise;
+        } finally { signal?.removeEventListener("abort", abort); }
+        assertNotCancelled(signal);
+        await assertContext();
+        await assertCurrentDocument(connection, sessionId, targetId, documentId);
+        if (event?.sessionId !== sessionId || event?.params?.frameId !== tree.frameTree.frame.id
+            || !Number.isSafeInteger(event?.params?.backendNodeId) || event.params.backendNodeId <= 0
+            || !["selectSingle", "selectMultiple"].includes(event.params.mode)
+            || (event.params.mode === "selectSingle" && files.length !== 1)) {
+          throw invalidUpload("observed control did not open a matching bounded file chooser");
+        }
+        const chosen = await connection.send("DOM.resolveNode", { backendNodeId: event.params.backendNodeId }, sessionId);
+        objectId = chosen?.object?.objectId;
+        if (!objectId) throw staleFileInput();
+      } else {
       throw staleFileInput();
+      }
     }
     // Resolving and inspecting the node cross asynchronous renderer calls.
     // Recheck both the owning document and its parents before exposing files.
@@ -265,6 +303,8 @@ export async function uploadBrowserFiles({
     if (error?.code !== "browser_cdp_command_failed") throw error;
     throw staleFileInput();
   } finally {
+    chooserWait?.cancel();
+    if (chooserIntercepted) await connection.send("Page.setInterceptFileChooserDialog", { enabled: false }, sessionId).catch(() => {});
     if (objectId) await connection.send("Runtime.releaseObject", { objectId }, sessionId).catch(() => {});
     await staged.discard();
   }

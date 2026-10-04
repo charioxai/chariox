@@ -80,6 +80,7 @@ pub enum LocalDaemonRequest {
     GetRoomEnvironmentResourceInventory(GetRoomEnvironmentResourceInventoryRequest),
     GetRoomEnvironmentTabAccessibility(GetRoomEnvironmentTabAccessibilityRequest),
     BindRoomEnvironmentSlice(BindRoomEnvironmentSliceRequest),
+    RoomBrowserArtifact(RoomBrowserArtifactRequest),
     CaptureRoomEnvironmentScreenshot(CaptureRoomEnvironmentScreenshotRequest),
     ReadRoomEnvironmentScreenshotChunk(ReadRoomEnvironmentScreenshotChunkRequest),
     GetRoomEnvironmentEvents(GetRoomEnvironmentEventsRequest),

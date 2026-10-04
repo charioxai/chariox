@@ -554,6 +554,8 @@ refresh_slice_support_files() {
     || fail "failed to refresh required slice support overlay: Browser Controller events"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-files.mjs" \
     || fail "failed to refresh required slice support overlay: Browser Controller files"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-artifacts.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-artifacts.mjs" "MP-08/MP-10/MP-11 Browser artifact module"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-image.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-image.mjs" "MP-08/MP-10/MP-11 Browser artifact module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-upload-staging.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-upload-staging.mjs" "Browser Controller upload staging module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-upload-store.py" "$SLICE_NAME:/opt/chariox-slice/browser-upload-store.py" "Browser upload quota store"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-lifecycle.py" "$SLICE_NAME:/opt/chariox-slice/browser-lifecycle.py" "Browser lifecycle owner"

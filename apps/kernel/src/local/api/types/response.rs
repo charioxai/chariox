@@ -3,6 +3,7 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    RoomBrowserArtifact { result: crate::transport::runtime_tools::RuntimeToolResult },
     AppPublisherEnrollmentStatus { operation: AppPublisherEnrollmentSummary, },
     AppInstallOperationStatus { operation: AppInstallOperationSummary, },
     AppPackageUploadStatus { upload: AppPackageUploadSummary, },

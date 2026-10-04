@@ -121,6 +121,12 @@ test("MP-08/MP-10/MP-11 actual CDP upload/download and passive capture fixture",
       .find(event => event.kind === "download_progress" && event.data.state === "completed"));
     assert.equal(progress.target_id, current.target_id);
     assert.deepEqual(await readFile(path.join(downloads, progress.data.guid)), file.bytes);
+    const artifact = await request("browser.artifact", { ...current, browser_generation: browser.browserGeneration,
+      viewport, kind: "download", guid: progress.data.guid });
+    assert.equal(artifact.ok, true, artifact.error?.code);
+    assert.deepEqual(Buffer.from(artifact.result.data_base64, "base64"), file.bytes);
+    assert.equal(artifact.result.display_name, file.name);
+    assert.equal(artifact.result.sha256, createHash("sha256").update(file.bytes).digest("hex"));
   }
   const slowSnapshot = await request("browser.snapshot", current);
   const slow = slowSnapshot.result.accessibility_nodes.find(node => node.role === "link" && node.name === "Download slowly");
@@ -137,6 +143,7 @@ test("MP-08/MP-10/MP-11 actual CDP upload/download and passive capture fixture",
   const retired = await request("browser.downloads.cancel", { browser_generation: browser.browserGeneration, guid: started.data.guid });
   assert.equal(retired.ok, false);
   assert.equal(retired.error.code, "browser_download_not_active");
+  // MP-08/MP-10/MP-11: actual Browser image bytes via the controller seam.
   // Capture actual bytes from the same controller session and pin its document
   // before/after. These bytes have not traversed the kernel/MCP image path.
   const before = (await connection.send("Page.getFrameTree", {}, sessionId)).frameTree.frame.loaderId;
@@ -155,17 +162,53 @@ test("MP-08/MP-10/MP-11 actual CDP upload/download and passive capture fixture",
   assert.ok(events.some(event => event.kind === "network_request" && event.data.url.endsWith("/network-proof")));
   assert.ok(events.every(event => event.target_id === current.target_id));
   assert.doesNotMatch(JSON.stringify(events), /synthetic|authorization|fixture_private|set-cookie/i);
+  const imageArtifact = await request("browser.artifact", { ...current, browser_generation: browser.browserGeneration, viewport, kind: "image" });
+  assert.equal(imageArtifact.ok, true, imageArtifact.error?.code);
+  assert.equal(imageArtifact.result.document_id, current.document_id);
+  assert.equal(imageArtifact.result.target_id, current.target_id);
+  const nativeImage = Buffer.from(imageArtifact.result.data_base64, "base64");
+  assert.equal(nativeImage.readUInt32BE(16), viewport.css_width);
+  assert.equal(nativeImage.readUInt32BE(20), viewport.css_height);
+  assert.equal(imageArtifact.result.sha256, createHash("sha256").update(nativeImage).digest("hex"));
+  const networkArtifact = await request("browser.artifact", { ...current, browser_generation: browser.browserGeneration, viewport, kind: "network" });
+  assert.equal(networkArtifact.ok, true, networkArtifact.error?.code);
+  const harBytes = Buffer.from(networkArtifact.result.data_base64, "base64");
+  assert.doesNotMatch(harBytes.toString(), /synthetic|authorization|fixture_private|set-cookie/i);
+  const networkEntries = JSON.parse(harBytes).log.entries.filter(entry => entry.request.url.endsWith("/network-proof"));
+  assert.ok(networkEntries.length >= 2);
+  assert.ok(networkEntries.every(entry => entry.request.extra_info_observed === true));
+  assert.ok(networkEntries.every(entry => entry.request.headers.some(header => header.name === "accept" && header.value === fixture.network.at(-1).accept)));
+  assert.deepEqual(imageArtifact.result.geometry, { pageX:0, pageY:0, clientWidth:960, clientHeight:640, scale:1 });
+  browser.protectedValues.add("synthetic-protected-value");
+  const redactedImage = await request("browser.artifact", { ...current, browser_generation: browser.browserGeneration, viewport, kind: "image" });
+  assert.equal(redactedImage.ok, true, redactedImage.error?.code);
+  assert.equal(redactedImage.result.redaction, "full_viewport");
+  const redactedBytes = Buffer.from(redactedImage.result.data_base64, "base64");
+  assert.notDeepEqual(redactedBytes, nativeImage);
+  assert.equal(redactedBytes.readUInt32BE(16), viewport.css_width);
+  const protectedDownload = await request("browser.artifact", { ...current, browser_generation: browser.browserGeneration, viewport, kind: "download", guid: "unobserved" });
+  assert.equal(protectedDownload.ok, false);
+  assert.equal(protectedDownload.error.code, "browser_observation_redacted");
+  browser.protectedValues.clear();
+  assert.equal((await request("browser.artifact", { ...current, browser_generation: browser.browserGeneration + 1, viewport, kind: "image" })).ok, false);
+  const partial = await request("browser.artifact", { ...current, browser_generation: browser.browserGeneration, viewport, kind: "download", guid: started.data.guid });
+  assert.equal(partial.ok, false, "canceled download has no reusable artifact");
   // First-party fail-capable assertion for P8. On frozen G2 this is RED at
   // browser_upload_invalid: a visible trigger is not yet a permitted chooser.
   const chosen = await request("browser.upload", { ...current, node_ref: chooser.node_ref,
-    file_paths: expected.map(file => path.join(uploads, file.name)) });
+    artifact_files: expected.map(file => ({ display_name: file.name, mime_type: file.type,
+      data_base64: file.bytes.toString("base64"), size_bytes: file.bytes.length, sha256: createHash("sha256").update(file.bytes).digest("hex") })) });
+  assert.equal(chosen.ok, true, chosen.error?.code);
+  assert.equal((await request("browser.action", { ...current, node_ref: send.node_ref, action: { kind: "click" } })).ok, true);
+  await until(async () => fixture.receipts[1]);
+  assertControllerfilesReceipt(fixture.receipts[1], expected);
   const result = { mp: ["MP-08", "MP-10", "MP-11"], scope: "controller/Chromium fixture only",
     inputUpload: true, missingDenied: true, cancelNoPartialReuse: true, downloadExactBytes: true,
     downloadCancelNoPartialReuse: true,
     capture: { sha256: createHash("sha256").update(image).digest("hex"), sizeBytes: image.length,
-      targetId: current.target_id, documentId: before, viewport }, passiveEventsRedacted: true,
+      targetId: current.target_id, documentId: before, viewport }, passiveEventsRedacted: true, controllerImageArtifact: true, controllerDownloadArtifact: true, controllerPassiveHar: true,
     chooser: { ok: chosen.ok, diagnostic: chosen.error?.code ?? null },
-    openGates: ["opaque download artifact", "Browser capture artifact", "kernel browser passive attachment", "provider/Web/TUI conjunction"] };
+    openGates: ["kernel artifact admission", "kernel browser passive attachment", "provider/Web/TUI conjunction"] };
   if (evidence) {
     await writeFile(path.join(evidence, "controller-result.json"), JSON.stringify(result, null, 2), { mode: 0o600, flag: "wx" });
     await writeFile(path.join(evidence, "same-tab.png"), image, { mode: 0o600, flag: "wx" });

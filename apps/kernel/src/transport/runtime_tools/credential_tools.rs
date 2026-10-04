@@ -322,7 +322,10 @@ pub struct SliceBrowserDownloadCancelArgs {
 #[serde(deny_unknown_fields)]
 pub struct SliceBrowserUploadArgs {
     pub field_id: String,
+    #[serde(default)]
     pub files: Vec<std::path::PathBuf>,
+    #[serde(default)]
+    pub artifact_ids: Vec<String>,
 }
 
 impl std::fmt::Debug for SliceBrowserUploadArgs {
@@ -723,4 +726,27 @@ pub fn canonical_credential_tool_name(tool_name: &str) -> Option<&'static str> {
         | "mcp__chariox__chariox_request_popup" => Some(REQUEST_POPUP_TOOL),
         _ => None,
     }
+}
+
+// MP-08/MP-10/MP-11: common provider and client attachment operations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SliceBrowserArtifactArgs {
+    Capture {
+        kind: crate::runtime::browser_artifact::BrowserArtifactKind,
+        browser_generation: u64,
+        #[serde(default)]
+        guid: Option<String>,
+        #[serde(default)]
+        return_image_base64: bool,
+    },
+    Read {
+        artifact_id: String,
+        #[serde(default)]
+        offset: u64,
+        max_bytes: u32,
+    },
+    Inspect {
+        artifact_id: String,
+    },
 }

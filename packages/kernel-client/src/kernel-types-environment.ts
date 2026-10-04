@@ -320,3 +320,8 @@ export type RoomEnvironmentActionCancellationUpdatedResponse = {
     environment: RoomEnvironmentSnapshot
   }
 }
+
+// MP-08/MP-10/MP-11: opaque metadata and bounded bytes from one shared service.
+export type RoomBrowserArtifactResponse = {
+  RoomBrowserArtifact: { result: { ok: boolean; payload: Record<string, unknown> } }
+}

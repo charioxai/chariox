@@ -123,6 +123,13 @@ impl CommandRouter {
             LocalDaemonRequest::LaunchProviderRuns(request) => Box::pin(async move {
                 execute_provider_batch_launch_command(&self.runtime_state, &command, request).await
             }),
+            LocalDaemonRequest::RoomBrowserArtifact(request) => Box::pin(async move {
+                let result = self
+                    .runtime_state
+                    .room_browser_artifact_for_client(&command.caller, request)
+                    .await?;
+                Ok(LocalDaemonResponse::RoomBrowserArtifact { result })
+            }),
             LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(request) => Box::pin(async move {
                 let artifact = self
                     .runtime_state
