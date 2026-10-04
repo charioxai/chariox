@@ -5,6 +5,7 @@ mod maintenance;
 mod registration;
 #[cfg(test)]
 mod regression_tests;
+mod user_domain;
 
 /// Refusals that clear once the pending decision is answered.
 pub(crate) const INTERACTION_ALREADY_PENDING: &str =
@@ -39,23 +40,31 @@ impl KernelRuntimeOwnedState {
         choice_id: &str,
         caller_user_id: Option<&str>,
     ) -> Option<(String, String)> {
-        let owner = self
+        let pending = self
             .pending_interactions
             .write()
             .get(interaction_id)
-            .filter(|pending| pending.session_id == session_id)
-            .filter(|pending| {
-                pending
-                    .kernel_operation_deadline
-                    .is_none_or(|deadline| std::time::Instant::now() < deadline)
-            })
-            .and_then(|pending| pending.kernel_operation_owner.clone())
+            .cloned()
+            .filter(|p| p.session_id == session_id && p.belongs_to(&self.session_store))
+            .filter(|p| {
+                p.kernel_operation_deadline
+                    .is_none_or(|d| std::time::Instant::now() < d)
+            })?;
+        let owner = pending
+            .kernel_operation_owner
+            .clone()
             .filter(|owner| Some(owner.as_str()) == caller_user_id)?;
-        let session = self.session_store.get_session(session_id).ok()?;
-        let interaction = session
-            .active_interactions()
-            .iter()
-            .find(|interaction| interaction.id() == interaction_id)?;
+        let interaction = match pending.user_domain_interaction {
+            Some(interaction) => interaction,
+            None => self
+                .session_store
+                .get_session(session_id)
+                .ok()?
+                .active_interactions()
+                .iter()
+                .find(|i| i.id() == interaction_id)?
+                .clone(),
+        };
         interaction
             .choice(choice_id)
             .filter(|choice| choice.requires_passkey())?;
@@ -225,6 +234,20 @@ impl KernelRuntimeOwnedState {
             .is_some_and(|deadline| std::time::Instant::now() >= deadline)
         {
             return Err(interaction_error("Kernel operation decision expired"));
+        }
+        if let Some(interaction) = &pending.user_domain_interaction {
+            if custom_reply.is_some() || sudo.is_some() || authorizing_terminal.is_some() {
+                return Err(interaction_error(
+                    "Invalid unattached decision reply authority",
+                ));
+            }
+            return self.resolve_user_domain_interaction_locked(
+                interaction_id,
+                interaction,
+                choice_id,
+                passkey_verified,
+                take_host,
+            );
         }
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
@@ -474,6 +497,14 @@ impl KernelRuntimeOwnedState {
         self.pending_interactions.write().remove(interaction_id);
         if pending.passkey_prompt.is_some() {
             self.passkey_prompts.record_change();
+        }
+        if let Some(interaction) = &pending.user_domain_interaction {
+            self.finish_user_domain_interaction(
+                &pending,
+                interaction_id,
+                timeout_runtime_interaction_resolution(interaction),
+            );
+            return Ok(());
         }
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();

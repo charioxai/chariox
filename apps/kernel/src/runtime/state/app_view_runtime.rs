@@ -5,12 +5,12 @@
 use super::KernelRuntimeState;
 #[path = "app_view_recovery.rs"]
 mod recovery;
+use super::app_view_host::{AppViewHost, RoomAppViewHost};
 use crate::{
     error::DaemonError,
     local::{AppRequestErrorCode, LocalDaemonRequest, LocalDaemonResponse},
     runtime::{
         app_call_errors,
-        app_operation_budget::AppOperationBudget,
         app_views::{AppViewBinding, ViewCall},
         app_worker::AppWorkerError,
         browser_controller_app_view::{
@@ -18,9 +18,6 @@ use crate::{
             BrowserAppViewError, BrowserAppViewOpened, BrowserAppViewRequest,
         },
         command::KernelCommand,
-    },
-    transport::room_browser_controller::{
-        RoomBrowserControllerCommand as Command, RoomBrowserControllerResult as Response,
     },
 };
 use base64::Engine;
@@ -188,20 +185,10 @@ impl KernelRuntimeState {
         let mut attempt = 0;
         loop {
             attempt += 1;
-            match self
-                .room_browser_controller_command(
-                    session_id,
-                    Command::AppView {
-                        request: request.clone(),
-                    },
-                )
-                .await
-            {
-                Ok(Response::AppView {
-                    result: Some(value),
-                }) => return serde_json::from_value(value)
+            match (RoomAppViewHost { state: self, session: session_id }).command(request.clone()).await {
+                Ok(Some(value)) => return serde_json::from_value(value)
                     .map_err(|_| open_error("The Room browser returned an invalid App view response. Restart the Room Environment and try again.")),
-                Ok(_) => return Err(open_error("This Room has no browser controller available. Bind an Environment with /room bind <slice> and start it with /room start, then retry /app open.")),
+                Ok(None) => return Err(open_error("This Room has no browser controller available. Bind an Environment with /room bind <slice> and start it with /room start, then retry /app open.")),
                 Err(error)
                     if (open
                         && tokio::time::Instant::now() < deadline
@@ -594,7 +581,7 @@ impl KernelRuntimeState {
             Some((binding, false)) if binding.installation == call.installation_id => {
                 match self
                     .invoke_app_view_tool(
-                        &session_id,
+                        Some(&session_id),
                         &binding,
                         &call.method,
                         call.params,
@@ -769,19 +756,20 @@ impl KernelRuntimeState {
         }
     }
 
-    async fn invoke_app_view_tool(
+    pub(super) async fn invoke_app_view_tool(
         &self,
-        session_id: &str,
+        session_id: Option<&str>,
         binding: &AppViewBinding,
         tool: &str,
         input: Value,
         tracked: &mut ViewCall,
     ) -> Result<Value, BrowserAppViewError> {
         let unavailable = || view_error("APP_UNAVAILABLE", "The App is not running");
-        let lease = match self
-            .app_lease_on_demand(&binding.owner, &binding.installation)
-            .await
-        {
+        let leased = tokio::select! {
+            result = self.app_lease_on_demand(&binding.owner, &binding.installation) => result,
+            () = tracked.cancelled() => return Err(view_error("CANCELLED", "The calling view went away")),
+        };
+        let lease = match leased {
             Ok(lease) => lease,
             Err(_)
                 if self
@@ -792,6 +780,9 @@ impl KernelRuntimeState {
             }
             Err(_) => return Err(unavailable()),
         };
+        if tracked.is_cancelled() {
+            return Err(view_error("CANCELLED", "The calling view went away"));
+        }
         if lease.catalog().generation() != binding.generation {
             return Err(view_error(
                 "APP_VIEW_STALE",
@@ -822,9 +813,10 @@ impl KernelRuntimeState {
         let store = self.owned.durable_state_store.clone();
         let caller = view_caller(binding, session_id);
         let tool_name = tool;
+        let operation_budget = tracked.operation_budget();
         let response = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            store.enqueue_app_tool(slot, &tool_name, input, caller, budget())
+            store.enqueue_app_tool(slot, &tool_name, input, caller, operation_budget)
         })
         .await
         .map_err(|_| unavailable())?
@@ -865,10 +857,10 @@ fn app_error(error: crate::durable_state::app_tools::AppToolsError) -> BrowserAp
 /// Room browser acts through it with the owner's App authority (V-SDK-04: no
 /// separate view privilege). Critical effects still need the kernel's human
 /// validation, which a view click cannot provide.
-fn view_caller(binding: &AppViewBinding, session_id: &str) -> CallerContext {
+fn view_caller(binding: &AppViewBinding, session_id: Option<&str>) -> CallerContext {
     CallerContext {
         actor: Actor::Human(binding.owner.clone()),
-        room_id: session_id.into(),
+        room_id: session_id.map(str::to_owned),
         operation_id: format!("app-operation-{:016x}", rand::random::<u64>()),
         task_id: None,
         turn_id: None,
@@ -876,7 +868,7 @@ fn view_caller(binding: &AppViewBinding, session_id: &str) -> CallerContext {
 }
 
 /// One origin per owner and installation keeps each App's web storage apart.
-fn origin_label(owner: &str, installation: &str) -> String {
+pub(super) fn origin_label(owner: &str, installation: &str) -> String {
     let digest = Sha256::digest(format!("{owner}\0{installation}"));
     format!("a{}", &hex_prefix(&digest)[..24])
 }
@@ -934,11 +926,7 @@ fn view_tool(
         .map(|tool| tool.name.clone())
 }
 
-fn budget() -> AppOperationBudget {
-    AppOperationBudget::from_supervisor(|| false)
-}
-
-fn open_error(message: &str) -> DaemonError {
+pub(super) fn open_error(message: &str) -> DaemonError {
     DaemonError::AppViewUnavailable {
         message: message.to_owned(),
     }
@@ -1006,9 +994,9 @@ mod tests {
             generation: 1,
             panel: Default::default(),
         };
-        let caller = view_caller(&binding, "session-1");
+        let caller = view_caller(&binding, Some("session-1"));
         assert!(matches!(&caller.actor, Actor::Human(owner) if owner == "alice"));
-        assert_eq!(caller.room_id, "session-1");
+        assert_eq!(caller.room_id.as_deref(), Some("session-1"));
         assert!(caller.task_id.is_none() && caller.turn_id.is_none());
     }
 
@@ -1096,7 +1084,7 @@ mod tests {
     }
 }
 
-fn view_assets(
+pub(super) fn view_assets(
     view: crate::durable_state::app_view_assets::AppViewAssets,
 ) -> (String, Vec<BrowserAppViewAsset>) {
     let engine = base64::engine::general_purpose::STANDARD;

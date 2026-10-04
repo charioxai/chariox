@@ -258,5 +258,7 @@ pub use workspace::*;
 /// Version 415 adds external sudo requests and requester attribution.
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
 /// MD-2: version 417 adds kernel-owned sessionless host browser control.
+/// MD-APP: version 418 adds owner-scoped detached App views.
+/// MD-DISPLAY: version 419 adds protected browser display frames.
 /// MD-N3 / MP-08 / MP-11: protocol 424 adds private notes and selection reports.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 424;

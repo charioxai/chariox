@@ -4,20 +4,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct BrowserAppViewAsset {
-    pub(crate) path: String,
-    pub(crate) content_type: String,
-    pub(crate) body_base64: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct BrowserAppViewError {
-    pub(crate) code: String,
-    pub(crate) message: String,
-}
+pub(crate) use crate::local::{
+    AppFrontendAsset as BrowserAppViewAsset, AppViewChannelError as BrowserAppViewError,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
