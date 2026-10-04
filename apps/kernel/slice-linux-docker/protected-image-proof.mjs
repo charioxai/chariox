@@ -54,6 +54,23 @@ export function recordCapturedImageProof(root, sourceDigest, parent, container, 
     sourceDigest, parentImageId: parent.Id, layers: captured.RootFS.Layers, kernelHash: prior.kernelHash})
 }
 
+// The broker's own flattening of a proven parent's stopped or paused container
+// (captured-image-depth.mjs) restarts lineage at one layer with the same runtime.
+// `importedImageId` is the ID the helper reported, so a retagged image is never proven.
+export function recordFlattenedImageProof(root, sourceDigest, parent, container, flattened, importedImageId) {
+  requireManagedImageProof(root, sourceDigest, parent?.Id)
+  const prior = readProtectedLayoutReceipt(root, identity(parent.Id))
+  if (container?.Image !== parent.Id || flattened?.Id !== importedImageId || flattened?.Parent
+      || flattened?.Config?.User !== "slice"
+      || JSON.stringify(flattened.Config?.Env) !== JSON.stringify(container.Config?.Env)
+      || JSON.stringify(parent.RootFS?.Layers) !== JSON.stringify(prior.layers)
+      || !Array.isArray(flattened.RootFS?.Layers) || flattened.RootFS.Layers.length !== 1
+      || !/^sha256:[a-f0-9]{64}$/.test(flattened.RootFS.Layers[0])) refuse()
+  const id = identity(flattened.Id)
+  writeProtectedLayoutReceipt(root, id, {version: 1, sliceId: id, imageId: flattened.Id,
+    sourceDigest, parentImageId: parent.Id, layers: flattened.RootFS.Layers, kernelHash: prior.kernelHash})
+}
+
 if (process.argv[2] === "--record-standard-build") {
   try {
     const root = process.env.CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT
