@@ -592,3 +592,147 @@ async fn provider_output_pump_includes_runs_with_pending_git_snapshots() {
         "output pump must drain runs that still have pending git/WLS snapshots"
     );
 }
+
+#[tokio::test]
+async fn pending_prompt_protects_its_agents_provider_after_session_focus_moves() {
+    let worktree = crate::test_support::TestWorktree::new("pending-prompt-focus-move");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let pending_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(crate::agent::CreateAgentRequest::new(
+            session.id(),
+            "dev-stub",
+        ))
+        .expect("pending agent should spawn");
+    let first_run = app
+        .providers
+        .launch_run_detached(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(first_agent.id()),
+        )
+        .expect("first provider should launch");
+    let pending_run = app
+        .providers
+        .launch_run_detached(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(pending_agent.id()),
+        )
+        .expect("pending provider should launch");
+    let prompt = crate::session::PromptQueueItem::new(
+        "pending-prompt",
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id("pending-run"),
+        pending_agent.id(),
+        "pending branch",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("pending prompt should be admitted")
+    else {
+        panic!("prompt should start");
+    };
+    assert!(prompt.durable_delivery_provider_run_id().is_none());
+    // Another branch can move the session-wide projection while this prompt's
+    // provider is prepared but not yet bound by the delivery acknowledgement.
+    app.sessions
+        .set_active_provider_run(session.id(), Some(first_run.id().to_string()))
+        .expect("other branch should become the projected provider");
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    assert!(runtime
+        .owned
+        .provider_run_has_active_prompt(session.id(), &pending_run)
+        .expect("pending prompt should protect its current provider"));
+    assert!(app
+        .lock()
+        .await
+        .provider_run_has_active_prompt(session.id(), &pending_run)
+        .expect("app-side lifecycle must protect the same provider"));
+
+    {
+        let mut app = app.lock().await;
+        let queued = crate::session::PromptQueueItem::new(
+            "queued-prompt",
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id("pending-run"),
+            pending_agent.id(),
+            "queued branch",
+            crate::session::PromptStatus::Queued,
+        );
+        app.prompt_owner_submit_prepared_prompt(session.id(), queued, true)
+            .expect("next prompt should queue");
+        app.prompt_owner_complete_active_prompt_only(session.id(), pending_agent.id())
+            .expect("only the queued prompt should remain before launch promotion");
+    }
+    assert!(!runtime
+        .owned
+        .provider_run_has_active_prompt(session.id(), &pending_run)
+        .expect("queued work is distinct from an active prompt"));
+    runtime
+        .owned
+        .session_store
+        .set_active_provider_run(session.id(), Some(pending_run.id().to_string()))
+        .expect("finishing launch should project the pending provider");
+    runtime
+        .owned
+        .sync_focused_provider_run_if_idle(session.id())
+        .expect("owned idle reconciliation should preserve queued delivery");
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(pending_run.id())
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Running
+    );
+    {
+        let mut app = app.lock().await;
+        app.sessions
+            .set_active_provider_run(session.id(), Some(pending_run.id().to_string()))
+            .expect("app-side reconciliation should see the same launch handoff");
+        app.sync_focused_provider_run_if_idle(session.id())
+            .expect("app idle reconciliation should preserve queued delivery");
+        assert_eq!(
+            app.providers.get_run(pending_run.id()).unwrap().state(),
+            crate::provider::ProviderRunState::Running
+        );
+    }
+
+    let replacement = runtime
+        .owned
+        .provider_store
+        .launch_run_detached(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(pending_agent.id()),
+        )
+        .expect("replacement provider should launch");
+    assert!(!runtime
+        .owned
+        .provider_run_has_prompt_work(session.id(), &pending_run)
+        .expect("queued prompt should not protect an obsolete provider"));
+    assert!(runtime
+        .owned
+        .provider_run_has_prompt_work(session.id(), &replacement)
+        .expect("queued prompt should protect its replacement provider"));
+}
