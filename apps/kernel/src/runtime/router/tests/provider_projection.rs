@@ -761,3 +761,57 @@ async fn settled_provider_launch_pending_state_uses_projection_without_app_lock(
 mod catalog_projection;
 #[cfg(test)]
 mod process_projection;
+
+#[test]
+fn ended_projected_opencode_run_remains_readable_without_local_selection_sync() {
+    let store = crate::runtime::projection::ProviderRunProjectionStore::default();
+    let mut run = RuntimeProviderRun::from_control_capability_inference(
+        "leased:removed-agent:opencode-run",
+        "session".into(),
+        Some("removed-agent".into()),
+        "opencode".into(),
+    );
+    run.mark_ended();
+    store.update(run.clone());
+    let response = crate::runtime::provider_run_control::projected_provider_run_response(
+        &store,
+        &GetProviderRunRequest {
+            provider_run_id: run.id().into(),
+        },
+        crate::session::DEFAULT_LOCAL_USER_ID,
+    )
+    .expect("ended projection should retain ownership checks")
+    .expect("ended projection must not fall through to a missing local provider run");
+    let LocalDaemonResponse::ProviderRun { provider_run } = response else {
+        panic!("expected retained provider run");
+    };
+    assert_eq!(
+        provider_run.state(),
+        crate::provider::ProviderRunState::Ended
+    );
+}
+
+#[test]
+fn ended_local_opencode_run_keeps_local_selection_sync_read_path() {
+    let store = crate::runtime::projection::ProviderRunProjectionStore::default();
+    let mut run = RuntimeProviderRun::from_control_capability_inference(
+        "provider-run-local-ended",
+        "session".into(),
+        Some("local-agent".into()),
+        "opencode".into(),
+    );
+    run.mark_ended();
+    store.update(run.clone());
+    let response = crate::runtime::provider_run_control::projected_provider_run_response(
+        &store,
+        &GetProviderRunRequest {
+            provider_run_id: run.id().into(),
+        },
+        crate::session::DEFAULT_LOCAL_USER_ID,
+    )
+    .expect("local projection should retain ownership checks");
+    assert!(
+        response.is_none(),
+        "local OpenCode reads must still refresh selection through the provider registry"
+    );
+}

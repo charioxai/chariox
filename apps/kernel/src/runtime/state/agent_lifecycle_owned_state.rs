@@ -281,6 +281,19 @@ impl KernelRuntimeOwnedState {
             self.provider_run_projection.update(ended.clone());
             self.remove_provider_process_tracking_for_run(ended.id(), None);
         }
+        // Worker cleanup has already acknowledged destruction. Leased runs are
+        // home projections, absent from provider_store: retain their ended state
+        // for readers and clear routing before another agent's cleanup uses it.
+        if agent.remote_execution().is_some() {
+            for mut run in self.provider_run_projection.list_for_session(&session_id) {
+                if run.agent_instance_id() == Some(agent_id) {
+                    run.mark_ended();
+                    self.clear_active_provider_run_session_pointer(&session_id, run.id())?;
+                    self.clear_prompt_activity(run.id());
+                    self.provider_run_projection.update(run);
+                }
+            }
+        }
         self.withdraw_agent_interactions(&session_id, Some(agent_id))?;
         self.clear_agent_prompt_runtime_state(&session_id, agent_id);
         self.prompt_state_owner.remove_agent(&session_id, agent_id);

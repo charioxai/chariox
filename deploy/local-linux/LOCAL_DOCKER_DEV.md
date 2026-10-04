@@ -38,6 +38,11 @@ sudo python3 deploy/local-linux/install-local-docker-dev.py \
 
 The installer uses an isolated Docker configuration without authentication files
 and a uniquely named owned Buildx builder, removed after the build attempt.
+Buildx scratch uses a private directory beside the immutable source roots under
+`/usr/lib/chariox/slice-local-dev`, because `/run` may be mounted `noexec`.
+Normal completion and exceptions remove it. After a killed installer or power
+loss, an administrator may remove its remaining `chariox-local-broker-build-*`
+directory once that installer and its owned Buildx builder have stopped.
 It does not install a global plugin or prune shared caches. The helper build verifies the CLI hash, loader and Python/archive dependencies.
 A separate no-profile probe must negotiate successfully with the enrolled
 engine before enrollment is published. The installer publishes one root-owned
@@ -70,6 +75,31 @@ Fresh workers must pass the protected first-use identity retention barrier
 before boot. Save and restore inventory only the exact verified home volume;
 the broker never receives the whole Docker data directory. Restore admission
 checks free space on the destination volume's actual filesystem.
+
+### Worker image depth
+
+Docker's overlay2 layer store refuses images deeper than 125 layers. Every Save
+or Backup commits the container on top of the image it runs on, so a slice that
+runs on a saved image (after Restore or a clone) gains one layer per capture. A
+capture whose parent image already has 100 layers instead flattens the stopped
+or paused container into a single layer with the same configuration
+(`apps/kernel/slice-linux-docker/captured-image-depth.mjs`, applied by the
+broker and by a kernel driving Docker directly). Saved images therefore never
+exceed 100 layers. A flattened image shares no layers with its base, so a
+flattening capture needs disk space for the whole root filesystem, and disk
+admission reserves it. The cost repeats: a container keeps the image it was
+created from, so every capture of a slice running on an image with 100 or more
+layers flattens (and a desktop save keeps the slice paused for that copy) until
+the slice is restored onto a flattened image.
+
+Build the worker image with the repository's standard path: the provisioner's
+Dockerfile build (`CHARIOX_SLICE_BUILD_IMAGE=always`, or `auto` when the image
+is stale) from `apps/kernel/slice-linux-docker/docker/Dockerfile`. It produces
+about 75 layers, so most save cycles stay ordinary one-layer commits. Validation
+images assembled by adding one layer per changed file on top of a built image
+can start near Docker's limit (a 124-layer candidate image failed Restore before
+this bound existed), and every capture from such an image flattens. Squash such
+an overlay into one layer, or rebuild from the Dockerfile, before enrolling it.
 
 A fresh Slice without an explicit workspace uses its own named workspace
 volume. Explicit host workspace binds and development mounts are refused;

@@ -63,6 +63,8 @@ pub(crate) enum LifecycleError {
     DiskSpace(chariox_app_runtime::worker_process::HostDiskSpace),
     #[error("app_lifecycle_registration")]
     Registration,
+    #[error("app_lifecycle_registration_cancelled")]
+    RegistrationCancelled,
     /// Readiness exceeded its bounded wait. The owner is reaped; a fresh
     /// explicit start can retry the committed generation on the same kernel.
     #[error("app_lifecycle_registration_deadline")]
@@ -183,6 +185,8 @@ struct Control {
     idle_requested: AtomicBool,
     #[cfg(test)]
     completion_checkpoint: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    idle_refusal_checkpoint: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 pub(crate) struct Operation {
     inner: Arc<Inner>,

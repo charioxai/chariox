@@ -1,7 +1,12 @@
 import test from "node:test"
+import {spawn, spawnSync} from "node:child_process"
+import {closeSync, fstatSync, mkdtempSync, openSync, rmSync, writeFileSync} from "node:fs"
+import {tmpdir} from "node:os"
+import {join} from "node:path"
+import {fileURLToPath} from "node:url"
 import assert from "node:assert/strict"
 import {verifyLocalHomeInventory, requireSafeLocalHomeVolume} from "../apps/kernel/slice-linux-docker/protected-local-home-scan.mjs"
-import {requireRestoreVolumeReserve} from "../apps/kernel/slice-linux-docker/protected-home-restore.mjs"
+import {RestoreRefusal, extractCompressedArchive, requireRestoreVolumeReserve, validateCompressedArchive, verifyFreshRestoreTarget} from "../apps/kernel/slice-linux-docker/protected-home-restore.mjs"
 
 test("local inventory defers only transient metadata until quiescence", () => {
   const transient = Buffer.from(".config/chromium/SingletonSocket\0l\0/tmp/chrome-socket\0" + "700\0")
@@ -31,5 +36,46 @@ test("restore admission uses actual selected volume filesystem and fails closed 
   const calls=[]
   requireRestoreVolumeReserve(args=>{calls.push(args);return {status:0,stdout:"3000000 4096\n"}},"owned-restore")
   assert.deepEqual(calls[0],["exec","-u","root","owned-restore","/usr/bin/stat","-f","-c","%a %S","/home-dst"])
-  for (const result of [{status:0,stdout:"1 4096"},{status:1,stdout:"3000000 4096"},{status:0,stdout:"bad"},{status:0,stdout:"3000000 0"}]) assert.throws(()=>requireRestoreVolumeReserve(()=>result,"owned-restore"))
+  for (const [result, reason] of [
+    [{status:0,stdout:"1 4096"}, /restore volume has less than 10240 MiB free/],
+    [{status:1,stdout:"3000000 4096"}, /restore volume free space is unreadable/],
+    [{status:0,stdout:"bad"}, /restore volume free space is unreadable/],
+    [{status:0,stdout:"3000000 0"}, /restore volume free space is unreadable/],
+  ]) assert.throws(()=>requireRestoreVolumeReserve(()=>result,"owned-restore"), reason)
+})
+
+test("a refused protected home restore names the failed check without private paths", () => {
+  const script = fileURLToPath(new URL("../apps/kernel/slice-linux-docker/protected-home-restore.mjs", import.meta.url))
+  const refused = spawnSync(process.execPath, [script, "chariox-slice-x-home-restore-1", "chariox-slice-x-home-gbad", "/etc/passwd"],
+    {env: {PATH: "/usr/bin:/bin", CHARIOX_SLICE_NAME: "chariox-slice-x", CHARIOX_SLICE_RESTORE_GENERATION: "a".repeat(32)}, encoding: "utf8", timeout: 30_000})
+  assert.equal(refused.status, 1)
+  assert.equal(refused.stderr.trim(),
+    "Saved slice home restore was refused (restore arguments are invalid); existing identity and saved state are preserved")
+  assert.throws(() => verifyFreshRestoreTarget({Config: {Labels: {}}}, "helper", "volume", Buffer.alloc(0)),
+    (error) => error instanceof RestoreRefusal && error.reason === "restore target is not a fresh, empty, owned home volume")
+})
+
+test("a failing restore child is reported by its own exit, not by the broken pipe into it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "chariox-restore-reason-"))
+  const archive = join(root, "home.tar.zst")
+  writeFileSync(archive, Buffer.alloc(8 * 1024 * 1024, 7))
+  // Docker stands in as `cat`; the validator or extraction exits at once without
+  // reading, so the stream into it breaks while it is exiting.
+  const exits = (status) => (command, args, options) => command === "/usr/bin/docker" && args.includes("zstd")
+    ? spawn("cat", [], {stdio: options.stdio})
+    : spawn("/bin/sh", ["-c", `exit ${status}`], {stdio: options.stdio})
+  // One pinned descriptor serves every attempt: a destroyed stream must not close it.
+  const fd = openSync(archive, "r")
+  try {
+    for (let round = 0; round < 5; round++) {
+      await assert.rejects(validateCompressedArchive(fd, "helper", {}, () => {}, exits(3)),
+        (error) => error instanceof RestoreRefusal && error.reason === "archive validation exited with status 3")
+      await assert.rejects(extractCompressedArchive(fd, "helper", {}, () => {}, exits(2)),
+        (error) => error instanceof RestoreRefusal && error.reason === "archive extraction exited with status 2")
+      assert.ok(fstatSync(fd).isFile(), "the pinned archive descriptor stays open")
+    }
+  } finally {
+    closeSync(fd)
+    rmSync(root, {recursive: true, force: true})
+  }
 })

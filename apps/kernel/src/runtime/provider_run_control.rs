@@ -61,7 +61,11 @@ pub(crate) fn projected_provider_run_response(
         return Ok(None);
     };
     ensure_provider_run_visible_to_user(&provider_run, caller_user_id)?;
-    if crate::provider::provider_run_refreshes_selection_on_read(&provider_run) {
+    // Ended leased runs have no local provider registry entry to refresh.
+    let ended_leased_run = provider_run.state() == crate::provider::ProviderRunState::Ended
+        && provider_run.id().starts_with("leased:");
+    if crate::provider::provider_run_refreshes_selection_on_read(&provider_run) && !ended_leased_run
+    {
         return Ok(None);
     }
     Ok(Some(LocalDaemonResponse::ProviderRun { provider_run }))

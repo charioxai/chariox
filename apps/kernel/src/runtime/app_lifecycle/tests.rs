@@ -876,18 +876,48 @@ fn an_idle_stop_keeps_a_worker_whose_wake_was_admitted_after_its_idle_check() {
     wait(|| control.active_app_lease("alice", "installed").is_some());
     let lease = control.active_app_lease("alice", "installed").unwrap();
     let catalog = lease.catalog().clone();
+    let worker_control = service
+        .0
+        .entries
+        .lock()
+        .unwrap()
+        .get(&("alice".into(), "installed".into()))
+        .unwrap()
+        .control
+        .clone();
+    let (entered, received) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let released = Mutex::new(released);
+    *worker_control.idle_refusal_checkpoint.lock().unwrap() = Some(Arc::new(move || {
+        entered.send(()).unwrap();
+        released
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap();
+    }));
     // An eviction or idle stop reads the worker as idle, then the wake pump
     // admits a wake before the stop drains it: the worker keeps running.
     let delivery = std::cell::RefCell::new(None);
-    assert!(matches!(
-        service.idle_stop_blocking("alice", catalog.clone(), || {
-            *delivery.borrow_mut() = Some(lease.fixture_hold_delivery());
-            true
-        }),
-        Err(LifecycleError::Busy)
-    ));
-    assert!(control.active_app_lease("alice", "installed").is_some());
-    assert!(!control.is_app_dormant("alice", "installed"));
+    let result = service.idle_stop_blocking("alice", catalog.clone(), || {
+        *delivery.borrow_mut() = Some(lease.fixture_hold_delivery());
+        true
+    });
+    received.recv_timeout(Duration::from_secs(30)).unwrap();
+    // Hold the owner immediately after its Busy reply. Its refusal must
+    // already have rolled back dormancy, without relying on later cleanup.
+    let active = control.active_app_lease("alice", "installed").is_some();
+    let dormant = control.is_app_dormant("alice", "installed");
+    let phase = store
+        .app_worker_status("alice", "installed")
+        .unwrap()
+        .unwrap()
+        .phase;
+    release.send(()).unwrap();
+    assert_eq!(result, Err(LifecycleError::Busy));
+    assert!(active);
+    assert!(!dormant);
+    assert_eq!(phase, WorkerPhase::Running);
     // While the wake is in its handler, nothing reads the worker as idle.
     assert_eq!(lease.idle_ms(u64::MAX), 0);
     drop(delivery.into_inner());

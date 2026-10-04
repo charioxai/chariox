@@ -543,3 +543,14 @@ test("lifecycle update failures retain their kernel cause in operation output", 
   }
   assert.equal(formatInstallFailure("app_lifecycle_bad\nprivate details"), "The kernel could not complete the App operation.")
 })
+
+// Shared by standalone CLI operation output and TUI /app operation notices.
+test("readiness cancellation and deadline stay distinct in operation output", () => {
+  for (const suffix of ["cancelled", "deadline"]) {
+    const failure = `app_lifecycle_registration_${suffix}`
+    const text = formatInstallOperation({ request_id: "readiness", phase: "failed", installation_id: "installed", generation: "1", package_digest: `sha256:${"a".repeat(64)}`, interaction_id: null, failure })
+    assert.match(text, new RegExp(failure))
+    if (suffix === "cancelled") assert.doesNotMatch(text, /deadline|timed out|timeout/)
+    else assert.doesNotMatch(text, /cancelled/)
+  }
+})

@@ -50,13 +50,31 @@ class Docker:
                 "StartedAt": str(self.reads) if self.change else "2026-09-27T00:00:00Z", "FinishedAt": "2026-09-27T01:00:00Z"}}]).encode()
         if args[0] == "cp" and args[-1] == "-":
             return self.data
-        if args[:2] == ("cp", "-"):
+        if args[:2] == ("cp", "-") and len(args) == 3:
             self.writes.append((args, data))
             return b""
         raise AssertionError(args)
 
 
 class ReconciliationTests(unittest.TestCase):
+    def test_stopped_named_user_copy_preserves_numeric_archive_owners(self):
+        docker = Docker()
+        def request(*args, data=None):
+            if args[:3] == ("cp", "-a", "-"):
+                # Docker 20.10 resolves Config.User through getent for -a,
+                # which fails for a stopped container with a named user.
+                raise RuntimeError('getent unable to find entry "slice" in passwd database')
+            if args[:2] == ("cp", "-"):
+                with tarfile.open(fileobj=io.BytesIO(data)) as entries:
+                    for entry in entries:
+                        self.assertEqual((entry.uid, entry.gid, entry.mode), (1001, 1001, 0o600))
+                docker.writes.append((args, data))
+                return b""
+            return docker(*args, data=data)
+        result = module.reconcile(IDENTITY, LABELS, request)
+        self.assertEqual(result["retired"], 1)
+        self.assertEqual(len(docker.writes), 1)
+
     def test_missing_lifecycle_uses_head_status_not_docker_cli_error_rendering(self):
         for message in ("No such file or directory", "Could not find the file", "localized error"):
             docker = Docker()
@@ -220,9 +238,12 @@ class ReconciliationTests(unittest.TestCase):
             return docker(*args, **kwargs)
         result = module.reconcile(IDENTITY, LABELS, request)
         self.assertEqual(result["legacyEntries"], 1)
+        self.assertEqual([args for args, _ in docker.writes], [("cp", "-", IDENTITY + ":" + module.UPLOAD_ROOT)])
         with tarfile.open(fileobj=io.BytesIO(docker.writes[0][1])) as proof:
-            self.assertEqual(proof.getmembers()[0].name, "legacy-container-retired.json")
-            self.assertEqual(json.load(proof.extractfile(proof.getmembers()[0]))["entries"], [entry])
+            member, = proof.getmembers()
+            self.assertEqual(member.name, "legacy-container-retired.json")
+            self.assertEqual((member.uid, member.gid, member.mode), (1001, 1001, 0o600))
+            self.assertEqual(json.load(proof.extractfile(member))["entries"], [entry])
 
     def test_legacy_root_stat_rejects_public_or_symlink_directory(self):
         for mode in (0x80000000 | 0o755, 0x08000000 | 0o700, 0o700):

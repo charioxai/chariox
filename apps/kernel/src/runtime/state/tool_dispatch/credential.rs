@@ -513,28 +513,22 @@ impl KernelRuntimeState {
                         origin,
                     )
                     .await?
-                    .map(|(_, daemon, context)| (daemon, context))
                 } else {
                     None
                 };
-                if let Some((target_daemon_id, context)) = remote_target {
-                    let response = self
-                        .with_app_side_effect(|app| {
-                            app.block_on_relay_future(
-                                crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                                    app.config(),
-                                    ClientTarget {
-                                        daemon_id: Some(target_daemon_id.clone()),
-                                        daemon_alias: None,
-                                    },
-                                    RelayPeerRequest::ForwardNativeTurnInteraction {
-                                        context: context.clone(),
-                                        interaction: interaction.clone(),
-                                    },
-                                ),
-                            )
-                        })
-                        .await?;
+                if let Some((config, target_daemon_id, context)) = remote_target {
+                    // Home owns the popup deadline and its resolution. Leave time
+                    // for that outcome to return; an indefinite card has no relay cap.
+                    let response_timeout = timeout_sec.map(|seconds| {
+                        std::time::Duration::from_secs(seconds)
+                            .saturating_add(crate::runtime::native_interaction_bridge::REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER)
+                    });
+                    let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_optional_timeout(
+                        &config,
+                        ClientTarget { daemon_id: Some(target_daemon_id), daemon_alias: None },
+                        RelayPeerRequest::ForwardNativeTurnInteraction { context, interaction },
+                        response_timeout,
+                    ).await?;
                     let resolution = match response {
                         RelayPeerResponse::NativeInteractionResolved { resolution } => resolution,
                         other => {
