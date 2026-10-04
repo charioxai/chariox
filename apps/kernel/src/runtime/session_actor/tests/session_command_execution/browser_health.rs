@@ -399,7 +399,13 @@ async fn browser_health_receipts_classify_routes_and_keep_transient_failures_inc
         let before = state.room_environment_snapshot(&room).unwrap();
         // This is the same receipt consumer called by refresh after real relay
         // delivery. Typed errors cannot be produced by the local stdio tool.
-        state.observe_room_browser_health_receipt(&room, before.runtime_generation, Err(error));
+        state.observe_room_browser_health_receipt(
+            &room,
+            state
+                .admit_room_browser_health_probe(&room, before.runtime_generation)
+                .unwrap(),
+            Err(error),
+        );
         let after = state.room_environment_snapshot(&room).unwrap();
         if lost {
             assert_eq!(after.lifecycle, Lifecycle::Degraded);
@@ -445,12 +451,15 @@ async fn browser_health_receipt_attributes_controller_generation_without_stale_p
         }))
         .unwrap(),
     };
+    let admission = state
+        .admit_room_browser_health_probe(&room, before.runtime_generation)
+        .unwrap();
     let receipt = || {
         Ok(RoomBrowserControllerResult::Reconciled {
             reconciliation: Some(reconciliation.clone()),
         })
     };
-    state.observe_room_browser_health_receipt(&room, before.runtime_generation, receipt());
+    state.observe_room_browser_health_receipt(&room, admission, receipt());
     let attributed = state.room_environment_snapshot(&room).unwrap();
     let controller = attributed
         .health
@@ -466,7 +475,7 @@ async fn browser_health_receipt_attributes_controller_generation_without_stale_p
     assert_eq!(attributed.tabs, before.tabs);
     assert_eq!(attributed.viewport, before.viewport);
     assert_eq!(attributed.runtime_generation, before.runtime_generation);
-    state.observe_room_browser_health_receipt(&room, before.runtime_generation, receipt());
+    state.observe_room_browser_health_receipt(&room, admission, receipt());
     assert_eq!(
         state.room_environment_snapshot(&room).unwrap(),
         attributed,
@@ -474,7 +483,7 @@ async fn browser_health_receipt_attributes_controller_generation_without_stale_p
     );
     state.stop_room_environment(&room).unwrap();
     let stopped = state.room_environment_snapshot(&room).unwrap();
-    state.observe_room_browser_health_receipt(&room, before.runtime_generation, receipt());
+    state.observe_room_browser_health_receipt(&room, admission, receipt());
     assert_eq!(
         state.room_environment_snapshot(&room).unwrap(),
         stopped,
@@ -487,7 +496,7 @@ async fn browser_health_receipt_attributes_controller_generation_without_stale_p
         .transition_room_environment(&room, Lifecycle::Ready)
         .unwrap();
     let newer = state.room_environment_snapshot(&room).unwrap();
-    state.observe_room_browser_health_receipt(&room, before.runtime_generation, receipt());
+    state.observe_room_browser_health_receipt(&room, admission, receipt());
     assert_eq!(
         state.room_environment_snapshot(&room).unwrap(),
         newer,
@@ -502,7 +511,11 @@ async fn browser_health_receipt_after_foreground_recovery_cannot_reopen_recovery
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
     let (state, room, _tool, _) = fixture().await;
     let before = state.room_environment_snapshot(&room).unwrap();
-    let process = state.ensure_browser_controller_process_started(&room).await.unwrap().unwrap();
+    let process = state
+        .ensure_browser_controller_process_started(&room)
+        .await
+        .unwrap()
+        .unwrap();
     let old_receipt = BrowserControllerReconciliation {
         process: process.clone(),
         browser: serde_json::from_value(serde_json::json!({
@@ -511,18 +524,32 @@ async fn browser_health_receipt_after_foreground_recovery_cannot_reopen_recovery
             "resource_inventory": {"browser_ids": [], "profile_ids": []},
             "viewport": {"css_width": 1280, "css_height": 800, "device_scale_factor": 1,
                 "desktop_pixel_width": 1280, "desktop_pixel_height": 800}
-        })).unwrap(),
+        }))
+        .unwrap(),
     };
+    let admission = state
+        .admit_room_browser_health_probe(&room, before.runtime_generation)
+        .unwrap();
     let mut newer = old_receipt.clone();
     newer.process.runtime_generation += 1;
     newer.browser.browser_generation += 1;
-    state.observe_browser_controller_reconciliation(&room, newer).unwrap();
+    state
+        .observe_browser_controller_reconciliation(&room, newer)
+        .unwrap();
     let recovered = state.room_environment_snapshot(&room).unwrap();
     assert_eq!(recovered.runtime_generation, before.runtime_generation);
     assert_eq!(recovered.lifecycle, Lifecycle::Ready);
-    assert!(recovered.health.iter().all(|health| health.state == Health::Ready));
-    state.observe_room_browser_health_receipt(&room, before.runtime_generation,
-        Ok(RoomBrowserControllerResult::Reconciled { reconciliation: Some(old_receipt) }));
+    assert!(recovered
+        .health
+        .iter()
+        .all(|health| health.state == Health::Ready));
+    state.observe_room_browser_health_receipt(
+        &room,
+        admission,
+        Ok(RoomBrowserControllerResult::Reconciled {
+            reconciliation: Some(old_receipt),
+        }),
+    );
     assert_eq!(state.room_environment_snapshot(&room).unwrap(), recovered,
         "late controller A receipt must not degrade recovered controller B or invalidate references");
     // The foreground B observation must still be authoritative afterward.
@@ -536,7 +563,13 @@ async fn browser_health_receipt_after_foreground_recovery_cannot_reopen_recovery
             "resource_inventory": {"browser_ids": [], "profile_ids": []},
             "viewport": {"css_width": 1280, "css_height": 800, "device_scale_factor": 1,
                 "desktop_pixel_width": 1280, "desktop_pixel_height": 800}
-        })).unwrap(),
+        }))
+        .unwrap(),
     };
-    assert_eq!(state.observe_browser_controller_reconciliation(&room, fresh).unwrap(), recovered);
+    assert_eq!(
+        state
+            .observe_browser_controller_reconciliation(&room, fresh)
+            .unwrap(),
+        recovered
+    );
 }

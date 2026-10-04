@@ -17,6 +17,15 @@ use crate::transport::room_browser_controller::{
     RoomBrowserControllerCommand, RoomBrowserControllerResult,
 };
 
+// MP-08 / MP-10: Foreground observations supersede background health probes,
+// even if they leave the controller and Room generations unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ControllerGenerationObservation {
+    pub(super) generation: u64,
+    pub(super) recovery_pending: bool,
+    pub(super) revision: u64,
+}
+
 impl KernelRuntimeState {
     #[cfg(test)]
     pub(crate) fn set_browser_controller_process_store_for_test(
@@ -1247,15 +1256,24 @@ impl KernelRuntimeState {
             .map_err(|_| controller_generation_error("generation lock poisoned"))?;
         let mut began_recovery = false;
         let recovery_pending = match generations.get_mut(session_id) {
-            Some((previous, pending)) if *previous != generation => {
-                *previous = generation;
-                *pending = true;
-                began_recovery = true;
-                true
+            Some(observation) => {
+                observation.revision += 1;
+                if observation.generation != generation {
+                    observation.generation = generation;
+                    observation.recovery_pending = true;
+                    began_recovery = true;
+                }
+                observation.recovery_pending
             }
-            Some((_, pending)) => *pending,
             None => {
-                generations.insert(session_id.to_string(), (generation, false));
+                generations.insert(
+                    session_id.to_string(),
+                    ControllerGenerationObservation {
+                        generation,
+                        recovery_pending: false,
+                        revision: 1,
+                    },
+                );
                 false
             }
         };
@@ -1292,8 +1310,9 @@ impl KernelRuntimeState {
             .browser_controller_generations
             .lock()
             .map_err(|_| controller_generation_error("generation lock poisoned"))?;
-        if let Some((_, pending)) = generations.get_mut(session_id) {
-            *pending = false;
+        if let Some(observation) = generations.get_mut(session_id) {
+            observation.recovery_pending = false;
+            observation.revision += 1;
         }
         Ok(())
     }

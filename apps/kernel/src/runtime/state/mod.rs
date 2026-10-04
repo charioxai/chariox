@@ -170,7 +170,7 @@ struct KernelRuntimeOwnedState {
     next_room_browser_health_at_ms: Arc<AtomicU64>,
     room_environment_health_probes: Arc<room_environment_health::RoomEnvironmentHealthProbes>,
     browser_controller_generations:
-        Arc<std::sync::Mutex<BTreeMap<String, (u64, bool)>>>,
+        Arc<std::sync::Mutex<BTreeMap<String, browser_controller_runtime_state::ControllerGenerationObservation>>>,
     session_projection: crate::runtime::projection::SessionStateProjectionStore,
     agent_runtime_projection: crate::runtime::projection::AgentRuntimeProjectionStore,
     provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
