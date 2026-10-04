@@ -20,6 +20,9 @@ test("CLI discovers maximal slice identity from the kernel registry and preserve
     const client = kernelUnixClient()
     assert.equal(client.socketPath, `ws+unix://${defaultKernelUnixSocketPath(id, home)}`)
     await client.close()
+    process.env.CHARIOX_DAEMON_ID = "different-runtime-alias"
+    assert.equal(kernelUnixClient().socketPath, client.socketPath)
+    rmSync(join(home, "kernels/registry.json"))
     process.env.CHARIOX_DAEMON_ID = id
     assert.equal(kernelUnixClient().socketPath, client.socketPath)
     process.env.CHARIOX_DAEMON_SOCKET = "/tmp/private/override.sock"

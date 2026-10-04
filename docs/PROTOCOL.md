@@ -2604,7 +2604,9 @@ Workflow trigger and deployment direction:
   Unix socket with mode 0600 in an owned 0700 directory. Its default address is
   `/tmp/chariox-<effective uid>/<sha256>.sock`: the full SHA-256 covers the
   domain `chariox-unix-socket-v1\0`, lexically normalized absolute config home,
-  a NUL separator, and daemon ID. This keeps maximal slice identities and deep
+  a NUL separator, and the retained endpoint kernel ID from the registry (even
+  when the runtime announces a canonical slice reference). This keeps maximal
+  slice identities and deep
   homes below the OS address limit and separates kernels in different homes.
   CLI discovery uses the same derivation; TCP refusals name the actual socket.
   `CHARIOX_DAEMON_SOCKET` remains an explicit override; startup rejects addresses
