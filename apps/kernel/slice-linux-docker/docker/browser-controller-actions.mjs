@@ -1,3 +1,4 @@
+import { fillNativeSelect } from "./browser-controller-selection.mjs";
 const DEFAULT_ACTION_TIMEOUT_MS = 5_000;
 const MAX_ACTION_TIMEOUT_MS = 5_000;
 const MIN_ACTION_TIMEOUT_MS = 100;
@@ -40,9 +41,11 @@ export async function performBrowserAction({
   while (true) {
     assertNotCancelled(signal);
     if (attempts > 0 && now() - startedAt >= boundedTimeoutMs) {
+      const code = ["obscured", "not_editable", "not_visible", "disabled"].includes(lastReason)
+        ? `browser_element_${lastReason}` : "browser_action_timeout";
       throw new BrowserActionError(
-        "browser_action_timeout",
-        `browser ${normalizedAction.kind} did not become actionable within ${boundedTimeoutMs}ms`,
+        code,
+        `browser ${normalizedAction.kind} did not become actionable within ${boundedTimeoutMs}ms (${lastReason}); no input was delivered; capture a fresh snapshot before retrying`,
         { reason: lastReason, attempts, timeoutMs: boundedTimeoutMs },
       );
     }
@@ -59,7 +62,7 @@ export async function performBrowserAction({
         );
       }
       const geometry = readyGeometry(actionability, normalizedAction);
-      lastReason = actionability.state;
+      lastReason = geometry ? "unstable_geometry" : actionability.state;
       if (geometry && sameGeometry(previousGeometry, geometry)) {
         assertNotCancelled(signal);
         const actionResult = await withInput(() => executeAction(
@@ -253,6 +256,7 @@ export function actionabilityFunction() {
   if (
     this.disabled ||
     this.matches?.(":disabled") ||
+    (this.tagName === "LABEL" && this.control?.matches?.(":disabled")) ||
     this.closest?.("[inert]") ||
     this.getAttribute?.("aria-disabled") === "true"
   ) {
@@ -318,6 +322,7 @@ export function actionabilityFunction() {
     width: rect.width,
     height: rect.height,
     editable,
+    nativeSelect: this.tagName === "SELECT",
     ...(crossOriginFrame ? { crossOriginFrame: true } : {}),
   };
 }
@@ -326,7 +331,7 @@ function readyGeometry(actionability, action) {
   if (actionability.state !== "ready") {
     return null;
   }
-  if (action.kind === "fill" && actionability.editable !== true) {
+  if (action.kind === "fill" && actionability.editable !== true && actionability.nativeSelect !== true) {
     actionability.state = "not_editable";
     return null;
   }
@@ -336,7 +341,8 @@ function readyGeometry(actionability, action) {
     width: actionability.width,
     height: actionability.height,
   };
-  return Object.values(geometry).every(Number.isFinite) ? geometry : null;
+  if (!Object.values(geometry).every(Number.isFinite)) return null;
+  return { ...geometry, nativeSelect: actionability.nativeSelect === true };
 }
 
 function sameGeometry(left, right) {
@@ -363,6 +369,14 @@ async function executeAction(
   }
   if (action.kind === "submit") {
     await submitNearestForm(connection, sessionId, objectId);
+    return { dialogOpened: false };
+  }
+  if (geometry.nativeSelect) {
+    try {
+      await fillNativeSelect(connection, sessionId, objectId, action);
+    } catch (error) {
+      throw new BrowserActionError(error.code ?? "browser_selection_failed", error.message);
+    }
     return { dialogOpened: false };
   }
   if (action.expectedDocumentUrl !== null) {

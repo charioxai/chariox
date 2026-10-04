@@ -781,6 +781,11 @@ fn terminal_output_event_json_bytes_for_records(record_bytes: usize, record_coun
 }
 
 pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
+    if let Some(code) =
+        crate::runtime::browser_controller_error::browser_controller_error_code(error)
+    {
+        return kernel_error(code, error, false);
+    }
     match error {
         DaemonError::AgentWorkerCleanup { source, .. } => {
             let mut mapped = map_kernel_error(source);

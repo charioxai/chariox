@@ -26,6 +26,8 @@ const browserCloseModules = [
   "browser-controller-input.mjs",
   "browser-controller-permissions.mjs",
   "browser-controller-snapshot.mjs",
+  "browser-controller-text.mjs",
+  "browser-controller-selection.mjs",
   "browser-controller-upload-staging.mjs",
 ];
 // slice-screen.sh puts saved App navigations behind placeholders before an

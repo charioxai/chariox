@@ -192,7 +192,11 @@ impl KernelRuntimeState {
                     .await
             }
             SLICE_BROWSER_TEXT_TOOL => {
-                self.controller_browser_text_tool_result(session_id, slice_id, agent_id)
+                let args = parse_controller_tool_arguments::<SliceBrowserTextArgs>(
+                    arguments,
+                    "runtime_tool_slice_browser_text",
+                )?;
+                self.controller_browser_text_tool_result(session_id, slice_id, agent_id, args)
                     .await
             }
             SLICE_BROWSER_WAIT_FOR_TEXT_TOOL => {

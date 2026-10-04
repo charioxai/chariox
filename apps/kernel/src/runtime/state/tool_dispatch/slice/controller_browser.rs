@@ -193,8 +193,9 @@ impl KernelRuntimeState {
         session_id: &str,
         slice_id: &str,
         agent_id: &str,
+        args: crate::transport::runtime_tools::SliceBrowserTextArgs,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        run_controller_browser_text_tool(self, session_id, slice_id, agent_id).await
+        run_controller_browser_text_tool(self, session_id, slice_id, agent_id, args).await
     }
 
     pub(super) async fn controller_browser_wait_for_text_tool_result(
@@ -330,12 +331,15 @@ impl KernelRuntimeState {
                 });
             }
         };
-        let environment = ensure_controller_browser_environment(
-            self,
-            session_id,
-            "runtime_tool_slice_browser_dialog",
-        )
-        .await?;
+        // MP-08/MP-10/MP-11: answer against the observed Room binding. Reconcile
+        // inspects the renderer, which the very dialog being answered pauses.
+        // The ordinary mutation path still owns actor, tab/document, generation,
+        // takeover, cancellation and controller-restart admission.
+        let environment = self
+            .room_environment_snapshot(session_id)
+            .map_err(|error| {
+                room_environment_action_error("runtime_tool_slice_browser_dialog", error)
+            })?;
         let tab_id = environment
             .focused_tab_id
             .ok_or_else(|| DaemonError::LocalTransport {
@@ -712,6 +716,10 @@ mod observation_tests {
     pub(super) struct TestRoot(std::path::PathBuf);
 
     impl TestRoot {
+        pub(super) fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+
         fn new() -> Self {
             let path = std::env::temp_dir().join(format!(
                 "chariox-browser-observation-{}-{}",
@@ -1224,23 +1232,44 @@ pub(super) async fn run_controller_browser_text_tool(
     session_id: &str,
     slice_id: &str,
     agent_id: &str,
+    args: crate::transport::runtime_tools::SliceBrowserTextArgs,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-    let (environment, text) =
-        capture_controller_browser_text(state, session_id, "runtime_tool_slice_browser_text")
-            .await?;
-    Ok(crate::transport::runtime_tools::RuntimeToolResult {
-        ok: true,
-        payload: serde_json::json!({
-            "source": "browser_controller",
-            "slice_id": slice_id,
-            "agent_id": agent_id,
-            "session_id": session_id,
-            "environment_id": environment.environment_id,
-            "runtime_generation": environment.runtime_generation,
-            "tab_id": environment.focused_tab_id,
-            "text": text,
-        }),
-    })
+    let operation = "runtime_tool_slice_browser_text";
+    args.validate()
+        .map_err(|message| DaemonError::LocalTransport { operation, message })?;
+    let environment = ensure_controller_browser_environment(state, session_id, operation).await?;
+    let tab_id =
+        environment
+            .focused_tab_id
+            .as_deref()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation,
+                message: "the Room browser has no focused tab".into(),
+            })?;
+    let snapshot = state
+        .capture_browser_environment_snapshot_with_text(session_id, tab_id, Some(args.clone()))
+        .await?;
+    let page = snapshot
+        .text_page
+        .as_ref()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation,
+            message:
+                "Browser Controller does not support rendered text paging; upgrade the Environment"
+                    .into(),
+        })?;
+    if page.query != args.query
+        || page.offset != args.offset.min(page.total_bytes)
+        || page.text.len() as u64 > args.max_bytes
+    {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: "Browser Controller returned a mismatched text page".into(),
+        });
+    }
+    Ok(controller_browser_text_page_tool_result(
+        slice_id, agent_id, &snapshot, page,
+    ))
 }
 
 pub(super) async fn run_controller_browser_wait_for_text_tool(
@@ -1307,24 +1336,6 @@ pub(super) async fn run_controller_browser_wait_for_text_tool(
     }
 }
 
-pub(super) async fn capture_controller_browser_text(
-    state: &KernelRuntimeState,
-    session_id: &str,
-    operation: &'static str,
-) -> Result<(crate::session::RoomEnvironmentSnapshot, String), DaemonError> {
-    let environment = ensure_controller_browser_environment(state, session_id, operation).await?;
-    let tab_id =
-        environment
-            .focused_tab_id
-            .as_deref()
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation,
-                message: "the Room browser has no focused tab".to_string(),
-            })?;
-    let text = capture_controller_browser_text_from_tab(state, session_id, tab_id).await?;
-    Ok((environment, text))
-}
-
 async fn capture_controller_browser_text_from_tab(
     state: &KernelRuntimeState,
     session_id: &str,
@@ -1365,3 +1376,7 @@ fn slice_environment_viewport(
 #[cfg(test)]
 #[path = "controller_browser_concurrency_drill.rs"]
 mod concurrency_drill;
+
+#[cfg(test)]
+#[path = "controller_browser_recovery_tests.rs"]
+mod recovery_tests;

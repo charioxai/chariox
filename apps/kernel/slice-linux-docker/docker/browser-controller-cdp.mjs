@@ -1,4 +1,5 @@
 import { redactObservation } from "./browser-controller-snapshot.mjs";
+import { BrowserTextError } from "./browser-controller-text.mjs";
 import { BrowserInputCapture } from "./browser-controller-input.mjs";
 import {
   BrowserSnapshotError,
@@ -166,15 +167,18 @@ export class BrowserCdpClient {
           return await this.inspectPage(connection, target, metricsFor(target));
         } catch (error) {
           if (!targetGone(error)) throw error;
-          await this.forgetTarget(target.targetId);
           const { targetInfos: now = [] } = await connection.send("Target.getTargets");
-          if (!now.some((candidate) => candidate.targetId === target.targetId)) return null;
+          if (!now.some((candidate) => candidate.targetId === target.targetId)) {
+            await this.forgetTarget(target.targetId);
+            return null;
+          }
+          // MP-08/MP-10/MP-11: inspectPage retired the failed reader. A
+          // still-live Tab retains its document identity and snapshot counter.
           try {
             return await this.inspectPage(connection, target, metricsFor(target));
           } catch (again) {
             // Gone twice: it is closing. The next reconcile sees it if not.
             if (!targetGone(again)) throw again;
-            await this.forgetTarget(target.targetId);
             return null;
           }
         }
@@ -397,17 +401,46 @@ export class BrowserCdpClient {
   }
 
   async forgetTarget(targetId) {
+    this.documentIdsByTarget.delete(targetId);
+    this.snapshotStateByTarget.delete(targetId);
+    this.dialogDefaults.delete(targetId);
+    this.targetsBySession.delete(this.sessionsByTarget.get(targetId));
+    await this.forgetTargetSession(targetId);
+  }
+
+  async forgetTargetSession(targetId) {
     const sessionId = this.sessionsByTarget.get(targetId);
-    this.targetsBySession.delete(sessionId);
     this.networkRequestsBySession.delete(sessionId);
     this.sessionsByTarget.delete(targetId);
     this.viewportByTarget.delete(targetId);
-    this.documentIdsByTarget.delete(targetId);
     this.focusWorldsByTarget.delete(targetId);
-    this.snapshotStateByTarget.delete(targetId);
-    this.dialogDefaults.delete(targetId);
     this.targetsByFrame.removeTarget(targetId);
     await this.frameSessions.removeTarget(targetId);
+  }
+
+  // Retire a poisoned CDP reader, not the page or browser. The failed read
+  // keeps its precise error; the next observation attaches a fresh session.
+  // Mutations never use this path and are never replayed. A dialog intentionally
+  // pauses its renderer: retain that session and its private prompt default so
+  // the dialog-safe answer can release it.
+  async retireFailedReadSession(connection, targetId, error, failedSessionId) {
+    if (connection !== this.connection || !connection.isOpen()
+        || this.dialogDefaults.isOpen(targetId)
+        || (error?.code !== "browser_cdp_timeout" && !targetGone(error))) return;
+    const sessionId = this.sessionsByTarget.get(targetId);
+    if (!sessionId || sessionId !== failedSessionId) return;
+    this.appliedViewport = null;
+    // The browser/document did not restart: retain its observed identity and
+    // revision counter, including the binding needed by dialog-safe recovery.
+    try {
+      // MP-08/MP-10/MP-11: navigation events can still arrive while detach
+      // is pending. Keep their target binding so document fencing stays current.
+      await this.forgetTargetSession(targetId);
+      await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {});
+    } finally {
+      this.targetsBySession.delete(sessionId);
+      this.networkRequestsBySession.delete(sessionId);
+    }
   }
 
   // App pages are narrower than the canonical viewport: the trusted
@@ -424,32 +457,37 @@ export class BrowserCdpClient {
 
   async inspectPage(connection, target, metrics) {
     const sessionId = await this.ensureTargetSession(connection, target.targetId);
-    // Metrics differ per target (App pages lay out beside their panel).
-    // Reapply only when this target's metrics changed.
-    const metricsKey = JSON.stringify(metrics);
-    if (this.viewportByTarget.get(target.targetId) !== metricsKey) {
-      await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
-      this.viewportByTarget.set(target.targetId, metricsKey);
+    try {
+      // Metrics differ per target (App pages lay out beside their panel).
+      // Reapply only when this target's metrics changed.
+      const metricsKey = JSON.stringify(metrics);
+      if (this.viewportByTarget.get(target.targetId) !== metricsKey) {
+        await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
+        this.viewportByTarget.set(target.targetId, metricsKey);
+      }
+      const frameTree = await connection.send("Page.getFrameTree", {}, sessionId);
+      const frame = frameTree?.frameTree?.frame;
+      const documentId = frame?.loaderId;
+      if (typeof documentId !== "string" || !documentId) {
+        throw new BrowserControllerError(
+          "browser_document_identity_missing",
+          `browser target ${JSON.stringify(target.targetId)} has no top-level loader identity`,
+        );
+      }
+      const focus = await this.readFocus(connection, sessionId, target.targetId, frame);
+      this.documentIdsByTarget.set(target.targetId, documentId);
+      await registerBrowserFrameTargets(connection, sessionId, target.targetId, documentId, this.targetsByFrame);
+      return {
+        target_id: target.targetId,
+        document_id: documentId,
+        url: typeof target.url === "string" ? target.url : "",
+        title: typeof target.title === "string" ? target.title : "",
+        focused: focus === true,
+      };
+    } catch (error) {
+      await this.retireFailedReadSession(connection, target.targetId, error, sessionId);
+      throw error;
     }
-    const frameTree = await connection.send("Page.getFrameTree", {}, sessionId);
-    const frame = frameTree?.frameTree?.frame;
-    const documentId = frame?.loaderId;
-    if (typeof documentId !== "string" || !documentId) {
-      throw new BrowserControllerError(
-        "browser_document_identity_missing",
-        `browser target ${JSON.stringify(target.targetId)} has no top-level loader identity`,
-      );
-    }
-    const focus = await this.readFocus(connection, sessionId, target.targetId, frame);
-    this.documentIdsByTarget.set(target.targetId, documentId);
-    await registerBrowserFrameTargets(connection, sessionId, target.targetId, documentId, this.targetsByFrame);
-    return {
-      target_id: target.targetId,
-      document_id: documentId,
-      url: typeof target.url === "string" ? target.url : "",
-      title: typeof target.title === "string" ? target.title : "",
-      focused: focus === true,
-    };
   }
 
   // One isolated world per document: polls reuse it, a new document gets a new one.
@@ -615,6 +653,7 @@ export class BrowserCdpClient {
         browserGeneration: this.browserGeneration,
         snapshotRevision,
         protectedValues: this.protectedValues,
+        textRequest: rawRequest?.text_request,
       });
     } catch (error) {
       if (this.snapshotStateByTarget.get(targetId)?.revision === snapshotRevision) {
@@ -624,6 +663,7 @@ export class BrowserCdpClient {
           this.snapshotStateByTarget.delete(targetId);
         }
       }
+      await this.retireFailedReadSession(connection, targetId, error, sessionId);
       throw normalizeControllerError(error);
     }
   }
@@ -1037,7 +1077,8 @@ export class BrowserCdpClient {
         this.targetsBySession.delete(sessionId);
         this.networkRequestsBySession.delete(sessionId);
       }
-      if (typeof targetId === "string") {
+      // A delayed detach of a retired reader must not clear its replacement.
+      if (typeof targetId === "string" && this.sessionsByTarget.get(targetId) === sessionId) {
         this.appliedViewport = null;
         this.sessionsByTarget.delete(targetId);
         this.viewportByTarget.delete(targetId);
@@ -1504,6 +1545,7 @@ function normalizeControllerError(error) {
   if (error instanceof BrowserControllerError) {
     return error;
   }
+  if (error instanceof BrowserTextError) return new BrowserControllerError(error.code, error.message);
   if (error instanceof BrowserSnapshotError) {
     return new BrowserControllerError(error.code, error.message);
   }

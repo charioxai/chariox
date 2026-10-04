@@ -220,6 +220,8 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controlle
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-history.mjs /opt/chariox-slice/browser-controller-history.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-permissions.mjs /opt/chariox-slice/browser-controller-permissions.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-snapshot.mjs /opt/chariox-slice/browser-controller-snapshot.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-text.mjs /opt/chariox-slice/browser-controller-text.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-selection.mjs /opt/chariox-slice/browser-controller-selection.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller.mjs /opt/chariox-slice/browser-controller.mjs
 COPY --chown=slice:slice apps/browser-session-import/chrome-cookie-batch.mjs /opt/chariox-slice/browser-session-import/chrome-cookie-batch.mjs
 COPY --chown=slice:slice apps/browser-session-import/controller-cookie-import.mjs /opt/chariox-slice/browser-session-import/controller-cookie-import.mjs
@@ -261,6 +263,8 @@ RUN chmod +x /opt/chariox-slice/browser-cdp.mjs \
     /opt/chariox-slice/browser-controller-history.mjs \
     /opt/chariox-slice/browser-controller-permissions.mjs \
     /opt/chariox-slice/browser-controller-snapshot.mjs \
+    /opt/chariox-slice/browser-controller-text.mjs \
+    /opt/chariox-slice/browser-controller-selection.mjs \
     /opt/chariox-slice/browser-controller.mjs \
     /opt/chariox-slice/managed-provider-isolation-probe.mjs \
     /opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh \

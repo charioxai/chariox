@@ -150,7 +150,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_BROWSER_FIND_TOOL.to_string(),
-            description: "Find visible browser fields, buttons, or links by label, placeholder, name, text, role, or selector.".to_string(),
+            description: "Find rendered browser fields, buttons, links, custom options and handler-backed elements by label, placeholder, name, text or role. kind=any includes generic clickable targets. Returned field_id is opaque and document-bound; rediscover after navigation.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["query"],
@@ -163,7 +163,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_BROWSER_FILL_TOOL.to_string(),
-            description: "Fill a slice browser input, textarea, select, or contenteditable element by selector or field_id returned by slice_browser_find.".to_string(),
+            description: "Fill an observed input, textarea or contenteditable field by opaque field_id. For native select, text matches an exact option value or unique label and replaces the choice, including multi-select. Ambiguous or disabled choices fail. For custom comboboxes, click to open, fill the observed search field if present, then find(kind=any) and click the observed option.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["text"],
@@ -177,7 +177,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_BROWSER_CLICK_TOOL.to_string(),
-            description: "Click a slice browser element by selector or field_id returned by slice_browser_find.".to_string(),
+            description: "Click an observed browser element or custom option using its opaque field_id from slice_browser_find. The controller scrolls and hit-tests the target; covered or stale targets fail safely.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -280,10 +280,14 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_BROWSER_TEXT_TOOL.to_string(),
-            description: "Return the current slice browser document body text.".to_string(),
+            description: "Read rendered document text with paragraph, list and table boundaries; excludes scripts, styles, hidden content and input values. Repeated rows remain repeated. Returns valid bounded JSON with next_offset (UTF-8 bytes); pass it as offset to continue. query retrieves matching lines with adjacent context from the complete captured page, including beyond target discovery bounds. Pages bind to returned tab/document_revision; restart paging if the document changes.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "query": {"type": "string", "maxLength": 2048},
+                    "offset": {"type": "integer", "minimum": 0, "maximum": 9007199254740991_u64},
+                    "max_bytes": {"type": "integer", "minimum": 4, "maximum": 1024}
+                },
                 "additionalProperties": false
             }),
         },

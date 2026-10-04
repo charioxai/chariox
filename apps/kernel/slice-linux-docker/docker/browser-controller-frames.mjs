@@ -1,3 +1,4 @@
+import { browserTextPage } from "./browser-controller-text.mjs";
 import { BrowserSnapshotError, captureBrowserSnapshot } from "./browser-controller-snapshot.mjs";
 
 const MAX_FRAMES = 64;
@@ -209,10 +210,13 @@ export async function captureBrowserFrames(options) {
   const { connection, sessionId, targetId, documentId } = options;
   return withBrowserFrames(connection, sessionId, targetId, documentId, async (frames) => {
     let result;
+    const text = [];
     for (const entry of frames) {
       const remaining = MAX_NODES - Math.max(result?.accessibility_nodes.length ?? 0, result?.dom_nodes.length ?? 0);
-      if (remaining <= 0) break;
-      const snapshot = await captureBrowserSnapshot({ ...options, sessionId: entry.sessionId, documentId: entry.frame.loaderId, limits: { maxNodes: remaining } });
+      if (remaining <= 0 && !options.textRequest) break;
+      const snapshot = await captureBrowserSnapshot({ ...options, sessionId: entry.sessionId, documentId: entry.frame.loaderId, limits: { maxNodes: Math.max(1, remaining) }, captureText: !!options.textRequest });
+      if (options.textRequest) { if (snapshot.captured_text) text.push(snapshot.captured_text); delete snapshot.captured_text; }
+      if (remaining <= 0) continue;
       if (!result) { result = snapshot; continue; }
       const ref = (value) => value ? entry.prefix + value : null;
       const offset = result.dom_documents.length;
@@ -228,6 +232,7 @@ export async function captureBrowserFrames(options) {
         throw new BrowserSnapshotError("stale_document_reference", "browser frame tree changed during snapshot capture");
       }
     }
+    if (options.textRequest) result.text_page = browserTextPage(text.join("\n"), options.textRequest);
     return result;
   });
 }

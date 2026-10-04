@@ -10,6 +10,43 @@ use crate::session::{
 use crate::terminal::TerminalOutputKind;
 
 #[test]
+fn mp08_browser_controller_causes_survive_local_and_peer_projection() {
+    for code in [
+        "stale_element_reference",
+        "stale_document_reference",
+        "browser_cdp_timeout",
+        "browser_element_obscured",
+        "browser_element_not_editable",
+        "environment_stale_element_reference",
+        "environment_stale_document_revision",
+    ] {
+        let message = format!("browser controller `browser.action` failed with {code}: fixture cause; input delivery unknown");
+        let local = DaemonError::LocalTransport {
+            operation: "browser_controller.route",
+            message: message.clone(),
+        };
+        let peer = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: code.into(),
+            message,
+            retryable: false,
+        };
+        for error in [local, peer] {
+            let mapped = map_kernel_error(&error);
+            assert_eq!(
+                mapped.code, code,
+                "MP-08/MP-10/MP-11 cause must remain actionable"
+            );
+            assert!(
+                !mapped.retryable,
+                "a Browser error must not authorize mutation replay"
+            );
+            assert!(mapped.message.contains("fixture cause"));
+        }
+    }
+}
+
+#[test]
 fn credential_vault_locked_uses_a_stable_transport_error_code() {
     let error = DaemonError::LocalTransport {
         operation: "credential_vault_locked",

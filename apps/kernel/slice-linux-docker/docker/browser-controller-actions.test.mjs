@@ -7,6 +7,20 @@ import {
   performBrowserAction,
 } from "./browser-controller-actions.mjs";
 
+for (const reason of ["obscured", "not_editable", "not_visible", "disabled"]) {
+  test(`MP-08/MP-10/MP-11 ${reason} preserves the actionable cause without input delivery`, async () => {
+    const connection = new FakeActionConnection([{state: reason}]);
+    let now = 0;
+    await assert.rejects(performBrowserAction({
+      connection, sessionId: "session-a", targetId: "target-a", documentId: "loader-a",
+      nodeRef: "backend:103", action: {kind: "fill", text: "fixture"}, timeoutMs: 100,
+      now: () => now, sleep: async ms => { now += ms; },
+    }), error => error.code === `browser_element_${reason}` && error.reason === reason
+      && error.message.includes("no input was delivered"));
+    assert.equal(connection.calls.some(c => c.method.startsWith("Input.")), false);
+  });
+}
+
 test("click auto-waits for a stable actionable element and uses native input", async () => {
   const connection = new FakeActionConnection([
     { state: "not_visible" },
@@ -481,7 +495,7 @@ test("locator actions reject stale documents and time out with stable codes", as
     }),
     (error) =>
       error instanceof BrowserActionError &&
-      error.code === "browser_action_timeout" &&
+      error.code === "browser_element_disabled" &&
       error.reason === "disabled",
   );
 
@@ -502,7 +516,7 @@ test("locator actions reject stale documents and time out with stable codes", as
       sleep: async (milliseconds) => { now += milliseconds; },
     }),
     (error) =>
-      error.code === "browser_action_timeout" && error.reason === "not_editable",
+      error.code === "browser_element_not_editable" && error.reason === "not_editable",
   );
 
   const disconnected = new FakeActionConnection([]);

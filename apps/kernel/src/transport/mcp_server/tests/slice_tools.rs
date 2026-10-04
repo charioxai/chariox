@@ -546,7 +546,7 @@ async fn mcp_browser_status_uses_the_room_owned_controller_instead_of_one_shot_c
     let one_shot = fixture.root.join("slice-screen.sh");
     let one_shot_log = fixture.root.join("one-shot.log");
     let controller_script = format!(
-        r#"#!/bin/sh
+        r##"#!/bin/sh
 set -eu
 printf '%s\n' "$$" > '{}'
 document=loader-a
@@ -564,7 +564,11 @@ while IFS= read -r request; do
       ;;
     *'"method":"browser.snapshot"'*)
       printf 'snapshot\n' >> '{}'
-      printf '{{"id":%s,"ok":true,"result":{{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","snapshot_revision":1,"accessibility_nodes":[{{"node_ref":"backend:103","parent_ref":null,"child_refs":[],"role":"textbox","name":"Email","description":"","value":"","ignored":false,"disabled":false,"focused":true}},{{"node_ref":"backend:104","parent_ref":null,"child_refs":[],"role":"button","name":"Continue","description":"","value":"","ignored":false,"disabled":false,"focused":false}},{{"node_ref":"backend:105","parent_ref":null,"child_refs":[],"role":"link","name":"Help","description":"","value":"","ignored":false,"disabled":false,"focused":false}},{{"node_ref":"backend:106","parent_ref":null,"child_refs":[],"role":"textbox","name":"Password","description":"","value":"","ignored":false,"disabled":false,"focused":false}}],"dom_documents":[{{"document_index":0,"url":"https://example.test/dashboard","owner_node_ref":null}},{{"document_index":1,"url":"https://frame.test/login","owner_node_ref":null}}],"dom_nodes":[{{"node_ref":"backend:103","parent_ref":null,"document_index":1,"node_type":1,"node_name":"INPUT","text":"","attributes":{{"id":"email","name":"email","type":"email","placeholder":"Email"}},"bounds":{{"x":10,"y":20,"width":200,"height":30}}}},{{"node_ref":"backend:104","parent_ref":null,"document_index":0,"node_type":1,"node_name":"BUTTON","text":"Continue","attributes":{{"id":"continue"}},"bounds":{{"x":10,"y":60,"width":100,"height":30}}}},{{"node_ref":"backend:105","parent_ref":null,"document_index":0,"node_type":1,"node_name":"A","text":"Help","attributes":{{"id":"help","href":"/help"}},"bounds":{{"x":10,"y":100,"width":50,"height":20}}}},{{"node_ref":"backend:106","parent_ref":null,"document_index":1,"node_type":1,"node_name":"INPUT","text":"","attributes":{{"id":"password","name":"password","type":"password","placeholder":"Password"}},"bounds":{{"x":10,"y":55,"width":200,"height":30}}}}]}}}}\n' "$id"
+      case "$request" in
+        *'"text_request":{{'*) text_page=',"text_page":{{"text":"ContinueHelp","offset":0,"next_offset":null,"total_bytes":12,"query":null}}' ;;
+        *) text_page= ;;
+      esac
+      printf '{{"id":%s,"ok":true,"result":{{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","snapshot_revision":1%s,"accessibility_nodes":[{{"node_ref":"backend:103","parent_ref":null,"child_refs":[],"role":"textbox","name":"Email","description":"","value":"","ignored":false,"disabled":false,"focused":true}},{{"node_ref":"backend:104","parent_ref":null,"child_refs":[],"role":"button","name":"Continue","description":"","value":"","ignored":false,"disabled":false,"focused":false}},{{"node_ref":"backend:105","parent_ref":null,"child_refs":[],"role":"link","name":"Help","description":"","value":"","ignored":false,"disabled":false,"focused":false}},{{"node_ref":"backend:106","parent_ref":null,"child_refs":[],"role":"textbox","name":"Password","description":"","value":"","ignored":false,"disabled":false,"focused":false}}],"dom_documents":[{{"document_index":0,"url":"https://example.test/dashboard","owner_node_ref":null}},{{"document_index":1,"url":"https://frame.test/login","owner_node_ref":null}}],"dom_nodes":[{{"node_ref":"backend:103","parent_ref":null,"document_index":1,"node_type":1,"node_name":"INPUT","text":"","attributes":{{"id":"email","name":"email","type":"email","placeholder":"Email"}},"bounds":{{"x":10,"y":20,"width":200,"height":30}}}},{{"node_ref":"backend:104","parent_ref":null,"document_index":0,"node_type":1,"node_name":"BUTTON","text":"Continue","attributes":{{"id":"continue"}},"bounds":{{"x":10,"y":60,"width":100,"height":30}}}},{{"node_ref":"backend:105","parent_ref":null,"document_index":0,"node_type":1,"node_name":"A","text":"Help","attributes":{{"id":"help","href":"/help"}},"bounds":{{"x":10,"y":100,"width":50,"height":20}}}},{{"node_ref":"backend:106","parent_ref":null,"document_index":1,"node_type":1,"node_name":"INPUT","text":"","attributes":{{"id":"password","name":"password","type":"password","placeholder":"Password"}},"bounds":{{"x":10,"y":55,"width":200,"height":30}}}},{{"node_ref":"backend:107","parent_ref":"backend:104","document_index":0,"node_type":3,"node_name":"#text","text":"Continue","attributes":{{}},"rendered":true,"bounds":null}},{{"node_ref":"backend:108","parent_ref":"backend:105","document_index":0,"node_type":3,"node_name":"#text","text":"Help","attributes":{{}},"rendered":true,"bounds":null}}]}}}}\n' "$id" "$text_page"
       ;;
     *'"method":"browser.action"'*)
       if printf '%s' "$request" | grep -q '"kind":"fill"'; then action=fill;
@@ -618,7 +622,7 @@ while IFS= read -r request; do
       ;;
   esac
 done
-"#,
+"##,
         controller_pid.display(),
         controller_log.display(),
         controller_log.display(),

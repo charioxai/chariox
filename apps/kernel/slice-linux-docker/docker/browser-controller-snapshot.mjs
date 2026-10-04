@@ -1,3 +1,4 @@
+import { renderedNodes, renderedSnapshotText } from "./browser-controller-text.mjs";
 const DEFAULT_MAX_NODES = 5_000;
 const DEFAULT_MAX_STRING_LENGTH = 2_048;
 const DEFAULT_MAX_ATTRIBUTES = 32;
@@ -20,6 +21,7 @@ export async function captureBrowserSnapshot({
   snapshotRevision,
   limits = {},
   protectedValues = [],
+  captureText = false,
 }) {
   // MP-08/MP-10/MP-11: scrub the raw CDP strings before compaction can
   // truncate an echoed value and make exact-value redaction impossible.
@@ -37,7 +39,7 @@ export async function captureBrowserSnapshot({
     connection.send(
       "DOMSnapshot.captureSnapshot",
       {
-        computedStyles: [],
+        computedStyles: ["visibility", "opacity", "display"],
         includeDOMRects: true,
         includePaintOrder: false,
       },
@@ -63,6 +65,7 @@ export async function captureBrowserSnapshot({
     accessibility_nodes: accessibility.nodes,
     accessibility_truncated: accessibility.truncated,
     ...compactedDom,
+    ...(captureText ? { captured_text: renderedSnapshotText(dom) } : {}),
   };
 }
 
@@ -254,6 +257,8 @@ function compactDomSnapshot(rawSnapshot, options) {
       ? nodes.backendNodeId
       : [];
     const layoutBounds = boundsByNodeIndex(document?.layout);
+    const rendered = renderedNodes(document, strings);
+    const clickable = new Set(nodes.isClickable?.index ?? []);
     const contentDocuments = rareDataByIndex(nodes.contentDocumentIndex);
     const shadowRootTypes = rareDataByIndex(nodes.shadowRootType);
     for (
@@ -309,7 +314,10 @@ function compactDomSnapshot(rawSnapshot, options) {
         document_index: documentIndex,
         node_type: Number.isSafeInteger(nodeType) ? nodeType : 0,
         node_name: nodeName,
-        text,
+        text: rendered.has(nodeIndex) && (nodeType === 3 || nodeType === 4)
+          ? compactString(rendered.get(nodeIndex) ?? text, options.maxStringLength) : "",
+        clickable: clickable.has(nodeIndex),
+        rendered: rendered.has(nodeIndex),
         attributes: compactAttributes(
           strings,
           arrayValue(nodes.attributes, nodeIndex),

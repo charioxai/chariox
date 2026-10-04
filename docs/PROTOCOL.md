@@ -931,6 +931,34 @@ runtime tools without running inside the slice. Tool discovery and dispatch
 derive the slice from the provider run's Room, never from caller-supplied IDs.
 Unbound home agents do not gain access to local screen helpers.
 
+MP-08 / MP-10 / MP-11 round-2 Browser candidate (aggregate version pending):
+structured DOM nodes carry `clickable` from Chromium's handler metadata and
+`rendered` from layout/style observations. Find/status include rendered generic
+handler targets and custom options as opaque, document-bound action targets.
+Discovery does not establish actionability: controller input still scrolls,
+auto-waits and hit-tests; stale, covered and disabled targets fail safely.
+Native-select fill resolves an exact option value first, then a unique label,
+and replaces the selection (one choice for a multi-select). Ambiguous, absent
+and disabled choices fail before mutation. A changed choice delivers one input
+and change event pair. Custom comboboxes use the same observed click, search
+fill and option-click path; no selector or JavaScript execution is exposed.
+
+The existing Browser text tool accepts optional `query`, UTF-8 byte `offset`
+and `max_bytes` (4–1024, default 1024). Its ordinary Snapshot peer command
+carries an optional `text_request`; the controller returns an optional
+`text_page` with rendered text, offsets, total bytes and query identity.
+Text excludes non-rendered code and input values, preserves paragraph/list/table
+boundaries and repeated row values, keeps rendered line breaks and literal
+leading/trailing newlines, and does not append duplicate AX names.
+Query matches lines with adjacent context before paging, including content
+beyond the target-discovery node bound. The home validates the page and returns
+bounded JSON with `next_offset`, stable Tab, document and snapshot revisions.
+Each page is a fresh observation; on dynamic pages or document changes restart
+paging or use a query. An older controller lacking text pages, or a legacy one-shot environment,
+fails explicitly with upgrade guidance. No side-effecting action is automatically replayed.
+The integration must bump local/peer contracts and update version guards before
+merge; this lane allocates no protocol number or new client minimum.
+
 Protocol v285 and relay peer v21 add locator actions to the same physical route.
 Home-owned element resolution, stale-reference checks, actor admission, action
 serialization, and terminal history surround worker execution. The worker validates
