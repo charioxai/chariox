@@ -25,5 +25,5 @@ test("host restart reconciliation requires exact stopped generation and safe rec
   });
   assert.ifError(result.error);
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  assert.match(result.stderr, /Ran 16 tests/);
+  assert.match(result.stderr, /Ran 17 tests/);
 });
