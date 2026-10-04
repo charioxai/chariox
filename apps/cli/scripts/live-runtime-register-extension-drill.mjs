@@ -72,11 +72,11 @@ async function stopDaemon(child) {
   if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
 }
 
-async function waitForDaemon(kernelUrl, workspace) {
+async function waitForDaemon(kernelUrl, workspace, localAuthEnvironment) {
   const deadline = Date.now() + 25_000
   let lastError = null
   while (Date.now() < deadline) {
-    const client = new LocalIpcClient(kernelUrl)
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       const created = variant(await client.send(requests.createSessionRequest(workspace, workspace)), 'SessionCreated')
       await client.send(requests.endSessionRequest(created.session.id)).catch(() => {})
@@ -388,8 +388,8 @@ operations:
 
     const kernelBinary = await buildKernel()
     daemon = startDaemon(kernelBinary, env)
-    await waitForDaemon(kernelUrl, workspaceA)
-    client = new LocalIpcClient(kernelUrl)
+    await waitForDaemon(kernelUrl, workspaceA, env)
+    client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: env })
 
     const skillRuntime = await launchRuntimeSession(client, workspaceA, 'm16-skill')
     const skillRegister = await callRuntimeTool(skillRuntime.providerRun, 'chariox.register_skill_path', { path: path.relative(workspaceA, skillDir) })

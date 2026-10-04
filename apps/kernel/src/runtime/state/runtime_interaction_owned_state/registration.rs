@@ -8,6 +8,7 @@ impl KernelRuntimeOwnedState {
         responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
         kernel_operation_owner: Option<&str>,
         forwarding: Option<&crate::transport::relay_peer::RemoteNativeInteractionContext>,
+        terminal_credential_owner: Option<&str>,
     ) -> Result<(), DaemonError> {
         let _admission = self.begin_managed_activity_admission()?;
         let _mutation = self
@@ -51,6 +52,16 @@ impl KernelRuntimeOwnedState {
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let mut session = sessions.get_session(session_id)?.clone();
+        if terminal_credential_owner.is_some_and(|owner| {
+            owner != session.owner_user_id()
+                || kernel_operation_owner.is_some()
+                || interaction.agent_id().is_none()
+                || !interaction
+                    .timeout_sec()
+                    .is_some_and(|seconds| (1..=3600).contains(&seconds))
+        }) {
+            return Err(interaction_error("Invalid terminal credential prompt"));
+        }
         match (interaction.agent_id(), kernel_operation_owner) {
             (Some(_), None) => {}
             (None, Some(owner)) if interaction.kernel_operation_id().is_some() => {
@@ -58,9 +69,13 @@ impl KernelRuntimeOwnedState {
                     || interaction.kind() != crate::session::RuntimeInteractionKind::Permission
                     || interaction.default_on_timeout().is_some()
                     || interaction.custom_choice().is_some()
-                    || !interaction
-                        .timeout_sec()
-                        .is_some_and(|seconds| (1..=3600).contains(&seconds))
+                    || !interaction.timeout_sec().is_some_and(|seconds| {
+                        seconds >= 1
+                            && (seconds <= 3600
+                                || interaction
+                                    .kernel_operation_id()
+                                    .is_some_and(|id| id.starts_with("access-")))
+                    })
                 {
                     return Err(interaction_error("Invalid kernel operation decision"));
                 }
@@ -195,11 +210,19 @@ impl KernelRuntimeOwnedState {
                 worker: None,
             }
         });
+        // Protocol 403: a decision that needs the passkey is also a popup on
+        // every terminal of its owner.
+        let passkey_prompt = super::super::passkey_prompts::passkey_prompt(
+            &session,
+            &interaction,
+            crate::session::unix_epoch_ms(),
+        )?;
         let pending = super::super::PendingInteraction {
             agent_lifetime,
             session_id: session_id.into(),
             session_store_identity: self.session_store.weak_identity(),
             kernel_operation_owner: kernel_operation_owner.map(str::to_owned),
+            terminal_credential_owner: terminal_credential_owner.map(str::to_owned),
             kernel_operation_deadline: kernel_operation_owner.map(|_| {
                 std::time::Instant::now()
                     + std::time::Duration::from_secs(
@@ -208,6 +231,7 @@ impl KernelRuntimeOwnedState {
                             .expect("validated decision timeout"),
                     )
             }),
+            passkey_prompt: passkey_prompt.clone(),
             responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
         };
         let worker_live = pending.agent_lifetime.as_ref().is_none_or(|lifetime| {
@@ -230,9 +254,16 @@ impl KernelRuntimeOwnedState {
         }
         session.add_active_interaction(interaction.clone());
         let identity = pending.responder.clone();
+        if passkey_prompt.is_some() {
+            self.passkey_prompts
+                .forget_answered(session_id, interaction.id());
+        }
         self.pending_interactions
             .write()
             .insert(interaction.id().into(), pending);
+        if passkey_prompt.is_some() {
+            self.passkey_prompts.record_change();
+        }
         sessions.restore_session(session);
         activity_mutation.record();
         drop(sessions);
@@ -258,6 +289,9 @@ impl KernelRuntimeOwnedState {
                     session.remove_active_interaction(interaction.id());
                     sessions.restore_session(session);
                 }
+            }
+            if passkey_prompt.is_some() {
+                self.passkey_prompts.record_change();
             }
             return Err(error);
         }

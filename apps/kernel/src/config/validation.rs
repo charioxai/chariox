@@ -108,6 +108,12 @@ impl DaemonConfig {
                 message: "value must not be empty",
             });
         }
+        super::validate_local_socket_path(&self.local_socket_path).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "validate local Unix socket path",
+                message: error.to_string(),
+            }
+        })?;
         validate_non_empty("os_name", &self.os_name)?;
         validate_non_empty("kernel_websocket_host", &self.kernel_websocket_host)?;
         if self.kernel_websocket_port == 0 {
@@ -232,6 +238,7 @@ impl CharioxUserConfig {
         self.artifacts.validate()?;
         self.state.validate()?;
         self.slices.validate()?;
+        self.kernel_access.validate()?;
         validate_non_empty("credential_vault.service", &self.credential_vault.service)?;
         validate_non_empty("credential_vault.path", &self.credential_vault.path)?;
         validate_credential_vault_path(&self.credential_vault.path)?;

@@ -6,8 +6,9 @@ use crate::app::attachment_artifact_root;
 use crate::error::DaemonError;
 use crate::runtime::state::KernelRuntimeState;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(super) struct CapabilityContext {
+    state: KernelRuntimeState,
     pub(super) session_id: String,
     pub(super) attachment_id: String,
     pub(super) workspace_id: String,
@@ -21,6 +22,10 @@ pub(super) struct CapabilityContext {
 }
 
 impl CapabilityContext {
+    pub(super) fn authorize(&self) -> Result<(), DaemonError> {
+        self.state.authorize_current_external_command()
+    }
+
     pub(super) fn artifact_root(&self, category: &str) -> PathBuf {
         attachment_artifact_root(&self.session_id, &self.attachment_id, category)
     }
@@ -48,6 +53,7 @@ impl CapabilityRuntimeStore {
         attachment_id: &str,
         capability: &'static str,
     ) -> Result<CapabilityContext, DaemonError> {
+        self.state.authorize_current_external_command()?;
         let snapshot = self
             .state
             .capability_context(session_id, attachment_id, capability)
@@ -60,6 +66,7 @@ impl CapabilityRuntimeStore {
         };
         Ok(CapabilityContext {
             environment,
+            state: self.state.clone(),
             session_id: session_id.to_string(),
             attachment_id: attachment_id.to_string(),
             workspace_id: snapshot.workspace_id,

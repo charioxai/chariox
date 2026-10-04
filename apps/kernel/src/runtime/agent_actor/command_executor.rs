@@ -36,6 +36,18 @@ impl AgentRuntimeCommandExecutor {
         }
     }
 
+    pub(super) fn with_external_authority(
+        &self,
+        grant_id: String,
+        request: crate::local::LocalDaemonRequest,
+    ) -> Self {
+        let mut executor = self.clone();
+        executor.prompt_commands = self
+            .prompt_commands
+            .with_external_authority(grant_id, request);
+        executor
+    }
+
     pub(super) async fn execute(
         &self,
         command: AgentCommand,
@@ -107,6 +119,8 @@ impl AgentRuntimeCommandExecutor {
         )?;
         let meta_slash = crate::runtime::state::parse_meta_slash_command(&request.prompt);
         if let Some(meta_slash) = meta_slash.as_ref() {
+            self.prompt_commands
+                .record_meta_migration_notice(&request.session_id, &target_agent_id);
             if self
                 .prompt_commands
                 .session_task_lane_busy(&request.session_id)?

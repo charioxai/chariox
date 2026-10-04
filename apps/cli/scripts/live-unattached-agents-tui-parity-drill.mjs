@@ -313,8 +313,8 @@ async function main() {
     daemon = spawn(kernelBinary, [], { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"] })
     daemon.stdout.on("data", (chunk) => { daemonStdout += chunk.toString() })
     daemon.stderr.on("data", (chunk) => { daemonStderr += chunk.toString() })
-    await waitForKernel(LocalIpcClient, requests.listSessionsRequest, kernelUrl)
-    client = new LocalIpcClient(kernelUrl)
+    await waitForKernel(LocalIpcClient, requests.listSessionsRequest, kernelUrl, env)
+    client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: env })
     const directRefresh = unwrap(
       await client.send(refreshExternalProviderSessionsRequest()),
       "ExternalProviderSessionsRefreshed",

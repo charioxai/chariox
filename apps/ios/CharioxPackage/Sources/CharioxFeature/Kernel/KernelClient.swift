@@ -18,7 +18,7 @@ public struct KernelClient: KernelClientProtocol {
     }
 
     public func send(_ request: LocalDaemonRequest, to endpoint: URL) async throws -> LocalDaemonResponse {
-        let task = session.webSocketTask(with: endpoint)
+        let task = session.webSocketTask(with: KernelLocalAuth.connectionRequest(to: endpoint))
         task.resume()
         defer {
             task.cancel(with: .normalClosure, reason: nil)
@@ -66,7 +66,7 @@ public struct KernelClient: KernelClientProtocol {
         resumeFromEventID: Int64?
     ) -> AsyncThrowingStream<KernelEventFrame, Error> {
         AsyncThrowingStream { continuation in
-            let task = session.webSocketTask(with: endpoint)
+            let task = session.webSocketTask(with: KernelLocalAuth.connectionRequest(to: endpoint))
             task.resume()
 
             let streamTask = Task {

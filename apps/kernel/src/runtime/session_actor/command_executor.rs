@@ -1,5 +1,5 @@
 use crate::error::DaemonError;
-use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
+use crate::local::{KernelConnectionClass, LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::projection::{
     publish_session_runtime_projection, AgentRuntimeProjectionStore, SessionStateProjectionStore,
 };
@@ -25,6 +25,15 @@ pub(super) struct SessionRuntimeCommandExecutor {
 }
 
 impl SessionRuntimeCommandExecutor {
+    pub(super) fn with_external_command_authority(
+        &self,
+        authority: Option<(&str, &LocalDaemonRequest)>,
+    ) -> Self {
+        let mut executor = self.clone();
+        executor.store = self.store.with_external_command_authority(authority);
+        executor
+    }
+
     pub(super) fn new(
         store: SessionRuntimeStore,
         focus_projection: FocusedAgentProjection,
@@ -49,6 +58,7 @@ impl SessionRuntimeCommandExecutor {
         caller_user_id: String,
         caller_metaagent_id: Option<String>,
         terminal_caller: bool,
+        connection_class: Option<KernelConnectionClass>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let (result, projection_action) = if let Some(result) = projected_runtime_notices_response(
             &self.session_projection,
@@ -107,6 +117,7 @@ impl SessionRuntimeCommandExecutor {
                 caller_user_id,
                 caller_metaagent_id,
                 terminal_caller,
+                connection_class,
             )
             .await
         };
@@ -151,6 +162,7 @@ impl SessionRuntimeCommandExecutor {
         caller_user_id: String,
         caller_metaagent_id: Option<String>,
         terminal_caller: bool,
+        connection_class: Option<KernelConnectionClass>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -292,8 +304,18 @@ impl SessionRuntimeCommandExecutor {
                     .await
             }
             LocalDaemonRequest::RespondToInteraction(request) => {
+                // Managed host controllers keep their existing owner decision
+                // route, without becoming terminals. The interaction gate still
+                // refuses host passkeys and credential-prompt answers.
+                let owner_caller = terminal_caller
+                    || (caller_metaagent_id.is_none()
+                        && connection_class == Some(KernelConnectionClass::Host));
                 self.store
-                    .respond_to_interaction(request, terminal_caller.then_some(caller_user_id))
+                    .respond_to_interaction(
+                        request,
+                        owner_caller.then_some(caller_user_id),
+                        connection_class,
+                    )
                     .await
             }
             LocalDaemonRequest::AliasSession(request) => self.store.alias_session(request).await,

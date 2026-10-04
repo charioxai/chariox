@@ -80,7 +80,7 @@ async fn fd_exhaustion_transport_child() {
         router,
         listener,
         adopt_std_listener(mcp_listener, "test MCP").unwrap(),
-        None,
+        KernelLocalAuth::Unconfigured,
         async {
             let _ = shutdown_rx.await;
         },
@@ -415,7 +415,7 @@ async fn kernel_websocket_replies_to_ping_frames() {
             app,
             listener,
             mcp_listener,
-            None,
+            KernelLocalAuth::Unconfigured,
             async {
                 let _ = shutdown_rx.await;
             },
@@ -472,7 +472,7 @@ async fn kernel_websocket_refuses_browser_origins_with_or_without_local_auth() {
                 app,
                 listener,
                 mcp_listener,
-                token.map(Arc::<str>::from),
+                KernelLocalAuth::host_token_or_unconfigured(token.map(Arc::<str>::from)),
                 async {
                     let _ = shutdown_rx.await;
                 },
@@ -541,7 +541,7 @@ async fn kernel_websocket_auth_rejects_missing_or_wrong_tokens_before_accepting_
             app,
             listener,
             mcp_listener,
-            Some(Arc::<str>::from("kernel-local-auth-sentinel")),
+            KernelLocalAuth::HostToken(Arc::<str>::from("kernel-local-auth-sentinel")),
             async {
                 let _ = shutdown_rx.await;
             },
@@ -604,6 +604,375 @@ async fn kernel_websocket_auth_rejects_missing_or_wrong_tokens_before_accepting_
         .expect("server task should finish")
         .expect("server should exit cleanly");
 }
+
+#[tokio::test]
+async fn laptop_kernel_websocket_enforces_local_tokens() {
+    let listener = StdTcpListener::bind("127.0.0.1:0").expect("listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+    let mcp_listener =
+        StdTcpListener::bind("127.0.0.1:0").expect("runtime MCP listener should bind");
+    let config = daemon_config_for_runtime_mcp_listener(&mcp_listener);
+    let unix_socket = config.local_socket_path.clone();
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config).expect("daemon should boot"),
+    ));
+    let auth = Arc::new(local_auth::LocalTokenAuth::new(
+        local_auth::generate_kernel_local_auth_token(),
+    ));
+    let server_auth = KernelLocalAuth::LocalToken(Arc::clone(&auth));
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        run_kernel_websocket_server_on_listeners_with_auth(
+            app,
+            listener,
+            mcp_listener,
+            server_auth,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
+        .await
+    });
+
+    for authorization in [
+        None,
+        Some("Bearer chx_kat_wrong".to_string()),
+        Some(format!("Bearer {}", auth.token())),
+    ] {
+        let mut request = format!("ws://{addr}")
+            .into_client_request()
+            .expect("request should build");
+        if let Some(authorization) = &authorization {
+            request.headers_mut().insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(authorization).expect("header should be valid"),
+            );
+        }
+        let result = connect_async(request).await;
+        if authorization.as_deref() != Some(&format!("Bearer {}", auth.token())) {
+            let Err(tokio_tungstenite::tungstenite::Error::Http(response)) = result else {
+                panic!("missing and wrong tokens must fail the upgrade");
+            };
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let message = String::from_utf8(response.body().clone().unwrap()).unwrap();
+            assert!(message.contains(
+                &DaemonConfig::default_kernel_local_auth_token_path(addr.port())
+                    .display()
+                    .to_string()
+            ));
+            assert!(message.contains(&format!("ws+unix://{}", unix_socket.display())));
+            assert!(!message.contains(auth.token()));
+            assert!(!message.contains("chx_kat_wrong"));
+            continue;
+        }
+        let (mut socket, _) = result.expect("correct token should admit the connection");
+        socket
+            .send(Message::Ping(Vec::from("authenticated").into()))
+            .await
+            .expect("ping should send");
+        let pong = timeout(Duration::from_secs(2), async {
+            loop {
+                match socket.next().await {
+                    Some(Ok(Message::Pong(payload))) => break payload.to_vec(),
+                    Some(Ok(_)) => continue,
+                    Some(Err(error)) => panic!("websocket read failed: {error}"),
+                    None => panic!("websocket closed before pong"),
+                }
+            }
+        })
+        .await
+        .expect("pong should arrive");
+        assert_eq!(pong, b"authenticated");
+        let _ = socket.close(None).await;
+    }
+    // One authenticated, one missing and one wrong connection were counted.
+    assert_eq!(auth.counts(), (1, 1, 1));
+
+    let _ = shutdown_tx.send(());
+    timeout(Duration::from_secs(2), server)
+        .await
+        .expect("server should stop")
+        .expect("server task should finish")
+        .expect("server should exit cleanly");
+}
+
+/// Protocol 402: each websocket credential admits its connection class, and
+/// that class is the one a critical approval answer is audited with. A
+/// host cannot submit a passkey or use the owner's terminal remember window.
+#[cfg(unix)]
+#[tokio::test]
+async fn kernel_websocket_credentials_attribute_critical_approval_audits_to_their_class() {
+    const PASSKEY: &str = "correct horse battery";
+    let root = RuntimeTransportTempDir::new("connection-class");
+    let vault = root.path().join("vault.json");
+    crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY)
+        .expect("test vault should be created");
+
+    let laptop_auth = Arc::new(local_auth::LocalTokenAuth::new(
+        local_auth::generate_kernel_local_auth_token(),
+    ));
+    let laptop = ClassAuditKernel::start(
+        &root,
+        &vault,
+        KernelLocalAuth::LocalToken(Arc::clone(&laptop_auth)),
+    )
+    .await;
+    let terminal = Some(format!("Bearer {}", laptop_auth.token()));
+    assert_eq!(
+        laptop.answer(terminal, "approve", Some(PASSKEY)).await,
+        None
+    );
+    assert_eq!(
+        laptop.audits(),
+        [("verified".to_string(), serde_json::json!("terminal"))]
+    );
+    laptop.stop().await;
+
+    let host = ClassAuditKernel::start(
+        &root,
+        &vault,
+        KernelLocalAuth::HostToken(Arc::<str>::from("kernel-local-auth-sentinel")),
+    )
+    .await;
+    let host_token = Some("Bearer kernel-local-auth-sentinel".to_string());
+    let refused = host
+        .answer(host_token.clone(), "approve", Some(PASSKEY))
+        .await
+        .expect("a host passkey should be refused");
+    assert!(refused.contains("PASSKEY_NOT_ACCEPTED"), "{refused}");
+    // Open the owner's remember window through the terminal command path on
+    // this same runtime, then answer the other pending decision over the host
+    // websocket. Owner routing must not turn the host into a terminal.
+    let seed_id = format!("remember-seed-{:016x}", rand::random::<u64>());
+    let _seed = host
+        .router
+        .runtime_state()
+        .raise_critical_approval_for_test(&host.session_id, &seed_id)
+        .await;
+    let seed =
+        LocalDaemonRequest::RespondToInteraction(crate::local::RespondToInteractionRequest {
+            session_id: host.session_id.clone(),
+            interaction_id: seed_id,
+            choice_id: "approve".into(),
+            custom_reply: None,
+            passkey: Some(crate::local::ApprovalPasskey::new(PASSKEY)),
+            passkey_remember_minutes: Some(5),
+        });
+    let command = KernelCommand::from_local_request_with_caller(
+        "remember-seed",
+        KernelCommandSource::LocalCli,
+        crate::runtime::command::KernelCaller::for_source(&KernelCommandSource::LocalCli)
+            .with_connection_class(KernelConnectionClass::Terminal),
+        None,
+        None,
+        &seed,
+    );
+    host.router.dispatch(command, seed).await.unwrap();
+    let missing = host
+        .answer(host_token.clone(), "approve", None)
+        .await
+        .expect("approving still needs the passkey");
+    assert!(missing.contains("PASSKEY_REQUIRED"), "{missing}");
+    assert_eq!(host.answer(host_token, "deny", None).await, None);
+    assert!(
+        host.audits().is_empty(),
+        "hosts stay outside the passkey gate"
+    );
+    host.stop().await;
+}
+
+struct ClassAuditKernel {
+    config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
+    router: Arc<CommandRouter>,
+    addr: std::net::SocketAddr,
+    durable: crate::durable_state::DurableKernelStateStore,
+    session_id: String,
+    interaction_id: String,
+    _decision: Box<dyn std::any::Any + Send>,
+    shutdown: oneshot::Sender<()>,
+    server: tokio::task::JoinHandle<Result<(), DaemonError>>,
+}
+
+impl ClassAuditKernel {
+    async fn start(root: &RuntimeTransportTempDir, vault: &Path, auth: KernelLocalAuth) -> Self {
+        Self::start_for_owner(root, vault, auth, crate::session::DEFAULT_LOCAL_USER_ID).await
+    }
+
+    async fn start_for_owner(
+        root: &RuntimeTransportTempDir,
+        vault: &Path,
+        auth: KernelLocalAuth,
+        owner: &str,
+    ) -> Self {
+        let listener = StdTcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let mcp_listener =
+            StdTcpListener::bind("127.0.0.1:0").expect("runtime MCP listener should bind");
+        let mut config = daemon_config_for_runtime_mcp_listener(&mcp_listener);
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = vault.display().to_string();
+        config.user_config_path = root
+            .path()
+            .join(format!("config-{}.toml", rand::random::<u64>()));
+        if owner != crate::session::DEFAULT_LOCAL_USER_ID {
+            config.cloud_relay = Some(
+                serde_json::from_value(serde_json::json!({
+                    "api_url": "https://fixture.invalid", "email": "test@fixture.invalid",
+                    "account_id": "synthetic-account", "user_id": owner, "account_slug": "fixture",
+                    "realm_id": "synthetic-realm", "relay_url": "wss://fixture.invalid",
+                    "issuer_id": "synthetic-issuer", "client_id": "synthetic-terminal"
+                }))
+                .unwrap(),
+            );
+        }
+        let app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let mut session = crate::session::RuntimeSession::new(
+            format!("class-audit-{:016x}", rand::random::<u64>()),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
+        session.set_owner_user_id(owner);
+        let session_id = session.id().to_owned();
+        app.sessions_mut().restore_session(session);
+        let durable = app.durable_state_store();
+        let config_projection = app.config_projection_store();
+        let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+            Arc::new(Mutex::new(app)),
+            crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+        ));
+        let interaction_id = format!("class-audit-{:016x}", rand::random::<u64>());
+        let decision = router
+            .runtime_state()
+            .raise_critical_approval_for_test(&session_id, &interaction_id)
+            .await;
+        let listener = adopt_std_listener(listener, "kernel websocket").expect("listener");
+        let mcp_listener = adopt_std_listener(mcp_listener, "runtime mcp").expect("mcp listener");
+        let (shutdown, shutdown_rx) = oneshot::channel::<()>();
+        let server = tokio::spawn(run_kernel_websocket_server_with_bound_listeners(
+            Arc::clone(&router),
+            listener,
+            mcp_listener,
+            auth,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+        ));
+        Self {
+            config_projection,
+            router,
+            addr,
+            durable,
+            session_id,
+            interaction_id,
+            _decision: decision,
+            shutdown,
+            server,
+        }
+    }
+
+    /// Answers the pending decision over a new connection; the error message
+    /// on refusal.
+    async fn answer(
+        &self,
+        authorization: Option<String>,
+        choice: &str,
+        passkey: Option<&str>,
+    ) -> Option<String> {
+        let mut request = format!("ws://{}", self.addr)
+            .into_client_request()
+            .expect("request should build");
+        if let Some(authorization) = authorization {
+            request.headers_mut().insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&authorization).expect("header should be valid"),
+            );
+        }
+        let (mut socket, _) = connect_async(request)
+            .await
+            .expect("the connection should be accepted");
+        let request_id = format!("answer-{:016x}", rand::random::<u64>());
+        let frame = serde_json::json!({
+            "type": "request",
+            "request_id": request_id,
+            "request": LocalDaemonRequest::RespondToInteraction(
+                crate::local::RespondToInteractionRequest {
+                    session_id: self.session_id.clone(),
+                    interaction_id: self.interaction_id.clone(),
+                    choice_id: choice.into(),
+                    custom_reply: None,
+                    passkey: passkey.map(crate::local::ApprovalPasskey::new),
+                    passkey_remember_minutes: None,
+                },
+            ),
+        });
+        socket
+            .send(Message::Text(frame.to_string().into()))
+            .await
+            .expect("request should send");
+        let response = timeout(Duration::from_secs(10), async {
+            loop {
+                match socket.next().await {
+                    Some(Ok(Message::Text(text))) => {
+                        let value: Value = serde_json::from_str(&text).expect("frame is JSON");
+                        if value["type"] == "response" && value["request_id"] == request_id {
+                            break value;
+                        }
+                    }
+                    Some(Ok(_)) => continue,
+                    Some(Err(error)) => panic!("websocket read failed: {error}"),
+                    None => panic!("websocket closed before the response"),
+                }
+            }
+        })
+        .await
+        .expect("the response should arrive");
+        let _ = socket.close(None).await;
+        response["error"]["message"].as_str().map(str::to_owned)
+    }
+
+    /// The decision's audits: outcome and connection class, never a passkey.
+    fn audits(&self) -> Vec<(String, Value)> {
+        self.durable
+            .load_subject_events_by_kind(
+                &format!("validation:{}", self.interaction_id),
+                "critical_approval.passkey",
+                50,
+            )
+            .expect("audits should load")
+            .into_iter()
+            .map(|event| {
+                let payload = event.payload.to_string();
+                assert!(!payload.contains("correct horse") && !payload.contains("guess"));
+                assert!(!payload.contains("chx_kat_") && !payload.contains("sentinel"));
+                (
+                    event.payload["outcome"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                    event.payload["connection_class"].clone(),
+                )
+            })
+            .collect()
+    }
+
+    async fn stop(self) {
+        let _ = self.shutdown.send(());
+        timeout(Duration::from_secs(5), self.server)
+            .await
+            .expect("server should stop")
+            .expect("server task should finish")
+            .expect("server should exit cleanly");
+    }
+}
+
+#[cfg(unix)]
+mod kernel_access_config;
+#[cfg(unix)]
+mod passkey_prompts;
 
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
@@ -1371,8 +1740,7 @@ async fn slice_pending_backup_restore_acknowledgement_survives_crash_and_broker_
         "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED",
         std::ffi::OsStr::new("1"),
     );
-    let blocked = DaemonApp::bootstrap(config.clone())
-        .expect("a broker outage must not prevent kernel startup");
+    let blocked = crate::test_support::bootstrap_after_test_owner_exit(config.clone()).await;
     assert_eq!(
         blocked.slices().list_pending_restore_acknowledgements(),
         vec![owed.clone()]
@@ -1399,7 +1767,7 @@ async fn slice_pending_backup_restore_acknowledgement_survives_crash_and_broker_
     // Restart with the broker repaired: reconciliation acknowledges, and the
     // next restore starts and commits.
     let app = Arc::new(Mutex::new(
-        DaemonApp::bootstrap(config.clone()).expect("kernel should restart"),
+        crate::test_support::bootstrap_after_test_owner_exit(config.clone()).await,
     ));
     let router = CommandRouter::with_interactive_capacity(
         Arc::clone(&app),
@@ -1746,6 +2114,9 @@ async fn dispatch_transport_test_request(
         &outgoing,
         &close_tx,
         &Arc::new(AtomicBool::new(false)),
+        KernelConnectionClass::Unauthenticated,
+        None,
+        &Arc::default(),
         &payload,
     )
     .await;
@@ -1790,7 +2161,8 @@ fn restore_interruption_config(root: &Path) -> DaemonConfig {
     config.publication_control_state_root = Some(root.join("control"));
     config.user_config_path = root.join("config/chariox.toml");
     config.user_config.slices.root = Some(root.join("slices").display().to_string());
-    config.local_socket_path = root.join("kernel.sock");
+    config.local_socket_path =
+        DaemonConfig::default_local_socket_path(&format!("fixture:{}", root.display()));
     config
 }
 
@@ -2008,7 +2380,7 @@ async fn app_wake_deadline_interrupts_idle_transport_without_client_traffic() {
         Arc::new(Mutex::new(app)),
         listener,
         mcp,
-        None,
+        KernelLocalAuth::Unconfigured,
         async {
             let _ = stopped.await;
         },
@@ -2072,3 +2444,8 @@ async fn app_wake_deadline_interrupts_idle_transport_without_client_traffic() {
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod wake_pressure;
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod kernel_access_grants;
+
+mod ka_validation;

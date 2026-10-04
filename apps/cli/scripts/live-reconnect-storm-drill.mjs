@@ -80,8 +80,8 @@ try {
     try { resourceSamples.push({ at: Date.now(), processes: processMetrics(children) }) } catch {}
   }, 1_000)
   await waitForKernel()
-  control = new LocalIpcClient(`ws://127.0.0.1:${ports.kernel}`)
-  pressureControl = new LocalIpcClient(`ws://127.0.0.1:${ports.kernel}`)
+  control = new LocalIpcClient(`ws://127.0.0.1:${ports.kernel}`, { localAuthEnvironment: { ...process.env, XDG_STATE_HOME: path.join(root, "state") } })
+  pressureControl = new LocalIpcClient(`ws://127.0.0.1:${ports.kernel}`, { localAuthEnvironment: { ...process.env, XDG_STATE_HOME: path.join(root, "state") } })
   await waitFor(async () => unwrap(await control.send(requests.relayStatusRequest()), "RelayStatus")?.status?.connected === true, timeoutMs, "kernel relay connection")
 
   const contexts = []
@@ -522,7 +522,7 @@ async function availablePortBand() {
 }
 async function waitForKernel() {
   await waitFor(async () => {
-    const probe = new LocalIpcClient(`ws://127.0.0.1:${ports.kernel}`)
+    const probe = new LocalIpcClient(`ws://127.0.0.1:${ports.kernel}`, { localAuthEnvironment: { ...process.env, XDG_STATE_HOME: path.join(root, "state") } })
     try { await probe.send(requests.listSessionsRequest()); return true } catch { return false } finally { await probe.close().catch(() => undefined) }
   }, 30_000, "kernel readiness")
 }

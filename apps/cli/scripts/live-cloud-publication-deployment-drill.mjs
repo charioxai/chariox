@@ -351,8 +351,8 @@ async function main() {
     }
     kernel = startProcess(kernelBinary, [], env, 'kernel')
     const kernelUrl = `ws://127.0.0.1:${kernelPort}`
-    await waitForKernel(kernelUrl)
-    client = new LocalIpcClient(kernelUrl, { kernelPingIntervalMs: 60_000, kernelMaxMissedPongs: 10 })
+    await waitForKernel(kernelUrl, env)
+    client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: env, kernelPingIntervalMs: 60_000, kernelMaxMissedPongs: 10 })
     if (options.mode === 'local_runtime' && !useLocalRelay) {
       const connected = await connectKernelCloudRelay(client)
       logStep('cloud_relay_connected', { relayUrl: connected.relayUrl, tokenExpiresAtMs: connected.tokenExpiresAtMs })
@@ -516,7 +516,7 @@ async function main() {
         revoked: [],
         uninstalled: [],
         failures: [`cleanup:extension-state:${errorMessage(error)}`],
-      })
+      }))
       logStep('extension_cleanup', {
         revoked: outcome.revoked.length,
         uninstalled: outcome.uninstalled.length,

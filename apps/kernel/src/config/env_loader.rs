@@ -130,9 +130,11 @@ impl DaemonConfig {
             user_config,
             publication_control_state_root: env::var_os("CHARIOX_PUBLICATION_CONTROL_STATE_DIR")
                 .map(PathBuf::from),
+            // Clients discover the retained endpoint identity in the kernel registry,
+            // including workers that announce a distinct canonical slice reference.
             local_socket_path: env::var_os("CHARIOX_DAEMON_SOCKET")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| Self::default_local_socket_path(&daemon_id)),
+                .unwrap_or_else(|| Self::default_local_socket_path(&runtime_identity.daemon_id)),
             kernel_websocket_host,
             kernel_websocket_port,
             kernel_websocket_queue_capacity: env::var("CHARIOX_KERNEL_QUEUE_CAPACITY")

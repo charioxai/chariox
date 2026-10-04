@@ -193,9 +193,9 @@ async function terminateChild(child, signal = 'SIGTERM') {
   }
 }
 
-async function waitForLocalDaemon(kernelUrl, workspace, worktree) {
+async function waitForLocalDaemon(kernelUrl, workspace, worktree, localAuthEnvironment) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
-    const probe = new LocalIpcClient(kernelUrl)
+    const probe = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       const session = unwrap(await probe.send(createSessionRequest(workspace, worktree)), 'SessionCreated').session
       await probe.send(endSessionRequest(session.id)).catch(() => {})
@@ -408,10 +408,10 @@ async function main() {
     homeChild = spawnProcess(daemonBinary, [], { cwd: repoRoot, env: homeEnv })
     workerChild = spawnProcess(daemonBinary, [], { cwd: repoRoot, env: workerEnv })
 
-    await waitForLocalDaemon(homeKernelUrl, options.workspace, options.worktree)
+    await waitForLocalDaemon(homeKernelUrl, options.workspace, options.worktree, homeEnv)
     await waitForRelayTarget(relayUrl, clientRelayToken, 'home')
     await waitForRelayTarget(relayUrl, clientRelayToken, 'worker')
-    client = new LocalIpcClient(homeKernelUrl)
+    client = new LocalIpcClient(homeKernelUrl, { localAuthEnvironment: homeEnv })
     await client.send({ ConfigureRelay: { relay_url: relayUrl, relay_token: homeRelayToken } })
     await waitForRemoteMachine(client, workerMachineId)
 

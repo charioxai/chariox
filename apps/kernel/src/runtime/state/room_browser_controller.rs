@@ -23,18 +23,19 @@ impl KernelRuntimeState {
     ) -> Result<RelayPeerResponse, DaemonError> {
         match self.connected_relay_state_for_config(config).await {
             Some(relay_state) => {
-                crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+                crate::transport::relay_client::send_peer_request_via_connected_relay_authorized(
                     config,
                     &relay_state,
                     target,
                     request,
                     timeout,
+                    || self.authorize_current_external_command(),
                 )
                 .await
             }
             None => {
-                crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-                    config, target, request, timeout,
+                crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
+                    config, target, request, timeout, || self.authorize_current_external_command(),
                 )
                 .await
             }
@@ -116,6 +117,7 @@ impl KernelRuntimeState {
         background_probe: bool,
         admission_deadline: Option<tokio::time::Instant>,
     ) -> Result<Response, DaemonError> {
+        self.authorize_current_external_command()?;
         // Cleanup must remain available while the Room is quarantined, including
         // when the durable store cannot establish that execution is safe.
         if !recovery_authority
@@ -173,6 +175,7 @@ impl KernelRuntimeState {
                 ));
             }
             execute_local(
+                self.clone(),
                 self.owned.browser_controller_processes.clone(),
                 self.owned.computer_input_executions.clone(),
                 session_id,
@@ -180,6 +183,7 @@ impl KernelRuntimeState {
             )
             .await?
         };
+        // A completed controller effect must keep its result after grant revocation.
         match response {
             Response::ActionCancelled { controller_fenced } if admitted_mutation_command => {
                 Err(DaemonError::BrowserControllerActionCancelled { controller_fenced })
@@ -268,6 +272,7 @@ impl KernelRuntimeState {
         let response = match first {
             Ok(response) => response,
             Err(first_error) if recovery.is_some() => {
+                self.authorize_current_external_command()?;
                 send(target, recovery.expect("action recovery command"))
                 .await.map_err(|retry_error| controller_route_error(&format!(
                     "browser action result remained unavailable after non-mutating receipt recovery: {retry_error}; initial delivery error: {first_error}"
@@ -322,6 +327,7 @@ impl KernelRuntimeState {
             ));
         }
         execute_local(
+            self.clone(),
             self.owned.browser_controller_processes.clone(),
             self.owned.computer_input_executions.clone(),
             session_id,
@@ -448,11 +454,22 @@ fn lifecycle_recovery(
 }
 
 async fn execute_local(
+    state: KernelRuntimeState,
     processes: BrowserControllerProcessStore,
     computer_input_executions: crate::runtime::computer_input_execution::ComputerInputExecutionStore,
     session_id: &str,
     command: Command,
 ) -> Result<Response, DaemonError> {
+    state.authorize_current_external_command()?;
+    let controller_authorizer = state.clone();
+    let processes = processes.with_authorizer(Arc::new(move || {
+        controller_authorizer
+            .authorize_current_external_command()
+            .map_err(|error| error.to_string())
+    }));
+    let input_authorizer = state.clone();
+    let authorize_input: Arc<dyn Fn() -> Result<(), DaemonError> + Send + Sync> =
+        Arc::new(move || input_authorizer.authorize_current_external_command());
     let command = match command {
         Command::ComputerInput {
             action_id,
@@ -481,7 +498,9 @@ async fn execute_local(
             ) {
                 execution.withhold_capture().await;
             }
-            let cancellation = execution.cancellation();
+            let cancellation = execution
+                .cancellation()
+                .with_authorizer(authorize_input.clone());
             let input_result = match action {
                 crate::transport::room_browser_controller::RoomComputerInputAction::PointerMove {
                     x,
@@ -592,14 +611,16 @@ async fn execute_local(
                     "environment_clipboard_invalid_authority_context",
                 ));
             }
-            let content = super::tool_dispatch::run_room_clipboard_read().await?;
+            let content =
+                super::tool_dispatch::run_room_clipboard_read_authorized(Some(authorize_input))
+                    .await?;
             return Ok(Response::ComputerClipboard { content });
         }
         command => command,
     };
     let session_id = session_id.to_string();
     let recovery_processes = processes.clone();
-    let result = tokio::task::spawn_blocking(move || match command {
+    let result = authorized_controller_task(state, move || match command {
         Command::CancelAction { execution_id } => {
             let accepted = computer_input_executions.cancel(&session_id, &execution_id)
                 || processes.cancel_browser_action(&session_id, &execution_id);
@@ -859,8 +880,7 @@ async fn execute_local(
             })
             .map(|()| Response::CookieImportRecovered),
     })
-    .await
-    .map_err(|error| controller_route_error(&error.to_string()))?;
+    .await?;
     match result {
         Err(message) if message == CONTROLLER_RESTARTED_BEFORE_OPERATION => {
             let process = recovery_processes
@@ -899,6 +919,20 @@ fn room_slice_unreachable(
 
 pub(super) fn is_room_slice_unreachable(error: &DaemonError) -> bool {
     matches!(error, DaemonError::LocalTransport { message, .. } if message.starts_with(ROOM_SLICE_UNREACHABLE))
+}
+
+async fn authorized_controller_task(
+    state: KernelRuntimeState,
+    task: impl FnOnce() -> Result<Response, String> + Send + 'static,
+) -> Result<Result<Response, String>, DaemonError> {
+    tokio::task::spawn_blocking(move || {
+        state
+            .authorize_current_external_command()
+            .map_err(|error| error.to_string())?;
+        task()
+    })
+    .await
+    .map_err(|error| controller_route_error(&error.to_string()))
 }
 
 pub(super) fn controller_route_error(message: &str) -> DaemonError {

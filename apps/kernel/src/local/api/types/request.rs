@@ -2,6 +2,10 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
+    RequestKernelAccess(RequestKernelAccessRequest),
+    RequestKernelSudo(RequestKernelSudoRequest),
+    ListKernelAccessGrants(ListKernelAccessGrantsRequest),
+    RevokeKernelAccessGrant(RevokeKernelAccessGrantRequest),
     BeginAppPublisherEnrollment(BeginAppPublisherEnrollmentRequest),
     GetAppPublisherEnrollment(AppPublisherEnrollmentRequest),
     CancelAppPublisherEnrollment(AppPublisherEnrollmentRequest),

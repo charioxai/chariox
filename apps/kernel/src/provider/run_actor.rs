@@ -118,6 +118,15 @@ impl ProviderRunActorMailbox {
         self.native_interaction_bridge.read()
     }
 
+    pub(crate) fn claude_process_identities(
+        &self,
+    ) -> Vec<(
+        String,
+        crate::runtime::kernel_access::process::ProcessIdentity,
+    )> {
+        self.runtime_registry.claude_process_identities()
+    }
+
     pub(crate) fn insert_claude_runtime(&self, run_id: String, state: ClaudeRuntimeState) {
         self.runtime_registry.insert_claude_runtime(run_id, state);
     }

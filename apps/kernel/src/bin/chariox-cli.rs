@@ -64,7 +64,20 @@ fn run() -> Result<ExitCode, String> {
     // inherited value cannot override the cwd observed by this launcher.
     let terminal_cwd = env::current_dir()
         .map_err(|error| format!("failed to read terminal working directory: {error}"))?;
-    let status = Command::new(&bun)
+    let mut cli = Command::new(&bun);
+    #[cfg(unix)]
+    if args.first().map(String::as_str) == Some("access")
+        && args.get(1).map(String::as_str) == Some("request")
+        && !args.iter().any(|arg| arg == "--holder-pid")
+    {
+        cli.env(
+            "CHARIOX_CLI_ACCESS_HOLDER_PID",
+            chariox_kernel::local::default_access_holder_pid()
+                .map_err(|error| format!("cannot identify holder ancestor: {error}"))?
+                .to_string(),
+        );
+    }
+    let status = cli
         .env("CHARIOX_CLI_ORIGINAL_CWD", terminal_cwd)
         .arg(cli_dir.join("dist/index.js"))
         .args(args)

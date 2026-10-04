@@ -80,11 +80,11 @@ async function stopDaemon(child) {
   if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
 }
 
-async function waitForDaemon(kernelUrl) {
+async function waitForDaemon(kernelUrl, localAuthEnvironment) {
   const deadline = Date.now() + 25_000
   let lastError = null
   while (Date.now() < deadline) {
-    const client = new LocalIpcClient(kernelUrl)
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       await client.send(requests.listSessionsRequest())
       await client.close().catch(() => {})
@@ -479,8 +479,8 @@ operations:
 
     const kernelBinary = await buildKernel()
     daemon = startDaemon(kernelBinary, env)
-    await waitForDaemon(kernelUrl)
-    client = new LocalIpcClient(kernelUrl)
+    await waitForDaemon(kernelUrl, env)
+    client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: env })
 
     await client.send(requests.setCredentialSecretRequest(vaultKey, secretValue))
     const adapter = unwrap(await client.send(requests.registerConnectorAdapterRequest(adapterPath)), 'ConnectorAdapterRegistered').adapter

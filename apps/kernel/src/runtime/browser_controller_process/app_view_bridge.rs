@@ -26,6 +26,7 @@ impl BrowserControllerProcessStore {
             let mut ownership = ownership
                 .lock()
                 .map_err(|_| "browser controller supervisor lock poisoned")?;
+            self.authorize()?;
             ownership.require_app_view_lease(session_id)?;
             let supervisor = &mut ownership.supervisor;
             supervisor.prepare_unlocked_request()?;
@@ -49,6 +50,74 @@ mod tests {
     use super::super::tests::TestTool;
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn queued_app_view_calls_and_replies_reauthorize_before_dispatch() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let tool = TestTool::new(
+            r#"#!/bin/sh
+set -eu
+root=$1
+while IFS= read -r request; do
+  id=${request#*:}
+  id=${id%%,*}
+  case "$request" in
+    *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+    *'"method":"browser.app.'*) : > "$root/view-sent"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+    *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
+  esac
+done
+"#,
+        );
+        let store = BrowserControllerProcessStore::new(
+            tool.path(),
+            vec![tool.root.display().to_string()],
+            Duration::from_secs(3),
+        );
+        store.acquire("room").unwrap();
+        let live = Arc::new(AtomicBool::new(true));
+        let authority = live.clone();
+        let mut guarded = store.with_authorizer(Arc::new(move || {
+            if authority.load(Ordering::SeqCst) {
+                Ok(())
+            } else {
+                Err("revoked".into())
+            }
+        }));
+        let probe = Arc::new(tokio::sync::Notify::new());
+        guarded.observe_supervisor_lock_wait_for_test(probe.clone());
+        for request in [
+            BrowserAppViewRequest::Calls,
+            BrowserAppViewRequest::Respond {
+                target_id: "target".into(),
+                call_id: "call".into(),
+                result: None,
+                error: None,
+            },
+        ] {
+            live.store(true, Ordering::SeqCst);
+            let ownership = store.ownership.as_ref().unwrap().lock().unwrap();
+            let caller = guarded.clone();
+            let pending = std::thread::spawn(move || caller.app_view("room", &request));
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    tokio::time::timeout(Duration::from_secs(2), probe.notified())
+                        .await
+                        .unwrap();
+                });
+            live.store(false, Ordering::SeqCst);
+            drop(ownership);
+            assert_eq!(pending.join().unwrap().unwrap_err(), "revoked");
+            assert!(
+                !tool.root.join("view-sent").exists(),
+                "revoked queued work never reaches controller"
+            );
+        }
+        store.release("room").unwrap();
+    }
 
     #[test]
     fn app_view_idle_drain_does_not_hold_ownership_while_waiting() {
