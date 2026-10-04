@@ -169,3 +169,63 @@ fn clean_codex_utility_output(output: &str) -> String {
         .trim()
         .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{collections::BTreeMap, net::TcpListener, thread};
+    use serde_json::{json, Value};
+    use tokio_tungstenite::tungstenite::{accept, Message};
+    use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
+
+    #[test]
+    fn mp08_mp10_mp11_fresh_read_only_utility_uses_notifications_and_preserves_json() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let expected = "{\n  \"schema_version\": 1,\n  \"validation_commands\": []\n}";
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut socket = accept(stream).unwrap();
+            let mut methods = Vec::new();
+            while let Ok(message) = socket.read() {
+                let Message::Text(text) = message else { continue };
+                let request: Value = serde_json::from_str(&text).unwrap();
+                let method = request["method"].as_str().unwrap_or("");
+                if method == "initialized" { continue; }
+                methods.push(method.to_string());
+                let result = match method {
+                    "initialize" => json!({"userAgent":"fixture"}),
+                    "thread/start" => json!({"thread":{"id":"utility-thread"},"model":"fixture"}),
+                    "turn/start" => json!({"turn":{"id":"utility-turn"}}),
+                    // Fail explicitly like the official harness, rather than hanging.
+                    "thread/turns/list" => {
+                        socket.send(Message::Text(json!({"id": request["id"], "error":{"code":-32600,"message":"list_turns is not supported yet"}}).to_string().into())).unwrap();
+                        break;
+                    }
+                    _ => panic!("unexpected utility method {method}"),
+                };
+                socket.send(Message::Text(json!({"id":request["id"],"result":result}).to_string().into())).unwrap();
+                if method == "turn/start" {
+                    for notification in [
+                        json!({"method":"item/completed","params":{"threadId":"utility-thread","turnId":"utility-turn","item":{"id":"output","type":"agentMessage","text":expected}}}),
+                        json!({"method":"turn/completed","params":{"threadId":"utility-thread","turn":{"id":"utility-turn","status":"completed","items":[]}}}),
+                    ] {
+                        socket.send(Message::Text(notification.to_string().into())).unwrap();
+                    }
+                }
+            }
+            methods
+        });
+        let request = LaunchProviderRequest::new("session", "codex", "codex", "default", "fixture");
+        let run = RuntimeProviderRun::new("utility-run", &request, ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed, process_label:"fixture".into(),
+            pty_target:None, pty_program:None, pty_args:vec![], pty_env:BTreeMap::new(), pty_env_remove:vec![],
+            working_directory:None, structured_endpoint:Some(endpoint),
+        });
+        let output = run_codex_utility_prompt(&run, "Generate definition", "", Duration::from_secs(3), ProviderUtilityExecutionPolicy::ReadOnlyDiscovery);
+        let methods = server.join().unwrap();
+        assert_eq!(methods, ["initialize", "thread/start", "turn/start"]);
+        assert_eq!(output.unwrap(), expected);
+    }
+}

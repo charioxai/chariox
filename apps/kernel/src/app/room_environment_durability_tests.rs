@@ -140,3 +140,37 @@ fn room_environment_restart_retains_tabs_actions_and_idempotency_after_old_check
         "physical-target"
     );
 }
+
+// MP-08 / MP-10 / MP-11: preference changes use the same durable Room transaction.
+#[test]
+fn mp08_mp10_mp11_browser_bar_choice_survives_restart() {
+    let config = DaemonConfig::for_tests();
+    let room = {
+        let app = DaemonApp::bootstrap(config.clone()).unwrap();
+        let session = app.sessions_mut().create_session(CreateSessionRequest::new("workspace-bar", "worktree-bar")).unwrap();
+        app.save_durable_state_snapshot().unwrap();
+        let viewport = CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap();
+        app.sessions_mut().start_room_environment(session.id(), viewport).unwrap();
+        app.sessions_mut().transition_room_environment(session.id(), EnvironmentLifecycle::Ready).unwrap();
+        app.sessions_mut().set_room_browser_bar_visible_as_actor(session.id(), EnvironmentActor::new("human", EnvironmentActorKind::Human, "Human"), true).unwrap();
+        session.id().to_owned()
+    };
+    let app = DaemonApp::bootstrap(config).unwrap();
+    assert!(app.sessions().room_environment_snapshot(&room).unwrap().browser_bar_visible);
+}
+
+#[test]
+fn mp08_mp10_mp11_browser_bar_failed_write_rolls_back() {
+    let config = DaemonConfig::for_tests();
+    let app = DaemonApp::bootstrap(config.clone()).unwrap();
+    let session = app.sessions_mut().create_session(CreateSessionRequest::new("workspace-bar", "worktree-bar")).unwrap();
+    let viewport = CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap();
+    app.sessions_mut().start_room_environment(session.id(), viewport).unwrap();
+    app.sessions_mut().transition_room_environment(session.id(), EnvironmentLifecycle::Ready).unwrap();
+    let before = app.sessions().room_environment_snapshot(session.id()).unwrap();
+    let connection = rusqlite::Connection::open(config.durable_state_path()).unwrap();
+    connection.execute_batch("CREATE TRIGGER fail_room_bar BEFORE INSERT ON durable_room_environments BEGIN SELECT RAISE(ABORT, 'synthetic write failure'); END;").unwrap();
+    let result = app.sessions_mut().set_room_browser_bar_visible_as_actor(session.id(), EnvironmentActor::new("human", EnvironmentActorKind::Human, "Human"), true);
+    assert!(matches!(result, Err(crate::session::EnvironmentError::DurableStateUnavailable)));
+    assert_eq!(app.sessions().room_environment_snapshot(session.id()).unwrap(), before);
+}
