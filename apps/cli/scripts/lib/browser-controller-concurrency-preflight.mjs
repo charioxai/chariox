@@ -3,6 +3,8 @@
 import assert from "node:assert/strict";
 
 export const concurrencyTestSymbol = "runtime::state::tool_dispatch::slice::controller_browser::concurrency_drill::headed_controller_concurrency_acceptance";
+// Debug-build kernel futures exceed Linux's default 2 MiB test-thread stack.
+export const concurrencyRustMinStackBytes = 32 * 1024 * 1024;
 
 export function assertConcurrencyArtifact({ sha256, expectedSha256, listing }) {
   if (expectedSha256 !== undefined) {

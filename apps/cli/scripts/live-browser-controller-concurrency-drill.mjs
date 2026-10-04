@@ -9,7 +9,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, statfs, symlink, writeFile } fr
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { assertConcurrencyArtifact, assertConcurrencyResources, concurrencyTestSymbol } from "./lib/browser-controller-concurrency-preflight.mjs";
+import { assertConcurrencyArtifact, assertConcurrencyResources, concurrencyRustMinStackBytes, concurrencyTestSymbol } from "./lib/browser-controller-concurrency-preflight.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const options = {};
@@ -27,7 +27,8 @@ const container = `chariox-ctlconc-${process.pid}-${Date.now()}`;
 const mp_items = ["MP-08", "MP-10"];
 const memoryFloorGiB = Number(options["memory-floor-gib"] ?? 4);
 const receipt = { mp_items, startedAt: new Date().toISOString(), command: process.argv,
-  image: options.image, container, controllerBoundMs: 5000, memoryFloorGiB, commands: [], resources: [], cleanup: null,
+  image: options.image, container, controllerBoundMs: 5000, memoryFloorGiB,
+  rustMinStackBytes: concurrencyRustMinStackBytes, commands: [], resources: [], cleanup: null,
   limitations: ["Local synthetic kernel clients and real headed controller; no provider, Web, hosted relay, signed release or fresh Path-1 acceptance."] };
 const owned = new Set();
 let interrupted = false;
@@ -100,7 +101,8 @@ try {
   const test = await command(options["test-binary"], [
     concurrencyTestSymbol,
     "--exact", "--ignored", "--nocapture"], { timeout: 60000, log: path.join(options.output, "test.log"),
-    env: { ...process.env, PATH: transportDirectory + path.delimiter + process.env.PATH,
+    env: { ...process.env, RUST_MIN_STACK: String(concurrencyRustMinStackBytes),
+      PATH: transportDirectory + path.delimiter + process.env.PATH,
       CHARIOX_CONCURRENCY_REAL_DOCKER: realDocker,
       CHARIOX_CONCURRENCY_TRANSPORT_RECEIPT: path.join(options.output, "transport.jsonl"),
       CHARIOX_CONCURRENCY_CONTAINER: container, CHARIOX_CONCURRENCY_FIXTURE: mapping } });
