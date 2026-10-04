@@ -1216,8 +1216,10 @@ network attachments retain actual allowlisted CDP metadata, omitting cookie,
 auth and bodies. `slice_browser_upload` also accepts Room-owned opaque
 `artifact_ids`; home verifies and transfers bytes through the existing upload
 admission, staging and recovery path. The new controller peer Artifact variant
-and opaque upload variant require matching home/worker versions. Relay peer
-version coordination is pending merge allocation. See
+and opaque upload variant require relay peer protocol v71. The existing lease
+admission/rebind and hosted token installation/confirmation gates reject v70
+peers before these operations; image preflight requires v71 and matching runtime
+source lineage. Local client protocol remains v420. See
 `docs/BROWSER_CONTROLLERFILES_ACCEPTANCE.md` for bounds and validation limits.
 
 `slice_screenshot` returns inline PNG data as the standard MCP `image` content
