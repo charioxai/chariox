@@ -4,7 +4,7 @@
   "docker/browser-cdp.mjs": "99f0663a193370ead9ca134949cca09a74a7617b2e47db39f09bc868371ec956",
   "docker/browser-lifecycle.py": "a54c3ca226d8816f84deca253edca578107ff68602eccc0c1a0892c986bdbbc5",
   "docker/browser-upload-store.py": "68112d4f4143f76f1544bb26f363a4ad7bc1d6c105d07ddcf790c3856ad39c88",
-  "docker/browser-controller-actions.mjs": "33a1b4b966bdd1ec547d4fa4fcae102a6654091d59ab3fe8fe29f19f97328344",
+  "docker/browser-controller-actions.mjs": "08fb079c1e8e7b6766d9ef3e97505dcbebbac33193c87e9b011dd82a7e58079c",
   "docker/browser-controller-bar.mjs": "d106b12397f4f41ba9d96ef56af4854facd7a88d42e0bcda6762dc1a5626f5fe",
   "docker/browser-controller-cdp.mjs": "48f6f2cf30995a11cb214532e6a5f8d9b770f5ff8c712fb72fef275c856e5ec6",
   "docker/browser-controller-compatibility.mjs": "437fee2ae34059446ded032effe79f4fbd864a3d9cbc3a1b7c29551c0b34ab80",
@@ -22,5 +22,5 @@
   "chromium-seccomp.json": "9bca667a1e5f4ff084f2784f37d38d69bee86f1a305ec9dc30d3e1c61b5125b5",
   "restore-script": "cdf5891bdf7b36aa80ad74be590a953d3e6d9f6c5656967bdcfeb8dbc3b3fe5c",
   "docker/browser-controller-text.mjs": "836a18f5b937756fff91f2c76f70ac4d5b4f3a2b02f9becfe953c5a69f8672ec",
-  "docker/browser-controller-selection.mjs": "7410676b89d1e245d466c503836be4e0446e1ed765e38a3cbf06999b4c89f5e6"
+  "docker/browser-controller-selection.mjs": "3b27408839dc1f276f4797e9fc8efc830ff1472ea556f9f347effb565c178027"
 }
