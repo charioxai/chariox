@@ -274,7 +274,9 @@ impl KernelRuntimeState {
             .delivery_lock(&slice)?
             .lock_owned()
             .await;
-        self.deliver_slice_observation_revocations(slice_id).await
+        // MP-08/MP-10/MP-11: even empty/local admission paths share this future.
+        // Keep the relay delivery state behind the remote allocation boundary.
+        Box::pin(self.deliver_slice_observation_revocations(slice_id)).await
     }
 
     async fn deliver_slice_observation_revocations(

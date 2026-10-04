@@ -1,5 +1,53 @@
 use super::*;
 
+// MP-08/MP-10/MP-11: even non-Vault peer requests construct these shared
+// futures. Keep relay delivery out of their inline state on kernel stacks.
+#[tokio::test]
+async fn revocation_transport_keeps_room_controller_future_bounded() {
+    use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
+    let room = TestRoom::new("vault-retirement-stack");
+    let future = room.runtime.room_browser_controller_command(
+        &room.session_id,
+        Command::ClearSecretObservation {
+            disposition: Disposition::Retire,
+        },
+    );
+    let bytes = std::mem::size_of_val(&future);
+    assert!(
+        bytes <= 32 * 1024,
+        "Room controller future embeds relay transport: {bytes} bytes"
+    );
+    assert!(matches!(
+        future.await.unwrap(),
+        Response::SecretObservationCleared
+    ));
+}
+
+#[tokio::test]
+async fn revocation_transport_keeps_slice_admission_future_bounded() {
+    use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
+    let room = TestRoom::new("vault-admission-stack");
+    let future = room
+        .runtime
+        .settle_slice_observation_revocations("missing-slice");
+    let bytes = std::mem::size_of_val(&future);
+    assert!(
+        bytes <= 4096,
+        "Revocation admission embeds relay delivery: {bytes} bytes"
+    );
+    assert!(future.await.is_err());
+
+    let future = room
+        .runtime
+        .guard_slice_execution(None, [(None, None)], "agent.spawn");
+    let bytes = std::mem::size_of_val(&future);
+    assert!(
+        bytes <= 4096,
+        "Ordinary admission embeds relay delivery: {bytes} bytes"
+    );
+    assert_eq!(future.await.unwrap().slice_ids, vec![None]);
+}
+
 struct TestRoot(PathBuf);
 impl TestRoot {
     fn new() -> Self {

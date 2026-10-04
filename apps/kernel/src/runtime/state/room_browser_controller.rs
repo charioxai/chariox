@@ -155,9 +155,12 @@ impl KernelRuntimeState {
             {
                 // An unavailable worker cannot veto the home mutation. Its durable
                 // receipt remains mandatory at the next admission, including after deletion.
-                let _ = self
-                    .route_room_browser_controller_command(session_id, slice, command, false, None)
-                    .await;
+                // MP-08/MP-10/MP-11: use the same boxed transport boundary as
+                // ordinary Room commands, keeping relay state off every caller's stack.
+                let _ = Box::pin(self.route_room_browser_controller_command(
+                    session_id, slice, command, false, None,
+                ))
+                .await;
             }
             return Ok(Response::SecretObservationCleared);
         }
