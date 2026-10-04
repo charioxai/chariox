@@ -1,5 +1,26 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 PR846 shared Computer review correction, b204 (2026-10-04)
+
+The safe Unicode allocation pool remains keycodes 8/92, while core and XKB
+lookup retain the pinned implementation's full inherited-overlay distrust set.
+An inherited Unicode overlay on excluded BrowserRefresh keycode 181 must be
+rebound into a safe slot; an exhausted safe pool fails before input. Focused
+tests use the actual pinned lookup/prebind/press/release methods with a fake
+display. A physical Chromium fixture reproduces document reload with the old
+policy and acknowledges trusted text with the corrected policy.
+
+The pointer fixture checks the three single/double-click effects before the
+drag. Its independent drag receipt counts press, release and any release click.
+The pointer target disables text selection so this row cannot accidentally
+start a native selected-text drag; textarea selection remains a separate row.
+The existing target-test import stub now includes XK, introduced by hold421.
+
+No managed-placement branch, provider path or serialized contract changes in
+this correction. Allocated local protocol421 and relay70 remain unchanged.
+Physical helper and source proofs remain separate from live Room/provider,
+host-browser, Web/TUI, IME and Vault observations. MP-08/MP-10/MP-11 stay open.
+
 ## MP-08 / MP-10 / MP-11 bounded Computer hold continuation, b204 (2026-10-04)
 
 Coordinator-allocated local protocol421 adds keyboard and pointer holds through

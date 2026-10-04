@@ -206,23 +206,66 @@ def main():
             case("keyboard." + layout + "." + str(len(text)), lambda layout=layout, text=text: text_check(layout, text))
         execute("setxkbmap", "us")
 
+        def inherited_overlay_check():
+            prepare()
+            before = receipt()
+            # Another keyboard handler may leave an overlay on an otherwise
+            # spare hardware code. Seed its exact shape on BrowserRefresh.
+            execute(PYTHON, "-c", "from selkies.Xlib import display; d=display.Display(); "
+                    "assert 181 not in {kc for row in d.get_modifier_mapping() for kc in row}; "
+                    "d.change_keyboard_mapping(181, [[0x01004e16, 0x01004e16]]); d.sync(); d.close()")
+            try:
+                screen("computer-type-stdin", stdin="世".encode())
+                def acknowledged():
+                    current = receipt()
+                    return current if current["value"]["documentId"] != before["value"]["documentId"] or current["value"]["value"] == "世" else None
+                after = wait(acknowledged)
+                assert after["value"]["documentId"] == before["value"]["documentId"], "inherited unsafe overlay reloaded the browser document"
+                assert after["value"]["value"] == "世", "inherited unsafe overlay bypassed safe text allocation"
+                events = after["value"]["events"][len(before["value"]["events"]):]
+                assert any(e["kind"] == "input" and e["trusted"] for e in events), "inherited overlay lacks trusted input acknowledgement"
+                assert not any(e.get("key") == "BrowserRefresh" or e.get("code") == "BrowserRefresh" for e in events), "unsafe hardware code reached Chromium"
+                assert after["value"]["focused"] == "TEXTAREA", "inherited overlay changed editor focus"
+                return {"inheritedKeycode": 181, "sameDocument": True, "trustedText": True, "focusRetained": True}
+            finally:
+                execute("setxkbmap", "us")
+        case("keyboard.inherited-unsafe-overlay", inherited_overlay_check)
+
         def pointer_check():
             before = len(receipt()["value"]["events"])
             screen("pointer-click", *point(100, 280), "left", 1)
             screen("pointer-click", *point(100, 280), "left", 2)
             screen("pointer-click", *point(100, 280), "right", 1)
-            screen("pointer-drag", *point(100, 280), *point(240, 300), "left")
-            screen("pointer-scroll", *point(500, 280), 3, 3)
-            after = wait(lambda: receipt()["value"] if receipt()["value"]["scrollY"] > 0 else None)
-            events = after["events"][before:]
+            def clicked():
+                current = receipt()["value"]
+                events = current["events"][before:]
+                return current if any(e["kind"] == "contextmenu" for e in events) else None
+            after_clicks = wait(clicked)
+            events = after_clicks["events"][before:]
             clicks = sum(e["kind"] == "click" and e["button"] == 0 for e in events)
             assert clicks == 3, f"single/double-click effect counts differ: {clicks}"
             assert sum(e["kind"] == "dblclick" for e in events) == 1, "double-click not acknowledged exactly once"
             assert sum(e["kind"] == "contextmenu" for e in events) == 1, "right-click not acknowledged exactly once"
-            assert any(e["kind"] == "mousemove" and e["buttons"] == 1 for e in events), "drag did not retain held button"
+            # A drag release within this target can also dispatch a click.
+            # Count the single/double clicks before delivering the drag.
+            drag_start = len(after_clicks["events"])
+            screen("pointer-drag", *point(100, 280), *point(240, 300), "left")
+            screen("pointer-scroll", *point(500, 280), 3, 3)
+            def scrolled():
+                current = receipt()["value"]
+                return current if current["scrollX"] > 0 and current["scrollY"] > 0 else None
+            after = wait(scrolled)
+            drag_events = after["events"][drag_start:]
+            assert sum(e["kind"] == "mousedown" and e["button"] == 0 for e in drag_events) == 1, "drag initial press differs"
+            releases = sum(e["kind"] == "mouseup" and e["button"] == 0 for e in drag_events)
+            assert releases == 1, f"drag release differs: {releases}"
+            drag_clicks = sum(e["kind"] == "click" and e["button"] == 0 for e in drag_events)
+            assert drag_clicks <= 1, "drag release produced duplicate clicks"
+            assert any(e["kind"] == "mousemove" and e["buttons"] == 1 for e in drag_events), "drag did not retain held button"
             assert after["scrollX"] > 0 and after["scrollY"] > 0, "both scroll axes must move"
-            assert all(e["trusted"] for e in events), "untrusted pointer event"
-            return {"clicks": 3, "doubleClicks": 1, "rightClicks": 1, "scrollAxes": 2}
+            assert all(e["trusted"] for e in after["events"][before:]), "untrusted pointer event"
+            return {"clicks": 3, "doubleClicks": 1, "rightClicks": 1, "dragPresses": 1,
+                    "dragReleases": 1, "dragReleaseClicks": drag_clicks, "scrollAxes": 2}
         case("pointer.click-double-right-drag-scroll", pointer_check)
 
         def clipboard_check():
