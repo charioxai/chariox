@@ -22,6 +22,8 @@ pub(crate) struct BrowserControllerStructuredSnapshot {
     #[serde(default)]
     pub(crate) shadow_roots: Vec<BrowserControllerShadowRoot>,
     pub(crate) dom_nodes: Vec<BrowserControllerDomNode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) text_page: Option<BrowserTextPage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -76,6 +78,10 @@ pub(crate) struct BrowserControllerDomNode {
     pub(crate) node_type: u32,
     pub(crate) node_name: String,
     pub(crate) text: String,
+    #[serde(default)]
+    pub(crate) clickable: bool,
+    #[serde(default = "legacy_rendered")]
+    pub(crate) rendered: bool,
     pub(crate) attributes: BTreeMap<String, String>,
     pub(crate) bounds: Option<BrowserControllerNodeBounds>,
 }
@@ -102,6 +108,7 @@ pub(crate) struct RoomBrowserStructuredSnapshot {
     pub(crate) dom_documents: Vec<RoomBrowserDomDocument>,
     pub(crate) shadow_roots: Vec<RoomBrowserShadowRoot>,
     pub(crate) dom_nodes: Vec<RoomBrowserDomNode>,
+    pub(crate) text_page: Option<BrowserTextPage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,8 +147,44 @@ pub(crate) struct RoomBrowserDomNode {
     pub(crate) node_type: u32,
     pub(crate) node_name: String,
     pub(crate) text: String,
+    pub(crate) clickable: bool,
+    pub(crate) rendered: bool,
     pub(crate) attributes: BTreeMap<String, String>,
     pub(crate) bounds: Option<BrowserControllerNodeBounds>,
+}
+
+fn legacy_rendered() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct BrowserTextPage {
+    pub(crate) text: String,
+    pub(crate) offset: u64,
+    pub(crate) next_offset: Option<u64>,
+    pub(crate) total_bytes: u64,
+    pub(crate) query: Option<String>,
+}
+
+impl BrowserTextPage {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        let end = self
+            .offset
+            .checked_add(self.text.len() as u64)
+            .ok_or_else(|| "browser text page offset overflow".to_string())?;
+        if self.text.len() > 1024
+            || end > self.total_bytes
+            || self.next_offset != (end < self.total_bytes).then_some(end)
+            || self.next_offset.is_some() && self.text.is_empty()
+            || self.query.as_ref().is_some_and(|query| query.len() > 2048)
+        {
+            return Err(
+                "browser text page exceeded its bounds or returned an invalid continuation"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
 }
 
 impl BrowserControllerStructuredSnapshot {
@@ -159,6 +202,9 @@ impl BrowserControllerStructuredSnapshot {
             return Err(
                 "browser controller snapshot changed target or document identity".to_string(),
             );
+        }
+        if let Some(page) = &self.text_page {
+            page.validate()?;
         }
         validate_accessibility_nodes(&self.accessibility_nodes)?;
         validate_dom_nodes(&self.dom_nodes)?;
@@ -216,6 +262,8 @@ impl BrowserControllerStructuredSnapshot {
                     node_type: node.node_type,
                     node_name: node.node_name,
                     text: node.text,
+                    clickable: node.clickable,
+                    rendered: node.rendered,
                     attributes: node.attributes,
                     bounds: node.bounds,
                 })
@@ -256,6 +304,7 @@ impl BrowserControllerStructuredSnapshot {
             dom_documents,
             shadow_roots,
             dom_nodes,
+            text_page: self.text_page,
         })
     }
 }
@@ -620,6 +669,46 @@ mod tests {
         assert!(room.document_url_for_element("element-missing").is_err());
     }
 
+    #[test]
+    fn mp08_text_page_rejects_unbounded_or_inconsistent_continuations() {
+        let mut page = BrowserTextPage {
+            text: "Visible".into(),
+            offset: 0,
+            next_offset: None,
+            total_bytes: 7,
+            query: None,
+        };
+        page.validate().unwrap();
+        page.next_offset = Some(7);
+        assert!(page.validate().is_err());
+        page.next_offset = None;
+        page.text = "x".repeat(1025);
+        page.total_bytes = 1025;
+        assert!(page.validate().is_err());
+        page.offset = u64::MAX;
+        assert!(page.validate().is_err());
+    }
+
+    #[test]
+    fn mp08_legacy_snapshot_metadata_is_compatible_but_has_no_text_paging() {
+        let old = serde_json::json!({"node_ref":"backend:1", "parent_ref":null, "document_index":0,
+            "node_type":1, "node_name":"BUTTON", "text":"", "attributes":{}, "bounds":null});
+        let node: BrowserControllerDomNode = serde_json::from_value(old).unwrap();
+        assert!(node.rendered);
+        assert!(!node.clickable);
+        assert!(valid_snapshot().text_page.is_none());
+        let args: crate::transport::runtime_tools::SliceBrowserTextArgs =
+            serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(args.max_bytes, 1024);
+        args.validate().unwrap();
+        assert!(
+            serde_json::from_value::<crate::transport::runtime_tools::SliceBrowserTextArgs>(
+                serde_json::json!({"selector":"body"})
+            )
+            .is_err()
+        );
+    }
+
     fn valid_snapshot() -> BrowserControllerStructuredSnapshot {
         BrowserControllerStructuredSnapshot {
             browser_generation: 1,
@@ -634,6 +723,7 @@ mod tests {
                 owner_node_ref: None,
             }],
             shadow_roots: Vec::new(),
+            text_page: None,
             dom_nodes: vec![BrowserControllerDomNode {
                 node_ref: "backend:1".to_string(),
                 parent_ref: None,
@@ -641,6 +731,8 @@ mod tests {
                 node_type: 1,
                 node_name: "INPUT".to_string(),
                 text: String::new(),
+                clickable: false,
+                rendered: true,
                 attributes: BTreeMap::from([("value".to_string(), "[redacted]".to_string())]),
                 bounds: None,
             }],

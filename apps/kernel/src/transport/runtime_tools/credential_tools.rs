@@ -724,3 +724,31 @@ pub fn canonical_credential_tool_name(tool_name: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+// MP-08 / MP-10 / MP-11: byte paging is over rendered text, optionally queried.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SliceBrowserTextArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default)]
+    pub offset: u64,
+    #[serde(default = "browser_text_page_bytes")]
+    pub max_bytes: u64,
+}
+fn browser_text_page_bytes() -> u64 {
+    1024
+}
+impl SliceBrowserTextArgs {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if !(4..=1024).contains(&self.max_bytes)
+            || self.offset > 9_007_199_254_740_991
+            || self.query.as_ref().is_some_and(|query| query.len() > 2048)
+        {
+            return Err(
+                "browser text requires a bounded query, byte offset and max_bytes (4..1024)".into(),
+            );
+        }
+        Ok(())
+    }
+}

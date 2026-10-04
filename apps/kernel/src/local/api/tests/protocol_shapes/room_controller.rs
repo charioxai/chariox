@@ -552,6 +552,7 @@ fn room_controller_protocol_shapes_are_versioned() {
             RoomBrowserControllerCommand::Snapshot {
                 target_id: "target-1".into(),
                 document_id: "doc-1".into(),
+                text_request: None,
             },
             serde_json::json!({"kind":"snapshot","target_id":"target-1","document_id":"doc-1"}),
         ),
@@ -782,7 +783,8 @@ fn room_controller_protocol_shapes_are_versioned() {
                 "document_index":0,"url":"https://example.test/","owner_node_ref":null
             }],"shadow_roots":[],
             "dom_nodes":[{"node_ref":"backend:1","parent_ref":null,"document_index":0,"node_type":1,"node_name":"BUTTON",
-                "text":"","attributes":{},"bounds":{"x":1.5,"y":2.0,"width":3.0,"height":4.0}}]
+                "text":"","clickable":false,"rendered":true,"attributes":{},"bounds":{"x":1.5,"y":2.0,"width":3.0,"height":4.0}}],
+            "text_page":{"text":"Visible","offset":0,"next_offset":null,"total_bytes":7,"query":null}
         }}),
         serde_json::json!({"kind":"tab","result":{
             "browser_generation":1,"target_id":"target-1","document_id":"doc-1",
@@ -1085,5 +1087,30 @@ fn secret_observation_revocation_wire_protocol_411_peer_70_is_hashed() {
             Sha256::digest(serde_json::to_vec(&response).unwrap())
         ),
         "793d616c37292c4b5ccdfe4e5d3c71b89ed89615fc5d0b32f8ae43f972de51f9"
+    );
+}
+
+// MP-08 / MP-10 / MP-11: intentionally requires integration protocol admission.
+// The browserfix lane does not allocate an aggregate protocol number.
+#[test]
+fn mp08_browser_round2_shape_hash_requires_protocol_integration_bump() {
+    use sha2::{Digest, Sha256};
+    let wire = serde_json::json!({"kind":"snapshot", "target_id":"target", "document_id":"doc",
+        "text_request":{"query":"Visible", "offset":4, "max_bytes":256}});
+    let command: RoomBrowserControllerCommand = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(command).unwrap(), wire);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+        "fb9dc6bab87ec3e6c894a8897ed886b6aebd79bf80bc364ca2eaa887451db7d0"
+    );
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION.cmp(&410),
+        std::cmp::Ordering::Greater,
+        "round-2 Browser contract needs an aggregate local protocol bump"
+    );
+    assert_eq!(
+        RELAY_PEER_PROTOCOL_VERSION.cmp(&69),
+        std::cmp::Ordering::Greater,
+        "round-2 Browser snapshot request crosses the peer contract"
     );
 }

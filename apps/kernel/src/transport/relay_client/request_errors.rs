@@ -6,6 +6,11 @@ use crate::error::DaemonError;
 use crate::local::LocalDaemonRequest;
 
 pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
+    if let Some(code) =
+        crate::runtime::browser_controller_error::browser_controller_error_code(error)
+    {
+        return relay_error(code, &error.to_string(), false);
+    }
     match error {
         DaemonError::AgentWorkerCleanup { source, .. } => {
             let mut mapped = map_relay_error(source);
@@ -173,6 +178,30 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mp08_controller_actionability_is_not_a_retryable_transport_failure() {
+        for code in [
+            "stale_element_reference",
+            "browser_element_obscured",
+            "browser_element_not_editable",
+            "browser_cdp_timeout",
+        ] {
+            let error = DaemonError::LocalTransport {
+                operation: "browser_controller.route",
+                message: format!(
+                    "browser controller `browser.action` failed with {code}: fixture cause"
+                ),
+            };
+            let projected = map_relay_error(&error);
+            assert_eq!(
+                projected.code, code,
+                "MP-08/MP-10/MP-11 relay must preserve controller cause"
+            );
+            assert!(!projected.retryable);
+            assert!(projected.message.contains("fixture cause"));
+        }
+    }
     use crate::local::{
         CancelRoomEnvironmentActionRequest, GetRoomEnvironmentEventsRequest,
         GetRoomEnvironmentStateRequest, ListRoomEnvironmentActionHistoryRequest,

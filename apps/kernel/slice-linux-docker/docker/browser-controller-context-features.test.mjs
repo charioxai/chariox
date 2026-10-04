@@ -324,8 +324,9 @@ test("M2 attributes popup actions to stable target/document identities and bound
       sleep: async (milliseconds) => { now += milliseconds; },
     }),
     (error) => error instanceof BrowserActionError
-      && error.code === "browser_action_timeout"
-      && error.reason === "disabled",
+      && error.code === "browser_element_disabled"
+      && error.reason === "disabled"
+      && error.message.includes("no input was delivered"),
   );
 });
 

@@ -1015,6 +1015,8 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
         "browser-controller-frames.mjs",
         "browser-controller-permissions.mjs",
         "browser-controller-snapshot.mjs",
+        "browser-controller-text.mjs",
+        "browser-controller-selection.mjs",
         "browser-controller.mjs",
         "managed-provider-isolation-probe.mjs",
         "managed-provider-isolation-probe-wrapper.sh",

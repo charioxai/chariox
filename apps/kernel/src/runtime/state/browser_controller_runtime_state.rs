@@ -406,10 +406,24 @@ impl KernelRuntimeState {
         })
     }
 
-    pub(crate) async fn capture_browser_environment_snapshot(
+    pub(crate) fn capture_browser_environment_snapshot<'a>(
+        &'a self,
+        session_id: &'a str,
+        tab_id: &'a str,
+    ) -> impl std::future::Future<
+        Output = Result<
+            crate::runtime::browser_controller_snapshot::RoomBrowserStructuredSnapshot,
+            DaemonError,
+        >,
+    > + 'a {
+        self.capture_browser_environment_snapshot_with_text(session_id, tab_id, None)
+    }
+
+    pub(crate) async fn capture_browser_environment_snapshot_with_text(
         &self,
         session_id: &str,
         tab_id: &str,
+        text_request: Option<crate::transport::runtime_tools::SliceBrowserTextArgs>,
     ) -> Result<
         crate::runtime::browser_controller_snapshot::RoomBrowserStructuredSnapshot,
         DaemonError,
@@ -428,6 +442,7 @@ impl KernelRuntimeState {
                 RoomBrowserControllerCommand::Snapshot {
                     target_id: binding.runtime_target_id.clone(),
                     document_id: binding.document_id.clone(),
+                    text_request,
                 },
             )
             .await?

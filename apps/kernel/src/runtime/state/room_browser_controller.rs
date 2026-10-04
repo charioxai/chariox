@@ -345,7 +345,8 @@ impl KernelRuntimeState {
             .map_err(|error| room_slice_unreachable(&slice.name, private_slice_relay, error));
         let response = match first {
             Ok(response) => response,
-            Err(first_error) if recovery.is_some() => {
+            Err(first_error) if recovery.is_some()
+                && crate::runtime::browser_controller_error::browser_controller_error_code(&first_error).is_none() => {
                 send(target, recovery.expect("action recovery command"))
                 .await.map_err(|retry_error| controller_route_error(&format!(
                     "browser action result remained unavailable after non-mutating receipt recovery: {retry_error}; initial delivery error: {first_error}"
@@ -744,8 +745,14 @@ async fn execute_local(
         Command::Snapshot {
             target_id,
             document_id,
+            text_request,
         } => processes
-            .capture_browser_snapshot(&session_id, &target_id, &document_id)
+            .capture_browser_snapshot_with_text(
+                &session_id,
+                &target_id,
+                &document_id,
+                text_request.as_ref(),
+            )
             .map(|snapshot| Response::Snapshot { snapshot }),
         Command::Tab {
             execution_id,

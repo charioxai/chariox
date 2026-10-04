@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   assertPrivateDebuggerUrl,
   BrowserCdpClient,
+  BrowserControllerError,
   CdpConnection,
 } from "./browser-controller-cdp.mjs";
 import { handleBrowserControllerRequest } from "./browser-controller.mjs";
@@ -15,6 +16,127 @@ const viewport = {
   desktop_pixel_width: 2560,
   desktop_pixel_height: 1440,
 };
+
+for (const method of ["reconcile", "snapshot"]) {
+  test(`MP-08/MP-10/MP-11 stalled ${method} retires only its read session and the next read recovers`, async (t) => {
+    const connection = new FakeConnection();
+    const send = connection.send.bind(connection);
+    let poisoned = false;
+    connection.send = async (name, params = {}, sessionId) => {
+      if (name === "Target.detachFromTarget" && params.sessionId === "session-a") poisoned = false;
+      if (name === "Page.getFrameTree" && sessionId === "session-a" && poisoned) {
+        connection.calls.push({method: name, params, sessionId});
+        throw new BrowserControllerError("browser_cdp_timeout", "Page.getFrameTree timed out during retirement");
+      }
+      return send(name, params, sessionId);
+    };
+    const browser = new BrowserCdpClient({connectionFactory: async () => connection});
+    t.after(() => browser.close());
+    const first = await browser.reconcile(viewport);
+    const request = {target_id: "target-a", document_id: "loader-a"};
+    const previousSnapshot = await browser.snapshot(request);
+    const before = connection.calls.length;
+    poisoned = true;
+    const read = () => method === "reconcile" ? browser.reconcile(viewport)
+      : browser.snapshot({target_id: "target-a", document_id: "loader-a"});
+    await assert.rejects(read(), {code: "browser_cdp_timeout"});
+    assert.equal(browser.documentIdsByTarget.get("target-a"), "loader-a");
+    assert.equal(browser.snapshotStateByTarget.get("target-a").revision, previousSnapshot.snapshot_revision);
+    const next = await browser.reconcile(viewport);
+    assert.deepEqual(next.tabs, first.tabs);
+    assert.equal(next.browser_generation, first.browser_generation);
+    assert.equal(browser.documentIdsByTarget.get("target-a"), "loader-a");
+    const recoveredSnapshot = await browser.snapshot(request);
+    assert.equal(recoveredSnapshot.snapshot_revision, previousSnapshot.snapshot_revision + 1,
+      "MP-08/MP-10/MP-11 retiring a reader must not reuse an observed snapshot revision");
+    const recovery = connection.calls.slice(before);
+    assert.equal(recovery.filter(c => c.method === "Target.detachFromTarget").length, 1);
+    assert.ok(!recovery.some(c => ["Input.dispatchMouseEvent", "Input.insertText", "Page.navigate", "Target.closeTarget"].includes(c.method)));
+    assert.equal(recovery.filter(c => c.method === "Target.attachToTarget" && c.params.targetId === "target-b").length, 0);
+  });
+}
+
+test("MP-08/MP-10/MP-11 a late reader detach cannot retire its replacement", async (t) => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({connectionFactory: async () => connection});
+  t.after(() => browser.close());
+  await browser.reconcile(viewport);
+  browser.sessionsByTarget.set("target-a", "session-replacement");
+  browser.targetsBySession.set("session-replacement", "target-a");
+  connection.emit({method: "Target.detachedFromTarget", params: {sessionId: "session-a", targetId: "target-a"}});
+  assert.equal(browser.sessionsByTarget.get("target-a"), "session-replacement");
+  assert.equal(browser.documentIdsByTarget.get("target-a"), "loader-a");
+  assert.equal(browser.targetsBySession.has("session-a"), false);
+  await browser.retireFailedReadSession(connection, "target-a", new BrowserControllerError("browser_cdp_timeout", "late old reader"), "session-a");
+  assert.equal(browser.sessionsByTarget.get("target-a"), "session-replacement");
+  assert.ok(!connection.calls.some(c => c.method === "Target.detachFromTarget"));
+});
+
+test("MP-08/MP-10/MP-11 a lost session on a live Tab retains its snapshot revision", async (t) => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({connectionFactory: async () => connection});
+  t.after(() => browser.close());
+  await browser.reconcile(viewport);
+  const request = {target_id: "target-a", document_id: "loader-a"};
+  const previous = await browser.snapshot(request);
+  const send = connection.send.bind(connection);
+  let failOnce = true;
+  connection.send = async (method, params, sessionId) => {
+    if (method === "Page.getFrameTree" && sessionId === "session-a" && failOnce) {
+      failOnce = false;
+      throw new BrowserControllerError("browser_cdp_command_failed", "Session with given id not found");
+    }
+    return send(method, params, sessionId);
+  };
+  const recovered = await browser.reconcile(viewport);
+  assert.ok(recovered.tabs.some(tab => tab.target_id === "target-a" && tab.document_id === "loader-a"));
+  assert.equal((await browser.snapshot(request)).snapshot_revision, previous.snapshot_revision + 1);
+});
+
+test("MP-08/MP-10/MP-11 navigation during reader retirement fences a late dialog answer", async (t) => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({connectionFactory: async () => connection});
+  t.after(() => browser.close());
+  await browser.reconcile(viewport);
+  const detaching = Promise.withResolvers();
+  const acknowledged = Promise.withResolvers();
+  const send = connection.send.bind(connection);
+  connection.send = async (method, params, sessionId) => {
+    if (method === "Target.detachFromTarget" && params.sessionId === "session-a") {
+      detaching.resolve();
+      await acknowledged.promise;
+    }
+    return send(method, params, sessionId);
+  };
+  const retiring = browser.retireFailedReadSession(connection, "target-a",
+    new BrowserControllerError("browser_cdp_timeout", "fixture retirement"), "session-a");
+  await detaching.promise;
+  connection.emit({method: "Page.frameNavigated", sessionId: "session-a",
+    params: {frame: {id: "frame-a", loaderId: "loader-after-retirement"}}});
+  // Always settle the fixture gate, even when the fail-first assertion fails.
+  acknowledged.resolve();
+  await retiring;
+  assert.equal(browser.documentIdsByTarget.get("target-a"), "loader-after-retirement");
+  await assert.rejects(browser.handleDialog({target_id: "target-a", document_id: "loader-a", action: "accept"}),
+    {code: "stale_document_reference"});
+  assert.ok(!connection.calls.some(c => c.method === "Page.handleJavaScriptDialog"));
+});
+
+for (const type of ["alert", "confirm", "prompt", "beforeunload"]) {
+  test(`MP-08/MP-10/MP-11 a paused ${type} renderer retains its dialog-safe session`, async (t) => {
+    const connection = new FakeConnection();
+    const browser = new BrowserCdpClient({connectionFactory: async () => connection});
+    t.after(() => browser.close());
+    await browser.reconcile(viewport);
+    connection.emit({method: "Page.javascriptDialogOpening", sessionId: "session-a", params: {type, defaultPrompt: "fixture default"}});
+    await browser.retireFailedReadSession(connection, "target-a", new BrowserControllerError("browser_cdp_timeout", "renderer paused"), "session-a");
+    assert.equal(browser.sessionsByTarget.get("target-a"), "session-a");
+    assert.ok(!connection.calls.some(c => c.method === "Target.detachFromTarget"));
+    if (type === "prompt") assert.equal(browser.dialogDefaults.get("target-a", "loader-a"), "fixture default");
+    connection.emit({method: "Page.javascriptDialogClosed", sessionId: "session-a", params: {result: false}});
+    assert.equal(browser.dialogDefaults.isOpen("target-a"), false);
+  });
+}
 
 test("concurrent reads share connection initialization", async () => {
   const ready = Promise.withResolvers();
@@ -541,6 +663,8 @@ test("structured snapshots bind compact accessibility and DOM nodes to one docum
       node_type: 1,
       node_name: "BUTTON",
       text: "",
+      clickable: false,
+      rendered: true,
       attributes: { id: "save", type: "submit" },
       bounds: { x: 10, y: 20, width: 100, height: 30 },
     },

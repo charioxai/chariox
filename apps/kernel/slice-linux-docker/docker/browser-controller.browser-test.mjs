@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { startBrowserComputerFixture } from "../../../cli/scripts/lib/browser-computer-fixture.mjs";
 import { browserControllerLaunchOptions } from "./browser-controller-test-launch-options.mjs";
-import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
+import { BrowserCdpClient, BrowserControllerError } from "./browser-controller-cdp.mjs";
 import { handleBrowserControllerRequest } from "./browser-controller.mjs";
 
 const browserLaunchOptions = browserControllerLaunchOptions(process.env);
@@ -17,6 +17,88 @@ const viewport = {
   css_width: 1280, css_height: 800, device_scale_factor: 1,
   desktop_pixel_width: 1280, desktop_pixel_height: 800,
 };
+
+test("MP-08/MP-10/MP-11 visible native labels ground styled check/radio controls", async () => {
+  await withController(async ({page, request}) => {
+    await page.setContent(`<style>input {display:none} label {display:block;margin:16px;padding:12px}</style>
+      <input id="agree" type="checkbox"><label for="agree" id="agree-label">Agreement</label>
+      <input id="first" type="radio" name="choice"><label for="first" id="first-label">First choice</label>
+      <input id="second" type="radio" name="choice"><label for="second" id="second-label">Second choice</label>
+      <input id="disabled" type="checkbox" disabled><label for="disabled" id="disabled-label">Disabled choice</label>
+      <label for="missing" id="inert-label">Inert label</label><output id="events">0</output>
+      <script>document.addEventListener('change', () => {events.textContent=Number(events.textContent)+1})</script>`);
+    const target = (await request("browser.reconcile", {viewport})).result.tabs[0];
+    const snapshot = (await request("browser.snapshot", target)).result;
+    const label = id => snapshot.dom_nodes.find(n => n.attributes.id === id);
+    for (const id of ["agree-label", "first-label", "second-label"]) {
+      assert.equal(label(id).clickable, true, `MP-08/MP-10/MP-11 ${id} must expose native activation evidence`);
+      assert.equal(label(id).rendered, true);
+      const clicked = await request("browser.action", {...target, node_ref: label(id).node_ref, action: {kind: "click"}});
+      assert.equal(clicked.ok, true, JSON.stringify(clicked.error));
+    }
+    assert.equal(await page.locator("#agree").isChecked(), true);
+    assert.equal(await page.locator("#first").isChecked(), false);
+    assert.equal(await page.locator("#second").isChecked(), true);
+    assert.equal(await page.locator("#events").textContent(), "3");
+    assert.equal(label("disabled-label").clickable, false);
+    assert.equal(label("inert-label").clickable, false);
+    // A control disabled after discovery must still reject before native input.
+    await page.locator("#agree").evaluate(input => {input.disabled = true});
+    const disabled = await request("browser.action", {...target, node_ref: label("agree-label").node_ref,
+      action: {kind: "click"}, timeout_ms: 100});
+    assert.equal(disabled.error?.code, "browser_element_disabled");
+    assert.equal(await page.locator("#events").textContent(), "3");
+  });
+});
+
+test("MP-08/MP-10/MP-11 offscreen and covered targets distinguish actionability from CDP loss", async () => {
+  await withController(async ({page, request}) => {
+    await page.setContent(`<button id="covered" onclick="this.dataset.clicks=Number(this.dataset.clicks||0)+1">Covered</button>
+      <div style="position:fixed;inset:0;background:white;z-index:1" id="cover">Overlay</div>
+      <button style="margin-top:1800px;display:block" id="offscreen" onclick="this.dataset.clicks=Number(this.dataset.clicks||0)+1">Offscreen</button>`);
+    const target = (await request("browser.reconcile", {viewport})).result.tabs[0];
+    const snapshot = (await request("browser.snapshot", target)).result;
+    const reference = id => snapshot.dom_nodes.find(n => n.attributes.id === id).node_ref;
+    const blocked = await request("browser.action", {...target, node_ref: reference("covered"), action: {kind: "click"}, timeout_ms: 100});
+    assert.equal(blocked.error?.code, "browser_element_obscured");
+    assert.ok(blocked.error.message.includes("no input was delivered"));
+    assert.equal(await page.locator("#covered").getAttribute("data-clicks"), null);
+    await page.locator("#cover").evaluate(cover => cover.remove());
+    const clicked = await request("browser.action", {...target, node_ref: reference("offscreen"), action: {kind: "click"}});
+    assert.equal(clicked.ok, true, JSON.stringify(clicked.error));
+    assert.equal(await page.locator("#offscreen").getAttribute("data-clicks"), "1");
+    assert.equal((await request("browser.snapshot", target)).ok, true);
+  });
+});
+
+test("MP-08/MP-10/MP-11 an input acknowledgement failure never replays a delivered click", async () => {
+  await withController(async ({page, request, browser}) => {
+    await page.setContent('<button onclick="this.dataset.clicks=Number(this.dataset.clicks||0)+1">Count click</button>');
+    const target = (await request("browser.reconcile", {viewport})).result.tabs[0];
+    const snapshot = (await request("browser.snapshot", target)).result;
+    const button = snapshot.accessibility_nodes.find(n => n.role === "button" && n.name === "Count click");
+    const connection = browser.connection;
+    const send = connection.send.bind(connection);
+    const calls = [];
+    let lostAck = false;
+    connection.send = async (method, params, sessionId) => {
+      calls.push({method, params});
+      const result = await send(method, params, sessionId);
+      if (!lostAck && method === "Input.dispatchMouseEvent" && params.type === "mouseReleased") {
+        lostAck = true;
+        throw new BrowserControllerError("browser_cdp_timeout", "fixture lost acknowledgement after native input");
+      }
+      return result;
+    };
+    const failed = await request("browser.action", {...target, node_ref: button.node_ref, action: {kind: "click"}});
+    assert.equal(failed.error?.code, "browser_cdp_timeout");
+    assert.equal(await page.locator("button").getAttribute("data-clicks"), "1");
+    assert.equal(calls.filter(c => c.method === "Input.dispatchMouseEvent" && c.params.type === "mousePressed").length, 1);
+    assert.ok(!calls.some(c => c.method === "Target.detachFromTarget"));
+    assert.equal((await request("browser.snapshot", target)).ok, true);
+    assert.equal(await page.locator("button").getAttribute("data-clicks"), "1");
+  });
+});
 
 test("test Chromium override is trimmed, absolute-only, and keeps the chrome default", () => {
   assert.deepEqual(
@@ -1181,6 +1263,211 @@ test(`${late ? "late " : ""}${layout} download persists real bytes with tab-attr
 }
 }
 
+// MP-08 / MP-10 / MP-11: credential-free, first-party product regressions.
+test("MP-08 P1 handler-backed targets remain document-bound and hit-tested", async () => {
+  await withCrossOriginFixture(async (url) => withController(async ({ page, request }) => {
+    await page.goto(`${url}field`);
+    const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+    const snapshot = (await request("browser.snapshot", target)).result;
+    for (const id of ["listener", "inline", "svg", "far"]) {
+      const node = snapshot.dom_nodes.find(n => n.attributes.id === id);
+      assert.equal(node.clickable, true, `${id} is an observed handler target`);
+      const clicked = await request("browser.action", { ...target, node_ref: node.node_ref, action: { kind: "click" } });
+      assert.equal(clicked.ok, true, JSON.stringify(clicked.error));
+      assert.equal(await page.locator(`#${id}`).getAttribute("data-clicks"), "1");
+    }
+    for (const id of ["inert", "hidden"]) {
+      const node = snapshot.dom_nodes.find(n => n.attributes.id === id);
+      assert.ok(!node.clickable || !node.rendered);
+    }
+    const covered = snapshot.dom_nodes.find(n => n.attributes.id === "covered");
+    const rejected = await request("browser.action", { ...target, node_ref: covered.node_ref, action: { kind: "click" }, timeout_ms: 100 });
+    assert.equal(rejected.ok, false);
+    assert.match(rejected.error.message, /obscured/);
+    await page.goto(`${url}field?replacement`);
+    const stale = await request("browser.action", { ...target, node_ref: covered.node_ref, action: { kind: "click" } });
+    assert.equal(stale.error.code, "stale_document_reference");
+  }), { fieldMarkup: `<style>.target {display:block;width:160px;height:35px} #cover {position:absolute;inset:0;background:white}</style>
+    <span class="target" id="listener">Listener choice</span>
+    <div class="target" id="inline" onclick="this.dataset.clicks=Number(this.dataset.clicks||0)+1">Inline choice</div>
+    <svg width="160" height="35"><rect id="svg" width="160" height="35" onclick="this.dataset.clicks=Number(this.dataset.clicks||0)+1"/></svg>
+    <span id="inert">Inert content</span><div id="hidden" hidden onclick="this.dataset.clicks=1">Hidden</div>
+    <div style="position:relative;width:160px;height:35px"><div class="target" id="covered" onclick="this.dataset.clicks=1">Covered</div><div id="cover"></div></div>
+    <div style="height:1600px"></div><div class="target" id="far" onclick="this.dataset.clicks=Number(this.dataset.clicks||0)+1">Offscreen choice</div>
+    <script>document.getElementById('listener').addEventListener('click', function(){this.dataset.clicks=Number(this.dataset.clicks||0)+1})</script>` });
+});
+
+test("MP-08 P2 native selects fill unique labels and values with one event pair", async () => {
+  await withCrossOriginFixture(async (url) => withController(async ({ page, request }) => {
+    await page.goto(`${url}field`);
+    const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+    const snapshot = (await request("browser.snapshot", target)).result;
+    const select = snapshot.dom_nodes.find(n => n.attributes.id === "choice");
+    const fill = text => request("browser.action", { ...target, node_ref: select.node_ref, action: { kind: "fill", text }, timeout_ms: 100 });
+    const selected = await fill("日本");
+    assert.equal(selected.ok, true, JSON.stringify(selected.error));
+    assert.equal(await page.locator("select").inputValue(), "jp");
+    assert.deepEqual(await page.evaluate(() => window.effects), ["input", "change"]);
+    for (const [text, code] of [["Same", "browser_selection_ambiguous"], ["Disabled", "browser_selection_disabled"], ["Missing", "browser_selection_not_found"]]) {
+      const rejected = await fill(text);
+      assert.equal(rejected.error.code, code);
+      assert.equal(await page.locator("select").inputValue(), "jp");
+    }
+    assert.equal((await fill("b")).ok, true);
+    assert.equal(await page.locator("select").inputValue(), "b");
+    assert.deepEqual(await page.evaluate(() => window.effects), ["input", "change", "input", "change"]);
+  }), { fieldMarkup: `<label>Choice<select id="choice"><option value="a">Same</option><option value="b">Same</option><option value="jp">日本</option><option disabled>Disabled</option></select></label>
+    <script>window.effects=[];for(const kind of ['input','change'])document.querySelector('select').addEventListener(kind,()=>effects.push(kind))</script>` });
+});
+
+test("MP-08 P2 native select reports event-handler rejection without replay", async () => {
+  await withCrossOriginFixture(async (url) => withController(async ({ page, request }) => {
+    await page.goto(`${url}field`);
+    const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+    const snapshot = (await request("browser.snapshot", target)).result;
+    const node = snapshot.dom_nodes.find(n => n.attributes.id === "choice");
+    const result = await request("browser.action", { ...target, node_ref: node.node_ref, action: { kind: "fill", text: "Second" } });
+    assert.equal(result.ok, false, "a rejected applied value must not report success");
+    assert.equal(result.error.code, "browser_selection_not_applied");
+    assert.equal(await page.locator("select").inputValue(), "First");
+    assert.deepEqual(await page.evaluate(() => window.effects), ["input", "change"]);
+  }), { fieldMarkup: `<select id="choice"><option>First</option><option>Second</option></select><script>window.effects=[];const control=document.querySelector('select');control.addEventListener('input',()=>{effects.push('input');control.value='First'});control.addEventListener('change',()=>effects.push('change'))</script>` });
+});
+
+test("MP-08 P2 custom searchable combobox selects observed options and dependent fields", async () => {
+  await withCrossOriginFixture(async (url) => withController(async ({ page, request }) => {
+    await page.goto(`${url}field`);
+    const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+    const snapshot = () => request("browser.snapshot", target);
+    const action = async (name, kind, text) => {
+      const current = (await snapshot()).result;
+      const node = current.accessibility_nodes.find(node => node.name === name && !node.ignored && current.dom_nodes.some(dom => dom.node_ref === node.node_ref && dom.node_type === 1));
+      assert.ok(node, `observed ${name}`);
+      const result = await request("browser.action", { ...target, node_ref: node.node_ref, action: { kind, ...(text === undefined ? {} : { text }) } });
+      assert.equal(result.ok, true, JSON.stringify(result.error));
+    };
+    await action("Country", "click");
+    await action("Country search", "fill", "日本");
+    await action("日本", "click");
+    assert.equal(await page.locator("#country").textContent(), "日本");
+    await action("Region", "fill", "East");
+    assert.equal(await page.locator("#region").inputValue(), "east");
+    const current = (await snapshot()).result;
+    assert.ok(current.accessibility_nodes.some(node => node.role === "combobox" && node.name === "Country"));
+    assert.equal(await page.locator("#country").getAttribute("data-effects"), "1");
+  }), { fieldMarkup: `<button id="country" role="combobox" aria-label="Country" aria-controls="choices" aria-expanded="false" onclick="document.getElementById('choices').hidden=false;this.setAttribute('aria-expanded','true')">Choose</button>
+    <div id="choices" role="listbox" hidden><input aria-label="Country search" oninput="document.getElementById('jp').hidden=!('日本'.includes(this.value))"><div id="jp" role="option" onclick="const c=document.getElementById('country');c.textContent=this.textContent;c.dataset.effects=Number(c.dataset.effects||0)+1;c.setAttribute('aria-expanded','false');document.getElementById('choices').hidden=true;document.getElementById('region').disabled=false">日本</div></div>
+    <label>Region<select id="region" disabled><option value="">Choose</option><option value="east">East</option></select></label>` });
+});
+
+test("MP-08 P2 multi-select replaces its choice and cancellation never replays delivered events", async () => {
+  await withCrossOriginFixture(async (url) => withController(async ({ page, request, browser }) => {
+    await page.goto(`${url}field`);
+    const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+    const snapshot = (await request("browser.snapshot", target)).result;
+    const node = snapshot.dom_nodes.find(n => n.attributes.id === "multi");
+    const blocked = await request("browser.action", { ...target, node_ref: node.node_ref, action: { kind: "fill", text: "Blocked" } });
+    assert.equal(blocked.error.code, "browser_selection_disabled");
+    assert.deepEqual(await page.evaluate(() => window.effects), []);
+    const connection = await browser.ensureConnection();
+    const send = connection.send.bind(connection);
+    const controller = new AbortController();
+    let delivered = 0;
+    connection.send = async (method, params, ...rest) => {
+      const result = await send(method, params, ...rest);
+      if (method === "Runtime.callFunctionOn" && params.functionDeclaration.includes("function selectFunction(")) {
+        delivered++;
+        controller.abort();
+      }
+      return result;
+    };
+    const result = await request("browser.action", { ...target, node_ref: node.node_ref, action: { kind: "fill", text: "World" } }, { signal: controller.signal });
+    assert.equal(result.ok, true, JSON.stringify(result.error));
+    assert.equal(controller.signal.aborted, true);
+    assert.equal(delivered, 1);
+    assert.deepEqual(await page.locator("#multi").evaluate(n => Array.from(n.selectedOptions, o => o.value)), ["🌍"]);
+    assert.deepEqual(await page.evaluate(() => window.effects), ["input", "change"]);
+    const revision = (await request("browser.snapshot", target)).result.snapshot_revision;
+    assert.ok(revision > snapshot.snapshot_revision);
+    const stopped = await request("browser.action", { ...target, node_ref: node.node_ref, action: { kind: "fill", text: "One" } }, { signal: controller.signal });
+    assert.equal(stopped.error.code, "browser_action_cancelled");
+    assert.deepEqual(await page.evaluate(() => window.effects), ["input", "change"]);
+  }), { fieldMarkup: `<label>Multiple<select multiple id="multi"><option selected>One</option><option selected>Two</option><option value="🌍">World</option><optgroup disabled label="Unavailable"><option>Blocked</option></optgroup></select></label>
+    <script>window.effects=[];for(const kind of ['input','change'])document.querySelector('select').addEventListener(kind,()=>effects.push(kind))</script>` });
+});
+
+for (const layout of ["same-site", "isolated", "nested-isolated"]) {
+test(`MP-08 P3 ${layout} rendered text captures only the bound tab and fences frame replacement`, async () => {
+  await withCrossOriginFixture(async (url) => withController(async ({ page, request, context }) => {
+    await page.goto(url);
+    const field = layout === "nested-isolated" ? page.frameLocator("iframe").frameLocator("iframe") : page.frameLocator("iframe");
+    await field.getByText("Frame text").waitFor();
+    const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+    const other = await context.newPage();
+    await other.goto("data:text/html,<p>Other tab private content</p>");
+    const connection = await browserTextObservation(request, target);
+    assert.ok(connection.text.includes("Frame text"));
+    assert.ok(!connection.text.includes("Other tab private content"));
+    assert.ok(!connection.text.includes("POLLUTION"));
+    await page.goto(`${url}field?new-document`);
+    const stale = await request("browser.snapshot", { ...target, text_request: { offset: 0 } });
+    assert.equal(stale.error.code, "stale_document_reference");
+  }), { sameSite: layout === "same-site", nested: layout === "nested-isolated", fieldMarkup: '<p>Frame text</p><script>/* POLLUTION */</script>' });
+});
+}
+async function browserTextObservation(request, target) {
+  const snapshot = await request("browser.snapshot", { ...target, text_request: { offset: 0 } });
+  assert.equal(snapshot.ok, true, JSON.stringify(snapshot.error));
+  return snapshot.result.text_page;
+}
+
+test("MP-08 P3 rendered exact-copy text preserves edge newlines and BR boundaries", async () => {
+  await withCrossOriginFixture(async (url) => withController(async ({ page, request }) => {
+    await page.goto(`${url}field`);
+    const reconciled = await request("browser.reconcile", { viewport });
+    assert.equal(reconciled.ok, true, JSON.stringify(reconciled.error));
+    const target = reconciled.result.tabs[0];
+    const result = await request("browser.snapshot", { ...target, text_request: { offset: 0 } });
+    assert.equal(result.ok, true, JSON.stringify(result.error));
+    assert.equal(result.result.text_page.text, "\n  indented\n\nbefore\n\nafter");
+  }), { fieldMarkup: '<pre><span>\n  indented\n\n</span></pre><p>before<br><br>after</p><iframe src="about:blank"></iframe>' });
+});
+
+test("MP-08 P3 CSS visibility overrides retain visible text but not transparent text", async () => {
+  await withCrossOriginFixture(async (url) => withController(async ({ page, request }) => {
+    await page.goto(`${url}field`);
+    assert.equal(await page.locator("#visible").isVisible(), true);
+    const reconciled = await request("browser.reconcile", { viewport });
+    assert.equal(reconciled.ok, true, JSON.stringify(reconciled.error));
+    const text = await browserTextObservation(request, reconciled.result.tabs[0]);
+    assert.equal(text.text, "Visible override");
+  }), { fieldMarkup: '<p style="visibility:hidden">Hidden text<span id="visible" style="visibility:visible">Visible override</span></p><p style="opacity:0"><span style="visibility:visible">Transparent text</span></p>' });
+});
+
+test("MP-08 P3 rendered text excludes non-rendered pollution and pages beyond node bounds", async () => {
+  const rows = Array.from({length: 2700}, (_, i) => `<tr><td>Row ${i}</td><td>7</td></tr>`).join("");
+  await withCrossOriginFixture(async (url) => withController(async ({ page, request }) => {
+    await page.goto(`${url}field`);
+    const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+    const first = await request("browser.snapshot", { ...target, text_request: { offset: 0, max_bytes: 256 } });
+    assert.equal(first.ok, true, JSON.stringify(first.error));
+    assert.ok(first.result.text_page, "bounded text page must be projected");
+    const text = first.result.text_page.text;
+    assert.ok(text.includes("Visible code"));
+    assert.ok(!text.includes("POLLUTION"));
+    assert.equal((text.match(/Same person/g) || []).length, 2);
+    assert.ok(first.result.text_page.next_offset > 0);
+    assert.ok(Buffer.byteLength(text) <= 256);
+    const tail = await request("browser.snapshot", { ...target, text_request: { query: "Row 2699", offset: 0, max_bytes: 256 } });
+    assert.equal(tail.ok, true, JSON.stringify(tail.error));
+    assert.match(tail.result.text_page.text, /Row 2699\t7/);
+    assert.ok(!tail.result.text_page.text.includes("private-fixture"));
+  }), { fieldMarkup: `<script>/* POLLUTION ${'x'.repeat(5000)} */</script><style>/* POLLUTION */</style>
+    <p hidden>POLLUTION hidden</p><p style="visibility:hidden">POLLUTION invisible</p>
+    <ul><li><img alt="Same person">Same person</li><li><img alt="Same person">Same person</li></ul>
+    <pre>Visible code\n  indented</pre><input type="password" value="private-fixture"><table>${rows}</table>` });
+});
+
 async function withCrossOriginFixture(run, {
   sameSite = false, nested = false,
   download = false,
@@ -1189,12 +1476,12 @@ async function withCrossOriginFixture(run, {
 } = {}) {
   const childServer = createServer((request, response) => {
     if (download && downloadHandler(request, response)) return;
-    response.setHeader("content-type", "text/html");
+    response.setHeader("content-type", "text/html; charset=utf-8");
     response.end(nested ? `<iframe style="width:500px;height:100px" src="http://127.0.0.1:${server.address().port}/field"></iframe>` : fieldMarkup);
   });
   const server = createServer((request, response) => {
     if (download && downloadHandler(request, response)) return;
-    response.setHeader("content-type", "text/html");
+    response.setHeader("content-type", "text/html; charset=utf-8");
     response.end(request.url.startsWith("/field") ? fieldMarkup : `<main style="padding:60px"><iframe style="width:600px;height:200px" src="http://${sameSite ? "127.0.0.1" : "localhost"}:${childServer.address().port}/field"></iframe></main>`);
   });
   try {
@@ -1238,7 +1525,7 @@ async function withController(run, clientOptions = {}) {
     const page = context.pages()[0] ?? await context.newPage();
     page.setDefaultTimeout(10_000);
     let nextId = 0;
-    const request = (method, params) => handleBrowserControllerRequest({ id: ++nextId, method, params }, { browser });
+    const request = (method, params, options = {}) => handleBrowserControllerRequest({ id: ++nextId, method, params }, { browser, ...options });
     await run({ page, request, context, browser });
   } finally {
     try {

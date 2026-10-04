@@ -13,6 +13,8 @@ export class BrowserDialogDefaults {
         const text = message.params.defaultPrompt ?? "";
         const bounded = typeof text === "string" && text.length <= 2048 && Buffer.byteLength(text, "utf8") <= 2048;
         this.byTarget.set(targetId, { documentId, text: bounded ? text : null });
+      } else {
+        this.byTarget.set(targetId, { documentId });
       }
     } else if (
       message.method === "Page.javascriptDialogClosed" ||
@@ -29,6 +31,8 @@ export class BrowserDialogDefaults {
     const entry = this.byTarget.get(targetId);
     return entry?.documentId === documentId ? entry.text : undefined;
   }
+
+  isOpen(targetId) { return this.byTarget.has(targetId); }
 
   delete(targetId) { this.byTarget.delete(targetId); }
   clear() { this.byTarget.clear(); }

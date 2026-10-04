@@ -98,7 +98,7 @@ enum ExecutionAdmission {
 
 enum RecoveryAdmission {
     Wait(Arc<ExecutionRecord>),
-    Replay(ExecutionOutcome),
+    Replay(Box<ExecutionOutcome>),
 }
 
 impl ActiveAction {
@@ -212,7 +212,9 @@ impl BrowserActionExecutions {
             .map_err(|_| "browser execution registry poisoned")?;
         if let Some(completed) = state.completed.iter().find(|entry| entry.key == key) {
             return if completed.fingerprint == fingerprint {
-                Ok(RecoveryAdmission::Replay(completed.outcome.clone()))
+                Ok(RecoveryAdmission::Replay(Box::new(
+                    completed.outcome.clone(),
+                )))
             } else {
                 Err("browser execution identity was reused for a different recovery request".into())
             };
@@ -653,7 +655,7 @@ impl BrowserControllerProcessStore {
             .executions
             .recover(session_id, execution_id, fingerprint)?
         {
-            RecoveryAdmission::Replay(outcome) => outcome,
+            RecoveryAdmission::Replay(outcome) => *outcome,
             RecoveryAdmission::Wait(record) => record.wait(),
         }
     }
@@ -724,7 +726,7 @@ mod tests {
             executions
                 .recover("room", "00000000000000000000000000000001", fingerprint)
                 .unwrap(),
-            RecoveryAdmission::Replay(outcome) if outcome == completed()
+            RecoveryAdmission::Replay(outcome) if *outcome == completed()
         ));
     }
 

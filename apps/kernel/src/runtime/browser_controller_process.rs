@@ -549,11 +549,12 @@ impl BrowserControllerProcessStdioBackend {
         &mut self,
         target_id: &str,
         document_id: &str,
+        text_request: Option<&crate::transport::runtime_tools::SliceBrowserTextArgs>,
     ) -> Result<pending_responses::PendingResponse<BrowserControllerRpcResponse>, String> {
         self.begin_observation_request(
             "browser.snapshot",
             serde_json::json!({
-                "target_id": target_id, "document_id": document_id,
+                "target_id": target_id, "document_id": document_id, "text_request": text_request,
             }),
         )
     }
@@ -1476,12 +1477,26 @@ impl BrowserControllerProcessStore {
         self.reconcile_browser_observation(session_id, viewport, browser_bar_visible)
     }
 
+    #[cfg(test)]
     pub(crate) fn capture_browser_snapshot(
         &self,
         session_id: &str,
         target_id: &str,
         document_id: &str,
     ) -> Result<Option<BrowserControllerStructuredSnapshot>, String> {
+        self.capture_browser_snapshot_with_text(session_id, target_id, document_id, None)
+    }
+
+    pub(crate) fn capture_browser_snapshot_with_text(
+        &self,
+        session_id: &str,
+        target_id: &str,
+        document_id: &str,
+        text_request: Option<&crate::transport::runtime_tools::SliceBrowserTextArgs>,
+    ) -> Result<Option<BrowserControllerStructuredSnapshot>, String> {
+        if let Some(request) = text_request {
+            request.validate()?;
+        }
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
@@ -1494,7 +1509,7 @@ impl BrowserControllerProcessStore {
             supervisor.prepare_unlocked_request()?;
             let pending = supervisor
                 .backend
-                .begin_snapshot_read(target_id, document_id)?;
+                .begin_snapshot_read(target_id, document_id, text_request)?;
             (pending, supervisor.backend.timeout)
         };
         // Keep the Room lease check and stdin dispatch atomic, but never hold
@@ -2547,6 +2562,45 @@ done
                 .target_id,
             "target-second"
         );
+    }
+
+    #[test]
+    fn mp08_text_page_request_crosses_the_existing_document_bound_stdio_route() {
+        let tool = TestTool::new(
+            r#"#!/bin/sh
+set -eu
+while IFS= read -r request; do
+  id=${request#*:}
+  id=${id%%,*}
+  case "$request" in
+    *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+    *'"text_request":{"max_bytes":256,"offset":4,"query":"Visible"}'*) printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","snapshot_revision":1,"accessibility_nodes":[],"dom_nodes":[],"text_page":{"text":"Visible","offset":4,"next_offset":null,"total_bytes":11,"query":"Visible"}}}\n' "$id" ;;
+    *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
+    *) exit 2 ;;
+  esac
+done
+"#,
+        );
+        let store = BrowserControllerProcessStore::new(
+            tool.path(),
+            Vec::new(),
+            HEALTHY_TEST_CONTROLLER_TIMEOUT,
+        );
+        store.acquire("room-1").unwrap();
+        let request = crate::transport::runtime_tools::SliceBrowserTextArgs {
+            query: Some("Visible".into()),
+            offset: 4,
+            max_bytes: 256,
+        };
+        let snapshot = store
+            .capture_browser_snapshot_with_text("room-1", "target-a", "loader-a", Some(&request))
+            .unwrap()
+            .unwrap();
+        let page = snapshot.text_page.unwrap();
+        assert_eq!(page.text, "Visible");
+        assert_eq!(page.offset, request.offset);
+        assert_eq!(page.query, request.query);
+        store.release("room-1").unwrap();
     }
 
     #[test]

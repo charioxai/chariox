@@ -45,6 +45,7 @@ pub(crate) mod app_worker;
 pub(crate) mod browser_controller_action;
 pub(crate) mod browser_controller_app_view;
 pub(crate) mod browser_controller_compatibility;
+pub(crate) mod browser_controller_error;
 pub(crate) mod browser_controller_event;
 pub(crate) mod browser_controller_file_transfer;
 pub(crate) mod browser_controller_history;

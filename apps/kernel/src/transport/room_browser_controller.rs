@@ -241,6 +241,8 @@ pub(crate) enum RoomBrowserControllerCommand {
     Snapshot {
         target_id: String,
         document_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text_request: Option<crate::transport::runtime_tools::SliceBrowserTextArgs>,
     },
     Tab {
         execution_id: String,

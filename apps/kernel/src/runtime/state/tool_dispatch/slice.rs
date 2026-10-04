@@ -462,12 +462,9 @@ impl KernelRuntimeState {
                 });
             }
             crate::transport::runtime_tools::SLICE_BROWSER_TEXT_TOOL => {
-                let output = run_slice_screen_command(vec!["browser-text".to_string()]).await?;
-                let mut payload = slice_tool_payload(&slice_id, agent_id, &output);
-                payload["text"] = serde_json::Value::String(output.stdout.as_str().to_string());
-                return Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                    ok: output.success,
-                    payload,
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_text",
+                    message: "rendered browser text requires the long-running Room browser controller; upgrade the Environment".into(),
                 });
             }
             crate::transport::runtime_tools::SLICE_BROWSER_WAIT_FOR_TEXT_TOOL => {

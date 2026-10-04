@@ -527,6 +527,8 @@ refresh_slice_support_files() {
   fi
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-cdp.mjs" "browser CDP helper"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-actions.mjs" "Browser Controller actions module"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-selection.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-selection.mjs" "Browser Controller selection module"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-text.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-text.mjs" "Browser Controller rendered text module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-input.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-input.mjs" "Browser Controller actions module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-cdp.mjs" "Browser Controller CDP module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-display.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-display.mjs" "Canonical display support"
@@ -599,6 +601,8 @@ refresh_slice_support_files() {
     /opt/chariox-slice/browser-controller-history.mjs \
     /opt/chariox-slice/browser-controller-permissions.mjs \
     /opt/chariox-slice/browser-controller-snapshot.mjs \
+    /opt/chariox-slice/browser-controller-text.mjs \
+    /opt/chariox-slice/browser-controller-selection.mjs \
     /opt/chariox-slice/browser-controller.mjs \
     /opt/chariox-slice/managed-provider-isolation-probe.mjs \
     /opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh \
