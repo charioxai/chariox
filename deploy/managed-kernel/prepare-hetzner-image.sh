@@ -171,10 +171,6 @@ cleanup_path1_data_volume_bypass() {
 }
 
 bypass_path1_data_volume_dropins() {
-  # Both topologies claim and start a disposable rootless engine below. Register
-  # cleanup before the topology-specific bypass, but never claim inherited data.
-  trap cleanup_path1_data_volume_bypass EXIT
-  trap 'exit 1' HUP INT TERM
   [ "$managed_provider_topology" = path1 ] || return 0
   builder_rootless_dropin=/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf
   builder_allocator_dropin=/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf
@@ -458,6 +454,9 @@ remove_seeded_rootless_quota_config=0
 if [ ! -e "$rootless_docker_config" ] && [ ! -L "$rootless_docker_config" ]; then
   remove_seeded_rootless_quota_config=1
 fi
+# Both topologies own disposable builder storage; register cleanup before any claim.
+trap cleanup_path1_data_volume_bypass EXIT
+trap 'exit 1' HUP INT TERM
 bypass_path1_data_volume_dropins
 assert_path1_builder_storage_pristine
 if [ ! -e /var/lib/chariox-docker/data ] && [ ! -L /var/lib/chariox-docker/data ]; then

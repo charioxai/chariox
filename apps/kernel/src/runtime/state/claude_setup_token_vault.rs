@@ -24,21 +24,24 @@ impl KernelRuntimeState {
         owner_user_id: &str,
         account_profile: &str,
         token: Zeroizing<String>,
+        overwrite: bool,
         passphrase: Option<Zeroizing<String>>,
     ) -> Result<ClaudeSetupTokenStoreOutcome, DaemonError> {
         let config = self.owned.config_projection.snapshot();
         // Launches unlock and relock the same vault; serialize with them so
         // this operation-scoped unlock never relocks in the middle of one.
         let vault_path = expand_vault_path(&config.user_config.credential_vault.path);
-        let _unlock_request = vault_unlock_request_lock(&vault_path).lock_owned().await;
+        let unlock_request = vault_unlock_request_lock(&vault_path).lock_owned().await;
         let owner_user_id = owner_user_id.to_string();
         let account_profile = account_profile.to_string();
         tokio::task::spawn_blocking(move || {
+            let _unlock_request = unlock_request;
             store_claude_setup_token(
                 &config,
                 &owner_user_id,
                 &account_profile,
                 &token,
+                overwrite,
                 passphrase.as_ref().map(|value| value.as_str()),
             )
         })
@@ -55,6 +58,7 @@ fn store_claude_setup_token(
     owner_user_id: &str,
     account_profile: &str,
     token: &str,
+    overwrite: bool,
     passphrase: Option<&str>,
 ) -> Result<ClaudeSetupTokenStoreOutcome, DaemonError> {
     let vault = &config.user_config.credential_vault;
@@ -97,7 +101,7 @@ fn store_claude_setup_token(
         "claude",
         account_profile,
         token,
-        true,
+        overwrite,
     );
     if let Some(path) = lock_after_store {
         let _ = crate::secret::lock_chariox_encrypted_vault(&path);
@@ -161,13 +165,14 @@ mod tests {
         let vault_path = expand_vault_path(&config.user_config.credential_vault.path);
 
         assert_eq!(
-            store_claude_setup_token(&config, "local", "work", TOKEN, None).unwrap(),
+            store_claude_setup_token(&config, "local", "work", TOKEN, true, None).unwrap(),
             ClaudeSetupTokenStoreOutcome::VaultPassphraseRequired(
                 ClaudeSetupTokenVaultPrompt::Create
             )
         );
         assert_eq!(
-            store_claude_setup_token(&config, "local", "work", TOKEN, Some("vault-pass")).unwrap(),
+            store_claude_setup_token(&config, "local", "work", TOKEN, true, Some("vault-pass"))
+                .unwrap(),
             ClaudeSetupTokenStoreOutcome::Stored
         );
         assert!(
@@ -177,13 +182,14 @@ mod tests {
             "an operation-scoped unlock must lock again after storing"
         );
         assert_eq!(
-            store_claude_setup_token(&config, "local", "work", TOKEN, None).unwrap(),
+            store_claude_setup_token(&config, "local", "work", TOKEN, true, None).unwrap(),
             ClaudeSetupTokenStoreOutcome::VaultPassphraseRequired(
                 ClaudeSetupTokenVaultPrompt::Unlock
             )
         );
         assert!(matches!(
-            store_claude_setup_token(&config, "local", "work", TOKEN, Some("wrong-pass")).unwrap(),
+            store_claude_setup_token(&config, "local", "work", TOKEN, true, Some("wrong-pass"))
+                .unwrap(),
             ClaudeSetupTokenStoreOutcome::VaultUnlockFailed(_)
         ));
 
@@ -217,11 +223,16 @@ mod tests {
             "local",
             "work",
             "sk-ant-oat01-TESTONLY-first",
+            true,
             None,
         )
         .unwrap();
+        // MP-08: replacement is also fenced at commit, even if another caller
+        // wrote after --run passed its initial existence check.
+        assert!(store_claude_setup_token(&config, "local", "work", TOKEN, false, None).is_err());
+        assert_eq!(resolved_token(&config)[0].1, "sk-ant-oat01-TESTONLY-first");
         assert_eq!(
-            store_claude_setup_token(&config, "local", "work", TOKEN, None).unwrap(),
+            store_claude_setup_token(&config, "local", "work", TOKEN, true, None).unwrap(),
             ClaudeSetupTokenStoreOutcome::Stored
         );
         assert_eq!(

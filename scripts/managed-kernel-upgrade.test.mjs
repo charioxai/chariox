@@ -84,7 +84,8 @@ test("Path-1 upgrade drop-in guard checks reload freshness and both effective se
   assert.match(guard, /systemctl show --property=NeedDaemonReload --value "\$unit"/)
   assert.match(guard, /systemctl show --property=DropInPaths --value "\$unit"/)
   assert.ok(guard.indexOf("--property=NeedDaemonReload") < guard.indexOf("--property=DropInPaths"))
-  assert.match(source, /select_supervisor_service\nassert_path1_units_have_no_dropins\nrecover_transaction/)
+  assert.match(source, /select_supervisor_service\nassert_path1_units_have_no_dropins\nif \[ "\$recover_only" -eq 1 \]; then/)
+  assert.ok(source.indexOf("\nassert_path1_units_have_no_dropins\n") < source.indexOf("\nrecover_transaction\n"))
   assert.match(source, /systemctl daemon-reload \|\| return 1\n  assert_path1_units_have_no_dropins \|\| return 1\n  start_path1_runtime_services \|\| return 1\n  start_managed_app_storage \|\| return 1\n  health_not_before_ms=/)
   assert.match(source, /if ! systemctl daemon-reload \\\n  \|\| ! assert_path1_units_have_no_dropins \\\n  \|\| ! start_path1_runtime_services \\\n/)
 
@@ -138,8 +139,8 @@ test("repository release policy admits reviewed predecessors and matches the run
   const policy = JSON.parse(policyBytes)
   const runtimeTypes = await readFile(join(repositoryRoot, "apps/kernel/src/local/api/types.rs"), "utf8")
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
-  // Release F's reciprocal set (343, 367..376) plus the current protocol; unreleased 377..409 are not admitted.
-  const admittedProtocols = [343, ...Array.from({ length: 10 }, (_, index) => 367 + index), runtimeProtocol]
+  // MP-07/MP-10: released F/G predecessors and Apps main410; unreleased379..409 remain refused.
+  const admittedProtocols = [343, ...Array.from({ length: 12 }, (_, index) => 367 + index), 410, runtimeProtocol]
   assert.deepEqual(policy, {
     schemaVersion: 1,
     protocol: runtimeProtocol,
@@ -160,7 +161,7 @@ test("repository release policy admits reviewed predecessors and matches the run
     }
   }
 
-  for (const unsupportedProtocol of [312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index)]) {
+  for (const unsupportedProtocol of [312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index), ...Array.from({ length: 31 }, (_, index) => 379 + index)]) {
     for (const [currentRoot, currentProtocol, targetRoot, targetProtocol] of [
       [current, unsupportedProtocol, target, runtimeProtocol],
       [target, runtimeProtocol, current, unsupportedProtocol],

@@ -347,6 +347,16 @@ async fn leased_prompt_reconciles_durable_home_profile_after_lost_ack_and_restar
 // MP-08 / MP-10 / MP-11: Target worker re-resolves before its Ready shortcut.
 #[test]
 fn mp08_mp10_mp11_leased_reuse_observes_worker_value_changes() {
+    assert_leased_project_launch_and_refresh(false);
+}
+
+// MP-08 / MP-10 / MP-11: import uses mounted paths, not the lease session alias.
+#[test]
+fn mp08_mp10_mp11_imported_workspace_launch_bindings_and_refresh() {
+    assert_leased_project_launch_and_refresh(true);
+}
+
+fn assert_leased_project_launch_and_refresh(imported_workspace: bool) {
     use crate::app::remote_lease::provider_run::LeasedProviderRunMatch;
     use crate::project_environment::*;
     let workspace = crate::test_support::TestWorktree::new("leased-project-refresh");
@@ -377,14 +387,19 @@ fn mp08_mp10_mp11_leased_reuse_observes_worker_value_changes() {
         )
         .unwrap();
     let initial = app.sessions.get_session(&lease.backing_session_id).unwrap();
+    let manifest_workspace = if imported_workspace {
+        workspace.path().to_string_lossy().into_owned()
+    } else {
+        initial.workspace_id().to_string()
+    };
+    let mut workspace_ids = vec![initial.workspace_id().into()];
+    if manifest_workspace != initial.workspace_id() {
+        workspace_ids.push(manifest_workspace.clone());
+    }
     let project = app
         .sessions
         .read()
-        .prepare_leased_project(
-            initial.id(),
-            "envlayer5-leased-project",
-            vec![initial.workspace_id().into()],
-        )
+        .prepare_leased_project(initial.id(), "envlayer5-leased-project", workspace_ids)
         .unwrap();
     let session = app
         .sessions
@@ -404,7 +419,7 @@ fn mp08_mp10_mp11_leased_reuse_observes_worker_value_changes() {
             evidence_digest: evidence.digest(),
             entries: vec![ProjectEnvironmentEntry {
                 name: "APP_LABEL".into(),
-                workspace_id: session.workspace_id().into(),
+                workspace_id: manifest_workspace,
                 kind: ProjectEnvironmentEntryKind::Variable,
                 classification: ProjectEnvironmentClassification::NonSecret,
                 excluded: false,
@@ -437,6 +452,16 @@ fn mp08_mp10_mp11_leased_reuse_observes_worker_value_changes() {
     let LeasedProviderRunMatch::LaunchRequired(request) = select(&mut app) else {
         panic!("initial launch")
     };
+    let request = app
+        .prepare_app_provider_launch_request(request, "MP-08 / MP-10 / MP-11 regression")
+        .unwrap();
+    assert!(
+        request
+            .provider_credential_env
+            .iter()
+            .any(|(name, value)| name == "APP_LABEL" && value == "first"),
+        "imported Project variable must reach the initial provider launch"
+    );
     let first = app.launch_provider_detached(request).unwrap();
     assert!(matches!(select(&mut app), LeasedProviderRunMatch::Ready(id) if id == first.id()));
     std::fs::write(workspace.path().join(".env"), "APP_LABEL=second\n").unwrap();
@@ -447,6 +472,13 @@ fn mp08_mp10_mp11_leased_reuse_observes_worker_value_changes() {
         app.providers.get_run(first.id()).unwrap().state(),
         ProviderRunState::Ended
     );
+    let request = app
+        .prepare_app_provider_launch_request(request, "MP-08 / MP-10 / MP-11 regression")
+        .unwrap();
+    assert!(request
+        .provider_credential_env
+        .iter()
+        .any(|(name, value)| name == "APP_LABEL" && value == "second"));
     let second = app.launch_provider_detached(request).unwrap();
     assert_ne!(
         first.project_environment_revision(),

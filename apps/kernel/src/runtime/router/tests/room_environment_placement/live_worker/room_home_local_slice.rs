@@ -326,6 +326,8 @@ async fn check_home_room_agent_uses_home_local_slice_environment_browser_compute
             endpoint["url"],
             format!("ws://{}/display/{stream_id}/stream", fixture.address)
         );
+        super::room_secret::check_revocation(&fixture, true, &fixture.home.runtime_state, &token)
+            .await;
     })
     .catch_unwind()
     .await;

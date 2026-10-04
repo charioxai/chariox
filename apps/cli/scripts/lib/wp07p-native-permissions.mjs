@@ -16,6 +16,8 @@ export async function runPermissions(i){
     report.webPrompt={status:'PASS',promptId:t.prompt_id,origin:'production terminal composer'};
    }catch(error){report.webPrompt={status:'RED',reason:error.message.split('; last snapshot')[0]}}
   }
+  // MP-08/MP-10: completed history can precede provider activity settlement.
+  await waitFor(async()=>{const state=unwrap(await client.send(requests.getSessionStateRequest(sessionId)),'SessionState');const activity=state.agent_activity?.[provider.agentId];return activity?.status==='idle'&&activity?.prompt_status==='none'&&!state.session.agents.find(a=>a.id===provider.agentId)?.is_processing},90000,'MP-08/MP-10 provider did not settle before permission config');
   await client.send(requests.updateAgentConfigRequest({sessionId,agentId:provider.agentId,permissionLevel:'required'}));
   await client.send(requests.focusAgentRequest(sessionId,provider.agentId));
   attachment=unwrap(await client.send(requests.attachToSessionRequest(sessionId,'wp07-native-permission')),'SessionAttached').attachment;

@@ -12,7 +12,7 @@ impl KernelRuntimeState {
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         use crate::transport::runtime_tools::*;
 
-        match tool_name {
+        let result = match tool_name {
             PASTE_SECRET_TO_SLICE_TOOL => {
                 let args = parse_controller_tool_arguments::<PasteSecretToSliceArgs>(
                     arguments,
@@ -241,6 +241,14 @@ impl KernelRuntimeState {
                 message: format!("unsupported Room browser runtime tool `{tool_name}`"),
             }),
         }
+        .map_err(|error| {
+            self.owned
+                .room_secret_observations
+                .scrub_error(session_id, error)
+        })?;
+        self.owned
+            .room_secret_observations
+            .scrub(session_id, result)
     }
 }
 

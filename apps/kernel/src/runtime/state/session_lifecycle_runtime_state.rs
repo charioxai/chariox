@@ -38,11 +38,13 @@ impl KernelRuntimeState {
                 message: "creating separate metaagents is deprecated; create a regular session and send `/meta <task>` to enter meta mode".to_string(),
             });
         }
-        let slice_admission = self.guard_slice_execution(
-            None,
-            [(slice_ref.as_deref(), kernel_ref.as_deref())],
-            "session.create",
-        )?;
+        let slice_admission = self
+            .guard_slice_execution(
+                None,
+                [(slice_ref.as_deref(), kernel_ref.as_deref())],
+                "session.create",
+            )
+            .await?;
         let [slice_ref] = slice_admission.slice_ids.as_slice() else {
             return Err(DaemonError::InternalInvariant {
                 operation: "session.create",
@@ -676,11 +678,13 @@ impl KernelRuntimeState {
         let local_agent =
             self.owned
                 .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to remote")?;
-        let slice_admission = self.guard_slice_execution(
-            Some(session_id),
-            [(None, Some(machine_ref))],
-            "agent.move_remote",
-        )?;
+        let slice_admission = self
+            .guard_slice_execution(
+                Some(session_id),
+                [(None, Some(machine_ref))],
+                "agent.move_remote",
+            )
+            .await?;
         let [target_slice_id] = slice_admission.slice_ids.as_slice() else {
             return Err(DaemonError::InternalInvariant {
                 operation: "agent.move_remote",
@@ -939,6 +943,16 @@ impl KernelRuntimeState {
         let owned = &self.owned;
         let durable_session = owned.session_end_snapshot(&session_id)?;
         let durable_project_delete = owned.project_removed_by_session_delete(&session_id);
+        let _vault_observation_guard = self.vault_observation_mutation_guard().await;
+        // Revoke the bound worker copy while its Room/slice binding still exists.
+        if self
+            .owned
+            .room_secret_observations
+            .protects_bytes(&session_id)
+        {
+            self.room_browser_controller_command(&session_id,
+                crate::transport::room_browser_controller::RoomBrowserControllerCommand::ClearSecretObservation { disposition: Default::default() }).await?;
+        }
         self.append_session_durable_event(
             "session.deleted",
             &durable_session,
@@ -958,6 +972,16 @@ impl KernelRuntimeState {
         );
         owned.clear_session_prompt_runtime_state(&session_id);
         owned.remove_session_projection_after_durable_mutation(&session_id);
+        // MP-08/MP-10/MP-11: after commit, upgrade retirement to a worker wipe.
+        // A missed write is reconstructed from the orphaned slice on start/reconnect.
+        if let Some(slice) = owned.slice_store.environment_slice(&session_id) {
+            if owned.room_secret_observations.defer_revocation(
+                &session_id, &slice, crate::transport::room_browser_controller::SecretObservationDisposition::DeleteRoom,
+            ).is_err() {
+                tracing::warn!("MP-08/MP-10/MP-11: deleted Room worker wipe remains pending");
+            }
+            self.retry_slice_observation_revocations(&slice.id);
+        }
         for provider_run_id in terminated_run_ids {
             let (_, process_key) = self
                 .with_app_side_effect(|app| {
@@ -967,7 +991,25 @@ impl KernelRuntimeState {
                 .unwrap_or((false, None));
             owned.remove_provider_process_tracking_for_run(&provider_run_id, process_key);
         }
-        self.detach_session_slices(&session).await?;
+        if self.detach_session_slices(&session).await.is_err() {
+            tracing::warn!(
+                "MP-08/MP-10/MP-11: Room deleted; slice detachment cleanup remains incomplete"
+            );
+        }
+        let protection = &self.owned.room_secret_observations;
+        match protection.barrier(&session_id) {
+            Ok(barrier) => {
+                let _observation_guard = barrier.write_owned().await;
+                if protection.delete_room(&session_id).is_err() {
+                    tracing::warn!(
+                        "MP-08/MP-10/MP-11: Room deleted; observation cleanup remains fenced"
+                    );
+                }
+            }
+            Err(_) => tracing::warn!(
+                "MP-08/MP-10/MP-11: Room deleted; observation cleanup remains fenced"
+            ),
+        }
         Ok(session)
     }
 

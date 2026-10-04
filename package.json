@@ -11,8 +11,8 @@
     "build:cli": "pnpm --filter @chariox/cli run build",
     "lint": "pnpm -r --workspace-concurrency=1 run lint",
     "start:cli": "node scripts/start-cli.mjs",
-    "test": "node --test scripts/*.test.mjs && pnpm run test:slice-provisioner && pnpm -r --workspace-concurrency=1 run test",
-    "test:slice-provisioner": "sh -c 'for file in apps/kernel/slice-linux-docker/provision-*.test.mjs apps/kernel/slice-linux-docker/slice-disk-quota*.test.mjs apps/kernel/slice-linux-docker/managed-rootless-quota*.test.mjs apps/kernel/slice-linux-docker/slice-screen-*.test.mjs; do [ -f \"$file\" ] || exit 1; done; exec node --test --test-concurrency=1 apps/kernel/slice-linux-docker/provision-*.test.mjs apps/kernel/slice-linux-docker/slice-disk-quota*.test.mjs apps/kernel/slice-linux-docker/managed-rootless-quota*.test.mjs apps/kernel/slice-linux-docker/slice-screen-*.test.mjs'",
+    "test": "node --test scripts/*.test.mjs && pnpm run test:review-regressions && pnpm run test:slice-provisioner && pnpm -r --workspace-concurrency=1 run test",
+    "test:slice-provisioner": "sh -c 'for file in apps/kernel/slice-linux-docker/provision-*.test.mjs apps/kernel/slice-linux-docker/slice-disk-quota*.test.mjs apps/kernel/slice-linux-docker/managed-rootless-quota*.test.mjs apps/kernel/slice-linux-docker/slice-screen-*.test.mjs apps/kernel/slice-linux-docker/chariox-data-volume-admission.test.mjs; do [ -f \"$file\" ] || exit 1; done; exec node --test --test-concurrency=1 apps/kernel/slice-linux-docker/provision-*.test.mjs apps/kernel/slice-linux-docker/slice-disk-quota*.test.mjs apps/kernel/slice-linux-docker/managed-rootless-quota*.test.mjs apps/kernel/slice-linux-docker/slice-screen-*.test.mjs apps/kernel/slice-linux-docker/chariox-data-volume-admission.test.mjs'",
     "test:daemon": "RUST_MIN_STACK=16777216 RUST_TEST_THREADS=1 cargo test --manifest-path apps/kernel/Cargo.toml",
     "test:browser-controller-browser": "node --test --test-concurrency=1 apps/kernel/slice-linux-docker/docker/browser-controller.browser-test.mjs",
     "perf:drills": "node scripts/performance-drills.mjs",
@@ -21,7 +21,8 @@
     "validation:distributed-runtime-gate": "pnpm --filter @chariox/cli run validation:distributed-runtime-gate",
     "protocol:conformance": "cargo test --manifest-path apps/kernel/Cargo.toml client_protocol_conformance -- --nocapture",
     "smoke:daemon": "cargo run --manifest-path apps/kernel/Cargo.toml --bin chariox-kernel-harness",
-    "start:shell": "pnpm --filter @chariox/shell run start"
+    "start:shell": "pnpm --filter @chariox/shell run start",
+    "test:review-regressions": "node --test --test-concurrency=1 deploy/managed-kernel/managed-update-recovery.test.mjs apps/kernel/managed-upgrade-protocol-transitions.test.mjs apps/cli/scripts/lib/drill-turn-admission.test.mjs apps/cli/scripts/lib/native-permission-workspace.test.mjs"
   },
   "devDependencies": {
     "typescript": "^5.6.3",

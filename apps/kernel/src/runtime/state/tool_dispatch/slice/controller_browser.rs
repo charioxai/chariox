@@ -88,7 +88,9 @@ impl KernelRuntimeState {
             .await?;
         // Unlock can await a human for several minutes. Do not resolve against
         // credential metadata or vault configuration captured before that wait.
-        let service = self.home_runtime_secret_service()?;
+        let (service, _vault_observation_guard) = self
+            .room_secret_input_service(session_id, &args.credential_id)
+            .await?;
         let secret = zeroize::Zeroizing::new(
             service
                 .browser_secret_input_for_target_url(&args.credential_id, &target_document_url)?,

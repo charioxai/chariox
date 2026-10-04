@@ -1248,8 +1248,29 @@ Required cases:
 - user-created and agent-generated credentials
 - locked-vault unlock interaction
 - wrong user, Room, slice, or managed machine
+- form-less password step with a separate JavaScript sign-in button
+- native form controls named `submit` or `requestSubmit`
 - log, history, trace, screenshot, clipboard, and helper-output leak scan
 - relay and Cloud proof that secret payloads are not inspected or stored
+
+MP-08/MP-10: browser secret paste defaults to `submit=false`. On a password
+step with a separate Next or Sign in button, fill the discovered password field,
+then click that observed button through the ordinary Browser action. `submit=true`
+requires a native containing form. A missing form must reject before inserting
+any secret and report `browser_submit_failed` with the fill-then-click guidance.
+The controller invokes native form prototype methods so named form controls
+cannot shadow submission. Neither rejection nor script exceptions may return
+secret values or page-provided exception text. Local structural fixtures prove
+these controller cases; they do not establish live third-party authentication.
+
+MP-08/MP-10: `request_popup` accepts a single fixed acknowledgement choice for a
+blocking notice and rejects an empty fixed-choice list. Notices use the existing
+kernel-owned RuntimeInteraction and the same answer, reconnect, and timeout
+paths as choice questions. A notice never acknowledges itself merely because
+only one choice exists; only an explicitly configured timeout default may do so.
+Browser-use credential registrations require `injection.kind=browser`; `basic`
+means HTTP Basic authentication. Reject incompatible new metadata before any
+registry or Vault write, while preserving reads of legacy metadata for repair.
 
 ### Milestone 9: managed-machine deployment
 

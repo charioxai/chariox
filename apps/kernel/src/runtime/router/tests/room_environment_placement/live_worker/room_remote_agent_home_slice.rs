@@ -357,6 +357,8 @@ async fn check_remote_room_agent_uses_home_local_environment_browser_computer_an
                 .is_err(),
             "the remote kernel must not create parallel Room Environment authority"
         );
+        super::room_secret::check_revocation(&fixture, false, &agent_worker.runtime_state, &token)
+            .await;
     })
     .catch_unwind()
     .await;

@@ -76,7 +76,8 @@ impl KernelRuntimeState {
                     limit: Some(limit),
                 };
                 let query = recall_query_from_search_request(request);
-                recall_events_tool_result(
+                protected_recall_events_tool_result(
+                    &self.owned.room_secret_observations,
                     execute_query_recall_request(
                         self.owned.operational_history_store.clone(),
                         &self.owned.config_projection,
@@ -111,7 +112,8 @@ impl KernelRuntimeState {
                     cursor: args.cursor,
                     limit: Some(limit),
                 };
-                semantic_recall_events_tool_result(
+                protected_semantic_recall_events_tool_result(
+                    &self.owned.room_secret_observations,
                     execute_semantic_search_recall_request(
                         self,
                         &self.owned.config_projection,
@@ -154,7 +156,8 @@ impl KernelRuntimeState {
             before_sequence: args.before_sequence,
             limit: Some(args.limit.unwrap_or(20).clamp(1, 50)),
         });
-        recall_events_tool_result(
+        protected_recall_events_tool_result(
+            &self.owned.room_secret_observations,
             execute_query_recall_request(
                 self.owned.operational_history_store.clone(),
                 &self.owned.config_projection,
@@ -329,6 +332,72 @@ fn truncate_utf8_bytes(value: &str, max_bytes: usize) -> String {
     format!("{}{MARKER}", &value[..end])
 }
 
+// MP-08/MP-11: protect full history before snippet bounds can split known values.
+fn protected_recall_events_tool_result(
+    protection: &super::super::room_secret_observation::RoomSecretObservations,
+    response: LocalDaemonResponse,
+    mode: &str,
+) -> Result<RuntimeToolResult, DaemonError> {
+    let response = match response {
+        LocalDaemonResponse::RecallEvents {
+            events,
+            next_sequence,
+        } => LocalDaemonResponse::RecallEvents {
+            events: protection.protect_history_events(events),
+            next_sequence,
+        },
+        response => response,
+    };
+    recall_events_tool_result(response, mode)
+}
+fn protected_semantic_recall_events_tool_result(
+    protection: &super::super::room_secret_observation::RoomSecretObservations,
+    response: LocalDaemonResponse,
+    mode: &str,
+) -> Result<RuntimeToolResult, DaemonError> {
+    let response = match response {
+        LocalDaemonResponse::SemanticRecallEvents {
+            mut results,
+            next_cursor,
+            unavailable_reason,
+            mut answer,
+        } => {
+            for result in &mut results {
+                let protected = protection.protect_history_events(vec![result.event.clone()]);
+                if protected[0] != result.event {
+                    result.chunk_text = None;
+                    answer = None;
+                }
+                result.event = protected
+                    .into_iter()
+                    .next()
+                    .ok_or_else(super::super::room_secret_observation::protection_error)?;
+                if let Some(room) = result.event.session_id.as_deref() {
+                    result.chunk_text = result
+                        .chunk_text
+                        .as_deref()
+                        .map(|text| protection.scrub_text_or_withhold(room, text));
+                    result.reason = result
+                        .reason
+                        .as_deref()
+                        .map(|text| protection.scrub_text_or_withhold(room, text));
+                    answer = answer
+                        .as_deref()
+                        .map(|text| protection.scrub_text_or_withhold(room, text));
+                }
+            }
+            LocalDaemonResponse::SemanticRecallEvents {
+                results,
+                next_cursor,
+                unavailable_reason,
+                answer,
+            }
+        }
+        response => response,
+    };
+    semantic_recall_events_tool_result(response, mode)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,6 +441,43 @@ mod tests {
         assert!(events.iter().any(|event| {
             event.metadata.get("chariox_content_omitted") == Some(&serde_json::Value::Bool(true))
         }));
+    }
+
+    #[test]
+    fn semantic_recall_scrubs_independent_snippets_and_answer_before_bounds() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-vault-recall-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let protection = super::super::super::room_secret_observation::RoomSecretObservations::new(
+            root.clone(),
+            Default::default(),
+        );
+        protection
+            .register("session-recall-bounds", "synthetic-only")
+            .unwrap();
+        let mut source = event(1, "safe tool metadata");
+        source.kind = crate::history::HistoryEventKind::ProviderTool;
+        let response = LocalDaemonResponse::SemanticRecallEvents {
+            results: vec![crate::local::SemanticRecallMatch {
+                event: source,
+                chunk_text: Some("synthetic-only".into()),
+                reason: Some("SYNTHETIC-ONLY".into()),
+                score_millis: None,
+                chunk_index: None,
+            }],
+            next_cursor: None,
+            unavailable_reason: None,
+            answer: Some("synthetic-only".into()),
+        };
+        let result =
+            protected_semantic_recall_events_tool_result(&protection, response, "semantic")
+                .unwrap();
+        assert_eq!(result.payload["results"][0]["chunk_text"], "[redacted]");
+        assert_eq!(result.payload["results"][0]["reason"], "[redacted]");
+        assert_eq!(result.payload["answer"], "[redacted]");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

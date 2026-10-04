@@ -752,6 +752,33 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
   assert.match(rerun.stderr, /output directory must be empty/)
 })
 
+test("MP-07/MP-11 portable Path-1 packaging checks do not execute the Linux installer", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-portable-path1-packaging-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const preload = join(root, "darwin-preload.mjs")
+  await writeFile(preload, `
+import childProcess from "node:child_process"
+import { syncBuiltinESMExports } from "node:module"
+Object.defineProperty(process, "platform", { value: "darwin" })
+const spawnSync = childProcess.spawnSync
+childProcess.spawnSync = (command, ...args) => {
+  if (command === ${JSON.stringify(installer)}) throw new Error("Linux installer invoked during portable packaging checks")
+  return spawnSync(command, ...args)
+}
+syncBuiltinESMExports()
+`)
+  const result = spawnSync(process.execPath, ["--import", preload, "--test", "--test-concurrency=1",
+    "--test-name-pattern=^Path-1 bootstrap and data-volume artifacts are signed and selected by image install$",
+    fileURLToPath(import.meta.url)], {
+    encoding: "utf8", maxBuffer: 4 * 1024 * 1024,
+    env: { ...process.env, NODE_TEST_CONTEXT: undefined },
+  })
+  assert.equal(result.error, undefined)
+  assert.equal(result.signal, null)
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+  assert.match(result.stdout, /signed release and topology checks passed; installer execution requires Linux root ownership/)
+})
+
 test("Path-1 bootstrap and data-volume artifacts are signed and selected by image install", async (context) => {
   if (process.platform === "linux" && process.getuid() !== 0) {
     const result = spawnSync("sudo", ["--", process.execPath, "--test",
@@ -766,6 +793,7 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
     assert.equal(result.status, 0, result.stderr)
     return
   }
+  const canInstall = process.platform === "linux" && process.getuid?.() === 0
   const root = await mkdtemp(join(tmpdir(), "chariox-path1-managed-home-install-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const fixture = await makeFixture(root)
@@ -994,40 +1022,42 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
     path1WithoutDataVolume.stderr,
     /^verify-image-release\.mjs: Path-1 releases must include data-volume admission and both ordering drop-ins/,
   )
-  const oldSharedHostHarnessRoot = join(root, "old-shared-host-harness")
-  await mkdir(oldSharedHostHarnessRoot)
-  const oldSharedHostHarness = await createInstallerHarness(oldSharedHostHarnessRoot)
-  const oldSharedHostInstall = spawnSync(
-    installer,
-    installerArguments(releaseRoot, noVolumeDigest, fixture),
-    {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        PATH: `${oldSharedHostHarness.bin}:${process.env.PATH}`,
-        HARNESS_STATE: oldSharedHostHarness.state,
-        CHARIOX_IMAGE_INSTALL_ROOT: oldSharedHostHarness.installRoot,
-        CHARIOX_IMAGE_INSTALL_LOCK: join(oldSharedHostHarness.state, "install.lock"),
+  if (canInstall) {
+    const oldSharedHostHarnessRoot = join(root, "old-shared-host-harness")
+    await mkdir(oldSharedHostHarnessRoot)
+    const oldSharedHostHarness = await createInstallerHarness(oldSharedHostHarnessRoot)
+    const oldSharedHostInstall = spawnSync(
+      installer,
+      installerArguments(releaseRoot, noVolumeDigest, fixture),
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${oldSharedHostHarness.bin}:${process.env.PATH}`,
+          HARNESS_STATE: oldSharedHostHarness.state,
+          CHARIOX_IMAGE_INSTALL_ROOT: oldSharedHostHarness.installRoot,
+          CHARIOX_IMAGE_INSTALL_LOCK: join(oldSharedHostHarness.state, "install.lock"),
+        },
       },
-    },
-  )
-  assert.equal(oldSharedHostInstall.status, 0, oldSharedHostInstall.stderr)
-  const oldSharedHostReleasePath = join(
-    oldSharedHostHarness.installRoot,
-    "usr/lib/chariox/releases",
-    noVolumeDigest.slice("sha256:".length),
-  )
-  for (const relativePath of dataVolumeArtifactPaths) {
-    assert.equal(
-      await lstat(join(oldSharedHostReleasePath, relativePath)).then(() => true, () => false),
-      false,
-      `legacy shared-host release must omit undeclared ${relativePath}`,
     )
-    assert.equal(
-      await lstat(join(oldSharedHostHarness.installRoot, relativePath)).then(() => true, () => false),
-      false,
-      `legacy shared-host install must not activate ${relativePath}`,
+    assert.equal(oldSharedHostInstall.status, 0, oldSharedHostInstall.stderr)
+    const oldSharedHostReleasePath = join(
+      oldSharedHostHarness.installRoot,
+      "usr/lib/chariox/releases",
+      noVolumeDigest.slice("sha256:".length),
     )
+    for (const relativePath of dataVolumeArtifactPaths) {
+      assert.equal(
+        await lstat(join(oldSharedHostReleasePath, relativePath)).then(() => true, () => false),
+        false,
+        `legacy shared-host release must omit undeclared ${relativePath}`,
+      )
+      assert.equal(
+        await lstat(join(oldSharedHostHarness.installRoot, relativePath)).then(() => true, () => false),
+        false,
+        `legacy shared-host install must not activate ${relativePath}`,
+      )
+    }
   }
   for (const [relativePath, contents] of originalDataVolumeArtifacts) {
     await writeFile(join(releaseRoot, relativePath), contents)
@@ -1214,7 +1244,7 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
   await writeFile(manifestPath, originalManifestBytes)
   await writeFile(signaturePath, originalSignature)
 
-  if (process.platform !== "linux" || process.getuid?.() !== 0) {
+  if (!canInstall) {
     context.diagnostic("signed release and topology checks passed; installer execution requires Linux root ownership")
     return
   }

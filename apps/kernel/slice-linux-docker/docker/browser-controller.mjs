@@ -16,10 +16,21 @@ import {
 } from "./browser-controller-resources.mjs";
 
 import { managedCanonicalDisplay } from "./browser-controller-display.mjs";
+import { redactObservation } from "./browser-controller-snapshot.mjs";
 
 let browserImportModule;
 
-export async function handleBrowserControllerRequest(
+export async function handleBrowserControllerRequest(request, options = {}) {
+  const browser = options.browser ?? new BrowserCdpClient();
+  // Kernel-owned registry replay precedes raw CDP reads and their compaction.
+  for (const value of request?.protected_values ?? []) {
+    if (typeof value === "string" && value) browser.protectedValues?.add(value);
+  }
+  const result = await handleBrowserControllerRequestInner(request, { ...options, browser });
+  return redactObservation(result, browser.protectedValues ?? []);
+}
+
+async function handleBrowserControllerRequestInner(
   request,
   {
     processId = process.pid,

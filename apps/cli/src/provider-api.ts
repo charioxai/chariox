@@ -17,6 +17,8 @@ import {
   getProviderAuthStatusRequest,
   getProviderLoginStatusRequest,
   sendProviderLoginInputRequest,
+  setProviderAccountCredentialRequest,
+  type ProviderAccountCredentialRequestContext,
   cancelProviderLoginRequest,
   listProviderAccountProfilesRequest,
   createProviderAccountProfileRequest,
@@ -48,6 +50,7 @@ import {
   type ProviderCommandCatalogs,
 } from "./provider-command-catalog.js"
 import { describeCliError } from "./runtime.js"
+import { sendWithProtocolMinimum } from "./protocol-minimum-diagnostic.js"
 
 export async function getProviderCatalog(
   client: LocalIpcClient,
@@ -237,6 +240,34 @@ export async function getProviderLoginStatus(
 ): Promise<ProviderLoginStatus> {
   const response = await client.send<Record<string, unknown>>(getProviderLoginStatusRequest(loginId))
   return expectVariant<{ login: ProviderLoginStatus }>(response, "ProviderLoginStatus").login
+}
+
+// MP-08/MP-11: the run field first appears in the combined G2 protocol.
+export async function runProviderSetupToken(
+  client: LocalIpcClient,
+  accountProfile: string,
+  replace: boolean,
+  context: ProviderAccountCredentialRequestContext = {},
+): Promise<ProviderLoginStart> {
+  const response = await sendWithProtocolMinimum<Record<string, unknown>>(
+    request => client.send(request),
+    setProviderAccountCredentialRequest("claude", accountProfile, "", replace, context, true),
+    { capability: "Claude setup token capture", requestVariant: "SetProviderAccountCredential", unknownField: "run", minimumProtocolVersion: 411 },
+  )
+  return expectVariant<{ login: ProviderLoginStart }>(response, "ProviderLoginStarted").login
+}
+
+export async function storeProviderSetupToken(
+  client: LocalIpcClient,
+  accountProfile: string,
+  value: string,
+  replace: boolean,
+  context: ProviderAccountCredentialRequestContext = {},
+): Promise<{ replaced: boolean }> {
+  const response = await client.send<Record<string, unknown>>(
+    setProviderAccountCredentialRequest("claude", accountProfile, value, replace, context),
+  )
+  return expectVariant<{ replaced: boolean }>(response, "ProviderAccountCredentialStored")
 }
 
 export async function sendProviderLoginInput(

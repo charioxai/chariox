@@ -21,6 +21,12 @@ impl KernelRuntimeState {
                 agent_id: agent_id.to_string(),
             });
         }
+        let pixels = !matches!(&call, RemoteRoomComputerObservationCall::ScreenStatus);
+        self.ensure_room_observation_ready(session_id, agent_id, pixels)
+            .await?;
+        self.owned
+            .room_secret_observations
+            .require(session_id, pixels)?;
         let slice = self.running_room_screenshot_slice(session_id)?;
         if slice.id != slice_id {
             return Err(computer_observation_error(
@@ -79,8 +85,12 @@ impl KernelRuntimeState {
                 "worker returned mismatched Computer observation metadata",
             ));
         }
+        let result = self
+            .owned
+            .room_secret_observations
+            .scrub(session_id, result.0)?;
         authoritative_computer_observation_result(
-            result.0,
+            result,
             screen_status,
             session_id,
             &slice.id,
@@ -97,34 +107,60 @@ impl KernelRuntimeState {
         slice_id: &str,
         call: RemoteRoomComputerObservationCall,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let config = self.authorize_bound_room_computer_read(
+        self.authorize_bound_room_computer_read(
             authenticated_kernel_id,
             authenticated_public_key,
             session_id,
             slice_id,
+        )?;
+        let _observation_guard = self
+            .owned
+            .room_secret_observations
+            .barrier(session_id)?
+            .read_owned()
+            .await;
+        self.owned.room_secret_observations.require(
+            session_id,
+            !matches!(&call, RemoteRoomComputerObservationCall::ScreenStatus),
         )?;
         let capture_guard = self
             .owned
             .computer_input_executions
             .capture_guard()
             .map_err(computer_observation_error)?;
-        let artifact_path = match &call {
-            RemoteRoomComputerObservationCall::Ocr {
-                artifact_id: Some(artifact_id),
+        // Preserve opaque-artifact ownership checks without reading old pixels.
+        let artifact_id = match &call {
+            RemoteRoomComputerObservationCall::Ocr { artifact_id }
+            | RemoteRoomComputerObservationCall::FindText { artifact_id, .. } => {
+                artifact_id.as_deref()
             }
-            | RemoteRoomComputerObservationCall::FindText {
-                artifact_id: Some(artifact_id),
-                ..
-            } => Some(super::room_screenshot::room_screenshot_artifact_path(
-                &config,
+            RemoteRoomComputerObservationCall::ScreenStatus => None,
+        };
+        if let Some(artifact_id) = artifact_id {
+            super::room_screenshot::load_room_screenshot_artifact(
+                &self.owned.config_projection.snapshot(),
                 session_id,
                 slice_id,
                 artifact_id,
-            )?),
-            _ => None,
-        };
-        super::tool_dispatch::execute_room_computer_observation(call, artifact_path, capture_guard)
-            .await
+            )?;
+        }
+        // Old/pre-redaction artifacts are never OCR sources. Re-capture fresh.
+        let result = super::tool_dispatch::execute_room_computer_observation(
+            call,
+            self.owned
+                .room_secret_observations
+                .capture_policy(session_id)?,
+            capture_guard,
+            |ids| {
+                self.owned
+                    .room_secret_observations
+                    .prune_native_targets(session_id, ids)
+            },
+        )
+        .await?;
+        self.owned
+            .room_secret_observations
+            .scrub(session_id, result)
     }
 }
 

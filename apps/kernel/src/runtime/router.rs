@@ -210,6 +210,8 @@ mod tests {
     mod m16_runtime_extension_registration;
     mod m23_metaagent_runtime_tools;
     mod provider_projection;
+    #[cfg(unix)]
+    mod provider_setup_token;
     mod relay_leased_prompt_steer;
     mod remote_agent_message_origin;
     mod remote_authorization;

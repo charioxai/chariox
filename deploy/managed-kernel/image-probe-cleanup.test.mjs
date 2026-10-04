@@ -7,6 +7,9 @@ import test from 'node:test'
 
 const source = await readFile(new URL('./prepare-hetzner-image.sh', import.meta.url), 'utf8')
 const functions = source.slice(source.indexOf('assert_unmounted_probe_root()'), source.indexOf('assert_path1_unit_has_no_dropins()'))
+// MP-07/MP-08/MP-10: use the production call-site traps after helper extraction.
+const cleanupRegistration = source.match(/(^trap cleanup_path1_data_volume_bypass EXIT\ntrap 'exit 1' HUP INT TERM\n)bypass_path1_data_volume_dropins/m)?.[1]
+assert.ok(cleanupRegistration, 'production cleanup traps must exist at the shared call site')
 const linuxTest = process.platform === 'linux' ? test : test.skip
 async function runExit(t, body, scenario = '', topology = 'path1') {
   const root = await mkdtemp(join(tmpdir(), 'chariox-probe-exit-'))
@@ -40,7 +43,7 @@ systemctl() {
 }
 findmnt() { printf '/\\n'; }
 stat() { '${process.execPath}' -e 'const s=require("node:fs").statSync(process.argv[1]); console.log(s.dev+":"+s.ino)' "$3"; }
-bypass_path1_data_volume_dropins
+${cleanupRegistration}bypass_path1_data_volume_dropins
 ${body}`, 'test', root], { encoding: 'utf8', timeout: 10_000 })
   return { root, result }
 }

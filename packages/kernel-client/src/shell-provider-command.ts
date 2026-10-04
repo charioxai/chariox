@@ -7,6 +7,7 @@ import type {
 import {
   getProviderAuthStatusRequest,
   getProviderLoginStatusRequest,
+  sendProviderLoginInputRequest,
   cancelProviderLoginRequest,
   listProviderProcessesRequest,
   logoutProviderRequest,
@@ -36,10 +37,19 @@ export async function executeProviderCommand(
   const [action, providerArg, ...rest] = parsed.args
   if (action === "setup-token") {
     const provider = providerArg?.trim()
-    const accountProfile = rest.find((value) => value !== "--replace")?.trim() || "default"
+    const accountProfile = rest.find((value) => !value.startsWith("--"))?.trim() || "default"
     const replace = rest.includes("--replace")
-    if (provider !== "claude" || rest.filter((value) => value !== "--replace").length > 1) {
-      return { ok: false, message: "usage: provider setup-token claude [account-profile] [--replace]" }
+    const run = rest.includes("--run")
+    if (provider !== "claude" || rest.filter((value) => !value.startsWith("--")).length > 1 || rest.some((value) => value.startsWith("--") && !["--replace", "--run"].includes(value))) {
+      return { ok: false, message: "usage: provider setup-token claude [account-profile] [--replace] [--run]" }
+    }
+    if (run) {
+      const response = await deps.client.send(setProviderAccountCredentialRequest(
+        provider, accountProfile, "", replace,
+        { ...(context.sessionId ? { sessionId: context.sessionId } : {}), ...(context.agentId ? { agentId: context.agentId } : {}) }, true,
+      ))
+      const login = expectVariant<{ login: ProviderLoginStart }>(response, "ProviderLoginStarted").login
+      return { ok: true, message: formatProviderLoginStart(login, "setup-token"), data: { login } }
     }
     if (!deps.readSecret) {
       return {
@@ -110,6 +120,12 @@ export async function executeProviderCommand(
       message: [output, `${login.provider}/${login.account_profile} login ${login.state}`].filter(Boolean).join("\n"),
       data: { login },
     }
+  }
+  if (action === "login-input") {
+    if (!providerArg || !deps.readSecret) return { ok: false, message: "provider login-input requires a login ID and hidden input support" }
+    const value = await deps.readSecret("provider login input: ")
+    await deps.client.send(sendProviderLoginInputRequest(providerArg, Buffer.from(`${value}\r`, "utf8").toString("base64")))
+    return { ok: true, message: "Hidden provider response sent" }
   }
   if (action === "login-cancel") {
     if (!providerArg) return { ok: false, message: "usage: provider login-cancel <login-id>" }

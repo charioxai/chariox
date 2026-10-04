@@ -71,6 +71,8 @@ pub(super) struct RelayEventWriteCoalescer<T> {
 }
 
 impl<T> RelayEventWriteCoalescer<T> {
+    const MAX_PENDING_EVENTS: usize = 32;
+
     pub(super) fn new(delay_ms: u64) -> Self {
         Self {
             delay_ms,
@@ -94,6 +96,11 @@ impl<T> RelayEventWriteCoalescer<T> {
         self.envelopes.push_back(envelope);
         if self.ready_at.is_none() {
             self.ready_at = Some(now + Duration::from_millis(self.delay_ms));
+        }
+        // A continuously ready receiver can win over the write timer. Flush
+        // the oldest event at capacity so batching cannot bypass backpressure.
+        if self.envelopes.len() > Self::MAX_PENDING_EVENTS {
+            return self.envelopes.pop_front();
         }
         None
     }

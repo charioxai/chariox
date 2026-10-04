@@ -23,6 +23,15 @@ quota_storage_ready() {
   xfs_info "$1" 2>/dev/null | grep -Eq '(^|[[:space:],])ftype=1([[:space:],]|$)' || return 1
 }
 
+ensure_rootless_config_parent() {
+  if [ -L "$ROOTLESS_HOME/.config" ] || { [ -e "$ROOTLESS_HOME/.config" ] && [ ! -d "$ROOTLESS_HOME/.config" ]; }; then
+    echo "rootless Docker config parent is not a real directory" >&2
+    exit 1
+  fi
+  # Repair ancestors left root-owned by earlier image preparation as well.
+  install -d -o chariox-docker -g chariox-docker -m 0700 "$ROOTLESS_HOME/.config"
+}
+
 prepare_fresh_overlay2_backend() {
   [ "$(id -u)" -eq 0 ] || exit 1
   if [ -L "$ROOTLESS_DATA_ROOT" ] || { [ -e "$ROOTLESS_DATA_ROOT" ] && [ ! -d "$ROOTLESS_DATA_ROOT" ]; }; then
@@ -46,6 +55,7 @@ prepare_fresh_overlay2_backend() {
     # allocator probe to prove this exact XFS project-quota backend.
     return 0
   fi
+  ensure_rootless_config_parent
   if [ -e "$ROOTLESS_DOCKER_CONFIG" ]; then
     return 0
   fi
@@ -56,8 +66,6 @@ prepare_fresh_overlay2_backend() {
   fi
   chown chariox-docker:chariox-docker "$ROOTLESS_DATA_ROOT"
   chmod 0700 "$ROOTLESS_DATA_ROOT"
-  # A fresh image has no ~/.config; install -d would create it root-only under umask 077.
-  [ -e "$ROOTLESS_HOME/.config" ] || install -d -o chariox-docker -g chariox-docker -m 0700 "$ROOTLESS_HOME/.config"
   install -d -o root -g root -m 0755 "$ROOTLESS_HOME/.config/docker"
   temporary="$ROOTLESS_DOCKER_CONFIG.new.$$"
   (umask 022; printf '%s\n' "$ROOTLESS_QUOTA_DAEMON_CONFIG" > "$temporary")

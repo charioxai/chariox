@@ -1,6 +1,7 @@
 import net from "node:net"
 import path from "node:path"
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import {permissionFixtureTarget} from "./native-permission-workspace.mjs"
+import { chmod, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { setTimeout as sleep } from "node:timers/promises"
 import { deflateSync } from "node:zlib"
 import { LocalIpcClient } from "../../dist/ipc.js"
@@ -1149,6 +1150,8 @@ export async function runProviderScenario({
     if (options.includePermissions) {
       const remoteExecution = Boolean(options.hetznerWorker && machineRef)
       await ensureExecutionDirectory(options, remoteExecution, path.join(worktree, "outputs"))
+      // MP-08/MP-10: this owned fixture is writable by the slice provider user.
+      if (sliceRef) await chmod(path.join(worktree,"outputs"),0o777)
       const nativePermissionFile = path.join(worktree, "outputs", `remote-native-${provider}-${process.pid}-native-permission.txt`)
       const charioxPermissionFile = path.join(worktree, "outputs", `remote-native-${provider}-${process.pid}-chariox-permission.txt`)
       await removeExecutionFile(options, remoteExecution, nativePermissionFile)
@@ -1157,8 +1160,8 @@ export async function runProviderScenario({
       const nativePermissionContent = `native-${provider}`
       const charioxPermissionContent = `chariox-${provider}`
       const nativePrompt = provider === "claude"
-        ? claudePermissionPrompt(markers.nativePermission, nativePermissionFile, nativePermissionContent)
-        : permissionPrompt(markers.nativePermission, nativePermissionFile, nativePermissionContent)
+        ? claudePermissionPrompt(markers.nativePermission, permissionFixtureTarget(nativePermissionFile,sliceRef), nativePermissionContent)
+        : permissionPrompt(markers.nativePermission, permissionFixtureTarget(nativePermissionFile,sliceRef), nativePermissionContent)
       await automationRequest(automationSocket, {
         action: "workspace_shell_exec",
         command: `agent focus ${agents[0].id}`,
@@ -1186,7 +1189,7 @@ export async function runProviderScenario({
           [aliases[0]]: { prompts: [markers.nativePermission], outputs: [markers.nativePermission] },
         })
         await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, (_update, raw) =>
-          raw.includes(nativePermissionFile))
+          raw.includes(path.basename(nativePermissionFile)))
       }
       await waitForExecutionFileContent(
         options,
@@ -1199,8 +1202,8 @@ export async function runProviderScenario({
         badgeTransitions[aliases[0]].after = await waitForAgentBadgeTone(automationSocket, aliases[0], "idle")
       }
       const charioxPrompt = provider === "claude"
-        ? claudePermissionPrompt(markers.charioxPermission, charioxPermissionFile, charioxPermissionContent)
-        : permissionPrompt(markers.charioxPermission, charioxPermissionFile, charioxPermissionContent)
+        ? claudePermissionPrompt(markers.charioxPermission, permissionFixtureTarget(charioxPermissionFile,sliceRef), charioxPermissionContent)
+        : permissionPrompt(markers.charioxPermission, permissionFixtureTarget(charioxPermissionFile,sliceRef), charioxPermissionContent)
       await automationRequest(automationSocket, {
         action: "workspace_shell_exec",
         command: `prompt ${aliases[0]} ${shellQuote(charioxPrompt)}`,
@@ -1217,7 +1220,7 @@ export async function runProviderScenario({
           [aliases[0]]: { prompts: [markers.charioxPermission], outputs: [markers.charioxPermission] },
         })
         await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, (_update, raw) =>
-          raw.includes(charioxPermissionFile))
+          raw.includes(path.basename(charioxPermissionFile)))
       }
       await waitForExecutionFileContent(
         options,

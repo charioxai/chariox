@@ -58,12 +58,15 @@ impl KernelRuntimeState {
                     provider_run,
                 );
                 let registry = crate::credential::CharioxCredentialRegistry::user()?;
-                let result = service.upsert_vault_backed_credential_with_secret(
-                    &registry,
-                    credential,
-                    secret.as_str(),
-                    args.overwrite,
-                )?;
+                let result = self
+                    .upsert_observed_vault_credential(
+                        &service,
+                        &registry,
+                        credential,
+                        secret.as_str(),
+                        args.overwrite,
+                    )
+                    .await?;
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
@@ -253,12 +256,15 @@ impl KernelRuntimeState {
                     }
                 })?);
                 let registry = crate::credential::CharioxCredentialRegistry::user()?;
-                let result = service.upsert_vault_backed_credential_with_secret(
-                    &registry,
-                    credential,
-                    secret.as_str(),
-                    args.overwrite,
-                )?;
+                let result = self
+                    .upsert_observed_vault_credential(
+                        &service,
+                        &registry,
+                        credential,
+                        secret.as_str(),
+                        args.overwrite,
+                    )
+                    .await?;
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
@@ -412,10 +418,10 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_request_popup",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if args.choices.len() < 2 {
+                if args.choices.is_empty() {
                     return Err(DaemonError::LocalTransport {
                         operation: "runtime_tool_request_popup",
-                        message: "popup interactions require at least two choices".to_string(),
+                        message: "popup interactions require at least one choice".to_string(),
                     });
                 }
                 let choices = args
@@ -647,12 +653,13 @@ impl KernelRuntimeState {
                     Some(&context.worker_provider_run_id),
                 );
                 let registry = crate::credential::CharioxCredentialRegistry::user()?;
-                let result = service.upsert_vault_backed_credential_with_secret(
+                let result = self.upsert_observed_vault_credential(
+                    &service,
                     &registry,
                     credential,
                     secret.as_str(),
                     args.overwrite,
-                )?;
+                ).await?;
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
@@ -967,12 +974,15 @@ impl KernelRuntimeState {
             }
         })?);
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
-        let result = service.upsert_vault_backed_credential_with_secret(
-            &registry,
-            credential,
-            secret.as_str(),
-            args.overwrite,
-        )?;
+        let result = self
+            .upsert_observed_vault_credential(
+                &service,
+                &registry,
+                credential,
+                secret.as_str(),
+                args.overwrite,
+            )
+            .await?;
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({
@@ -993,7 +1003,7 @@ impl KernelRuntimeState {
         )
     }
 
-    pub(super) fn home_runtime_secret_service(
+    pub(in crate::runtime::state) fn home_runtime_secret_service(
         &self,
     ) -> Result<crate::secret::RuntimeSecretService, DaemonError> {
         let user_config = self.owned.config_projection.snapshot().user_config;

@@ -160,6 +160,7 @@ export function setProviderAccountCredentialRequest(
   value: string,
   overwrite = false,
   context: ProviderAccountCredentialRequestContext = {},
+  run = false,
 ) {
   return {
     SetProviderAccountCredential: {
@@ -169,6 +170,7 @@ export function setProviderAccountCredentialRequest(
       account_profile: accountProfile,
       value,
       overwrite,
+      ...(run ? { run: true } : {}),
     },
   }
 }

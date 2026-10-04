@@ -502,13 +502,13 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: PASTE_SECRET_TO_SLICE_TOOL.to_string(),
-            description: "Paste a browser credential into an editable password field after validating the current Chariox slice browser target. Unmasked fields are rejected before the secret is resolved, and the secret value is not returned to the model.".to_string(),
+            description: "Paste a browser credential into an editable password field after validating the current Chariox slice browser target. Unmasked fields are rejected before the secret is resolved, and the secret value is not returned to the model. Prefer submit=false, then click the observed Next/Sign in button; submit=true requires a native form.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential_id"],
                 "properties": {
                     "credential_id": {"type": "string"},
-                    "submit": {"type": "boolean", "description": "Submit the containing browser form after filling. Defaults to false."},
+                    "submit": {"type": "boolean", "description": "Submit the native containing browser form after filling. Defaults to false. For a separate Next/Sign in button, use false and click the observed button instead."},
                     "expected_host": {"type": "string", "description": "Optional expected current browser host. The paste fails before secret resolution if the browser is on a different host."},
                     "expected_url": {"type": "string", "description": "Optional expected current browser URL prefix. The paste fails before secret resolution if the browser URL does not start with this value."},
                     "selector": {"type": "string", "description": "Optional CSS selector for the intended fillable field."},
@@ -546,7 +546,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_POPUP_TOOL.to_string(),
-            description: "Request a synchronous Chariox popup in the current agent pane. The tool call blocks until the user answers or the timeout resolves. Set default_on_timeout to an existing choice id to return that reply on timeout; omit it to return status timed_out with no choice_id or reply.".to_string(),
+            description: "Request a synchronous Chariox popup in the current agent pane. Supply at least one choice; use one OK/acknowledge choice for a blocking notice. The tool call blocks until the user answers or the timeout resolves. Set default_on_timeout to an existing choice id to return that reply on timeout; omit it to return status timed_out with no choice_id or reply.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["message", "choices"],
@@ -573,7 +573,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     },
                     "choices": {
                         "type": "array",
-                        "minItems": 2,
+                        "minItems": 1,
                         "items": {
                             "type": "object",
                             "required": ["id", "label", "reply"],

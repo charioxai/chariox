@@ -44,7 +44,10 @@ impl KernelRuntimeState {
             .begin_audited_home_extension_invocation(&context, &metadata, &tool)
             .await?
         {
-            return Ok(cached);
+            return self
+                .owned
+                .room_secret_observations
+                .scrub_cached_result(&context.home_session_id, cached);
         }
         self.append_home_extension_audit_event(
             "home_extension.invoke.accepted",
@@ -61,6 +64,16 @@ impl KernelRuntimeState {
             self.dispatch_home_mcp_proxy_tool(&context, &name, payload),
         )
         .await
+        .and_then(|value| {
+            self.owned
+                .room_secret_observations
+                .scrub(&context.home_session_id, value)
+        })
+        .map_err(|error| {
+            self.owned
+                .room_secret_observations
+                .scrub_error(&context.home_session_id, error)
+        })
         .and_then(super::home_extension_execution_policy::enforce_home_extension_json_result_limit);
         if let Ok(value) = &result {
             let completed = self

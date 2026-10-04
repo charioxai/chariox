@@ -670,6 +670,20 @@ async fn execute_start_slice_request_with_relaunch_manifests(
             docker_options = docker_options.with_saved_state(&state);
         }
     }
+    let fresh_observation_environment = if start_mode == SliceStartMode::RestoreSavedState {
+        let inspection_slice = initial_slice.clone();
+        let inspection_options = docker_options.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::slice::fresh_local_docker_observation_environment(
+                &inspection_slice,
+                &inspection_options,
+            )
+        })
+        .await
+        .unwrap_or(false)
+    } else {
+        false
+    };
     let docker_action = match start_mode {
         SliceStartMode::RestoreSavedState => crate::slice::LocalDockerSliceAction::Provision,
         SliceStartMode::RecoverExistingContainer => crate::slice::LocalDockerSliceAction::Recover,
@@ -788,6 +802,14 @@ async fn execute_start_slice_request_with_relaunch_manifests(
         }
     }
     let slice = runtime_state.mark_slice_running(&request.slice_ref, Some(discovered.clone()))?;
+    if fresh_observation_environment {
+        runtime_state
+            .reset_fresh_slice_observation_environment(&slice)
+            .await?;
+    }
+    runtime_state
+        .settle_slice_observation_revocations(&slice.id)
+        .await?;
     let mut slice = slice;
     if !relaunch_manifests.is_empty() {
         let relaunch_agent_ids = relaunch_manifests

@@ -1530,7 +1530,15 @@ export async function captureSourceIdentity(repoRoot, {
     // Use the provisioner's exact path inventory and digest implementation.
     // Pass the repository as a shell argument; never interpolate a path into code.
     run("bash", ["-o", "pipefail", "-c",
-      'git -c safe.directory="$1" -C "$1" ls-files --cached --others --exclude-standard Cargo.toml Cargo.lock adapters/rust apps/aegs-dummy apps/kernel apps/relay examples/workflow-code packages/aegs-sdk packages/event-protocol | python3 "$1/apps/kernel/slice-linux-docker/slice-command-guard.py" digest-paths "$1"',
+      `roots=()
+while IFS= read -r root || [[ -n "$root" ]]; do
+  [[ -z "$root" ]] || roots+=("$root")
+done < "$1/apps/kernel/slice-linux-docker/runtime-source-roots.txt"
+if [[ "\${#roots[@]}" -eq 0 ]]; then
+  echo "runtime-source-roots.txt lists no runtime source roots" >&2
+  exit 1
+fi
+git -c safe.directory="$1" -C "$1" ls-files --cached --others --exclude-standard -- "\${roots[@]}" | python3 "$1/apps/kernel/slice-linux-docker/slice-command-guard.py" digest-paths "$1"`,
       "soak-runtime-source", repoRoot], { cwd: repoRoot, timeout: 60_000 }),
   ])
   if (!/^[0-9a-f]{64}$/.test(runtimeSourceRevision.trim())) throw new Error("could not identify the slice runtime source digest")

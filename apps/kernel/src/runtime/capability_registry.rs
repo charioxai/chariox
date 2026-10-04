@@ -8,14 +8,15 @@ use crate::local::{
     InstallSkillRequest, ListConnectorAdaptersRequest, ListConnectorsRequest,
     ListCredentialsRequest, ListEnvironmentsRequest, ListMcpServersRequest, ListScriptsRequest,
     ListSkillsRequest, LocalDaemonRequest, LocalDaemonResponse, RegisterConnectorAdapterRequest,
-    RegisterConnectorRequest, RegisterCredentialRequest, RegisterEnvironmentRequest,
-    RegisterScriptRequest, RemoveConnectorAdapterRequest, RemoveConnectorRequest,
-    RemoveCredentialRequest, RemoveEnvironmentRequest, RemoveScriptRequest, TestConnectorRequest,
-    UninstallMcpServerRequest, UninstallSkillRequest, UpdateMcpServerRequest, UpdateSkillRequest,
-    UpsertConnectorRequest, UpsertCredentialRequest, UpsertSkillRequest, ValidateScriptRequest,
+    RegisterConnectorRequest, RegisterEnvironmentRequest, RegisterScriptRequest,
+    RemoveConnectorAdapterRequest, RemoveConnectorRequest, RemoveEnvironmentRequest,
+    RemoveScriptRequest, TestConnectorRequest, UninstallMcpServerRequest, UninstallSkillRequest,
+    UpdateMcpServerRequest, UpdateSkillRequest, UpsertConnectorRequest, UpsertSkillRequest,
+    ValidateScriptRequest,
 };
 
-pub(crate) fn execute_capability_registry_request(
+pub(crate) async fn execute_capability_registry_request(
+    runtime_state: &crate::runtime::state::KernelRuntimeState,
     request: LocalDaemonRequest,
     credential_vault: crate::config::UserCredentialVaultConfig,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -49,10 +50,29 @@ pub(crate) fn execute_capability_registry_request(
         LocalDaemonRequest::GetScript(request) => execute_get_script_request(request),
         LocalDaemonRequest::ListScripts(request) => execute_list_scripts_request(request),
         LocalDaemonRequest::RegisterCredential(request) => {
-            execute_register_credential_request(request)
+            let registry = crate::credential::CharioxCredentialRegistry::user()?;
+            let credential = crate::credential::CharioxCredentialRegistry::read_registration_file(
+                &request.source_path,
+            )?;
+            let (credential, path) = runtime_state
+                .upsert_observed_credential_metadata(&registry, credential)
+                .await?;
+            Ok(LocalDaemonResponse::CredentialRegistered { credential, path })
         }
-        LocalDaemonRequest::UpsertCredential(request) => execute_upsert_credential_request(request),
-        LocalDaemonRequest::RemoveCredential(request) => execute_remove_credential_request(request),
+        LocalDaemonRequest::UpsertCredential(request) => {
+            let registry = crate::credential::CharioxCredentialRegistry::user()?;
+            let (credential, path) = runtime_state
+                .upsert_observed_credential_metadata(&registry, request.credential)
+                .await?;
+            Ok(LocalDaemonResponse::CredentialUpserted { credential, path })
+        }
+        LocalDaemonRequest::RemoveCredential(request) => {
+            let registry = crate::credential::CharioxCredentialRegistry::user()?;
+            let (credential, path) = runtime_state
+                .remove_observed_credential_metadata(&registry, &request.id)
+                .await?;
+            Ok(LocalDaemonResponse::CredentialRemoved { credential, path })
+        }
         LocalDaemonRequest::GetCredential(request) => execute_get_credential_request(request),
         LocalDaemonRequest::ListCredentials(request) => execute_list_credentials_request(request),
         LocalDaemonRequest::RegisterConnector(request) => {
@@ -95,30 +115,6 @@ pub(crate) fn execute_import_provider_capabilities_request(
     request: ImportProviderCapabilitiesRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     super::provider_capability_import::execute_import_provider_capabilities_request(request)
-}
-
-pub(crate) fn execute_register_credential_request(
-    request: RegisterCredentialRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::credential::CharioxCredentialRegistry::user()?;
-    let (credential, path) = registry.install_from_file(&request.source_path)?;
-    Ok(LocalDaemonResponse::CredentialRegistered { credential, path })
-}
-
-pub(crate) fn execute_upsert_credential_request(
-    request: UpsertCredentialRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::credential::CharioxCredentialRegistry::user()?;
-    let (credential, path) = registry.upsert(request.credential)?;
-    Ok(LocalDaemonResponse::CredentialUpserted { credential, path })
-}
-
-pub(crate) fn execute_remove_credential_request(
-    request: RemoveCredentialRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::credential::CharioxCredentialRegistry::user()?;
-    let (credential, path) = registry.remove(&request.id)?;
-    Ok(LocalDaemonResponse::CredentialRemoved { credential, path })
 }
 
 pub(crate) fn execute_get_credential_request(

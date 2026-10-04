@@ -15,6 +15,37 @@ new boot/machine/enrollment/relay identities, reviewed release, absence of old
 runtime residue, and retirement of the prior identity before the parity matrix
 or remaining acceptance gates run.
 
+## MP-07 / MP-02 / MP-10 / MP-11 managedfix recovery scope (2026-10-03)
+
+Based on OSS main `f1c402b82aa0053bb69f0f8fffe04b06e02a5c73` (signed F
+runtime `9e9bea265bc334db47bc0a9c58b85779f0ee6a7c` remains a separate identity).
+The root update wrapper discarded its archive before health admission and
+removed owned extraction even when an activated journal remained. Offline
+fail-first execution reproduces that loss. Recovery now precedes extraction,
+retains pending inputs, and uses the existing signed transaction to settle the
+original attempt without activating the target again. A stopped updater's
+persisted attempt can launch recovery before another Cloud poll. The internal
+`CHARIOX_MANAGED_UPGRADE_RECOVER_ONLY` selector and `validate-update-recovery`
+helper belong to the signed-deployment exception; neither changes provider
+execution or a serialized client contract. Recovery checks the root journal's
+exact Cloud update ID and from/target digests before service mutation. Unsafe,
+foreign, oversized, and symlink identities fail closed.
+
+MP-07's unexpected first systemd restart caller remains unknown: mirrored
+managed8 journals retain labels, not its initiating message. MP-02/MP-10's raw
+4,358-byte broker failure was discarded. Signed F's actual container runtime
+script/binary pass isolated local startup both unbound and with a complete
+product-created Room/slice binding, with the provider probe enabled. This
+narrows the investigation but does not reproduce managed broker/rootless
+provisioning or establish a Room startup fix. No corresponding broker policy
+change is justified by these results.
+
+Focused shell/Node checks and evidence are under
+`/root/.codex/evidence/browser-resume-20260930/managedfix/`. Compiled Rust,
+independent exact-head review, effective managed service policy, signed G
+B→G→B→G and interruption/reboot drills (including legacy target releases),
+and fresh ordinary/managed comparisons remain required. No MP item is closed.
+
 ## MP-02/MP-08/MP-11 parity3 source correction (2026-10-01)
 
 This lane starts from release B OSS `b37f4504e4ce040a2d6c35dc56475315defbc861`.

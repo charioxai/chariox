@@ -1699,7 +1699,7 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     std::fs::write(&screenshot, &screenshot_bytes).expect("computer screenshot fixture");
     std::fs::write(
         &screen_tool,
-        "#!/bin/sh\nset -eu\ncase \"${1:-}\" in\n  status)\n    printf 'available=true\\ndisplay=:99\\nscreen=1024x600\\nviewer=http://127.0.0.1:6080/vnc.html\\nmode=desktop\\n'\n    printf 'worker-viewer=http://127.0.0.1:6080/vnc.html\\n' >&2\n    ;;\n  screenshot)\n    cp \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\" \"$2\"\n    ;;\n  ocr)\n    if [ \"$#\" -eq 2 ]; then\n      cmp \"$2\" \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\"\n      printf 'worker-path=%s\\n' \"$2\" >&2\n      printf 'Artifact OCR\\n'\n    else\n      printf 'Grüße 世界\\nShared Computer\\n'\n    fi\n    ;;\n  find-text)\n    if [ \"${2:-}\" = 'Shared Computer' ]; then\n      if [ \"$#\" -eq 3 ]; then\n        cmp \"$3\" \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\"\n        printf 'worker-path=%s\\n' \"$3\" >&2\n        printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":640,\"top\":400,\"width\":240,\"height\":40,\"center_x\":760,\"center_y\":420}'\n      else\n        printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":320,\"top\":200,\"width\":240,\"height\":40,\"center_x\":440,\"center_y\":220}'\n      fi\n    else\n      printf 'null\\n'\n      exit 1\n    fi\n    ;;\n  computer-secret-target)\n    printf '%s\\n' '{\"focus_window\":101,\"active_window\":100,\"geometry\":[20,30,200,40],\"window_geometry\":[0,0,800,600]}'\n    ;;\n  computer-secret-paste-stdin)\n    input=$(cat)\n    [ \"$input\" = \"$CHARIOX_REMOTE_ROOM_COMPUTER_SECRET\" ]\n    printf 'computer-secret-input-ok\\n' >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  computer-type-stdin|computer-key-stdin|computer-clipboard-write-stdin)\n    input=$(cat)\n    printf '%s|%s\\n' \"$*\" \"$input\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  *)\n    printf '%s\\n' \"$*\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\nesac\n",
+        "#!/bin/sh\nset -eu\ncase \"${1:-}\" in protected-*) python3 -c 'import json,sys; p=json.load(sys.stdin); assert not p[\"unknown\"]; assert p[\"targets\"] or not p[\"values\"]' ;; esac\ncase \"${1:-}\" in\n  status)\n    printf 'available=true\\ndisplay=:99\\nscreen=1024x600\\nviewer=http://127.0.0.1:6080/vnc.html\\nmode=desktop\\n'\n    printf 'worker-viewer=http://127.0.0.1:6080/vnc.html\\n' >&2\n    ;;\n  protected-screenshot)\n    cp \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\" \"$2\"\n    ;;\n  protected-ocr)\n    printf 'Grüße 世界\\nShared Computer\\n'\n    ;;\n  protected-find-text)\n    if [ \"${2:-}\" = 'Shared Computer' ]; then\n      printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":320,\"top\":200,\"width\":240,\"height\":40,\"center_x\":440,\"center_y\":220}'\n    else\n      printf 'null\\n'\n      exit 1\n    fi\n    ;;\n  computer-secret-target)\n    printf '%s\\n' '{\"focus_window\":101,\"active_window\":100,\"geometry\":[20,30,200,40],\"window_geometry\":[0,0,800,600]}'\n    ;;\n  computer-secret-paste-stdin)\n    input=$(cat)\n    [ \"$input\" = \"$CHARIOX_REMOTE_ROOM_COMPUTER_SECRET\" ]\n    printf 'computer-secret-input-ok\\n' >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  computer-type-stdin|computer-key-stdin|computer-clipboard-write-stdin)\n    input=$(cat)\n    printf '%s|%s\\n' \"$*\" \"$input\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  *)\n    printf '%s\\n' \"$*\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\nesac\n",
     )
     .expect("computer secret screen helper");
     let multi_match_tool = fixture
@@ -1708,7 +1708,7 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         .join("computer-tools-multi-match-screen.sh");
     std::fs::write(
         &multi_match_tool,
-        "#!/bin/sh\nset -eu\nif [ \"${1:-}\" = 'find-text' ] && [ \"${2:-}\" = 'Shared Computer' ] && [ \"$#\" -eq 2 ]; then\n  printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":320,\"top\":200,\"width\":240,\"height\":40,\"center_x\":440,\"center_y\":220}'\n  printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":800,\"top\":400,\"width\":480,\"height\":80,\"center_x\":1040,\"center_y\":440}'\n  exit 0\nfi\nexec \"$CHARIOX_TEST_BASE_SCREEN_TOOL\" \"$@\"\n",
+        "#!/bin/sh\nset -eu\nif [ \"${1:-}\" = 'protected-find-text' ] && [ \"${2:-}\" = 'Shared Computer' ] && [ \"$#\" -eq 2 ]; then\n  python3 -c 'import json,sys; p=json.load(sys.stdin); assert not p[\"unknown\"]; assert p[\"targets\"] or not p[\"values\"]'\n  printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":320,\"top\":200,\"width\":240,\"height\":40,\"center_x\":440,\"center_y\":220}'\n  printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":800,\"top\":400,\"width\":480,\"height\":80,\"center_x\":1040,\"center_y\":440}'\n  exit 0\nfi\nexec \"$CHARIOX_TEST_BASE_SCREEN_TOOL\" \"$@\"\n",
     )
     .expect("computer multi-match screen helper");
     #[cfg(unix)]
@@ -2087,10 +2087,10 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
             json!({"artifact_id":screenshot_artifact_id}),
         )
         .await
-        .expect("worker provider OCR should reuse an opaque Room screenshot artifact");
+        .expect("worker provider OCR should validate the opaque artifact and recapture protected pixels");
     assert!(artifact_ocr.ok, "{:?}", artifact_ocr.payload);
     assert_eq!(artifact_ocr.payload["source"], "computer_controller");
-    assert_eq!(artifact_ocr.payload["text"], "Artifact OCR");
+    assert_eq!(artifact_ocr.payload["text"], "Grüße 世界\nShared Computer");
     let unknown_artifact = fixture
         .worker
         .runtime_state
@@ -2181,11 +2181,11 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
             }),
         )
         .await
-        .expect("worker provider text lookup should reuse an opaque screenshot artifact");
+        .expect("worker provider text lookup should validate the opaque artifact and recapture protected pixels");
     assert!(artifact_match.ok, "{:?}", artifact_match.payload);
     assert_eq!(artifact_match.payload["source"], "computer_controller");
-    assert_eq!(artifact_match.payload["match"]["left"], 640);
-    assert_eq!(artifact_match.payload["match"]["center_x"], 760);
+    assert_eq!(artifact_match.payload["match"]["left"], 320);
+    assert_eq!(artifact_match.payload["match"]["center_x"], 440);
     assert_eq!(
         fixture
             .home

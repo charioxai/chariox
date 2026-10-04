@@ -642,34 +642,43 @@ async fn run_slice_screen_command(
 
 pub(in crate::runtime::state) async fn execute_room_computer_observation(
     call: crate::transport::relay_peer::RemoteRoomComputerObservationCall,
-    artifact_path: Option<std::path::PathBuf>,
+    capture_policy: zeroize::Zeroizing<String>,
     capture_guard: tokio::sync::OwnedRwLockReadGuard<()>,
+    prune: impl Fn(&[u64]) -> Result<(), DaemonError>,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
     let args = match &call {
         crate::transport::relay_peer::RemoteRoomComputerObservationCall::ScreenStatus => {
             vec!["status".to_string()]
         }
         crate::transport::relay_peer::RemoteRoomComputerObservationCall::Ocr { .. } => {
-            let mut args = vec!["ocr".to_string()];
-            if let Some(path) = artifact_path.as_ref() {
-                args.push(room_computer_artifact_path(path)?);
-            }
-            args
+            vec!["protected-ocr".to_string()]
         }
         crate::transport::relay_peer::RemoteRoomComputerObservationCall::FindText {
             query, ..
         } => {
-            let mut args = vec![
-                "find-text".to_string(),
+            vec![
+                "protected-find-text".to_string(),
                 validated_slice_find_text_query(query)?,
-            ];
-            if let Some(path) = artifact_path.as_ref() {
-                args.push(room_computer_artifact_path(path)?);
-            }
-            args
+            ]
         }
     };
-    let output = run_slice_screen_command_with_capture(args, capture_guard).await?;
+    let output = run_slice_screen_command_inner_with_output_policy(
+        args,
+        Some(capture_policy),
+        None,
+        None,
+        false,
+        Some(capture_guard),
+    )
+    .await?;
+    prune_native_target_receipts(&output.stderr, prune)?;
+    if output.status_code == Some(75) {
+        return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+            ok: false,
+            payload: serde_json::json!({"status":"observation_redacted", "message":"observation redacted, retrying", "attempts":3}),
+        });
+    }
+
     let is_find_text = matches!(
         &call,
         crate::transport::relay_peer::RemoteRoomComputerObservationCall::FindText { .. }
@@ -698,18 +707,11 @@ pub(in crate::runtime::state) async fn execute_room_computer_observation(
     })
 }
 
-fn room_computer_artifact_path(path: &std::path::Path) -> Result<String, DaemonError> {
-    path.to_str()
-        .map(str::to_string)
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "environment.computer.observe",
-            message: "Room screenshot artifact path is not valid UTF-8".to_string(),
-        })
-}
-
 pub(in crate::runtime::state) async fn capture_room_environment_screenshot(
     destination: &std::path::Path,
+    capture_policy: zeroize::Zeroizing<String>,
     capture_guard: tokio::sync::OwnedRwLockReadGuard<()>,
+    prune: impl Fn(&[u64]) -> Result<(), DaemonError>,
 ) -> Result<(), DaemonError> {
     let destination = destination
         .to_str()
@@ -717,11 +719,22 @@ pub(in crate::runtime::state) async fn capture_room_environment_screenshot(
             operation: "environment.screenshot.capture",
             message: "screenshot destination is not valid UTF-8".to_string(),
         })?;
-    let output = run_slice_screen_command_with_capture(
-        vec!["screenshot".to_string(), destination.to_string()],
-        capture_guard,
+    let output = run_slice_screen_command_inner_with_output_policy(
+        vec!["protected-screenshot".to_string(), destination.to_string()],
+        Some(capture_policy),
+        None,
+        None,
+        false,
+        Some(capture_guard),
     )
     .await?;
+    prune_native_target_receipts(&output.stderr, prune)?;
+    if output.status_code == Some(75) {
+        return Err(DaemonError::LocalTransport {
+            operation: "environment.screenshot.capture",
+            message: "observation redacted, retrying".into(),
+        });
+    }
     if !output.success {
         return Err(DaemonError::LocalTransport {
             operation: "environment.screenshot.capture",
@@ -743,6 +756,24 @@ pub(in crate::runtime::state) async fn capture_room_environment_screenshot(
             operation: "environment.screenshot.capture",
             message: "slice screenshot helper produced an empty capture".to_string(),
         });
+    }
+    Ok(())
+}
+
+// MP-08/MP-10/MP-11: accept only the private mask helper's value-free XID receipt.
+fn prune_native_target_receipts(
+    stderr: &str,
+    prune: impl Fn(&[u64]) -> Result<(), DaemonError>,
+) -> Result<(), DaemonError> {
+    for line in stderr.lines() {
+        if let Some(receipt) = line.strip_prefix("CHARIOX_OBSERVATION_PRUNED_NATIVE:") {
+            let ids: Vec<u64> = serde_json::from_str(receipt)
+                .map_err(|_| super::super::room_secret_observation::protection_error())?;
+            if ids.len() > 256 || ids.iter().any(|id| *id <= 1) {
+                return Err(super::super::room_secret_observation::protection_error());
+            }
+            prune(&ids)?;
+        }
     }
     Ok(())
 }

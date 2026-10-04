@@ -86,9 +86,13 @@ mod project_environment_placement;
 mod project_environment_remote;
 mod project_environment_review;
 mod project_environment_worker_export;
+mod project_environment_workspaces;
 mod project_prompt_promotion;
 mod provider_output_deadline_store;
 mod provider_reload;
+mod room_computer_readiness;
+#[cfg(test)]
+mod room_computer_readiness_tests;
 use provider_output_deadline_store::ProviderOutputDeadlineStore;
 pub(crate) use provider_reload::*;
 mod browser_import_consent;
@@ -119,6 +123,7 @@ mod room_environment_health;
 mod room_environment_placement;
 mod room_environment_state;
 mod room_screenshot;
+mod room_secret_observation;
 mod runtime_tool_call_activity;
 pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 
@@ -157,6 +162,7 @@ struct KernelRuntimeOwnedState {
     browser_controller_processes:
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
+    room_secret_observations: room_secret_observation::RoomSecretObservations,
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
@@ -689,6 +695,35 @@ impl KernelRuntimeState {
                 }
             };
         provider_store.set_managed_kernel_admission_gate(managed_kernel_quiescence.clone());
+        let room_secret_observations = room_secret_observation::RoomSecretObservations::new(
+            config
+                .private_runtime_state_root()
+                .join("room-observation-quarantine"),
+            session_store
+                .list_all_sessions()
+                .into_iter()
+                .filter(|session| {
+                    config.room_environment_worker_binding.is_some()
+                        || session_store
+                            .room_environment_snapshot(session.id())
+                            .is_ok()
+                })
+                .map(|session| {
+                    config
+                        .room_environment_worker_binding
+                        .as_ref()
+                        .map(|binding| binding.session_id.clone())
+                        .unwrap_or_else(|| session.id().to_string())
+                })
+                .collect(),
+        )
+        .with_identity(&config.relay_private_key)
+        .with_worker_room(
+            config
+                .room_environment_worker_binding
+                .as_ref()
+                .map(|binding| binding.session_id.clone()),
+        );
         let runtime = Self {
             app,
             provider_runtime_lanes,
@@ -722,6 +757,7 @@ impl KernelRuntimeState {
                 browser_import_admission:
                     crate::runtime::browser_import_admission::BrowserImportAdmission::default(),
                 environment_execution_gates: Default::default(),
+                room_secret_observations,
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
                 room_browser_health_inflight: Arc::new(std::sync::Mutex::new(BTreeSet::new())),

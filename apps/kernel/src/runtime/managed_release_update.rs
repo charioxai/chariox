@@ -129,6 +129,25 @@ impl ManagedReleaseUpdateClient {
         let running = running_release_digest(&self.receipt_path)?;
         let attempt = read_attempt(&self.attempt_path)?;
         let recovery_pending = recovery_pending()?;
+        // MP-07: after a stopped unit or reboot, the durable attempt owns
+        // recovery. Waiting silently would strand both Cloud and the journal.
+        if recovery_pending {
+            let attempt = attempt
+                .as_ref()
+                .ok_or_else(|| update_error("release recovery has no durable update attempt"))?;
+            let from = attempt
+                .from_runtime_release_digest
+                .as_ref()
+                .ok_or_else(|| update_error("release recovery has no original release digest"))?;
+            return self.start_update_unit(
+                &UpdateCommand {
+                    update_id: attempt.update_id.clone(),
+                    from_runtime_release_digest: from.clone(),
+                    target_runtime_release_digest: attempt.target_runtime_release_digest.clone(),
+                },
+                &Path::new(DOWNLOAD_ROOT).join(format!("{}.tar.gz", attempt.update_id)),
+            );
+        }
         let terminal_evidence = read_evidence(Path::new(UPDATE_EVIDENCE))
             .map_err(|error| update_error(format!("read release update evidence: {error}")))?;
         let report = attempt.as_ref().map(|attempt| {
@@ -146,7 +165,7 @@ impl ManagedReleaseUpdateClient {
                 recovery_pending,
             )
         });
-        if report == Some(UpdateReport::Pending) || (attempt.is_none() && recovery_pending) {
+        if report == Some(UpdateReport::Pending) {
             return Ok(());
         }
         // Reclaim the persisted, settled attempt before polling. Cloud can
@@ -231,9 +250,13 @@ impl ManagedReleaseUpdateClient {
             |error| update_error(format!("record release update attempt: {error}")),
         )
         .await?;
+        prepared.delegate();
+        self.start_update_unit(&update, &archive)
+    }
+
+    fn start_update_unit(&self, update: &UpdateCommand, archive: &Path) -> Result<(), DaemonError> {
         let tooling = std::fs::canonicalize(CURRENT_RELEASE)
             .map_err(|error| update_error(format!("resolve current release: {error}")))?;
-        prepared.delegate();
         let status = Command::new("sudo")
             .args([
                 "-n",
@@ -246,9 +269,9 @@ impl ManagedReleaseUpdateClient {
             .args(["/bin/sh", "-c"])
             .arg(update_script(
                 &tooling,
-                &archive,
+                archive,
                 Path::new(STAGING_ROOT),
-                &update,
+                update,
             ))
             .status()
             .map_err(|error| update_error(format!("start release update unit: {error}")))?;
@@ -287,8 +310,10 @@ impl ManagedReleaseUpdateClient {
 
 /// The root unit extracts the archive and runs the signed upgrade transaction with
 /// the installed release's tooling, resolved to its physical directory so the
-/// activation of `current` cannot swap scripts mid-transaction. The archive and
-/// its bounded extraction are removed however the unit ends.
+/// activation of `current` cannot swap scripts mid-transaction. MP-07: retain
+/// extracted recovery inputs while a journal remains, including after interruption.
+/// Reclaim the archive immediately after extraction; recovery needs no archive.
+/// The settled attempt reclaims scratch through the same owned storage helper.
 fn update_script(
     tooling_release: &Path,
     archive: &Path,
@@ -299,17 +324,23 @@ fn update_script(
     let tooling = tooling_release.join("usr/lib/chariox/slice-build-context/deploy/managed-kernel");
     let release_key = tooling_release.join("usr/lib/chariox/release-public-key");
     let publication_root = tooling_release.parent().unwrap_or(tooling_release);
+    let authority_root = publication_root.parent().unwrap_or(publication_root);
     format!(
-        "set -eu; trap \"python3 '{tooling}/release-update-storage.py' cleanup '{staging_root}' '{update_id}'; rm -f '{archive}'\" EXIT; \
+        "set -eu; pending() {{ [ -e '{authority_root}/.managed-kernel-upgrade' ] || [ -L '{authority_root}/.managed-kernel-upgrade' ] || \
+         [ -e '{authority_root}/.managed-kernel-upgrade.terminal' ] || [ -L '{authority_root}/.managed-kernel-upgrade.terminal' ]; }}; \
+         trap \"if ! pending; then python3 '{tooling}/release-update-storage.py' cleanup '{staging_root}' '{update_id}'; rm -f '{archive}'; fi\" EXIT; \
+         run_upgrade() {{ CHARIOX_MANAGED_UPGRADE_RECOVER_ONLY=$1 CHARIOX_MANAGED_RELEASE_UPDATE_ID='{update_id}' \
+         CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1 CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY={builder_key} \
+         sh '{tooling}/upgrade-image.sh' '{staging}/extracted/rootfs' '{from}' '{target}' '{release_key}'; }}; \
+         if pending; then run_upgrade 1; else \
          python3 '{tooling}/release-update-storage.py' prepare '{staging_root}' '{update_id}'; \
          python3 '{tooling}/extract-release.py' '{archive}' '{staging}/extracted' '{publication_root}'; \
-         rm -f '{archive}'; TMPDIR='{staging}' CHARIOX_MANAGED_RELEASE_UPDATE_ID='{update_id}' \
-         CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1 CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY={builder_key} \
-         sh '{tooling}/upgrade-image.sh' '{staging}/extracted/rootfs' '{from}' '{target}' '{release_key}'",
+         rm -f '{archive}'; TMPDIR='{staging}' run_upgrade 0; fi",
         staging = staging.display(),
         archive = archive.display(),
         staging_root = staging_root.display(),
         publication_root = publication_root.display(),
+        authority_root = authority_root.display(),
         update_id = update.update_id,
         builder_key = TRUSTED_BUILDER_PUBLIC_KEY,
         tooling = tooling.display(),
@@ -504,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn the_update_runs_the_installed_tooling_and_removes_its_files_however_it_ends() {
+    fn the_update_runs_installed_tooling_and_retains_recovery_inputs_until_settled() {
         let root = std::env::temp_dir()
             .canonicalize()
             .expect("temporary root")
@@ -595,6 +626,48 @@ mod tests {
                     .display()
             )
         );
+        // MP-07: an interrupted activation must remain recoverable when the
+        // same root unit restarts, without another Cloud artifact download.
+        let transaction = root.join(".managed-kernel-upgrade");
+        std::fs::write(
+            tooling.join("upgrade-image.sh"),
+            format!(
+                "set -eu; if [ ! -f '{0}/interrupted' ]; then test -f \"$1/marker\"; mkdir '{1}'; echo activated > '{1}/phase'; touch '{0}/interrupted'; exit 1; fi; test \"$CHARIOX_MANAGED_UPGRADE_RECOVER_ONLY\" = 1; test -f '{1}/phase'; rm -rf '{1}'\n",
+                root.display(), transaction.display(),
+            ),
+        ).expect("interrupted upgrade fixture");
+        std::fs::write(&archive, &packed).expect("archive");
+        let restart = || {
+            Command::new("sh")
+                .arg("-c")
+                .arg(update_script(
+                    &root.join("releases/release"),
+                    &archive,
+                    &staging,
+                    &update,
+                ))
+                .status()
+                .expect("root updater")
+        };
+        // Use a release-layout path so the production wrapper sees the actual
+        // journal authority beside releases, independently of current.
+        std::fs::create_dir_all(root.join("releases")).unwrap();
+        std::fs::rename(root.join("release"), root.join("releases/release")).unwrap();
+        assert!(!restart().success());
+        assert!(
+            !archive.exists(),
+            "MP-07 extraction must reclaim the archive before activation/recovery"
+        );
+        assert!(
+            staging.join(&update.update_id).exists(),
+            "MP-07 retain owned scratch until recovery"
+        );
+        assert!(
+            restart().success(),
+            "MP-07 restart must reach recovery without an archive"
+        );
+        assert!(!archive.exists() && !staging.join(&update.update_id).exists());
+        assert!(!transaction.exists());
         assert!(valid_digest(&digest('b')) && !valid_digest("sha256:../../etc"));
         assert!(valid_update_id(
             "managed_release_update_0123abcd-0000-4000-8000-0123456789ab"

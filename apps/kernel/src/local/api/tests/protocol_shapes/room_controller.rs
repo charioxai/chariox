@@ -18,8 +18,8 @@ fn browser_import_peer_contract_is_private_redacted_bounded_and_versioned() {
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
     use zeroize::Zeroizing;
 
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 410);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 411);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 70);
     let generated_value = format!("generated-{}", crate::session::unix_epoch_ms());
     let payload_json = serde_json::json!([{"name":"session","value":generated_value}]).to_string();
     let command = RoomBrowserControllerCommand::ImportCookies {
@@ -94,8 +94,8 @@ fn browser_history_peer_contract_is_document_bound_and_versioned() {
     };
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
 
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 410);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 411);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 70);
     let command = RoomBrowserControllerCommand::History {
         execution_id: "00000000000000000000000000000001".into(),
         target_id: "target-a".into(),
@@ -136,8 +136,8 @@ fn download_cancellation_peer_contract_is_versioned_and_does_not_require_a_live_
         BrowserControllerDownloadCancellationResult, BrowserDownloadCancellation,
     };
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 410);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 411);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 70);
     let command = RoomBrowserControllerCommand::CancelDownload {
         cancellation: BrowserDownloadCancellation::new(2, "download-a".into()).unwrap(),
     };
@@ -169,7 +169,7 @@ fn download_cancellation_peer_contract_is_versioned_and_does_not_require_a_live_
 
 #[test]
 fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 70);
 
     let request = RelayPeerRequest::ReadRoomScreenshotChunk {
         session_id: "session-1".to_string(),
@@ -211,7 +211,7 @@ fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
 
 #[test]
 fn room_computer_observation_peer_protocol_is_typed_redacted_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 70);
     let request = RelayPeerRequest::ObserveRoomComputer {
         session_id: "room-1".to_string(),
         slice_id: "slice-1".to_string(),
@@ -303,8 +303,8 @@ fn room_computer_observation_peer_protocol_is_typed_redacted_and_versioned() {
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 410);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 411);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 70);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
@@ -980,8 +980,8 @@ fn efix5_computer_secret_input_requires_an_approved_display_target() {
 // MP-08 / MP-11: exact required-target wire and hash, including peer focus query.
 #[test]
 fn computer_secret_target_protocol_374_peer_67_is_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 410);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 411);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 70);
     let wire = serde_json::json!({"kind":"secret_text", "input":"synthetic",
         "expected_target":{"focus_window":101,"active_window":100,
             "geometry":[20,30,200,40],"window_geometry":[0,0,800,600]}});
@@ -1015,5 +1015,75 @@ fn computer_secret_target_protocol_374_peer_67_is_hashed() {
             Sha256::digest(serde_json::to_vec(&result_wire).unwrap())
         ),
         "d15bc20375584abc3a797667ea308d85b6da0e1153b135f6406c6db34ccff111"
+    );
+}
+
+// MP-08/MP-10/MP-11: authenticated retirement/reset/deletion on unshipped 411/70.
+#[test]
+fn secret_observation_revocation_wire_protocol_411_peer_70_is_hashed() {
+    use crate::transport::room_browser_controller::{
+        RoomBrowserControllerResult, SecretObservationDisposition,
+    };
+    use sha2::{Digest, Sha256};
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 411);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 70);
+    for (disposition, wire, hash) in [
+        (
+            SecretObservationDisposition::Retire,
+            "retire",
+            "43ac01951683b1a086742fe1eb9c78932405d8c824db2ec0e554a44a3d0be87d",
+        ),
+        (
+            SecretObservationDisposition::ResetEnvironment,
+            "reset_environment",
+            "ceeccbf6748d5cba7d12a58fdeeae1fb9a9785bb8571c148815b592bcaff392a",
+        ),
+        (
+            SecretObservationDisposition::DeleteRoom,
+            "delete_room",
+            "6ab4c8584a11689bb93d19f2221f1e08c3a277b393dad0ebc35a0aeb1704d780",
+        ),
+    ] {
+        let command = serde_json::to_value(RoomBrowserControllerCommand::ClearSecretObservation {
+            disposition,
+        })
+        .unwrap();
+        assert_eq!(
+            command,
+            serde_json::json!({"kind":"clear_secret_observation", "disposition":wire})
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&command).unwrap())
+            ),
+            hash
+        );
+    }
+    // Old unshipped commands remain retirement, never owner clearance.
+    for payload in [
+        serde_json::json!({"kind":"clear_secret_observation"}),
+        serde_json::json!({"kind":"clear_secret_observation", "clear_unknown":true}),
+    ] {
+        let legacy: RoomBrowserControllerCommand = serde_json::from_value(payload).unwrap();
+        assert!(matches!(
+            legacy,
+            RoomBrowserControllerCommand::ClearSecretObservation {
+                disposition: SecretObservationDisposition::Retire
+            }
+        ));
+    }
+    let response =
+        serde_json::to_value(RoomBrowserControllerResult::SecretObservationCleared).unwrap();
+    assert_eq!(
+        response,
+        serde_json::json!({"kind":"secret_observation_cleared"})
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&response).unwrap())
+        ),
+        "793d616c37292c4b5ccdfe4e5d3c71b89ed89615fc5d0b32f8ae43f972de51f9"
     );
 }

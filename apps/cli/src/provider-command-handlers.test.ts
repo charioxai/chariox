@@ -710,3 +710,17 @@ test("accounts add with --method enrolls the new alias through the chosen mode",
   }])
   assert.match(footers.join(" "), /enrollment started/)
 })
+
+test("MP-08/MP-11 TUI setup-token --run uses the kernel login workflow and explicit replacement", async () => {
+  const calls: unknown[] = []
+  const notices: string[] = []
+  const deps: ProviderCommandHandlerDeps = {
+    listProviderAccountProfiles: async () => [{ owner_user_id: "local", provider: "claude", profile_id: "work", label: "work", origin: "chariox_created", is_default: true, auth_state: "authenticated", materializations: [], usage: { provider: "claude", profile_id: "work", availability: "unavailable", meters: [], source: "not_observed" } }],
+    currentProviderId: () => "claude", flashFooter: () => {}, appendNotice: (message) => notices.push(message),
+    readSecret: async () => { throw new Error("token must stay inside kernel") },
+    runProviderSetupToken: async (profile, replace) => { calls.push([profile, replace]); return { provider: "claude", account_profile: profile, login_kind: "terminal", login_id: "capture-1", auth_url: null, verification_url: null, user_code: null } },
+  }
+  await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider setup-token claude work --run --replace", value: "setup-token claude work --run --replace" })
+  assert.deepEqual(calls, [["work", true]])
+  assert.match(notices.join("\n"), /login-status capture-1/)
+})

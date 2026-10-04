@@ -235,9 +235,15 @@ def stop_locked(root, profile, settlement_timeout=12):
         owner = record["supervisor"]
         if not same_process(owner):
             raise RuntimeError("browser supervisor identity is gone without retirement proof")
+        # MP-08/MP-10/MP-11: a CDP close acknowledgement precedes profile
+        # flush and descendant retirement. Share the existing three-second
+        # close budget with settlement before falling back to owned TERM.
+        close_deadline = time.monotonic() + 3
         try:
-            subprocess.run(["node", str(Path(__file__).with_name("browser-cdp.mjs")), "close-browser", "--owned-profile", profile],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3, check=False)
+            closed = subprocess.run(["node", str(Path(__file__).with_name("browser-cdp.mjs")), "close-browser", "--owned-profile", profile],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3, check=False)
+            while closed.returncode == 0 and not receipt.exists() and time.monotonic() < close_deadline:
+                time.sleep(0.05)
         except subprocess.TimeoutExpired:
             pass
         if receipt.exists():

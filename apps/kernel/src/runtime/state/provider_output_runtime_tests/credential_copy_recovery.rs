@@ -3,28 +3,55 @@ use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mp08_mp10_mp11_fake_oauth_copy_notice_login_and_resume_stay_on_worker() {
-    isolated_case(false).await;
+    isolated_case(RecoveryCase::Prompt).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mp08_mp10_mp11_credential_copy_startup_login_recovery_stays_on_worker() {
-    isolated_case(true).await;
+    isolated_case(RecoveryCase::Startup).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mp08_mp10_mp11_login_relaunch_failure_settles_prompt_and_advances_queue() {
+    isolated_case(RecoveryCase::RelaunchFailure).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mp08_mp10_mp11_login_relaunch_stall_settles_prompt_without_late_spawn() {
+    isolated_case(RecoveryCase::RelaunchStall).await;
+}
+
+#[derive(Clone, Copy)]
+enum RecoveryCase {
+    Prompt,
+    Startup,
+    RelaunchFailure,
+    RelaunchStall,
 }
 
 // Run the async login seam in a separate process. EnvGuard intentionally restores
 // variables on drop; the child must inherit its fake binaries before taking that guard.
-async fn isolated_case(startup: bool) {
-    let case = if startup {
-        "mp08_mp10_mp11_credential_copy_startup_login_recovery_stays_on_worker"
-    } else {
-        "mp08_mp10_mp11_fake_oauth_copy_notice_login_and_resume_stay_on_worker"
+async fn isolated_case(recovery: RecoveryCase) {
+    let case = match recovery {
+        RecoveryCase::Prompt => {
+            "mp08_mp10_mp11_fake_oauth_copy_notice_login_and_resume_stay_on_worker"
+        }
+        RecoveryCase::Startup => {
+            "mp08_mp10_mp11_credential_copy_startup_login_recovery_stays_on_worker"
+        }
+        RecoveryCase::RelaunchFailure => {
+            "mp08_mp10_mp11_login_relaunch_failure_settles_prompt_and_advances_queue"
+        }
+        RecoveryCase::RelaunchStall => {
+            "mp08_mp10_mp11_login_relaunch_stall_settles_prompt_without_late_spawn"
+        }
     };
     if std::env::var("CHARIOX_CREDWARN_FIXTURE_CHILD")
         .ok()
         .as_deref()
         == Some(case)
     {
-        run_case(startup).await;
+        run_case(recovery).await;
         return;
     }
     let result = tokio::task::spawn_blocking(move || {
@@ -76,11 +103,17 @@ async fn isolated_case(startup: bool) {
     );
 }
 
-async fn run_case(startup_failure: bool) {
+async fn run_case(recovery: RecoveryCase) {
+    let startup_failure = matches!(recovery, RecoveryCase::Startup);
+    let relaunch_failure = matches!(recovery, RecoveryCase::RelaunchFailure);
+    let relaunch_stall = matches!(recovery, RecoveryCase::RelaunchStall);
     use std::os::unix::fs::PermissionsExt;
     let workspace = crate::test_support::TestWorktree::new("credential-copy-recovery");
     let _env = crate::env_lock::lock();
-    let config = crate::config::DaemonConfig::for_tests();
+    let mut config = crate::config::DaemonConfig::for_tests();
+    if relaunch_stall {
+        config.provider_runtime_init_delay_ms = 65_000;
+    }
     let fixture = config
         .private_runtime_state_root()
         .join("codex-auth-fixture.py");
@@ -174,6 +207,23 @@ async fn run_case(startup_failure: bool) {
             Vec::new(),
         )
         .unwrap();
+        None
+    };
+    let queued_id = if relaunch_failure || relaunch_stall {
+        let crate::session::PromptSubmissionOutcome::Queued { prompt } = app
+            .submit_prompt(
+                session.id(),
+                attachments[0].id(),
+                Some(agent.id()),
+                "queued after recovery",
+                Vec::new(),
+            )
+            .unwrap()
+        else {
+            panic!("second prompt should queue");
+        };
+        Some(prompt.id().to_string())
+    } else {
         None
     };
     let app = Arc::new(Mutex::new(app));
@@ -281,6 +331,22 @@ async fn run_case(startup_failure: bool) {
         .unwrap()
         .join("synthetic-official-login-invoked")
         .exists());
+    let admitted_id = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(
+            &runtime
+                .owned
+                .session_store
+                .get_session(session.id())
+                .unwrap(),
+            agent.id(),
+        )
+        .map(|p| p.id().to_string());
+    if relaunch_failure {
+        // Official login is already running. Fail replacement initialization once.
+        std::fs::write(target_home.join("synthetic-relaunch-failure"), "once").unwrap();
+    }
     let verification_url = challenge.login.verification_url.unwrap();
     assert!(
         verification_url.starts_with("http://127.0.0.1:"),
@@ -290,27 +356,135 @@ async fn run_case(startup_failure: bool) {
     tokio::task::spawn_blocking(move || ureq::get(&url).call().unwrap())
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(20), async {
-        let marker = if startup_failure {
-            "synthetic-ready"
-        } else {
-            "synthetic-resumed"
-        };
-        while !target_home.join(marker).exists()
-            || runtime
+    if relaunch_failure || relaunch_stall {
+        assert!(
+            admitted_id.is_some(),
+            "recovery must retain the admitted prompt"
+        );
+        let mut stalled_run_id = None;
+        tokio::time::timeout(Duration::from_secs(70), async {
+            loop {
+                if relaunch_stall && stalled_run_id.is_none() {
+                    stalled_run_id = runtime
+                        .owned
+                        .provider_store
+                        .get_run_for_agent(session.id(), agent.id())
+                        .filter(|replacement| replacement.id() != run.id())
+                        .map(|replacement| replacement.id().to_string());
+                }
+                let snapshot = runtime
+                    .owned
+                    .session_store
+                    .get_session(session.id())
+                    .unwrap();
+                let active = runtime
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&snapshot, agent.id());
+                if active.as_ref().is_none_or(|p| Some(p.id()) != admitted_id.as_deref())
+                    && runtime.owned.prompt_state_owner
+                        .peek_next_queued_prompt(&snapshot, agent.id()).is_none()
+                    && target_home.join("synthetic-resumed").exists()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            let snapshot = runtime.owned.session_store.get_session(session.id()).unwrap();
+            let active = runtime.owned.prompt_state_owner.active_prompt_for_agent(&snapshot, agent.id());
+            let queued = runtime.owned.prompt_state_owner.peek_next_queued_prompt(&snapshot, agent.id());
+            let current = runtime.owned.provider_store.get_run_for_agent(session.id(), agent.id());
+            panic!("failed relaunch must settle and advance: active={:?}, queued={:?}, run={:?}, native_dispatch={}, original_queue_id={:?}",
+                active.as_ref().map(|p| p.id()), queued.as_ref().map(|p| p.id()),
+                current.as_ref().map(|r| (r.id(), r.state())), target_home.join("synthetic-resumed").exists(), queued_id);
+        });
+        let snapshot = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap();
+        assert!(
+            runtime
                 .owned
-                .provider_store
-                .get_run_for_agent(session.id(), agent.id())
-                .is_none_or(|current| {
-                    current.id() == run.id()
-                        || current.state() != crate::provider::ProviderRunState::Running
+                .prompt_state_owner
+                .peek_next_queued_prompt(&snapshot, agent.id())
+                .is_none(),
+            "recovery failure must advance the queue"
+        );
+        let active = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&snapshot, agent.id());
+        // Queue activation assigns a fresh mirror ID; match the queued content.
+        assert!(active
+            .as_ref()
+            .is_none_or(|p| p.prompt().trim() == "queued after recovery"));
+        // Completion can race the snapshot. Prove actual dispatch, including its
+        // exactly-once count, rather than requiring a transient Working state.
+        let turns: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(target_home.join("synthetic-turns.json")).unwrap(),
+        )
+        .unwrap();
+        let queued_starts = turns["threads"]
+            .as_object()
+            .unwrap()
+            .values()
+            .flat_map(|thread| thread.as_array().unwrap())
+            .filter(|turn| {
+                turn["input"].as_array().unwrap().iter().any(|input| {
+                    input["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("queued after recovery"))
                 })
-        {
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            })
+            .count();
+        assert_eq!(
+            queued_starts, 1,
+            "the queued prompt must be dispatched exactly once"
+        );
+        if relaunch_stall {
+            let stalled = stalled_run_id.expect("replacement must start before stalling");
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            assert_eq!(
+                runtime
+                    .owned
+                    .provider_store
+                    .get_run(&stalled)
+                    .unwrap()
+                    .state(),
+                crate::provider::ProviderRunState::Ended
+            );
+            assert!(
+                !app.lock().await.pty().has_process(&stalled),
+                "retired replacement spawned after its deadline"
+            );
         }
-    })
-    .await
-    .expect("the same admitted turn should resume after login");
+    } else {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            let marker = if startup_failure {
+                "synthetic-ready"
+            } else {
+                "synthetic-resumed"
+            };
+            while !target_home.join(marker).exists()
+                || runtime
+                    .owned
+                    .provider_store
+                    .get_run_for_agent(session.id(), agent.id())
+                    .is_none_or(|current| {
+                        current.id() == run.id()
+                            || current.state() != crate::provider::ProviderRunState::Running
+                    })
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the same admitted turn should resume after login");
+    }
     assert_eq!(std::fs::read(&source_auth).unwrap(), original);
     assert!(runtime
         .owned

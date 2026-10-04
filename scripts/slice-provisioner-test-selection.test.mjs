@@ -34,6 +34,7 @@ function selectionGlobs(command) {
     `${sliceTestDirectory}/managed-rootless-quota*.test.mjs`,
     // Phase 1: the slice screen launcher's process-group and pointer tests.
     `${sliceTestDirectory}/slice-screen-*.test.mjs`,
+    `${sliceTestDirectory}/chariox-data-volume-admission.test.mjs`,
   ]
   const expectedScript = `for file in ${patterns.join(" ")}; do [ -f \"$file\" ] || exit 1; done; exec node --test --test-concurrency=1 ${patterns.join(" ")}`
   assert.equal(shellScript, expectedScript, "all test globs must be guarded before the sequential Node run")
@@ -46,7 +47,10 @@ function expandOneLevelGlob(pattern) {
   const directory = resolve(repositoryRoot, pattern.slice(0, separator))
   const filenamePattern = pattern.slice(separator + 1)
   const wildcard = filenamePattern.indexOf("*")
-  assert.notEqual(wildcard, -1, `expected a shell glob: ${pattern}`)
+  if (wildcard === -1) {
+    assert.ok(existsSync(resolve(repositoryRoot, pattern)), `selected test must exist: ${pattern}`)
+    return [pattern]
+  }
   assert.equal(filenamePattern.indexOf("*", wildcard + 1), -1, `expected one wildcard: ${pattern}`)
   const prefix = filenamePattern.slice(0, wildcard)
   const suffix = filenamePattern.slice(wildcard + 1)
@@ -78,6 +82,7 @@ function makeSelectionFixture(t, quotaTests, { includeProvisioner = true } = {})
   if (includeProvisioner) addFixtureTest(testDirectory, "provision-existing.test.mjs")
   addFixtureTest(testDirectory, "managed-rootless-quota-check.test.mjs")
   addFixtureTest(testDirectory, "slice-screen-existing.test.mjs")
+  addFixtureTest(testDirectory, "chariox-data-volume-admission.test.mjs")
   for (const quotaTest of quotaTests) addFixtureTest(testDirectory, quotaTest.filename, quotaTest)
   return { root, marker: join(root, "selection-marker") }
 }
@@ -112,7 +117,7 @@ test("slice provisioner selection covers its dynamic repository inventory once a
   const provisionPattern = `${sliceTestDirectory}/provision-*.test.mjs`
   const quotaPattern = `${sliceTestDirectory}/slice-disk-quota*.test.mjs`
   assert.deepEqual(patterns, [provisionPattern, quotaPattern, `${sliceTestDirectory}/managed-rootless-quota*.test.mjs`,
-    `${sliceTestDirectory}/slice-screen-*.test.mjs`])
+    `${sliceTestDirectory}/slice-screen-*.test.mjs`, `${sliceTestDirectory}/chariox-data-volume-admission.test.mjs`])
 
   const selected = patterns.flatMap(expandOneLevelGlob).sort()
   const directory = resolve(repositoryRoot, sliceTestDirectory)
@@ -125,12 +130,12 @@ test("slice provisioner selection covers its dynamic repository inventory once a
   assert.ok(quotaInventory.length > 0, "the quota test inventory must not be empty")
   assert.ok(screenInventory.length > 0, "the slice screen test inventory must not be empty")
   assert.equal(new Set(selected).size, selected.length, "a test file must not be selected twice")
-  for (const filename of [...provisionInventory, ...quotaInventory, ...screenInventory]) {
+  for (const filename of [...provisionInventory, ...quotaInventory, ...screenInventory, "chariox-data-volume-admission.test.mjs"]) {
     assert.ok(selected.includes(join(sliceTestDirectory, filename)), `${filename} must be selected`)
   }
   assert.deepEqual(
     selected,
-    [...new Set([...provisionInventory, ...quotaInventory, ...screenInventory])]
+    [...new Set([...provisionInventory, ...quotaInventory, ...screenInventory, "chariox-data-volume-admission.test.mjs"])]
       .map((filename) => join(sliceTestDirectory, filename))
       .sort(),
     "the command should select all provisioner, quota and slice screen tests and no unrelated files",
@@ -147,14 +152,15 @@ test("selection runs future quota-pattern files once and propagates a selected t
 
   assert.notEqual(result.status, 0, `a failing selected quota test must fail the package script\n${result.diagnostics}`)
   assert.match(output, /intentional selection failure/, result.diagnostics)
-  assert.match(output, /(?:#|ℹ)\s*tests 5\b/, result.diagnostics)
-  assert.match(output, /(?:#|ℹ)\s*pass 4\b/, result.diagnostics)
+  assert.match(output, /(?:#|ℹ)\s*tests 6\b/, result.diagnostics)
+  assert.match(output, /(?:#|ℹ)\s*pass 5\b/, result.diagnostics)
   assert.match(output, /(?:#|ℹ)\s*fail 1\b/, result.diagnostics)
   assert.match(output, /(?:#|ℹ)\s*skipped 0\b/, result.diagnostics)
   assert.deepEqual(
     readFileSync(fixture.marker, "utf8").trim().split("\n").sort(),
     [
       "managed-rootless-quota-check.test.mjs",
+      "chariox-data-volume-admission.test.mjs",
       "provision-existing.test.mjs",
       "slice-disk-quota-current.test.mjs",
       "slice-disk-quota-future.test.mjs",

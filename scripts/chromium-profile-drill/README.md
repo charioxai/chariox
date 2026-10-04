@@ -42,8 +42,9 @@ renderer and restricted-link counts, so evidence distinguishes these paths.
 Browser containers have no external network or published ports, two CPUs,
 2 GiB memory without extra swap, and 512 PIDs. The BuildKit container also has
 two CPUs and 2 GiB memory, with one build step at a time. The production restore
-functions receive a Docker shim that adds stricter hosted helper resource limits
-and the drill's cleanup label; their restore commands and archive/token guards remain unchanged. The
+functions receive a Docker shim that disables extra swap and adds the drill's
+cleanup label. Production owns the network, CPU, memory and PID limits; the shim
+must not duplicate those options. Restore commands and archive/token guards remain unchanged. The
 test-only adapter extracts these exact functions and bypasses only full worker
 image/runtime provisioning, which this minimal browser image cannot exercise.
 [Docker documents the build container resource options](https://docs.docker.com/build/builders/drivers/docker-container/).

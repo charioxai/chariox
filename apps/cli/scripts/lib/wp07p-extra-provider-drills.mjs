@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {completedDrillTurn} from './drill-turn-admission.mjs';
 import http from 'node:http';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -30,11 +31,12 @@ export async function roomsExtra(input){
  const runCli=async(name,args)=>{const child=spawn('node',[path.join(laneRoot, name==='live-browser-computer-drill-e-scenario.mjs'?'drill-e-live.mjs':'office-suite-live.mjs'),...args],{stdio:['ignore','pipe','pipe']});let output='';child.stdout.on('data',x=>output+=x);child.stderr.on('data',()=>{});const code=await new Promise((resolve,reject)=>{child.on('error',reject);child.on('exit',resolve)});return {mp_items,helperCommit:process.env.ROOMS_HELPER_HEAD??'unknown',command:['node',path.join(laneRoot,name==='live-browser-computer-drill-e-scenario.mjs'?'drill-e-live.mjs':'office-suite-live.mjs'),...args],exit_code:code,summary:output.trim()}};
  const turn=async(agentId,prompt)=>{
   const attachment=unwrap(await client.send(requests.attachToSessionRequest(sessionId,`rooms-extra-setup-${agentId}-${randomUUID()}`)),'SessionAttached').attachment;
-  let id;
+  let id;let completed;
   try{
+   const before=unwrap(await client.send(requests.getSessionHistoryOutlineRequest(sessionId,[agentId],100)),'SessionHistoryOutline');const prior=new Set(before.agents?.find(a=>a.agent_id===agentId)?.turns?.map(t=>t.prompt_id)??[]);
    const submitted=unwrap(await client.send(requests.submitPromptRequest(sessionId,attachment.id,agentId,prompt,[])),'PromptSubmitted');id=(submitted.outcome.Started??submitted.outcome.Queued)?.prompt?.id;assert.ok(id);
-   await waitFor(async()=>{await client.send(requests.pollRuntimeNoticesRequest(sessionId,attachment.id));const h=unwrap(await client.send(requests.getSessionHistoryOutlineRequest(sessionId,[agentId],2)),'SessionHistoryOutline');const state=unwrap(await client.send(requests.getSessionStateRequest(sessionId)),'SessionState');const a=state.agent_activity?.[agentId];if(a?.status==='error'&&a?.prompt_status==='none')throw new Error('MP-08/MP-10 official provider entered error state during Room setup/work');return a?.status==='idle'&&a?.prompt_status==='none'&&h.agents?.find(a=>a.agent_id===agentId)?.turns?.some(t=>t.prompt_id===id&&t.lifecycle==='completed')},180000,'rooms setup turn timeout');
-   return id;
+   await waitFor(async()=>{await client.send(requests.pollRuntimeNoticesRequest(sessionId,attachment.id));const h=unwrap(await client.send(requests.getSessionHistoryOutlineRequest(sessionId,[agentId],100)),'SessionHistoryOutline');const state=unwrap(await client.send(requests.getSessionStateRequest(sessionId)),'SessionState');const a=state.agent_activity?.[agentId];if(a?.status==='error'&&a?.prompt_status==='none')throw new Error('MP-08/MP-10 official provider entered error state during Room setup/work');completed=completedDrillTurn(h.agents?.find(a=>a.agent_id===agentId)?.turns??[],id,submitted.outcome.Started?'Started':'Queued',prompt,prior);return a?.status==='idle'&&a?.prompt_status==='none'&&completed},180000,'rooms setup turn timeout');
+   return completed.prompt_id;
   }finally{await client.send(requests.detachFromSessionRequest(attachment.id))}
  };
 

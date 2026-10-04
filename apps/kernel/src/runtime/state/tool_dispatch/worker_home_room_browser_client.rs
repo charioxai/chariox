@@ -55,7 +55,10 @@ fn room_browser_runtime_tool_response_timeout(
     tool_name: &str,
     arguments: &serde_json::Value,
 ) -> Duration {
-    let default_timeout = Duration::from_millis(config.relay_request_timeout_ms);
+    let default_timeout = std::cmp::max(
+        Duration::from_millis(config.relay_request_timeout_ms),
+        Duration::from_secs(60),
+    );
     if canonical_room_browser_runtime_tool(tool_name)
         == Some(crate::transport::runtime_tools::PASTE_SECRET_TO_SLICE_TOOL)
     {

@@ -18,6 +18,9 @@ mod history_tests;
 #[cfg(test)]
 mod test_pause;
 
+#[cfg(test)]
+mod test_provider_runs;
+
 const REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(60);
 

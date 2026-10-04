@@ -53,6 +53,15 @@ impl KernelRuntimeState {
         input: RoomComputerInputAction,
         approved_generation: Option<u64>,
     ) -> Result<ComputerControllerActionExecution, DaemonError> {
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.into(),
+                agent_id: agent_id.into(),
+            });
+        }
+        self.recover_active_room_for_computer_input(session_id)
+            .await?;
         let _execution_guard = self
             .owned
             .environment_execution_gates

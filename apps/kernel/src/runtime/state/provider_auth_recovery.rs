@@ -277,7 +277,7 @@ impl KernelRuntimeState {
             let previous_run = run.id().to_string();
             tokio::spawn(async move {
                 // Relaunch retains the admitted prompt; dispatch only when the replacement is ready.
-                let _ = tokio::time::timeout(Duration::from_secs(60), async {
+                let outcome = tokio::time::timeout(Duration::from_secs(60), async {
                     loop {
                         if let Some(run) = state
                             .owned
@@ -288,17 +288,81 @@ impl KernelRuntimeState {
                                 && run.state() == crate::provider::ProviderRunState::Running
                             {
                                 let _permit = state.provider_runtime_lanes.acquire(run.id()).await;
-                                let _ = state.redispatch_after_provider_login(&run, &prompt).await;
-                                return;
+                                return state.redispatch_after_provider_login(&run, &prompt).await;
                             }
                         }
                         tokio::time::sleep(Duration::from_millis(100)).await;
                     }
                 })
                 .await;
+                if !matches!(outcome, Ok(Ok(true))) {
+                    let _ = state
+                        .fail_provider_login_redispatch(
+                            &session_id,
+                            &agent_id,
+                            &previous_run,
+                            &prompt,
+                        )
+                        .await;
+                }
             });
         }
         Ok(())
+    }
+
+    async fn fail_provider_login_redispatch(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        previous_run_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<bool, DaemonError> {
+        let run = match self
+            .owned
+            .provider_store
+            .get_run_for_agent(session_id, agent_id)
+        {
+            Some(run) => run,
+            None => self.owned.provider_store.get_run(previous_run_id)?,
+        };
+        let _permit = self.provider_runtime_lanes.acquire(run.id()).await;
+        let session = self.owned.session_store.get_session(session_id)?;
+        let Some(active) = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+        else {
+            return Ok(false);
+        };
+        if active.id() != prompt.id() {
+            return Ok(false);
+        }
+        // MP-08/MP-10/MP-11: transfer the retained turn's failure ownership to
+        // its replacement, including a run still initializing at the deadline.
+        // The shared failure path then retires it and advances the backlog once.
+        if active
+            .durable_delivery_provider_run_id()
+            .is_some_and(|id| id != previous_run_id && id != run.id())
+        {
+            return Ok(false);
+        }
+        self.owned.mark_active_prompt_delivery(
+            session_id,
+            agent_id,
+            prompt.id(),
+            crate::session::DurablePromptDeliveryPhase::Accepted,
+            Some(run.id().to_string()),
+            None,
+        )?;
+        self.fail_owned_provider_prompt_with_termination_if_matches(
+            session_id,
+            run.id(),
+            "Provider could not resume the turn after login; retry on this machine.",
+            true,
+            Some(prompt.id()),
+            None,
+        )
+        .await
     }
 
     async fn recover_provider_login(

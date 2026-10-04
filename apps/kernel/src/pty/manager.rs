@@ -18,6 +18,8 @@ const PTY_DIAGNOSTIC_TAIL_LIMIT: usize = 8 * 1024;
 const PTY_READER_STACK_BYTES: usize = 256 * 1024;
 const PTY_WRITER_STACK_BYTES: usize = 128 * 1024;
 
+type PtyOutputFilter = Box<dyn FnMut(&[u8]) -> Vec<u8> + Send>;
+
 #[cfg(unix)]
 fn disable_pty_input_echo(
     master: &dyn MasterPty,
@@ -61,9 +63,12 @@ fn disable_pty_input_echo(
 
 #[cfg(unix)]
 fn terminate_pty_process_group(master: &dyn MasterPty, process_group: Option<i32>) {
-    // MP-08/MP-10: tcgetpgrp can return -1 after the session leader exits.
-    // Retain the owned session's group instead of relying on a live terminal.
-    for process_group in [master.process_group_leader(), process_group]
+    let Some(process_group) = process_group else {
+        return;
+    };
+    // MP-08/MP-10: the recorded leader must still reserve this PID. The
+    // foreground group may disappear once the leader exits, before reaping.
+    for process_group in [master.process_group_leader(), Some(process_group)]
         .into_iter()
         .flatten()
         .filter(|group| *group > 0)
@@ -202,6 +207,46 @@ fn cache_pty_process_exit(process: &mut PtyProcess, status: portable_pty::ExitSt
     let exit = observe_pty_process_exit(status);
     process.exit_code = exit.exit_code;
     process.signal = exit.signal;
+    process.process_group = None;
+}
+
+fn try_wait_pty_process(
+    process: &mut PtyProcess,
+) -> Result<Option<portable_pty::ExitStatus>, String> {
+    #[cfg(unix)]
+    if let Some(pid) = process.child.process_id() {
+        // MP-08/MP-10/MP-11: observe without reaping, so the zombie still
+        // reserves its PGID while we terminate any surviving descendants.
+        let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if result != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ECHILD) {
+                return Err(error.to_string());
+            }
+            // Another owner already reaped it. Never use the recorded group.
+            process.process_group = None;
+        } else if info.si_signo == 0 {
+            return Ok(None);
+        } else {
+            terminate_pty_process_group(process.master.as_ref(), process.process_group);
+        }
+    }
+    let status = process
+        .child
+        .try_wait()
+        .map_err(|error| error.to_string())?;
+    if status.is_some() {
+        process.process_group = None;
+    }
+    Ok(status)
 }
 
 fn append_pty_diagnostic_tail(tail: &Mutex<VecDeque<u8>>, bytes: &[u8]) {
@@ -336,6 +381,16 @@ impl PtyManager {
         credentials: &crate::provider::ProviderCredentialEnvironment,
         scrub_ambient_credentials: bool,
     ) -> Result<(), DaemonError> {
+        self.spawn_with_output_filter(request, credentials, scrub_ambient_credentials, None)
+    }
+
+    pub(crate) fn spawn_with_output_filter(
+        &mut self,
+        request: PtySpawnRequest,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+        scrub_ambient_credentials: bool,
+        mut output_filter: Option<PtyOutputFilter>,
+    ) -> Result<(), DaemonError> {
         if let Some(process_key) = self.process_aliases.get(&request.provider_run_id) {
             self.output_signal
                 .prefer_alias(process_key, &request.provider_run_id);
@@ -456,11 +511,26 @@ impl PtyManager {
                         break;
                     }
 
-                    append_pty_diagnostic_tail(&reader_diagnostic_tail, &buffer[..size]);
-                    if output_tx.send(buffer[..size].to_vec()).is_err() {
+                    // Sensitive utilities filter before queues, diagnostics or projections.
+                    let bytes = if let Some(filter) = output_filter.as_mut() {
+                        let bytes = filter(&buffer[..size]);
+                        zeroize::Zeroize::zeroize(&mut buffer[..size]);
+                        bytes
+                    } else {
+                        buffer[..size].to_vec()
+                    };
+                    append_pty_diagnostic_tail(&reader_diagnostic_tail, &bytes);
+                    if !bytes.is_empty() && output_tx.send(bytes).is_err() {
                         break;
                     }
                     output_signal.record_output(&output_process_key);
+                }
+                if let Some(filter) = output_filter.as_mut() {
+                    let bytes = filter(&[]);
+                    append_pty_diagnostic_tail(&reader_diagnostic_tail, &bytes);
+                    if !bytes.is_empty() {
+                        let _ = output_tx.send(bytes);
+                    }
                 }
                 output_signal.record_output(&output_process_key);
             });
@@ -654,10 +724,8 @@ impl PtyManager {
         }
 
         if process.exit_code.is_none() && process.signal.is_none() {
-            let status = process
-                .child
-                .try_wait()
-                .map_err(|error| DaemonError::PtyCleanup {
+            let status =
+                try_wait_pty_process(process).map_err(|error| DaemonError::PtyCleanup {
                     provider_run_id: provider_run_id.to_string(),
                     message: error.to_string(),
                 })?;
@@ -726,13 +794,10 @@ impl PtyManager {
             return Ok(cached_pty_process_state(process));
         }
 
-        let status = process
-            .child
-            .try_wait()
-            .map_err(|error| DaemonError::PtyCleanup {
-                provider_run_id: provider_run_id.to_string(),
-                message: error.to_string(),
-            })?;
+        let status = try_wait_pty_process(process).map_err(|error| DaemonError::PtyCleanup {
+            provider_run_id: provider_run_id.to_string(),
+            message: error.to_string(),
+        })?;
 
         if let Some(status) = status {
             cache_pty_process_exit(process, status);
@@ -798,17 +863,18 @@ impl PtyManager {
                     provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
                 })?;
 
-        let status = process
-            .child
-            .try_wait()
-            .map_err(|error| DaemonError::PtyCleanup {
+        let status = if process.exit_code.is_some() || process.signal.is_some() {
+            // Already reaped by output drain or liveness polling.
+            return Ok(true);
+        } else {
+            try_wait_pty_process(&mut process).map_err(|error| DaemonError::PtyCleanup {
                 provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
                 message: error.to_string(),
-            })?;
+            })?
+        };
 
-        // MP-08/MP-10: a dead harness leader can leave live provider/tool children.
-        terminate_pty_process_group(process.master.as_ref(), process.process_group);
         if status.is_none() {
+            terminate_pty_process_group(process.master.as_ref(), process.process_group);
             process
                 .child
                 .kill()
@@ -1491,7 +1557,7 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(crate::runtime::process_health::process_running(child_pid));
+        // Polling terminates the group before it reaps the leader.
 
         manager
             .remove_process(provider_run_id)
@@ -1506,6 +1572,59 @@ mod tests {
         assert!(
             !crate::runtime::process_health::process_running(child_pid),
             "removing the provider PTY left descendant PID {child_pid} running"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mp08_mp10_removal_after_reaping_does_not_signal_a_reused_group() {
+        use std::os::unix::process::CommandExt;
+        let mut probe = std::process::Command::new("/bin/sh");
+        probe.args(["-c", "sleep 30"]);
+        unsafe {
+            probe.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let probe = probe.spawn().unwrap();
+        struct Probe(std::process::Child);
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                if matches!(self.0.try_wait(), Ok(None)) {
+                    unsafe {
+                        libc::kill(-(self.0.id() as i32), libc::SIGKILL);
+                    }
+                    let _ = self.0.wait();
+                }
+            }
+        }
+        let mut probe = Probe(probe);
+        let mut manager = PtyManager::new();
+        let id = "mp08-mp10-reaped-leader";
+        manager
+            .spawn(PtySpawnRequest {
+                process_key: id.into(),
+                provider_run_id: id.into(),
+                program: "/bin/sh".into(),
+                args: vec!["-c".into(), "exit 0".into()],
+                env: std::collections::BTreeMap::new(),
+                env_remove: Vec::new(),
+                working_directory: None,
+                cols: 80,
+                rows: 24,
+            })
+            .unwrap();
+        assert!(wait_for_exit(&mut manager, id).is_exited());
+        // Deterministically model the recorded PGID being reused after reap.
+        manager.processes.get_mut(id).unwrap().process_group = Some(probe.0.id() as i32);
+        manager.remove_process(id).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            probe.0.try_wait().unwrap().is_none(),
+            "cleanup signalled an unrelated group after reap"
         );
     }
 

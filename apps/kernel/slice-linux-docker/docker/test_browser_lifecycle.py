@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 import uuid
 
 HERE = Path(__file__).parent
@@ -116,6 +117,38 @@ time.sleep(60)
         self.assertTrue(Path(f"/proc/{escaped}").exists())
         self.assertFalse(self.store.retired(record))
         self.assertTrue(self.lifecycle.same_process(record["supervisor"]))
+
+    def test_graceful_close_ack_waits_for_owned_browser_flush(self):
+        # MP-08/MP-10/MP-11: CDP acknowledges close before profile writes and
+        # the owned descendant lifetime finish. TERM must not race that flush.
+        closing = self.root / "closing"
+        flushed = self.root / "flushed"
+        ready = self.root / "flush-ready"
+        code = f'''import pathlib,time
+pathlib.Path({str(ready)!r}).touch()
+while not pathlib.Path({str(closing)!r}).exists(): time.sleep(.01)
+time.sleep(.2)
+pathlib.Path({str(flushed)!r}).touch()
+'''
+        started = subprocess.run([sys.executable, str(HERE / "browser-lifecycle.py"), "start", self.profile,
+                                  str(self.root / "browser.log"), sys.executable, "-c", code,
+                                  f"--user-data-dir={self.profile}"],
+                                 text=True, capture_output=True, timeout=8)
+        self.assertEqual(started.returncode, 0, started.stderr)
+        record = json.loads(started.stdout)
+        self.wait_file(ready)
+        actual_run = subprocess.run
+
+        def acknowledge_close(command, **kwargs):
+            if command[0] == "node":
+                closing.touch()
+                return subprocess.CompletedProcess(command, 0)
+            return actual_run(command, **kwargs)
+
+        with patch.object(self.lifecycle.subprocess, "run", side_effect=acknowledge_close):
+            self.lifecycle.stop_locked(self.lifecycle.directory(), self.profile)
+        self.assertTrue(flushed.exists(), "close acknowledgement must allow profile flush before TERM")
+        self.assertTrue(self.store.retired(record))
 
     def test_reused_or_cross_namespace_identity_is_not_live_ownership(self):
         owner = self.lifecycle.identity(os.getpid())

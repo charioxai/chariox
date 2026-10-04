@@ -1,3 +1,4 @@
+use super::claude_setup_token_login;
 use crate::error::DaemonError;
 use crate::local::{
     DeleteCredentialSecretRequest, GetCredentialVaultStatusRequest, GetUserConfigRequest,
@@ -84,6 +85,9 @@ pub(crate) async fn execute_set_provider_account_credential_request(
     command: &KernelCommand,
     request: SetProviderAccountCredentialRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    if request.run {
+        return claude_setup_token_login::start(runtime_state, command, request).await;
+    }
     let owner_user_id =
         runtime_state.provider_account_authority_owner_user_id(&command_caller_user_id(command));
     let provider = crate::provider::validate_provider_account_credential_input(
@@ -251,6 +255,12 @@ pub(crate) async fn execute_set_credential_secret_request(
         Vec::new(),
         &user_config.credential_vault,
     )?;
+    let _observation_guard = runtime_state.vault_observation_mutation_guard().await;
+    if !request.value.is_empty() {
+        runtime_state
+            .revoke_vault_observation_values(&request.key)
+            .await?;
+    }
     service.set_vault_secret(&request.key, &request.value)?;
     Ok(LocalDaemonResponse::CredentialSecretStored { key: request.key })
 }
@@ -274,6 +284,10 @@ pub(crate) async fn execute_delete_credential_secret_request(
         Vec::new(),
         &user_config.credential_vault,
     )?;
+    let _observation_guard = runtime_state.vault_observation_mutation_guard().await;
+    runtime_state
+        .revoke_vault_observation_values(&request.key)
+        .await?;
     service.delete_vault_secret(&request.key)?;
     Ok(LocalDaemonResponse::CredentialSecretDeleted { key: request.key })
 }

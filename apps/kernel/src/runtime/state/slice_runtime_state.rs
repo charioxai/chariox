@@ -748,6 +748,7 @@ impl KernelRuntimeState {
             crate::session::unix_epoch_ms(),
         )?;
         self.append_slice_durable_event("slice.updated", &slice)?;
+        self.retry_slice_observation_revocations(&slice.id);
         Ok(slice)
     }
 
@@ -755,6 +756,13 @@ impl KernelRuntimeState {
         &self,
         worker: &chariox_relay::protocol::RelayKernelPresence,
     ) -> Result<bool, DaemonError> {
+        for slice in self
+            .list_slices()
+            .into_iter()
+            .filter(|slice| slice.worker_kernel_id.as_deref() == Some(worker.kernel_id.as_str()))
+        {
+            self.retry_slice_observation_revocations(&slice.id);
+        }
         let Some(slice) = self
             .owned
             .slice_store
@@ -869,6 +877,14 @@ impl KernelRuntimeState {
             self.enqueue_room_browser_manifest_sync_for_session(session_id);
         }
         self.append_slice_durable_event("slice.deleted", &slice)?;
+        if self
+            .owned
+            .room_secret_observations
+            .remove_slice_revocations(&slice)
+            .is_err()
+        {
+            tracing::warn!("MP-08/MP-10/MP-11: deleted slice obligation cleanup remains pending");
+        }
         Ok(slice)
     }
 

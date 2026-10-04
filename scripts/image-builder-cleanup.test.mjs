@@ -10,6 +10,6 @@ test("image-builder cleanup preserves exact resource and UTC identities", () => 
   });
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stderr, /Ran 15 tests/);
+  assert.match(result.stderr, /Ran 16 tests/);
   assert.match(result.stderr, /\bOK\b/);
 });

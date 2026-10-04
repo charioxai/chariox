@@ -119,7 +119,7 @@ pub use workspace::*;
 /// Version 366 adds explicit kernel control capabilities to RelayStatus.
 /// Version 367 adds bounded, explicitly negotiated Unix guarded-control sessions.
 /// On the Apps branch, versions 344-367 carried the Apps contracts instead; a
-/// kernel at version 377 or later implements both lines:
+/// kernel at version 410 or later implements both lines:
 /// Version 344 merges the Chariox Apps contracts (branch protocols 288-297:
 /// App installation, upload, bindings, events, HTTP/Fetch, kernel operation
 /// approvals and publisher enrollment) onto the main protocol line.
@@ -241,4 +241,5 @@ pub use workspace::*;
 /// restart limit is exhausted. Recovery uses the existing explicit start action.
 /// Version 409 adds owner-mediated App clipboard and link acceptance.
 /// Version 410 adds owner-scoped named saved App data snapshot restore.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 410;
+/// Version411 combines Apps Phase1 and Browser/Computer G2 with autonomous Vault observation masks (MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 411;

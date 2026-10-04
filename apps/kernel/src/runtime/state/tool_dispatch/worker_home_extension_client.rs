@@ -88,9 +88,18 @@ impl KernelRuntimeState {
             .filter(|tool| tool.kind == crate::extension::ExtensionKind::Mcp)
             .cloned()
         {
-            return self
+            let response = self
                 .dispatch_remote_home_mcp_proxy_call(&run, name, tool, payload)
-                .await;
+                .await
+                .map_err(|error| {
+                    self.owned
+                        .room_secret_observations
+                        .scrub_error(run.session_id(), error)
+                })?;
+            return self
+                .owned
+                .room_secret_observations
+                .scrub(run.session_id(), response);
         }
         if run.mcp_servers().iter().any(|server| {
             server.name == name
@@ -105,13 +114,22 @@ impl KernelRuntimeState {
                 message: format!("home-proxy MCP `{name}` is no longer granted"),
             });
         }
-        crate::runtime::runtime_mcp_proxy_dispatcher::dispatch_authenticated_mcp_proxy_call(
-            provider_run_projection,
-            auth_token,
-            name,
-            payload,
-        )
-        .await
+        let response =
+            crate::runtime::runtime_mcp_proxy_dispatcher::dispatch_authenticated_mcp_proxy_call(
+                provider_run_projection,
+                auth_token,
+                name,
+                payload,
+            )
+            .await
+            .map_err(|error| {
+                self.owned
+                    .room_secret_observations
+                    .scrub_error(run.session_id(), error)
+            })?;
+        self.owned
+            .room_secret_observations
+            .scrub(run.session_id(), response)
     }
 
     async fn dispatch_remote_home_mcp_proxy_call(

@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { LocalIpcClient } from "./ipc.js"
-import { getProviderCatalog, getProviderCommandCatalogs } from "./provider-api.js"
+import { getProviderCatalog, getProviderCommandCatalogs, runProviderSetupToken } from "./provider-api.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
 
@@ -94,3 +94,11 @@ function clientRejecting(error: Error): LocalIpcClient {
     },
   } as unknown as LocalIpcClient
 }
+
+// MP-08/MP-11: a main410 daemon rejects G2's run field with an upgrade diagnostic.
+test("setup-token run names protocol411 when the daemon lacks its run field", async () => {
+  await assert.rejects(
+    runProviderSetupToken(clientRejecting(new Error("unknown field `run`")), "work", false),
+    /Claude setup token capture requires kernel protocol 411 or newer/,
+  )
+})

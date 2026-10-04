@@ -15,7 +15,7 @@ test("Linux browser lifecycle owns descendants and crash-safe upload locks", {
   });
   assert.ifError(result.error);
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  assert.match(result.stderr, /Ran 8 tests/);
+  assert.match(result.stderr, /Ran 9 tests/);
   assert.match(result.stderr, /\bOK\b/);
 });
 

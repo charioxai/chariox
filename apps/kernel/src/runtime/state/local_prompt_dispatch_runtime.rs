@@ -4425,12 +4425,9 @@ impl KernelRuntimeState {
         }
     }
 
-    /// Reaps finished structured prompt jobs and dispatches the follow-ups an
-    /// abort acknowledgement left to the dispatcher.
+    /// Reaps finished structured prompt jobs through the shared follow-up dispatcher.
     pub(super) fn reap_structured_prompt_jobs_and_dispatch(&self) {
-        for dispatch in self.owned.reap_structured_prompt_jobs() {
-            self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
-        }
+        self.spawn_workflow_prompt_dispatches(self.owned.reap_structured_prompt_jobs());
     }
 
     pub(crate) fn spawn_prompt_dispatch(

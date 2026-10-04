@@ -35,6 +35,8 @@ mod home_archive_verify;
 mod image;
 mod local_authority;
 mod memory_admission;
+mod observation_environment;
+pub(crate) use observation_environment::fresh_local_docker_observation_environment;
 mod provider_inputs;
 mod snapshot_pause;
 mod state;

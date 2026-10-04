@@ -31,7 +31,7 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, agent: &str, tab: &
                 .await
         });
         let assertions = std::panic::AssertUnwindSafe(async {
-            wait_file(&pending).await;
+            wait_file(&pending, "configuration reaches injection point").await;
             dispatch_json(
                 &fixture.home,
                 json!({"RequestRoomEnvironmentInputTakeover":{
@@ -40,7 +40,7 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, agent: &str, tab: &
             )
             .await
             .unwrap();
-            wait_file(&observed).await;
+            wait_file(&observed, "configuration receives cancellation").await;
             assert_eq!(physical_count(fixture, counter), before);
         })
         .catch_unwind()
@@ -185,12 +185,12 @@ fn physical_count(fixture: &LiveWorker, counter: &str) -> u64 {
     state[counter].as_u64().unwrap_or(0)
 }
 
-async fn wait_file(path: &std::path::Path) {
+async fn wait_file(path: &std::path::Path, stage: &str) {
     timeout(Duration::from_secs(2), async {
         while !path.exists() {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
-    .expect("controller reaches configuration fault-injection point");
+    .expect(stage);
 }

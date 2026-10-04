@@ -45,13 +45,15 @@ def exact_timestamp(value):
     return Fraction(delta.days * 86400 + delta.seconds) + Fraction(int(fraction or '0'), 10 ** len(fraction))
 
 
-def protected_bytes(path, maximum):
+def protected_bytes(path, maximum, private_parent=False):
     path = Path(path)
     require(path.is_absolute() and str(path) == os.path.normpath(path), 'canonical absolute path required')
     for parent in path.parents:
         info = parent.lstat()
         require(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and info.st_mode & 0o022 == 0,
                 'input parent must be a protected root-owned directory')
+        if private_parent and parent == path.parent:
+            require(stat.S_IMODE(info.st_mode) == 0o700, 'receipt task directory must have mode 0700')
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         before = os.fstat(fd)
@@ -261,7 +263,7 @@ def main():
     parser.add_argument('--receipt', required=True)
     args = parser.parse_args()
     require(os.geteuid() == 0, 'run on the OpenShip authority host as root')
-    receipt = validate_receipt(json.loads(protected_bytes(args.receipt, 16384), object_pairs_hook=unique_object))
+    receipt = validate_receipt(json.loads(protected_bytes(args.receipt, 16384, private_parent=True), object_pairs_hook=unique_object))
     if args.mode == 'expire':
         require(time.time() >= timestamp(receipt['expiresAt']), 'cleanup deadline has not arrived')
     api = Provider(authority_token(), time.monotonic() + MAX_RUN_SECONDS)

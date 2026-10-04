@@ -282,7 +282,8 @@ impl CommandRouter {
                     .snapshot()
                     .user_config
                     .credential_vault;
-                execute_capability_registry_request(request, credential_vault)
+                execute_capability_registry_request(&self.runtime_state, request, credential_vault)
+                    .await
             }),
             request @ LocalDaemonRequest::RelayStatus(_) => Box::pin(async move {
                 execute_relay_config_request(

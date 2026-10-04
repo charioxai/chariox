@@ -342,7 +342,7 @@ test("builder pin activation failure reports whether rollback restored the relea
 
 test("upgrade recovers interrupted phases and rolls back failed migration or health checks", () => {
   assert.ok(upgradeSource.includes("prepared|stopped|activated) rollback_transaction"))
-  assert.ok(upgradeSource.includes("recover_transaction\nselect_receipt_path"))
+  assert.match(upgradeSource, /recover_transaction\n[\s\S]*?if \[ "\$recover_only" -eq 1 \]; then exit 0; fi\nselect_receipt_path/)
   assert.ok(upgradeSource.includes('"$terminal_transaction/phase"'))
   assert.ok(upgradeSource.includes("if ! resume_home_migration; then"))
   assert.ok(upgradeSource.includes("managed kernel home migration failed; restored previous managed kernel release"))
@@ -357,7 +357,7 @@ test("Path-1 upgrade checks both effective units before recovery and after reloa
   const guard = upgradeSource.match(/assert_path1_units_have_no_dropins\(\) \{\n[\s\S]*?^\}/m)?.[0]
   assert.ok(guard, "upgrade must inspect effective systemd drop-ins")
 
-  const initialGuard = indexOf(upgradeSource, "assert_path1_units_have_no_dropins\nrecover_transaction", "pre-recovery guard")
+  const initialGuard = indexOf(upgradeSource, "assert_path1_units_have_no_dropins\nif [ \"$recover_only\" -eq 1 ]; then", "pre-recovery guard")
   const transaction = indexOf(upgradeSource, "pending_transaction=$chariox_root/.managed-kernel-upgrade.pending", "transaction preparation")
   assert.ok(initialGuard < transaction, "drop-ins must block recovery and transaction writes")
   assert.match(upgradeSource, /systemctl daemon-reload \|\| return 1\n\s*assert_path1_units_have_no_dropins \|\| return 1\n[\s\S]*?systemctl start "\$service_name"/, "rollback must recheck after reload before starting")
@@ -405,7 +405,7 @@ esac
     ["home needs daemon-reload", { SYSTEMD_HOME_NEED_DAEMON_RELOAD: "yes" }, 1, /needs systemd daemon-reload/],
     ["worker needs daemon-reload", { SYSTEMD_WORKER_NEED_DAEMON_RELOAD: "yes" }, 1, /needs systemd daemon-reload/],
     ["unknown home reload state", { SYSTEMD_HOME_NEED_DAEMON_RELOAD: "unknown" }, 1, /could not verify systemd reload state/],
-    ["malformed worker reload state", { SYSTEMD_WORKER_NEED_DAEMON_RELOAD: "no\\nno" }, 1, /could not verify systemd reload state/],
+    ["malformed worker reload state", { SYSTEMD_WORKER_NEED_DAEMON_RELOAD: "no\nno" }, 1, /could not verify systemd reload state/],
     ["home reload query failure", { SYSTEMD_HOME_RELOAD_QUERY_FAIL: "1" }, 1, /could not inspect systemd reload state/],
     ["worker reload query failure", { SYSTEMD_WORKER_RELOAD_QUERY_FAIL: "1" }, 1, /could not inspect systemd reload state/],
     ["home drop-in query failure", { SYSTEMD_HOME_DROP_INS_QUERY_FAIL: "1" }, 1, /could not inspect effective systemd drop-ins/],

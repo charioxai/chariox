@@ -41,6 +41,12 @@ impl CharioxCredentialRegistry {
         &self,
         source: &Path,
     ) -> Result<(UserCredentialConfig, PathBuf), DaemonError> {
+        self.upsert(Self::read_registration_file(source)?)
+    }
+
+    pub(crate) fn read_registration_file(
+        source: &Path,
+    ) -> Result<UserCredentialConfig, DaemonError> {
         if !source.is_file() {
             return Err(DaemonError::InvalidConfig {
                 field: "credential file",
@@ -48,26 +54,15 @@ impl CharioxCredentialRegistry {
             });
         }
         let credential = Self::read_yaml(source)?;
-        validate_credentials(std::slice::from_ref(&credential))?;
-        ensure_private_dir(&self.root, "credential.register")?;
-        let path = self.path_for(&credential.id)?;
-        let payload =
-            serde_yaml::to_string(&credential).map_err(|error| DaemonError::LocalTransport {
-                operation: "credential.register",
-                message: format!(
-                    "failed to serialize credential `{}`: {error}",
-                    credential.id
-                ),
-            })?;
-        atomic_write_private(&path, payload.as_bytes(), "credential.register")?;
-        Ok((credential, path))
+        validate_credential_registration(&credential)?;
+        Ok(credential)
     }
 
     pub fn upsert(
         &self,
         credential: UserCredentialConfig,
     ) -> Result<(UserCredentialConfig, PathBuf), DaemonError> {
-        validate_credentials(std::slice::from_ref(&credential))?;
+        validate_credential_registration(&credential)?;
         ensure_private_dir(&self.root, "credential.upsert")?;
         let path = self.path_for(&credential.id)?;
         let payload =
@@ -139,6 +134,31 @@ impl CharioxCredentialRegistry {
         validate_credentials(std::slice::from_ref(&credential))?;
         Ok(credential)
     }
+}
+
+// MP-08/MP-10: validate new registrations without making legacy metadata
+// unreadable. Never infer an injection mode from a username or rewrite a handle.
+pub(crate) fn validate_credential_registration(
+    credential: &UserCredentialConfig,
+) -> Result<(), DaemonError> {
+    validate_credentials(std::slice::from_ref(credential))?;
+    if credential
+        .allowed_uses
+        .contains(&crate::config::UserCredentialUse::Browser)
+        && !matches!(
+            credential.injection,
+            crate::config::UserCredentialInjectionConfig::Browser
+        )
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "credential.register",
+            message: format!(
+                "credential `{}` allows browser use but requires injection.kind=browser; basic is HTTP Basic authentication",
+                credential.id,
+            ),
+        });
+    }
+    Ok(())
 }
 
 pub fn load_user_credentials() -> Result<Vec<UserCredentialConfig>, DaemonError> {
@@ -230,6 +250,47 @@ mod tests {
     use crate::config::{
         UserCredentialInjectionConfig, UserCredentialSourceConfig, UserCredentialUse,
     };
+
+    // MP-08/MP-10: reject incompatible metadata at registration, before storage.
+    #[test]
+    fn browser_registration_rejects_non_browser_injection_before_writing() {
+        let root = crate::test_support::TestWorktree::new("browser-credential-registration");
+        let registry_root = root.path().join("registry");
+        let registry = CharioxCredentialRegistry::new(registry_root.clone());
+        let mut credential = UserCredentialConfig {
+            id: "fixture-browser".into(),
+            description: None,
+            source: UserCredentialSourceConfig::Vault {
+                key: "fixture-browser".into(),
+            },
+            allowed_hosts: vec!["fixture.test".into()],
+            allowed_uses: vec![UserCredentialUse::Browser],
+            injection: UserCredentialInjectionConfig::Basic {
+                username: "fixture-user".into(),
+            },
+            metadata: None,
+        };
+        let source = root.path().join("credential.yaml");
+        fs::write(&source, serde_yaml::to_string(&credential).unwrap()).unwrap();
+        let error = registry.install_from_file(&source).unwrap_err();
+        assert!(error.to_string().contains("injection.kind=browser"));
+        assert!(
+            !registry_root.exists(),
+            "invalid metadata must not create registry state"
+        );
+        let error = registry.upsert(credential.clone()).unwrap_err();
+        assert!(error.to_string().contains("injection.kind=browser"));
+        assert!(!registry_root.exists());
+        // Basic remains valid for HTTP, including the legacy unrestricted use list.
+        credential.allowed_uses = vec![UserCredentialUse::Http];
+        registry.upsert(credential.clone()).unwrap();
+        credential.allowed_uses.clear();
+        registry.upsert(credential.clone()).unwrap();
+        credential.allowed_uses = vec![UserCredentialUse::Browser];
+        credential.injection = UserCredentialInjectionConfig::Browser;
+        registry.upsert(credential.clone()).unwrap();
+        assert_eq!(registry.get(&credential.id).unwrap(), Some(credential));
+    }
 
     #[test]
     fn upsert_writes_and_replaces_credential_metadata() {

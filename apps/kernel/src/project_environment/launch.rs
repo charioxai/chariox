@@ -127,10 +127,31 @@ pub(crate) fn attach_project_provider_environment(
                     &config.private_runtime_state_root(),
                 )
                 .load(session.project_id())?;
+            // MP-08 / MP-10 / MP-11: imported workspaces use mounted paths;
+            // a leased session keeps its synthetic workspace identity.
+            let directory_workspace = directory.to_string_lossy();
+            let workspace_id = project_environment_state
+                .as_ref()
+                .filter(|state| {
+                    let selected = |workspace: &str| {
+                        state
+                            .manifest
+                            .entries
+                            .iter()
+                            .any(|entry| entry.workspace_id == workspace)
+                            || state
+                                .manifest
+                                .private_files
+                                .iter()
+                                .any(|file| file.workspace_id == workspace)
+                    };
+                    !selected(session.workspace_id()) && selected(directory_workspace.as_ref())
+                })
+                .map_or(session.workspace_id(), |_| directory_workspace.as_ref());
             let environment = crate::project_environment::project_launch_environment(
                 config,
                 session.project_id(),
-                session.workspace_id(),
+                workspace_id,
                 directory,
             )?;
             let previously_bound = request.project_environment_revision.is_some();
@@ -144,7 +165,7 @@ pub(crate) fn attach_project_provider_environment(
             let missing = crate::project_environment::project_missing_inputs(
                 config,
                 session.project_id(),
-                session.workspace_id(),
+                workspace_id,
             )?;
             if !missing.is_empty() {
                 request.provider_account_env.insert(

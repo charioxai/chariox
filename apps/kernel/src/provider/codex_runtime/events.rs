@@ -67,6 +67,30 @@ pub(super) fn apply_notification_with_manifest(
     remote_extension_manifest: &RemoteExtensionManifest,
 ) {
     match notification {
+        CodexNotification::TurnScoped {
+            turn_id,
+            notification,
+        } => {
+            // A successful interrupt settles the old prompt before the next
+            // FIFO submit. Late output must not inherit that prompt's retry.
+            if active_turn_id.as_deref() != Some(turn_id.as_str()) {
+                return;
+            }
+            apply_notification_with_manifest(
+                *notification,
+                active_turn_id,
+                turn_tracker,
+                text_items,
+                tool_items,
+                chunks,
+                _completions,
+                notices,
+                prompt_completed,
+                terminal_failure,
+                resolved_usage,
+                remote_extension_manifest,
+            );
+        }
         CodexNotification::AgentMessageDelta { item_id, delta } => {
             if !delta.is_empty() {
                 turn_tracker.note_assistant_content();
@@ -208,7 +232,10 @@ pub(super) fn apply_notification_with_manifest(
                 chunks.push(chunk);
             }
         }
-        CodexNotification::TokenUsageUpdated { usage, .. } => {
+        CodexNotification::TokenUsageUpdated { turn_id, usage, .. } => {
+            if !turn_id.is_empty() && active_turn_id.as_deref() != Some(turn_id.as_str()) {
+                return;
+            }
             *resolved_usage = Some(usage);
         }
         CodexNotification::TurnStarted { turn_id } => {

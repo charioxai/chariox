@@ -150,8 +150,8 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
 
 # Nested Docker cannot write an unprivileged uid_map on every host. The
 # setuid helper only sets up Bubblewrap's namespace and drops its caps
-# before the provider starts. Managed provider launches use the unprivileged
-# no-new-privs path validated by the provisioner sandbox probe.
+# before the provider starts. Slice launches select the supported Bubblewrap
+# path through managed-provider-bwrap; the provisioner probes that wrapper.
 RUN chmod 4755 /usr/bin/bwrap
 
 RUN --mount=type=bind,source=apps/kernel/slice-linux-docker/docker/managed-provider-seccomp.c,target=/tmp/managed-provider-seccomp.c \
@@ -238,6 +238,8 @@ COPY apps/kernel/slice-linux-docker/docker/browser-controller-display.mjs /opt/c
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/tint2rc /opt/chariox-slice/tint2rc
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-keyboard.py /opt/chariox-slice/slice-keyboard.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-text-finder.py /opt/chariox-slice/slice-text-finder.py
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-observation-mask.py /opt/chariox-slice/slice-observation-mask.py
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-observation-regions.mjs /opt/chariox-slice/browser-observation-regions.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-providers.sh /opt/chariox-slice/start-providers.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-runtime.sh /opt/chariox-slice/start-runtime.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/validate-screen.sh /opt/chariox-slice/validate-screen.sh

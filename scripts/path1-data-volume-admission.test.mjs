@@ -54,6 +54,12 @@ test("Path-1 admission is nonpersistent and mount-bound consumers fail closed", 
     ]) {
       assert.ok(directives.includes(required), label + " drop-in must declare " + required)
     }
+    for (const directive of directives) {
+      if (/^(BindsTo|Requires)=/.test(directive)) {
+        assert.ok(!directive.split(/\s+/).some((value) => value.endsWith(".mount")),
+          label + " must not require or bind to the transient mount unit");
+      }
+    }
     if (label === "rootless Docker") {
       assert.ok(directives.includes("BindsTo=chariox-slice-disk-quota-allocator.service"))
     }

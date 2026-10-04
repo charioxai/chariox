@@ -6,6 +6,7 @@
   "scripts": {
     "build": "pnpm --workspace-root run build:kernel-client && node scripts/build.mjs",
     "parity:source-inventory": "node scripts/managed-parity-source-inventory.mjs",
+    "test:hidden-input": "node --test scripts/hidden-input-pty.test.mjs",
     "test:managed-parity-source-inventory": "node --test scripts/managed-parity-source-inventory.test.mjs",
     "test:managed-ordinary-parity-matrix": "node --test scripts/managed-ordinary-parity-matrix.test.mjs",
     "test:managed-ordinary-parity": "node --test --test-concurrency=1 scripts/managed-ordinary-parity-matrix.test.mjs scripts/lib/managed-ordinary-live-kernel-binding.test.mjs scripts/lib/managed-ordinary-provider-turn-binding.test.mjs scripts/managed-ordinary-parity-collector.test.mjs scripts/managed-ordinary-parity-probe.test.mjs",

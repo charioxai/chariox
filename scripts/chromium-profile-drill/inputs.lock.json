@@ -1,12 +1,12 @@
 {
-  "docker/slice-screen.sh": "d1b08d6cb3b438f545daa82bc1528a78f90513c6d78853e3c190b5f3d48279f8",
+  "docker/slice-screen.sh": "f64fb9d8a1df0e703245073d836a417863fd6c52ab5107294322a6edd5d238e6",
   "docker/browser-app-restore.mjs": "f03191db5373897b2db21d5cf2169b0ac612e98eb2fa6bdd0ca857759fd463e3",
   "docker/browser-cdp.mjs": "99f0663a193370ead9ca134949cca09a74a7617b2e47db39f09bc868371ec956",
-  "docker/browser-lifecycle.py": "775c0e9d22d57afaf9ef9e05cbbdc6c5686c1c3d54d5027d2972b9b047b8b7d1",
+  "docker/browser-lifecycle.py": "a54c3ca226d8816f84deca253edca578107ff68602eccc0c1a0892c986bdbbc5",
   "docker/browser-upload-store.py": "68112d4f4143f76f1544bb26f363a4ad7bc1d6c105d07ddcf790c3856ad39c88",
-  "docker/browser-controller-actions.mjs": "e3b8c53af6c517fa7e052dd3c7dc9931465bcd748486f437ee8a3380531fd71e",
+  "docker/browser-controller-actions.mjs": "785eaf7433d56c0a85b217f52f54d14f5b3febce5238dd8057da070dc09a331b",
   "docker/browser-controller-bar.mjs": "d106b12397f4f41ba9d96ef56af4854facd7a88d42e0bcda6762dc1a5626f5fe",
-  "docker/browser-controller-cdp.mjs": "7705dd8389bf152a22520e1e131c60c125d70fa8f56da1d96fecb3082930e936",
+  "docker/browser-controller-cdp.mjs": "dd7e7e050d5f92941a3b1ca625b089d23d62665997824c1ea7457fd3519de2ac",
   "docker/browser-controller-compatibility.mjs": "437fee2ae34059446ded032effe79f4fbd864a3d9cbc3a1b7c29551c0b34ab80",
   "docker/browser-controller-cookie-fence.mjs": "4d4fa4f47c8468626713ac559dab96f207d42eaebd1ade47cc4c82558e50f006",
   "docker/browser-controller-dialogs.mjs": "13148e4a4d5387f31718d06421fa03f4614775a334ed34ee621eae2b6930ead9",
@@ -16,9 +16,9 @@
   "docker/browser-controller-history.mjs": "89b0f43bed1174a0a47cc34c419b7c8fc180172463d157e4cd97827c3c4d8b0e",
   "docker/browser-controller-input.mjs": "95161e840156be1c9be39bf0342e3202c853f3ffc195877dd7d62dc30bd2e5fe",
   "docker/browser-controller-permissions.mjs": "f87bc18294a986c44e86f8fbcd83206a27c4ed0595411090cc4c0a6df3584608",
-  "docker/browser-controller-snapshot.mjs": "c93405b3c8cfa277cf426da1d61ea01c679730adf0aeb4f753084ad4ebceacd0",
+  "docker/browser-controller-snapshot.mjs": "8c16b34d0f3aebdb8f18eeb90cb260c640579d4f9e630071b439910838943af7",
   "docker/browser-controller-upload-staging.mjs": "e4d06a8766473bee125744580b2de281434715f1d0852b5950f1ab816fdd902f",
-  "docker/tint2rc": "44bfe66faa0769967a7a0d32dd5697f9211b31796e89938d245962034344999a",
+  "docker/tint2rc": "e3d74c6480c9746d0b6238de32559dbb90e46e767ba5d84db690efb78a0f8812",
   "chromium-seccomp.json": "9bca667a1e5f4ff084f2784f37d38d69bee86f1a305ec9dc30d3e1c61b5125b5",
   "restore-script": "cdf5891bdf7b36aa80ad74be590a953d3e6d9f6c5656967bdcfeb8dbc3b3fe5c"
 }

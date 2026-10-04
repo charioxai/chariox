@@ -74,6 +74,7 @@ export type CliInputRoutingCompositionDeps = {
   handleMachineCommand: AnyFn
   handleSliceCommand: AnyFn
   openRoomViewer?: AnyFn
+  readSecret?: (prompt: string) => Promise<string>
   handleRoomCommand: AnyFn
   handleRelayCommand: AnyFn
   handleCloudCommand: AnyFn
@@ -286,6 +287,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     client: deps.client,
     clientId: deps.options.clientId,
     ...(deps.openRoomViewer ? { openRoomViewer: deps.openRoomViewer } : {}),
+    ...(deps.readSecret ? { readSecret: deps.readSecret } : {}),
     workspaceShellContext: deps.workspaceShellContext,
     setWorkspaceShellContext: (context) => {
       deps.setWorkspaceShellContext(context)

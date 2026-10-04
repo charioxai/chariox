@@ -47,6 +47,34 @@ fn relay_event_writer_can_disable_event_coalescing_for_tests() {
 }
 
 #[test]
+fn relay_event_writer_bounds_a_continuously_ready_producer_without_reordering() {
+    // MP-08/MP-10: the writer's ready event receiver may win over its timer.
+    // Force that receive path repeatedly without draining the timer branch.
+    let now = TokioInstant::now();
+    let mut coalescer = RelayEventWriteCoalescer::new(RELAY_EVENT_WRITE_COALESCE_MS);
+    let mut sent = Vec::new();
+    for event in 0..10_000 {
+        if let Some(ready) = coalescer.push_event(event, now) {
+            sent.push(ready);
+        }
+        assert!(
+            event + 1 - sent.len() <= 32,
+            "event coalescer exceeded its 32-event bound"
+        );
+        assert_eq!(
+            coalescer.ready_at(),
+            Some(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS))
+        );
+    }
+    while let Some(event) = coalescer.pop_ready(now) {
+        sent.push(event);
+    }
+    assert_eq!(sent, (0..10_000).collect::<Vec<_>>());
+    assert!(coalescer.is_empty());
+    assert_eq!(coalescer.ready_at(), None);
+}
+
+#[test]
 fn missing_relay_config_without_cloud_profile_is_local_idle() {
     let config = crate::config::DaemonConfig::for_tests();
 

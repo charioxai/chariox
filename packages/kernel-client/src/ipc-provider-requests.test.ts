@@ -6,7 +6,7 @@ import * as providerRequests from "./ipc-provider-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
 test("provider login request carries the selected enrollment method", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 410)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 411)
   const request = startProviderLoginRequest("codex", "work", "device_code") as {
     StartProviderLogin: Record<string, unknown>
   }
@@ -49,4 +49,10 @@ test("provider setup token request carries account scope and explicit replacemen
       },
     },
   )
+})
+
+test("MP-08/MP-11 setup-token run carries only scope and replacement policy", () => {
+  assert.deepEqual(setProviderAccountCredentialRequest("claude", "work", "", true, { sessionId: "session-1" }, true), {
+    SetProviderAccountCredential: { provider: "claude", account_profile: "work", value: "", run: true, overwrite: true, session_id: "session-1" },
+  })
 })

@@ -97,6 +97,10 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.match(script, /\[ "\$builder_mount_status" -eq 32 \]/)
   assert.match(script, /\/run\/chariox-data-volume-observation/)
   assert.match(script, /trap cleanup_path1_data_volume_bypass EXIT/)
+  const bypassFunction = script.match(/^bypass_path1_data_volume_dropins\(\) \{\n[\s\S]*?^\}/m)?.[0]
+  assert.ok(bypassFunction)
+  assert.doesNotMatch(bypassFunction, /trap /)
+  assert.match(script, /trap cleanup_path1_data_volume_bypass EXIT\ntrap 'exit 1' HUP INT TERM\nbypass_path1_data_volume_dropins\n/)
   assert.match(script, /restore_path1_data_volume_dropins/)
   assert.match(script, /rm -- "\$builder_rootless_dropin" "\$builder_allocator_dropin"/)
   assert.doesNotMatch(script, /rm\s+(?:-rf?\s+|--\s+)?\/var\/lib\/chariox-data-volume\b/)

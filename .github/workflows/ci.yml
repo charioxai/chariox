@@ -54,6 +54,10 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Managed upgrade recovery ownership regression
+        # MP-07: the root journal ownership fixture would skip as the runner user.
+        run: sudo "$(command -v node)" --test --test-concurrency=1 deploy/managed-kernel/managed-update-recovery.test.mjs
+
   rust:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
@@ -107,9 +111,12 @@ jobs:
 
       - name: Release session project assignment regression
         # MP-08/MP-10: partition the large kernel test crate for the CI compiler;
-        # keep release optimization and disabled debug assertions unchanged.
+        # keep kernel release optimization and disabled debug assertions unchanged.
+        # The dev-only App fixture dependency requires debug assertions; production
+        # App builds retain their default release guard against this feature.
         run: >-
           cargo --config 'profile.release.package.chariox-kernel.codegen-units=256'
+          --config 'profile.release.package.chariox-app-runtime.debug-assertions=true'
           test --release -p chariox-kernel --lib visible_session_project_assignment_survives_release_builds -- --nocapture
 
       - name: Clippy

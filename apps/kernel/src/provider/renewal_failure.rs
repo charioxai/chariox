@@ -5,7 +5,12 @@ pub(crate) fn renewal_failed(provider: &str, error: &str) -> bool {
         return false;
     }
     let error = error.to_ascii_lowercase();
-    oauth_renewal_evidence(&error)
+    // MP-08/MP-10: OpenCode may omit the OAuth response code. Recovery still
+    // requires a renewable profile because this is not strong OAuth evidence.
+    (provider == "opencode"
+        && error.trim_end().ends_with("token refresh failed")
+        && !error.contains("workspace service"))
+        || oauth_renewal_evidence(&error)
         || error.contains("provider_authentication_failed")
         || error.contains("claude stopfailure [authentication_failed]")
         || (error.contains("401")
@@ -28,6 +33,28 @@ pub(crate) fn oauth_renewal_evidence(error: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mp08_mp10_mp11_opencode_generic_refresh_failure_requires_profile_gate() {
+        assert!(renewal_failed("opencode", "Token refresh failed"));
+        assert!(renewal_failed(
+            "opencode",
+            "provider protocol failure: Token refresh failed"
+        ));
+        // The receiving kernel must still establish a renewable login profile.
+        assert!(!oauth_renewal_evidence("Token refresh failed"));
+        for provider in ["codex", "claude", "dev-stub"] {
+            assert!(!renewal_failed(provider, "Token refresh failed"));
+        }
+        assert!(!renewal_failed(
+            "opencode",
+            "Token refresh failed: network timeout"
+        ));
+        assert!(!renewal_failed(
+            "opencode",
+            "workspace service: Token refresh failed"
+        ));
+    }
 
     #[test]
     fn mp08_mp10_mp11_renewal_failure_codes_and_negative_cases() {

@@ -433,6 +433,15 @@ async function secureFillElement(connection, sessionId, objectId, action) {
         if (!isMaskedEditableInput()) {
           return { ok: false, reason: "target_not_masked" };
         }
+        // MP-08/MP-10: submission eligibility is checked before secret mutation.
+        // Some sign-in steps use a separate JavaScript button and no native form.
+        const form = submit ? this.form || this.closest?.("form") : null;
+        const formPrototype = ownerWindow.HTMLFormElement?.prototype;
+        const submitForm = formPrototype?.requestSubmit ?? formPrototype?.submit;
+        if (submit && !form) return { ok: false, reason: "form_not_found" };
+        if (submit && typeof submitForm !== "function") {
+          return { ok: false, reason: "form_submit_unavailable" };
+        }
         this.focus();
         if (ownerWindow.location.href !== expectedDocumentUrl) {
           return { ok: false, reason: "target_url_changed" };
@@ -465,10 +474,9 @@ async function secureFillElement(connection, sessionId, objectId, action) {
         this.dispatchEvent(new ownerWindow.Event("change", { bubbles: true }));
         if (!restoreMaskAfterHandler()) return { ok: false, reason: "target_not_masked" };
         if (submit) {
-          const form = this.form || this.closest?.("form");
-          if (!form) return { ok: false, reason: "form_not_found" };
-          if (typeof form.requestSubmit === "function") form.requestSubmit();
-          else form.submit();
+          // Form controls named submit/requestSubmit must not shadow DOM methods.
+          try { submitForm.call(form); }
+          catch { return { ok: false, reason: "form_submit_failed" }; }
         }
         return { ok: true };
       }`,
@@ -503,10 +511,36 @@ async function secureFillElement(connection, sessionId, objectId, action) {
         "browser secret target must remain an editable password field during insertion",
       );
     }
+    if (outcome?.reason === "form_not_found") {
+      throw new BrowserActionError(
+        "browser_submit_failed",
+        "browser password field has no native form; use submit=false, then click the observed sign-in button",
+      );
+    }
+    if (["form_submit_unavailable", "form_submit_failed"].includes(outcome?.reason)) {
+      throw new BrowserActionError(
+        "browser_submit_failed",
+        "browser password form could not submit",
+        { reason: outcome.reason },
+      );
+    }
+    if (response?.exceptionDetails) {
+      throw new BrowserActionError(
+        "browser_secret_input_exception",
+        "browser secret insertion script raised an exception; rediscover the password field before retrying",
+      );
+    }
+    if (outcome?.reason === "value_setter_unavailable") {
+      throw new BrowserActionError(
+        "browser_action_failed",
+        "browser password field has no native value setter",
+      );
+    }
     throw new BrowserActionError(
       "browser_action_failed",
       "browser secret target could not receive secure input",
-      { reason: outcome?.reason ?? "secure_fill_failed" },
+      // Do not expose exception text: page code can include the inserted secret.
+      { reason: "secure_fill_failed" },
     );
   }
 }

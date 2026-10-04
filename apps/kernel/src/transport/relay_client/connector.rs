@@ -969,6 +969,9 @@ async fn run_daemon_relay_connector_inner(
                 router
                     .transport_health_store()
                     .record_relay_connected(&relay_url);
+                router
+                    .runtime_state()
+                    .retry_pending_slice_observation_revocations();
                 if static_relay.is_none() {
                     let _ = spawn_pending_managed_slice_activation_confirmation_after_connect(
                         Arc::clone(&router),

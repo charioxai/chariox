@@ -13,8 +13,10 @@ pub(super) fn build_agent_context_handoff_from_history(
     history_store: &OperationalHistoryStore,
     session_id: &str,
     agent_id: &str,
+    protection: &super::super::room_secret_observation::RoomSecretObservations,
 ) -> Result<Option<String>, DaemonError> {
     let events = history_store.load_session_events(session_id, Some(agent_id))?;
+    let events = protection.protect_history_events(events);
     Ok(build_agent_context_handoff(&events))
 }
 
