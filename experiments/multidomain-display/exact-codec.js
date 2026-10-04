@@ -2,7 +2,7 @@
 // Research only: production needs epochs, masks, resync and actual network pacing.
 class ExactFrameEncoder {
   constructor({pack,emit,budget}){this.pack=pack;this.emit=emit;this.budget=budget;this.reset()}
-  reset(){this.previous=null;this.credits=new Map();this.stats={frames:0,full_frames:0,tiles:0,bytes:0,initial_bytes:0}}
+  reset(){this.previous=null;this.credits=new Map();this.stats={frames:0,full_frames:0,tiles:0,bytes:0,initial_bytes:0,max_frame_bytes:0}}
   credit(id){this.credits.get(id)?.();this.credits.delete(id)}
   async encode(meta,bytes){
     const began=performance.now(),bmp=await createImageBitmap(new Blob([bytes],{type:'image/png'}));
@@ -33,7 +33,7 @@ class ExactFrameEncoder {
       sent+=packets[i].length;await new Promise(r=>setTimeout(r,Math.max(0,began+sent*8000/this.budget-performance.now())));
       this.emit(packets[i]);if(!full&&i>=7)await credits[i-7];
     }
-    await Promise.all(credits);this.previous=pixels;this.stats.frames++;this.stats.bytes+=sent;
+    await Promise.all(credits);this.previous=pixels;this.stats.frames++;this.stats.bytes+=sent;this.stats.max_frame_bytes=Math.max(this.stats.max_frame_bytes,sent);
   }
 }
 class ExactFrameDecoder {
