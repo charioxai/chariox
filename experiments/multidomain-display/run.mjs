@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fixture } from './fixtures.mjs';
 import { compare, distribution } from './metrics.mjs';
-import { display, headedBrowser, stopGroup, resources, guard, until, git, pause, requestStop } from './runtime.mjs';
+import { display, headedBrowser, stopGroup, resources, guard, until, git, pause, requestStop, failRun, throwIfFailed } from './runtime.mjs';
 import { dirtyTiles } from './tiles.mjs';
 import { nativeEncoder } from './native-encoder.mjs';
 import { baseline } from './selkies.mjs';
@@ -19,9 +19,9 @@ if(output.startsWith(git('rev-parse','--show-toplevel')+'/'))throw Error('MD-DIS
 await mkdir(output,{recursive:true});
 const result={items:['MD-DISPLAY-01','MD-DISPLAY-02'],start:new Date().toISOString(),source:{commit:git('rev-parse','HEAD'),base:'9334141d420f8a32393f206102c5b8b4a1b0b609',dirty:git('status','--porcelain'),prototype_diff_sha256: null},topology:'headed host Chromium → CDP PNG → browser WebCodecs encoder → loopback plaintext WebSocket → browser decoder; isolated-world DOM → loopback WebSocket → scriptless iframe',scope:'credential-free display research; no production or hosted relay admission proof',runs:[],resource_samples:[],cleanup:{}};
 const {createHash}=await import('node:crypto');result.source.prototype_diff_sha256=createHash('sha256').update(git('diff','HEAD')).digest('hex');
-result.source.prototype_files={};for(const file of ['run.mjs','runtime.mjs','fixtures.mjs','mirror-source.js','metrics.mjs','viewer.html','selkies.mjs','package.json','tiles.mjs','exact-codec.js','native-encoder.mjs','native-encoder.py'])result.source.prototype_files[file]=createHash('sha256').update(await readFile(path.join(here,file))).digest('hex');
+result.source.prototype_files={};for(const file of ['run.mjs','runtime.mjs','fixtures.mjs','mirror-source.js','metrics.mjs','viewer.html','selkies.mjs','package.json','tiles.mjs','exact-codec.js','native-encoder.mjs','native-encoder.py','owned-process.mjs','selkies-packets.mjs'])result.source.prototype_files[file]=createHash('sha256').update(await readFile(path.join(here,file))).digest('hex');
 const servers=[],screens=[],browsers=[],roles=new Map(),events=[],groups=[];let monitor,sampling=false,sourcePage,sourceCDP,world,activeMode,pending=new Map(),received=new Map(),byteCount={},installedBaseline,activeProbe,ingress=new Map(),ingressLatency=new Map(),tileAcks=new Set(),traffic=[],metricSources=new Map(),frameMetrics=[],metricWrites=[],activePage,saveMetric,lastCast,exactWorking=false,exactPainted=new Set();
-const reportError=e=>events.push({kind:'harness-error',message:e.message});
+const reportError=e=>{events.push({kind:'harness-error',message:e.message});failRun(e)};
 for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{requestStop();process.exitCode=130});
 const deadline=setTimeout(()=>{requestStop();process.exitCode=124},15*60*1000);
 const count=(key,n)=>{traffic.push({key,n,at_ms:performance.now()});byteCount[key]=(byteCount[key]||0)+n};
@@ -55,7 +55,7 @@ try{
   result.resource_samples.push(await resources());guard(result.resource_samples.at(-1));
   const server=await listen(handler),other=await listen(handler);otherOrigin=`http://127.0.0.1:${other.address().port}`;const origin=`http://127.0.0.1:${server.address().port}`;
   const wss=new WebSocketServer({server,path:'/socket',maxPayload:4*1024*1024});
-  wss.on('connection',(ws,request)=>{const role=new URL(request.url,origin).searchParams.get('role');roles.set(role,ws);ws.on('message',(data,binary)=>{
+  wss.on('connection',(ws,request)=>{const role=new URL(request.url,origin).searchParams.get('role');roles.set(role,ws);ws.on('error',reportError);ws.on('message',(data,binary)=>{try{
     if(binary){if(role==='encoder'){count('encoded',data.length);send(activeMode==='hybrid'?'dom':'video',data)}return}
     const m=JSON.parse(data);events.push({...m,role,at_ms:performance.now()});
     if(m.kind==='exact-noop'&&role==='encoder')exactPainted.add(m.timestamp);
@@ -65,7 +65,7 @@ try{
     if(m.kind==='probe'){const t=pending.get(m.seq);if(t!==undefined){received.set(m.seq,performance.now()-t);if(ingress.has(m.seq))ingressLatency.set(m.seq,performance.now()-ingress.get(m.seq));pending.delete(m.seq)}}
     if(m.kind==='painted'&&m.mode==='exact')exactPainted.add(m.timestamp);
     if(m.kind==='painted'&&['video','dom'].includes(role)){if(installedBaseline)installedBaseline.ack(m.frame_id);else send('encoder',{kind:'ack',timestamp:m.timestamp})}
-  })});
+  }catch(e){reportError(e)}})});
   let sourceScreen;
   if(process.env.MD_BASELINE!=='1'){sourceScreen=await display();screens.push(sourceScreen);groups.push(sourceScreen.child.pid)}
   const viewerScreen=await display();screens.push(viewerScreen);groups.push(viewerScreen.child.pid);
@@ -79,11 +79,11 @@ try{
   const encoder=await vc.newPage(),video=await vc.newPage(),dom=await vc.newPage();
   for(const p of [encoder,video,dom]){await p.setViewportSize({width:960,height:600});const c=await vc.newCDPSession(p);await c.send('Emulation.setDeviceMetricsOverride',{width:960,height:600,deviceScaleFactor:2,mobile:false})}
   const codec=process.env.MD_MODES==='native'?'avc1.f40033':process.env.MD_CODEC || 'avc1.420033';
-  if(process.env.MD_MODES==='native'){native=nativeEncoder();groups.push(native.child.pid);result.topology='headed host Chromium → CDP PNG → native software libx264rgb (4:4:4 RGB, explicit colour metadata) → loopback WebSocket → browser WebCodecs decoder';}
+  if(process.env.MD_MODES==='native'){native=await nativeEncoder();groups.push(native.child.pid);result.topology='headed host Chromium → CDP PNG → native software libx264rgb (4:4:4 RGB, explicit colour metadata) → loopback WebSocket → browser WebCodecs decoder';}
   await encoder.goto(`${origin}/viewer?role=encoder&codec=${codec}&bitrate=${Number(process.env.MD_BITRATE||8000000)}&rate=${process.env.MD_RATE||'variable'}&keyms=${Number(process.env.MD_KEYMS||2000)}&latency=${process.env.MD_LATENCY||'realtime'}`);await video.goto(`${origin}/viewer?role=video`);await dom.goto(`${origin}/viewer?role=dom`);
   for(const p of [encoder,video,dom])await p.waitForFunction(()=>window.md.ready);
   const probeSupport=await encoder.evaluate(async()=>Promise.all(['avc1.420033','avc1.640033','avc1.f40033','vp09.00.10.08','vp09.01.10.08','av01.0.08M.08','hvc1.1.6.L153.B0'].map(async codec=>({codec,supported:(await VideoEncoder.isConfigSupported({codec,width:1920,height:1200,bitrate:8000000,framerate:30,latencyMode:'realtime',hardwareAcceleration:'prefer-software'})).supported}))));result.codec_support=probeSupport;
-  monitor=setInterval(async()=>{if(sampling)return;sampling=true;try{const r=await resources(groups);guard(r);result.resource_samples.push(r);if(installedBaseline)result.container_samples.push({at_ms:performance.now(),...(await installedBaseline.sample())})}catch(e){reportError(e);process.kill(process.pid,'SIGTERM')}finally{sampling=false}},1000);
+  monitor=setInterval(async()=>{if(sampling)return;sampling=true;try{const r=await resources(groups);guard(r);result.resource_samples.push(r);if(installedBaseline)result.container_samples.push({at_ms:performance.now(),...(await installedBaseline.sample())})}catch(e){reportError(e)}finally{sampling=false}},1000);
   const capture=async()=>Buffer.from((await sourceCDP.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false,clip:{x:0,y:0,width:960,height:600,scale:1}})).data,'base64');
   const domCDP=await vc.newCDPSession(dom);
   const domSnapshot=async()=>Buffer.from((await domCDP.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false})).data,'base64');
@@ -216,21 +216,21 @@ try{
     await sourcePage.goto('https://chromedevtools.github.io/devtools-protocol/tot/Page/',{waitUntil:'domcontentloaded',timeout:30000});await sourcePage.waitForFunction(()=>document.body.innerText.includes('startScreencast'),{},{timeout:15000});await sourcePage.evaluate(()=>document.fonts.ready);await pause(1000);await installMirror();traffic=[];tileAcks.clear();previous=new Map();send('dom',{kind:'reset'});await mirror(true,true);await dom.bringToFront();await pause(700);
     result.public_docs={status:'MEASURED_UNACCEPTED',url:sourcePage.url(),title:await sourcePage.title(),fidelity:await saveComparison('public-docs-dom',await capture(),await domSnapshot()),limitations:'no source input suite; external assets and pseudo-elements may drift'};
   }catch(e){result.public_docs={status:'RED',first_failing_seam:e.message}}
-  result.status=process.exitCode?'RED':'PASS_PROTOTYPE';
+  throwIfFailed();result.status=process.exitCode?'RED':'PASS_PROTOTYPE';
 }catch(e){result.status='RED';result.first_failing_seam=e.message;result.failure_events=events;result.failure_bytes=byteCount;
   if(sourcePage)try{result.failure_source_probe=await sourcePage.locator('#probe').getAttribute('data-seq');await sourcePage.screenshot({path:path.join(output,'failure-source.png'),timeout:5000})}catch{}
   for(const b of browsers)for(const p of b.browser.contexts()[0].pages())if(p.url().includes('/viewer'))try{const role=new URL(p.url()).searchParams.get('role');result[`failure_${role}`]=await p.evaluate(()=>md);await p.screenshot({path:path.join(output,`failure-${role}.png`),timeout:5000})}catch{}
-  console.error(e.message);process.exitCode=1}
+  console.error(e.message);process.exitCode=process.exitCode||1}
 finally{
   clearInterval(monitor);clearTimeout(deadline);
   // Settle an already-running stats call before removing its exact container.
   while(sampling)await pause(20);
-  await native?.close();
+  try{await native?.close()}catch(e){result.cleanup.native_error=e.message;process.exitCode=process.exitCode||1}
   for(const b of browsers.reverse())try{await b.close()}catch(e){result.cleanup.browser_error=e.message;process.exitCode=1}
-  for(const s of screens)await stopGroup(s.child);
+  for(const s of screens)try{await stopGroup(s.child)}catch(e){result.cleanup.display_error=e.message;process.exitCode=process.exitCode||1}
   for(const ws of roles.values())ws.terminate();
   for(const s of servers)await new Promise(r=>s.close(r));
-  const final=await resources(groups);result.resource_samples.push(final);result.cleanup.live_owned_processes=final.processes.filter(p=>p.state!=='Z'&&p.pid!==process.pid);result.cleanup.profiles_removed=true;result.cleanup.harness_pid_exits_with_command=process.pid;result.cleanup.servers_closed=servers.every(s=>!s.listening);
+  const final=await resources(groups);result.resource_samples.push(final);result.cleanup.live_owned_processes=final.processes.filter(p=>p.state!=='Z'&&p.pid!==process.pid);result.cleanup.profiles_removed=!result.cleanup.browser_error;result.cleanup.harness_pid_exits_with_command=process.pid;result.cleanup.servers_closed=servers.every(s=>!s.listening);
   if(result.cleanup.live_owned_processes.length){result.status='RED';process.exitCode=1}
   if(process.exitCode)result.status='RED';
   result.finish=new Date().toISOString();result.exit_code=process.exitCode||0;await writeFile(path.join(output,'results.json'),JSON.stringify(result,null,2));console.log(`MD-DISPLAY-02 evidence ${output} exit=${result.exit_code}`);

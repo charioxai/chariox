@@ -1,19 +1,25 @@
 # Multidomain display transport — MD-DISPLAY-01/02/03/04
 
-Research and component prototypes, 2026-10-04, builder2. **Decision remains with
-the owner.** The recommendation is to build a transport-neutral browser display
-seam and a portable video fallback first, make signed App views native next,
-and admit general DOM mirroring only after drift and secret-safety gates pass.
-These experiments support keeping mirroring as a selective optimization; they
-do not support making it the default for arbitrary pages today.
+Phase 2 research and component prototypes, builder2, 2026-10-04/05. **Static
+fidelity improves; a universal higher-quality replacement at comparable latency
+is not established.** At a stated 2 Mbps PNG egress budget, small-change pages
+converge to exact RGB at 83–96 ms median. Native RGB H.264 reaches 51–72 dB on
+all frozen fixtures at a 2 Mbps VBV target and 80–153 ms median. Selkies remains
+faster on media/dense scrolling. Public scrolling defeats the native RGB
+ultrafast configuration; `veryfast` 8 Mbps only matches SelkiesCBR8 fidelity at
+more than twice the p95 latency. These are measured limits, not acceptance.
 
-The owner plan supplies no numbered MD rows. This lane uses MD-DISPLAY-01
-(options/prior art), MD-DISPLAY-02 (host video/DOM), MD-DISPLAY-03 (installed
-Selkies baseline), and MD-DISPLAY-04 (seam/migration/decisions). These labels
-identify deliverables, not accepted product milestones. The frozen Browser/
-Computer, Path-1 and M20 gates remain unchanged. No managed or MD acceptance
-item is closed here. Production implementation waits for the owner decision
-and coordinator-assigned protocol versions.
+MD-DISPLAY-04 recommendation: attach a transport-neutral frame/input seam to
+kbrowser; deliver portable video with exact idle refresh and RGB dirty regions;
+keep native 4:4:4 as a negotiated software option and DOM as a selective pilot.
+Native signed App views remain valuable. Preserve Room desktop coverage until
+replacement gates pass. **The owner decides the production design.**
+
+The owner plan has no numbered MD rows. Lane labels: MD-DISPLAY-01 options/prior
+art; MD-DISPLAY-02 headed host video/DOM/RGB; MD-DISPLAY-03 installed baseline;
+MD-DISPLAY-04 API/migration/decisions. They do not redefine managed gates.
+No MD, MP, Browser/Computer, Path-1 or M20 acceptance item is closed. No production
+serialized shape changes or protocol allocation; kbrowser owns protocol 417.
 
 ## MD-DISPLAY-01 — What each option buys
 
@@ -69,173 +75,318 @@ transform. Refuse stale epochs instead of guessing after layout drift.
 | [Surfly technology](https://help.surfly.com/en/the-surfly-proxy), [security](https://www.surfly.com/security-and-compliance), [Cobrowse masking](https://docs.cobrowse.io/sdk-features/redact-sensitive-data) | Commercial co-browsing demonstrates interaction rewriting and pre-transmission element/field masking. | A drop-in open-source transport, compatibility without integration, or a safe reason to move cookies to a relay. Their deployed architectures differ from Chariox's encrypted transport-only relay. No service was bought or tested. |
 | [Cloudflare NVR overview](https://blog.cloudflare.com/cloudflare-and-remote-browser-isolation/), [canvas remoting](https://developers.cloudflare.com/cloudflare-one/remote-browser-isolation/canvas-remoting/), [limitations](https://developers.cloudflare.com/cloudflare-one/remote-browser-isolation/known-limitations/) | Drawing-instruction browser isolation is a deployed product; difficult canvas content can still need a separate remoting path. | Universal perfect canvas/DRM fidelity, an available Chariox Chromium fork, or measured cost/latency on these clients. We did not prototype NVR. |
 | [Chromium Paint Preview](https://chromium.googlesource.com/experimental/chromium/src/%2Bshow/refs/heads/lkgr/components/paint_preview/README.md), [player](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/components/paint_preview/player/) | Skia pictures + metadata can record/replay page previews; existing compositor/player code is useful research. | A real-time remote compositing protocol. Previews use capture/compositing/player components; the documented player is principally Android. “Chromium remote compositing” is not an off-the-shelf stable CDP draw-command stream. |
-| [CDP Page](https://chromedevtools.github.io/devtools-protocol/tot/Page/), [#607](https://github.com/charioxai/chariox/pull/607) | CDP exposes screencast, screenshot, frame acknowledgement and isolated-world creation. Frozen source has a controller-owned focus world. | CDP screencast is experimental, not a codec stream or desktop capture. #607 is a focus-integrity seam, not a generic DOM observer/resource broker or secret boundary. The isolated world shares the DOM with page code. |
+| [CDP Page](https://chromedevtools.github.io/devtools-protocol/tot/Page/), [#607](https://github.com/charioxai/chariox/pull/607) | CDP exposes screencast, screenshot, frame acknowledgement and isolated-world creation. Frozen source has a controller-owned focus world. | CDP screencast is experimental, not a codec stream or desktop capture. The referenced #607 page was not retrievable in this run; frozen source focus-world code is the implementation reference, not proof of a DOM resource broker or secret boundary. The isolated world shares the DOM with page code. |
 | [WebCodecs specification](https://www.w3.org/TR/webcodecs/), [Chrome tabCapture](https://developer.chrome.com/docs/extensions/reference/api/tabCapture) | Browser codec configuration/support probing and encode/decode queues; a documented tab media capture API exists. | Mandatory codec/hardware availability, transport, security admission, or automatic background capture permission. Probe supported configurations on both ends. Tab capture has its extension/activation requirements. |
 
-## MD-DISPLAY-02/03 — Reproducible component experiment
+## MD-DISPLAY-02/03 — Phase 2 method and bandwidth fairness
 
-Prototype source, commands and limits are in
-[`experiments/multidomain-display/README.md`](../experiments/multidomain-display/README.md).
-No accounts, provider harnesses, paid services, real Vault values, external
-relay, Apps machine or shared kernel were used. Host source and client Chrome
-are headed and isolated on separate Xvfb displays. Source pixels are DPR2;
-software-preferred WebCodecs encoding is requested at 8 Mbit/s, 30 fps nominal.
-CDP screenshots poll at 10 Hz; screencast is event driven. DOM updates poll at
-50 ms with mutation invalidation; opaque regions also poll. Rate differences
-are recorded, so this is not an equal-framerate codec ranking.
+All comparisons use the same 960×600 CSS / 1920×1200 physical DPR2 fixture
+geometry, source probe, viewer decoder and paired RGB metric. Source/client
+Chrome 154 run headed, sandboxed and outside slices on independent Xvfb displays.
+The installed baseline is Chromium 147 in an owned 2-CPU/3-GiB container. It is
+an installed Selkies component, not a signed F/G2/Room or noVNC validation.
+No production kernel, account, provider, Vault, hosted relay or external Apps
+machine is involved. Application WebSockets are plaintext loopback; production
+must use existing encrypted delivery with kernel admission.
 
-The fixture corpus consists of live browser pages, not static screenshot mocks:
-repo-sourced protocol documentation; a script-driven task SPA with router/data
-mutations; form controls with native JavaScript submission; changing canvas
-plus actual canvas.captureStream video; and an invoice iframe on a different
-origin. Each receives 20 real viewer clicks. DOM also verifies SPA add/route,
-Unicode form fill/submit, password placeholder masking and a cross-origin
-button effect. A public CDP documentation page is a separate network-page
-comparison. It is not treated as a passed general-site input suite.
+Each cell has 20 actual viewer clicks. Latency is harness click submission to
+matching source probe read back after viewer rAF. It includes Playwright/polling
+and excludes physical panel scanout. DOM acknowledges its mirrored probe after
+rAF rather than checking raster pixels. Ingress-only latency, raw samples,
+nearest-rank p50/p95/p99 and histograms are in JSON. With 20 samples, p99 is the
+maximum; shared-builder load and browser differences preclude a production SLO.
+The public scroll experiment has 10 wheels, checks source scroll and the first
+subsequent viewer output; it is a weaker freshness proxy, not a frame-matched
+physical input-to-photon measurement.
 
-A binary black/white marker is located from source element geometry. Single
-colour counters were rejected because codec quantization changed colours;
-fixed pixel coordinates were rejected because scrollbars shift geometry.
-Both early RED runs remain retained. A second harness defect was overlapping
-regional CDP captures: temporary capture-surface changes contaminated full
-frames and later iframe measurement. The corrected path takes one full PNG
-and crops opaque regions locally, then settles the pump before fidelity
-capture. Those earlier runs are not relabelled as valid results.
+Frozen full-frame RGB MSE/PSNR compares source and viewer. `lossless:true` means
+zero RGB error at identical dimensions; null PSNR alone never means exact.
+Intentional redaction/caret/focus differences stay in the metric. PSNR is not a
+text-readability, HDR, colour-management or moving-frame guarantee. A separate
+moving diagnostic pairs timestamped input PNGs with decoded video and introduces
+extra PNG/readback overhead. Source PNG capture-only pairs are exact in the
+measured portable-video fixtures: their loss comes after capture.
 
-### MD-DISPLAY-02/03 — Source identities and final observations
+### MD-DISPLAY-03 — What the baseline actually does
 
-Evidence root (operator-local, never committed):
-`/root/.codex/evidence/browser-resume-20260930/display/`.
-Open `report/index.html` for an opacity overlay and error images; `report/summary.json`
-binds every row to a SHA-256 of its source receipt. Raw histograms and frame pairs
-are in each campaign directory. All three core campaigns exited 0 with no live
-owned browser/Xvfb groups, removed profiles and closed servers.
+The unchanged installed parser selects **software x264, CRF25, paint-over
+CRF18 enabled, fullcolour false, nominal 8 Mbps and 30 fps**. The 8 Mbps value
+is not a bandwidth cap in CRF mode. The harness records only allowlisted,
+non-secret installed parser settings and packet counts; it never reads private
+live configuration. Baseline CBR ladder explicitly selects 0.5/1/2/4/8 Mbps,
+turns paint-over off and records resolved initial values. Default CRF remains a
+separate point, not a fictional 8 Mbps CBR point.
 
-| Campaign | Exact clean source commit | Core result | Minimum available / free GiB |
-| --- | --- | --- | --- |
-| `review-h264` | `e183160b6a9851117228cd4eda943fef7d75dcb3` | 15 cases × 20 = 300 inputs | 41.4 / 219.0 |
-| `review-vp9` | `7f5cb0a1143ffd35134a720dd05ce3f854082308` | 5 cases × 20 = 100 inputs | 45.5 / 223.4 |
-| `review-selkies` | `7f5cb0a1143ffd35134a720dd05ce3f854082308` | 5 cases × 20 = 100 inputs | 45.3 / 223.4 |
+Portable WebCodecs High H.264 / VP9 / AV1 select constant bitrate, realtime,
+software preference, DPR2 PNG capture and a 2-second timestamp-based keyframe
+policy. Actual browser rate control remains an implementation result. Native
+RGB x264 uses CRF18 plus target-rate VBV with a 2-second buffer, not CBR. Exact
+PNG is paced at the selected application egress rate, with bounded credits and
+atomic tile batches. None of these configured targets can substitute for
+measured traffic. Curves expose configured **and** observed rates separately.
 
-These are runs of the eight execution files whose hashes appear in each receipt.
-They match the final execution files byte for byte. The H.264 run predates the
-report-only commit; it is attributed to its actual commit, not relabelled. Final
-documentation changes do not change those files. Host Chrome is
-`154.0.8037.97`; baseline container Chromium is `147.0.7727.137`, so comparisons
-also include browser/build and encoder differences. Linux x86_64, Node 22.22.1,
-Docker 29.1.3; source and viewer run on independent X displays.
+Byte rates include video packet payload or complete DOM/video/patch messages as
+labelled, but exclude source-local CDP/base64, Python IPC, encryption/TLS, WS
+headers and relay fragmentation. Fixture rates include bootstrap and settled
+measurement over the reported interval. One-second maxima expose bursts.
+Public latest receipts separate bootstrap bytes from bytes after bootstrap;
+older public totals include bootstrap while their duration excludes it and
+must not be called a steady-state bitrate. Different content cadence and a
+short VBV experiment can exceed target averages; production needs a real shared
+egress scheduler with a specified burst allowance, not just encoder hints.
 
-| Live page / method | Click→visual p50 / p95 ms | Ingress→visual p95 ms | RGB PSNR dB | Application KiB/s | Host CPU % / peak RSS MiB |
+### MD-DISPLAY-02 — Higher fidelity configurations
+
+The initial High H.264, VP9 and AV1 WebCodecs ladders still trail Selkies on
+text, even at 8 Mbps. Chrome's encoder rejects AVC High 4:4:4 / VP9 profile1;
+its **decoder supports both** here. HEVC encode/decode probing is unsupported
+in this Chrome build. Support probes are separate from actual decoded-frame
+proof. Browser build and negotiated client capabilities determine availability.
+
+A native PyAV16.0.1 / Pillow11.3.0 `libx264rgb` probe avoids chroma subsampling:
+RGB24, five threads, ultrafast, zerolatency, CRF18, repeat headers, keyint60,
+scene-cut off, target VBV and 2-second buffer. Full-range GBR/sRGB encoder VUI
+and decoder colour metadata are explicit. A single frame decoded without the
+correct colour metadata turned white pink (15.9 dB); that result is retained.
+A corrected unconstrained one-frame colour probe reaches 56.4 dB but is **not**
+a latency/bandwidth result. Live ladder results below include capture, software
+encoding, WebSocket, browser decode and input acknowledgement. Native Python
+base64 IPC is an experimental adapter, not the proposed shipping dependency.
+
+Exact RGB is a complementary mode: browser-native image decode/readback,
+Uint32 dirty comparison, 128-pixel PNG tiles and at most eight in-flight credits.
+It chooses one full original PNG when smaller, applies tile batches atomically,
+and suppresses unchanged frames. Full snapshots are paced too. A final settled
+refresh establishes convergence; moving-content freshness is not established
+by that exact frozen pair. Source-difference dirty updates are distinct from
+repairing errors across an entire lossy video frame.
+
+Every portable-video ladder cell also tests an explicit settled repair after
+stream stop/flush: compare decoded RGB with source, pace PNG correction tiles,
+then verify zero RGB error. A real source click followed by source-difference
+tiles also verifies exact pixels. These 150 settled/dirty image checks across 75 cells pass; this is
+**not** an automatic idle scheduler or production epoch fencing. Production
+must prevent a later video frame from overwriting corrected pixels.
+
+### MD-DISPLAY-02 — Selective structure and hybrid
+
+DOM-only docs/SPA remain the strong selective case: exact docs and 85.6 dB SPA,
+74.5/81.4 ms median,95.5/95.2 ms p95 in `phase2-dom-switch`. Every source action
+runs on the original browser. One switch per page costs 323/298 ms to first
+video,19/42 ms for full DOM restoration with every patch rAF acknowledged;
+restored frame fidelity is recorded. This is a one-shot loopback measurement,
+not a robust switching policy or generic-site result.
+
+Hybrid encodes the **full page**, crops decoded opaque regions and re-encodes
+those regions as PNG images in a scriptless DOM viewer. It demonstrates
+composition/input but saves no regional video bandwidth. Media/iframe frozen
+PSNR 50.9/43.0 dB, median 632/127 ms, p95 932/144 ms; owned CPU 642/153% of one
+core. DOM→video227/229 ms, reverse200/190 ms; restored settled patches96.8 dB.
+All 20 clicks and the cross-origin source button pass. Count **both** DOM and
+video egress; encoded-only rates undercount this method. An attempted direct
+canvas patch presentation showed blank opaque regions despite passing inputs;
+`phase2-hybrid-final` is MEASURED_UNACCEPTED (17.7/12.9 dB). Restoring the
+validated image path fixes the first presentation seam; no general canvas
+lifecycle diagnosis or optimized regional encoder is claimed.
+
+### MD-DISPLAY-02/03 — Evidence provenance and retained RED results
+
+Evidence stays under `/root/.codex/evidence/browser-resume-20260930/display/`.
+`phase2-review/report/index.html` provides configured/observed curves, raw
+per-cell rows, source/viewer opacity overlays and amplified diffs.
+`summary.json` binds rows to exact receipt SHA-256. `PHASE2_MANIFEST.json`
+will consolidate commands, exits, source identities, resources and cleanup. No source
+identity is reassigned to the handoff commit.
+
+- Core codec/default-baseline matrix: clean `0a92ef8d9`,105 cells/2,100 clicks,
+  75 portable-video cells plus 30 baseline cells. SelkiesCBR2 form is RED at a
+  measurement-stage decoder queue bound; campaign exit1. The synchronous PNG
+  comparison left producers running and accumulated frames. Stop/settle before
+  comparison corrects this harness seam. Clean `6a116581b` rerun passes all five
+  CBR2 cases; raw failed cells stay visible rather than overwritten.
+- Native PNG ladder: clean `6a116581b`, five rates×five pages, all 20 inputs/cell,
+  exit 0 and exact settled pairs. Latest all-page 2 Mbps confirmation is clean
+  `ea08ec18b`; public 8 Mbps and DOM switch are clean `c7c60a426`.
+- Hybrid image composition: clean `d211d4e7b`. Earlier blank-canvas hybrid and
+  public window-only scroll timeout at `6a116581b` stay unaccepted. The public
+  site scrolls inner containers; checking source total scroll fixes the test.
+- First Phase 2 curve campaign was cooperatively interrupted to bind clean source
+  identities; it is diagnostic (parent 130/child 1), not a completed ladder.
+- Native RGB H.264 ladder: clean `18ff62cdc`, 25 cells/480 successful probes;
+  0.5 Mbps docs RED (zero probes), other four campaigns exit 0. Preset4/8 Mbps
+  diagnostics are clean `0fdeae013`. Pixel-quality failures remain unaccepted
+  even when probe counts and process exit pass. Full identities are in manifest.
+
+Post-review source changes add guarded process ownership and awaited launch,
+stream-callback and campaign failure paths. **Historical Phase 1/2 measurements
+do not validate these changed files.** In particular `run.mjs`, `selkies.mjs`
+and `viewer.html` differ from Phase 1's measured blobs. There is no claim that
+all final files match those historical hashes. New lifecycle checks and focused
+post-review live receipts will be listed separately, with their exact hashes;
+the full historical ladder is not being relabelled as a rerun.
+
+Phase 1 evidence remains historical: H.264 300 inputs at clean `e183160b6`,
+VP9/Selkies 100 each at clean `7f5cb0a11`; default Selkies 47–54 dB versus initial
+portable H.264 35–44/VP9 36–45 dB. Phase 1 public DOM 33.01 dB remains
+MEASURED_UNACCEPTED; public VP9 navigation failed ERR_NETWORK_CHANGED. Phase 2
+updates those conclusions rather than relabelling those images or hashes.
+
+Installed baseline tag `chariox-local-headed:f1c402b82aa0053bb69f0f8fffe04b06e02a5c73`;
+immutable image `sha256:e76b80392f3368efaceed6e6636cc4d736fe57c25be0206ca4cf8f132a168f64`;
+embedded source digest `5d65f6e6b40902c31995b1806b04b7d7a83edce6567933fc629987d489f3335e`
+(64-hex digest, not a Git commit), embedded relay 68, Selkies source
+`3f87241fcd6abc44e205b22f6596e78ef4946670`. Harness frozen G2 base is 411/70.
+Image/browser differences stay explicit; no signed aggregate acceptance.
+
+## MD-DISPLAY-02/03 — Fidelity versus observed bitrate
+
+Each cell below is **RGB PSNR dB / observed application Mbps**, with target
+columns 0.5/1/2/4/8 Mbps. Observed rate includes the fixture bootstrap and test
+interval. The interactive report contains curves and all five pages, latency
+histograms, bursts, CPU, screenshots/diffs, source identities and rejected cells.
+CBR2 baseline cells below use the corrected rerun; the original RED form receipt
+remains in the report. `exact` denotes zero RGB error at frozen convergence,
+not continuously exact moving frames. This is a rate/quality tradeoff; identical
+targets are not identical measured bandwidth.
+
+### MD-DISPLAY-02/03 — docs curve
+
+| Method | 0.5 Mbps | 1 Mbps | 2 Mbps | 4 Mbps | 8 Mbps |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| docs / H.264 screencast | 97.6 / 117.8 | 88.3 | 35.4 | 33.4 | 115 / 3799 |
-| docs / H.264 screenshot 10 Hz | 164.8 / 224.5 | 194.4 | 34.9 | 53.0 | 168 / 4105 |
-| docs / DOM + PNG patches | 80.0 / 95.0 | 57.7 | exact | 11.1 | 79 / 3930 |
-| spa / H.264 screencast | 91.4 / 101.9 | 81.1 | 41.3 | 11.1 | 105 / 4058 |
-| spa / H.264 screenshot 10 Hz | 141.0 / 166.4 | 132.6 | 41.7 | 30.5 | 144 / 4019 |
-| spa / DOM + PNG patches | 82.9 / 95.9 | 62.8 | 85.6 | 23.6 | 72 / 3806 |
-| form / H.264 screencast | 83.1 / 91.0 | 73.0 | 42.1 | 10.4 | 96 / 4033 |
-| form / H.264 screenshot 10 Hz | 142.2 / 158.2 | 149.4 | 42.5 | 26.3 | 144 / 4015 |
-| form / DOM + PNG patches | 73.5 / 94.7 | 59.1 | 37.2 | 15.4 | 71 / 3888 |
-| media / H.264 screencast | 173.6 / 197.5 | 134.2 | 44.0 | 120.4 | 532 / 4090 |
-| media / H.264 screenshot 10 Hz | 145.1 / 242.6 | 221.1 | 44.0 | 26.8 | 156 / 4085 |
-| media / DOM + PNG patches | 330.1 / 546.6 | 356.6 | 96.8 | 175.2 | 174 / 3869 |
-| iframe / H.264 screencast | 94.6 / 120.4 | 98.6 | 41.3 | 11.9 | 115 / 4032 |
-| iframe / H.264 screenshot 10 Hz | 145.8 / 192.4 | 173.7 | 41.7 | 32.6 | 148 / 4079 |
-| iframe / DOM + PNG patches | 398.2 / 973.8 | 371.4 | 96.8 | 231.4 | 171 / 3891 |
-| docs / VP9 screencast | 94.8 / 107.3 | 91.2 | 36.0 | 48.0 | 122 / 3871 |
-| spa / VP9 screencast | 81.7 / 92.2 | 72.9 | 42.0 | 15.5 | 114 / 4113 |
-| form / VP9 screencast | 80.8 / 90.2 | 72.5 | 42.8 | 13.0 | 106 / 4180 |
-| media / VP9 screencast | 185.0 / 266.3 | 170.0 | 44.7 | 150.3 | 531 / 4128 |
-| iframe / VP9 screencast | 85.2 / 91.8 | 74.5 | 42.0 | 17.5 | 119 / 4130 |
-| docs / installed Selkies H.264 | 73.0 / 111.6 | 61.2 | 48.3 | 55.9 | 112 / 2489 |
-| spa / installed Selkies H.264 | 82.0 / 93.9 | 58.0 | 53.7 | 18.8 | 98 / 2460 |
-| form / installed Selkies H.264 | 70.1 / 95.7 | 53.3 | 53.6 | 16.9 | 100 / 2457 |
-| media / installed Selkies H.264 | 80.7 / 98.1 | 61.0 | 47.2 | 30.9 | 93 / 2378 |
-| iframe / installed Selkies H.264 | 74.4 / 93.4 | 56.4 | 52.0 | 22.0 | 95 / 2377 |
+| Selkies CBR | 14.13 / 0.051 | 35.20 / 0.391 | 46.17 / 0.577 | 49.98 / 1.057 | 50.16 / 1.085 |
+| WebCodecs High H.264 | 30.63 / 0.262 | 31.97 / 0.304 | 31.97 / 0.404 | 32.63 / 0.540 | 34.70 / 0.660 |
+| WebCodecs VP9 | 27.76 / 0.208 | 27.76 / 0.247 | 31.77 / 0.359 | 34.16 / 0.577 | 35.53 / 0.627 |
+| WebCodecs AV1 | 28.30 / 0.255 | 28.30 / 0.277 | 28.62 / 0.342 | 31.81 / 0.563 | 34.19 / 0.627 |
+| Native RGB H.264 ultrafast | 16.74 / 0.121 RED | 35.20 / 0.447 | 51.06 / 0.917 | 60.20 / 1.299 | 60.17 / 1.107 |
+| Paced exact PNG | exact / 0.282 | exact / 0.386 | exact / 0.499 | exact / 0.530 | exact / 0.537 |
 
-Host CPU counts source/client Chrome, Xvfb and the Node harness; 100% is one
-core. It includes the prototype browser encoder and source screenshot work.
-RSS sums processes and can double-count shared pages. Selkies container cost
-is separate: sampled CPU 21.6–62.5% of one core; peak reported usage
-`440.2MiB / 3GiB`. Neither per-case GPU use nor hardware acceleration was
-measured; all H.264/VP9/AV1 configurations passed capability probing, only
-H.264 and VP9 received full campaigns.
+### MD-DISPLAY-02/03 — media curve
 
-Installed baseline identity (do not infer a release from its tag):
+| Method | 0.5 Mbps | 1 Mbps | 2 Mbps | 4 Mbps | 8 Mbps |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Selkies CBR | 13.21 / 0.042 | 42.79 / 0.310 | 47.19 / 0.425 | 47.45 / 0.489 | 47.47 / 0.572 |
+| WebCodecs High H.264 | 43.35 / 0.423 | 42.46 / 0.425 | 41.95 / 0.414 | 43.70 / 0.431 | 43.99 / 0.436 |
+| WebCodecs VP9 | 44.53 / 0.725 | 44.54 / 0.852 | 44.58 / 0.790 | 43.55 / 0.759 | 43.62 / 0.752 |
+| WebCodecs AV1 | 44.22 / 0.322 | 44.11 / 0.347 | 44.08 / 0.321 | 44.10 / 0.314 | 44.39 / 0.294 |
+| Native RGB H.264 ultrafast | 8.85 / 0.741 poor image | 61.52 / 1.498 | 71.60 / 1.541 | 71.84 / 1.586 | 71.56 / 1.514 |
+| Paced exact PNG | exact / 0.463 | exact / 0.834 | exact / 1.410 | exact / 1.999 | exact / 1.958 |
 
-- Tag: `chariox-local-headed:f1c402b82aa0053bb69f0f8fffe04b06e02a5c73`.
-- Immutable image: `sha256:e76b80392f3368efaceed6e6636cc4d736fe57c25be0206ca4cf8f132a168f64`.
-- Embedded runtime source digest: `5d65f6e6b40902c31995b1806b04b7d7a83edce6567933fc629987d489f3335e`;
-  this 64-hex value is not a Git commit. Embedded relay version is **68**,
-  distinct from the frozen G2 harness base (411/70) and coordinator release identities.
-- Selkies source: `3f87241fcd6abc44e205b22f6596e78ef4946670`.
-- Installed `slice-selkies.py` SHA-256: `1983bb29a1e43662d7097c6119ae81d81ebacfc82cc59db546a8e8e372a5c174`.
-- Baseline decoder: `avc1.42C032`; host video codec is
-  `avc1.420033` or `vp09.00.10.08`. Baseline is not a same-codec/same-bitrate
-  controlled comparison, signed F/G2 validation, or a noVNC result.
+The native 0.5 Mbps docs cell has zero successful probes and exits 1 at the first
+visual acknowledgement; its 16.7 dB frame is not a passed point. Media 8.9 dB at
+that target is visibly broken although 20 probe inputs passed. `PASS_PROTOTYPE`
+in old/raw harness receipts means input count and comparable dimensions,
+**not** fidelity or production acceptance. The native short-run media1 Mbps
+average exceeds target (1.50 Mbps); the 2-second VBV target is not a hard egress
+cap. Prototype pacing is required before a production bandwidth promise.
 
-The source-DOM docs fixture matched exact pixels; SPA and pixel-patch fixtures
-were close in frozen frames. The form comparison includes deliberate password
-redaction and focus/caret differences. On the **actual network CDP docs page**,
-the H.264 campaign's supplemental DOM pair measured **33.01 dB**,
-with **1.67%** pixels changed. The retained error image exposes missing
-shadow/icon/pseudo-element details and glyph differences. It has no source input
-suite and remains `MEASURED_UNACCEPTED`. The VP9 campaign supplemental public
-navigation was **RED** at `page.goto`, `net::ERR_NETWORK_CHANGED`; it has no
-comparable public pair. This does not erase that campaign’s five measured core
-cases, nor establish the public page passed. There was no network fault diagnosis.
+### MD-DISPLAY-02/03 — Static and moving cost at a stated 2 Mbps target
 
-DOM patches cost more than encoded video in the measured media/iframe cases
-and have substantially higher click tails. The current PNG cropping, encoding
-and repeated full capture are intentionally simple; this is evidence against
-shipping **this patch implementation**, not proof that regional encoded video
-cannot improve it. Static DOM gains do not extend to arbitrary web content.
-Selkies remained competitive; replacing it is motivated by portable native
-browser reach and selectable/semantic UI, not a measured universal quality win.
+The default CRF baseline is uncapped; the portable modes have the stated 2 Mbps
+budget/target. CPU aggregates owned host processes; baseline container cost is
+separate. Exact/native columns use clean `ea08ec18b` / `18ff62cdc` respectively.
 
-Retained RED campaigns are diagnostic evidence, not accepted measurements:
+| Page / method | RGB PSNR dB | Observed Mbps | Click p50 / p95 ms | Owned host CPU % of one core |
+| --- | ---: | ---: | ---: | ---: |
+| docs / Selkies default | 48.30 | 0.482 | 69.23 / 90.56 | 95 |
+| docs / Selkies CBR2 | 46.17 | 0.577 | 70.31 / 74.72 | 89 |
+| docs / Native RGB H.2642 | 51.06 | 0.917 | 95.24 / 125.57 | 115 |
+| docs / Exact PNG2 | exact | 0.499 | 96.25 / 115.81 | 108 |
+| spa / Selkies default | 53.68 | 0.165 | 69.53 / 71.06 | 87 |
+| spa / Selkies CBR2 | 51.46 | 0.321 | 74.41 / 95.24 | 101 |
+| spa / Native RGB H.2642 | 65.25 | 0.352 | 80.72 / 85.82 | 110 |
+| spa / Exact PNG2 | exact | 0.226 | 85.62 / 98.29 | 104 |
+| form / Selkies default | 53.55 | 0.138 | 82.31 / 94.91 | 79 |
+| form / Selkies CBR2 | 50.39 | 0.244 | 81.28 / 96.14 | 98 |
+| form / Native RGB H.2642 | 66.71 | 0.296 | 81.46 / 87.23 | 107 |
+| form / Exact PNG2 | exact | 0.206 | 83.21 / 90.59 | 98 |
+| media / Selkies default | 47.23 | 0.253 | 71.50 / 90.02 | 87 |
+| media / Selkies CBR2 | 47.19 | 0.425 | 80.54 / 95.45 | 94 |
+| media / Native RGB H.2642 | 71.60 | 1.541 | 152.73 / 178.07 | 418 |
+| media / Exact PNG2 | exact | 1.410 | 231.23 / 312.37 | 331 |
+| iframe / Selkies default | 52.02 | 0.188 | 70.68 / 71.57 | 82 |
+| iframe / Selkies CBR2 | 51.93 | 0.358 | 71.22 / 103.12 | 100 |
+| iframe / Native RGB H.2642 | 65.51 | 0.398 | 82.45 / 95.99 | 116 |
+| iframe / Exact PNG2 | exact | 0.226 | 87.95 / 99.69 | 113 |
 
-- `host-sandbox-attempt`, `host-probe-calibration`, `host-bit-marker`:
-  quantized colour or stale fixed marker geometry was the first measurement seam.
-- `host-calibrated-h264`, `host-h264-v2`: DOM physical-size/capture overlap
-  defects; `capture-region-correction` records the later full-capture/local-crop fix.
-- `final-a7-h264`/`final-a7-vp9`: core cases passed but supplemental public
-  navigation waited for an absent `h1`; corrected to actual protocol text.
-- `final-selkies`: decoder queue overflow because the harness acknowledged
-  ingress rather than presentation. `final-selkies-presentation` cleared the
-  five input cases but exited **130**: an in-flight stats sample raced container
-  removal. Its top-level PASS label does not override that failing exit code.
-  The final campaign acknowledges viewer presentation and settles sampling
-  before cleanup. No upstream Selkies fix is claimed.
+**Best demonstrated exact-text configuration:** DPR2, 2 Mbps paced RGB PNG,
+128px dirty tiles/full-PNG size choice, at most 8 in-flight credits, atomic frame
+presentation and unchanged-frame suppression. Small-change docs/SPA/form/iframe
+have 83–96 ms median, 91–116 ms p95, 0.21–0.50 Mbps actual and 98–113% owned CPU.
+This beats default Selkies on static RGB fidelity at a stated budget. Static
+latency remains in the same 100 ms range, with 20–40 ms p95 penalties against
+the faster default baseline and some comparable CBR2 cells. The owner has not
+set a tolerance that would classify this as accepted latency parity. It is
+not suitable as the only general display mode: media p95 312 ms versus default
+baseline 90 ms and public scroll p95 1572 ms. Initial bootstrap
+and dense whole-frame changes cost hundreds of KiB.
 
+**Best demonstrated video text option:** native RGB 4:4:4 software x264 at 4 Mbps
+VBV, CRF18/ultrafast, explicit GBR/full-range sRGB; frozen docs 60.2 dB at 1.30
+Mbps observed and 118 ms p95 versus Phase 2 default 48.3 dB at 0.482 Mbps/91 ms.
+It spends
+more bandwidth for sharper pixels. At 2 Mbps it improves all five frozen fixture
+PSNRs, but media latency 178 ms p95 still trails default baseline 90 ms. The `veryfast` 4
+Mbps docs point 49.8 dB at 0.499 Mbps/p95 130 ms is closer in **actual** bandwidth
+to Phase 2 default 48.3 dB at 0.482 Mbps/p95 91 ms; it is a scoped fidelity gain
+with about 40 ms extra p95, not a
+universal win. CPU 124.8% versus default host 94.6% plus container cost.
 
-Latency is a visual-completion proxy on one monotonic harness clock: viewer
-click submission to matching source marker visible/read back after viewer
-requestAnimationFrame. Video reads the decoded canvas pixels; DOM reads the
-source marker’s mirrored `data-seq` after rAF, so its ack is a DOM/render-cycle
-proxy rather than a measured raster presentation timestamp. Both include
-automation scheduling and exclude physical panel scanout. JSON additionally reports input arrival at the harness
-to the visual ack, excluding client uplink. Twenty samples per cell establish
-only a bounded component experiment; p99 is essentially the sample maximum.
-There is no WAN, induced loss/jitter or true physical input-to-photon result.
+High H.2642 Mbps settled video repair costs 87–326 KiB and 699–1772 ms across
+fixtures; a source-difference update costs 0.8–4.0 KiB and 23–37 ms. The static
+PNG bootstrap (~97–250 KiB in fixtures) can be smaller than an all-tile repair;
+production should compare encodings before sending a correction. Actual bytes,
+frames/full-frame choices, initial bytes and maximum frame sizes stay in JSON.
+Encoder refresh policy alone does not solve stale patch/video composition.
 
-PSNR is RGB error over paired frozen full frames. Exact pixels are explicitly
-`lossless: true`; incompatible dimensions cannot pass. Raw metrics include
-intentional password placeholder changes, focus rings and caret differences.
-They do not measure text readability, HDR or perceptual quality by themselves.
-Byte rates count application messages, including prototype metadata where
-specified, and exclude CDP base64, encryption, relay fragments, TLS and WS wire
-headers. Source PNG transport is local prototype overhead, not proposed WAN
-traffic. Idle/application changes and media cadence matter more than a single
-global bytes/s number.
+### MD-DISPLAY-02/03 — Public dense scrolling boundary
 
-The installed baseline uses its existing private Selkies lifecycle/read-only
-stream adapter, no edits to upstream capture/encoder code, and the same browser
-decoder. Its Xvfb/Chromium run in a disposable labelled container, with 2 CPUs,
-3 GiB/no extra swap and 512 PIDs. It uses credential-free unsandboxed Chromium
-under Docker's default policy. Host Chromium uses its normal non-root sandbox.
-This distinction is recorded; neither proves production sandbox acceptance.
-No Room, kernel, encrypted hosted relay or signed aggregate is being validated.
+Actual public DevTools documentation, 10 wheel inputs, same DPR2. Modern rows
+count bytes **after bootstrap** over scroll plus settling/final-capture time;
+bootstrap bytes remain separate. All are MEASURED_UNACCEPTED, with the weaker
+first-output latency proxy described above. Final frozen image quality is not
+moving-frame freshness or a general-site acceptance.
+
+| Mode / target | Frozen RGB PSNR | After-bootstrap Mbps | Wheel p50 / p95 ms | Bootstrap KiB |
+| --- | ---: | ---: | ---: | ---: |
+| Exact PNG8 | exact | 5.321 | 456.28 / 485.25 | 290.3 |
+| Selkies CBR2 | 23.81 | 1.103 | 59.38 / 86.40 | 9.5 |
+| Selkies CBR4 | 31.93 | 2.484 | 59.76 / 95.77 | 24.0 |
+| Selkies CBR8 | 37.45 | 5.430 | 59.96 / 75.48 | 58.2 |
+| Native RGB ultrafast2 | 16.22 | 1.360 | 99.44 / 135.25 | 283.3 |
+| Native RGB ultrafast4 | 17.75 | 2.986 | 112.16 / 152.96 | 507.2 |
+| Native RGB ultrafast8 | 20.98 | 7.322 | 102.82 / 146.28 | 658.2 |
+| Native RGB veryfast4 | 20.12 | 3.596 | 117.85 / 141.83 | 306.8 |
+| Native RGB veryfast8 | 37.41 | 6.426 | 140.01 / 166.04 | 332.0 |
+
+Exact PNG8 is still slow (485 ms p95); 11 full images, maximum 356.5 KiB/frame,
+show why tile reuse cannot help much when most text moves. Exact PNG2 is 1572
+ms p95 (older receipt totals include bootstrap; no steady rate inferred).
+Native ultrafast scrolling shows visibly bad prediction/colour artifacts even
+at 8 Mbps. Independent PyAV decoding of the saved 8 Mbps trace reproduces poor
+public fidelity (19.2 dB): the first failing seam is the generated encoded
+stream, not the viewer WebSocket/browser decoder. Internal codec cause is
+unresolved; changing preset improves 8 Mbps to 37.4 dB but still fails the owner's
+higher-quality/comparable-latency goal. Never use these points to justify a
+production default. Default uncapped Selkies public pair is 40.2 dB/p95 64.8 ms,
+but its older bytes include bootstrap and cannot be plotted as steady bitrate.
+
+Separate moving diagnostics: High H.2648 Mbps three paired frames 42.66–42.80 dB;
+native RGB2 Mbps one paired frame 63.17 dB. Diagnostic readback adds cost and
+three captured candidates did not all yield paired native frames, so it is not
+a three-frame native sample or a motion-quality distribution.
+
+### MD-DISPLAY-02/03 — Resource and cross-OS limits
+
+Selected Phase 2 receipts sample at least 22.03 GiB MemAvailable and 211.15 GiB
+free disk, above16/10 GiB floors. Native software worker uses five encoder
+threads. Owned host CPU includes source/viewer Chrome, Xvfb, Node and native
+worker (12–21 ms typical per-frame PNG decode+native encode on simple pages).
+Exact2 Mbps host CPU 98–113% static/331% media; native2 Mbps 107–116%
+static/418% media. Evidence CPU/readback can add cost; RSS sums processes and
+can double-count shared pages. No GPU utilization, hardware encoding, macOS or
+Windows measurements were made. Baseline container samples remain separate;
+no claim that host-only baseline CPU is its entire cost. Software-encoder build
+and allocation differ from native OS hardware paths.
 
 ## MD-DISPLAY-01/04 — Security boundary
 
@@ -264,109 +415,150 @@ secret rendered by page JavaScript. Switching transport never replaces Vault
 masking or viewing authorization. Native App UI must obey the same masking,
 bridge identity and critical approval policy for each viewer.
 
-## MD-DISPLAY-04 — Recommended seam for the kbrowser lane
+## MD-DISPLAY-04 — Concrete internal seam proposal (Phase 2)
 
-Attach display below clients, to an existing kernel-owned browser/controller
-handle; placement on the host or inside a Room slice is an adapter choice.
-Keep browser lifecycle, profile, tab registry, canonical viewport, input
-serialization, user focus and RuntimeInteractions unchanged. The seam should
-separate **frame/content acquisition**, **projection/encoding**, and **admitted
-encrypted delivery**. Provider adapters do not know which transport is chosen.
+This is an internal API sketch for the kbrowser lane's protocol-417 browser
+handle, not a serialized protocol definition or allocation. kbrowser owns
+Chromium launch, sandbox/profile, CDP connection, tabs, source viewport and
+existing controller actions. A display service borrows that handle. A slice
+adapter can provide the same handle later without a client-specific authority.
 
-```mermaid
-flowchart LR
-  B[Kernel-owned Chromium and controller] --> S[Kernel display projection]
-  S --> V[Page video frame adapter]
-  S --> D[Sanitized DOM and authorized patches]
-  A[Kernel App runtime and signed UI assets] --> S
-  V --> E[Existing encrypted display channel]
-  D --> E
-  S --> T[TUI text and state projection]
-  E --> R[Relay: opaque packet routing]
-  R --> C[Admitted web or native client]
-  C --> I[Kernel input admission and action ledger]
-  I --> B
+```ts
+interface BrowserDisplaySource {
+  describe(tab: TabId): Promise<SourceGeometry>;
+  frames(tab: TabId, request: CaptureRequest, signal: AbortSignal):
+    AsyncIterable<CapturedFrame>;
+  snapshot(tab: TabId, epoch: DocumentEpoch): Promise<SanitizedProjection>;
+  // This delegates to the EXISTING kernel admission/action service.
+  dispatch(actor: AdmittedActor, input: ExistingBrowserAction): Promise<ActionReceipt>;
+}
+interface SourceGeometry {
+  browser: BrowserId; tab: TabId;
+  documentEpoch: bigint; viewportEpoch: bigint;
+  cssWidth: number; cssHeight: number; pixelWidth: number; pixelHeight: number;
+  deviceScaleFactor: number; colour: 'srgb'; scope: 'tab';
+}
+interface CapturedFrame {
+  geometry: SourceGeometry; sourceRevision: bigint; capturedMonotonicUs: bigint;
+  pixels: OwnedRgbaBuffer | OwnedPngBuffer; release(): void;
+}
+interface DisplayProjector {
+  open(source: BrowserDisplaySource, viewer: AdmittedViewer,
+       capabilities: DecoderCapabilities, budget: DisplayBudget,
+       signal: AbortSignal): AsyncIterable<DisplayUpdate>;
+  acknowledge(stream: StreamId, revision: bigint): void;
+  requestResync(stream: StreamId): void;
+}
 ```
 
-The kbrowser handoff needs a transport-neutral internal browser handle exposing
-stable browser/tab identity, CDP ownership, lifecycle/cancel, canonical viewport
-and document/viewport epoch. A video frame source returns pixels/encoded data
-with dimensions, DPR, colour space, capture time and generation; a structure
-source returns a snapshot/delta and authorized opaque regions for the same
-epoch. Projection negotiation is between kernel and admitted viewer, including
-codec capabilities, scope, masking policy and fallback state. A display-only
-viewer receives no direct input authority.
+`CapturedFrame` is pre-transport and process-local. `Owned*Buffer` has an explicit
+lifetime; the projector keeps at most one pending source image and a bounded
+encoder queue. Acquiring frames must not expose a second independently-owned
+CDP connection or launch another browser. Scope is explicitly tab-only: the
+source cannot stand in for Computer's full desktop or native file dialogs.
+Capture times must be translated to one kernel monotonic clock; they are not
+assumed comparable across kernels or client machines.
 
-The existing implementation has useful encrypted framing in
-`apps/kernel/src/transport/secure_display.rs` and
-`packages/kernel-client/src/display-stream.ts`: authenticated peer/direction,
-sequence, fresh stream ID, bounded fragments and messages. Input and permissions
-remain elsewhere in kernel services. Current producers/capability checks are
-Selkies-specific (`selkies_stream.rs`, `slice/display.rs`, Room display endpoint
-and client backend validation). Do not label a new DOM/video adapter `selkies`
-to bypass those checks. Extract the common admitted transport responsibilities;
-add reviewed adapter capabilities through a coordinator-assigned version,
-protocol snapshot/minimums and focused boundary/rejection drill. This lane
-changes none of those serialized contracts.
+A proposed `DisplayUpdate` has a **common envelope**: stream ID, document and
+viewport epochs, source revision, presentation revision, mask-policy generation,
+physical/CSS dimensions, DPR, colour space and capture timestamp. Variants:
+`VideoConfig`, `VideoChunk`, `ExactFrame`, `ExactTiles`, `DomSnapshot`, `DomDelta`,
+`OpaqueRegionMap`, `Cursor` and `Unavailable`. Payload and this envelope are
+inside the existing authenticated encryption boundary. Relay-visible routing
+contains only connection scope and opaque bounded packets. The relay cannot
+select a codec, inspect a DOM node, decode a mask, fetch an asset or admit input.
 
-### MD-DISPLAY-04 — Migration stages and gates
+An `ExactTiles` update carries `basePresentationRevision`, physical-pixel
+rectangles, exact image payloads and a final `commitRevision`. The client applies
+the batch atomically only to the matching base/epochs/mask generation. A newer
+video frame either invalidates the tiles or declares compatible dirty regions;
+it never silently mixes revisions. During resync, suppress obsolete deltas,
+force a fresh decoder configuration/keyframe or exact full frame, then resume.
+Navigation, resize, mask changes and revocation cancel capture/encoding and
+invalidate cached DOM/assets/pixels. A changed masking policy must immediately
+invalidate already displayed content, including an exact overlay.
 
-1. **Portable fallback and neutral seam.** Integrate the host kbrowser handle
-   with a page-frame adapter and existing encrypted delivery. Keep Selkies for
-   existing Room desktop coverage during the migration. Validate native Mac
-   Chrome without a slice, DPR1/2/3, zoom/text/colour, CPU budget, reconnect,
-   two viewers, slow viewer, cancellation and terminal traffic. CDP screencast
-   first is a bounded prototype direction, not a promise that PNG→encode is
-   the final capture path. Evaluate direct tab capture/native capture if latency
-   or CPU budget fails; preserve a software path. Fallback must report page-only
-   scope and cannot silently stand in for the complete Computer desktop.
-2. **Native signed App projection.** Serve reviewed App assets from the
-   installation's isolated origin with the kernel bridge, identity and
-   existing CSP/trusted host panel. Compare human local actions with the
-   agent's source copy. Decide transient draft/scroll/focus semantics before
-   claiming shared App UI. Validate critical approval and secret masking.
-   Roll back projection without restarting the App/runtime or browser profile.
-3. **Selective DOM pilot, initially user-domain tabs.** Add an isolated-world
-   observer, typed serializer, asset broker, masks and safe native-input mapping.
-   Pilot approved static/forms/known SPAs. Compare source/client landmark boxes,
-   text/selection and frozen patches at canonical viewport; provide visible
-   degraded/fallback state and manual switch. Candidate gate for owner approval:
-   zero missing/incorrect interactive targets, ≤1 CSS px p95 landmark drift,
-   complete masking matrix, and acceptable input p95 under the chosen network
-   budget. Global PSNR alone is insufficient. Pixel coordinate actions stay on
-   source images when mirror layout differs. Fall back on unsupported CSS,
-   shadow/frame/media features rather than route clicks to the wrong element.
-4. **Regional video and Room parity.** Replace expensive PNG patches with a
-   shared capture/encoder path, bound patch composition to viewport epochs,
-   prove animation clipping/scroll, multiple actors, takeover, masks and source
-   screenshots. Extend to Rooms only after the same input/state path passes.
-   Do not remove the full desktop path while non-browser Computer work needs it.
-5. **Retire Linux streamers only after replacement coverage.** Meet the
-   Browser/Computer, M20 persistence, provider/Web/TUI, security, resource and
-   cleanup gates on actual release identities. Remove Selkies/noVNC in a
-   dedicated reviewed change after a measured rollback window. Research drawing
-   commands only if compatibility/fidelity needs justify a Chromium maintenance
-   program. No fork is needed merely to establish the first portable seam.
+`DisplayBudget` proposes `targetVideoBps`, `maxEgressBps`, a finite burst allowance,
+`maxQueuedBytes`, `maxFrameAgeMs` and `idleRefineDelayMs`. Share the egress budget
+between video and refinement. Prefer a compact exact full image for the initial
+idle correction, source-difference tiles for subsequent small changes, and
+coalesce/drop only deltas that preserve decoder state. Slow viewers must request
+a new keyframe/base rather than retain arbitrarily many frames. Kernel control,
+terminal and interaction traffic keep priority over display. This prototype's
+encoder bitrate is only a target; production needs an actual egress scheduler.
 
-### MD-DISPLAY-04 — Owner questions
+Input reuses the existing kernel/controller action service. The display adapter
+supplies source viewport/epoch metadata for mapping, never a new permission or
+prompt path. Pointer positions map from CSS viewport to source CSS coordinates;
+DOM actions carry a kernel-issued element ref plus document epoch and are
+resolved on the source. On layout drift, reject/fall back before issuing a click.
+Composition/IME transactions, key modifiers, clipboard permission, file chooser
+and drag/drop lifecycle remain controller responsibilities. Cursor shape/hotspot
+is a separate source observation, not a permanently drawn crosshair or a CSS
+cursor inferred from the mirrored client. Multi-viewer input requires the same
+Room/user-domain ownership and action ledger as today's kernel.
 
-- Scope: user-domain pilot first, or simultaneous Room support? Recommendation:
-  user domain first, while preserving Room desktop behavior and one authority.
-- Native Apps: accept per-viewer transient drafts/scroll/selection, or require
-  the agent and every user to see the same UI state? This changes the expected
-  App experience and cost; kernel App data/actions remain shared either way.
-- Fidelity: approve the proposed per-target geometry/masking gates and choose
-  an input p95/network budget, supported colour/HiDPI/zoom targets and an explicit
-  fallback policy. The research numbers are not a production SLO.
-- Actions: keep element-addressed browser operations plus source-image
-  coordinate Computer actions, with pixel/mirror mismatch rejection?
-- Clients/capture: which web/native browsers and codec configurations must be
-  supported initially? Prefer capability-probed H.264/VP9 with fallback;
-  software AV1 availability here does not establish acceptable host cost.
-  Approve a trusted capture extension only if needed, or native capture APIs?
-- Profile scope: per-user/per-home-kernel remains the proposed default in the
-  owner plan; this lane did not choose or transfer profiles.
+### MD-DISPLAY-04 — Attachment order and migration gates
 
-MD-DISPLAY-01/02/03/04 are reviewable research deliverables. The decisions,
-independent production security review, actual kernel/relay integration,
-macOS/Windows/native client tests and complete acceptance campaign remain open.
+1. kbrowser exposes a cancellable tab frame source and source geometry through
+   its internal handle. Keep production protocol 417 under that lane; do not add
+   a display shape without coordinator allocation, snapshot tests, client
+   minimums and a focused drill. Wire a portable page-only fallback to the shared
+   secure transport after those approvals.
+2. Add decoder negotiation, sRGB/DPR2 fidelity pairs, cursor observation, source
+   input replay, bounded delivery, revocation and navigation/resize fencing.
+   Hardware encode is an adapter; a software fallback remains available.
+3. Add budgeted exact idle refresh and dirty regions, with revision-atomic
+   composition. Mask DOM and pixels **before** differencing, capture export,
+   encoding, caching and any delivery. The fixture-only reconstruction evidence
+   does not establish Vault secrecy or production epoch correctness.
+4. Native signed App views can render locally after the owner chooses transient
+   viewer state. Selective DOM text/SPA mirroring follows asset/masking/drift and
+   input-target gates. Regional video is a measured optimization candidate;
+   this experiment encodes a full page and gains no regional network savings.
+5. Preserve existing Room desktop coverage until the replacement passes actual
+   Browser/Computer, managed, M20, provider/Web/TUI and security gates on reviewed
+   release identities. Native macOS/Windows, WAN loss/jitter, two viewers, slow
+   viewers, soak, full clipboard/IME/filechooser and cursor shape remain required.
+   Retire Selkies in a separate reviewed change only after those gates pass.
+
+### MD-DISPLAY-04 — Owner questions after Phase 2
+
+- Choose separate moving-content and settled-text fidelity gates, a video/total
+  egress budget, acceptable idle refinement delay and input p95 under specified
+  WAN conditions. Exact settled text does not establish a motion-quality win.
+- Is page-only user-domain delivery the initial scope, with Room desktop retained?
+- Which clients/codecs must work? H.264 plus PNG is the broad compatibility
+  candidate; VP9/AV1 need per-viewer negotiation and real native-OS measurements.
+- Approve or change the masking/geometry/revision gates, native App per-viewer
+  transient state and element-vs-source-coordinate action policy.
+- Accept selective DOM only after drift/security gates, or fund broader CSS,
+  font/asset, shadow DOM and iframe work? This lane makes no default-DOM decision.
+
+## MD-DISPLAY-01/02 — Native OS encoder expectation
+
+The Linux measurements use software WebCodecs in a trusted encoder browser and native libx264rgb through a disposable Python worker,
+including PNG decode/RGB→video conversion. That browser is a prototype device,
+not the recommended shipping dependency. No hardware-encoder or GPU utilization
+measurement was made. Per-process RSS includes shared pages; CPU aggregates the
+owned source/client browser groups, Xvfb and Node, and includes the native worker, tile comparison,
+PNG encoding and evidence work when enabled. Baseline container CPU is reported
+separately. These costs cannot be extrapolated as VideoToolbox/MF utilization.
+
+A shipping macOS adapter can encode with VideoToolbox; Chromium maintains a
+[VideoToolbox encoder implementation](https://chromium.googlesource.com/chromium/src/+/main/media/gpu/mac/vt_video_encode_accelerator_mac.mm).
+Windows has a [Media Foundation encoder implementation](https://chromium.googlesource.com/chromium/src/+/main/media/gpu/windows/media_foundation_video_encode_accelerator_win.cc).
+Those sources establish available implementation paths, not measured performance,
+codec availability or 4:4:4 support on the owner's machines. Start with browser
+CDP capture without OS screen-recording permission; later evaluate direct tab
+frames/native window capture to remove PNG/base64 copies if the CPU/latency gate
+fails. Native window capture adds OS consent and capture-scope work.
+
+The [WebCodecs configuration contract](https://www.w3.org/TR/webcodecs/)
+exposes bitrate mode, latency preference, codec profile and hardware preference;
+capability probing and encode/decode success must both be checked. An encoder
+preference does not prove which hardware ran. Common hardware paths use subsampled
+video, so a higher bitrate does not by itself prove pixel-exact coloured glyphs.
+Exact PNG refresh works in RGB independently of the video codec, at the price of
+CPU, bursts and composition/epoch complexity. SDR sRGB/DPR2 is this harness's
+scope; HDR/wide gamut and native macOS/Windows colour need separate measurements.

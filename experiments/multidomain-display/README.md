@@ -41,7 +41,7 @@ Install tools outside the repository (Node 22, Xvfb, Google Chrome, Docker):
 ```sh
 export MD_TOOLS=/root/.chariox/dev/browser-resume-20260930/agents/display/tools
 npm install --prefix "$MD_TOOLS" --no-audit --no-fund playwright-core@1.58.2 ws@8.18.3 pngjs@7.0.0
-node --test experiments/multidomain-display/metrics.test.mjs
+node --test experiments/multidomain-display/*.test.mjs
 export MD_OUTPUT=/root/.codex/evidence/browser-resume-20260930/display/host-h264
 node experiments/multidomain-display/run.mjs
 MD_CODEC=vp09.00.10.08 MD_MODES=screencast MD_OUTPUT=/root/.codex/evidence/browser-resume-20260930/display/host-vp9 node experiments/multidomain-display/run.mjs
@@ -154,7 +154,7 @@ enabled and the prototype encoder browser; container CPU remains separate.
 Run the focused reconstruction/metric checks with:
 
 ```sh
-node --test experiments/multidomain-display/metrics.test.mjs experiments/multidomain-display/tiles.test.mjs
+node --test experiments/multidomain-display/*.test.mjs experiments/multidomain-display/tiles.test.mjs
 ```
 
 MD-DISPLAY-02 Phase 2 also measures `MD_MODES=lossless`: CDP PNG frames go to
@@ -216,3 +216,22 @@ CPU cost; default stays ultrafast for the original ladder. `MD_NATIVE_TRACE=1`
 writes credential-free fixture/public H.264 packets in the evidence directory
 for independent decoder diagnosis. It must not be used against authenticated
 sites. The packet trace is diagnostic, not a production recording path.
+
+## MD-DISPLAY-02/03 reviewer and incident recovery
+
+`owned-process.mjs` records each launched child PID and Linux start time.
+Signals reject PID 0/1/-1, invalid values, unregistered children and reused IDs.
+Before each group signal it inventories `/proc`, verifies the group exists and
+proves every member belongs to the launched session/descendant tree or matches
+an already observed owned identity. Browser shutdown snapshots membership before
+CDP close. A failed ownership check leaves resources alone and reports RED;
+this guard is Linux-specific, not a native-OS process manager.
+
+Missing/non-executable Chrome/Xvfb launch errors reject an awaited operation;
+failed display readiness and browser launch clean acquired resources before
+returning. Selkies JSON/stripe/socket-write failures latch into the awaited
+harness/stop path. Campaigns continue collecting independent cases, aggregate
+nonzero/null/signal exits to parent exit 1, and report parent interruption as
+130. Focused tests exercise failure routing, readiness cleanup, valid descendant
+teardown, invalid PID rejection and campaign statuses. Raw RED receipts and
+historical source hashes must stay unchanged after harness fixes.
