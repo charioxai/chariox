@@ -385,7 +385,8 @@ fn resume_deadline_keeps_worker_unpublished_and_never_overlaps_shutdown() {
     assert!(
         before.elapsed() >= Duration::from_secs(29) && before.elapsed() < Duration::from_secs(35)
     );
-    assert_eq!(names(&frames(&observations, 1)), ["startup", "resume"]);
+    // The blocked durable write retains the owner; completion cannot precede it.
+    assert!(control.lifecycle().has_pending_owner("alice", "installed"));
     assert_eq!(
         store
             .app_worker_status("alice", "installed")
@@ -394,7 +395,10 @@ fn resume_deadline_keeps_worker_unpublished_and_never_overlaps_shutdown() {
             .phase,
         WorkerPhase::Starting
     );
+    // Release the writer before waiting for completion: the owner needs it
+    // to persist Failed before it can publish that it is finished.
     delayed_failure.rollback().unwrap();
+    wait(|| !control.lifecycle().has_pending_owner("alice", "installed"));
     wait(|| {
         store
             .app_worker_status("alice", "installed")
@@ -413,6 +417,7 @@ fn resume_deadline_keeps_worker_unpublished_and_never_overlaps_shutdown() {
     assert!(control.active_app_lease("alice", "installed").is_none());
     control.lifecycle().shutdown_blocking().unwrap();
     assert_eq!(names(&frames(&observations, 1)), ["startup", "resume"]);
+    assert_eq!(observations.lock().unwrap().len(), 2);
     assert!(all_reaped(&observations));
 }
 #[test]
