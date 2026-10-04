@@ -57,7 +57,9 @@ override; the reported host evidence uses the default sandboxed launch.
 
 Every case submits 20 actual viewer clicks, changes a five-bit high-contrast
 source marker, and waits for its matching visual state after a viewer
-`requestAnimationFrame`. Source geometry calibrates marker sampling, including
+`requestAnimationFrame`. Video reads decoded canvas pixels; DOM reads the
+mirrored marker’s `data-seq` after rAF, a render-cycle proxy rather than a raster
+presentation timestamp. Source geometry calibrates video sampling, including
 scrollbars; colour quantization cannot be used as an exact sequence counter.
 Results retain raw samples, histogram, nearest-rank p50/p95/p99, application
 bytes/s and pixel RGB MSE/PSNR, changed-pixel fraction, screenshots and 4× error
@@ -92,3 +94,13 @@ never pruned. A SIGKILL cannot run `finally`; use recorded exact ownership to
 repair only that interrupted run. Results name the source commit, dirty state,
 prototype file hashes, timestamps, exit code, resource and cleanup observations.
 See `docs/MULTIDOMAIN_DISPLAY_TRANSPORT.md` for MD-DISPLAY-01/04 interpretation.
+
+MD-DISPLAY-02/03 generate a standalone local frame explorer from cleaned runs:
+
+```sh
+node experiments/multidomain-display/report.mjs /root/.codex/evidence/browser-resume-20260930/display/report /root/.codex/evidence/browser-resume-20260930/display/review-h264 /root/.codex/evidence/browser-resume-20260930/display/review-vp9 /root/.codex/evidence/browser-resume-20260930/display/review-selkies
+```
+
+Open the output `index.html`; it binds rows to receipt hashes and lets a reviewer
+overlay source/viewer images or inspect amplified RGB error. Core fixture success
+and supplemental public-page failures are reported separately.
