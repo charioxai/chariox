@@ -1,13 +1,15 @@
 # MP-11 — b211scan
 
-## MP-11 — 2026-10-05, PR #848 reviewer fixes validated
+## MP-11 — PR #848 reviewer fixes ready for coordinator publication
 
 - Starting tool head: `5667ae4d8784e21607f616a3f551a42c6f8a6b68`; existing `agent/b211scan` branch retained.
 - P1 commit: `fd0a17331`. Both frozen-Git tests fail in a depth-one checkout without G2 (2/2 RED). The Node CI job now fetches the exact pinned source; the same clone passes both tests after that step, with HEAD unchanged. Public GitHub origin verification also passed. Evidence: `reviewer-p1-{red,green,public-origin}` receipts/logs.
-- P2 fixed: both strict UTF-8 decoders retain U+FEFF with `ignoreBOM: true`. Four fail-first regressions cover fixture/committed-blob first-line columns (19 rather than 18) and both fragment boundary columns (2 rather than 1). Invalid UTF-8 remains rejected in both decoder paths; candidate disposition remains unreviewed. Evidence: `reviewer-p2-{red,green}` receipts/logs.
-- Complete scanner suite: **197/197 PASS, zero skips** (`reviewer-focused-suite`). The pending source delta was unchanged during validation. Historical rule/review modules remain unchanged. Final committed-head receipts and handoff mapping follow.
+- P2 commit: `721756ebd815124f9841e360e1efebfdae2c60fc`. Both strict UTF-8 decoders retain U+FEFF with `ignoreBOM: true`. Four fail-first regressions cover fixture/committed-blob first-line columns (19 rather than 18) and both fragment boundary columns (2 rather than 1). Invalid UTF-8 remains rejected in both decoder paths; candidate disposition remains unreviewed. Evidence: `reviewer-p2-{red,green}` receipts/logs.
+- Complete scanner suite: **197/197 PASS, zero skips**. Final code head `721756ebd` also passes the complete suite in a fresh depth-one checkout after the exact CI fetch from public GitHub, with HEAD unchanged (`reviewer-final-shallow-suite`). Historical rule/review modules remain unchanged. `PUSH_READY.md` maps both findings to commits; `REVIEWER_FIXES.md` indexes evidence.
 - The 9,949-anchor semantic audit remains paused pending the owner decision. No runtime/protocol changes or approval repinning are in scope.
 - Initial resources: 66 GiB available disk and 19.95 GiB MemAvailable, above MP-11 lane floors. Node/Python only; coordinator retains publication.
+- Reviewer-fix receipt minima: 11.52 GiB MemAvailable / 69.84 GB disk; no resource interruption. All own shallow clones and test fixtures were removed. No build output, provider/runtime/process/container state, credentials or durable keys were created; foreign state was untouched. No Rust build, protocol allocation, push, GitHub CI, PR/comment, merge, deployment or protected-host contact.
+- Both findings are addressed; independent review and coordinator publication remain external gates. The semantic audit is paused, not completed, and no MP item closes. This lane stops at the reviewable handoff.
 
 ## MP-11 — 2026-10-04, reviewable scanner repair; semantic gate OPEN
 
@@ -23,7 +25,7 @@
 ## MP-11 — Coordinator asks
 
 - Publish/review the coherent scanner-only correction when appropriate. No protocol allocation is needed.
-- Arrange independent exact-head tooling review and complete the **9,949 outstanding current semantic dispositions** using `REMAINING_SEMANTIC_REVIEW_REQUESTS.json`; it contains exact commit/tree/blob/line/hash and responsibility prompts, not approvals or defect claims. Frozen G2 reviews cannot approve a later aggregate automatically.
+- Arrange independent exact-head tooling review. Keep the **9,949 outstanding current semantic dispositions paused pending owner decision**; retain `REMAINING_SEMANTIC_REVIEW_REQUESTS.json` as exact commit/tree/blob/line/hash requests, not approvals or defect claims. Frozen G2 reviews cannot approve a later aggregate automatically.
 
 ## MP-11 — Owner questions
 
