@@ -947,7 +947,7 @@ impl KernelRuntimeState {
             .protects_bytes(&session_id)
         {
             self.room_browser_controller_command(&session_id,
-                crate::transport::room_browser_controller::RoomBrowserControllerCommand::ClearSecretObservation { clear_unknown: false }).await?;
+                crate::transport::room_browser_controller::RoomBrowserControllerCommand::ClearSecretObservation).await?;
         }
         self.append_session_durable_event(
             "session.deleted",

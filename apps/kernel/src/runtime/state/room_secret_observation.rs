@@ -101,6 +101,13 @@ impl RoomSecretObservations {
             if let Some(restored) = self.restore_registry(room)? {
                 return Ok(restored);
             }
+        } else if let Some(history_before_ms) = self.legacy_history_cutoff(room)? {
+            // Migration withholds old artifacts, without blocking fresh observations.
+            return Ok(Protection {
+                recovered_artifacts: true,
+                history_before_ms,
+                ..Default::default()
+            });
         }
         let unknown = marked;
         Ok(Protection {
@@ -368,6 +375,11 @@ impl RoomSecretObservations {
         mut entry: crate::history::SessionHistoryEntry,
     ) -> crate::history::SessionHistoryEntry {
         use crate::history::SessionHistoryEntryKind;
+        if self.withholds_history(&entry.session_id, entry.timestamp_ms) {
+            entry.text = "[recovered sensitive Room history withheld]".into();
+            entry.attachments.clear();
+            return entry;
+        }
         if matches!(
             entry.kind,
             SessionHistoryEntryKind::ProviderOutput | SessionHistoryEntryKind::ProviderReasoning
@@ -453,19 +465,7 @@ impl RoomSecretObservations {
                 continue;
             };
             let room = self.room_key(&room);
-            let recovered = self.blocked(room, false).is_err()
-                || self
-                    .rooms
-                    .lock()
-                    .map(|rooms| rooms[room].recovered_artifacts)
-                    .unwrap_or(true);
-            let history_before_ms = self
-                .rooms
-                .lock()
-                .ok()
-                .and_then(|rooms| rooms.get(room).map(|p| p.history_before_ms))
-                .unwrap_or(u64::MAX);
-            if recovered && event.timestamp_ms <= history_before_ms {
+            if self.withholds_history(room, event.timestamp_ms) {
                 event.content = Some("[recovered sensitive Room history withheld]".into());
                 event.content_ref = None;
                 event.metadata.clear();
@@ -487,6 +487,20 @@ impl RoomSecretObservations {
             }
         }
         events
+    }
+
+    fn withholds_history(&self, room: &str, timestamp_ms: u64) -> bool {
+        let room = self.room_key(room);
+        if self.blocked(room, false).is_err() {
+            return true;
+        }
+        self.rooms
+            .lock()
+            .map(|rooms| {
+                let protection = &rooms[room];
+                protection.recovered_artifacts && timestamp_ms <= protection.history_before_ms
+            })
+            .unwrap_or(true)
     }
 }
 

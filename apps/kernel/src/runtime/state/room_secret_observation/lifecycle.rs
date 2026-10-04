@@ -1,4 +1,4 @@
-//! MP-08/MP-10/MP-11: Vault revocation and explicit legacy Room recovery.
+//! MP-08/MP-10/MP-11: Vault revocation and credential lifecycle fences.
 use super::*;
 
 impl KernelRuntimeState {
@@ -13,66 +13,11 @@ impl KernelRuntimeState {
                 .room_secret_observations
                 .uses_vault_key(session.id(), key)?
             {
-                self.room_browser_controller_command(
-                    session.id(),
-                    Command::ClearSecretObservation {
-                        clear_unknown: false,
-                    },
-                )
-                .await?;
+                self.room_browser_controller_command(session.id(), Command::ClearSecretObservation)
+                    .await?;
             }
         }
         Ok(())
-    }
-
-    pub(in crate::runtime::state) async fn recover_unknown_room_observations(
-        &self,
-        room: &str,
-    ) -> Result<&'static str, DaemonError> {
-        let owner = self
-            .owned
-            .session_store
-            .get_session(room)?
-            .owner_user_id()
-            .to_string();
-        let id = format!(
-            "vault-observation-recovery-{}",
-            crate::session::unix_epoch_ms()
-        );
-        let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
-            &id, format!("room-observation-recovery:{room}"), "Recover Room observations",
-            "Remove prior secrets from all browser pages and desktop controls first. Confirm only after the environment is clean. Prior history and cached artifacts will stay withheld.",
-            vec![
-                crate::session::RuntimeInteractionChoice::new("clear_observations", "I removed prior secrets; restore fresh observations", "clear_observations", Some(crate::session::RuntimeInteractionChoiceStyle::Danger)),
-                crate::session::RuntimeInteractionChoice::new("dismiss", "Keep observations protected", "dismiss", Some(crate::session::RuntimeInteractionChoiceStyle::Secondary)),
-            ],
-        );
-        let rx = self
-            .create_kernel_operation_interaction(room, &owner, interaction)
-            .await?;
-        let resolution = match tokio::time::timeout(std::time::Duration::from_secs(300), rx).await {
-            Ok(Ok(resolution)) => resolution,
-            Ok(Err(_)) => return Err(protection_error()),
-            Err(_) => {
-                self.timeout_runtime_interaction(room, &id).await?;
-                return Ok("dismissed");
-            }
-        };
-        if resolution.choice_id.as_deref() == Some("clear_observations") {
-            let _guard = self.owned.room_secret_observations.vault_lifecycle.clone().try_write_owned().map_err(|_| DaemonError::LocalTransport {
-                operation: "room.observation.recovery", message: "Finish pending credential operations, remove prior secrets, and retry Room recovery.".into(),
-            })?;
-            self.room_browser_controller_command(
-                room,
-                Command::ClearSecretObservation {
-                    clear_unknown: true,
-                },
-            )
-            .await?;
-            Ok("observations_cleared")
-        } else {
-            Ok("dismissed")
-        }
     }
 
     pub(in crate::runtime::state) async fn track_room_vault_key(

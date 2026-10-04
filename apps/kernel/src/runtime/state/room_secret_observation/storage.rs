@@ -147,6 +147,32 @@ impl RoomSecretObservations {
 }
 
 impl RoomSecretObservations {
+    fn history_marker(&self, room: &str) -> PathBuf {
+        self.marker(room).with_extension("history")
+    }
+
+    pub(super) fn legacy_history_cutoff(&self, room: &str) -> Result<Option<u64>, DaemonError> {
+        use std::io::Read;
+        let file = match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(self.history_marker(room))
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(protection_error()),
+        };
+        let metadata = file.metadata().map_err(|_| protection_error())?;
+        if !metadata.is_file() || metadata.len() > 32 {
+            return Err(protection_error());
+        }
+        let mut text = String::new();
+        file.take(33)
+            .read_to_string(&mut text)
+            .map_err(|_| protection_error())?;
+        text.parse().map(Some).map_err(|_| protection_error())
+    }
+
     // MP-08/MP-10/MP-11: fence only Rooms present at the first upgraded boot.
     pub(super) fn migrate_legacy_rooms(
         &self,
@@ -166,13 +192,26 @@ impl RoomSecretObservations {
             Err(_) => return Err(protection_error()),
         }
         for room in recovered {
-            self.persist_marker(
-                &room,
-                &Protection {
-                    unknown: true,
-                    ..Default::default()
-                },
-            )?;
+            // Separate from the protected-value marker: a lost secret registry
+            // must never fall back to this clean historical state.
+            use std::io::Write;
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(self.history_marker(&room))
+            {
+                Ok(mut file) => {
+                    file.write_all(self.epoch.to_string().as_bytes())
+                        .map_err(|_| protection_error())?;
+                    file.sync_all().map_err(|_| protection_error())?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    self.legacy_history_cutoff(&room)?;
+                }
+                Err(_) => return Err(protection_error()),
+            }
         }
         let file = std::fs::OpenOptions::new()
             .write(true)
@@ -188,26 +227,20 @@ impl RoomSecretObservations {
     }
 
     // Caller holds the Room's exclusive capture/input barrier. Revocation keeps
-    // unknown observations closed; explicit operator clearance restores fresh
-    // observations but never releases historical artifacts or cached results.
-    pub(in crate::runtime::state) fn forget(
-        &self,
-        room: &str,
-        clear_unknown: bool,
-    ) -> Result<(), DaemonError> {
+    // prior echoes closed without a human-clearance fallback.
+    pub(in crate::runtime::state) fn forget(&self, room: &str) -> Result<(), DaemonError> {
         let room = self.room_key(room);
         self.blocked(room, false)?;
         let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
         let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
         let replacement = Protection {
-            unknown: !clear_unknown,
+            unknown: true,
             recovered_artifacts: true,
             history_before_ms: crate::session::unix_epoch_ms(),
             revision: protection.revision.saturating_add(1),
             ..Default::default()
         };
-        // Memory stays closed on every deletion/write failure, even when this
-        // was an operator clearance rather than an ordinary revocation.
+        // Memory stays closed on every deletion/write failure.
         *protection = Protection {
             unknown: true,
             ..Default::default()
@@ -231,9 +264,14 @@ impl RoomSecretObservations {
 
     pub(in crate::runtime::state) fn delete_room(&self, room: &str) -> Result<(), DaemonError> {
         // Keep an in-memory tombstone for already admitted late callbacks.
-        self.forget(room, false)?;
+        self.forget(room)?;
         self.remove_registry(room)?;
         std::fs::remove_file(self.marker(room)).map_err(|_| protection_error())?;
+        match std::fs::remove_file(self.history_marker(room)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(protection_error()),
+        }
         std::fs::File::open(&self.root)
             .and_then(|dir| dir.sync_all())
             .map_err(|_| protection_error())

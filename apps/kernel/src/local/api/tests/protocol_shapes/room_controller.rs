@@ -1018,30 +1018,37 @@ fn computer_secret_target_protocol_374_peer_67_is_hashed() {
     );
 }
 
-// MP-08/MP-10/MP-11: revocation versus explicit recovery on unshipped 411/70.
+// MP-08/MP-10/MP-11: authenticated revocation without owner clearance on 411/70.
 #[test]
 fn secret_observation_revocation_wire_protocol_411_peer_70_is_hashed() {
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
     use sha2::{Digest, Sha256};
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 411);
     assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 70);
-    let command = serde_json::to_value(RoomBrowserControllerCommand::ClearSecretObservation {
-        clear_unknown: false,
-    })
-    .unwrap();
+    let command =
+        serde_json::to_value(RoomBrowserControllerCommand::ClearSecretObservation).unwrap();
     let legacy: RoomBrowserControllerCommand =
         serde_json::from_value(serde_json::json!({"kind":"clear_secret_observation"})).unwrap();
     assert!(matches!(
         legacy,
-        RoomBrowserControllerCommand::ClearSecretObservation {
-            clear_unknown: false
-        }
+        RoomBrowserControllerCommand::ClearSecretObservation
     ));
+    // Removed unshipped owner flags cannot turn revocation into clearance.
+    for clear_unknown in [false, true] {
+        let old: RoomBrowserControllerCommand = serde_json::from_value(
+            serde_json::json!({"kind":"clear_secret_observation", "clear_unknown":clear_unknown}),
+        )
+        .unwrap();
+        assert!(matches!(
+            old,
+            RoomBrowserControllerCommand::ClearSecretObservation
+        ));
+    }
     let response =
         serde_json::to_value(RoomBrowserControllerResult::SecretObservationCleared).unwrap();
     assert_eq!(
         command,
-        serde_json::json!({"kind":"clear_secret_observation", "clear_unknown":false})
+        serde_json::json!({"kind":"clear_secret_observation"})
     );
     assert_eq!(
         response,
@@ -1052,7 +1059,7 @@ fn secret_observation_revocation_wire_protocol_411_peer_70_is_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&command).unwrap())
         ),
-        "858f0befeb37e68630f8fc81b4102bd7969eccffed52a902c2efa9474cbc3c27"
+        "0b51d367c657307a95c218d49cd379845c8b051b9d24dd91c652a9bc2aa74e08"
     );
     assert_eq!(
         format!(

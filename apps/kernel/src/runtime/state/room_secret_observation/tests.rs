@@ -240,11 +240,11 @@ fn clean_rooms_remain_observable_after_restart_and_legacy_migrates_once() {
     let root = TestRoot::new();
     let path = root.path().join("observations");
     let store = RoomSecretObservations::new(path.clone(), BTreeSet::from(["legacy".into()]));
-    assert!(store.require("legacy", false).is_err());
+    assert!(store.require("legacy", false).is_ok());
     assert!(store.require("new-room", false).is_ok());
     let restarted =
         RoomSecretObservations::new(path, BTreeSet::from(["legacy".into(), "new-room".into()]));
-    assert!(restarted.require("legacy", false).is_err());
+    assert!(restarted.require("legacy", false).is_ok());
     assert!(restarted.require("new-room", false).is_ok());
     assert!(!restarted.protects_bytes("new-room"));
     assert_eq!(
@@ -282,100 +282,98 @@ async fn room_deletion_removes_sealed_values() {
 }
 
 #[tokio::test]
-async fn explicit_vault_recovery_clears_unknown_but_keeps_prior_history_withheld() {
+async fn legacy_room_migration_is_autonomous_and_permanently_withholds_only_prior_history() {
     use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
     let root = TestRoot::new();
-    let mut room = TestRoom::new("vault-legacy-recovery");
-    let mut config = room.runtime.owned.config_projection.snapshot();
-    config.user_config.credential_vault.path = root.path().join("vault").display().to_string();
-    room.runtime.owned.config_projection.update(config.clone());
-    room.runtime.owned.room_secret_observations = RoomSecretObservations::new(
-        root.path().join("observations"),
-        BTreeSet::from([room.session_id.clone()]),
-    )
-    .with_identity(&config.relay_private_key);
+    let mut room = TestRoom::new("vault-legacy-autonomous-migration");
+    let config = room.runtime.owned.config_projection.snapshot();
+    let path = root.path().join("observations");
+    room.runtime.owned.room_secret_observations =
+        RoomSecretObservations::new(path.clone(), BTreeSet::from([room.session_id.clone()]))
+            .with_identity(&config.relay_private_key);
     let store = &room.runtime.owned.room_secret_observations;
-    assert!(store.require(&room.session_id, false).is_err());
-    let operation = room
+    let cutoff = store.epoch;
+    for pixels in [false, true] {
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            room.runtime
+                .ensure_room_observation_ready(&room.session_id, &room.agent_id, pixels),
+        )
+        .await
+        .expect("MP-08/MP-10/MP-11: migration must never wait for a human")
+        .expect("MP-08/MP-10/MP-11: fresh legacy-Room observations flow autonomously");
+    }
+    assert!(room
         .runtime
-        .manage_credential_vault_unlock(&room.session_id, &room.agent_id);
-    tokio::pin!(operation);
-    let answer = async {
-        loop {
-            let session = room
-                .runtime
-                .owned
-                .session_store
-                .get_session(&room.session_id)
-                .unwrap();
-            if let Some(interaction) = session.active_interactions().first() {
-                assert!(
-                    interaction.kernel_operation_id().is_some(),
-                    "MP-08/MP-10/MP-11: recovery must be owned by the human"
-                );
-                assert!(room
-                    .runtime
-                    .resolve_runtime_interaction(
-                        &room.session_id,
-                        interaction.id(),
-                        "clear_observations",
-                        None
-                    )
-                    .await
-                    .is_err());
-                room.runtime
-                    .resolve_terminal_runtime_interaction(
-                        &room.session_id,
-                        interaction.id(),
-                        "clear_observations",
-                        None,
-                        Some(session.owner_user_id()),
-                    )
-                    .await
-                    .unwrap();
-                break;
+        .owned
+        .session_store
+        .get_session(&room.session_id)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    let mut restarted =
+        RoomSecretObservations::new(path, BTreeSet::from([room.session_id.clone()]))
+            .with_identity(&config.relay_private_key);
+    // Simulate a later boot: the historical boundary must not advance on restart.
+    restarted.epoch = cutoff + 60_000;
+    for store in [store, &restarted] {
+        assert_eq!(
+            store
+                .scrub(&room.session_id, "fresh result".to_string())
+                .unwrap(),
+            "fresh result"
+        );
+        assert_eq!(
+            store.protect_unframed_bytes(&room.session_id, b"fresh terminal"),
+            b"fresh terminal"
+        );
+        let policy: serde_json::Value =
+            serde_json::from_str(&store.capture_policy(&room.session_id).unwrap()).unwrap();
+        assert_eq!(policy["unknown"], false);
+        let entry = crate::history::SessionHistoryEntry::provider_output(
+            &room.session_id,
+            "run",
+            None,
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            None,
+            "observation",
+        );
+        for (timestamp_ms, expected) in [
+            (0, "[recovered sensitive Room history withheld]"),
+            (cutoff, "[recovered sensitive Room history withheld]"),
+            (cutoff + 1, "observation"),
+        ] {
+            let mut transcript = entry.clone();
+            transcript.timestamp_ms = timestamp_ms;
+            assert_eq!(
+                store.protect_transcript_entry(transcript.clone()).text,
+                expected
+            );
+            let mut event =
+                crate::history::HistoryEvent::transcript(1, &transcript, Default::default());
+            event.timestamp_ms = timestamp_ms;
+            event.content_ref = Some("old-image".into());
+            event
+                .metadata
+                .insert("observation".into(), "prior content".into());
+            let protected = store.protect_history_events(vec![event]);
+            assert_eq!(protected[0].content.as_deref(), Some(expected));
+            if timestamp_ms <= cutoff {
+                assert!(protected[0].content_ref.is_none());
+                assert!(protected[0].metadata.is_empty());
             }
-            tokio::task::yield_now().await;
         }
-    };
-    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        tokio::join!(&mut operation, answer)
-    })
-    .await
-    .unwrap();
-    assert_eq!(result.unwrap().1, "observations_cleared");
-    assert!(store.require(&room.session_id, false).is_ok());
+        assert!(store
+            .scrub_cached_result(&room.session_id, "old result".to_string())
+            .is_err());
+    }
+    restarted
+        .register(&room.session_id, "synthetic-new-value")
+        .unwrap();
     assert_eq!(
-        store
-            .scrub(&room.session_id, "fresh result".to_string())
-            .unwrap(),
-        "fresh result"
+        restarted.scrub_text_or_withhold(&room.session_id, "fresh synthetic-new-value"),
+        "fresh [redacted]"
     );
-    let entry = crate::history::SessionHistoryEntry::provider_output(
-        &room.session_id,
-        "run",
-        None,
-        crate::terminal::TerminalOutputKind::ProviderOutput,
-        None,
-        "prior sensitive result",
-    );
-    let mut event = crate::history::HistoryEvent::transcript(1, &entry, Default::default());
-    event.timestamp_ms = store.epoch;
-    assert_eq!(
-        store.protect_history_events(vec![event])[0]
-            .content
-            .as_deref(),
-        Some("[recovered sensitive Room history withheld]")
-    );
-    assert!(store
-        .scrub_cached_result(&room.session_id, "old result".to_string())
-        .is_err());
-    let restarted = RoomSecretObservations::new(
-        root.path().join("observations"),
-        BTreeSet::from([room.session_id.clone()]),
-    )
-    .with_identity(&config.relay_private_key);
-    assert!(restarted.require(&room.session_id, false).is_ok());
 }
 
 #[tokio::test]
@@ -474,7 +472,7 @@ async fn vault_delete_and_rotation_remove_sealed_values_only_in_affected_rooms()
         );
         assert!(
             store.require(&room.session_id, false).is_err(),
-            "old page echoes remain protected until explicit cleanup"
+            "MP-08/MP-10/MP-11: revoked page echoes remain protected without a human fallback"
         );
         assert!(store.require("unrelated", false).is_ok());
         assert!(!store
@@ -489,7 +487,7 @@ async fn vault_delete_and_rotation_remove_sealed_values_only_in_affected_rooms()
 }
 
 #[test]
-fn fresh_capture_never_reauthorizes_unknown_recovered_history() {
+fn fresh_capture_never_reauthorizes_pre_upgrade_history() {
     let root = TestRoot::new();
     let store = RoomSecretObservations::new(
         root.path().join("observations"),
@@ -585,7 +583,7 @@ async fn vault_mutation_drains_inputs_and_blocks_new_resolutions_across_rooms() 
 }
 
 #[test]
-fn explicit_clearance_io_failure_keeps_memory_protected() {
+fn revocation_io_failure_keeps_memory_protected() {
     let root = TestRoot::new();
     let key = crate::transport::relay_crypto::generate_private_key_base64();
     let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new())
@@ -594,7 +592,7 @@ fn explicit_clearance_io_failure_keeps_memory_protected() {
     let sealed = store.registry_path("room");
     std::fs::remove_file(&sealed).unwrap();
     std::fs::create_dir(&sealed).unwrap();
-    assert!(store.forget("room", true).is_err());
+    assert!(store.forget("room").is_err());
     assert!(store.require("room", false).is_err());
     assert!(store.protects_bytes("room"));
 }
@@ -637,33 +635,31 @@ fn vault_key_provenance_matches_normalized_store_keys() {
 async fn credential_removal_and_metadata_replacement_revoke_sealed_values() {
     use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
     use crate::local::{LocalDaemonRequest, RemoveCredentialRequest, UpsertCredentialRequest, RegisterCredentialRequest};
-    let root = TestRoot::new();
-    let mut room = TestRoom::new("vault-credential-metadata");
-    let config = room.runtime.owned.config_projection.snapshot();
-    room.runtime.owned.room_secret_observations =
-        RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new())
-            .with_identity(&config.relay_private_key);
     let _environment = crate::env_lock::lock();
-    struct RestoreHome(Option<std::ffi::OsString>);
-    impl Drop for RestoreHome {
-        fn drop(&mut self) {
-            if let Some(value) = &self.0 {
-                std::env::set_var("CHARIOX_HOME", value);
-            } else {
-                std::env::remove_var("CHARIOX_HOME");
+    for action in ["remove", "upsert", "register"] {
+        let root = TestRoot::new();
+        let mut room = TestRoom::new("vault-credential-metadata");
+        let config = room.runtime.owned.config_projection.snapshot();
+        room.runtime.owned.room_secret_observations =
+            RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new())
+                .with_identity(&config.relay_private_key);
+        struct RestoreHome(Option<std::ffi::OsString>);
+        impl Drop for RestoreHome {
+            fn drop(&mut self) {
+                if let Some(value) = &self.0 {
+                    std::env::set_var("CHARIOX_HOME", value);
+                } else {
+                    std::env::remove_var("CHARIOX_HOME");
+                }
             }
         }
-    }
-    let _home = RestoreHome(std::env::var_os("CHARIOX_HOME"));
-    std::env::set_var("CHARIOX_HOME", root.path().join("home"));
-    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
-    let store = &room.runtime.owned.room_secret_observations;
-    for action in ["remove", "upsert", "register"] {
+        let _home = RestoreHome(std::env::var_os("CHARIOX_HOME"));
+        std::env::set_var("CHARIOX_HOME", root.path().join("home"));
+        let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+        let store = &room.runtime.owned.room_secret_observations;
         registry
             .upsert(browser_credential("login", "old-key"))
             .unwrap();
-        // Explicit fixture reset between the three independent metadata mutations.
-        store.forget(&room.session_id, true).unwrap();
         store
             .register_credential_source(&room.session_id, Some("old-key"))
             .unwrap();
@@ -721,7 +717,41 @@ fn legacy_provenance_stays_conservative_after_new_credential_input() {
         BTreeSet::from(["room".into()]),
     );
     assert!(
-        migrated.uses_vault_key("room", "prior-vault-key").unwrap(),
-        "MP-08/MP-10/MP-11: unknown home state must also revoke a bound worker's possible values"
+        !migrated.uses_vault_key("room", "prior-vault-key").unwrap(),
+        "MP-08/MP-10/MP-11: historical migration alone must not revoke fresh observation state"
     );
+}
+
+#[test]
+fn migrated_history_marker_cannot_reopen_a_lost_secret_registry() {
+    let root = TestRoot::new();
+    let path = root.path().join("observations");
+    let key = crate::transport::relay_crypto::generate_private_key_base64();
+    let store = RoomSecretObservations::new(path.clone(), BTreeSet::from(["room".into()]))
+        .with_identity(&key);
+    store.register("room", "synthetic-only").unwrap();
+    std::fs::remove_file(store.registry_path("room")).unwrap();
+    let restarted =
+        RoomSecretObservations::new(path, BTreeSet::from(["room".into()])).with_identity(&key);
+    assert!(restarted.require("room", false).is_err());
+    assert!(restarted.protects_bytes("room"));
+}
+
+#[test]
+fn interrupted_migration_preserves_cutoff_and_room_deletion_removes_it() {
+    let root = TestRoot::new();
+    let path = root.path().join("observations");
+    let store = RoomSecretObservations::new(path.clone(), BTreeSet::from(["room".into()]));
+    let cutoff = store.legacy_history_cutoff("room").unwrap().unwrap();
+    std::fs::remove_file(path.join("migration-v1")).unwrap();
+    let restarted = RoomSecretObservations::new(path, BTreeSet::from(["room".into()]));
+    assert_eq!(
+        restarted.legacy_history_cutoff("room").unwrap(),
+        Some(cutoff)
+    );
+    assert!(restarted.require("room", false).is_ok());
+    restarted.delete_room("room").unwrap();
+    assert!(restarted.legacy_history_cutoff("room").unwrap().is_none());
+    assert!(!restarted.marker("room").exists());
+    assert!(!restarted.registry_path("room").exists());
 }

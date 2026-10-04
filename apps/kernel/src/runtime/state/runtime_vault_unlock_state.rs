@@ -395,19 +395,6 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
     ) -> Result<(crate::secret::CharioxVaultUnlockStatus, String), DaemonError> {
-        if self
-            .owned
-            .room_secret_observations
-            .blocked(session_id, false)?
-        {
-            // Observations never open this explicit, human-owned recovery path.
-            let action = self.recover_unknown_room_observations(session_id).await?;
-            let config = self.owned.config_projection.snapshot();
-            let status = crate::secret::chariox_encrypted_vault_status(expand_vault_path(
-                &config.user_config.credential_vault.path,
-            ))?;
-            return Ok((status, action.into()));
-        }
         let user_config = self.owned.config_projection.snapshot().user_config;
         let vault_config = user_config.credential_vault;
         if vault_config.backend != crate::config::CredentialVaultBackend::CharioxEncrypted {

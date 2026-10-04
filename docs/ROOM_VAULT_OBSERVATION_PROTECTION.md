@@ -12,8 +12,12 @@ zeroizing memory and the private sealed registry described below. A private valu
 a private sealed registry restores known-value scrubbing and target references
 automatically after kernel restart. The registry uses the existing kernel runtime
 identity and authenticated encryption with a separate purpose and Room binding.
-It creates no new identity or key. A one-time value-free migration fences Rooms present at the first upgraded boot.
-Rooms created afterward remain clean across restarts until a secret is inserted.
+It creates no new identity or key. A one-time value-free migration permanently
+withholds the pre-upgrade history and cached artifacts of Rooms present at the
+first upgraded boot. Its persisted history cutoff stays fixed across restarts.
+These legacy Rooms immediately permit fresh text, terminal and pixel observations
+autonomously, without unknown state or any human action. Rooms created afterward
+remain clean across restarts until a secret is inserted.
 Unavailable or invalid registries retain their unknown-state fence. No private material is put into diagnostics.
 
 MP-08/MP-11 text scrubbing retains exact values, case variants, URI/JSON/HTML
@@ -66,14 +70,9 @@ An unreachable worker returns an error and leaves that operation uncommitted.
 Room deletion removes the home registry and marker after runtime teardown;
 workers retain only empty unknown-state protection.
 
-An explicit `/credential vault manage` request in an unknown Room offers a
-human-owned kernel recovery decision. The user must remove prior secrets from
-browser pages and desktop controls before confirming recovery. Dismissal and
-timeout retain protection. Pending credential operations prevent clearance; the
-user can retry after they settle and the environment is clean. Confirmation clears unknown state on home and bound
-workers, persists the clean state and permits fresh observations. Prior history
-up to the clearance boundary and recovered caches remain withheld. Browser and
-Computer observations never request this exceptional recovery decision.
+There is no human observation-recovery interaction or clearance fallback.
+Vault management does not change Room observation protection. Lost or invalid
+secret registries and revoked values still fail closed to protect prior echoes.
 
 MP-08/MP-11 OCR and find-text always re-capture through this masking helper,
 including requests carrying old artifact IDs. OCR runs only on a fresh masked PNG,
@@ -83,16 +82,15 @@ served. Recovered history and caches stay unavailable; fresh captures do not
 reauthorize old content.
 
 MP-08/MP-11 shared local protocol 411 / relay peer 70 are the unshipped G2
-protocol pair. `clear_secret_observation` now carries `clear_unknown` (default
-`false`): lifecycle revocation removes retained values and keeps observations
-unknown; explicit human recovery sends `true`. Bound workers authenticate the
-same home/Room/slice scope as ordinary controller commands and return
+protocol pair. `clear_secret_observation` revokes retained values and keeps
+observations unknown; it has no owner-clearance flag. Bound workers authenticate
+the same home/Room/slice scope as ordinary controller commands and return
 `secret_observation_cleared`. Snapshot/hash tests pin the corrected shape within
 411/70 under the review-lane instruction; no client minimum changes. Known-value
 seeding and sealed registry metadata remain private kernel/controller contracts.
 
 MP-10 focused source and helper checks include false-positive benign observations,
-no human interactions, clean restart, one-time migration, explicit recovery and prior-history fencing,
+no human interactions, clean restart, autonomous one-time migration and permanent prior-history fencing,
 Vault revocation on both home and worker, registry Room/identity binding, bounded
 retry, old-artifact recapture, trusted Browser geometry, copied text/canvas masking,
 and unchanged native focus checks. Real Chromium/X11 helper runs use synthetic

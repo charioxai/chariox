@@ -356,12 +356,8 @@ pub(crate) enum RoomBrowserControllerCommand {
         action: RoomComputerInputAction,
     },
     ComputerSecretTarget,
-    /// MP-08/MP-11: revoke retained values; only explicit operator recovery
-    /// clears unknown state after removing prior secrets from the environment.
-    ClearSecretObservation {
-        #[serde(default)]
-        clear_unknown: bool,
-    },
+    /// MP-08/MP-11: revoke retained values on an authenticated bound worker.
+    ClearSecretObservation,
     ComputerClipboardRead {
         actor_id: String,
         runtime_generation: u64,
