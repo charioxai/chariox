@@ -174,6 +174,7 @@ struct KernelRuntimeOwnedState {
     external_provider_sessions: ExternalProviderSessionIndexStore,
     attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
     slice_store: crate::slice::SliceStore,
+    kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost,
     browser_controller_processes:
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
@@ -441,6 +442,7 @@ pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
 mod tool_dispatch;
+mod kernel_browser_runtime;
 mod transport_runtime_state;
 mod workflow;
 mod workflow_access_owned_state;
@@ -776,6 +778,7 @@ impl KernelRuntimeState {
                 external_provider_sessions,
                 attached_provider_transcript_cursors,
                 slice_store,
+                kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost::new(config.private_runtime_state_root()),
                 browser_controller_processes:
                     crate::runtime::browser_controller_process::BrowserControllerProcessStore::from_environment(),
                 browser_import_admission:

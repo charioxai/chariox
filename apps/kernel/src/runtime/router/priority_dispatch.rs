@@ -80,6 +80,14 @@ impl CommandRouter {
         // Select the handler before polling. A single async match reserves
         // stack space for unrelated arms throughout every nested handler poll.
         match request {
+            LocalDaemonRequest::KernelBrowser(request) => Box::pin(async move {
+                if !command.is_terminal_caller() {
+                    return Err(DaemonError::LocalTransport { operation: "kernel_browser", message: "MD-2: authenticated terminal required".into() });
+                }
+                let user = command_caller_user_id(&command);
+                let result = self.runtime_state.kernel_browser_request(user, request.command).await?;
+                Ok(LocalDaemonResponse::KernelBrowser { result })
+            }),
             LocalDaemonRequest::GetTerminalCommandCatalog(_) => {
                 Box::pin(async move { terminal_command_catalog_response() })
             }

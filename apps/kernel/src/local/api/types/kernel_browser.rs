@@ -1,0 +1,74 @@
+//! MD-2: sessionless host browser protocol (local 417).
+use super::*;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum KernelBrowserCommand {
+    Start,
+    State,
+    Stop,
+    Open {
+        url: String,
+    },
+    Close {
+        tab_id: String,
+        generation: u64,
+    },
+    Navigate {
+        tab_id: String,
+        generation: u64,
+        url: String,
+    },
+    Snapshot {
+        tab_id: String,
+        generation: u64,
+    },
+    Input {
+        tab_id: String,
+        generation: u64,
+        input: KernelBrowserInput,
+    },
+    Screenshot {
+        tab_id: String,
+        generation: u64,
+    },
+    Subscribe {
+        tab_id: String,
+        generation: u64,
+    },
+    Poll {
+        subscription_id: String,
+        generation: u64,
+    },
+    Unsubscribe {
+        subscription_id: String,
+        generation: u64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum KernelBrowserInput {
+    Click {
+        x: u32,
+        y: u32,
+    },
+    Text {
+        text: String,
+    },
+    Key {
+        key: String,
+    },
+    Scroll {
+        x: u32,
+        y: u32,
+        delta_x: i32,
+        delta_y: i32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KernelBrowserRequest {
+    pub command: KernelBrowserCommand,
+}

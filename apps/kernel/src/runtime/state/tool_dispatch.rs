@@ -147,7 +147,7 @@ impl KernelRuntimeState {
             .owned
             .provider_store
             .get_runs_by_runtime_mcp_auth_token(auth_token);
-        let mut specs = Vec::new();
+        let mut specs = self.kernel_browser_tool_specs(&provider_runs);
         if matches!(provider_runs.as_slice(), [run]
             if crate::provider::provider_run_uses_claude_permission_prompt_tool(run))
         {
@@ -267,6 +267,7 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        if let Some(result) = self.try_kernel_browser_tool(auth_token, tool_name, arguments.clone()).await { return result; }
         {
             let owned = &self.owned;
             let canonical_tool_name =
@@ -654,7 +655,7 @@ impl KernelRuntimeState {
             .map(|slice| slice.id)
     }
 
-    fn slice_kernel_id(&self) -> Option<String> {
+    pub(super) fn slice_kernel_id(&self) -> Option<String> {
         crate::slice::slice_worker_id_for_config(&self.owned.config_projection.snapshot())
     }
 }
