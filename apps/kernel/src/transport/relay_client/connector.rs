@@ -404,6 +404,19 @@ fn spawn_managed_slice_token_refresh(
     })
 }
 
+// MP-08/MP-10/MP-11: reject an obsolete home before settling token confirmation.
+fn managed_slice_token_confirmation_matches(
+    slice_id: &str,
+    nonce: &str,
+    peer_version: u32,
+    expected_slice_id: &str,
+    expected_nonce: &str,
+) -> bool {
+    slice_id == expected_slice_id
+        && nonce == expected_nonce
+        && peer_version >= crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+}
+
 fn spawn_managed_slice_activation_confirmation(
     router: Arc<CommandRouter>,
     state: Arc<RwLock<RelayClientState>>,
@@ -443,10 +456,10 @@ fn spawn_managed_slice_activation_confirmation(
                         activation_nonce,
                         relay_peer_protocol_version,
                     },
-                ) if slice_id == pending.slice_id
-                    && activation_nonce == pending.activation_nonce
-                    && relay_peer_protocol_version
-                        >= crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION =>
+                ) if managed_slice_token_confirmation_matches(
+                    &slice_id, &activation_nonce, relay_peer_protocol_version,
+                    &pending.slice_id, &pending.activation_nonce,
+                ) =>
                 {
                     state
                         .write()
