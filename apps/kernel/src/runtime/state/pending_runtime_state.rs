@@ -83,6 +83,7 @@ pub(super) struct PendingWorkerInteractionLifetime {
     pub(super) execution_lease_id: String,
     pub(super) provider_run_id: String,
     pub(super) binding_observed: Arc<std::sync::atomic::AtomicBool>,
+    pub(super) startup_permission: bool,
 }
 
 impl PendingInteraction {

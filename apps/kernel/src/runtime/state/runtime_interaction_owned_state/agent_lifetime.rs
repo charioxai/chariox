@@ -82,14 +82,19 @@ impl KernelRuntimeOwnedState {
                     &worker.leased_agent_id,
                     &worker.provider_run_id,
                 );
-                let live = run.id() == expected
-                    && run.state() == crate::provider::ProviderRunState::Running;
-                if live {
-                    worker
-                        .binding_observed
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                // MP-08 / MP-10 / MP-11: An unobserved provider startup
+                // approval may arrive before its launch ACK. History from a
+                // different run is not evidence that this launch has ended.
+                if run.id() == expected || !worker.unobserved_startup_permission() {
+                    let live = run.id() == expected
+                        && run.state() == crate::provider::ProviderRunState::Running;
+                    if live {
+                        worker
+                            .binding_observed
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    return live;
                 }
-                return live;
             }
         }
         match remote.active_worker_provider_run_id.as_deref() {
@@ -192,6 +197,7 @@ impl KernelRuntimeOwnedState {
             // MP-08 / MP-10 / MP-11: An idle review cannot outlive replacement
             // even if the separate active-dispatch binding still names the old run.
             if lifetime.prompt_id.is_none()
+                && !worker.unobserved_startup_permission()
                 && self
                     .provider_store
                     .get_run_for_agent(session.id(), &lifetime.agent_id)
@@ -336,5 +342,14 @@ impl KernelRuntimeState {
     ) -> Option<crate::session::NativeInteractionOrigin> {
         self.owned
             .capture_native_interaction_origin(session_id, agent_id, run_id)
+    }
+}
+
+impl super::super::pending_runtime_state::PendingWorkerInteractionLifetime {
+    fn unobserved_startup_permission(&self) -> bool {
+        self.startup_permission
+            && !self
+                .binding_observed
+                .load(std::sync::atomic::Ordering::Relaxed)
     }
 }

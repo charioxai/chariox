@@ -143,6 +143,9 @@ impl KernelRuntimeOwnedState {
                             .map(|remote| remote.execution_lease_id.clone())
                             .unwrap_or_default(),
                         provider_run_id: context.worker_provider_run_id.clone(),
+                        startup_permission: interaction.kind()
+                            == crate::session::RuntimeInteractionKind::Permission
+                            && matches!(origin, NativeInteractionOrigin::ProviderStartup { .. }),
                         binding_observed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                             // MP-08 / MP-10 / MP-11: Kernel choices raised by
                             // an idle worker need an already live run. Active
