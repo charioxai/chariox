@@ -2601,7 +2601,14 @@ Workflow trigger and deployment direction:
   passkey inside their approval panels; it is typed only into the popup.
 - protocol 404: process-bound external agent access over the existing
   `local_socket_path`. The kernel serves the same websocket envelopes on a
-  Unix socket with mode 0600 in an owned 0700 directory. It rejects other
+  Unix socket with mode 0600 in an owned 0700 directory. Its default address is
+  `/tmp/chariox-<effective uid>/<sha256>.sock`: the full SHA-256 covers the
+  domain `chariox-unix-socket-v1\0`, lexically normalized absolute config home,
+  a NUL separator, and daemon ID. This keeps maximal slice identities and deep
+  homes below the OS address limit and separates kernels in different homes.
+  CLI discovery uses the same derivation; TCP refusals name the actual socket.
+  `CHARIOX_DAEMON_SOCKET` remains an explicit override; startup rejects addresses
+  exceeding the platform byte limit before touching the filesystem. It rejects other
   UIDs, `Origin`, and bearer authorization headers. macOS identifies the
   peer with `getpeereid` and `LOCAL_PEERTOKEN`, including the audit token's
   process version. Linux uses `SO_PEERCRED` and the process start time.

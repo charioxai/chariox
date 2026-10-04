@@ -390,6 +390,7 @@ fn chariox_home_owns_config_identity_state_and_runtime_paths() {
 
     let config = DaemonConfig::load_from_env();
     let durable_state_path = config.durable_state_path();
+    let expected_socket = DaemonConfig::default_local_socket_path(&config.daemon_id);
 
     unsafe {
         restore_env_var("CHARIOX_HOME", old_chariox_home);
@@ -405,7 +406,10 @@ fn chariox_home_owns_config_identity_state_and_runtime_paths() {
         temp_home.join("state").join("kernel.db")
     );
     assert_eq!(config.session_history_root(), temp_home.join("sessions"));
-    assert!(config.local_socket_path.starts_with(temp_home.join("run")));
+    assert!(config
+        .local_socket_path
+        .starts_with(format!("/tmp/chariox-{}", unsafe { libc::geteuid() })));
+    assert_eq!(config.local_socket_path, expected_socket);
 }
 
 #[test]
