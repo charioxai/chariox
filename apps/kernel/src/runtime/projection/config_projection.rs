@@ -22,6 +22,16 @@ impl DaemonConfigProjectionStore {
             .clone()
     }
 
+    pub(crate) fn local_owner_user_id(&self) -> String {
+        self.config
+            .lock()
+            .expect("daemon config projection lock should not be poisoned")
+            .cloud_relay
+            .as_ref()
+            .map(|profile| profile.user_id.clone())
+            .unwrap_or_else(|| crate::session::DEFAULT_LOCAL_USER_ID.into())
+    }
+
     pub(crate) fn update(&self, config: DaemonConfig) {
         *self
             .config

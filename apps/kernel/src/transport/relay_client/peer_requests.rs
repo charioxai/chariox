@@ -3725,7 +3725,8 @@ mod tests {
 
         let mut config = DaemonConfig::for_tests();
         config.user_config_path = root.join("config.toml");
-        config.local_socket_path = root.join("kernel.sock");
+        config.local_socket_path =
+            DaemonConfig::default_local_socket_path(&format!("fixture:{}", root.display()));
         config = config.with_session_history_root(root.join("sessions"));
         config.user_config.history.operational.path =
             Some(root.join("operational.db").display().to_string());

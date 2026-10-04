@@ -175,6 +175,8 @@ pub fn error_with_fields(component: &str, message: impl Into<String>, fields: Va
 }
 
 fn log(level: LogLevel, component: &str, message: String, fields: Value) {
+    #[cfg(test)]
+    capture::record(component, &message, &fields);
     let Some(logger) = LOGGER.get() else {
         return;
     };
@@ -493,6 +495,59 @@ fn unix_epoch_ms() -> u64 {
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX)
+}
+
+/// Every log record of every level, while a test holds a capture: tests
+/// prove that a secret reaches no log, whatever the configured logger.
+#[cfg(test)]
+pub(crate) mod capture {
+    use std::sync::Mutex;
+
+    static RECORDS: Mutex<Option<Vec<String>>> = Mutex::new(None);
+    static CAPTURES: Mutex<usize> = Mutex::new(0);
+
+    pub(crate) struct LogCapture;
+
+    pub(crate) fn start() -> LogCapture {
+        let mut captures = CAPTURES.lock().unwrap_or_else(|error| error.into_inner());
+        *captures += 1;
+        RECORDS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_or_insert_with(Vec::new);
+        LogCapture
+    }
+
+    impl LogCapture {
+        /// Every record logged so far by any test, as text.
+        pub(crate) fn records(&self) -> Vec<String> {
+            RECORDS
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+                .unwrap_or_default()
+        }
+    }
+
+    impl Drop for LogCapture {
+        fn drop(&mut self) {
+            let mut captures = CAPTURES.lock().unwrap_or_else(|error| error.into_inner());
+            *captures -= 1;
+            if *captures == 0 {
+                *RECORDS.lock().unwrap_or_else(|error| error.into_inner()) = None;
+            }
+        }
+    }
+
+    pub(super) fn record(component: &str, message: &str, fields: &serde_json::Value) {
+        if let Some(records) = RECORDS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_mut()
+        {
+            records.push(format!("{component} {message} {fields}"));
+        }
+    }
 }
 
 #[cfg(test)]

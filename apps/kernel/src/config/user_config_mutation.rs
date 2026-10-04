@@ -9,6 +9,37 @@ impl CharioxUserConfig {
     pub(super) fn set_value(&mut self, key_path: &str, value: String) -> Result<(), DaemonError> {
         let normalized = key_path.trim();
         validate_config_key_path(normalized)?;
+        if normalized.starts_with("kernel_access.") {
+            let mut candidate = self.kernel_access.clone();
+            match normalized {
+                "kernel_access.grant_default_minutes" => {
+                    candidate.grant_default_minutes =
+                        parse_config_u32("kernel_access.grant_default_minutes", &value, true)?
+                }
+                "kernel_access.grant_max_minutes" => {
+                    candidate.grant_max_minutes =
+                        parse_config_u32("kernel_access.grant_max_minutes", &value, true)?
+                }
+                "kernel_access.grant_extend_notice_minutes" => {
+                    candidate.grant_extend_notice_minutes =
+                        parse_config_u32("kernel_access.grant_extend_notice_minutes", &value, true)?
+                }
+                "kernel_access.request_timeout_minutes" => {
+                    candidate.request_timeout_minutes =
+                        parse_config_u32("kernel_access.request_timeout_minutes", &value, true)?
+                }
+                _ => {
+                    return Err(DaemonError::InvalidConfig {
+                        field: "user_config",
+                        message: "unsupported user config key",
+                    })
+                }
+            }
+            candidate.validate()?;
+            self.kernel_access = candidate;
+            return Ok(());
+        }
+
         match normalized {
             "version" => {
                 self.version = value
@@ -435,6 +466,34 @@ impl CharioxUserConfig {
     pub(super) fn unset_value(&mut self, key_path: &str) -> Result<(), DaemonError> {
         let normalized = key_path.trim();
         validate_config_key_path(normalized)?;
+        if normalized.starts_with("kernel_access.") {
+            let mut candidate = self.kernel_access.clone();
+            let defaults = super::UserKernelAccessConfig::default();
+            match normalized {
+                "kernel_access.grant_default_minutes" => {
+                    candidate.grant_default_minutes = defaults.grant_default_minutes
+                }
+                "kernel_access.grant_max_minutes" => {
+                    candidate.grant_max_minutes = defaults.grant_max_minutes
+                }
+                "kernel_access.grant_extend_notice_minutes" => {
+                    candidate.grant_extend_notice_minutes = defaults.grant_extend_notice_minutes
+                }
+                "kernel_access.request_timeout_minutes" => {
+                    candidate.request_timeout_minutes = defaults.request_timeout_minutes
+                }
+                _ => {
+                    return Err(DaemonError::InvalidConfig {
+                        field: "user_config",
+                        message: "unsupported user config key",
+                    })
+                }
+            }
+            candidate.validate()?;
+            self.kernel_access = candidate;
+            return Ok(());
+        }
+
         match normalized {
             "providers.default" => self.providers.default = None,
             "providers.model" => self.providers.model = None,

@@ -64,6 +64,7 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
   await writeFile(path.join(workspace, "README.md"), `# Slice restart provider thread transfer drill for ${provider}\n`, "utf8")
 
   const client = new LocalIpcClient(kernelUrl, {
+    localAuthEnvironment: options.localAuthEnvironment,
     kernelPingIntervalMs: 60_000,
     kernelMaxMissedPongs: 10,
   })
@@ -214,6 +215,7 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
       ),
       `submit slice marker prompt for ${provider}`,
       Math.min(options.timeoutMs, 60_000),
+      options.localAuthEnvironment,
     )
     await waitForHistoryOutputMarker({
       client,
@@ -394,6 +396,7 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
       ),
       `submit slice recall marker prompt for ${provider}`,
       Math.min(options.timeoutMs, 60_000),
+      options.localAuthEnvironment,
     )
     await waitForHistoryOutputMarker({
       client,
@@ -530,6 +533,7 @@ async function validateSliceSaveFailureRecovery({
     ),
     `submit pre-failure marker for ${provider}`,
     Math.min(options.timeoutMs, 60_000),
+    options.localAuthEnvironment,
   )
   await waitForHistoryOutputMarker({
     client,
@@ -640,6 +644,7 @@ async function validateSliceSaveFailureRecovery({
     ),
     `submit post-failure recall for ${provider}`,
     Math.min(options.timeoutMs, 60_000),
+    options.localAuthEnvironment,
   )
   await waitForHistoryOutputMarker({
     client,
@@ -670,6 +675,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
   await writeFile(path.join(workspace, "README.md"), `# Live local-to-slice provider thread transfer drill for ${provider}\n`, "utf8")
 
   const client = new LocalIpcClient(kernelUrl, {
+    localAuthEnvironment: options.localAuthEnvironment,
     kernelPingIntervalMs: 60_000,
     kernelMaxMissedPongs: 10,
   })
@@ -763,6 +769,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
       ),
       `submit local marker prompt for ${provider}`,
       Math.min(options.timeoutMs, 60_000),
+      options.localAuthEnvironment,
     )
     await waitForHistoryOutputMarker({
       client,
@@ -922,6 +929,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
       ),
       `submit slice migration recall marker prompt for ${provider}`,
       Math.min(options.timeoutMs, 60_000),
+      options.localAuthEnvironment,
     )
     await waitForHistoryOutputMarker({
       client,
@@ -960,6 +968,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
         ),
         `submit slice return marker prompt for ${provider}`,
         Math.min(options.timeoutMs, 60_000),
+        options.localAuthEnvironment,
       )
       await waitForHistoryOutputMarker({
         client,
@@ -1071,6 +1080,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
         ),
         `submit returned local recall marker prompt for ${provider}`,
         Math.min(options.timeoutMs, 60_000),
+        options.localAuthEnvironment,
       )
       await waitForHistoryOutputMarker({
         client,

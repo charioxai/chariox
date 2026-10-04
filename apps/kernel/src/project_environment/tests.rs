@@ -1733,7 +1733,17 @@ fn mp08_mp10_mp11_foreign_owned_mounted_config_is_private_and_transactional() {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o664)).unwrap();
     // The child UID cannot traverse a root-owned builder checkout.
     let executable = fixture.0.join("worker-test");
-    std::fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+    // Linking avoids a writable executable descriptor being inherited by a
+    // concurrent fork, which can make the next exec fail with ETXTBSY.
+    std::fs::hard_link(std::env::current_exe().unwrap(), &executable)
+        .or_else(|error| {
+            if error.raw_os_error() == Some(libc::EXDEV) {
+                std::fs::copy(std::env::current_exe().unwrap(), &executable).map(|_| ())
+            } else {
+                Err(error)
+            }
+        })
+        .unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
     for mode in [
         "drop",

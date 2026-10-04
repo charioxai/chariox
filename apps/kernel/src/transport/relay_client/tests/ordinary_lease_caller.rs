@@ -8,7 +8,8 @@ fn isolate_test_config(
     let state_root = root.join(name);
     std::fs::create_dir_all(&state_root).expect("isolated daemon state root should be created");
     config.user_config_path = state_root.join("config.toml");
-    config.local_socket_path = state_root.join("daemon.sock");
+    config.local_socket_path =
+        DaemonConfig::default_local_socket_path(&format!("fixture:{}", state_root.display()));
     config.user_config.state.path = Some(state_root.join("state.db").display().to_string());
     config.user_config.history.operational.path = Some(
         state_root
@@ -294,7 +295,7 @@ async fn ordinary_lease_caller_binding_survives_restart_and_rejects_spoofs_async
     );
 
     let restarted_worker = Arc::new(Mutex::new(
-        DaemonApp::bootstrap(worker_config.clone()).expect("worker should restore same state"),
+        crate::test_support::bootstrap_after_test_owner_exit(worker_config.clone()).await,
     ));
     let restarted_state = restarted_worker.lock().await.relay_client_state();
     let (shutdown_restarted_tx, shutdown_restarted_rx) = watch::channel(false);

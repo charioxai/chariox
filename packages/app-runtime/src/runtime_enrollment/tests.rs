@@ -104,6 +104,27 @@ impl Drop for Fixture {
 
 #[test]
 fn signature_pins_exact_inventory_and_keeps_an_installer_lease_until_drop() {
+    // A concurrent fork can retain a CLOEXEC lease until that child execs.
+    // Measure release in a private process, without other tests' fork windows.
+    const CHILD: &str = "CHARIOX_TEST_ISOLATED_ENROLLMENT_LEASE";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "runtime_enrollment::tests::signature_pins_exact_inventory_and_keeps_an_installer_lease_until_drop",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated lease fixture: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     let fixture = Fixture::new();
     let runtime = fixture.open().unwrap();
     assert_eq!(runtime.revision(), 1);

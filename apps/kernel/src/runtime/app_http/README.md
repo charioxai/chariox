@@ -77,7 +77,8 @@ Opening acknowledges only after the first task poll checks the original request
 budget. Once acknowledged, the stream keeps its original one-hour lifetime;
 subsequent pulls retain each IPC request's original absolute budget. Handles,
 unread buffers, socket tasks and DNS drivers share the lifetime reservation and
-actual worker lease. Draining signals handles synchronously and joins all tasks;
+actual worker lease. Draining signals handles synchronously, waits for durable
+writer jobs to release their pins, and joins all tasks;
 canceling that wait preserves join ownership for a later resume. EOF consults the
 retained task result so a full response queue cannot hide transport failure.
 

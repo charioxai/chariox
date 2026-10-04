@@ -39,7 +39,8 @@ impl TestState {
             .parent()
             .unwrap()
             .to_path_buf();
-        config.local_socket_path = root.join("kernel.sock");
+        config.local_socket_path =
+            DaemonConfig::default_local_socket_path(&format!("fixture:{}", root.display()));
         config.user_config_path = root.join("config.toml");
         config = config.with_session_history_root(root.join("history"));
         config.user_config.history.operational.path =

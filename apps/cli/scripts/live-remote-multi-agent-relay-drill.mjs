@@ -195,9 +195,9 @@ async function terminateChild(child, signal = 'SIGTERM') {
   }
 }
 
-async function waitForLocalDaemon(kernelUrl) {
+async function waitForLocalDaemon(kernelUrl, localAuthEnvironment) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
-    const probe = new LocalIpcClient(kernelUrl)
+    const probe = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       const session = unwrap(await probe.send(createSessionRequest(repoRoot, repoRoot)), 'SessionCreated').session
       await probe.send(endSessionRequest(session.id)).catch(() => {})
@@ -440,11 +440,11 @@ async function main() {
       }),
     })
 
-    await waitForLocalDaemon(homeKernelUrl)
+    await waitForLocalDaemon(homeKernelUrl, { ...process.env, XDG_STATE_HOME: path.join(rootDir, `${homeDaemonId}-xdg-state`) })
     await waitForRelayTarget(relayUrl, relayToken, 'home')
     await waitForRelayTarget(relayUrl, relayToken, 'worker')
 
-    localClient = new LocalIpcClient(homeKernelUrl)
+    localClient = new LocalIpcClient(homeKernelUrl, { localAuthEnvironment: { ...process.env, XDG_STATE_HOME: path.join(rootDir, `${homeDaemonId}-xdg-state`) } })
     remoteClient = new LocalIpcClient(relayUrl, {
       relayAuthToken: relayToken,
       targetDaemonAlias: 'home',

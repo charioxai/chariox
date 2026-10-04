@@ -542,13 +542,16 @@ impl KernelRuntimeState {
         &self,
         mut request: crate::agent::CreateAgentRequest,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.authorize_current_external_command()?;
         self.normalize_local_kernel_ref(&mut request);
         if request.kernel_ref.is_none() {
             request = self.prepare_local_agent_worktree_placement(request)?;
             return self.owned.spawn_agent(request);
         }
         self.with_app_side_effect(|app| {
-            crate::app::KernelSessionService::new(app).spawn_agent(request)
+            self.authorize_current_external_command()?;
+            crate::app::KernelSessionService::new(app)
+                .spawn_agent_authorized(request, &|| self.authorize_current_external_command())
         })
         .await
     }
@@ -675,6 +678,7 @@ impl KernelRuntimeState {
         machine_ref: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.authorize_current_external_command()?;
         let local_agent =
             self.owned
                 .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to remote")?;
@@ -711,11 +715,15 @@ impl KernelRuntimeState {
         }
         let agent = self
             .with_app_side_effect(|app| {
-                app.move_agent_to_remote(session_id, agent_ref, &worker_ref)
+                self.authorize_current_external_command()?;
+                app.move_agent_to_remote_authorized(session_id, agent_ref, &worker_ref, &|| {
+                    self.authorize_current_external_command()
+                })
             })
             .await?;
         if let Some(slice_ref) = target_slice_id {
-            self.attach_slice_agent(&slice_ref, session_id, agent.id())
+            self.with_external_command_authority(None)
+                .attach_slice_agent(&slice_ref, session_id, agent.id())
                 .await?;
         }
         Ok(agent)
@@ -727,6 +735,7 @@ impl KernelRuntimeState {
         agent_ref: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.authorize_current_external_command()?;
         let remote_agent =
             self.owned
                 .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to local")?;
@@ -749,8 +758,13 @@ impl KernelRuntimeState {
                 &remote_agent,
             )?;
         let agent = self
-            .with_app_side_effect(|app| app.move_agent_to_local(session_id, agent_ref))
+            .with_authorized_app_side_effect(|app| {
+                app.move_agent_to_local_authorized(session_id, agent_ref, &|| {
+                    self.authorize_current_external_command()
+                })
+            })
             .await?;
+        // The move committed; finish its slice bookkeeping under kernel authority.
         if let Some(slice_ref) = slice_ref {
             let slice = self.owned.slice_store.detach_agent(
                 &slice_ref,
@@ -767,11 +781,28 @@ impl KernelRuntimeState {
         Ok(agent)
     }
 
+    pub(crate) async fn destroy_agent_in_session(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        caller_user_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.into(),
+                agent_id: agent_id.into(),
+            });
+        }
+        self.destroy_agent(agent_id, caller_user_id).await
+    }
+
     pub(crate) async fn destroy_agent(
         &self,
         agent_id: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.authorize_current_external_command()?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let local_provider_run_ids = if agent.remote_execution().is_none() {
             self.owned
@@ -804,12 +835,17 @@ impl KernelRuntimeState {
         // Local deletion retains its app-lock-independent owned-state path.
         let destroyed = if agent.remote_execution().is_some() {
             self.with_app_side_effect(|app| {
+                self.authorize_current_external_command()?;
                 crate::app::KernelSessionService::new(app)
-                    .destroy_agent_worker_execution(&agent)
+                    .destroy_agent_worker_execution_authorized(&agent, &|| {
+                        self.authorize_current_external_command()
+                    })
                     .map_err(|error| DaemonError::AgentWorkerCleanup {
                         agent_id: agent_id.to_string(),
                         source: Box::new(error),
                     })?;
+                // Worker cleanup has committed. Finish home deletion under the
+                // same app lock so a queued projection cannot revive the run.
                 self.owned.destroy_agent(agent_id, caller_user_id)
             })
             .await?
@@ -907,6 +943,7 @@ impl KernelRuntimeState {
         self.stop_managed_environment_for_session_lifecycle(session_id)
             .await;
         let (session, terminated_run_ids) = owned.end_session(session_id)?;
+        self.sweep_kernel_access();
         owned.clear_session_prompt_runtime_state(session_id);
         let session = owned.publish_session_after_durable_mutation(session);
         for provider_run_id in terminated_run_ids {
@@ -966,6 +1003,7 @@ impl KernelRuntimeState {
             .await;
         let (session, terminated_run_ids, removed_project) =
             owned.delete_session(owned.session_store.get_session(&session_id)?)?;
+        self.sweep_kernel_access();
         debug_assert_eq!(
             removed_project.as_ref().map(|project| project.id()),
             durable_project_delete.as_ref().map(|project| project.id()),

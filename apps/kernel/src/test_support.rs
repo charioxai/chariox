@@ -7,8 +7,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod environment;
+#[cfg(unix)]
+mod pre_exec_child;
 mod runtime_mcp;
 pub(crate) use environment::{environment_test_isolated, isolate_environment_test};
+#[cfg(unix)]
+pub(crate) use pre_exec_child::PreExecChild;
 pub(crate) use runtime_mcp::TestRuntimeMcp;
 
 /// Run ambient-environment fixtures outside the parallel test process. A mutex
@@ -24,6 +28,27 @@ macro_rules! isolated_env_test {
 pub(crate) use isolated_env_test;
 
 static TEST_WORKTREE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Dropped router tasks may briefly retain the durable store's ownership fence.
+/// Yield until they finish, retrying only that explicit busy-owner error.
+pub(crate) async fn bootstrap_after_test_owner_exit(config: DaemonConfig) -> DaemonApp {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            match DaemonApp::bootstrap(config.clone()) {
+                Ok(app) => return app,
+                Err(DaemonError::LocalTransport {
+                    operation: "durable_state.acquire_owner",
+                    message,
+                }) if message == "durable state is already owned by another kernel" => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("restart should bootstrap: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("the dropped kernel's background owners should exit")
+}
 
 /// A real, disposable working directory for provider-launch fixtures.
 ///

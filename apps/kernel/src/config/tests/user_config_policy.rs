@@ -115,7 +115,8 @@ fn user_config_defaults_to_versioned_slice_image() {
 
 #[test]
 fn provider_sandbox_compatibility_is_an_explicit_settable_security_grant() {
-    let mut config = DaemonConfig::new("daemon", "machine", "tester");
+    // Persistence must not use another fixture's ambient CHARIOX_HOME.
+    let mut config = DaemonConfig::for_tests();
 
     config
         .set_user_config_value("slices.linux.allow_provider_sandbox_compatibility", "true")
@@ -123,6 +124,13 @@ fn provider_sandbox_compatibility_is_an_explicit_settable_security_grant() {
     assert_eq!(
         config
             .user_config
+            .slices
+            .linux
+            .allow_provider_sandbox_compatibility,
+        Some(true)
+    );
+    assert_eq!(
+        load_user_config_from_path(&config.user_config_path)
             .slices
             .linux
             .allow_provider_sandbox_compatibility,
@@ -149,6 +157,15 @@ fn provider_sandbox_compatibility_is_an_explicit_settable_security_grant() {
             .allow_provider_sandbox_compatibility,
         None
     );
+    assert_eq!(
+        load_user_config_from_path(&config.user_config_path)
+            .slices
+            .linux
+            .allow_provider_sandbox_compatibility,
+        None
+    );
+    std::fs::remove_dir_all(config.user_config_path.parent().unwrap())
+        .expect("the private config fixture should be removed");
 }
 
 #[test]

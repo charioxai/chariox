@@ -161,6 +161,7 @@ mod mcp_catalog_reload;
 #[cfg(unix)]
 mod project_queued_environment;
 mod prompt_cancellation;
+mod prompt_parking;
 mod publication_settlement;
 mod pump_selection;
 mod quiet_drain_workflow;

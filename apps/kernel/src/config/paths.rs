@@ -5,7 +5,9 @@ use super::{persisted_daemon, DaemonConfig};
 
 impl DaemonConfig {
     pub fn default_local_socket_path(daemon_id: &str) -> PathBuf {
-        default_runtime_dir().join(format!("{daemon_id}.sock"))
+        super::socket_path::default_socket_path(daemon_id, &default_config_dir(), unsafe {
+            libc::geteuid()
+        })
     }
 
     pub fn default_session_history_root() -> PathBuf {
@@ -181,6 +183,15 @@ impl DaemonConfig {
         default_config_dir().join("kernels").join("active")
     }
 
+    /// The owner-only file where a laptop kernel listening on `port` writes
+    /// its local auth token. Local clients derive the same path from
+    /// `CHARIOX_HOME`, `XDG_STATE_HOME` or `HOME` and the port they connect to.
+    pub fn default_kernel_local_auth_token_path(port: u16) -> PathBuf {
+        default_state_dir()
+            .join("kernel-local-auth")
+            .join(format!("{port}.token"))
+    }
+
     pub fn default_daemon_config_path() -> PathBuf {
         persisted_daemon::default_daemon_config_path()
     }
@@ -232,28 +243,6 @@ pub(super) fn default_config_dir() -> PathBuf {
     }
 
     env::temp_dir().join("chariox").join("config")
-}
-
-fn default_runtime_dir() -> PathBuf {
-    if let Some(home_dir) = chariox_home_dir() {
-        return home_dir.join("run");
-    }
-
-    if let Some(runtime_dir) = env::var_os("XDG_RUNTIME_DIR")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-    {
-        return runtime_dir.join("chariox");
-    }
-
-    if let Some(home_dir) = env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-    {
-        return home_dir.join(".chariox").join("run");
-    }
-
-    env::temp_dir().join("chariox")
 }
 
 fn expand_user_path(value: &str) -> PathBuf {

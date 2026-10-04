@@ -62,6 +62,7 @@ struct Inner {
     runtime: Handle,
     state: Mutex<State>,
     tasks: AsyncMutex<JoinSet<()>>,
+    writer_jobs: watch::Sender<usize>,
 }
 #[derive(Clone)]
 pub(super) struct HttpStreams(Arc<Inner>);
@@ -139,6 +140,7 @@ impl HttpStreams {
                 entries: BTreeMap::new(),
             }),
             tasks: AsyncMutex::new(JoinSet::new()),
+            writer_jobs: watch::channel(0).0,
         })))
     }
 
@@ -228,6 +230,10 @@ impl HttpStreams {
     /// join resumes ownership instead of detaching or discarding task handles.
     pub(super) async fn join(&self) {
         self.begin_draining();
+        // A reply can precede destruction of the durable writer's request.
+        // Wait for its pins before taking the task lock needed by submission.
+        let mut jobs = self.0.writer_jobs.subscribe();
+        jobs.wait_for(|count| *count == 0).await.unwrap();
         let mut tasks = self.0.tasks.lock().await;
         while tasks.join_next().await.is_some() {}
     }

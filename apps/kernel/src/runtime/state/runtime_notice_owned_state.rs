@@ -2,6 +2,14 @@
 
 use super::*;
 
+impl KernelRuntimeState {
+    pub(crate) fn record_meta_migration_notice(&self, session_id: &str, agent_id: &str) {
+        self.owned.record_notice_for_agent(session_id, None, Some(agent_id),
+            self.owned.attachment_store.list_session_attachment_ids(session_id),
+            "/sudo <prompt> replaces /meta. /meta remains delegation-only for one release and needs no passkey. /sudo requires your passkey in the kernel popup and grants authority for exactly one turn.");
+    }
+}
+
 impl KernelRuntimeOwnedState {
     /// Tell every attached session once when kernel storage fills, has space
     /// again, or stops saving, so the owner sees why changes are refused. With

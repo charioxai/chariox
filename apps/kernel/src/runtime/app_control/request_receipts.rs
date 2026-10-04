@@ -5,7 +5,8 @@ use crate::{
     local::{AppRequestErrorCode, LocalDaemonRequest, LocalDaemonResponse},
     runtime::command::KernelCommand,
     runtime_transport::command_cache::{
-        is_receipt_capacity_error, CommandFingerprint, CommandReservation, CommandResultCache,
+        is_receipt_capacity_error, is_receipt_expired_error, CommandFingerprint,
+        CommandReservation, CommandResultCache,
     },
 };
 
@@ -115,6 +116,11 @@ impl AppRequestReceipts {
                 Ok(CommandReservation::Conflict) => LocalDaemonResponse::AppRequestFailed {
                     code: AppRequestErrorCode::Conflict,
                 },
+                Err(error) if is_receipt_expired_error(&error) => {
+                    LocalDaemonResponse::AppRequestFailed {
+                        code: AppRequestErrorCode::ReceiptExpired,
+                    }
+                }
                 Err(error) if is_receipt_capacity_error(&error) && safety_control => {
                     // Reservation checks existing identities/conflicts before
                     // capacity. Preserve every accepted receipt; only this new

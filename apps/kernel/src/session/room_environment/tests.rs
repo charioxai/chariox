@@ -177,6 +177,7 @@ fn pointer_motion_coalesces_without_crowding_room_events_out_of_replay() {
     let mut environment =
         RoomEnvironment::new_with_event_capacity("room-1", "environment-1", viewport, 3).unwrap();
     environment.start_runtime().unwrap();
+    mark_components_ready(&mut environment);
     environment
         .transition_to(EnvironmentLifecycle::Ready)
         .unwrap();
@@ -202,7 +203,7 @@ fn pointer_motion_coalesces_without_crowding_room_events_out_of_replay() {
     environment.update_component_health(
         EnvironmentComponent::Streamer,
         EnvironmentComponentHealthState::Ready,
-        None,
+        Some("streamer_refresh"),
     );
     for x in 20..30 {
         environment
@@ -308,6 +309,359 @@ fn controller_tab_reconciliation_preserves_identity_and_tracks_documents_and_foc
             ("tab-3", "https://c.test", "C", 1, false),
         ]
     );
+}
+
+#[test]
+fn cold_app_recovery_reuses_the_logical_tab_only_after_verified_binding() {
+    for restart_while_down in [false, true] {
+        let mut environment = ready_environment_with_agent();
+        let layout = super::AppPanelLayout::default();
+        environment.set_app_tabs(
+            std::collections::BTreeMap::from([("old-app".into(), ("app_1".into(), layout))]),
+            Some("agent-1".into()),
+            true,
+        );
+        environment.reconcile_controller_tabs(
+            vec![observed_tab(
+                "old-app",
+                "old-document",
+                "https://app.todo.invalid/",
+                "Todo",
+            )],
+            Some("old-app"),
+        );
+        let before = environment.snapshot().tabs[0].clone();
+        environment.invalidate_runtime_after_process_loss().unwrap();
+        assert!(environment.snapshot().tabs.is_empty());
+        if restart_while_down {
+            environment =
+                serde_json::from_value(serde_json::to_value(&environment).unwrap()).unwrap();
+        }
+        environment.reconcile_controller_tabs(
+            vec![observed_tab(
+                "new-app",
+                "new-document",
+                "https://app.todo.invalid/",
+                "Todo",
+            )],
+            Some("new-app"),
+        );
+        // An origin is not authority: a same-URL page stays an ordinary Tab.
+        assert_ne!(environment.snapshot().tabs[0].tab_id, before.tab_id);
+        assert!(environment.snapshot().tabs[0].app.is_none());
+        environment.set_app_tabs(
+            std::collections::BTreeMap::from([("new-app".into(), ("app_1".into(), layout))]),
+            Some("agent-1".into()),
+            true,
+        );
+        let after = environment.snapshot();
+        assert_eq!(after.tabs.len(), 1);
+        assert_eq!(after.tabs[0].tab_id, before.tab_id);
+        assert!(after.tabs[0].document_revision > before.document_revision);
+        assert_eq!(
+            after.focused_tab_id.as_deref(),
+            Some(before.tab_id.as_str())
+        );
+        assert_eq!(
+            environment
+                .controller_tab_binding(&before.tab_id)
+                .unwrap()
+                .runtime_target_id,
+            "new-app"
+        );
+    }
+}
+
+#[test]
+fn duplicate_app_bindings_claim_recovery_once_without_stealing_live_focus() {
+    let mut environment = ready_environment_with_agent();
+    let layout = super::AppPanelLayout::default();
+    let mark = |targets: &[&str]| {
+        targets
+            .iter()
+            .map(|target| ((*target).to_string(), ("app_1".to_string(), layout)))
+            .collect()
+    };
+    environment.set_app_tabs(mark(&["old-app"]), Some("agent-1".into()), true);
+    environment.reconcile_controller_tabs(
+        vec![observed_tab(
+            "old-app",
+            "old-doc",
+            "https://app.todo.invalid/",
+            "Todo",
+        )],
+        Some("old-app"),
+    );
+    let old = environment.snapshot().tabs[0].tab_id.clone();
+    environment.invalidate_runtime_after_process_loss().unwrap();
+    environment.reconcile_controller_tabs(
+        vec![
+            observed_tab("new-a", "doc-a", "https://app.todo.invalid/", "Todo"),
+            observed_tab("new-b", "doc-b", "https://app.todo.invalid/", "Todo"),
+        ],
+        Some("new-b"),
+    );
+    let chosen = environment.snapshot().focused_tab_id.unwrap();
+    environment.set_app_tabs(mark(&["new-a", "new-b"]), Some("agent-1".into()), true);
+    let after = environment.snapshot();
+    assert_eq!(after.tabs.iter().filter(|tab| tab.tab_id == old).count(), 1);
+    assert_eq!(after.tabs.len(), 2);
+    assert_eq!(after.focused_tab_id, Some(chosen));
+}
+
+#[test]
+fn explicit_slice_replacement_recovers_identity_without_room_invalidation() {
+    for activity in [0, 1, 2] {
+        let mut environment = ready_environment_with_agent();
+        let layout = super::AppPanelLayout::default();
+        environment.set_app_tabs(
+            std::collections::BTreeMap::from([("old-app".into(), ("app_1".into(), layout))]),
+            None,
+            true,
+        );
+        environment.reconcile_controller_tabs(
+            vec![observed_tab(
+                "old-app",
+                "old-doc",
+                "https://app.todo.invalid/",
+                "Todo",
+            )],
+            Some("old-app"),
+        );
+        let old = environment.snapshot().tabs[0].clone();
+        let generation = environment.snapshot().runtime_generation;
+        environment.prepare_app_recovery();
+        // A poll finishing before the stop must not consume its own identity.
+        environment.set_app_tabs(
+            std::collections::BTreeMap::from([("old-app".into(), ("app_1".into(), layout))]),
+            None,
+            true,
+        );
+        assert_eq!(
+            environment.snapshot().tabs[0].document_revision,
+            old.document_revision
+        );
+        // Suspending AppViews removes authority before the old browser exits.
+        environment.set_app_tabs(std::collections::BTreeMap::new(), None, true);
+        environment.reconcile_controller_tabs(vec![], None);
+        environment.reconcile_controller_tabs(
+            vec![
+                observed_tab("new-app", "new-doc", "https://app.todo.invalid/", "Todo"),
+                observed_tab("startup-blank", "blank-doc", "about:blank", "about:blank"),
+            ],
+            Some("startup-blank"),
+        );
+        let blank = environment.snapshot().focused_tab_id.unwrap();
+        match activity {
+            1 => environment.cancel_app_recovery_focus(), // explicit Tab choice
+            2 => {
+                environment
+                    .submit_action(EnvironmentActionRequest::computer_mutation(
+                        "agent-1",
+                        generation,
+                        "new-pointer-choice",
+                        Some(&blank),
+                    ))
+                    .unwrap();
+            }
+            _ => {}
+        }
+        environment.set_app_tabs(
+            std::collections::BTreeMap::from([("new-app".into(), ("app_1".into(), layout))]),
+            None,
+            true,
+        );
+        let after = environment.snapshot();
+        assert_eq!(after.runtime_generation, generation);
+        let app = after.tabs.iter().find(|tab| tab.app.is_some()).unwrap();
+        assert_eq!(app.tab_id, old.tab_id);
+        assert!(app.document_revision > old.document_revision);
+        assert_eq!(
+            after.focused_tab_id,
+            Some(if activity == 0 { old.tab_id } else { blank })
+        );
+    }
+}
+
+#[test]
+fn reclaimed_app_focus_survives_projection_until_activation_or_new_input() {
+    for activity in [0, 1, 2] {
+        let mut environment = ready_environment_with_agent();
+        let mark = |target: &str| {
+            std::collections::BTreeMap::from([(
+                target.into(),
+                ("app_1".into(), super::AppPanelLayout::default()),
+            )])
+        };
+        environment.set_app_tabs(mark("old-app"), None, true);
+        environment.reconcile_controller_tabs(
+            vec![observed_tab(
+                "old-app",
+                "old-doc",
+                "https://app.todo.invalid/",
+                "Todo",
+            )],
+            Some("old-app"),
+        );
+        let old = environment.snapshot().focused_tab_id.unwrap();
+        environment.prepare_app_recovery();
+        environment.set_app_tabs(std::collections::BTreeMap::new(), None, true);
+        environment.reconcile_controller_tabs(vec![], None);
+        let observations = || {
+            vec![
+                observed_tab("new-app", "new-doc", "https://app.todo.invalid/", "Todo"),
+                observed_tab("startup-blank", "blank-doc", "about:blank", "about:blank"),
+            ]
+        };
+        environment.reconcile_controller_tabs(observations(), Some("startup-blank"));
+        let blank = environment.snapshot().focused_tab_id.unwrap();
+        environment.set_app_tabs(mark("new-app"), None, true);
+        assert_eq!(
+            environment.snapshot().focused_tab_id.as_deref(),
+            Some(old.as_str())
+        );
+        // Layout publication and browser events can reconcile again before
+        // the restore coroutine sends its physical Activate command.
+        environment = serde_json::from_value(serde_json::to_value(&environment).unwrap()).unwrap();
+        // The verified live binding is runtime-owned and is republished after
+        // deserializing durable Room state.
+        environment.set_app_tabs(mark("new-app"), None, true);
+        environment.reconcile_controller_tabs(observations(), Some("startup-blank"));
+        assert_eq!(
+            environment.snapshot().focused_tab_id.as_deref(),
+            Some(old.as_str())
+        );
+        environment.reconcile_controller_tabs(observations(), Some("new-app"));
+        match activity {
+            1 => environment.cancel_app_recovery_focus(),
+            2 => {
+                environment
+                    .submit_action(EnvironmentActionRequest::computer_mutation(
+                        "agent-1",
+                        environment.snapshot().runtime_generation,
+                        "post-recovery-pointer-choice",
+                        Some(&old),
+                    ))
+                    .unwrap();
+            }
+            _ => {}
+        }
+        // A delayed blank observation after activation must not discard the
+        // restored focus, but a new explicit choice or input always wins.
+        environment.reconcile_controller_tabs(observations(), Some("startup-blank"));
+        assert_eq!(
+            environment.snapshot().focused_tab_id,
+            Some(if activity == 0 { old } else { blank })
+        );
+        // A different nonblank live page also ends the recovery focus intent.
+        let mut other = observations();
+        other[1] = observed_tab("startup-blank", "other-doc", "https://other.test/", "Other");
+        environment.reconcile_controller_tabs(other, Some("startup-blank"));
+        assert_eq!(
+            environment
+                .snapshot()
+                .tabs
+                .iter()
+                .find(|t| t.focused)
+                .unwrap()
+                .url,
+            "https://other.test/"
+        );
+    }
+}
+
+#[test]
+fn recovery_waits_until_the_old_live_tab_releases_its_identity() {
+    let mut environment = ready_environment_with_agent();
+    let layout = super::AppPanelLayout::default();
+    let observation =
+        |target, document| observed_tab(target, document, "https://app.todo.invalid/", "Todo");
+    environment.set_app_tabs(
+        std::collections::BTreeMap::from([("old-app".into(), ("app_1".into(), layout))]),
+        None,
+        true,
+    );
+    environment.reconcile_controller_tabs(vec![observation("old-app", "old-doc")], Some("old-app"));
+    let old = environment.snapshot().tabs[0].tab_id.clone();
+    environment.prepare_app_recovery();
+    environment.reconcile_controller_tabs(
+        vec![
+            observation("old-app", "old-doc"),
+            observation("new-app", "new-doc"),
+        ],
+        Some("new-app"),
+    );
+    environment.set_app_tabs(
+        std::collections::BTreeMap::from([("new-app".into(), ("app_1".into(), layout))]),
+        None,
+        true,
+    );
+    let overlap = environment.snapshot();
+    assert_eq!(overlap.tabs.len(), 2);
+    assert_ne!(overlap.tabs[0].tab_id, overlap.tabs[1].tab_id);
+    assert_eq!(
+        environment.tab_id_for_controller_target("old-app"),
+        Some(old.clone())
+    );
+    assert_ne!(
+        environment.tab_id_for_controller_target("new-app"),
+        Some(old.clone())
+    );
+    environment.reconcile_controller_tabs(vec![observation("new-app", "new-doc")], Some("new-app"));
+    let recovered = environment.snapshot();
+    assert_eq!(recovered.tabs.len(), 1);
+    assert_eq!(recovered.tabs[0].tab_id, old);
+    assert_eq!(environment.tab_id_for_controller_target("old-app"), None);
+    assert_eq!(
+        environment
+            .controller_tab_binding(&old)
+            .unwrap()
+            .runtime_target_id,
+        "new-app"
+    );
+    environment.reconcile_controller_tabs(vec![observation("new-app", "new-doc")], Some("new-app"));
+    assert_eq!(
+        environment.snapshot().tabs[0].document_revision,
+        recovered.tabs[0].document_revision
+    );
+}
+
+#[test]
+fn unclaimed_app_recovery_expires_at_the_next_physical_generation() {
+    let mut environment = ready_environment_with_agent();
+    let layout = super::AppPanelLayout::default();
+    environment.set_app_tabs(
+        std::collections::BTreeMap::from([("old-app".into(), ("app_1".into(), layout))]),
+        None,
+        true,
+    );
+    environment.reconcile_controller_tabs(
+        vec![observed_tab(
+            "old-app",
+            "old-doc",
+            "https://app.todo.invalid/",
+            "Todo",
+        )],
+        Some("old-app"),
+    );
+    let old = environment.snapshot().tabs[0].tab_id.clone();
+    environment.invalidate_runtime_after_process_loss().unwrap();
+    environment.invalidate_runtime_after_process_loss().unwrap();
+    environment.reconcile_controller_tabs(
+        vec![observed_tab(
+            "new-app",
+            "new-doc",
+            "https://app.todo.invalid/",
+            "Todo",
+        )],
+        Some("new-app"),
+    );
+    environment.set_app_tabs(
+        std::collections::BTreeMap::from([("new-app".into(), ("app_1".into(), layout))]),
+        None,
+        true,
+    );
+    assert_ne!(environment.snapshot().tabs[0].tab_id, old);
 }
 
 #[test]
@@ -2620,12 +2974,12 @@ fn component_health_projects_safe_diagnostic_codes() {
             },
             EnvironmentComponentHealth {
                 component: EnvironmentComponent::Browser,
-                state: EnvironmentComponentHealthState::Starting,
+                state: EnvironmentComponentHealthState::Ready,
                 diagnostic_code: None,
             },
             EnvironmentComponentHealth {
                 component: EnvironmentComponent::Desktop,
-                state: EnvironmentComponentHealthState::Unavailable,
+                state: EnvironmentComponentHealthState::Ready,
                 diagnostic_code: None,
             },
             EnvironmentComponentHealth {
@@ -2677,12 +3031,183 @@ fn starting_environment_with_agent() -> RoomEnvironment {
     environment
 }
 
+fn mark_components_ready(environment: &mut RoomEnvironment) {
+    for component in [
+        EnvironmentComponent::BrowserController,
+        EnvironmentComponent::Browser,
+        EnvironmentComponent::Desktop,
+        EnvironmentComponent::Streamer,
+    ] {
+        environment.update_component_health(
+            component,
+            EnvironmentComponentHealthState::Ready,
+            None,
+        );
+    }
+}
+
 fn ready_environment() -> RoomEnvironment {
     let viewport = CanonicalViewport::new(1440, 900, 1, 1440, 900).unwrap();
     let mut environment = RoomEnvironment::new("room-1", "environment-1", viewport).unwrap();
     environment.start_runtime().unwrap();
+    mark_components_ready(&mut environment);
     environment
         .transition_to(EnvironmentLifecycle::Ready)
         .unwrap();
     environment
+}
+
+#[test]
+fn room_health_recovery_last_component_settles_aggregate_immediately() {
+    for last in [
+        EnvironmentComponent::BrowserController,
+        EnvironmentComponent::Browser,
+        EnvironmentComponent::Desktop,
+        EnvironmentComponent::Streamer,
+    ] {
+        let mut environment = ready_environment();
+        environment.update_component_health(
+            last,
+            EnvironmentComponentHealthState::Unavailable,
+            Some("lost"),
+        );
+        assert_eq!(
+            environment.snapshot().lifecycle,
+            EnvironmentLifecycle::Degraded
+        );
+        environment.update_component_health(last, EnvironmentComponentHealthState::Ready, None);
+        assert_eq!(
+            environment.snapshot().lifecycle,
+            EnvironmentLifecycle::Ready,
+            "last component {last:?}"
+        );
+    }
+}
+
+#[test]
+fn room_health_recovery_repeated_ready_receipt_repairs_stale_aggregate() {
+    let mut environment = ready_environment();
+    environment
+        .transition_to(EnvironmentLifecycle::Degraded)
+        .unwrap();
+    environment.update_component_health(
+        EnvironmentComponent::Browser,
+        EnvironmentComponentHealthState::Ready,
+        None,
+    );
+    assert_eq!(
+        environment.snapshot().lifecycle,
+        EnvironmentLifecycle::Ready
+    );
+}
+
+#[test]
+fn room_health_recovery_never_ready_with_a_down_component_or_pending_recovery() {
+    let mut environment = ready_environment();
+    environment.begin_browser_controller_recovery();
+    environment.update_component_health(
+        EnvironmentComponent::BrowserController,
+        EnvironmentComponentHealthState::Starting,
+        Some("controller_restarted"),
+    );
+    assert_eq!(
+        environment.snapshot().lifecycle,
+        EnvironmentLifecycle::Degraded
+    );
+    environment.update_component_health(
+        EnvironmentComponent::Browser,
+        EnvironmentComponentHealthState::Unavailable,
+        Some("browser_debugger_unavailable"),
+    );
+    environment.update_component_health(
+        EnvironmentComponent::BrowserController,
+        EnvironmentComponentHealthState::Ready,
+        None,
+    );
+    assert_eq!(
+        environment.snapshot().lifecycle,
+        EnvironmentLifecycle::Degraded
+    );
+    environment.update_component_health(
+        EnvironmentComponent::Browser,
+        EnvironmentComponentHealthState::Ready,
+        None,
+    );
+    assert_eq!(
+        environment.snapshot().lifecycle,
+        EnvironmentLifecycle::Degraded,
+        "recovery has not committed yet"
+    );
+    environment.complete_browser_controller_recovery();
+    assert_eq!(
+        environment.snapshot().lifecycle,
+        EnvironmentLifecycle::Ready
+    );
+}
+
+#[test]
+fn room_health_recovery_does_not_complete_initial_start_or_revive_stopped_room() {
+    let viewport = CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap();
+    let mut environment = RoomEnvironment::new("health-recovery", "environment", viewport).unwrap();
+    for starting in [false, true] {
+        if starting {
+            environment.start_runtime().unwrap();
+        }
+        for component in [
+            EnvironmentComponent::BrowserController,
+            EnvironmentComponent::Browser,
+            EnvironmentComponent::Desktop,
+            EnvironmentComponent::Streamer,
+        ] {
+            environment.update_component_health(
+                component,
+                EnvironmentComponentHealthState::Ready,
+                None,
+            );
+        }
+        assert_eq!(
+            environment.snapshot().lifecycle,
+            if starting {
+                EnvironmentLifecycle::Starting
+            } else {
+                EnvironmentLifecycle::Stopped
+            }
+        );
+    }
+}
+
+#[test]
+fn crashed_app_target_returns_on_the_same_logical_tab_with_a_new_document_fence() {
+    let mut environment = ready_environment();
+    let observation = |target: &str, document: &str| EnvironmentTabObservation {
+        runtime_target_id: target.into(),
+        document_id: document.into(),
+        url: "https://app.todo.invalid/".into(),
+        title: "Todo".into(),
+    };
+    environment.reconcile_controller_tabs(vec![observation("old", "before")], Some("old"));
+    let saved = environment.snapshot().tabs[0].clone();
+    environment.reconcile_controller_tabs(vec![], None);
+    // Another projection may see the restored physical target first.
+    environment.reconcile_controller_tabs(vec![observation("new", "after")], Some("new"));
+    assert_ne!(environment.snapshot().tabs[0].tab_id, saved.tab_id);
+    environment.restore_app_tab(&saved, "new");
+    environment.reconcile_controller_tabs(vec![observation("new", "after")], Some("new"));
+    let restored = environment.snapshot();
+    assert_eq!(restored.tabs.len(), 1);
+    assert_eq!(restored.tabs[0].tab_id, saved.tab_id);
+    assert!(restored.tabs[0].document_revision > saved.document_revision);
+    let binding = environment.controller_tab_binding(&saved.tab_id).unwrap();
+    assert_eq!(binding.runtime_target_id, "new");
+    assert!(matches!(
+        environment.validate_tab_reference(
+            restored.runtime_generation,
+            &saved.tab_id,
+            saved.document_revision
+        ),
+        Err(EnvironmentError::StaleDocumentRevision { .. })
+    ));
+    let revision = restored.tabs[0].document_revision;
+    environment.restore_app_tab(&saved, "new");
+    assert_eq!(environment.snapshot().tabs[0].document_revision, revision);
 }

@@ -74,7 +74,7 @@ process.on("SIGTERM", interrupt)
 
 try {
   await waitForKernel(port)
-  client = new LocalIpcClient(`ws://127.0.0.1:${port}`)
+  client = new LocalIpcClient(`ws://127.0.0.1:${port}`, { localAuthEnvironment: { ...process.env, XDG_STATE_HOME: path.join(root, "state") } })
   const created = unwrap(await client.send(requests.createSessionRequest(root, root)), "SessionCreated")
   const sessionId = created.session.id
   const agentId = created.agent.id
@@ -243,7 +243,7 @@ async function availablePort() {
 }
 async function waitForKernel(kernelPort) {
   for (let attempt = 0; attempt < 120; attempt += 1) {
-    const probe = new LocalIpcClient(`ws://127.0.0.1:${kernelPort}`)
+    const probe = new LocalIpcClient(`ws://127.0.0.1:${kernelPort}`, { localAuthEnvironment: { ...process.env, XDG_STATE_HOME: path.join(root, "state") } })
     try { await probe.send(requests.listSessionsRequest()); await probe.close(); return } catch { await probe.close().catch(() => undefined); await sleep(100) }
   }
   throw new Error("stream-soak kernel did not become ready")

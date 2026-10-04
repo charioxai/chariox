@@ -138,10 +138,10 @@ async function main() {
       },
       stdio: ['ignore', 'ignore', 'inherit'],
     })
-    await waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, workspace, workspace)
+    await waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, workspace, workspace, { ...process.env, ...daemonProfile.env })
   }
 
-  const client = new LocalIpcClient(kernelUrl)
+  const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: { ...process.env, ...daemonProfile?.env } })
   wrapClientSendWithTimeout(client, options.timeoutMs)
   const events = []
   let workerKernelRef = null

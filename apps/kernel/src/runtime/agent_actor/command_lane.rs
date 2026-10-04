@@ -50,6 +50,7 @@ pub(super) struct AgentCommandEnvelope {
     pub(super) command_id: String,
     pub(super) command_type: String,
     pub(super) telemetry: LaneCommandTrace,
+    pub(super) external_grant_id: Option<String>,
     pub(super) command: AgentCommand,
     pub(super) result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
@@ -59,6 +60,7 @@ impl AgentRuntime {
         &self,
         agent_id: String,
         command_trace: CommandTrace,
+        external_grant_id: Option<String>,
         command: AgentCommand,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let lane_key = agent_id;
@@ -71,6 +73,7 @@ impl AgentRuntime {
             command_id: telemetry.command_id().to_string(),
             command_type: telemetry.command_type().to_string(),
             telemetry: telemetry.clone(),
+            external_grant_id,
             command,
             result_tx,
         }) {
@@ -125,7 +128,12 @@ impl AgentRuntime {
             self.agent_runtime_projection.clone(),
             self.prompt_id_allocator.clone(),
         );
-        tokio::spawn(run_agent_command_lane(executor, agent_id.to_string(), rx));
+        tokio::spawn(run_agent_command_lane(
+            executor,
+            self.store.state.clone(),
+            agent_id.to_string(),
+            rx,
+        ));
         tx
     }
 
@@ -161,8 +169,9 @@ impl AgentRuntime {
     }
 }
 
-async fn run_agent_command_lane(
+pub(super) async fn run_agent_command_lane(
     executor: AgentRuntimeCommandExecutor,
+    state: KernelRuntimeState,
     agent_id: String,
     mut rx: mpsc::Receiver<AgentCommandEnvelope>,
 ) {
@@ -183,7 +192,23 @@ async fn run_agent_command_lane(
                 "command_type": envelope.command_type,
             }),
         );
-        let result = executor.execute(envelope.command).await;
+        let authorization = envelope
+            .external_grant_id
+            .as_deref()
+            .map(|id| state.authorize_external_request(id, &envelope.command.local_request()))
+            .transpose();
+        let result = match authorization {
+            Err(error) => Err(error),
+            Ok(_) => {
+                let executor = match envelope.external_grant_id {
+                    Some(id) => {
+                        executor.with_external_authority(id, envelope.command.local_request())
+                    }
+                    None => executor.clone(),
+                };
+                executor.execute(envelope.command).await
+            }
+        };
         log_lane_completed(
             &envelope.telemetry,
             "agent",
@@ -192,5 +217,29 @@ async fn run_agent_command_lane(
             &result,
         );
         let _ = envelope.result_tx.send(result);
+    }
+}
+
+impl AgentCommand {
+    fn local_request(&self) -> crate::local::LocalDaemonRequest {
+        use crate::local::LocalDaemonRequest;
+        match self {
+            Self::SubmitPrompt { request, .. } => LocalDaemonRequest::SubmitPrompt(request.clone()),
+            Self::CompletePrompt { request, .. } => {
+                LocalDaemonRequest::CompletePrompt(request.clone())
+            }
+            Self::CancelActivePrompt { request, .. } => {
+                LocalDaemonRequest::CancelActivePrompt(request.clone())
+            }
+            Self::SteerQueuedPrompt { request } => {
+                LocalDaemonRequest::SteerQueuedPrompt(request.clone())
+            }
+            Self::CancelQueuedPrompt { request } => {
+                LocalDaemonRequest::CancelQueuedPrompt(request.clone())
+            }
+            Self::UpdateQueuedPrompt { request } => {
+                LocalDaemonRequest::UpdateQueuedPrompt(request.clone())
+            }
+        }
     }
 }

@@ -263,7 +263,9 @@ fn protected_slice_announces_its_canonical_worker_ref_with_retained_keys() {
         "chariox-protected-worker-ref-{}",
         generate_identity_suffix()
     ));
-    fs::create_dir(&directory).expect("create isolated synthetic identity fixture");
+    let fixture_root = directory;
+    let directory = fixture_root.join("deep/".repeat(40)).join("kernel");
+    fs::create_dir_all(&directory).expect("create isolated synthetic identity fixture");
     struct Restore(
         Vec<(&'static str, Option<std::ffi::OsString>)>,
         std::path::PathBuf,
@@ -283,6 +285,7 @@ fn protected_slice_announces_its_canonical_worker_ref_with_retained_keys() {
         "CHARIOX_KERNEL_HOST",
         "CHARIOX_KERNEL_PORT",
         "CHARIOX_DAEMON_ID",
+        "CHARIOX_DAEMON_SOCKET",
         "CHARIOX_MACHINE_ID",
         "CHARIOX_SLICE_OWNER_MACHINE_ID",
         "CHARIOX_SLICE_ID",
@@ -299,7 +302,7 @@ fn protected_slice_announces_its_canonical_worker_ref_with_retained_keys() {
             .into_iter()
             .map(|name| (name, env::var_os(name)))
             .collect(),
-        directory.clone(),
+        fixture_root.clone(),
     );
     let worker_ref_for = |machine: &str| {
         format!(
@@ -311,6 +314,7 @@ fn protected_slice_announces_its_canonical_worker_ref_with_retained_keys() {
     let worker_ref = worker_ref_for("synthetic-owner-machine");
     unsafe {
         for name in [
+            "CHARIOX_DAEMON_SOCKET",
             "CHARIOX_RELAY_URL",
             "CHARIOX_RELAY_TOKEN",
             "CHARIOX_CLOUD_RELAY_CONFIG_JSON",
@@ -348,6 +352,16 @@ fn protected_slice_announces_its_canonical_worker_ref_with_retained_keys() {
     // retained keys and machine identity stay authoritative.
     let config = load();
     assert_eq!(config.daemon_id, worker_ref);
+    assert_eq!(
+        config.local_socket_path,
+        DaemonConfig::default_local_socket_path("retained-kernel")
+    );
+    assert_ne!(
+        config.local_socket_path,
+        DaemonConfig::default_local_socket_path(&worker_ref)
+    );
+    assert!(config.local_socket_path.as_os_str().len() < 104);
+    assert_eq!(load().local_socket_path, config.local_socket_path);
     assert_eq!(config.host_machine_id, "retained-machine");
     assert_eq!(config.relay_public_key, "synthetic-public");
     // No other ambient value can rename the retained kernel.
@@ -390,6 +404,7 @@ fn chariox_home_owns_config_identity_state_and_runtime_paths() {
 
     let config = DaemonConfig::load_from_env();
     let durable_state_path = config.durable_state_path();
+    let expected_socket = DaemonConfig::default_local_socket_path(&config.daemon_id);
 
     unsafe {
         restore_env_var("CHARIOX_HOME", old_chariox_home);
@@ -405,7 +420,10 @@ fn chariox_home_owns_config_identity_state_and_runtime_paths() {
         temp_home.join("state").join("kernel.db")
     );
     assert_eq!(config.session_history_root(), temp_home.join("sessions"));
-    assert!(config.local_socket_path.starts_with(temp_home.join("run")));
+    assert!(config
+        .local_socket_path
+        .starts_with(format!("/tmp/chariox-{}", unsafe { libc::geteuid() })));
+    assert_eq!(config.local_socket_path, expected_socket);
 }
 
 #[test]

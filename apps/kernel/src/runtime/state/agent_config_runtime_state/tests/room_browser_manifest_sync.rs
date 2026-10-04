@@ -1317,6 +1317,7 @@ async fn paused_prompt_dispatch_and_provider_launch_serialize_with_room_bind_and
                 &launch_agent_id,
                 &remote_execution,
                 None,
+                None,
             )
             .await
     });

@@ -1208,6 +1208,7 @@ mod receipt_reconciliation {
                 &fixture.session_id,
                 &fixture.agent_id,
                 &fixture.dispatch.source_attachment_id,
+                None,
             )
             .await
             .expect("concurrent cancellation should preserve the durable intent")

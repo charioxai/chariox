@@ -62,6 +62,7 @@ export type CliAppWorkspaceViewProps = {
   assignDialogOverlayBox: (value: any) => void
   assignKernelApprovalBanner: (value: any) => void
   assignKernelApprovalBox: (value: any) => void
+  assignPasskeyPopupBox: (value: any) => void
   kernelApprovalOwnsInput: () => boolean
   handlePromptKeyDown: WorkspaceLayoutProps["onPromptKeyDown"]
   handlePromptContentChange: () => void
@@ -106,6 +107,7 @@ export function CliAppWorkspaceView(props: CliAppWorkspaceViewProps) {
       onRootMouseUp={props.retainPromptFocus}
       onKernelApprovalBoxRef={props.assignKernelApprovalBox}
       onKernelApprovalBannerRef={props.assignKernelApprovalBanner}
+      onPasskeyPopupBoxRef={props.assignPasskeyPopupBox}
       onResponseSurfaceMouseUp={props.handlePromptSelectionSurfaceMouseUp}
       onFooterMouseUp={props.handlePromptSelectionSurfaceMouseUp}
       onResponseLayoutBoxRef={(value) => {

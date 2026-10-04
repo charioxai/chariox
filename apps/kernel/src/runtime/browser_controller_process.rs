@@ -1365,25 +1365,58 @@ pub(crate) struct BrowserControllerProcessStore {
     executions: cancellation::BrowserActionExecutions,
     tab_mutation_barrier: Arc<RwLock<()>>,
     tab_mutation_lanes: BrowserTabMutationLanes,
+    authorizer: Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>>,
+    #[cfg(test)]
+    lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
     app_view_replies: Arc<Mutex<()>>,
 }
 
 impl BrowserControllerProcessStore {
+    pub(crate) fn with_authorizer(
+        &self,
+        authorizer: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+    ) -> Self {
+        let mut store = self.clone();
+        store.authorizer = Some(authorizer);
+        store
+    }
+
+    pub(super) fn authorize(&self) -> Result<(), String> {
+        if let Some(authorizer) = &self.authorizer {
+            authorizer()?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn protect_observation_values(
         &self,
         room: &str,
         values: Vec<zeroize::Zeroizing<String>>,
     ) -> Result<(), String> {
         if let Some(ownership) = &self.ownership {
-            ownership
+            #[cfg(test)]
+            if let Some(probe) = &self.lock_wait_probe {
+                probe.notify_one();
+            }
+            let mut ownership = ownership
                 .lock()
-                .map_err(|_| "controller supervisor lock poisoned")?
+                .map_err(|_| "controller supervisor lock poisoned")?;
+            self.authorize()?;
+            ownership
                 .supervisor
                 .backend
                 .protected_values
                 .insert(room.into(), values);
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_supervisor_lock_wait_for_test(
+        &mut self,
+        probe: Arc<tokio::sync::Notify>,
+    ) {
+        self.lock_wait_probe = Some(probe);
     }
 
     #[cfg(test)]
@@ -1441,9 +1474,14 @@ impl BrowserControllerProcessStore {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if let Some(probe) = &self.lock_wait_probe {
+            probe.notify_one();
+        }
         let mut ownership = ownership
             .lock()
             .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
         ownership.acquire(session_id).map(Some)
     }
 
@@ -1455,9 +1493,14 @@ impl BrowserControllerProcessStore {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if let Some(probe) = &self.lock_wait_probe {
+            probe.notify_one();
+        }
         let mut ownership = ownership
             .lock()
             .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
         let snapshot = ownership.release(session_id)?;
         ownership
             .supervisor
@@ -1486,9 +1529,14 @@ impl BrowserControllerProcessStore {
             return Ok(None);
         };
         let (pending, timeout) = {
+            #[cfg(test)]
+            if let Some(probe) = &self.lock_wait_probe {
+                probe.notify_one();
+            }
             let mut ownership = ownership
                 .lock()
                 .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+            self.authorize()?;
             ownership.require_lease(session_id)?;
             let supervisor = &mut ownership.supervisor;
             supervisor.prepare_unlocked_request()?;
@@ -1519,9 +1567,14 @@ impl BrowserControllerProcessStore {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if let Some(probe) = &self.lock_wait_probe {
+            probe.notify_one();
+        }
         let mut ownership = ownership
             .lock()
             .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
         ownership
             .perform_browser_action(
                 session_id,
@@ -1556,9 +1609,14 @@ impl BrowserControllerProcessStore {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if let Some(probe) = &self.lock_wait_probe {
+            probe.notify_one();
+        }
         let mut ownership = ownership
             .lock()
             .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
         ownership
             .handle_browser_dialog(session_id, target_id, document_id, action)
             .map(Some)
@@ -1572,9 +1630,14 @@ impl BrowserControllerProcessStore {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if let Some(probe) = &self.lock_wait_probe {
+            probe.notify_one();
+        }
         let mut ownership = ownership
             .lock()
             .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
         ownership
             .cancel_browser_download(session_id, cancellation)
             .map(Some)
@@ -1588,6 +1651,10 @@ impl BrowserControllerProcessStore {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if let Some(probe) = &self.lock_wait_probe {
+            probe.notify_one();
+        }
         if matches!(
             request,
             super::browser_controller_app_view::BrowserAppViewRequest::Calls
@@ -1598,6 +1665,7 @@ impl BrowserControllerProcessStore {
         let mut ownership = ownership
             .lock()
             .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
         ownership.app_view(session_id, request).map(Some)
     }
 
@@ -1611,9 +1679,14 @@ impl BrowserControllerProcessStore {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if let Some(probe) = &self.lock_wait_probe {
+            probe.notify_one();
+        }
         let mut ownership = ownership
             .lock()
             .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
         ownership
             .poll_browser_events(session_id, browser_generation, cursor, limit)
             .map(Some)
@@ -1629,9 +1702,14 @@ impl BrowserControllerProcessStore {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if let Some(probe) = &self.lock_wait_probe {
+            probe.notify_one();
+        }
         let mut ownership = ownership
             .lock()
             .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
         ownership
             .recover_browser_cookie_import(session_id, binding, target_id)
             .map(Some)
@@ -1642,9 +1720,14 @@ impl BrowserControllerProcessStore {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if let Some(probe) = &self.lock_wait_probe {
+            probe.notify_one();
+        }
         let mut ownership = ownership
             .lock()
             .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
         ownership.shutdown().map(Some)
     }
 
@@ -1655,6 +1738,7 @@ impl BrowserControllerProcessStore {
         let ownership = ownership
             .lock()
             .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
         Ok(Some(ownership.supervisor.snapshot().clone()))
     }
 }

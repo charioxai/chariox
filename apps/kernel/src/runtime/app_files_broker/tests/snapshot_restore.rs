@@ -105,8 +105,13 @@ fn reopen(f: &mut Fixture) -> DurableKernelStateStore {
     f.store.fence_writer().unwrap();
     let parked =
         DurableKernelStateStore::open_owned(path.with_file_name("retired.sqlite")).unwrap();
+    // Reproduce a concurrent process launch holding a fork-inherited owner fd.
+    // A restart must not depend on that unrelated child reaching exec.
+    let child = crate::test_support::PreExecChild::pause();
     drop(std::mem::replace(&mut f.store, parked));
-    let reopened = DurableKernelStateStore::open_owned(path).unwrap();
+    let reopened = DurableKernelStateStore::open_owned(path);
+    child.resume_and_wait();
+    let reopened = reopened.unwrap();
     f.store = reopened.clone();
     reopened
 }

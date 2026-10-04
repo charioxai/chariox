@@ -260,6 +260,8 @@ fn operational_history_size_config_is_clamped_to_hard_cap() {
 
 #[test]
 fn default_user_config_rejects_test_persistence_paths() {
+    // Both the caller and the guard resolve the default path from the environment.
+    crate::test_support::isolated_env_test!();
     let mut config = CharioxUserConfig::default();
     config.history.operational.path = Some("/tmp/chariox-tests/operational-history.db".to_string());
 

@@ -40,7 +40,7 @@ export type AppUpdateSummary = {
   updated_at_ms: number
 }
 
-export type AppRequestErrorCode = "invalid_request" | "unauthorized" | "not_found" | "busy" | "limit_exceeded" | "conflict" | "digest_mismatch" | "storage_unavailable"
+export type AppRequestErrorCode = "invalid_request" | "unauthorized" | "not_found" | "busy" | "limit_exceeded" | "conflict" | "digest_mismatch" | "storage_unavailable" | "receipt_expired"
 
 export type AppPackageUploadSummary = {
   handle: string

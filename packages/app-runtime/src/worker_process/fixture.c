@@ -42,13 +42,14 @@ static int fixture_installation(const char* value) {
 }
 
 int main(int argc, char** argv) {
-  if (argc != 2 || getsid(0) != getpid() || getpgrp() != getpid()) return 80;
+  if ((argc != 2 && argc != 3) || getsid(0) != getpid() || getpgrp() != getpid()) return 80;
   if (!getenv("LANG") || strcmp(getenv("LANG"), "C.UTF-8") ||
       !getenv("TZ") || strcmp(getenv("TZ"), "UTC")) return 81;
   size_t entries = 0;
   for (char** item = environ; *item; ++item) ++entries;
   if (entries != 2 || getenv("HOME") || getenv("PATH")) return 82;
-  if (fcntl(240, F_GETFD) != -1 || errno != EBADF) return 83;
+  int ambient_fd = argc == 3 ? atoi(argv[2]) : 240;
+  if (ambient_fd < 240 || fcntl(ambient_fd, F_GETFD) != -1 || errno != EBADF) return 83;
   char byte;
   if (read(0, &byte, 1) != 0) return 84;
   if (!strcmp(argv[1], "early")) return 42;

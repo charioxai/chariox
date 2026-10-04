@@ -49,6 +49,16 @@ pub(super) fn spawn_claude_child(
         command.current_dir(working_directory);
     }
 
+    #[cfg(unix)]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     let mut child = crate::process_spawn::spawn_command(command).map_err(|error| {
         DaemonError::LocalTransport {
             operation,

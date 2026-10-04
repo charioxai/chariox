@@ -75,6 +75,7 @@ impl BrowserControllerProcessStore {
         let mut ownership = ownership
             .lock()
             .map_err(|_| "browser controller supervisor lock poisoned")?;
+        self.authorize()?;
         if ownership.require_lease(session_id).is_err() {
             return Ok(None);
         }
@@ -114,6 +115,7 @@ impl BrowserControllerProcessStore {
             let mut ownership = ownership
                 .lock()
                 .map_err(|_| "browser controller supervisor lock poisoned")?;
+            self.authorize()?;
             ownership.require_lease(session_id)?;
             let supervisor = &mut ownership.supervisor;
             let exited = supervisor.backend.take_exited_process()?.is_some();
@@ -146,6 +148,7 @@ impl BrowserControllerProcessStore {
         let mut ownership = ownership
             .lock()
             .map_err(|_| "browser controller supervisor lock poisoned")?;
+        self.authorize()?;
         ownership
             .reconcile_browser(session_id, viewport, browser_bar_visible)
             .map(Some)
@@ -169,6 +172,7 @@ impl BrowserControllerProcessStore {
             let mut ownership = ownership
                 .lock()
                 .map_err(|_| "browser controller supervisor lock poisoned")?;
+            self.authorize()?;
             ownership.require_lease(session_id)?;
             let supervisor = &mut ownership.supervisor;
             supervisor.prepare_unlocked_request()?;

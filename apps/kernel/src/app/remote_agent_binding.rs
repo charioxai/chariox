@@ -7,8 +7,8 @@ use crate::app::DaemonApp;
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::transport::relay_client::{
-    send_peer_request_via_connected_relay, send_peer_request_via_temporary_connection,
-    RelayClientState,
+    send_peer_request_via_connected_relay_authorized,
+    send_peer_request_via_temporary_connection_authorized, RelayClientState,
 };
 use crate::transport::relay_discovery;
 use crate::transport::relay_peer::{
@@ -27,6 +27,7 @@ const REMOTE_KERNEL_REF_DISCOVERY_ATTEMPTS: usize = 20;
 const REMOTE_KERNEL_REF_DISCOVERY_RETRY_DELAY_MS: u64 = 250;
 
 pub(crate) struct RemoteAgentBindingRefreshPlan {
+    pub(crate) authorizer: Arc<dyn Fn() -> Result<(), DaemonError> + Send + Sync>,
     agent: AgentInstance,
     expected_binding: RemoteAgentBinding,
     config: DaemonConfig,
@@ -45,6 +46,7 @@ pub(crate) struct RemoteAgentBindingRefreshPlan {
 pub(crate) async fn execute_remote_agent_binding_refresh(
     plan: RemoteAgentBindingRefreshPlan,
 ) -> Result<RemoteAgentBindingRefreshResult, DaemonError> {
+    (plan.authorizer)()?;
     let old_binding = plan.expected_binding.clone();
     let old_worker_ref = old_binding.worker_kernel_id.clone();
     let mut discovery_config = plan.relay_config.clone();
@@ -129,6 +131,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
             owner_user_id: plan.agent.owner_user_id().to_string(),
         },
         use_connected_relay,
+        plan.authorizer.as_ref(),
     )
     .await?
     {
@@ -251,6 +254,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
                     materialization: account_materialization,
                 },
                 use_connected_relay,
+                plan.authorizer.as_ref(),
             )
             .await
             {
@@ -349,6 +353,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
             worktree_placement: None,
         },
         use_connected_relay,
+        plan.authorizer.as_ref(),
     )
     .await
     {
@@ -665,7 +670,9 @@ impl DaemonApp {
         &mut self,
         mut request: CreateAgentRequest,
         kernel_ref: &str,
+        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
     ) -> Result<AgentInstance, DaemonError> {
+        authorize()?;
         let relay_override = self.slice_relay_config_for_kernel_ref(kernel_ref);
         let relay_config = relay_override
             .clone()
@@ -677,6 +684,7 @@ impl DaemonApp {
             &request.provider,
             &discovery_config,
         )?;
+        authorize()?;
         let worker_worktree_id =
             self.worker_worktree_id_for_kernel_ref(kernel_ref, request.worktree_id.clone());
         let worktree_placement = request.worktree_placement.clone();
@@ -688,12 +696,13 @@ impl DaemonApp {
             let mut sessions = session_store.write();
             self.agents.create_agent(request, &mut sessions)?
         };
-        let remote_setup = self.bind_remote_agent_to_worker(
+        let remote_setup = self.bind_remote_agent_to_worker_authorized(
             &agent,
             &worker_kernel,
             worker_worktree_id,
             worktree_placement,
             relay_override,
+            authorize,
         );
         if remote_setup.is_err() {
             let mut sessions = session_store.write();
@@ -710,6 +719,26 @@ impl DaemonApp {
         worktree_placement: Option<crate::agent::GitWorktreePlacement>,
         relay_override: Option<DaemonConfig>,
     ) -> Result<AgentInstance, DaemonError> {
+        self.bind_remote_agent_to_worker_authorized(
+            agent,
+            worker_kernel,
+            worker_worktree_id,
+            worktree_placement,
+            relay_override,
+            &|| Ok(()),
+        )
+    }
+
+    fn bind_remote_agent_to_worker_authorized(
+        &mut self,
+        agent: &AgentInstance,
+        worker_kernel: &RelayKernelPresence,
+        worker_worktree_id: Option<String>,
+        worktree_placement: Option<crate::agent::GitWorktreePlacement>,
+        relay_override: Option<DaemonConfig>,
+        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
+    ) -> Result<AgentInstance, DaemonError> {
+        authorize()?;
         let relay_config = relay_override
             .clone()
             .unwrap_or_else(|| self.config.clone());
@@ -729,18 +758,20 @@ impl DaemonApp {
         self.remember_remote_worker_public_key(&relay_config, worker_kernel)?;
         let use_connected_relay =
             self.hosted_shared_slice_uses_connected_relay(&worker_kernel.kernel_id);
-        let (lease, relay_peer_protocol_version) = match self.send_remote_binding_request(
-            &relay_config,
-            target.clone(),
-            RelayPeerRequest::CreateExecutionLease {
-                home_kernel_id: self.config.daemon_id.clone(),
-                home_session_id: agent.session_id().to_string(),
-                home_agent_id: agent.id().to_string(),
-                home_agent_metaagent: agent.is_metaagent(),
-                owner_user_id: agent.owner_user_id().to_string(),
-            },
-            use_connected_relay,
-        )? {
+        let (lease, relay_peer_protocol_version) = match self
+            .send_remote_binding_request_authorized(
+                &relay_config,
+                target.clone(),
+                RelayPeerRequest::CreateExecutionLease {
+                    home_kernel_id: self.config.daemon_id.clone(),
+                    home_session_id: agent.session_id().to_string(),
+                    home_agent_id: agent.id().to_string(),
+                    home_agent_metaagent: agent.is_metaagent(),
+                    owner_user_id: agent.owner_user_id().to_string(),
+                },
+                use_connected_relay,
+                authorize,
+            )? {
             RelayPeerResponse::ExecutionLeaseCreated {
                 lease,
                 relay_peer_protocol_version,
@@ -788,6 +819,10 @@ impl DaemonApp {
                     RELAY_PEER_PROTOCOL_VERSION
                 ),
             });
+        }
+        if let Err(error) = authorize() {
+            cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
+            return Err(error);
         }
         let mut materialized_account = None;
         if crate::provider::canonical_provider_family(agent.provider())
@@ -852,7 +887,7 @@ impl DaemonApp {
                 // stamp that identity on the encrypted replica envelope.
                 account_materialization.profile.owner_user_id = agent.owner_user_id().to_string();
                 let expected_account = account_materialization.profile.clone();
-                match self.send_remote_binding_request(
+                match self.send_remote_binding_request_authorized(
                     &relay_config,
                     target.clone(),
                     RelayPeerRequest::EnsureRemoteProviderAccount {
@@ -865,6 +900,7 @@ impl DaemonApp {
                         materialization: account_materialization,
                     },
                     use_connected_relay,
+                    authorize,
                 ) {
                     Ok(response)
                         if remote_provider_account_response_matches(
@@ -934,7 +970,7 @@ impl DaemonApp {
                 }
             }
         }
-        let leased_agent = match self.send_remote_binding_request(
+        let leased_agent = match self.send_remote_binding_request_authorized(
             &relay_config,
             target.clone(),
             RelayPeerRequest::SpawnLeasedAgent {
@@ -954,6 +990,7 @@ impl DaemonApp {
                 worktree_placement,
             },
             use_connected_relay,
+            authorize,
         ) {
             Ok(RelayPeerResponse::LeasedAgentSpawned { leased_agent }) => leased_agent,
             Ok(other) => {
@@ -968,6 +1005,16 @@ impl DaemonApp {
                 return Err(error);
             }
         };
+        if let Err(error) = authorize() {
+            cleanup_remote_setup(
+                self,
+                &relay_config,
+                &target,
+                &lease.id,
+                Some(&leased_agent.id),
+            );
+            return Err(error);
+        }
         let leased_agent_id = leased_agent.id.clone();
         let lease_id = lease.id.clone();
         let bound = match self.agents.bind_remote_execution(
@@ -999,7 +1046,7 @@ impl DaemonApp {
                 return Err(error);
             }
         };
-        if let Err(error) = self.ensure_remote_agent_skill_packages(&bound) {
+        if let Err(error) = self.ensure_remote_agent_skill_packages(&bound, authorize) {
             cleanup_remote_setup(
                 self,
                 &relay_config,
@@ -1046,6 +1093,7 @@ impl DaemonApp {
         let slice_recovery =
             SliceBindingRecovery::admit(&self.slices, &current_binding, agent.session_id(), None)?;
         Ok(RemoteAgentBindingRefreshPlan {
+            authorizer: Arc::new(|| Ok(())),
             agent,
             expected_binding: current_binding.clone(),
             config: self.config.clone(),
@@ -1109,10 +1157,12 @@ impl DaemonApp {
         (Ok(rebound), true)
     }
 
-    pub(crate) fn refresh_remote_agent_binding(
+    pub(crate) fn refresh_remote_agent_binding_authorized(
         &mut self,
         agent_id: &str,
+        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
     ) -> Result<AgentInstance, DaemonError> {
+        authorize()?;
         let agent = self.agents.get_agent(agent_id)?;
         let Some(remote_execution) = agent.remote_execution().cloned() else {
             return Err(DaemonError::LocalTransport {
@@ -1148,12 +1198,14 @@ impl DaemonApp {
             &worker_kernel.kernel_id,
             &worker_kernel.machine_id,
         );
-        let rebound = self.bind_remote_agent_to_worker(
+        authorize()?;
+        let rebound = self.bind_remote_agent_to_worker_authorized(
             &agent,
             &worker_kernel,
             worker_worktree_id,
             None,
             uses_remote_execution_relay.then_some(relay_config),
+            authorize,
         )?;
         self.durable_state_store().append_event(
             "agent.updated",
@@ -1238,6 +1290,17 @@ impl DaemonApp {
         agent_ref: &str,
         machine_ref: &str,
     ) -> Result<AgentInstance, DaemonError> {
+        self.move_agent_to_remote_authorized(session_id, agent_ref, machine_ref, &|| Ok(()))
+    }
+
+    pub(crate) fn move_agent_to_remote_authorized(
+        &mut self,
+        session_id: &str,
+        agent_ref: &str,
+        machine_ref: &str,
+        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
+    ) -> Result<AgentInstance, DaemonError> {
+        authorize()?;
         let agent = self
             .agents
             .get_agent(agent_ref)
@@ -1287,12 +1350,14 @@ impl DaemonApp {
                 )?
             };
         let worker_worktree_id = self.worker_worktree_id_for_kernel_ref(machine_ref, None);
-        self.bind_remote_agent_to_worker(
+        authorize()?;
+        self.bind_remote_agent_to_worker_authorized(
             &agent,
             &worker_kernel,
             worker_worktree_id,
             None,
             relay_override,
+            authorize,
         )
     }
 
@@ -1301,6 +1366,16 @@ impl DaemonApp {
         session_id: &str,
         agent_ref: &str,
     ) -> Result<AgentInstance, DaemonError> {
+        self.move_agent_to_local_authorized(session_id, agent_ref, &|| Ok(()))
+    }
+
+    pub(crate) fn move_agent_to_local_authorized(
+        &mut self,
+        session_id: &str,
+        agent_ref: &str,
+        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
+    ) -> Result<AgentInstance, DaemonError> {
+        authorize()?;
         let agent = self
             .agents
             .get_agent(agent_ref)
@@ -1335,13 +1410,14 @@ impl DaemonApp {
         };
         let use_connected_relay =
             self.hosted_shared_slice_uses_connected_relay(&remote_execution.worker_kernel_id);
-        match self.send_remote_binding_request(
+        match self.send_remote_binding_request_authorized(
             &relay_config,
             target.clone(),
             RelayPeerRequest::DestroyLeasedAgent {
                 leased_agent_id: remote_execution.leased_agent_id.clone(),
             },
             use_connected_relay,
+            authorize,
         )? {
             RelayPeerResponse::LeasedAgentDestroyed { .. } => {}
             other => {
@@ -1351,13 +1427,14 @@ impl DaemonApp {
                 });
             }
         }
-        match self.send_remote_binding_request(
+        match self.send_remote_binding_request_authorized(
             &relay_config,
             target,
             RelayPeerRequest::DestroyExecutionLease {
                 lease_id: remote_execution.execution_lease_id.clone(),
             },
             use_connected_relay,
+            &|| Ok(()), // Cleanup of an already destroyed agent cannot depend on its grant.
         )? {
             RelayPeerResponse::ExecutionLeaseDestroyed { .. } => {}
             other => {
@@ -1385,7 +1462,9 @@ impl DaemonApp {
     pub(crate) fn destroy_remote_execution_binding(
         &self,
         remote_execution: &RemoteAgentBinding,
+        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
     ) -> Result<(), DaemonError> {
+        authorize()?;
         let relay_config = self.relay_config_for_remote_execution(remote_execution);
         let target = ClientTarget {
             daemon_id: Some(remote_execution.worker_kernel_id.clone()),
@@ -1393,13 +1472,14 @@ impl DaemonApp {
         };
         let use_connected_relay =
             self.hosted_shared_slice_uses_connected_relay(&remote_execution.worker_kernel_id);
-        match self.send_remote_binding_request(
+        match self.send_remote_binding_request_authorized(
             &relay_config,
             target.clone(),
             RelayPeerRequest::DestroyLeasedAgent {
                 leased_agent_id: remote_execution.leased_agent_id.clone(),
             },
             use_connected_relay,
+            authorize,
         )? {
             RelayPeerResponse::LeasedAgentDestroyed { .. } => {}
             other => {
@@ -1409,13 +1489,14 @@ impl DaemonApp {
                 });
             }
         }
-        match self.send_remote_binding_request(
+        match self.send_remote_binding_request_authorized(
             &relay_config,
             target,
             RelayPeerRequest::DestroyExecutionLease {
                 lease_id: remote_execution.execution_lease_id.clone(),
             },
             use_connected_relay,
+            &|| Ok(()), // Cleanup of an already destroyed agent cannot depend on its grant.
         )? {
             RelayPeerResponse::ExecutionLeaseDestroyed { .. } => Ok(()),
             other => Err(DaemonError::LocalTransport {
@@ -1428,7 +1509,9 @@ impl DaemonApp {
     fn ensure_remote_agent_skill_packages(
         &mut self,
         agent: &AgentInstance,
+        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
     ) -> Result<(), DaemonError> {
+        authorize()?;
         let Some(remote_execution) = agent.remote_execution() else {
             return Ok(());
         };
@@ -1456,7 +1539,7 @@ impl DaemonApp {
             return Ok(());
         }
         let relay_config = self.relay_config_for_remote_execution(remote_execution);
-        let response = self.send_remote_binding_request(
+        let response = self.send_remote_binding_request_authorized(
             &relay_config,
             ClientTarget {
                 daemon_id: Some(remote_execution.worker_kernel_id.clone()),
@@ -1472,6 +1555,7 @@ impl DaemonApp {
                 packages,
             },
             self.hosted_shared_slice_uses_connected_relay(&remote_execution.worker_kernel_id),
+            authorize,
         )?;
         match response {
             RelayPeerResponse::RemoteSkillPackagesEnsured { .. } => Ok(()),
@@ -1661,19 +1745,40 @@ impl DaemonApp {
         request: RelayPeerRequest,
         use_connected_relay: bool,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        self.send_remote_binding_request_authorized(
+            relay_config,
+            target,
+            request,
+            use_connected_relay,
+            &|| Ok(()),
+        )
+    }
+
+    fn send_remote_binding_request_authorized(
+        &self,
+        relay_config: &DaemonConfig,
+        target: ClientTarget,
+        request: RelayPeerRequest,
+        use_connected_relay: bool,
+        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
+    ) -> Result<RelayPeerResponse, DaemonError> {
         if use_connected_relay {
             let relay_state = self.relay_client_state();
-            self.block_on_relay_future(send_peer_request_via_connected_relay(
+            self.block_on_relay_future(send_peer_request_via_connected_relay_authorized(
                 relay_config,
                 &relay_state,
                 target,
                 request,
+                Duration::from_millis(relay_config.relay_request_timeout_ms),
+                authorize,
             ))
         } else {
-            self.block_on_relay_future(send_peer_request_via_temporary_connection(
+            self.block_on_relay_future(send_peer_request_via_temporary_connection_authorized(
                 relay_config,
                 target,
                 request,
+                Duration::from_millis(relay_config.relay_request_timeout_ms),
+                authorize,
             ))
         }
     }
@@ -1779,11 +1884,27 @@ async fn send_remote_binding_request_off_lock(
     target: ClientTarget,
     request: RelayPeerRequest,
     use_connected_relay: bool,
+    authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
 ) -> Result<RelayPeerResponse, DaemonError> {
     if use_connected_relay {
-        send_peer_request_via_connected_relay(relay_config, relay_state, target, request).await
+        send_peer_request_via_connected_relay_authorized(
+            relay_config,
+            relay_state,
+            target,
+            request,
+            Duration::from_millis(relay_config.relay_request_timeout_ms),
+            authorize,
+        )
+        .await
     } else {
-        send_peer_request_via_temporary_connection(relay_config, target, request).await
+        send_peer_request_via_temporary_connection_authorized(
+            relay_config,
+            target,
+            request,
+            Duration::from_millis(relay_config.relay_request_timeout_ms),
+            authorize,
+        )
+        .await
     }
 }
 
@@ -1804,6 +1925,7 @@ async fn cleanup_remote_binding_setup_off_lock(
                 leased_agent_id: leased_agent_id.to_string(),
             },
             use_connected_relay,
+            &|| Ok(()),
         )
         .await;
     }
@@ -1815,6 +1937,7 @@ async fn cleanup_remote_binding_setup_off_lock(
             lease_id: lease_id.to_string(),
         },
         use_connected_relay,
+        &|| Ok(()),
     )
     .await;
 }
@@ -1925,6 +2048,7 @@ async fn ensure_remote_skill_packages_off_lock(
             packages,
         },
         use_connected_relay,
+        plan.authorizer.as_ref(),
     )
     .await?
     {

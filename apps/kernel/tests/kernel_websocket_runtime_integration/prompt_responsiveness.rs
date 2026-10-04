@@ -422,7 +422,8 @@ fn kernel_websocket_prompt_submit_acks_while_provider_process_list_is_slow() {
 
 #[test]
 fn kernel_websocket_prompt_submit_acks_while_provider_launch_is_initializing() {
-    crate::run_kernel_websocket_runtime_test(async {
+    crate::run_kernel_websocket_runtime_test_with_paused_clock(async {
+        let paused_at = tokio::time::Instant::now();
         let workspace = ExecutionWorkspace::new();
         let mut config = DaemonConfig::for_tests();
         let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
@@ -536,7 +537,47 @@ fn kernel_websocket_prompt_submit_acks_while_provider_launch_is_initializing() {
             "prompt should queue while the accepted provider launch is still starting: {submit_response}"
         );
 
-        sleep(Duration::from_millis(600)).await;
+        assert_eq!(tokio::time::Instant::now(), paused_at);
+        send_frame(
+            &mut socket,
+            json!({
+                "type": "subscribe",
+                "request_id": "observe-provider-initialization",
+                "session_id": session_id,
+                "attachment_id": attachment_id,
+            }),
+        )
+        .await;
+        let (_, initial_snapshot) = wait_for_response_and_event(
+            &mut socket,
+            "observe-provider-initialization",
+            "session_snapshot",
+        )
+        .await;
+        assert_eq!(
+            initial_snapshot["event"]["provider_run"]["state"],
+            "Starting"
+        );
+        assert_eq!(
+            initial_snapshot["event"]["agent_activity"][&agent_id]["queued_prompt_count"],
+            1
+        );
+
+        tokio::time::resume();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let frame = next_json_frame(&mut socket).await;
+                if matches!(
+                    frame["event"]["event"].as_str(),
+                    Some("session_snapshot" | "agent_activity_changed")
+                ) && frame["event"]["agent_activity"][&agent_id]["active_prompt_count"] == 1
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("the queued prompt should become active after initialization resumes");
         let state_response = send_request(
             &mut socket,
             "session-state-after-launch",

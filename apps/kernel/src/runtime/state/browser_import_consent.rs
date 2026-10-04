@@ -508,7 +508,7 @@ impl KernelRuntimeState {
         session_id: &str,
         attachment_id: &str,
     ) -> Result<(String, String), DaemonError> {
-        if command.caller.metaagent_id.is_some() {
+        if command.caller.metaagent_id.is_some() || !command.is_terminal_caller() {
             return Err(denied());
         }
         let user_id = match (&command.source, &command.caller.caller_kind) {
@@ -602,5 +602,60 @@ fn denied() -> DaemonError {
     DaemonError::LocalTransport {
         operation: "browser import consent",
         message: "browser import consent is unavailable or unauthorized".into(),
+    }
+}
+
+#[cfg(test)]
+mod human_consent_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn external_unix_caller_cannot_borrow_a_humans_browser_import_attachment() {
+        let worktree = crate::test_support::TestWorktree::new("browser-import-human");
+        let mut app = crate::test_support::bootstrap_authenticated_app(
+            crate::config::DaemonConfig::for_tests(),
+        )
+        .unwrap();
+        let (session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "human-terminal",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        let state = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            32,
+        )
+        .runtime_state();
+        let request = LocalDaemonRequest::ResolveSession(crate::local::ResolveSessionRequest {
+            session_ref: session.id().into(),
+            workspace_id: None,
+        });
+        let mut command = KernelCommand::from_local_request_with_source(
+            "import",
+            KernelCommandSource::LocalIpc,
+            None,
+            None,
+            &request,
+        );
+        command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
+        assert!(state
+            .browser_import_human(&command, session.id(), attachment.id())
+            .await
+            .is_ok());
+        command.caller.connection_class = Some(crate::local::KernelConnectionClass::ExternalAgent);
+        assert!(state
+            .browser_import_human(&command, session.id(), attachment.id())
+            .await
+            .is_err());
+        command.caller.connection_class = Some(crate::local::KernelConnectionClass::KernelAgent);
+        assert!(state
+            .browser_import_human(&command, session.id(), attachment.id())
+            .await
+            .is_err());
     }
 }

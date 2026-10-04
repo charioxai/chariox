@@ -19,6 +19,7 @@ mod disposable_worker;
 mod event_publication;
 mod extension_apps;
 mod fresh_remote_relay_inventory;
+mod kernel_access;
 mod kernel_operation_interactions;
 mod managed_activity;
 mod managed_context;

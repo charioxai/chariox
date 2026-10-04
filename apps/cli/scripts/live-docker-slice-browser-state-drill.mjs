@@ -193,7 +193,7 @@ async function run() {
   requests = importedRequests
   log(`waiting for kernel ${kernelUrl}`)
   client = await waitFor(async () => {
-    const candidate = interruption.guardClient(new LocalIpcClient(kernelUrl))
+    const candidate = interruption.guardClient(new LocalIpcClient(kernelUrl, { localAuthEnvironment: { CHARIOX_HOME: path.join(tempRoot, "home") } }))
     try {
       await candidate.send(requests.listSlicesRequest())
       return candidate

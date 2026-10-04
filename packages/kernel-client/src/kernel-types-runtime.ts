@@ -153,6 +153,26 @@ export type RuntimeInteractionChoice = {
   requires_passkey?: boolean
 }
 
+/** Protocol 403: a kernel-owned pending interaction that needs the Chariox
+ * passkey, projected as a popup to every terminal connected as its owner.
+ * Every field is what the kernel established. It is answered with
+ * `RespondToInteraction`: the approve choice with the passkey, or the refuse
+ * choice without it. */
+export type PasskeyPrompt = {
+  kind: "critical_approval" | "access_grant" | "access_extension" | "sudo"
+  lifetime_minutes?: number | null
+  max_lifetime_minutes?: number | null
+  session_id: string
+  session_alias?: string | null
+  interaction_id: string
+  title: string
+  message: string
+  approve_choice_id: string
+  refuse_choice_id: string
+  requested_at_ms: number
+  expires_at_ms: number
+}
+
 export type RuntimeInteractionCustomChoice = {
   id: string
   label: string
@@ -269,6 +289,12 @@ export type CharioxUserConfig = {
   ui?: Record<string, unknown>
   relay?: Record<string, unknown>
   kernel?: Record<string, unknown>
+  kernel_access?: {
+    grant_default_minutes: number
+    grant_max_minutes: number
+    grant_extend_notice_minutes: number
+    request_timeout_minutes: number
+  }
   workflow?: {
     max_queues_per_workflow?: number
     session_default_max_agents?: number
@@ -410,3 +436,21 @@ export type RuntimeAttachment = {
   id: string
   session_id: string
 }
+
+export type KernelAccessGrant = {
+  grant_id: string
+  session_id: string
+  owner_user_id: string
+  holder_pid: number
+  holder_executable: string
+  lifetime_minutes: number
+  expires_at_ms: number
+}
+export type KernelAccessGrantedResponse = { KernelAccessGranted: { grant: KernelAccessGrant } }
+export type KernelAccessGrantsListedResponse = { KernelAccessGrantsListed: { grants: KernelAccessGrant[]; sudo_turns: KernelSudoTurn[] } }
+export type KernelAccessRevokedResponse = { KernelAccessRevoked: { revoked: number } }
+
+export type KernelSudoTurn = { entry_id: string; session_id: string; agent_id: string; owner_user_id: string; terminal_id: string; requester?: KernelAccessGrant; prompt_id: string | null; provider_run_id: string | null }
+
+export type RequestKernelSudoRequest = { agent_id: string; prompt: string }
+export type KernelSudoRequestedResponse = { KernelSudoRequested: { agent_id: string } }

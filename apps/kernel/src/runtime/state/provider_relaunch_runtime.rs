@@ -52,6 +52,14 @@ impl KernelRuntimeState {
                     }
                 }
             }
+            if let Err(error) = state.authorize_current_external_command() {
+                crate::logging::info_with_fields(
+                    "daemon.provider",
+                    "provider policy relaunch authority invalidated",
+                    serde_json::json!({"error":error.to_string()}),
+                );
+                return;
+            }
             let started = match state.owned.start_provider_launch(launch_request) {
                 Ok(started) => started,
                 Err(error) => {
@@ -69,6 +77,7 @@ impl KernelRuntimeState {
             let permit = state.provider_runtime_lanes.acquire(started.run.id()).await;
             let spawn_result = state
                 .with_app_side_effect(|app| {
+                    state.authorize_current_external_command()?;
                     // MP-08/MP-10/MP-11: recovery can retire a slow replacement
                     // before its initialization delay ends. Never spawn it later.
                     if state
@@ -97,6 +106,10 @@ impl KernelRuntimeState {
                 .provider_run_projection
                 .update(started.run.clone());
             drop(permit);
+            if let Err(error) = state.authorize_current_external_command() {
+                state.fail_provider_launch(&started, &error).await;
+                return;
+            }
             let run = started.run.clone();
             let binding = tokio::task::spawn_blocking(move || {
                 crate::provider::ProviderProcessService::initialize_runtime_binding(&run)
@@ -108,6 +121,10 @@ impl KernelRuntimeState {
             });
             match binding {
                 Ok(Ok(binding)) => {
+                    if let Err(error) = state.authorize_current_external_command() {
+                        state.fail_provider_launch(&started, &error).await;
+                        return;
+                    }
                     state.finish_provider_launch(&started, binding).await;
                 }
                 Ok(Err(error)) | Err(error) => {

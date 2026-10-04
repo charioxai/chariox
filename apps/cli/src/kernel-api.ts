@@ -56,3 +56,13 @@ export async function exportDebugBundle(
     limit: payload.limit,
   }
 }
+
+export async function listKernelAccessGrants(client: LocalIpcClient) {
+  const response = await client.send<Record<string, unknown>>({ ListKernelAccessGrants: {} })
+  return expectVariant<{ grants: import("@chariox/kernel-client/kernel-types").KernelAccessGrant[]; sudo_turns?: import("@chariox/kernel-client/kernel-types").KernelSudoTurn[] }>(response, "KernelAccessGrantsListed")
+}
+
+export async function revokeKernelAccessGrant(client: LocalIpcClient, grantId: string | null) {
+  const response = await client.send<Record<string, unknown>>({ RevokeKernelAccessGrant: { grant_id: grantId } })
+  return expectVariant<{ revoked: number }>(response, "KernelAccessRevoked").revoked
+}

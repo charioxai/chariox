@@ -459,6 +459,12 @@ async fn proxied_session_subscriptions_share_one_attachment_without_replacement(
         expect_json_client_response(&mut client_socket, "sub-1", &subscription_private_key).await;
     assert_eq!(subscribe_response["ok"], serde_json::json!(true));
 
+    // Protocol 403: a terminal's subscription starts with its passkey prompts.
+    let prompts = expect_client_event(&mut client_socket, &subscription_private_key).await;
+    assert_eq!(
+        prompts,
+        serde_json::json!({"event": "passkey_prompts_changed", "prompts": []})
+    );
     let event = expect_client_event(&mut client_socket, &subscription_private_key).await;
     assert_eq!(event["event"], serde_json::json!("session_snapshot"));
     assert_eq!(
@@ -511,6 +517,12 @@ async fn proxied_session_subscriptions_share_one_attachment_without_replacement(
     )
     .await;
     assert_eq!(second_subscribe_response["ok"], serde_json::json!(true));
+    let second_prompts =
+        expect_client_event(&mut second_client_socket, &second_subscription_private_key).await;
+    assert_eq!(
+        second_prompts,
+        serde_json::json!({"event": "passkey_prompts_changed", "prompts": []})
+    );
     let second_event =
         expect_client_event(&mut second_client_socket, &second_subscription_private_key).await;
     assert_eq!(second_event["event"], serde_json::json!("session_snapshot"));
@@ -648,6 +660,12 @@ async fn relay_subscription_replays_recent_events_after_resume_cursor() {
     .await;
     let _ =
         expect_json_client_response(&mut client_socket, "sub-1", &subscription_private_key).await;
+    // Protocol 403: the passkey prompts come first and are never replayed.
+    let prompts = expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
+    assert_eq!(
+        prompts.1,
+        serde_json::json!({"event": "passkey_prompts_changed", "prompts": []})
+    );
     let first_event =
         expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
     assert_eq!(
@@ -970,8 +988,22 @@ async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_res
         None,
         Arc::clone(&restarted_runtime),
         true,
-        crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+        crate::transport::relay_client::subscriptions::RelaySubscriber {
+            user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+            connection_class: crate::local::KernelConnectionClass::Terminal,
+        },
     ));
+    // Protocol 403: a terminal's subscription starts with its passkey prompts.
+    let prompts = tokio::time::timeout(
+        Duration::from_secs(5),
+        decrypt_relay_event_from_channel(&mut event_rx, &subscription_private_key),
+    )
+    .await
+    .expect("the current passkey prompts should arrive first");
+    assert_eq!(
+        prompts.1,
+        serde_json::json!({"event": "passkey_prompts_changed", "prompts": []})
+    );
     let current_snapshot = tokio::time::timeout(
         Duration::from_secs(5),
         decrypt_relay_event_from_channel(&mut event_rx, &subscription_private_key),

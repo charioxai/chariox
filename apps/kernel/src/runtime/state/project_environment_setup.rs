@@ -136,6 +136,7 @@ impl KernelRuntimeState {
         request: LocalDaemonRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.authorize_current_external_command()?;
         match request {
             LocalDaemonRequest::StartProjectEnvironmentSetup(request) => {
                 let prepared = self.prepare_setup_execution(request, caller_user_id)?;
@@ -556,8 +557,10 @@ impl KernelRuntimeState {
                             &request.session_id,
                             caller_user_id,
                             true,
+                            &|| self.authorize_current_external_command(),
                         )
                         .await?;
+                    self.authorize_current_external_command()?;
                     let status = project_environment_setup_ack::cancel_remote_and_reconcile(
                         self,
                         &execution,
@@ -3624,3 +3627,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 }
+
+#[cfg(test)]
+#[path = "project_environment_access_tests.rs"]
+mod access_tests;
