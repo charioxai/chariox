@@ -179,11 +179,24 @@ pub(super) fn serve(
                     };
                     // A wake admitted before suspension keeps the worker live.
                     if !context.control.begin_idle_drain() {
+                        // Roll back capacity and visibility before another
+                        // idle request can enter or the caller observes Busy.
+                        drop(reservation);
                         context
                             .control
                             .idle_requested
                             .store(false, Ordering::Release);
                         let _ = request.reply.send(Err(LifecycleError::Busy));
+                        #[cfg(test)]
+                        if let Some(checkpoint) = context
+                            .control
+                            .idle_refusal_checkpoint
+                            .lock()
+                            .unwrap()
+                            .clone()
+                        {
+                            checkpoint();
+                        }
                         continue;
                     }
                     Some(reservation)

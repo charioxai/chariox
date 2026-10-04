@@ -185,6 +185,8 @@ struct Control {
     idle_requested: AtomicBool,
     #[cfg(test)]
     completion_checkpoint: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    idle_refusal_checkpoint: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 pub(crate) struct Operation {
     inner: Arc<Inner>,
