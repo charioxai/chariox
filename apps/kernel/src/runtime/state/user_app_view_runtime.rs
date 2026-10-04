@@ -1,17 +1,12 @@
-//! Owner-scoped client-native views over ordinary kernel request transport.
+//! Owner-scoped native and kernel-browser views over shared request transport.
 use super::{
-    app_view_host::{AppViewHost, ClientNativeAppViewHost},
     app_view_runtime::{origin_label, view_assets},
     KernelRuntimeState,
 };
 use crate::{
     error::DaemonError,
     local::*,
-    runtime::{
-        app_views::AppViewBinding,
-        browser_controller_app_view::{BrowserAppViewOpened, BrowserAppViewRequest},
-        command::KernelCommand,
-    },
+    runtime::{app_views::AppViewBinding, command::KernelCommand},
 };
 
 impl KernelRuntimeState {
@@ -62,40 +57,34 @@ impl KernelRuntimeState {
                     Ok(view) => view,
                     Err(code) => return Ok(failed(code)),
                 };
-                let opened: BrowserAppViewOpened = serde_json::from_value(
-                    ClientNativeAppViewHost {
-                        state: self,
-                        owner,
-                        binding: binding.clone(),
-                    }
-                    .command(BrowserAppViewRequest::Open {
-                        origin_label: origin_label(owner, &request.installation_id),
-                        installation_id: request.installation_id.clone(),
-                        entry: frontend.entry.clone(),
-                        assets: frontend.assets.clone(),
-                        page: None,
-                    })
-                    .await?
-                    .ok_or_else(|| {
-                        super::app_view_runtime::open_error("Native App host unavailable")
-                    })?,
-                )
-                .map_err(|_| super::app_view_runtime::open_error("Invalid native host response"))?;
-                let Some((_, view)) = instances.get(owner, &opened.target_id) else {
-                    return Ok(failed(AppRequestErrorCode::NotFound));
+                let mut view = match instances.open(
+                    owner,
+                    binding.clone(),
+                    &origin_label(owner, &request.installation_id),
+                ) {
+                    Ok(view) => view,
+                    Err(code) => return Ok(failed(code)),
                 };
                 self.app_control()
                     .views()
                     .register(&view.view_id, &view.view_id, binding.clone());
+                if request.host == Some(UserAppViewHost::KernelBrowser) {
+                    let hosted = self.open_user_app_browser(owner, &view, &frontend).await;
+                    match hosted {
+                        Ok(opened) => view = opened,
+                        Err(error) => {
+                            self.forget_user_app_view(owner, &view.view_id);
+                            return Err(error);
+                        }
+                    }
+                }
                 // Uninstall/update can commit while assets are read or the host opens.
                 if !self
                     .user_app_generation_live(owner, &request.installation_id, binding.generation)
                     .await
                     || instances.get(owner, &view.view_id).is_none()
                 {
-                    instances.close(owner, &view.view_id);
-                    self.app_control().views().forget_session(&view.view_id);
-                    self.app_control().views().keep_pumping(&view.view_id);
+                    self.close_user_app_view(owner, &view.view_id).await;
                     return Ok(failed(AppRequestErrorCode::Conflict));
                 }
                 Ok(LocalDaemonResponse::UserAppViewOpened { view, frontend })
@@ -106,11 +95,10 @@ impl KernelRuntimeState {
                 })
             }
             LocalDaemonRequest::CloseUserAppView(request) => {
-                if !instances.close(owner, &request.view_id) {
+                if instances.get(owner, &request.view_id).is_none() {
                     return Ok(failed(AppRequestErrorCode::NotFound));
                 }
-                self.app_control().views().forget_session(&request.view_id);
-                self.app_control().views().keep_pumping(&request.view_id);
+                self.close_user_app_view(owner, &request.view_id).await;
                 Ok(LocalDaemonResponse::UserAppViewClosed {
                     view_id: request.view_id.clone(),
                 })
@@ -148,18 +136,16 @@ impl KernelRuntimeState {
                     self.app_control().views().keep_pumping(&request.view_id);
                     return Ok(failed(AppRequestErrorCode::NotFound));
                 }
-                let result = if request.method == "chariox.panel" {
-                    Ok(serde_json::json!({"placement": "none", "minimized": false}))
-                } else {
-                    self.invoke_app_view_tool(
-                        None,
+                let result = self
+                    .invoke_user_app_view_call(
+                        owner,
+                        &request.view_id,
                         &binding,
                         &request.method,
                         request.input.clone(),
                         &mut tracked,
                     )
-                    .await
-                };
+                    .await;
                 match result {
                     Ok(result) => Ok(LocalDaemonResponse::UserAppViewCallResult {
                         result: Some(result),
@@ -214,6 +200,35 @@ impl KernelRuntimeState {
             }
             _ => unreachable!(),
         }
+    }
+
+    pub(super) async fn invoke_user_app_view_call(
+        &self,
+        owner: &str,
+        view_id: &str,
+        binding: &AppViewBinding,
+        method: &str,
+        input: serde_json::Value,
+        tracked: &mut crate::runtime::app_views::ViewCall,
+    ) -> Result<serde_json::Value, crate::runtime::browser_controller_app_view::BrowserAppViewError>
+    {
+        if self
+            .app_control()
+            .user_views()
+            .get(owner, view_id)
+            .is_none()
+            || tracked.is_cancelled()
+        {
+            return Err(super::app_view_runtime::view_error(
+                "CANCELLED",
+                "App view closed",
+            ));
+        }
+        if method == "chariox.panel" {
+            return Ok(serde_json::json!({"placement": "none", "minimized": false}));
+        }
+        self.invoke_app_view_tool(None, binding, method, input, tracked)
+            .await
     }
 
     async fn user_app_generation_live(

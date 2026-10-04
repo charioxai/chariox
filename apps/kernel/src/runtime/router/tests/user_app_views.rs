@@ -61,15 +61,26 @@ fn answer(id: &str, passkey: Option<&str>) -> LocalDaemonRequest {
 
 #[test]
 fn user_app_view_no_session_integration_drill() {
-    run_drill(false);
+    run_drill(false, false);
 }
 
 #[test]
 fn user_app_view_close_cancels_a_stalled_channel_call() {
-    run_drill(true);
+    run_drill(true, false);
 }
 
-fn run_drill(stall: bool) {
+#[test]
+#[ignore = "Requires a normal Linux user, disposable CHARIOX_HOME and sandboxed native Chromium"]
+fn user_app_view_kernel_browser_integration_drill() {
+    assert_ne!(
+        unsafe { libc::geteuid() },
+        0,
+        "run the host drill as a normal Unix user"
+    );
+    run_drill(false, true);
+}
+
+fn run_drill(stall: bool, browser: bool) {
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024)
         .spawn(move || {
@@ -109,10 +120,15 @@ fn run_drill(stall: bool) {
             let sessions = app.session_state_store();
             assert!(sessions.list_sessions().is_empty());
             let store = app.durable_state_store();
-            let catalog = crate::durable_state::app_state::fixture_tool_catalog(&store);
+            let (catalog, bytes, publisher) = if browser {
+                crate::durable_state::app_state::fixture_browser_tool_package(&store)
+            } else {
+                let catalog = crate::durable_state::app_state::fixture_tool_catalog(&store);
+                let (bytes, publisher) = crate::durable_state::app_state::fixture_tool_package();
+                (catalog, bytes, publisher)
+            };
             let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 2);
             let fixture = Fixture::compile().unwrap();
-            let (bytes, publisher) = crate::durable_state::app_state::fixture_tool_package();
             let package = verify(
                 &bytes,
                 &VerificationPolicy::new(LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
@@ -156,9 +172,12 @@ fn run_drill(stall: bool) {
                 .app_control()
                 .publish_app_worker("alice", handle)
                 .unwrap();
-            runtime.block_on(async {
+            let outcome = runtime.block_on(async {
+                use futures_util::FutureExt;
+                let outcome = std::panic::AssertUnwindSafe(async {
                 let open = LocalDaemonRequest::OpenUserAppView(OpenUserAppViewRequest {
                     installation_id: "installed".into(),
+                    host: browser.then_some(UserAppViewHost::KernelBrowser),
                 });
                 let mut unverified = remote_command_for_request(&open, None);
                 unverified.caller.connection_class = Some(KernelConnectionClass::Unauthenticated);
@@ -243,14 +262,21 @@ fn run_drill(stall: bool) {
                     panic!("channel call");
                 };
                 assert_eq!(result, serde_json::json!({"ok":true}));
+                if browser { check_browser_page(&router, &view, &observed, 2).await; }
+                else { assert!(view.browser.is_none()); }
                 let recorded = observed.tool_requests().unwrap();
-                assert_eq!(recorded.len(), 1);
+                assert_eq!(recorded.len(), if browser { 2 } else { 1 });
                 assert_eq!(
                     recorded[0]["context"]["actor"],
                     serde_json::json!({"kind":"human","id":"alice"})
                 );
                 assert!(recorded[0]["context"].get("room_id").is_none());
                 assert!(recorded[0]["context"].get("agent_id").is_none());
+                for recorded in &recorded {
+                    assert_eq!(recorded["context"]["actor"], serde_json::json!({"kind":"human","id":"alice"}));
+                    assert!(recorded["context"].get("room_id").is_none());
+                    assert!(recorded["context"].get("agent_id").is_none());
+                }
                 let LocalDaemonResponse::UserAppViewsChanged {
                     cursor,
                     views,
@@ -371,6 +397,28 @@ fn run_drill(stall: bool) {
                         now_ms: now
                     })
                     .is_err());
+                if browser {
+                    let LocalDaemonResponse::UserAppViewOpened { view: second, .. } = request(&router, "alice", LocalDaemonRequest::OpenUserAppView(OpenUserAppViewRequest {
+                        installation_id: "installed".into(), host: Some(UserAppViewHost::KernelBrowser),
+                    })).await.unwrap() else { panic!("second App open") };
+                    assert_ne!(view.view_id, second.view_id);
+                    assert_ne!(view.browser.as_ref().unwrap().tab_id, second.browser.as_ref().unwrap().tab_id);
+                    check_browser_page(&router, &second, &observed, 3).await;
+                    let second_browser = second.browser.as_ref().unwrap();
+                    let stream = browser_request(&router, KernelBrowserCommand::Subscribe {
+                        tab_id: second_browser.tab_id.clone(), generation: second_browser.generation,
+                    }).await;
+                    request(&router, "alice", LocalDaemonRequest::CloseUserAppView(UserAppViewRequest { view_id: second.view_id })).await.unwrap();
+                    assert!(request(&router, "alice", LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
+                        command: KernelBrowserCommand::Poll {
+                            subscription_id: stream["subscription_id"].as_str().unwrap().into(),
+                            generation: stream["generation"].as_u64().unwrap(),
+                        },
+                    })).await.is_err(), "closed App frame stream is revoked");
+                    let state = browser_request(&router, KernelBrowserCommand::State).await;
+                    assert_eq!(state["tabs"].as_array().unwrap().len(), 1);
+                    assert_eq!(state["tabs"][0]["tab_id"], view.browser.as_ref().unwrap().tab_id);
+                }
                 let close = LocalDaemonRequest::CloseUserAppView(UserAppViewRequest {
                     view_id: view.view_id.clone(),
                 });
@@ -397,13 +445,22 @@ fn run_drill(stall: bool) {
                     panic!("list");
                 };
                 assert!(views.is_empty());
-                assert!(
-                    sessions.list_sessions().is_empty(),
-                    "drill must finish with no sessions"
-                );
+                assert!(sessions.list_sessions().is_empty(), "App lifecycle has no sessions");
+                if browser {
+                    assert!(browser_request(&router, KernelBrowserCommand::State).await["tabs"].as_array().unwrap().is_empty());
+                    check_focused_browser_tab(&router, &root, view.browser.as_ref().unwrap().generation).await;
+                }
+                }).catch_unwind().await;
+                if browser { router.runtime_state.shutdown_cleanup().await.unwrap(); }
+                outcome
             });
             worker.shutdown_blocking();
             assert!(observed.was_reaped());
+            if let Err(error) = outcome { std::panic::resume_unwind(error); }
+            if browser {
+                let evidence_root = std::path::PathBuf::from(std::env::var_os("CHARIOX_MDINT_DRILL_ROOT").unwrap());
+                std::fs::write(evidence_root.join("MDINT-PASS.txt"), "PASS: no-session kernel Chromium App, real signed bundle/page bridge/fixed ABI worker, owner channel context, detached passkey approval and receipt, close, then focused on-demand MCP tab; worker reaped, host shutdown. No model, client/relay projection, Mac or production Vault claim.\n").unwrap();
+            }
         })
         .unwrap()
         .join()
@@ -469,4 +526,146 @@ async fn user_app_view_detached_decision_uses_the_sessionless_reply_contract() {
     ));
     assert_eq!(receiver.await.unwrap().choice_id.as_deref(), Some("deny"));
     assert!(sessions.list_sessions().is_empty());
+}
+
+async fn browser_request(
+    router: &CommandRouter,
+    command: KernelBrowserCommand,
+) -> serde_json::Value {
+    let LocalDaemonResponse::KernelBrowser { result } = request(
+        router,
+        "alice",
+        LocalDaemonRequest::KernelBrowser(KernelBrowserRequest { command }),
+    )
+    .await
+    .unwrap() else {
+        panic!("browser response")
+    };
+    result
+}
+
+async fn check_browser_page(
+    router: &CommandRouter,
+    view: &UserAppView,
+    observed: &chariox_app_runtime::worker_process::test_fixture::Observation,
+    expected_calls: u64,
+) {
+    use base64::Engine;
+    let browser = view
+        .browser
+        .as_ref()
+        .expect("Chromium fallback tab reference");
+    assert!(browser.tab_id.starts_with("host-tab-"));
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let page = browser_request(
+                router,
+                KernelBrowserCommand::Snapshot {
+                    tab_id: browser.tab_id.clone(),
+                    generation: browser.generation,
+                },
+            )
+            .await;
+            if page.to_string().contains("App channel {\\\"ok\\\":true}") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("actual page bridge call/reply");
+    assert_eq!(observed.tool_invocations(), expected_calls);
+    let frame = browser_request(
+        router,
+        KernelBrowserCommand::Screenshot {
+            tab_id: browser.tab_id.clone(),
+            generation: browser.generation,
+        },
+    )
+    .await;
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(frame["data_base64"].as_str().unwrap())
+        .unwrap();
+    assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+    let root = std::path::PathBuf::from(std::env::var_os("CHARIOX_MDINT_DRILL_ROOT").unwrap());
+    std::fs::write(root.join("MDINT-APP.png"), png).unwrap();
+}
+
+async fn check_focused_browser_tab(
+    router: &CommandRouter,
+    root: &std::path::Path,
+    app_generation: u64,
+) {
+    let workspace = root.join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let (session, agent, run) = {
+        let mut app = router.app.lock().await;
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(
+                CreateSessionRequest::new(workspace.to_string_lossy(), workspace.to_string_lossy())
+                    .with_owner_user_id("alice"),
+            )
+            .unwrap();
+        let run = launch_test_provider(
+            &mut app,
+            session.id(),
+            agent.id(),
+            "dev-stub",
+            "dev-stub",
+            "default",
+        );
+        (session, agent, run)
+    };
+    // The provider binding is a dev stub: this exercises admission, not a model.
+    let credential = run.runtime_mcp_auth_token().unwrap();
+    let focus = LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+        session_id: session.id().into(),
+        agent_id: agent.id().into(),
+    });
+    request(router, "alice", focus).await.unwrap();
+    // The same owner/profile serves this user tab after its App view closes.
+    router
+        .dispatch_authenticated_runtime_tool_call(
+            credential,
+            "chariox.load_kernel_browser",
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+    let opened = router
+        .dispatch_authenticated_runtime_tool_call(
+            credential,
+            "chariox.kernel_browser",
+            serde_json::json!({"command":{"op":"open","url":"about:blank"}}),
+        )
+        .await
+        .unwrap();
+    let tab = opened.payload["tab_id"].as_str().unwrap();
+    let generation = opened.payload["generation"].as_u64().unwrap();
+    assert!(tab.starts_with("host-tab-"));
+    assert_eq!(
+        generation, app_generation,
+        "App and focused tab use the same owner browser"
+    );
+    let state = router
+        .dispatch_authenticated_runtime_tool_call(
+            credential,
+            "chariox.kernel_browser",
+            serde_json::json!({"command":{"op":"state"}}),
+        )
+        .await
+        .unwrap();
+    assert!(state.payload["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["tab_id"] == tab));
+    router
+        .dispatch_authenticated_runtime_tool_call(
+            credential,
+            "chariox.kernel_browser",
+            serde_json::json!({"command":{"op":"close","tab_id":tab,"generation":generation}}),
+        )
+        .await
+        .unwrap();
 }

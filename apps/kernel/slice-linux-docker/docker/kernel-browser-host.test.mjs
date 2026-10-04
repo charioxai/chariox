@@ -378,3 +378,50 @@ test("MD-3: bound stream captures a document-bound source rather than annotating
   }
   assert.fail("bound stream frame never arrived");
 }));
+
+test("MD integration: focused browser input cannot impersonate a human App call; App tabs are not restored", () => using(async ({ host, sent }, root) => {
+  const opened = await host.request({op:"open",url:"https://app.a.invalid/"});
+  const target = host.tabs.get(opened.tab_id).target_id;
+  host.browser.appTabs = {apps:new Map([["app", {targetId:target}]])};
+  const command = {op:"input",tab_id:opened.tab_id,generation:opened.generation,input:{kind:"click",x:12,y:20}};
+  for (const op of ["input", "navigate", "close"]) {
+    await assert.rejects(host.request({...command,op,url:"https://app.a.invalid/",_agent_input:true}), /human App/);
+  }
+  assert(!sent.some(call=>call.method==="Input.dispatchMouseEvent"));
+  await host.request(command);
+  assert(sent.some(call=>call.method==="Input.dispatchMouseEvent"));
+  const {readFile} = await import("node:fs/promises");
+  assert.deepEqual(JSON.parse(await readFile(path.join(root,"tabs.json"),"utf8")).tabs, []);
+}));
+
+test("MD integration: stale-generation App drains cannot reach the new controller", () => using(async ({ host, sent }) => {
+  await host.start();
+  const before = sent.length;
+  const result = await host.handle({id:"stale",method:"browser.app.calls",params:{_host_generation:host.generation-1}});
+  assert.equal(result.ok,false);
+  assert.equal(sent.length,before);
+}));
+
+test("MD integration: generation-bound App calls never restart a stopped browser", () => using(async ({host,chromium}) => {
+  await host.start();
+  const generation=host.generation;
+  await host.stop();
+  for (const method of ["browser.app.calls","browser.app.respond","browser.app.close"]) {
+    const reply=await host.handle({id:method,method,params:{_host_generation:generation}});
+    assert.equal(reply.ok,false);
+    assert.equal(chromium.child,null);
+    assert.equal(host.generation,generation);
+  }
+}));
+
+
+test("MD integration: target close revokes its frame subscription", () => using(async ({host,handlers,sent}) => {
+  const tab=await host.request({op:"open",url:"about:blank"});
+  const stream=await host.request({op:"subscribe",tab_id:tab.tab_id,generation:tab.generation});
+  await host.browser.manageTab({target_id:host.tabs.get(tab.tab_id).target_id});
+  await host.reconcile();
+  assert.equal(host.streams.size,0);
+  assert.equal(handlers.size,0);
+  assert(sent.some(call=>call.method==="Page.stopScreencast"));
+  await assert.rejects(host.request({op:"poll",...stream}),/stale/);
+}));

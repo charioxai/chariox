@@ -23,6 +23,7 @@ pub(crate) struct KernelBrowserHost {
 #[derive(Default)]
 struct HostState {
     browsers: BTreeMap<String, Arc<Mutex<BrowserControllerProcessStdioBackend>>>,
+    stopped: bool,
     focus: BTreeMap<String, FocusedAgent>,
     actors: BTreeMap<String, Arc<Mutex<KernelBrowserActors>>>,
     loaded: BTreeSet<(String, String, KernelBrowserCapability)>,
@@ -180,6 +181,9 @@ impl KernelBrowserHost {
             .inner
             .lock()
             .map_err(|_| "MD-2: browser host lock poisoned")?;
+        if state.stopped {
+            return Err("MD integration: browser host is shut down".into());
+        }
         if !state.browsers.contains_key(user) {
             if state.browsers.len() >= 16 {
                 return Err("MD-2: browser user limit reached".into());
@@ -212,6 +216,18 @@ impl KernelBrowserHost {
             backend.start()?;
         }
         Ok(())
+    }
+    fn require_running(&self) -> Result<(), String> {
+        if self
+            .inner
+            .lock()
+            .map_err(|_| "MD-2: browser host lock poisoned")?
+            .stopped
+        {
+            Err("MD integration: browser host is shut down".into())
+        } else {
+            Ok(())
+        }
     }
     #[cfg(test)]
     pub(crate) fn protected_request(
@@ -306,6 +322,7 @@ impl KernelBrowserHost {
         let mut backend = browser
             .lock()
             .map_err(|_| "MD-2: browser operation lock poisoned")?;
+        self.require_running()?;
         self.check_admission(admission)?;
         if method == "host.browser" && params["op"] == "stop" {
             let model = self.actor_model(user)?;
@@ -330,7 +347,13 @@ impl KernelBrowserHost {
             self.check_admission(admission)?;
             return Ok(serde_json::json!({ "state": "stopped", "tabs": [] }));
         }
-        Self::ensure_ready(&mut backend)?;
+        if params["_host_generation"].is_u64() {
+            if !matches!(backend.health(), Ok(health) if health.state == BrowserControllerProcessState::Ready) {
+                return Err("MD-APP: App host is no longer live".into());
+            }
+        } else {
+            Self::ensure_ready(&mut backend)?;
+        }
         self.check_admission(admission)?;
         backend.host_request("host.protect", policy)?;
         self.check_admission(admission)?;
@@ -466,6 +489,7 @@ impl KernelBrowserHost {
                 .inner
                 .lock()
                 .map_err(|_| "MD-2: browser host lock poisoned")?;
+            state.stopped = true;
             std::mem::take(&mut state.browsers)
         };
         let mut first = None;
@@ -582,6 +606,15 @@ mod tests {
             host.note_operation("a", Some(&fresh), || Ok(42)).unwrap(),
             42
         );
+    }
+    #[test]
+    fn retained_host_cannot_restart_after_shutdown() {
+        let host = KernelBrowserHost::new(PathBuf::from("/tmp/mdint-stopped-host"));
+        let retained = host.clone();
+        host.shutdown().unwrap();
+        assert!(retained
+            .protected_request("alice", None, "host.browser", serde_json::json!({"op":"start"}), Value::Null)
+            .is_err());
     }
     #[test]
     fn profile_selection_is_private_stable_and_user_separated() {

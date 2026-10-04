@@ -543,7 +543,8 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::ClearWorkflowPromptQueue(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
-        LocalDaemonRequest::OpenUserAppView(_)
+        LocalDaemonRequest::KernelBrowser(_)
+        | LocalDaemonRequest::OpenUserAppView(_)
         | LocalDaemonRequest::ListUserAppViews(_)
         | LocalDaemonRequest::CloseUserAppView(_)
         | LocalDaemonRequest::GetUserAppViewFrontend(_)

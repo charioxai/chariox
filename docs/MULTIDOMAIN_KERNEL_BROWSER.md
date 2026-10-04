@@ -1,6 +1,8 @@
 # MD-1: kernel browser outside slices
 
-Protocol allocation: local 417. Base: OSS G2 `9334141d420f8a32393f206102c5b8b4a1b0b609`.
+Protocol introduction: local 417. Integration current: 418/70 on OSS main
+`358491d66` plus Apps-on-main. See MULTIDOMAIN_INTEGRATION.md for merge-order
+renumbering and the bound App host.
 MD-1 is design, MD-2 host/browser and shared protocol, MD-3 focused runtime MCP,
 MD-4 native drill and recovery, MD-5 shared Vault protection. These are not MP acceptance claims.
 
@@ -275,3 +277,9 @@ The replay and focused API regression use default Rust thread stacks; production
 App-copy/control future boundaries are boxed to prevent the discovered overflow.
 Native Mac execution and the public display/client adapter remain external gates.
 No MP acceptance item closes from these checks.
+The first integration uses the App seam for explicit user-domain Chromium fallback
+while keeping native rendering default. Generation-bound App requests cannot
+start a stopped browser; App instances/tabs are ephemeral and excluded from
+ordinary-tab restoration. Focused browser input/navigation/close is refused on live App tabs to
+preserve the human/agent App actor boundary. No separate Chromium or Room is
+created. App trust, tool queue and detached approvals remain in the App runtime.

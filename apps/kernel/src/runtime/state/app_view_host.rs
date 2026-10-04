@@ -40,34 +40,22 @@ impl AppViewHost for RoomAppViewHost<'_> {
     }
 }
 
-pub(super) struct ClientNativeAppViewHost<'a> {
+pub(super) struct KernelBrowserAppViewHost<'a> {
     pub state: &'a KernelRuntimeState,
     pub owner: &'a str,
-    pub binding: crate::runtime::app_views::AppViewBinding,
+    pub generation: Option<u64>,
 }
 
-impl AppViewHost for ClientNativeAppViewHost<'_> {
+impl AppViewHost for KernelBrowserAppViewHost<'_> {
     fn command(
         &self,
         request: BrowserAppViewRequest,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, DaemonError>> + Send + '_>> {
         Box::pin(async move {
-            let BrowserAppViewRequest::Open { origin_label, .. } = request else {
-                return Err(super::app_view_runtime::open_error(
-                    "Unsupported client-native host command",
-                ));
-            };
-            let view = self
-                .state
-                .app_control()
-                .user_views()
-                .open(self.owner, self.binding.clone(), &origin_label)
-                .map_err(|_| {
-                    super::app_view_runtime::open_error("Too many open user-domain App views")
-                })?;
-            Ok(Some(
-                serde_json::json!({"target_id": view.view_id, "origin": view.origin}),
-            ))
+            self.state
+                .kernel_browser_app_view(self.owner.into(), request, self.generation)
+                .await
+                .map(Some)
         })
     }
 }
