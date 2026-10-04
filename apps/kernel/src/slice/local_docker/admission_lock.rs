@@ -207,7 +207,11 @@ mod tests {
         if unsafe { libc::geteuid() } != 0 {
             return; // Cross-UID proof runs on the disposable root builder.
         }
-        let fixture = Fixture::new();
+        // The ordinary UID must not depend on a private TMPDIR or checkout.
+        let fixture = Fixture::new_in(Path::new("/tmp"));
+        let executable = fixture.0.join("worker-test");
+        std::fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
         let provisioned = std::process::Command::new("python3")
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -226,7 +230,7 @@ mod tests {
         let held = open_for_owner(&path, 0).unwrap();
         held.lock_exclusive().unwrap();
         let probe = |blocked| {
-            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            let mut command = std::process::Command::new(&executable);
             command
                 .args(["--exact", "slice::local_docker::admission_lock::tests::provisioned_root_lock_uses_kernel_opener_as_ordinary_uid"])
                 .uid(65534)
@@ -239,7 +243,9 @@ mod tests {
             let result = command.output().unwrap();
             assert!(
                 result.status.success(),
-                "{}",
+                "ordinary UID probe failed ({}):\n{}\n{}",
+                result.status,
+                String::from_utf8_lossy(&result.stdout),
                 String::from_utf8_lossy(&result.stderr)
             );
         };
@@ -251,8 +257,10 @@ mod tests {
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
-            let p = std::env::temp_dir()
-                .join(format!("chariox-admission-{:032x}", rand::random::<u128>()));
+            Self::new_in(&std::env::temp_dir())
+        }
+        fn new_in(parent: &Path) -> Self {
+            let p = parent.join(format!("chariox-admission-{:032x}", rand::random::<u128>()));
             std::fs::create_dir(&p).unwrap();
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
             Self(p)
