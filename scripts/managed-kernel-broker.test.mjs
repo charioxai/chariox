@@ -3,8 +3,8 @@ import "./managed-home-archive-digest.test.mjs"
 import assert from "node:assert/strict"
 import { access, chmod, mkdtemp, mkdir, readFile, readdir, readlink, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { fileURLToPath } from "node:url"
+import { dirname, join } from "node:path"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { spawn, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { once } from "node:events"
@@ -20,6 +20,22 @@ const broker = join(
   repositoryRoot,
   "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
 )
+// The production broker is an ES module; these isolated VM fixtures are scripts.
+// Preserve its module URL when evaluating the complete execution path, including
+// the saved-image flatten helper added in #822.
+function brokerExecutionFixture(source, context) {
+  const spawnStart = source.indexOf("function spawnBounded(")
+  const spawnEnd = source.indexOf("\nfunction provisionerQuotaRequest(", spawnStart)
+  const executeStart = source.indexOf("async function execute(request)")
+  const executeEnd = source.indexOf("\nfunction errorResponse(", executeStart)
+  assert.ok(spawnStart >= 0 && spawnEnd > spawnStart, "broker owned-lifetime function must exist")
+  assert.ok(executeStart >= 0 && executeEnd > executeStart, "broker execution function must exist")
+  const spawnSource = source.slice(spawnStart, spawnEnd)
+  const executeSource = source.slice(executeStart, executeEnd)
+    .replaceAll("import.meta.url", JSON.stringify(pathToFileURL(broker).href))
+  return runInNewContext(`${spawnSource}\n${executeSource}\nexecute`, { dirname, fileURLToPath, ...context })
+}
+
 const ownerPublicKey = Buffer.concat([Buffer.from([4]), Buffer.alloc(64, 1)]).toString("base64")
 const sliceRuntimeLogScript = `
 set -eu
@@ -1137,12 +1153,11 @@ test("runtime log script selects protected and legacy roots without mixing them"
 
 test("MP-08 MP-10 MP-11 all provisioner requests use common owned lifetime", async () => {
   const source = await readFile(broker, "utf8")
-  const spawnSource = source.slice(source.indexOf("function spawnBounded("), source.indexOf("\nfunction provisionerQuotaRequest("))
-  const executeSource = source.slice(source.indexOf("async function execute(request)"), source.indexOf("\nfunction errorResponse("))
   const calls = []
+  const brokerLifetime = new AbortController()
   let prepared = 0
   let cleaned = 0
-  const execute = runInNewContext(`${spawnSource}\n${executeSource}\nexecute`, {
+  const execute = brokerExecutionFixture(source, {
     ...archivePolicy, process, Buffer, Set,
     PROVISIONER: process.execPath, DOCKER_HOST: "unix:///synthetic/unused", MAX_OUTPUT_BYTES: 1024,
     // Phase 1 managed authority: no Local DEV enrollment, no verified build
@@ -1159,8 +1174,10 @@ test("MP-08 MP-10 MP-11 all provisioner requests use common owned lifetime", asy
     },
     prepareProvisioner: async request => { await new Promise(resolve => setImmediate(resolve)); prepared++; return { environment: request.environment, handles: new Set(), newHandles: new Set() } },
     cleanupPrepared: () => { cleaned++ }, removePersistentHandles: () => {},
-    brokerLifetime: new AbortController(), BROKER_OUTPUT_ROOT: "/synthetic/logs", join,
+    brokerLifetime, BROKER_OUTPUT_ROOT: "/synthetic/logs", join,
     runBrokerCommand: async (command, args, options) => {
+      assert.equal(options.signal, brokerLifetime.signal, "commands share the broker lifetime cancellation signal")
+      assert.equal(options.logRoot, "/synthetic/logs/logs", "commands use broker-owned output logs")
       calls.push({ command, args, timeout: options.timeout, env: options.env })
       return spawnSync(command, ["-e", "setTimeout(() => process.stdout.write('restored'), 120)"], options)
     },
@@ -1189,8 +1206,6 @@ test("MP-08 MP-10 MP-11 all provisioner requests use common owned lifetime", asy
 
 test("Phase 1 local DEV broker runs unbounded slices without release F's managed quota coordination", async () => {
   const source = await readFile(broker, "utf8")
-  const spawnSource = source.slice(source.indexOf("function spawnBounded("), source.indexOf("\nfunction provisionerQuotaRequest("))
-  const executeSource = source.slice(source.indexOf("async function execute(request)"), source.indexOf("\nfunction errorResponse("))
   // A local DEV host has no quota allocator, coordination root or admission
   // proofs: any use of them is a failure of this topology.
   const quotaUse = []
@@ -1199,7 +1214,7 @@ test("Phase 1 local DEV broker runs unbounded slices without release F's managed
   const commands = []
   const released = []
   let authorityChecks = 0
-  const execute = runInNewContext(`${spawnSource}\n${executeSource}\nexecute`, {
+  const execute = brokerExecutionFixture(source, {
     ...archivePolicy, process, Buffer, Set,
     PROVISIONER: process.execPath, DOCKER_HOST: "unix:///run/docker.sock", MAX_OUTPUT_BYTES: 1024,
     LOCAL_AUTHORITY: { enrollment: { ownerUid: 1000 } },
@@ -1387,13 +1402,11 @@ test("MP-08 MP-11 broker admits documented nondefault slice tuning", async conte
 
 test("quota admission uses the retained generation and final evidence uses the prepared restore generation", async () => {
   const source = await readFile(broker, "utf8")
-  const spawnSource = source.slice(source.indexOf("function spawnBounded("), source.indexOf("\nfunction provisionerQuotaRequest("))
-  const executeSource = source.slice(source.indexOf("async function execute(request)"), source.indexOf("\nfunction errorResponse("))
   const container = "chariox-slice-generation"
   const retained = `${container}-home-g${"a".repeat(32)}`
   const restored = `${container}-home-g${"b".repeat(32)}`
   const quotas = [], environments = []
-  const execute = runInNewContext(`${spawnSource}\n${executeSource}\nexecute`, {
+  const execute = brokerExecutionFixture(source, {
     ...archivePolicy, process, Buffer, Set, join,
     PROVISIONER: "/synthetic/provisioner", DOCKER_HOST: "unix:///synthetic", MAX_OUTPUT_BYTES: 1024,
     LOCAL_AUTHORITY: undefined, VERIFIED_BUILD_CONTEXT_DIGEST: "", brokerLifetime: new AbortController(), BROKER_OUTPUT_ROOT: "/synthetic",
@@ -1415,14 +1428,12 @@ test("quota admission uses the retained generation and final evidence uses the p
 test("quota destroy retires retained generations after current-home removal even without a marker", async () => {
   const {retireProtectedQuotaHomes} = await import("../apps/kernel/slice-linux-docker/protected-home-retirement.mjs")
   const source = await readFile(broker, "utf8")
-  const spawnSource = source.slice(source.indexOf("function spawnBounded("), source.indexOf("\nfunction provisionerQuotaRequest("))
-  const executeSource = source.slice(source.indexOf("async function execute(request)"), source.indexOf("\nfunction errorResponse("))
   const identity = {containerName: "chariox-slice-retirement", sliceId: "retirement", ownerKernelId: "kernel", ownerMachineId: "machine"}
   const oldHome = `${identity.containerName}-home`
   const currentHome = `${oldHome}-g${"e".repeat(32)}`
   identity.homeVolumeName = currentHome
   const remaining = new Set([oldHome, currentHome]), events = []
-  const execute = runInNewContext(`${spawnSource}\n${executeSource}\nexecute`, {
+  const execute = brokerExecutionFixture(source, {
     ...archivePolicy, process, Buffer, Set, join,
     PROVISIONER: "/synthetic/provisioner", DOCKER_HOST: "unix:///synthetic", MAX_OUTPUT_BYTES: 1024,
     LOCAL_AUTHORITY: undefined, VERIFIED_BUILD_CONTEXT_DIGEST: "", brokerLifetime: new AbortController(), BROKER_OUTPUT_ROOT: "/synthetic",
