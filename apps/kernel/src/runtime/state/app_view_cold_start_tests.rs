@@ -1,3 +1,4 @@
+use super::recovery::MAX_POLL_FAILURES;
 use super::*;
 use crate::{
     app::{DaemonApp, KernelSessionService},
@@ -309,4 +310,126 @@ async fn inconclusive_identity_probes_are_throttled_without_slowing_live_calls()
         polls.tick().await;
     }
     assert!(views.binding_state("room", "missing").is_some());
+}
+
+#[test]
+fn viewport_verification_downtime_preserves_restore_and_poll_authority() {
+    let message = "browser controller `browser.reconcile` failed with viewport_apply_failed: canonical physical display apply failed";
+    let local = DaemonError::LocalTransport {
+        operation: "browser_controller.route",
+        message: message.into(),
+    };
+    let relay = DaemonError::RelayTransport {
+        operation: "read relay peer response",
+        code: "transport_error".into(),
+        message: local.to_string(),
+        retryable: true,
+    };
+    // App commands wrap the same fault in their existing unavailable envelope.
+    for error in [local, relay] {
+        let wrapped = open_error(&error.to_string());
+        assert!(matches!(
+            cold_restore_error(error),
+            ColdAppRestoreError::ViewportUnavailable
+        ));
+        assert!(matches!(
+            cold_restore_error(wrapped),
+            ColdAppRestoreError::ViewportUnavailable
+        ));
+    }
+    let unavailable = open_error("This Room has no browser controller available.");
+    assert!(matches!(
+        cold_restore_error(unavailable),
+        ColdAppRestoreError::Failed(_)
+    ));
+}
+
+fn viewport_fault() -> DaemonError {
+    open_error("browser controller `browser.reconcile` failed with viewport_apply_failed: canonical physical display apply failed")
+}
+
+#[tokio::test(start_paused = true)]
+async fn permanent_viewport_failure_eventually_retires_restore_and_poll_bindings() {
+    let views = crate::runtime::app_views::AppViews::default();
+    let binding = AppViewBinding {
+        owner: "local".into(),
+        installation: "todo".into(),
+        generation: 1,
+        panel: Default::default(),
+        logical_tab: None,
+    };
+    views.register("cold", "old", binding.clone());
+    views.suspend_for_cold_start("cold");
+    views.register("live", "target", binding.clone());
+    let mut recovery = AppViewRecovery::default();
+    let mut polling = AppViewRecovery::default();
+    for _ in 0..MAX_POLL_FAILURES + 8 {
+        recovery.restore_finished(
+            &views,
+            "cold",
+            &binding,
+            Err(cold_restore_error(viewport_fault())),
+        );
+        polling.poll_failed(&views, "live", &viewport_fault());
+        assert_eq!(views.next_cold_start_attempt("cold"), Some(binding.clone()));
+        assert!(views.keep_pumping("live"));
+        tokio::time::advance(Duration::from_millis(250)).await;
+    }
+    tokio::time::advance(Duration::from_secs(120)).await;
+    for _ in 0..3 {
+        recovery.restore_finished(
+            &views,
+            "cold",
+            &binding,
+            Err(cold_restore_error(viewport_fault())),
+        );
+    }
+    assert!(views.next_cold_start_attempt("cold").is_none());
+    assert!(!views.keep_pumping("cold"));
+    for _ in 0..MAX_POLL_FAILURES {
+        polling.poll_failed(&views, "live", &viewport_fault());
+    }
+    assert!(!views.keep_pumping("live"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn successful_poll_rearms_a_new_bounded_viewport_window() {
+    let views = crate::runtime::app_views::AppViews::default();
+    let binding = AppViewBinding {
+        owner: "local".into(),
+        installation: "todo".into(),
+        generation: 1,
+        panel: Default::default(),
+        logical_tab: None,
+    };
+    views.register("room", "old", binding.clone());
+    views.suspend_for_cold_start("room");
+    let mut recovery = AppViewRecovery::default();
+    recovery.restore_finished(
+        &views,
+        "room",
+        &binding,
+        Err(cold_restore_error(viewport_fault())),
+    );
+    tokio::time::advance(Duration::from_secs(121)).await;
+    recovery.poll_succeeded();
+    for _ in 0..4 {
+        recovery.restore_finished(
+            &views,
+            "room",
+            &binding,
+            Err(cold_restore_error(viewport_fault())),
+        );
+    }
+    assert_eq!(views.next_cold_start_attempt("room"), Some(binding.clone()));
+    tokio::time::advance(Duration::from_secs(120)).await;
+    for _ in 0..3 {
+        recovery.restore_finished(
+            &views,
+            "room",
+            &binding,
+            Err(cold_restore_error(viewport_fault())),
+        );
+    }
+    assert!(views.next_cold_start_attempt("room").is_none());
 }

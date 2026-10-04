@@ -276,6 +276,14 @@ impl RoomEnvironment {
 
     /// The open App views (installation and panel layout by controller target)
     /// and the session's focus agent.
+    pub(crate) fn prepare_app_recovery(&mut self) {
+        self.tabs.prepare_app_recovery();
+    }
+
+    pub(crate) fn cancel_app_recovery_focus(&mut self) {
+        self.tabs.cancel_app_recovery_focus();
+    }
+
     pub(crate) fn set_app_tabs(
         &mut self,
         apps: BTreeMap<String, (String, super::model::AppPanelLayout)>,
@@ -714,9 +722,11 @@ impl RoomEnvironment {
         )?;
         match &admission {
             ActionAdmission::Accepted { action_id } => {
+                self.tabs.cancel_app_recovery_focus();
                 self.emit_action_changed(action_id, EnvironmentActionState::Running);
             }
             ActionAdmission::Queued { action_id, .. } => {
+                self.tabs.cancel_app_recovery_focus();
                 self.emit_action_changed(action_id, EnvironmentActionState::Queued);
             }
             _ => {}

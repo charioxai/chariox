@@ -22,6 +22,41 @@ from selkies.input_handler import (
 )
 
 
+class _BrowserSafeTextKeyboard(_XTestKeyboard):
+    """Keep text overlays away from Chromium's physical accelerators.
+
+    Xorg can report browser/media and function keycodes as NoSymbol. Chromium
+    still handles their physical code: an overlay character on BrowserRefresh
+    reloads the page rather than typing it. Keep the main text-key range only,
+    excluding controls and F1..F12. Selkies retains its bounded recycling.
+    """
+
+    @staticmethod
+    def _text_accelerator(keycode):
+        return (keycode >= 104 or keycode in (9, 22, 23, 36, 66, 95, 96)
+                or 67 <= keycode <= 78)
+
+    def _find_spare_keycodes(self):
+        slots = [code for code in super()._find_spare_keycodes()
+                 if not self._text_accelerator(code)]
+        self._spare_set = frozenset(slots)
+        return slots
+
+    def _resolve(self, keysym):
+        code, modifiers, group = super()._resolve(keysym)
+        if not code:
+            raise ValueError("no safe physical text keycode")
+        # Explicit text line breaks and tabs retain their ordinary controls.
+        # A previous helper may have left Unicode on an unsafe physical code;
+        # do not accept that overlay as an inherited layout binding either.
+        if keysym not in (0xff0d, 0xff09) and self._text_accelerator(code):
+            code = self._overlay_keycode(keysym)
+            if not code:
+                raise ValueError("no safe physical text keycode")
+            return code, (), None
+        return code, modifiers, group
+
+
 class SecretTargetChanged(Exception):
     pass
 
@@ -73,7 +108,7 @@ def assert_secret_target(connection, expected_target):
 
 def type_text(text, expected_target=None):
     connection = display.Display()
-    keyboard = _XTestKeyboard(connection)
+    keyboard = _BrowserSafeTextKeyboard(connection)
     lifted = []
     active_keysym = None
     try:

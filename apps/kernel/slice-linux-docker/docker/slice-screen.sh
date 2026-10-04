@@ -683,6 +683,13 @@ computer_key_stdin() {
     printf 'computer key must be a non-whitespace xdotool key name of at most 128 bytes\n' >&2
     return 2
   fi
+  # DOM callers use Enter; X11's ordinary Enter keysym is Return. Translate
+  # whole chord components only, preserving native names such as KP_Enter.
+  local chord="+$key+"
+  while [[ "$chord" == *"+Enter+"* ]]; do
+    chord="${chord//+Enter+/+Return+}"
+  done
+  key="${chord:1:${#chord}-2}"
   run_xdotool key --clearmodifiers --repeat "$repeat" --delay 40 "$key"
 }
 
