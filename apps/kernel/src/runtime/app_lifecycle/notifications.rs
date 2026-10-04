@@ -179,6 +179,9 @@ pub(super) fn serve(
                     };
                     // A wake admitted before suspension keeps the worker live.
                     if !context.control.begin_idle_drain() {
+                        // Roll back capacity and visibility before another
+                        // idle request can enter or the caller observes Busy.
+                        drop(reservation);
                         context
                             .control
                             .idle_requested

@@ -279,6 +279,13 @@ impl ProjectEnvironmentStore {
 pub struct ProjectEnvironmentLock {
     _file: File,
 }
+impl Drop for ProjectEnvironmentLock {
+    fn drop(&mut self) {
+        // A concurrent fork can retain this open file description until exec.
+        // Closing only our descriptor must not prolong the kernel's ownership.
+        let _ = fs2::FileExt::unlock(&self._file);
+    }
+}
 impl std::fmt::Debug for ProjectEnvironmentLock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ProjectEnvironmentLock")
