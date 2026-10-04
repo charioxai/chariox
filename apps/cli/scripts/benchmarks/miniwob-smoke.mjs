@@ -15,7 +15,7 @@ assert.ok(clientModuleRoot && path.isAbsolute(clientModuleRoot), 'MP-08 / MP-10 
 const { LocalIpcClient } = await import(`${clientModuleRoot}/ipc.js`)
 const r = await import(`${clientModuleRoot}/ipc-requests.js`)
 import { sanitizeDrillMetadata } from '../lib/drill-secrets.mjs'
-import { roomProviderToolName } from '../lib/room-provider-tool-record.mjs'
+import { roomProviderToolName, roomProviderToolOutput } from '../lib/room-provider-tool-record.mjs'
 import { observeKernelRpcErrors, rpcErrorRecord } from './round2/rpc-errors.mjs'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..')
@@ -273,7 +273,7 @@ try {
     row.elapsedMs = Date.now() - started; row.timedOut = timedOut; row.turnLifecycle = turn?.lifecycle ?? null
     row.mutatingActions = row.actions.filter(a => !observationKinds.has(a.kind)).length
     // Hydrate the official transcript to audit the tool track, retaining only
-    // tool identity/status and permitted first-party input, never raw outputs.
+    // bounded, sanitized results from permitted first-party Browser tools.
     row.toolTrace = []; row.toolAuditComplete = true
     for (const blob of turn?.blobs ?? []) {
       if (!['provider_tool', 'provider_error'].includes(blob.kind)) continue
@@ -284,11 +284,15 @@ try {
         continue
       }
       for (const item of content.entries) {
+        if (item.entry.kind === 'provider_error') { row.providerError = true; continue }
+        if (item.entry.kind !== 'provider_tool') continue
         try {
           const record = JSON.parse(item.entry.text), tool = roomProviderToolName(record.tool)
           const permitted = /^slice_browser_(?:status|find|text|wait_for_text|wait_for_idle|click|fill|submit|dialog|events|downloads|tab|history|upload)$/.test(tool)
           row.toolTrace.push({ tool, status: record.status, permitted,
-            ...(permitted ? { input: sanitizeDrillMetadata(record.input) } : {}) })
+            ...(permitted ? { input: sanitizeDrillMetadata(record.input),
+              output: sanitizeDrillMetadata(roomProviderToolOutput(record.output)),
+              error: sanitizeDrillMetadata(record.error ?? null) } : {}) })
         } catch { row.toolAuditComplete = false }
       }
     }
