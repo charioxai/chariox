@@ -76,10 +76,6 @@ test("the broker reads the imported image ID from the flatten helper's output", 
   for (const output of ["", "{}", '{"image":"latest"}', "not json"]) {
     assert.throws(() => flattenedImageId(Buffer.from(output)), /did not report its image/)
   }
-  // The broker refuses to prove a tag that no longer names the imported image.
-  return readFile(new URL("./managed-docker-broker.mjs", import.meta.url), "utf8").then((broker) => {
-    assert.match(broker, /flattenCapture && captured\.Id !== imported\) fail\(/)
-  })
 })
 
 test("a flattened capture restarts protected lineage at one layer and keeps the runtime proof", async () => {

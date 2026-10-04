@@ -62,6 +62,7 @@ export function importChanges(config) {
   }
   const volumes = Object.keys(config.Volumes ?? {})
   if (volumes.length) changes.push(`VOLUME ${JSON.stringify(volumes)}`)
+  // Docker 20.10 import rejects STOPSIGNAL; slice images and containers set none.
   if (!empty(config.StopSignal)) {
     if (!/^[A-Z0-9+]+$/.test(config.StopSignal)) refuse("stop signal is invalid")
     changes.push(`STOPSIGNAL ${config.StopSignal}`)
@@ -98,7 +99,9 @@ export async function flattenContainerImage({ container, image, docker = "docker
   if (source.State?.Running && !source.State?.Paused) refuse("the container must be stopped or paused")
   const changes = importChanges(source.Config)
   const exporter = spawn(docker, ["export", source.Id], { env, stdio: ["ignore", "pipe", "inherit"] })
-  const importer = spawn(docker, ["import", ...changes, "-", image], { env, stdio: ["pipe", "ignore", "inherit"] })
+  const importer = spawn(docker, ["import", ...changes, "-", image], { env, stdio: ["pipe", "pipe", "inherit"] })
+  let importedOutput = ""
+  importer.stdout.setEncoding("utf8").on("data", (chunk) => { importedOutput = (importedOutput + chunk).slice(-4096) })
   // A failed side closes the pipe; the exit codes below report the failure.
   exporter.stdout.on("error", () => {})
   importer.stdin.on("error", () => {})
@@ -114,9 +117,15 @@ export async function flattenContainerImage({ container, image, docker = "docker
     spawnSync(docker, ["image", "rm", "-f", image], { env, stdio: "ignore", timeout: 60_000 })
     throw error
   }
-  const flattened = inspect(docker, env, "image", image)
+  // Inspect the image `docker import` created, by ID, never whatever the tag names now.
+  const importedId = importedOutput.trim().split("\n").at(-1)
+  if (!/^sha256:[a-f0-9]{64}$/.test(importedId ?? "")) {
+    spawnSync(docker, ["image", "rm", "-f", image], { env, stdio: "ignore", timeout: 60_000 })
+    refuse("docker import did not report the image it created")
+  }
+  const flattened = inspect(docker, env, "image", importedId)
   const mismatches = flattenedConfigMismatches(source.Config, flattened.Config)
-  if (mismatches.length || flattened.RootFS?.Layers?.length !== 1) {
+  if (flattened.Id !== importedId || mismatches.length || flattened.RootFS?.Layers?.length !== 1) {
     spawnSync(docker, ["image", "rm", "-f", image], { env, stdio: "ignore", timeout: 60_000 })
     refuse(`the imported image differs in ${mismatches.join(", ") || "layer count"}`)
   }
