@@ -1,5 +1,13 @@
 # MP-11 — b211scan
 
+## MP-11 — 2026-10-05, PR #848 reviewer fixes in progress
+
+- Starting tool head: `5667ae4d8784e21607f616a3f551a42c6f8a6b68`; existing `agent/b211scan` branch retained.
+- P1 fixed: both frozen-Git tests fail in a depth-one checkout without G2 (2/2 RED). The Node CI job now fetches the exact pinned source; the same clone passes both tests after that step, with HEAD unchanged. Evidence: `reviewer-p1-{red,green}` receipts/logs. Public-origin and committed-head verification follow.
+- P2: add fail-first physical-column checks for BOM-prefixed fixture and committed blobs, then preserve the BOM in both strict UTF-8 decoders.
+- The 9,949-anchor semantic audit remains paused pending the owner decision. No runtime/protocol changes or approval repinning are in scope.
+- Initial resources: 66 GiB available disk and 19.95 GiB MemAvailable, above MP-11 lane floors. Node/Python only; coordinator retains publication.
+
 ## MP-11 — 2026-10-04, reviewable scanner repair; semantic gate OPEN
 
 - Base: OSS `9334141d420f8a32393f206102c5b8b4a1b0b609` / tree `f78d25308bd4cc012f129a86df8ff537699712df`; branch `agent/b211scan`. Cloud read-only target: `50eb909aa70298e16daca533a6b3a4f5b63ffeae` / tree `9f9c7c813af08d94da4f2f079cc60ef93b1b89d5`.

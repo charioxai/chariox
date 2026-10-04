@@ -25,6 +25,9 @@ jobs:
       - name: Verify source revision
         run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
+      - name: Fetch MP-11 frozen inventory source
+        run: git fetch --no-tags --depth=1 origin 9334141d420f8a32393f206102c5b8b4a1b0b609
+
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
