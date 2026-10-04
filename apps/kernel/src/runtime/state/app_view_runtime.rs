@@ -3,6 +3,8 @@
 //! `window.chariox.call(tool, input)` runs the App's own tool as the human
 //! owner through the same catalog, validation and durable path as agent calls.
 use super::KernelRuntimeState;
+#[path = "app_view_recovery.rs"]
+mod recovery;
 use crate::{
     error::DaemonError,
     local::{AppRequestErrorCode, LocalDaemonRequest, LocalDaemonResponse},
@@ -23,6 +25,7 @@ use crate::{
 };
 use base64::Engine;
 use chariox_app_runtime::app_catalog::{Actor, CallerContext};
+use recovery::{cold_restore_error, AppViewRecovery, ColdAppRestoreError};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
@@ -34,9 +37,6 @@ const OPEN_WAIT: Duration = Duration::from_secs(16);
 const RESPOND_ATTEMPTS: u32 = 5;
 /// A view's first call re-projects the Room, waiting this long for a busy slice.
 const REPROJECT_WINDOW: Duration = Duration::from_secs(5);
-/// Consecutive failed polls before the session's views are dropped (for
-/// example after the Room environment went away).
-const MAX_POLL_FAILURES: u32 = 20;
 /// The page's agent panel request; answered by the kernel, not the App.
 const PANEL_METHOD: &str = "chariox.panel";
 
@@ -218,7 +218,7 @@ impl KernelRuntimeState {
 
     async fn pump_app_view_calls(self, session_id: String) {
         let views = self.app_control().views().clone();
-        let mut failures = 0;
+        let mut recovery = AppViewRecovery::default();
         let mut polls = super::app_view_poll::AppViewPoll::new();
         while views.keep_pumping(&session_id) {
             polls.tick().await;
@@ -233,16 +233,8 @@ impl KernelRuntimeState {
                     continue;
                 }
                 if let Some(binding) = views.next_cold_start_attempt(&session_id) {
-                    match self.restore_cold_app_view(&session_id, &binding).await {
-                        Ok(())
-                        | Err(ColdAppRestoreError::Failed(
-                            AppRequestErrorCode::NotFound | AppRequestErrorCode::LimitExceeded,
-                        )) => views.finish_cold_start_view(&session_id, &binding),
-                        Err(ColdAppRestoreError::Busy) => {}
-                        Err(ColdAppRestoreError::Failed(_)) => {
-                            views.fail_cold_start_view(&session_id, &binding);
-                        }
-                    }
+                    let result = self.restore_cold_app_view(&session_id, &binding).await;
+                    recovery.restore_finished(&views, &session_id, &binding, result);
                 }
                 // Poll registered targets after every attempt, even if another
                 // restore failed. Their bindings already carry call authority.
@@ -253,21 +245,13 @@ impl KernelRuntimeState {
                 .await;
             let batch = match polled {
                 Ok(batch) => batch,
-                // Both end fast polling; only a genuine failure spends the budget.
-                Err(error) if app_view_controller_downtime(&error.to_string()) => {
-                    polls.failed();
-                    continue;
-                }
-                Err(_) => {
-                    failures += 1;
-                    if failures >= MAX_POLL_FAILURES {
-                        views.forget_session(&session_id);
-                    }
+                Err(error) => {
+                    recovery.poll_failed(&views, &session_id, &error);
                     polls.failed();
                     continue;
                 }
             };
-            failures = 0;
+            recovery.poll_succeeded();
             polls.observed_calls(!batch.calls.is_empty());
             if let Some(open) = &batch.open_targets {
                 views.retain_open(&session_id, open, polled_up_to);
@@ -1064,35 +1048,6 @@ fn view_assets(
         })
         .collect();
     (view.entry, assets)
-}
-
-// Private recovery outcomes; no serialized App or transport contract changes.
-enum ColdAppRestoreError {
-    Busy,
-    Failed(AppRequestErrorCode),
-}
-
-impl From<AppRequestErrorCode> for ColdAppRestoreError {
-    fn from(code: AppRequestErrorCode) -> Self {
-        Self::Failed(code)
-    }
-}
-
-// Display verification can fail while a cold stream is warming or being
-// resized. This is controller downtime, not rejection of the saved App view.
-// Keep both its restore attempts and its registered call authority intact.
-fn app_view_controller_downtime(message: &str) -> bool {
-    crate::runtime::app_views::slice_busy(message)
-        || message
-            .contains("browser controller `browser.reconcile` failed with viewport_apply_failed:")
-}
-
-fn cold_restore_error(error: DaemonError) -> ColdAppRestoreError {
-    if app_view_controller_downtime(&error.to_string()) {
-        ColdAppRestoreError::Busy
-    } else {
-        ColdAppRestoreError::Failed(AppRequestErrorCode::Conflict)
-    }
 }
 
 #[cfg(test)]
