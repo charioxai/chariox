@@ -400,7 +400,11 @@ pub(super) fn start_gate(
                 && old.phase == WorkerPhase::Failed
                 && !restart_allowed(&old, crate::session::unix_epoch_ms()) =>
         {
-            StartGate::Refused
+            if old.is_quarantined() {
+                StartGate::Quarantined
+            } else {
+                StartGate::RestartDeferred
+            }
         }
         _ => StartGate::Allowed,
     })
