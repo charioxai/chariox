@@ -1314,6 +1314,7 @@ fn transient_started_browser_error(error: &DaemonError) -> bool {
         "browser_debugger_unavailable",
         "browser_cdp_disconnected",
         "browser_cdp_socket_error",
+        "viewport_apply_failed",
     ]
     .iter()
     .any(|code| {

@@ -1,14 +1,16 @@
-//! A refused dispatch is recoverable without replacing the Room's runtime.
+//! Recoverable startup downtime retains the Room runtime for its health poll.
 use crate::error::DaemonError;
 use crate::session::EnvironmentLifecycle;
 use crate::slice::ENVIRONMENT_USE_ADMISSION_EXPIRED;
 
 pub(super) fn lifecycle_after_start_error(error: &DaemonError) -> EnvironmentLifecycle {
     if matches!(error, DaemonError::LocalTransport { operation: "browser_controller.route", message }
-        if message == ENVIRONMENT_USE_ADMISSION_EXPIRED)
+        if message == ENVIRONMENT_USE_ADMISSION_EXPIRED
+            || message.contains(&crate::runtime::browser_controller_process::controller_error_marker("viewport_apply_failed")))
     {
-        // No controller command ran. Retain the runtime and its Tab identities;
-        // the normal health poll can finish startup when the slice queue drains.
+        // Admission expiry or unavailable canonical capture is inconclusive.
+        // Retain the runtime and its Tab identities so a later verified health
+        // poll can complete startup; Failed Rooms are no longer polled.
         EnvironmentLifecycle::Degraded
     } else {
         EnvironmentLifecycle::Failed
@@ -48,6 +50,32 @@ mod tests {
     }
 
     #[test]
+    fn canonical_capture_downtime_keeps_cold_room_recovery_available() {
+        let mut room = RoomEnvironment::new(
+            "room",
+            "environment",
+            CanonicalViewport::new(390, 844, 1, 390, 844).unwrap(),
+        )
+        .unwrap();
+        room.start_runtime().unwrap();
+        let tab = room
+            .register_or_reconcile_tab("target", "https://app.invalid", "Todo")
+            .unwrap();
+        for message in [
+            "browser controller `browser.reconcile` failed with viewport_apply_failed: canonical physical display apply failed",
+            "relay peer failed: browser controller `browser.reconcile` failed with viewport_apply_failed: canonical physical display apply failed",
+        ] {
+            let error = DaemonError::LocalTransport { operation: "browser_controller.route", message: message.into() };
+            let _ = room.transition_to(lifecycle_after_start_error(&error));
+            assert_eq!(room.snapshot().lifecycle, EnvironmentLifecycle::Degraded);
+            // The normal verified health completion recovers the same runtime.
+            room.transition_to(EnvironmentLifecycle::Ready).unwrap();
+            assert_eq!(room.snapshot().tabs[0].tab_id, tab);
+            assert_eq!(room.snapshot().focused_tab_id.as_deref(), Some(tab.as_str()));
+        }
+    }
+
+    #[test]
     fn actual_controller_start_failure_remains_failed() {
         for (operation, message) in [
             (
@@ -56,6 +84,10 @@ mod tests {
             ),
             ("browser_controller.route", "controller exited"),
             ("another.operation", ENVIRONMENT_USE_ADMISSION_EXPIRED),
+            (
+                "another.operation",
+                "browser controller `browser.reconcile` failed with viewport_apply_failed: failure",
+            ),
         ] {
             let error = DaemonError::LocalTransport {
                 operation,
