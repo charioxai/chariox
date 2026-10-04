@@ -279,22 +279,14 @@ impl KernelRuntimeState {
             };
             failures = 0;
             polls.observed_calls(!batch.calls.is_empty());
-            if let Some(open) = &batch.open_targets {
-                // A quick supervised restart may finish between polls. Prove
-                // whether the physical browser changed before treating missing
-                // targets as ordinary closes. A route error is inconclusive.
-                if views.has_missing_targets(&session_id, open, polled_up_to)
-                    && self
-                        .reconcile_browser_controller_environment(&session_id)
-                        .await
-                        .is_err()
-                {
-                    polls.failed();
-                    continue;
-                }
-                views.retain_open(&session_id, open, polled_up_to);
-                views.set_open_tabs(&session_id, open.len());
-            }
+            retain_app_poll_targets(
+                &views,
+                &session_id,
+                &batch,
+                polled_up_to,
+                self.reconcile_browser_controller_environment(&session_id),
+            )
+            .await;
             self.reload_updated_app_views(&session_id, &views);
             // App Tabs are always marked; an older controller, which does not
             // lay pages out beside a panel, gets no panel.
@@ -365,6 +357,20 @@ impl KernelRuntimeState {
         session: &str,
         binding: &AppViewBinding,
     ) -> Result<(), ColdAppRestoreError> {
+        // A local Room's explicit Stop must win over pending recovery intent.
+        // Slice stops retain their existing intent behind the slice status gate.
+        if self.owned.slice_store.environment_slice(session).is_none()
+            && self.room_environment_snapshot(session).is_ok_and(|room| {
+                matches!(
+                    room.lifecycle,
+                    crate::session::EnvironmentLifecycle::Stopped
+                        | crate::session::EnvironmentLifecycle::Stopping
+                        | crate::session::EnvironmentLifecycle::Failed
+                )
+            })
+        {
+            return Err(AppRequestErrorCode::NotFound.into());
+        }
         // Acquire before reading assets: a Running slice can still be held by
         // slice.start while its attached agents relaunch. Admission refusals
         // are downtime, and spend neither restore nor polling failure budgets.
@@ -1110,6 +1116,27 @@ impl From<AppRequestErrorCode> for ColdAppRestoreError {
     fn from(code: AppRequestErrorCode) -> Self {
         Self::Failed(code)
     }
+}
+
+/// Calls have already been drained from the controller. An inconclusive
+/// identity check defers pruning only; it must never discard that call batch.
+async fn retain_app_poll_targets<F, T, E>(
+    views: &crate::runtime::app_views::AppViews,
+    session: &str,
+    batch: &BrowserAppViewCalls,
+    up_to: u64,
+    reconcile: F,
+) where
+    F: std::future::Future<Output = Result<T, E>>,
+{
+    let Some(open) = &batch.open_targets else {
+        return;
+    };
+    if views.has_missing_targets(session, open, up_to) && reconcile.await.is_err() {
+        return;
+    }
+    views.retain_open(session, open, up_to);
+    views.set_open_tabs(session, open.len());
 }
 
 fn cold_restore_waiting_for_slice(status: Option<crate::slice::SliceStatus>) -> bool {

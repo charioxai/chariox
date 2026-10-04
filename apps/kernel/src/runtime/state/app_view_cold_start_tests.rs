@@ -12,18 +12,18 @@ use tokio::sync::Mutex;
 /// The pump's idle poll cadence (`AppViewPoll`), which busy refusals keep.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
-#[tokio::test]
-async fn running_slice_start_does_not_spend_restore_or_poll_failure_budgets() {
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn fixture() -> (KernelRuntimeState, String, Cleanup) {
     let root =
         std::env::temp_dir().join(format!("chariox-cold-pump-{:016x}", rand::random::<u64>()));
     std::fs::create_dir(&root).unwrap();
-    struct Cleanup(std::path::PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let _cleanup = Cleanup(root.clone());
+    let cleanup = Cleanup(root.clone());
     let mut config = DaemonConfig::for_tests().with_session_history_root(root.join("history"));
     config.user_config.state.path = Some(root.join("state.db").display().to_string());
     config.user_config.history.operational.path =
@@ -41,6 +41,12 @@ async fn running_slice_start_does_not_spend_restore_or_poll_failure_budgets() {
     let session = session.id().to_owned();
     let runtime =
         CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1).runtime_state();
+    (runtime, session, cleanup)
+}
+
+#[tokio::test]
+async fn running_slice_start_does_not_spend_restore_or_poll_failure_budgets() {
+    let (runtime, session, _cleanup) = fixture();
     let store = &runtime.owned.slice_store;
     let slice = store
         .create(
@@ -150,4 +156,83 @@ fn local_room_has_no_slice_restore_gate() {
     assert!(cold_restore_waiting_for_slice(Some(SliceStatus::Stopped)));
     assert!(cold_restore_waiting_for_slice(Some(SliceStatus::Unhealthy)));
     assert!(!browser_recovery_downtime("browser_controller_unreachable"));
+}
+
+#[tokio::test]
+async fn stopped_local_room_does_not_acquire_browser_for_pending_restore() {
+    let (runtime, session, _cleanup) = fixture();
+    assert!(runtime
+        .owned
+        .slice_store
+        .environment_slice(&session)
+        .is_none());
+    let binding = AppViewBinding {
+        owner: "local".into(),
+        installation: "todo".into(),
+        generation: 1,
+        panel: Default::default(),
+        logical_tab: None,
+    };
+    assert!(matches!(
+        runtime.restore_cold_app_view(&session, &binding).await,
+        Err(ColdAppRestoreError::Failed(AppRequestErrorCode::NotFound))
+    ));
+    assert_eq!(
+        runtime
+            .room_environment_snapshot(&session)
+            .unwrap()
+            .lifecycle,
+        EnvironmentLifecycle::Stopped
+    );
+}
+
+#[tokio::test]
+async fn inconclusive_identity_check_keeps_drained_live_calls_and_cancels_gone_documents() {
+    let views = crate::runtime::app_views::AppViews::default();
+    let binding = AppViewBinding {
+        owner: "local".into(),
+        installation: "todo".into(),
+        generation: 1,
+        panel: Default::default(),
+        logical_tab: None,
+    };
+    views.register("room", "gone", binding.clone());
+    views.register("room", "live", binding);
+    let gone = views.track_call("room", "gone", Some("old-document".into()));
+    let batch = BrowserAppViewCalls {
+        calls: vec![BrowserAppViewCall {
+            installation_id: "todo".into(),
+            target_id: "live".into(),
+            document_id: Some("live-document".into()),
+            call_id: "call-1".into(),
+            method: "list_todos".into(),
+            params: serde_json::json!({}),
+        }],
+        open_targets: Some(vec!["live".into()]),
+        documents: Some(std::collections::HashMap::from([(
+            "live".into(),
+            "live-document".into(),
+        )])),
+        app_panels: false,
+    };
+    retain_app_poll_targets(&views, "room", &batch, views.registrations("room"), async {
+        Err::<(), _>("controller_busy")
+    })
+    .await;
+    // The missing binding is not pruned without proof of browser identity.
+    assert!(views.binding_state("room", "gone").is_some());
+    assert!(views.cold_start_views("room").is_empty());
+    assert_eq!(batch.calls.len(), 1);
+    let call = &batch.calls[0];
+    let live = views.track_call("room", &call.target_id, call.document_id.clone());
+    assert_eq!(
+        views.cancel_gone_calls(
+            "room",
+            batch.open_targets.as_deref(),
+            batch.documents.as_ref()
+        ),
+        1
+    );
+    assert!(gone.is_cancelled());
+    assert!(!live.is_cancelled());
 }
