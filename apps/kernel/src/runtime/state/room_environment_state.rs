@@ -46,16 +46,31 @@ impl KernelRuntimeState {
         session_id: &str,
         viewport: CanonicalViewport,
     ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
-        self.owned
+        let result = self
+            .owned
             .session_store
-            .start_room_environment(session_id, viewport)
+            .start_room_environment(session_id, viewport);
+        if result.is_ok() {
+            self.owned
+                .room_environment_health_probes
+                .startup_recovery
+                .reset(session_id);
+        }
+        result
     }
 
     pub(crate) fn stop_room_environment(
         &self,
         session_id: &str,
     ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
-        self.owned.session_store.stop_room_environment(session_id)
+        let result = self.owned.session_store.stop_room_environment(session_id);
+        if result.is_ok() {
+            self.owned
+                .room_environment_health_probes
+                .startup_recovery
+                .reset(session_id);
+        }
+        result
     }
 
     pub(crate) fn begin_stop_room_environment(
@@ -71,16 +86,31 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
     ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
-        self.owned
+        let result = self
+            .owned
             .session_store
-            .complete_stop_room_environment(session_id)
+            .complete_stop_room_environment(session_id);
+        if result.is_ok() {
+            self.owned
+                .room_environment_health_probes
+                .startup_recovery
+                .reset(session_id);
+        }
+        result
     }
 
     pub(crate) fn retry_room_environment(
         &self,
         session_id: &str,
     ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
-        self.owned.session_store.retry_room_environment(session_id)
+        let result = self.owned.session_store.retry_room_environment(session_id);
+        if result.is_ok() {
+            self.owned
+                .room_environment_health_probes
+                .startup_recovery
+                .reset(session_id);
+        }
+        result
     }
 
     pub(crate) fn transition_room_environment(

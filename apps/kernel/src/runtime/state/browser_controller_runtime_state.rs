@@ -98,7 +98,10 @@ impl KernelRuntimeState {
             );
             let _ = self.transition_room_environment(
                 session_id,
-                super::room_browser_start_failure::lifecycle_after_start_error(&error),
+                self.owned
+                    .room_environment_health_probes
+                    .startup_recovery
+                    .after_start_error(session_id, &error, std::time::Instant::now()),
             );
             return Err(error);
         }
@@ -119,7 +122,15 @@ impl KernelRuntimeState {
                         None,
                     )
                     .map_err(|error| environment_runtime_error(operation, error))?;
-                self.complete_bound_slice_computer_start(session_id, environment, operation)
+                let result =
+                    self.complete_bound_slice_computer_start(session_id, environment, operation);
+                if result.is_ok() {
+                    self.owned
+                        .room_environment_health_probes
+                        .startup_recovery
+                        .reset(session_id);
+                }
+                result
             }
             Err(error) => {
                 let _ = self.update_room_environment_component_health(
@@ -130,7 +141,10 @@ impl KernelRuntimeState {
                 );
                 let _ = self.transition_room_environment(
                     session_id,
-                    super::room_browser_start_failure::lifecycle_after_start_error(&error),
+                    self.owned
+                        .room_environment_health_probes
+                        .startup_recovery
+                        .after_start_error(session_id, &error, std::time::Instant::now()),
                 );
                 Err(error)
             }

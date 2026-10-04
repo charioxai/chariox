@@ -7,6 +7,96 @@ fn room_start_admission_timeout_recovers_through_health_refresh() {
     run_test(start_admission_timeout_recovers);
 }
 
+#[test]
+fn room_start_capture_failure_crosses_relay_and_recovers_through_health() {
+    run_test(capture_failure_recovers);
+}
+
+async fn capture_failure_recovers() {
+    let mut fixture = LiveWorker::start_configured(false, true).await;
+    let assertions = std::panic::AssertUnwindSafe(async {
+        fixture.create_slice().await;
+        fixture
+            .home
+            .app
+            .lock()
+            .await
+            .slices()
+            .set_status("desktop", SliceStatus::Running, 1)
+            .unwrap();
+        let room = &fixture.rooms[0];
+        dispatch_json(&fixture.home, bind(room, "desktop"))
+            .await
+            .unwrap();
+        dispatch_json(
+            &fixture.home,
+            json!({"StartRoomEnvironment": {
+                "session_id": room, "viewport": {
+                    "css_width": 1280, "css_height": 800, "device_scale_factor": 1,
+                    "desktop_pixel_width": 1280, "desktop_pixel_height": 800
+                }
+            }}),
+        )
+        .await
+        .unwrap();
+        let runtime = &fixture.home.runtime_state;
+        let before = runtime.room_environment_snapshot(room).unwrap();
+        assert_eq!(before.lifecycle, EnvironmentLifecycle::Ready);
+        runtime
+            .transition_room_environment(room, EnvironmentLifecycle::Degraded)
+            .unwrap();
+        let fault = fixture
+            ._worker_state
+            .root
+            .join("unavailable-canonical-capture");
+        std::fs::write(&fault, "temporary capture loss").unwrap();
+        let error = timeout(
+            Duration::from_secs(35),
+            runtime.finish_room_environment_controller_start(room, "test.start"),
+        )
+        .await
+        .unwrap()
+        .expect_err("worker capture is unavailable");
+        assert!(
+            matches!(error, DaemonError::RelayTransport {
+            operation: "read relay peer response", ref code, ref message, ..
+        } if code == "transport_error" && message.contains("failed with viewport_apply_failed:")),
+            "{error}"
+        );
+        assert_eq!(
+            runtime.room_environment_snapshot(room).unwrap().lifecycle,
+            EnvironmentLifecycle::Degraded
+        );
+        std::fs::remove_file(fault).unwrap();
+        runtime.schedule_room_environment_health_refresh(room);
+        let recovered = timeout(Duration::from_secs(10), async {
+            loop {
+                let environment = runtime.room_environment_snapshot(room).unwrap();
+                if environment.lifecycle == EnvironmentLifecycle::Ready {
+                    break environment;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("normal health poll must recover the existing slice Room");
+        assert_eq!(recovered.runtime_generation, before.runtime_generation);
+        assert_eq!(recovered.tabs, before.tabs);
+    })
+    .catch_unwind()
+    .await;
+    let cleanup = fixture
+        .worker
+        .runtime_state
+        .shutdown_browser_controller_process()
+        .await;
+    fixture.stop().await;
+    cleanup.unwrap();
+    if let Err(panic) = assertions {
+        std::panic::resume_unwind(panic);
+    }
+}
+
 async fn start_admission_timeout_recovers() {
     let mut fixture = LiveWorker::start_configured(false, true).await;
     let assertions = std::panic::AssertUnwindSafe(async {
