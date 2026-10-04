@@ -307,6 +307,66 @@ mod tests {
     use super::*;
     use crate::history::{HistoryEventTurnContext, SessionHistoryEntry};
     use crate::terminal::TerminalOutputKind;
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
+
+    static RELEASE_HISTORY_WRITER: AtomicBool = AtomicBool::new(false);
+
+    fn release_history_writer_on_busy(attempt: i32) -> bool {
+        RELEASE_HISTORY_WRITER.store(true, Ordering::Release);
+        std::thread::sleep(Duration::from_millis(1));
+        attempt < 1_000
+    }
+
+    #[test]
+    // MP-08/MP-10/MP-11: the first worker projection must survive a history write.
+    fn first_leased_projection_waits_for_concurrent_history_write_before_reading_schema() {
+        let fixture = Fixture::new();
+        let store = fixture.open();
+        RELEASE_HISTORY_WRITER.store(false, Ordering::Release);
+        store
+            .connection
+            .lock()
+            .unwrap()
+            .busy_handler(Some(release_history_writer_on_busy))
+            .unwrap();
+        let writer = rusqlite::Connection::open(store.path()).unwrap();
+        writer
+            .execute_batch("BEGIN IMMEDIATE; CREATE TABLE concurrent_history_write (id INTEGER);")
+            .unwrap();
+        let worker = std::thread::spawn(move || {
+            let started = Instant::now();
+            while !RELEASE_HISTORY_WRITER.load(Ordering::Acquire)
+                && started.elapsed() < Duration::from_secs(2)
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            writer.execute_batch("COMMIT").unwrap();
+        });
+        // In WAL mode a deferred migration reads a snapshot, then fails immediately
+        // upgrading it to a write transaction. It cannot use the busy handler.
+        let first_projection = store.load_leased_projection_cursor("session:agent:run");
+        RELEASE_HISTORY_WRITER.store(true, Ordering::Release);
+        worker.join().unwrap();
+        first_projection.expect("first projection must survive a concurrent history write");
+        let entry = crate::history::SessionHistoryEntry::user_prompt(
+            "session",
+            "attachment",
+            "agent",
+            "prompt",
+        );
+        let event = crate::history::HistoryEvent::transcript(1, &entry, Default::default());
+        store.append(&event).unwrap();
+        let projected = store
+            .load_leased_projection_history("session", "agent", "run", 0)
+            .unwrap();
+        assert_eq!(
+            projected.len(),
+            1,
+            "history writer and projection must remain usable after migration"
+        );
+        assert_eq!(projected[0].1.event_id, event.event_id);
+    }
 
     struct Fixture(std::path::PathBuf);
     impl Fixture {
