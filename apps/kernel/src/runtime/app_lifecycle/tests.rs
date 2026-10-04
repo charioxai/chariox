@@ -117,6 +117,21 @@ fn make_control(
 }
 
 impl AppLifecycleService {
+    /// Reproduce a catalog retained when an idle App's startup fails.
+    pub(crate) fn fixture_dormant_catalog(&self) {
+        let catalog = self
+            .0
+            .store
+            .active_app_event_catalog("alice", "installed")
+            .unwrap();
+        assert!(self
+            .0
+            .publisher
+            .reserve_dormant("alice", catalog, serde_json::Value::Null)
+            .unwrap()
+            .commit());
+    }
+
     /// Native inbox fixture, on the same owner/registration/health path.
     pub(crate) fn fixture_inbox_workers(&self) -> Arc<Mutex<Vec<Observation>>> {
         let observations = Arc::new(Mutex::new(Vec::new()));

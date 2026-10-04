@@ -225,6 +225,21 @@ fn start_gate_defers_a_failed_current_generation_but_not_an_older_one() {
         store.app_worker_start_gate("alice", "installed").unwrap(),
         StartGate::RestartDeferred
     );
+    for _ in 1..4 {
+        store
+            .record_app_worker(
+                &admission,
+                WorkerPhase::Failed,
+                true,
+                Some("crash"),
+                budget(),
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        store.app_worker_start_gate("alice", "installed").unwrap(),
+        StartGate::Quarantined
+    );
     // A row left by an older generation (the App was since updated) does not
     // fence the current one.
     let changed = rusqlite::Connection::open(fixture.0.join("kernel.sqlite"))

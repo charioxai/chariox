@@ -44,8 +44,10 @@ pub(crate) enum StartGate {
     Allowed,
     /// The user stopped this generation; use waits for an explicit start.
     UserStopped,
-    /// Restart backoff or quarantine: accepted work waits for recovery.
+    /// Restart backoff: accepted work waits for recovery.
     RestartDeferred,
+    /// Crash-loop quarantine: only an explicit Start can recover it.
+    Quarantined,
     /// Revoked publisher or inactive/paused installation.
     Refused,
 }

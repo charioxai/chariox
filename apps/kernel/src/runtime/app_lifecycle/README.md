@@ -40,7 +40,9 @@ Each ordinary SDK call continues to use its own current catalog/permission fence
 
 Accepted inbox occurrences and due wakes wait without spending delivery attempts
 while restart backoff or quarantine prevents a worker from running. Quarantine
-ends only after an explicit Start. The normal bounded expiry and handler-failure
+ends only after an explicit Start; held work uses the stopped-work wait interval,
+and quarantined catalogs leave dormant discovery. Backoff uses the short wait.
+The normal bounded expiry and handler-failure
 rules still apply; revoked publishers and inactive installations remain refused.
 
 A stop request withdraws tool/pump handles immediately, including when App

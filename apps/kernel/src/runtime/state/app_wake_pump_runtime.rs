@@ -30,12 +30,12 @@ const IDLE_AFTER_MS: u64 = 10 * 60_000;
 /// Outcome of one on-demand start request for an installation.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Start {
-    /// Starting, admission busy, restart backoff or quarantine: wait without an attempt.
+    /// Starting, admission busy or restart backoff: wait without an attempt.
     Pending,
     /// Every live worker slot is taken: wait without an attempt while the
     /// pass makes room, as a tool call does, by stopping an idle worker.
     AtLiveLimit,
-    /// The user stopped the App: keep work without spending attempts.
+    /// User stop or quarantine: keep work until an explicit Start, without attempts.
     UserStopped,
     /// Revocation, inactive installation or another start failure: bounded attempts.
     Refused,
@@ -231,15 +231,15 @@ impl KernelRuntimeState {
     }
 
     /// Forget dormant catalogs whose installation may no longer start (revoked,
-    /// paused, uninstalled or failed), so they leave the catalog and live cap.
-    async fn prune_dormant_apps(&self) {
+    /// paused, uninstalled or quarantined), so they leave the catalog and live cap.
+    pub(super) async fn prune_dormant_apps(&self) {
         let control = self.app_control().clone();
         let store = self.owned.durable_state_store.clone();
         let _ = tokio::task::spawn_blocking(move || {
             for (owner, installation) in control.dormant_app_keys() {
                 if matches!(
                     store.app_worker_start_gate(&owner, &installation),
-                    Ok(StartGate::Refused)
+                    Ok(StartGate::Refused | StartGate::Quarantined)
                 ) {
                     control.forget_app_dormant(&owner, &installation);
                 }
@@ -399,6 +399,10 @@ impl KernelRuntimeState {
                         }
                         Err(LifecycleError::LiveLimit) => Start::AtLiveLimit,
                         Err(LifecycleError::Stopped) => Start::UserStopped,
+                        Err(LifecycleError::Quarantined) => {
+                            planning.forget_app_dormant(&owner, &installation);
+                            Start::UserStopped
+                        }
                         Err(_) => {
                             planning.forget_app_dormant(&owner, &installation);
                             Start::Refused

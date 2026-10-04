@@ -39,6 +39,7 @@ impl AppLifecycleService {
             StartGate::Allowed => self.start(owner, installation, true, runtime),
             StartGate::UserStopped => Err(LifecycleError::Stopped),
             StartGate::RestartDeferred => Err(LifecycleError::RestartDeferred),
+            StartGate::Quarantined => Err(LifecycleError::Quarantined),
             StartGate::Refused => Err(LifecycleError::Authority),
         }
     }

@@ -1,12 +1,17 @@
 //! Regression for accepted work held through a native crash-loop quarantine.
 use super::*;
 use crate::{
-    durable_state::app_state::fixture_inbox_installation, runtime::router::CommandRouter,
+    durable_state::{
+        app_state::{fixture_inbox_installation, AppStateOperation},
+        app_wakes::{AppWakeOperation, AppWakeOutcome},
+    },
+    runtime::{app_operation_budget::AppOperationBudget, router::CommandRouter},
     DaemonApp, DaemonConfig,
 };
 use chariox_app_package::{verify, VerificationPolicy};
 use chariox_app_runtime::{
     app_inbox::MAX_ATTEMPTS,
+    managed_state::{Wake, WakeChange},
     release_store::{ReleaseStore, StageBudget},
 };
 use serde_json::json;
@@ -59,7 +64,7 @@ fn counts(state: &KernelRuntimeState) -> InboxCounts {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn quarantined_inbox_keeps_attempts_and_delivers_once_after_explicit_start() {
+async fn quarantined_inbox_and_wake_keep_attempts_and_deliver_once_after_explicit_start() {
     let config = DaemonConfig::for_tests();
     let _scratch = Scratch(config.durable_state_path().parent().unwrap().to_owned());
     let app = DaemonApp::bootstrap(config).unwrap();
@@ -148,6 +153,30 @@ async fn quarantined_inbox_keeps_attempts_and_delivers_once_after_explicit_start
         .unwrap()
         .unwrap()
         .is_quarantined());
+    // Both maintenance and a due planner remove the stale idle-start catalog.
+    control.lifecycle().fixture_dormant_catalog();
+    assert!(control.is_app_dormant("alice", "installed"));
+    state.prune_dormant_apps().await;
+    assert!(!control.is_app_dormant("alice", "installed"));
+    control.lifecycle().fixture_dormant_catalog();
+    let catalog = store
+        .active_app_event_catalog("alice", "installed")
+        .unwrap();
+    store
+        .execute_app_state(
+            "alice",
+            catalog,
+            AppStateOperation::Schedule {
+                wakes: vec![WakeChange::Set(Wake {
+                    id: "held-wake".into(),
+                    due_at_ms: crate::session::unix_epoch_ms(),
+                    revision: "r1".into(),
+                })],
+                wakes_count_as_use: false,
+            },
+            AppOperationBudget::from_supervisor(|| false),
+        )
+        .unwrap();
     assert!(!state
         .accept_app_inbox_occurrence(
             "alice",
@@ -164,6 +193,35 @@ async fn quarantined_inbox_keeps_attempts_and_delivers_once_after_explicit_start
     for pass in 1..=MAX_ATTEMPTS + 2 {
         let at = now + u64::from(pass) * 60_000;
         state.app_inbox_pass(at).await;
+        let AppWakeOutcome::Due(due) = store
+            .app_wakes(AppWakeOperation::Due {
+                now_ms: at,
+                limit: 8,
+            })
+            .unwrap()
+        else {
+            panic!("held wake")
+        };
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].attempts, 0);
+        let (deliver, held, _) = state
+            .plan_app_delivery(due, at, |w| (w.owner_id.clone(), w.installation_id.clone()))
+            .await
+            .unwrap();
+        assert!(deliver.is_empty());
+        for (wake, settle) in held {
+            assert_eq!(
+                settle,
+                Settle::Postponed(at + 60_000),
+                "quarantine uses the long stopped-work wait"
+            );
+            store
+                .app_wakes(AppWakeOperation::Postponed {
+                    wake,
+                    until_ms: at + 60_000,
+                })
+                .unwrap();
+        }
         assert_eq!(
             observations.lock().unwrap().len(),
             4,
@@ -171,10 +229,11 @@ async fn quarantined_inbox_keeps_attempts_and_delivers_once_after_explicit_start
         );
     }
     let held = counts(&state);
+    assert!(!control.is_app_dormant("alice", "installed"));
     assert_eq!((held.pending, held.failed, held.delivered), (1, 0, 4));
     let AppInboxOutcome::Due(due) = store
         .app_inbox(AppInboxOperation::Due {
-            now_ms: now + u64::from(MAX_ATTEMPTS + 2) * 60_000 + START_WAIT_MS,
+            now_ms: now + u64::from(MAX_ATTEMPTS + 3) * 60_000,
             limit: 8,
         })
         .unwrap()
@@ -192,6 +251,35 @@ async fn quarantined_inbox_keeps_attempts_and_delivers_once_after_explicit_start
         .unwrap();
     wait(|| control.active_app_lease("alice", "installed").is_some()).await;
     let recovered_at = now + 11 * 60_000;
+    let AppWakeOutcome::Due(due) = store
+        .app_wakes(AppWakeOperation::Due {
+            now_ms: recovered_at,
+            limit: 8,
+        })
+        .unwrap()
+    else {
+        panic!("recovered wake")
+    };
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].attempts, 0);
+    control
+        .active_app_lease("alice", "installed")
+        .unwrap()
+        .deliver_wake(&due[0].wake, true, false, Duration::from_secs(5))
+        .await
+        .unwrap();
+    store
+        .app_wakes(AppWakeOperation::Delivered(due[0].clone()))
+        .unwrap();
+    assert_eq!(
+        store
+            .app_wakes(AppWakeOperation::Due {
+                now_ms: recovered_at + 60_000,
+                limit: 8
+            })
+            .unwrap(),
+        AppWakeOutcome::Due(Vec::new())
+    );
     state.app_inbox_pass(recovered_at).await;
     assert_eq!(
         (
@@ -219,6 +307,13 @@ async fn quarantined_inbox_keeps_attempts_and_delivers_once_after_explicit_start
         .flat_map(|o| o.lifecycle_frames().unwrap())
         .collect();
     assert_eq!(frames.iter().filter(|f| f["method"] == "events.deliver" && f["params"]["occurrence_id"] == "control").count(), 1);
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|f| f["method"] == "schedule.wake" && f["params"]["id"] == "held-wake")
+            .count(),
+        1
+    );
     assert_eq!(counts(&state).delivered, 5);
     assert_eq!(
         store
