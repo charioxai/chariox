@@ -12,7 +12,7 @@ import { runCodexNativeTui } from "./codex.js"
 import { waitForNativeProviderRunReady } from "./provider-run-control.js"
 
 // MP-08 / MP-10: actual entry point + proxy with distinct display/managed turns.
-async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended") {
+async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "steer" | "compact" | "controls") {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-codex-lifecycle-"))
   const reservation = net.createServer().listen(0, "127.0.0.1")
   await once(reservation, "listening")
@@ -26,6 +26,9 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended") {
   let polls = 0
   let tuiStarted = false
   const interrupts: unknown[] = []
+  const controls: { method: string, params: Record<string, unknown> }[] = []
+  let compacted = false
+  const promptContexts: boolean[] = []
   const startServer = async () => {
     server = new WebSocketServer({ host: "127.0.0.1", port: address.port })
     server.on("connection", (socket) => socket.on("message", (raw) => {
@@ -33,7 +36,21 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended") {
       let result: unknown = {}
       if (r.method === "initialize") { tuiStarted = true; result = { userAgent: "fixture" } }
       if (r.method === "thread/start") result = { thread: { id: "display-thread" } }
-      if (r.method === "turn/start") { running = true; result = { turn: { id: "managed-turn" } } }
+      if (r.method === "turn/start") {
+        running = true
+        promptContexts.push(compacted)
+        result = { turn: { id: "managed-turn" } }
+      }
+      if (r.method === "thread/read") result = { thread: { id: r.params.threadId, turns: running ? [{ id: "managed-turn", status: "inProgress" }] : [] } }
+      if (r.method === "turn/steer" || r.method === "thread/compact/start") {
+        controls.push({ method: r.method, params: r.params })
+        if (r.params.threadId !== "managed-thread" || (r.method === "turn/steer" && r.params.expectedTurnId !== "managed-turn")) {
+          socket.send(JSON.stringify({ id: r.id, error: { code: -32000, message: "control missed managed conversation" } }))
+          return
+        }
+        if (r.method === "thread/compact/start") { compacted = true; running = false }
+        result = r.method === "turn/steer" ? { turnId: "managed-turn" } : {}
+      }
       if (r.method === "turn/interrupt") {
         interrupts.push(r.params)
         if (r.params.threadId === "managed-thread" && r.params.turnId === "managed-turn") running = false
@@ -42,7 +59,7 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended") {
     }))
     await once(server, "listening")
   }
-  if (mode === "interrupt") await startServer()
+  if (!["cold", "ended"].includes(mode)) await startServer()
   let nextId = 1
   const managedRequest = async (method: string, params: unknown) => {
     if (!managed) { managed = new WebSocket(endpoint); await once(managed, "open") }
@@ -58,11 +75,11 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended") {
     switch (kind) {
       case "CreateSession": return { SessionCreated: { session: { id: "session", alias: "fixture", workspace_id: root, worktree_id: root, agents: [agent] }, agent } }
       case "AttachToSession": return { SessionAttached: { attachment: { id: "attachment" } } }
-      case "LaunchProviderRun": return { ProviderRunLaunchAccepted: { provider_run: { ...run, state: mode === "interrupt" ? "Running" : "Starting" } } }
+      case "LaunchProviderRun": return { ProviderRunLaunchAccepted: { provider_run: { ...run, state: mode === "cold" || mode === "ended" ? "Starting" : "Running" } } }
       case "GetProviderRun":
         polls += 1
         if (mode === "cold" && polls === 2) await startServer()
-        return { ProviderRun: { provider_run: { ...run, state: mode === "ended" ? "Ended" : mode === "cold" && polls < 2 ? "Starting" : "Running" } } }
+        return { ProviderRun: { provider_run: { ...run, provider_session_id: running || compacted ? "managed-thread" : null, state: mode === "ended" ? "Ended" : mode === "cold" && polls < 2 ? "Starting" : "Running" } } }
       case "SubmitPrompt":
         assert.equal(payload.target_agent_id, "agent")
         await managedRequest("turn/start", { threadId: "managed-thread", input: [{ type: "text", text: payload.prompt }] })
@@ -90,9 +107,17 @@ try {
 await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
 await request('initialize', { clientInfo: { name: 'codex-tui', version: 'fixture' } });
 await request('thread/start', {});
-if (${JSON.stringify(mode)} === 'interrupt') {
+if (['interrupt', 'steer', 'compact', 'controls'].includes(${JSON.stringify(mode)})) {
  const result = await request('turn/start', { threadId: 'display-thread', input: [{ type: 'text', text: 'long prompt' }] });
- await request('turn/interrupt', { threadId: 'display-thread', turnId: result.turn.id });
+ if (${JSON.stringify(mode)} === 'interrupt') await request('turn/interrupt', { threadId: 'display-thread', turnId: result.turn.id });
+ if (['steer', 'controls'].includes(${JSON.stringify(mode)})) {
+   const response = await request('turn/steer', { threadId: 'display-thread', expectedTurnId: result.turn.id, input: [{ type: 'text', text: 'change direction' }] });
+   if (response.turnId !== result.turn.id) throw new Error('steer response exposed the execution turn');
+ }
+ if (['compact', 'controls'].includes(${JSON.stringify(mode)})) {
+   await request('thread/compact/start', { threadId: 'display-thread' });
+   await request('turn/start', { threadId: 'display-thread', input: [{ type: 'text', text: 'after compaction' }] });
+ }
 }
 } catch (error) { process.stderr.write(error.message + '\\n'); process.exitCode = 1; }
 finally { clearTimeout(timer); socket.close(); }
@@ -110,6 +135,12 @@ finally { clearTimeout(timer); socket.close(); }
       if (mode === "interrupt") {
         assert.equal(running, false, "interrupt must stop the managed turn, not the synthetic display turn")
         assert.deepEqual(interrupts, [{ threadId: "managed-thread", turnId: "managed-turn" }])
+      } else if (mode === "steer" || mode === "compact" || mode === "controls") {
+        const expected = []
+        if (mode !== "compact") expected.push({ method: "turn/steer", params: { threadId: "managed-thread", expectedTurnId: "managed-turn", input: [{ type: "text", text: "change direction" }] } })
+        if (mode !== "steer") expected.push({ method: "thread/compact/start", params: { threadId: "managed-thread" } })
+        assert.deepEqual(controls, expected)
+        assert.deepEqual(promptContexts, mode === "steer" ? [false] : [false, true], "subsequent prompts must use the compacted managed conversation")
       } else assert.ok(polls >= 2, "must wait for asynchronous launch completion before starting the TUI")
     }
   } finally {
@@ -127,6 +158,10 @@ finally { clearTimeout(timer); socket.close(); }
 test("MP-08 MP-10 native entry point interrupts the kernel managed turn", (t) => fixture(t, "interrupt"))
 test("MP-08 MP-10 native entry point waits for a cold managed endpoint", (t) => fixture(t, "cold"))
 test("MP-08 MP-10 native entry point reports an ended launch before attaching", (t) => fixture(t, "ended"))
+
+test("MP-08 MP-10 native entry point steers the kernel managed turn", (t) => fixture(t, "steer"))
+test("MP-08 MP-10 native entry point compacts the conversation used for subsequent prompts", (t) => fixture(t, "compact"))
+test("MP-08 MP-10 native entry point steers then compacts the managed conversation", (t) => fixture(t, "controls"))
 
 // MP-08 / MP-10: A launch that never settles has a bounded actionable failure.
 test("MP-08 MP-10 managed endpoint readiness timeout names the pending run", async () => {
