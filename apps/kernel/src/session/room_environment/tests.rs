@@ -483,6 +483,61 @@ fn explicit_slice_replacement_recovers_identity_without_room_invalidation() {
 }
 
 #[test]
+fn recovery_waits_until_the_old_live_tab_releases_its_identity() {
+    let mut environment = ready_environment_with_agent();
+    let layout = super::AppPanelLayout::default();
+    let observation =
+        |target, document| observed_tab(target, document, "https://app.todo.invalid/", "Todo");
+    environment.set_app_tabs(
+        std::collections::BTreeMap::from([("old-app".into(), ("app_1".into(), layout))]),
+        None,
+        true,
+    );
+    environment.reconcile_controller_tabs(vec![observation("old-app", "old-doc")], Some("old-app"));
+    let old = environment.snapshot().tabs[0].tab_id.clone();
+    environment.prepare_app_recovery();
+    environment.reconcile_controller_tabs(
+        vec![
+            observation("old-app", "old-doc"),
+            observation("new-app", "new-doc"),
+        ],
+        Some("new-app"),
+    );
+    environment.set_app_tabs(
+        std::collections::BTreeMap::from([("new-app".into(), ("app_1".into(), layout))]),
+        None,
+        true,
+    );
+    let overlap = environment.snapshot();
+    assert_eq!(overlap.tabs.len(), 2);
+    assert_ne!(overlap.tabs[0].tab_id, overlap.tabs[1].tab_id);
+    assert_eq!(
+        environment.tab_id_for_controller_target("old-app"),
+        Some(old.clone())
+    );
+    assert_ne!(
+        environment.tab_id_for_controller_target("new-app"),
+        Some(old.clone())
+    );
+    environment.reconcile_controller_tabs(vec![observation("new-app", "new-doc")], Some("new-app"));
+    let recovered = environment.snapshot();
+    assert_eq!(recovered.tabs.len(), 1);
+    assert_eq!(recovered.tabs[0].tab_id, old);
+    assert_eq!(
+        environment
+            .controller_tab_binding(&old)
+            .unwrap()
+            .runtime_target_id,
+        "new-app"
+    );
+    environment.reconcile_controller_tabs(vec![observation("new-app", "new-doc")], Some("new-app"));
+    assert_eq!(
+        environment.snapshot().tabs[0].document_revision,
+        recovered.tabs[0].document_revision
+    );
+}
+
+#[test]
 fn unclaimed_app_recovery_expires_at_the_next_physical_generation() {
     let mut environment = ready_environment_with_agent();
     let layout = super::AppPanelLayout::default();

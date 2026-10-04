@@ -203,7 +203,9 @@ impl TabRegistry {
                 let installation = &state.tab.app.as_ref()?.installation_id;
                 self.restoring_apps
                     .get(installation)
-                    .filter(|previous| previous.tab_id != *tab_id)
+                    .filter(|previous| {
+                        previous.tab_id != *tab_id && !self.tabs.contains_key(&previous.tab_id)
+                    })
                     .map(|_| (tab_id.clone(), installation.clone()))
             })
             .collect::<Vec<_>>();
