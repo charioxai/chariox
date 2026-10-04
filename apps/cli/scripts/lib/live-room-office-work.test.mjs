@@ -4,8 +4,9 @@ import { runRoomOfficeWork } from "./live-room-office-work.mjs"
 
 // Model terminal attachment expiry at the two real idle boundaries without
 // Docker, a provider, credentials, or a slow wall-clock sleep.
-for (const boundary of ["office-installing", "office-mailing", "web-office-mailing"]) {
-  test(`office prompts survive attachment expiry during ${boundary}`, async () => {
+for (const boundary of ["office-installing", "office-mailing", "web-office-mailing", "provider-terminal-error"]) {
+  test(`MP-08 MP-10 office prompt handling during ${boundary}`, async () => {
+    const terminalError = boundary === "provider-terminal-error"
     const live = new Set()
     let next = 0
     let submitted = 0
@@ -37,8 +38,11 @@ for (const boundary of ["office-installing", "office-mailing", "web-office-maili
         waitForTuis: async () => { throw new Error("Web caller must not claim to observe TUIs") },
       } : { waitForTuis: async () => {} }),
       withTimeout: async (promise) => promise,
-      waitFor: async (check) => {
-        const result = await check()
+      waitFor: async (check, _timeout, message) => {
+        // Production waiters retry read errors. A terminal failure must be a
+        // truthy result, not an exception swallowed until the 300s deadline.
+        const result = message === "office provider did not complete its task"
+          ? await check().catch(() => false) : await check()
         assert.ok(result, "fixture did not reach the expected result")
         return result
       },
@@ -56,7 +60,7 @@ for (const boundary of ["office-installing", "office-mailing", "web-office-maili
           assert.ok(live.has(args[1]), "attachment was not found")
           submitted++
           if (submitted === 2) throw stop
-          typed = true
+          typed = !terminalError
           return { PromptSubmitted: { outcome: { Started: { prompt: { id: "prompt" } } } } }
         }
         if (name === "listRoomEnvironmentActionHistory") return { RoomEnvironmentActionHistoryListed: {
@@ -65,8 +69,12 @@ for (const boundary of ["office-installing", "office-mailing", "web-office-maili
             arguments: { utf8_byte_count: Buffer.byteLength(contents) } }] : [] },
         } }
         if (name === "getSessionHistoryOutline") return { SessionHistoryOutline: { agents: [{ agent_id: "agent",
-          turns: [{ prompt_id: "prompt", turn_id: "turn", lifecycle: "completed" }] }] } }
-        if (name === "getSessionState") return { SessionState: { session: { agents: [{ id: "agent", is_processing: false }] } } }
+          turns: [{ prompt_id: "prompt", turn_id: "turn", lifecycle: terminalError ? "open" : "completed" }] }] } }
+        if (name === "getSessionState") return { SessionState: {
+          session: { agents: [{ id: "agent", is_processing: false, state: terminalError ? "Error" : "Idle" }] },
+          agent_activity: { agent: { status: terminalError ? "error" : "idle",
+            last_error: "synthetic-private-provider-detail-must-not-escape" } },
+        } }
         throw new Error(`unexpected fixture request ${name}`)
       } },
       officeRuntime: {
@@ -88,8 +96,9 @@ for (const boundary of ["office-installing", "office-mailing", "web-office-maili
         runCommandWithStdin: async () => ({ code: 0 }),
       },
     }
-    await assert.rejects(runRoomOfficeWork(input), (error) => error === stop)
-    assert.equal(submitted, 2)
+    await assert.rejects(runRoomOfficeWork(input), (error) => terminalError
+      ? error.message === "office provider failed before the required physical result" : error === stop)
+    assert.equal(submitted, terminalError ? 1 : 2)
     assert.equal(live.size, 0, "prompt attachments must be released even when submission fails")
   })
 }
