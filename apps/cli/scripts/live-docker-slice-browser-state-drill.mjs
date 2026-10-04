@@ -220,7 +220,6 @@ async function run() {
     fixture: workspaceFixture,
     slice,
     repositoryRoot: repoRoot,
-    ...(workspaceFixture.localDev ? { managedSliceRoot: path.join(tempRoot, "slices") } : {}),
   })
   if (workspaceFixture.localDev) {
     const mounts = JSON.parse(await dockerText(["inspect", containerName, "--format", "{{json .Mounts}}"]));
@@ -1078,11 +1077,11 @@ async function cleanup() {
   if (workspaceFixture) {
     try {
       await cleanupBrowserStateDrillWorkspace(workspaceFixture)
-    if (workspaceFixture.localDev) {
-      const volume = await runCommand("docker", ["volume", "inspect", `${containerName}-workspace`], { timeoutMs: 20_000 })
-      assert.equal(volume.code, 1, "local DEV workspace volume must be removed by DeleteSlice")
-      assert.match(volume.stderr, /No such volume/i, "workspace absence must be a Docker absence response")
-    }
+      if (workspaceFixture.localDev) {
+        const volume = await runCommand("docker", ["volume", "inspect", `${containerName}-workspace`], { timeoutMs: 20_000 })
+        assert.equal(volume.code, 1, "local DEV workspace volume must be removed by DeleteSlice")
+        assert.match(volume.stderr, /No such volume/i, "workspace absence must be a Docker absence response")
+      }
       fixtureWorkspaceRemoved = true
     } catch (error) {
       workspaceCleanupError = error

@@ -72,6 +72,11 @@ export async function finalizeBrowserStateDrillWorkspace({
       "direct-Docker slice must retain the exact owned fixture workspace")
     return fixture
   }
+  if (fixture.localDev) {
+    assert.equal(slice.workspace_mount ?? null, null, "local DEV must not bind a host workspace")
+    assert.equal(slice.development ?? null, null, "local DEV must use its owned workspace volume")
+    return fixture
+  }
   const lease = await assertRoomRootlessWorkspaceFixture({
     slice,
     allowedDevelopmentRoot: path.join(managedSliceRoot, "development"),
