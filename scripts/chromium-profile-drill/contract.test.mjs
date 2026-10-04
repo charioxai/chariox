@@ -3,7 +3,8 @@ import { once } from "node:events";
 import test from "node:test";
 import { fixtureServer } from "./fixture-server.mjs";
 import { verifyInputs, source, fixtureSource } from "./prepare.mjs";
-import { restoreScript } from "./restore.mjs";
+import { restoreDockerShim, restoreScript } from "./restore.mjs";
+import { spawnSync } from "node:child_process";
 import { drillEnvironment } from "./environment.mjs";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -77,6 +78,29 @@ test("restore adapter consumes current guarded production functions and rejects 
   assert.throws(() => restoreScript(sourceText.replace("prepare_home_volume() {", "missing_home_function() {")), /prepare_home_volume function is missing/);
 });
 
+test("restore Docker shim preserves production helper options without duplicating network or resource limits", () => {
+  const label = `io.chariox.chromium-drill=${"a".repeat(24)}`;
+  // Intercept only the final exec; exercise the actual shell dispatch without
+  // creating Docker resources during the contract test.
+  const invoke = args => {
+    const result = spawnSync("bash", ["-c",
+      `exec() { printf '%s\\0' "$@"; exit 0; }\n${restoreDockerShim(label)}`,
+      "--", ...args], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.split("\0").slice(0, -1);
+  };
+  const helper = ["--name", "restore-helper", "--user", "root", "--memory", "512m",
+    "--cpus", "1", "--pids-limit", "64", "--network", "none", "--label",
+    "io.chariox.home-restore-helper=restore-helper", "-v", "home:/home-dst", "image", "sleep", "infinity"];
+  assert.deepEqual(invoke(["create", ...helper]),
+    ["/usr/bin/docker", "create", "--memory-swap", "512m", "--label", label, ...helper]);
+  assert.deepEqual(invoke(["volume", "create", "--label", "archive=identity", "home"]),
+    ["/usr/bin/docker", "volume", "create", "--label", label, "--label", "archive=identity", "home"]);
+  assert.deepEqual(invoke(["exec", "-i", "restore-helper", "tar", "--zstd", "-xf", "-"]),
+    ["/usr/bin/docker", "exec", "-i", "restore-helper", "tar", "--zstd", "-xf", "-"]);
+  assert.throws(() => restoreDockerShim("invalid-owner"));
+});
+
 
 test("fixture authentication requires its cookie and server revocation independently invalidates it", async () => {
   const server = fixtureServer();
@@ -127,4 +151,3 @@ test("cleanup checks ownership again and removes only the identified fixture res
 test("unrelated provisioner changes do not invalidate consumed restore functions", () => {
   mutatedInput("source", "provision-linux-docker-slice.sh", s => s + "\n# unrelated function change\n");
 });
-

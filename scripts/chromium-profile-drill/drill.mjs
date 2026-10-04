@@ -3,7 +3,7 @@ import { appendFileSync, chmodSync, readFileSync, statSync, writeFileSync } from
 import { join } from "node:path";
 import { checked, cleanup, docker, loadOwner } from "./resources.mjs";
 import { source } from "./prepare.mjs";
-import { restoreScript } from "./restore.mjs";
+import { restoreDockerShim, restoreScript } from "./restore.mjs";
 import { createHash } from "node:crypto";
 
 const [mode, scratch] = process.argv.slice(2);
@@ -90,8 +90,8 @@ try {
   const restoredVolume = `chariox-chromium-${owner.id}-restored`;
   // Invoke the production initial-home functions through a test-only adapter.
   // Production creates the fresh volume and verifies its archive/token labels.
-  // The shim only adds helper resource limits and our cleanup ownership label.
-  writeFileSync(join(scratch, "bin/docker"), `#!/usr/bin/env bash\nset -euo pipefail\nif [[ "$1" == create ]]; then shift; exec /usr/bin/docker create --network none --memory 512m --memory-swap 512m --cpus 1 --pids-limit 128 --label '${label}' "$@"; fi\nif [[ "$1" == volume && "$2" == create ]]; then shift 2; exec /usr/bin/docker volume create --label '${label}' "$@"; fi\nexec /usr/bin/docker "$@"\n`);
+  // The shim only disables extra swap and adds our cleanup ownership label.
+  writeFileSync(join(scratch, "bin/docker"), restoreDockerShim(label));
   chmodSync(join(scratch, "bin/docker"), 0o700);
   const provisioner = readFileSync(join(source, "provision-linux-docker-slice.sh"));
   assert.equal(createHash("sha256").update(restoreScript(provisioner.toString("utf8"))).digest("hex"), owner.inputs["restore-script"]);

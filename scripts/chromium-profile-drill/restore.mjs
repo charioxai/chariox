@@ -1,5 +1,23 @@
 import assert from "node:assert/strict";
 
+// Keep production helper options intact; the fixture adds its cleanup label
+// and disables extra swap. Production already sets network, CPU, memory/PIDs.
+export function restoreDockerShim(label) {
+  assert.match(label, /^io\.chariox\.chromium-drill=[a-f0-9]{24}$/);
+  return `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == create ]]; then
+  shift
+  exec /usr/bin/docker create --memory-swap 512m --label '${label}' "$@"
+fi
+if [[ "$1" == volume && "$2" == create ]]; then
+  shift 2
+  exec /usr/bin/docker volume create --label '${label}' "$@"
+fi
+exec /usr/bin/docker "$@"
+`;
+}
+
 function section(source, startMarker, endMarker) {
   const start = source.indexOf(startMarker);
   const end = source.indexOf(endMarker, start + startMarker.length);
