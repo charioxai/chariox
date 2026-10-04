@@ -15,6 +15,7 @@ mod agent_prompt_schedule;
 mod agent_utility;
 mod apps;
 mod browser_import;
+mod kernel_browser;
 mod capability;
 mod cloud_relay;
 mod config_capabilities;
@@ -49,6 +50,7 @@ pub use agent_prompt_schedule::*;
 pub use agent_utility::*;
 pub use apps::*;
 pub use browser_import::*;
+pub use kernel_browser::*;
 pub use capability::*;
 pub use cloud_relay::*;
 pub use config_capabilities::*;
@@ -242,4 +244,5 @@ pub use workspace::*;
 /// Version 409 adds owner-mediated App clipboard and link acceptance.
 /// Version 410 adds owner-scoped named saved App data snapshot restore.
 /// Version411 combines Apps Phase1 and Browser/Computer G2 with autonomous Vault observation masks (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 411;
+/// MD-2: version 417 adds kernel-owned sessionless host browser control.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 417;

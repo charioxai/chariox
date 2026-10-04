@@ -2,6 +2,7 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
+    KernelBrowser(KernelBrowserRequest),
     BeginAppPublisherEnrollment(BeginAppPublisherEnrollmentRequest),
     GetAppPublisherEnrollment(AppPublisherEnrollmentRequest),
     CancelAppPublisherEnrollment(AppPublisherEnrollmentRequest),
