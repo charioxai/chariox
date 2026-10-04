@@ -21,6 +21,13 @@ pub enum LocalDaemonResponse {
     AppWorker { worker: AppWorkerSummary, },
     AppAutomations { installation_id: String, automations: Vec<AppAutomationSummary>, },
     AppAutomation { installation_id: String, automation: AppAutomationSummary, },
+    UserAppViewOpened { view: UserAppView, frontend: AppFrontendBundle },
+    UserAppViewsListed { views: Vec<UserAppView> },
+    UserAppViewClosed { view_id: String },
+    UserAppViewFrontend { view: UserAppView, frontend: AppFrontendBundle },
+    UserAppViewCallResult { result: Option<serde_json::Value>, error: Option<AppViewChannelError> },
+    UserAppViewsChanged { cursor: u64, views: Vec<UserAppView>, interactions: Vec<crate::session::RuntimeInteraction> },
+    UserDomainInteractionAnswered { interaction_id: String },
     AppViewOpened { installation_id: String, target_id: String, origin: String, bound_agent_id: Option<String>, },
     /// The user's panel choice for the App's views in this session.
     AppViewPanelSet { installation_id: String, placement: Option<crate::session::AppPanelPlacement>, minimized: bool, },

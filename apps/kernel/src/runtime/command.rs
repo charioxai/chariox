@@ -165,6 +165,13 @@ fn local_request_payload(request: &LocalDaemonRequest) -> Value {
                 "overwrite": request.overwrite
             }
         }),
+        LocalDaemonRequest::AnswerUserDomainInteraction(request) => serde_json::json!({
+            "AnswerUserDomainInteraction": {
+                "interaction_id": request.interaction_id, "choice_id": request.choice_id,
+                "passkey": request.passkey.as_ref().map(|_| "[redacted]"),
+                "passkey_remember_minutes": request.passkey_remember_minutes,
+            }
+        }),
         LocalDaemonRequest::RespondToInteraction(request) => serde_json::json!({
             "RespondToInteraction": {
                 "session_id": request.session_id,

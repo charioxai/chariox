@@ -220,6 +220,8 @@ mod tests {
     mod remote_agent_message_origin;
     mod remote_authorization;
     mod remote_workspace_live_sync_authorization;
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    mod user_app_views;
     // Kernel resource telemetry reads /proc; other platforms report it as unsupported.
     mod agent_workflow;
     #[cfg(target_os = "linux")]

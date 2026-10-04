@@ -1,0 +1,472 @@
+//! No-session public-protocol drill with a real fixed App ABI worker.
+//! Validation enters at the durable broker boundary; the normal pump and
+//! RuntimeInteraction/passkey verifier handle the decision.
+use super::*;
+use crate::{
+    durable_state::app_validations::{
+        self, EffectReceipt, ValidationCommand, ValidationOperation, ValidationState,
+    },
+    local::*,
+};
+use chariox_app_package::{verify, VerificationPolicy};
+use chariox_app_runtime::{
+    release_store::{ReleaseStore, StageBudget},
+    worker_peer::{Broker, BrokerFuture, BrokerRequest, PeerLimits},
+    worker_process::test_fixture::{Fixture, Mode},
+};
+
+struct RejectBroker;
+impl Broker for RejectBroker {
+    fn handle(&self, _: BrokerRequest) -> BrokerFuture {
+        Box::pin(async {
+            Err(chariox_app_runtime::wire::RemoteError {
+                code: "FIXTURE_UNSUPPORTED".into(),
+                message: "Fixed fixture".into(),
+                retryable: None,
+            })
+        })
+    }
+}
+struct Scratch(std::path::PathBuf);
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+async fn request(
+    router: &CommandRouter,
+    user: &str,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let mut command = remote_command_for_request(&request, Some(user));
+    command.command_id = format!("user-view-{:016x}", rand::random::<u64>());
+    command.caller.connection_class = Some(KernelConnectionClass::Terminal);
+    router.dispatch(command, request).await
+}
+fn snapshot() -> LocalDaemonRequest {
+    LocalDaemonRequest::SubscribeUserAppViews(SubscribeUserAppViewsRequest {
+        after: None,
+        wait_ms: 0,
+    })
+}
+fn answer(id: &str, passkey: Option<&str>) -> LocalDaemonRequest {
+    LocalDaemonRequest::AnswerUserDomainInteraction(AnswerUserDomainInteractionRequest {
+        interaction_id: id.into(),
+        choice_id: "approve".into(),
+        passkey: passkey.map(ApprovalPasskey::new),
+        passkey_remember_minutes: None,
+    })
+}
+
+#[test]
+fn user_app_view_no_session_integration_drill() {
+    run_drill(false);
+}
+
+#[test]
+fn user_app_view_close_cancels_a_stalled_channel_call() {
+    run_drill(true);
+}
+
+fn run_drill(stall: bool) {
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap();
+            let _entered = runtime.enter();
+            let scratch = Scratch(
+                std::env::temp_dir()
+                    .join(format!("chariox-user-app-{:016x}", rand::random::<u64>())),
+            );
+            std::fs::create_dir(&scratch.0).unwrap();
+            let root = scratch.0.canonicalize().unwrap();
+            let test_vault = root.join("fixture-vault.json");
+            crate::secret::create_chariox_encrypted_vault_for_test(
+                &test_vault,
+                "fixture-passphrase",
+            )
+            .unwrap();
+            let mut config =
+                DaemonConfig::for_tests().with_session_history_root(root.join("history"));
+            config.user_config_path = root.join("config.toml");
+            config.local_socket_path = root.join("kernel.sock");
+            config.user_config.state.path = Some(root.join("state.db").display().to_string());
+            config.user_config.history.operational.path =
+                Some(root.join("events.db").display().to_string());
+            config.user_config.artifacts.operational.root =
+                Some(root.join("artifacts").display().to_string());
+            config.user_config.artifacts.operational.index_path =
+                Some(root.join("artifacts.db").display().to_string());
+            config.user_config.credential_vault.backend =
+                crate::config::CredentialVaultBackend::CharioxEncrypted;
+            config.user_config.credential_vault.path = test_vault.display().to_string();
+            let app = DaemonApp::bootstrap(config).unwrap();
+            let sessions = app.session_state_store();
+            assert!(sessions.list_sessions().is_empty());
+            let store = app.durable_state_store();
+            let catalog = crate::durable_state::app_state::fixture_tool_catalog(&store);
+            let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 2);
+            let fixture = Fixture::compile().unwrap();
+            let (bytes, publisher) = crate::durable_state::app_state::fixture_tool_package();
+            let package = verify(
+                &bytes,
+                &VerificationPolicy::new(LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
+            )
+            .unwrap();
+            ReleaseStore::open_or_create(store.path())
+                .unwrap()
+                .stage(
+                    &package,
+                    &bytes,
+                    StageBudget {
+                        max_stage_bytes: 1024 * 1024,
+                        reserved_bytes: 1024 * 1024,
+                        host_reserve_bytes: 1024 * 1024,
+                    },
+                )
+                .unwrap();
+            let (process, observed) = fixture.spawn_blocking(if stall { Mode::ToolStall } else { Mode::ToolEcho }, &package).unwrap();
+            let (starting, _events) = crate::runtime::app_worker::AppWorkerOwner::start_blocking(
+                process,
+                &package,
+                catalog.clone(),
+                Arc::new(RejectBroker),
+                PeerLimits::default(),
+                runtime.handle().clone(),
+            )
+            .unwrap();
+            let mut registered = starting
+                .await_registered_blocking(std::time::Duration::from_secs(3))
+                .unwrap();
+            let proof = store
+                .confirm_app_activation(
+                    "alice",
+                    registered.catalog().clone(),
+                    registered.take_activation_budget().unwrap(),
+                )
+                .unwrap();
+            let (worker, handle) = registered.activate_blocking(proof).unwrap();
+            router
+                .runtime_state
+                .app_control()
+                .publish_app_worker("alice", handle)
+                .unwrap();
+            runtime.block_on(async {
+                let open = LocalDaemonRequest::OpenUserAppView(OpenUserAppViewRequest {
+                    installation_id: "installed".into(),
+                });
+                let mut unverified = remote_command_for_request(&open, None);
+                unverified.caller.connection_class = Some(KernelConnectionClass::Unauthenticated);
+                assert!(matches!(
+                    router.dispatch(unverified, open.clone()).await.unwrap(),
+                    LocalDaemonResponse::AppRequestFailed {
+                        code: AppRequestErrorCode::Unauthorized
+                    }
+                ));
+                let mut provider = remote_command_for_request(&open, Some("alice"));
+                provider.caller.connection_class = Some(KernelConnectionClass::KernelAgent);
+                assert!(matches!(
+                    router.dispatch(provider, open.clone()).await.unwrap(),
+                    LocalDaemonResponse::AppRequestFailed {
+                        code: AppRequestErrorCode::Unauthorized
+                    }
+                ));
+                let LocalDaemonResponse::UserAppViewOpened { view, frontend } =
+                    request(&router, "alice", open).await.unwrap()
+                else {
+                    panic!("open native view");
+                };
+                assert_eq!(frontend.entry, "index.html");
+                assert!(frontend
+                    .assets
+                    .iter()
+                    .all(|a| !a.path.starts_with("runtime/") && !a.path.contains("..")));
+                assert!(frontend
+                    .content_security_policy
+                    .contains("connect-src 'none'"));
+                assert!(!frontend.iframe_sandbox.contains("allow-top-navigation"));
+                assert!(
+                    sessions.list_sessions().is_empty(),
+                    "opening must not create a session"
+                );
+                let fetch = LocalDaemonRequest::GetUserAppViewFrontend(UserAppViewRequest {
+                    view_id: view.view_id.clone(),
+                });
+                assert!(matches!(
+                    request(&router, "bob", fetch.clone()).await.unwrap(),
+                    LocalDaemonResponse::AppRequestFailed {
+                        code: AppRequestErrorCode::NotFound
+                    }
+                ));
+                assert!(matches!(
+                    request(&router, "alice", fetch).await.unwrap(),
+                    LocalDaemonResponse::UserAppViewFrontend { .. }
+                ));
+                let call = LocalDaemonRequest::CallUserAppView(CallUserAppViewRequest {
+                    view_id: view.view_id.clone(),
+                    method: "echo".into(),
+                    input: serde_json::json!({"text":"native"}),
+                });
+                assert!(matches!(
+                    request(&router, "bob", call.clone()).await.unwrap(),
+                    LocalDaemonResponse::AppRequestFailed {
+                        code: AppRequestErrorCode::NotFound
+                    }
+                ));
+                if stall {
+                    let call_router = router.clone();
+                    let pending_request = call.clone();
+                    let mut pending = tokio::spawn(async move { request(&call_router, "alice", pending_request).await });
+                    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                        while observed.tool_invocations() == 0 { tokio::time::sleep(std::time::Duration::from_millis(10)).await; }
+                    }).await.unwrap();
+                    assert!(!pending.is_finished());
+                    request(&router, "alice", LocalDaemonRequest::CloseUserAppView(UserAppViewRequest { view_id: view.view_id.clone() })).await.unwrap();
+                    let result = tokio::time::timeout(std::time::Duration::from_secs(3), &mut pending).await.unwrap().unwrap().unwrap();
+                    assert!(matches!(result, LocalDaemonResponse::UserAppViewCallResult { error: Some(ref error), .. } if error.code == "CANCELLED"));
+                    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                        while observed.tool_cancellations() == 0 { tokio::time::sleep(std::time::Duration::from_millis(10)).await; }
+                    }).await.unwrap();
+                    assert!(sessions.list_sessions().is_empty());
+                    return;
+                }
+                let LocalDaemonResponse::UserAppViewCallResult {
+                    result: Some(result),
+                    error: None,
+                } = request(&router, "alice", call.clone()).await.unwrap()
+                else {
+                    panic!("channel call");
+                };
+                assert_eq!(result, serde_json::json!({"ok":true}));
+                let recorded = observed.tool_requests().unwrap();
+                assert_eq!(recorded.len(), 1);
+                assert_eq!(
+                    recorded[0]["context"]["actor"],
+                    serde_json::json!({"kind":"human","id":"alice"})
+                );
+                assert!(recorded[0]["context"].get("room_id").is_none());
+                assert!(recorded[0]["context"].get("agent_id").is_none());
+                let LocalDaemonResponse::UserAppViewsChanged {
+                    cursor,
+                    views,
+                    interactions,
+                } = request(&router, "alice", snapshot()).await.unwrap()
+                else {
+                    panic!("subscription");
+                };
+                assert_eq!(views.len(), 1);
+                assert!(interactions.is_empty());
+                // Kernel broker's validated request at its durable boundary.
+                let now = crate::session::unix_epoch_ms();
+                let (parameters, digest) =
+                    app_validations::canonical(&serde_json::json!({"text":"native"}));
+                store
+                    .app_validation(ValidationCommand::Create(ValidationOperation {
+                        operation_id: "view-approval".into(),
+                        owner: "alice".into(),
+                        installation: "installed".into(),
+                        generation: 1,
+                        action: "fixture_action".into(),
+                        parameters,
+                        digest: digest.clone(),
+                        state: ValidationState::Pending,
+                        expires_ms: now + app_validations::PENDING_MS,
+                        callers: serde_json::json!([{"kind":"human","id":"alice"}]).to_string(),
+                    }))
+                    .unwrap();
+                router.runtime_state.schedule_app_validation_pump();
+                let snapshot = tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    request(
+                        &router,
+                        "alice",
+                        LocalDaemonRequest::SubscribeUserAppViews(SubscribeUserAppViewsRequest {
+                            after: Some(cursor),
+                            wait_ms: 25000,
+                        }),
+                    ),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                let LocalDaemonResponse::UserAppViewsChanged { interactions, .. } = snapshot else {
+                    panic!("approval snapshot");
+                };
+                assert_eq!(interactions.len(), 1);
+                let id = interactions[0].id();
+                assert_eq!(
+                    interactions[0].kernel_operation_id(),
+                    Some("validation:view-approval")
+                );
+                let prompts = router.runtime_state.passkey_prompts_for("alice");
+                assert_eq!(prompts.len(), 1);
+                assert_eq!(prompts[0].session_id, "");
+                assert!(router.runtime_state.passkey_prompts_for("bob").is_empty());
+                assert!(request(&router, "bob", answer(id, None)).await.is_err());
+                assert!(request(&router, "alice", answer(id, None))
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("PASSKEY_REQUIRED"));
+                assert!(request(&router, "alice", answer(id, Some("wrong-fixture")))
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("PASSKEY_REJECTED"));
+                request(&router, "alice", answer(id, Some("fixture-passphrase")))
+                    .await
+                    .unwrap();
+                assert!(
+                    request(&router, "alice", answer(id, Some("fixture-passphrase")))
+                        .await
+                        .is_err()
+                );
+                assert!(router.runtime_state.passkey_prompts_for("alice").is_empty());
+                tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                    loop {
+                        if store
+                            .app_validation_status("alice", "installed", "view-approval")
+                            .unwrap()
+                            .unwrap()
+                            .state
+                            == ValidationState::Approved
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                let receipt = EffectReceipt {
+                    owner: "alice".into(),
+                    installation: "installed".into(),
+                    generation: 1,
+                    action: "fixture_action".into(),
+                    operation_id: "view-approval".into(),
+                    digest,
+                };
+                let mut changed = receipt.clone();
+                changed.digest = "different-parameters".into();
+                assert!(store
+                    .app_validation(ValidationCommand::Consume {
+                        receipt: changed,
+                        now_ms: now
+                    })
+                    .is_err());
+                store
+                    .app_validation(ValidationCommand::Consume {
+                        receipt: receipt.clone(),
+                        now_ms: now,
+                    })
+                    .unwrap();
+                assert!(store
+                    .app_validation(ValidationCommand::Consume {
+                        receipt,
+                        now_ms: now
+                    })
+                    .is_err());
+                let close = LocalDaemonRequest::CloseUserAppView(UserAppViewRequest {
+                    view_id: view.view_id.clone(),
+                });
+                assert!(matches!(
+                    request(&router, "bob", close.clone()).await.unwrap(),
+                    LocalDaemonResponse::AppRequestFailed {
+                        code: AppRequestErrorCode::NotFound
+                    }
+                ));
+                request(&router, "alice", close).await.unwrap();
+                assert!(matches!(
+                    request(&router, "alice", call).await.unwrap(),
+                    LocalDaemonResponse::AppRequestFailed {
+                        code: AppRequestErrorCode::NotFound
+                    }
+                ));
+                let LocalDaemonResponse::UserAppViewsListed { views } = request(
+                    &router,
+                    "alice",
+                    LocalDaemonRequest::ListUserAppViews(ListUserAppViewsRequest {}),
+                )
+                .await
+                .unwrap() else {
+                    panic!("list");
+                };
+                assert!(views.is_empty());
+                assert!(
+                    sessions.list_sessions().is_empty(),
+                    "drill must finish with no sessions"
+                );
+            });
+            worker.shutdown_blocking();
+            assert!(observed.was_reaped());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn user_app_view_detached_decision_uses_the_sessionless_reply_contract() {
+    let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let sessions = app.session_state_store();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let receiver = router
+        .runtime_state
+        .create_kernel_operation_interaction(
+            "",
+            "alice",
+            crate::session::RuntimeInteraction::for_kernel_operation(
+                "detached-popup",
+                "fixture:detached-popup",
+                "Decide",
+                "Fixture",
+                vec![crate::session::RuntimeInteractionChoice::new(
+                    "deny", "Deny", "deny", None,
+                )],
+            ),
+        )
+        .await
+        .unwrap();
+    let reply = LocalDaemonRequest::RespondToInteraction(RespondToInteractionRequest {
+        session_id: "".into(),
+        interaction_id: "detached-popup".into(),
+        choice_id: "deny".into(),
+        custom_reply: None,
+        passkey: None,
+        passkey_remember_minutes: None,
+    });
+    assert!(request(&router, "bob", reply.clone()).await.is_err());
+    let mut host = remote_command_for_request(&reply, Some("alice"));
+    host.caller.connection_class = Some(KernelConnectionClass::Host);
+    assert!(router.dispatch(host, reply.clone()).await.is_err());
+    // The legacy reply promises a Session in its response. It must reject
+    // an empty scope before consuming the detached decision.
+    assert!(request(&router, "alice", reply).await.is_err());
+    let reply =
+        LocalDaemonRequest::AnswerUserDomainInteraction(AnswerUserDomainInteractionRequest {
+            interaction_id: "detached-popup".into(),
+            choice_id: "deny".into(),
+            passkey: None,
+            passkey_remember_minutes: None,
+        });
+    assert!(request(&router, "bob", reply.clone()).await.is_err());
+    let mut host = remote_command_for_request(&reply, Some("alice"));
+    host.caller.connection_class = Some(KernelConnectionClass::Host);
+    assert!(matches!(
+        router.dispatch(host, reply.clone()).await.unwrap(),
+        LocalDaemonResponse::AppRequestFailed {
+            code: AppRequestErrorCode::Unauthorized
+        }
+    ));
+    assert!(matches!(
+        request(&router, "alice", reply).await.unwrap(),
+        LocalDaemonResponse::UserDomainInteractionAnswered { .. }
+    ));
+    assert_eq!(receiver.await.unwrap().choice_id.as_deref(), Some("deny"));
+    assert!(sessions.list_sessions().is_empty());
+}
