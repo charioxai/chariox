@@ -217,7 +217,7 @@ async fn human(router: &CommandRouter, command: KernelBrowserCommand) -> Value {
     let request = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest { command });
     let response = router
         .dispatch(
-            KernelCommand::from_local_request("MD-4-browser", None, None, &request),
+            terminal_command("MD-4-browser", &request),
             request,
         )
         .await
@@ -227,6 +227,13 @@ async fn human(router: &CommandRouter, command: KernelBrowserCommand) -> Value {
     };
     result
 }
+fn terminal_command(id: &str, request: &LocalDaemonRequest) -> KernelCommand {
+    let mut command = KernelCommand::from_local_request(id, None, None, request);
+    command.caller.user_id = Some(DEFAULT_LOCAL_USER_ID.into());
+    command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
+    command
+}
+
 async fn live_check() {
     use base64::Engine;
     use std::io::{Read, Write};
@@ -406,7 +413,7 @@ async fn live_check() {
         assert!(
             router
                 .dispatch(
-                    KernelCommand::from_local_request("MD-4-stale", None, None, &stale),
+                    terminal_command("MD-4-stale", &stale),
                     stale
                 )
                 .await
@@ -421,12 +428,7 @@ async fn live_check() {
         assert!(
             router
                 .dispatch(
-                    KernelCommand::from_local_request(
-                        "MD-4-stale-stream",
-                        None,
-                        None,
-                        &stale_stream
-                    ),
+                    terminal_command("MD-4-stale-stream", &stale_stream),
                     stale_stream
                 )
                 .await

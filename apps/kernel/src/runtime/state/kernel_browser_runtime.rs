@@ -17,6 +17,12 @@ impl KernelRuntimeState {
         user: String,
         command: KernelBrowserCommand,
     ) -> Result<serde_json::Value, DaemonError> {
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        if matches!(command, KernelBrowserCommand::Stop) {
+            for view in self.app_control().user_views().browser_views(&user) {
+                self.forget_user_app_view(&user, &view.view_id);
+            }
+        }
         let host = self.owned.kernel_browser_host.clone();
         tokio::task::spawn_blocking(move || host.request(&user, command))
             .await
@@ -28,9 +34,10 @@ impl KernelRuntimeState {
         &self,
         user: String,
         request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+        generation: Option<u64>,
     ) -> Result<serde_json::Value, DaemonError> {
         let host = self.owned.kernel_browser_host.clone();
-        tokio::task::spawn_blocking(move || host.app_view(&user, &request))
+        tokio::task::spawn_blocking(move || host.app_view(&user, &request, generation))
             .await
             .map_err(|_| host_error("MD-2: App view task failed".into()))?
             .map_err(host_error)

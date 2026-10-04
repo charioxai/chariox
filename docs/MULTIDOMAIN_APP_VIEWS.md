@@ -73,10 +73,11 @@ pending prompt. A Session is never created just to host an approval.
 A small `AppViewHost` command interface separates presentation from policy.
 The existing Room host delegates to the slice/local Room browser controller,
 with the existing operation-slot retries, call polling, document cancellation,
-recovery, layout and foreground binding unchanged. The client-native host
-allocates kernel instances and returns bundles/channel responses through the
-same kernel protocol. A future kernel Chromium host implements the same seam;
-it owns rendering only and must not gain installation or permission authority.
+recovery, layout and foreground binding unchanged. The user-domain runtime
+allocates instances and returns native bundles/channel responses through the
+same kernel protocol. The kernel Chromium host implements the presentation seam
+for an explicit fallback, through the same owner's existing host controller;
+it owns rendering only and gains no installation or permission authority.
 No Selkies/noVNC or display transport choice is embedded in this interface.
 
 Native clients must serve the bundle on an isolated per-owner/installation
@@ -95,8 +96,8 @@ The page cannot select another view id or call the terminal's approval API.
 App origin persistence is separate from Rooms and the trusted UI. Approval,
 Vault and conversation UI stay outside that frame. A TUI projects App data
 through its own renderer; if it cannot render the signed frontend it uses a
-kernel Chromium host once available. This lane supplies the kernel protocol,
-not a web frontend or a replacement display implementation.
+kernel Chromium fallback. The Cloud native frontend remains a separate flagged
+prototype; no replacement display transport is selected here.
 
 ## Focused agent access and migration
 
@@ -136,9 +137,22 @@ per instance. Human/agent simultaneous frontend editing remains deferred.
 
 ## Open questions
 
-- Final kernel Chromium host interface and display tiers (lane kbrowser, 417).
+- Final display-tier choice, transport and Mac acceptance; Linux kernel Chromium
+  is bound through lane kbrowser's 417 seam in MULTIDOMAIN_INTEGRATION.md.
 - Ratify the proposed selector/tool-name table in `user_domain_app_access.rs`
   when the broader user-domain registry/MCP lane implements it.
-- Native web origin provisioning and mobile/TUI frontend rendering policy.
+- Production native web origin provisioning and mobile/TUI frontend rendering
+  policy. Cloud prototype b64dacb3 stays off by default.
 - Kernel browser profile selection, display transport and App multi-interaction
   remain owner decisions outside this lane.
+
+## First integration
+
+See MULTIDOMAIN_INTEGRATION.md. Native remains the default; optional
+`host: "kernel_browser"` binds the verified frontend to the same owner's kernel
+Chromium, with an optional transport-neutral tab/generation reference. The shared
+Room/Chromium host trait only presents verified bytes. Instance creation and App
+call/approval authority stay in the shared user-domain runtime; the former native
+host's duplicate registry wrapper is removed. App instances are never restored
+with ordinary browser tabs. Focused browser mutations cannot impersonate a human App
+channel; the proposed focused App tool table still awaits its registry adapter.

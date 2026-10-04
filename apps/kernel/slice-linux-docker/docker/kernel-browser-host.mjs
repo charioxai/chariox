@@ -94,6 +94,7 @@ export class KernelBrowserHost {
       this.tabs.set(old?.tab_id ?? `host-tab-${randomUUID()}`, { ...tab, tab_id: old?.tab_id ?? null });
     }
     for (const [id, tab] of this.tabs) tab.tab_id = id;
+    for (const [id, stream] of this.streams) if (!this.tabs.has(stream.tabId)) await this.removeStream(id);
     if (!this.restoring) await this.save();
     return { state: "ready", generation: this.generation,
       tabs: [...this.tabs.values()].map(({ target_id, ...tab }) => tab), viewport };
@@ -200,6 +201,10 @@ export class KernelBrowserHost {
       return { generation: this.generation, frame: stream.latest };
     }
     const tab = await this.target(command);
+    if (["input", "navigate", "close"].includes(command.op) && command._agent_input
+      && [...(this.browser.appTabs?.apps?.values() ?? [])].some(app => app.targetId === tab.target_id)) {
+      throw new Error("Use the focused App tool channel; browser input cannot act as the human App frontend");
+    }
     const binding = { target_id: tab.target_id, document_id: tab.document_id };
     if (command.op === "close") {
       for (const [id, stream] of this.streams) {
@@ -225,8 +230,14 @@ export class KernelBrowserHost {
       if (request.method === "host.browser") return { id: request.id, ok: true, result: await this.request(request.params) };
       // Kernel-internal App adapter; no public raw CDP dispatch.
       if (request.method.startsWith("browser.app.")) {
+        const { _host_generation: generation, ...params } = request.params ?? {};
+        // Bound ephemeral instances cannot start/restore a stopped or crashed
+        // browser. Only an explicit Open or ordinary tab request may start it.
+        if (generation !== undefined && (!this.browser || this.chromium.child?.exitCode !== null
+          || this.chromium.child?.signalCode !== null)) throw new Error("App host is no longer live");
         await this.start();
-        const result = await handleBrowserControllerRequest(request, { browser: this.browser });
+        if (generation !== undefined && generation !== this.generation) throw new Error("MD integration: stale App host generation");
+        const result = await handleBrowserControllerRequest({ ...request, params }, { browser: this.browser });
         if (result.ok) {
           await this.reconcile();
           if (request.method === "browser.app.open") {

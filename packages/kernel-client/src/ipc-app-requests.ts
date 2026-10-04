@@ -216,8 +216,8 @@ export function restoreAppDataSnapshotRequest(installationId: string, expectedGe
 export const userAppViewsMinimumProtocolVersion = 418
 
 /** User-domain views have no session, Room, slice or agent field. */
-export function openUserAppViewRequest(installationId: string) {
-  return { OpenUserAppView: { installation_id: installationId } }
+export function openUserAppViewRequest(installationId: string, host?: "client_native" | "kernel_browser") {
+  return { OpenUserAppView: { installation_id: installationId, ...(host ? { host } : {}) } }
 }
 
 export function listUserAppViewsRequest() {

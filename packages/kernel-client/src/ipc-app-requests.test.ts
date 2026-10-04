@@ -201,3 +201,9 @@ test("protocol 418 user-domain channel and subscription supply no session or cal
   assert.deepEqual(subscribeUserAppViewsRequest(4), { SubscribeUserAppViews: { after: 4, wait_ms: 25000 } })
   assert.deepEqual(answerUserDomainInteractionRequest({ interactionId: "d", choiceId: "deny" }), { AnswerUserDomainInteraction: { interaction_id: "d", choice_id: "deny", passkey: null, passkey_remember_minutes: null } })
 })
+
+test("protocol 418 kernel browser fallback is explicit; the native default stays wire-compatible", async () => {
+  const { openUserAppViewRequest } = await import("./ipc-app-requests.js")
+  assert.deepEqual(openUserAppViewRequest("todo"), { OpenUserAppView: { installation_id: "todo" } })
+  assert.deepEqual(openUserAppViewRequest("todo", "kernel_browser"), { OpenUserAppView: { installation_id: "todo", host: "kernel_browser" } })
+})

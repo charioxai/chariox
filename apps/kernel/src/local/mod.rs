@@ -247,7 +247,8 @@ pub use api::{
     OpenUserAppViewRequest, PrepareDeploymentAppsRequest, PreviewDeploymentAppsRequest,
     RestoreAppDataSnapshotRequest, RevokeAppConnectionRequest, RevokeAppFileGrantsRequest,
     SaveAppFileExportRequest, SetAppViewPanelRequest, SubscribeUserAppViewsRequest,
-    TestAppInboxRouteRequest, UninstallAppRequest, UserAppView, UserAppViewRequest, APP_SET_SCHEMA,
+    TestAppInboxRouteRequest, UninstallAppRequest, UserAppView, UserAppViewBrowser, UserAppViewHost,
+    UserAppViewRequest, APP_SET_SCHEMA,
 };
 pub use api::{
     AppInstallOperationPhase, AppInstallOperationRequest, AppInstallOperationSummary,

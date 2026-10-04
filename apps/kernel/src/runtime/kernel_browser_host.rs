@@ -21,6 +21,7 @@ struct HostState {
     browsers: BTreeMap<String, Arc<Mutex<BrowserControllerProcessStdioBackend>>>,
     focus: BTreeMap<String, String>,
     loaded: BTreeSet<(String, String)>,
+    stopped: bool,
 }
 
 impl KernelBrowserHost {
@@ -81,6 +82,9 @@ impl KernelBrowserHost {
             .inner
             .lock()
             .map_err(|_| "MD-2: browser host lock poisoned")?;
+        if state.stopped {
+            return Err("MD integration: browser host is shut down".into());
+        }
         if !state.browsers.contains_key(user) {
             if state.browsers.len() >= 16 {
                 return Err("MD-2: browser user limit reached".into());
@@ -114,6 +118,18 @@ impl KernelBrowserHost {
         }
         Ok(())
     }
+    fn require_running(&self) -> Result<(), String> {
+        if self
+            .inner
+            .lock()
+            .map_err(|_| "MD-2: browser host lock poisoned")?
+            .stopped
+        {
+            Err("MD integration: browser host is shut down".into())
+        } else {
+            Ok(())
+        }
+    }
     pub(crate) fn request(
         &self,
         user: &str,
@@ -135,6 +151,7 @@ impl KernelBrowserHost {
         let mut backend = browser
             .lock()
             .map_err(|_| "MD-2: browser operation lock poisoned")?;
+        self.require_running()?;
         if let Some(agent) = agent {
             let state = self.inner.lock().map_err(|_| "MD-3: focus lock poisoned")?;
             require_loaded(&state, user, agent)?;
@@ -144,23 +161,33 @@ impl KernelBrowserHost {
             return Ok(serde_json::json!({ "state": "stopped", "tabs": [] }));
         }
         Self::ensure_ready(&mut backend)?;
-        backend.host_request(
-            "host.browser",
-            serde_json::to_value(command).map_err(|_| "MD-2: invalid browser command")?,
-        )
+        let mut params =
+            serde_json::to_value(command).map_err(|_| "MD-2: invalid browser command")?;
+        if agent.is_some() {
+            // Browser input must not impersonate the human App channel. The
+            // focused App MCP adapter supplies a separate agent actor.
+            params["_agent_input"] = true.into();
+        }
+        backend.host_request("host.browser", params)
     }
     /// MD-2 appviews lane seam: trusted App requests use the same user controller.
     pub(crate) fn app_view(
         &self,
         user: &str,
         request: &super::browser_controller_app_view::BrowserAppViewRequest,
+        generation: Option<u64>,
     ) -> Result<Value, String> {
         let browser = self.backend(user)?;
         let mut backend = browser
             .lock()
             .map_err(|_| "MD-2: browser operation lock poisoned")?;
+        self.require_running()?;
         Self::ensure_ready(&mut backend)?;
-        backend.host_request(request.method(), request.params())
+        let mut params = request.params();
+        if let Some(generation) = generation {
+            params["_host_generation"] = generation.into();
+        }
+        backend.host_request(request.method(), params)
     }
     pub(crate) fn shutdown(&self) -> Result<(), String> {
         let browsers = {
@@ -168,6 +195,7 @@ impl KernelBrowserHost {
                 .inner
                 .lock()
                 .map_err(|_| "MD-2: browser host lock poisoned")?;
+            state.stopped = true;
             std::mem::take(&mut state.browsers)
         };
         let mut first = None;
@@ -207,6 +235,15 @@ fn require_loaded(state: &HostState, user: &str, agent: &str) -> Result<(), Stri
 mod tests {
     use super::*;
     #[test]
+    fn retained_host_cannot_restart_after_shutdown() {
+        let host = KernelBrowserHost::new(PathBuf::from("/tmp/mdint-stopped-host"));
+        let retained = host.clone();
+        host.shutdown().unwrap();
+        assert!(retained
+            .request("alice", KernelBrowserCommand::Start)
+            .is_err());
+    }
+    #[test]
     fn profile_selection_is_private_stable_and_user_separated() {
         let host = KernelBrowserHost::new(PathBuf::from("/tmp/md2-state"));
         assert_eq!(
@@ -228,10 +265,9 @@ mod tests {
         assert!(host.is_loaded("a", "agent1"));
         host.set_focus("a", Some("agent2"));
         assert!(!host.is_loaded("a", "agent1"));
-        assert!(
-            host.request_as("a", Some("agent1"), KernelBrowserCommand::State)
-                .is_err()
-        );
+        assert!(host
+            .request_as("a", Some("agent1"), KernelBrowserCommand::State)
+            .is_err());
         assert!(!host.is_focused("b", "agent2"));
         host.set_focus("a", Some("agent1"));
         assert!(!host.is_loaded("a", "agent1"));

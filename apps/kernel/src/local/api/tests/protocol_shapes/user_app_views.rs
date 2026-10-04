@@ -72,3 +72,73 @@ fn detached_passkey_is_redacted_from_kernel_command_and_debug() {
         .unwrap()
         .contains("synthetic-test-secret"));
 }
+
+#[test]
+fn user_app_view_protocol_418_kernel_browser_host_selection_snapshot() {
+    use crate::runtime::browser_controller_app_view::BrowserAppViewRequest;
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 418);
+    let request = LocalDaemonRequest::OpenUserAppView(OpenUserAppViewRequest {
+        installation_id: "todo".into(),
+        host: Some(UserAppViewHost::KernelBrowser),
+    });
+    let expected =
+        serde_json::json!({"OpenUserAppView":{"installation_id":"todo","host":"kernel_browser"}});
+    assert_eq!(serde_json::to_value(&request).unwrap(), expected);
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonRequest>(expected.clone()).unwrap(),
+        request
+    );
+    let view = UserAppView {
+        view_id: "v".into(),
+        installation_id: "todo".into(),
+        generation: "7".into(),
+        origin: "https://app.a.invalid".into(),
+        browser: Some(UserAppViewBrowser {
+            tab_id: "host-tab-t".into(),
+            generation: 2,
+        }),
+    };
+    let view = serde_json::to_value(view).unwrap();
+    assert_eq!(
+        view,
+        serde_json::json!({"view_id":"v","installation_id":"todo","generation":"7","origin":"https://app.a.invalid","browser":{"tab_id":"host-tab-t","generation":2}})
+    );
+    let close = BrowserAppViewRequest::Close {
+        target_id: "internal-target".into(),
+    };
+    assert_eq!(
+        serde_json::to_value(&close).unwrap(),
+        serde_json::json!({"op":"close","target_id":"internal-target"})
+    );
+    assert_eq!(close.method(), "browser.app.close");
+    assert_eq!(
+        close.params(),
+        serde_json::json!({"target_id":"internal-target"})
+    );
+    let hosted_open = BrowserAppViewRequest::Open {
+        origin_label: "a".into(),
+        installation_id: "todo".into(),
+        instance_id: Some("v".into()),
+        entry: "index.html".into(),
+        assets: vec![],
+        page: None,
+    };
+    let snapshot =
+        serde_json::json!({"open":expected,"view":view,"close":close,"hosted_open":hosted_open});
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "19f81bf671f5dd1087609b81195b6ff580537600d88b4d1bdddd40833cba4019"
+    );
+    for host in [
+        serde_json::json!("slice"),
+        serde_json::json!({"controller":"forged"}),
+    ] {
+        assert!(serde_json::from_value::<LocalDaemonRequest>(
+            serde_json::json!({"OpenUserAppView":{"installation_id":"todo","host":host}})
+        )
+        .is_err());
+    }
+}
