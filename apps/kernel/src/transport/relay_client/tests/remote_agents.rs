@@ -794,7 +794,28 @@ fn remote_machine_agents_execute_prompts_through_the_home_session() {
     crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("remote-agents-execute-prompts", || {
         remote_machine_agents_execute_prompts_through_the_home_session_async(
-            false, false, false, false, false, false,
+            false, false, false, false, false, false, false,
+        )
+    });
+}
+
+// MP-08 / MP-10: the new native RPC still uses the ordinary home/leased seam.
+#[test]
+fn mp08_mp10_native_active_steering_reaches_the_leased_worker_without_queueing() {
+    crate::test_support::isolated_env_test!();
+    run_async_with_large_test_stack("native-active-steer-remote", || {
+        remote_machine_agents_execute_prompts_through_the_home_session_async(
+            false, false, false, false, false, false, true,
+        )
+    });
+}
+
+#[test]
+fn mp08_mp10_native_active_steering_rejects_a_reply_after_home_target_completion() {
+    crate::test_support::isolated_env_test!();
+    run_async_with_large_test_stack("native-active-steer-stale-remote", || {
+        remote_machine_agents_execute_prompts_through_the_home_session_async(
+            false, true, false, true, false, false, true,
         )
     });
 }
@@ -806,7 +827,7 @@ fn remote_agent_message_steers_live_worker_without_a_user_queue() {
     for _ in 0..2 {
         run_async_with_large_test_stack("remote-agent-direct-message", || {
             remote_machine_agents_execute_prompts_through_the_home_session_async(
-                true, false, false, false, false, false,
+                true, false, false, false, false, false, false,
             )
         });
     }
@@ -816,7 +837,7 @@ fn remote_agent_message_steers_live_worker_without_a_user_queue() {
 fn remote_agent_message_steer_keeps_home_app_lock_available_while_worker_reply_waits() {
     run_async_with_large_test_stack("remote-agent-message-home-lock", || {
         remote_machine_agents_execute_prompts_through_the_home_session_async(
-            true, true, false, false, false, false,
+            true, true, false, false, false, false, false,
         )
     });
 }
@@ -825,7 +846,7 @@ fn remote_agent_message_steer_keeps_home_app_lock_available_while_worker_reply_w
 fn remote_agent_message_reply_after_target_completion_does_not_commit_stale_steer() {
     run_async_with_large_test_stack("remote-agent-message-stale-reply", || {
         remote_machine_agents_execute_prompts_through_the_home_session_async(
-            true, true, false, true, false, false,
+            true, true, false, true, false, false, false,
         )
     });
 }
@@ -835,7 +856,7 @@ fn remote_queued_prompt_steer_reserves_queue_head_and_keeps_home_lock_available_
 ) {
     run_async_with_large_test_stack("remote-queued-steer-home-lock", || {
         remote_machine_agents_execute_prompts_through_the_home_session_async(
-            false, false, true, false, false, false,
+            false, false, true, false, false, false, false,
         )
     });
 }
@@ -844,7 +865,7 @@ fn remote_queued_prompt_steer_reserves_queue_head_and_keeps_home_lock_available_
 fn failed_remote_queued_prompt_steer_advances_after_concurrent_completion() {
     run_async_with_large_test_stack("remote-queued-steer-failed-advance", || {
         remote_machine_agents_execute_prompts_through_the_home_session_async(
-            false, false, true, false, true, false,
+            false, false, true, false, true, false, false,
         )
     });
 }
@@ -853,7 +874,7 @@ fn failed_remote_queued_prompt_steer_advances_after_concurrent_completion() {
 fn ambiguous_remote_queued_steer_reply_reconciles_exact_receipt_without_replay() {
     run_async_with_large_test_stack("remote-queued-steer-uncertain", || {
         remote_machine_agents_execute_prompts_through_the_home_session_async(
-            false, false, true, false, false, true,
+            false, false, true, false, false, true, false,
         )
     });
 }
@@ -865,6 +886,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
     finish_target_before_direct_reply: bool,
     fail_queued_prompt_reply: bool,
     lose_queued_prompt_reply: bool,
+    active_native_steer: bool,
 ) {
     let _relay_test_guard = relay_client_test_guard().await;
     let _test_home = RelayTestHome::new();
@@ -1186,6 +1208,126 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
         "the regression requires raw provider-run IDs to collide across kernels"
     );
     assert_ne!(projected_provider_run_id, local_provider_run_id);
+
+    if active_native_steer {
+        let request = |expected: &str| {
+            LocalDaemonRequest::SteerActivePrompt(crate::local::SteerActivePromptRequest {
+                session_id: session_id.clone(),
+                attachment_id: steering_attachment_id.clone(),
+                target_agent_id: remote_agent_id.clone(),
+                expected_active_prompt_id: expected.into(),
+                prompt: "MP08_MP10_NATIVE_ACTIVE_STEER".into(),
+                attachments: vec![],
+            })
+        };
+        let bad = request("old-home-prompt");
+        let command = KernelCommand::from_local_request("stale-native-steer", None, None, &bad);
+        assert!(router.dispatch(command, bad).await.is_err());
+        let request = request("prompt-1");
+        let command =
+            KernelCommand::from_local_request("native-active-steer", None, None, &request);
+        let response = if hold_agent_message_reply {
+            let pending = registry.read().await.pending_request_count();
+            let worker_guard = app_worker.lock().await;
+            let dispatch_router = Arc::clone(&router);
+            let task =
+                tokio::spawn(async move { dispatch_router.dispatch(command, request).await });
+            timeout(Duration::from_secs(2), async {
+                while registry.read().await.pending_request_count() <= pending {
+                    sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("native steer should use the leased relay request");
+            {
+                let mut home = timeout(Duration::from_secs(2), app_home.lock())
+                    .await
+                    .expect("home app lock stays available");
+                home.prompt_owner_complete_active_prompt_only(&session_id, &remote_agent_id)
+                    .unwrap();
+            }
+            drop(worker_guard);
+            task.await.unwrap()
+        } else {
+            router.dispatch(command, request).await
+        };
+        if finish_target_before_direct_reply {
+            assert!(
+                response.is_err(),
+                "a late receipt must not commit to the settled home turn"
+            );
+        } else {
+            assert!(matches!(
+                response.unwrap(),
+                LocalDaemonResponse::ActivePromptSteered { .. }
+            ));
+            timeout(Duration::from_secs(3), async {
+                loop {
+                    let count = app_worker
+                        .lock()
+                        .await
+                        .terminal()
+                        .input_records()
+                        .iter()
+                        .filter(|r| {
+                            String::from_utf8_lossy(&r.bytes)
+                                .contains("MP08_MP10_NATIVE_ACTIVE_STEER")
+                        })
+                        .count();
+                    if count > 0 {
+                        assert_eq!(count, 1);
+                        break;
+                    }
+                    sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("managed worker must receive native steering");
+        }
+        {
+            let mut home = app_home.lock().await;
+            assert_eq!(
+                home.prompt_owner_queued_prompt_count_for_agent(&session_id, &remote_agent_id)
+                    .unwrap(),
+                0
+            );
+            let echoes = home
+                .terminal()
+                .output_records()
+                .iter()
+                .filter(|r| {
+                    r.kind == crate::terminal::TerminalOutputKind::PromptEcho
+                        && String::from_utf8_lossy(&r.bytes)
+                            .contains("MP08_MP10_NATIVE_ACTIVE_STEER")
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if finish_target_before_direct_reply {
+                assert!(echoes.is_empty());
+            } else {
+                assert_eq!(echoes.len(), 1);
+                assert_eq!(echoes[0].provider_run_id, projected_provider_run_id);
+                assert_eq!(
+                    echoes[0].agent_id.as_deref(),
+                    Some(remote_agent_id.as_str())
+                );
+                assert_eq!(
+                    home.prompt_owner_active_prompt_for_agent(&session_id, &remote_agent_id)
+                        .unwrap()
+                        .unwrap()
+                        .id(),
+                    "prompt-1"
+                );
+            }
+        }
+        let _ = shutdown_home_tx.send(true);
+        let _ = shutdown_worker_tx.send(true);
+        connector_home.await.unwrap();
+        connector_worker.await.unwrap();
+        let _ = server_shutdown_tx.send(());
+        server_task.await.unwrap();
+        return;
+    }
 
     if direct_message_only {
         let sender_prompt_id = {

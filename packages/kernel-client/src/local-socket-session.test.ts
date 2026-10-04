@@ -37,7 +37,7 @@ async function fixture(run: (socketPath: string, server: net.Server) => Promise<
   }
 }
 test("protocol 367 snapshots the explicit opt-in transport envelope", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 411)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 422)
   assert.equal(JSON.stringify(guardedControlSessionRequest), '{"GuardedControlSession":{"version":1}}')
 })
 test("fragmented probe and response execute one command on the admitted socket", async () => {

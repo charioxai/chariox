@@ -3,6 +3,12 @@ import test from "node:test"
 import { acceptAppHostActionRequest, appHostActionMinimumProtocolVersion, restoreAppDataSnapshotRequest, startSliceRequest, submitRoomEnvironmentBrowserActionRequest } from "@chariox/kernel-client/ipc-requests"
 import { requireKernelFeatureProtocol } from "./kernel-feature-minimum.js"
 
+test("MP-08 MP-10 native active steering requires allocated protocol 422", () => {
+  const request = { SteerActivePrompt: {} }
+  assert.throws(() => requireKernelFeatureProtocol(request, 421), /Active prompt steering needs protocol ≥422/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 422))
+})
+
 test("protocol-388 kernel gets actionable App host refusal before a request is sent", () => {
   assert.throws(() => requireKernelFeatureProtocol(acceptAppHostActionRequest("s", "o"), 388), {
     message: "kernel too old: App host actions needs protocol ≥409; this kernel is 388; update the kernel",

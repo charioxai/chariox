@@ -84,6 +84,18 @@ pub struct SteerQueuedPromptRequest {
     pub prompt_id: String,
 }
 
+/// MP-08 / MP-10: Compare-and-steer a home turn, without queue/start fallback.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SteerActivePromptRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+    pub target_agent_id: String,
+    pub expected_active_prompt_id: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub attachments: Vec<PromptAttachment>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CancelQueuedPromptRequest {
     pub session_id: String,

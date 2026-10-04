@@ -186,7 +186,7 @@ impl KernelRuntimeState {
             prompt = prompt.with_durable_operation(operation_id, fingerprint);
         }
         if let Some(dispatch) =
-            self.prepare_local_active_agent_message_dispatch(session.id(), &prompt)?
+            self.prepare_local_active_prompt_steer_dispatch(session.id(), &prompt)?
         {
             let _permit = self
                 .provider_runtime_lanes
@@ -270,7 +270,7 @@ impl KernelRuntimeState {
             ));
         }
         if let Some(provider_run_id) = self
-            .steer_remote_agent_message(session.id(), &prompt)
+            .steer_remote_agent_message(session.id(), &prompt, None)
             .await?
         {
             let result = crate::transport::runtime_tools::RuntimeToolResult {
@@ -357,74 +357,6 @@ impl KernelRuntimeState {
             store.record(operation_id, fingerprint, result.clone());
         }
         Ok(result)
-    }
-
-    fn prepare_local_active_agent_message_dispatch(
-        &self,
-        session_id: &str,
-        prompt: &crate::session::PromptQueueItem,
-    ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
-        let agent_id = prompt.target_agent_id();
-        if self
-            .owned
-            .agent_store
-            .get_agent(agent_id)?
-            .remote_execution()
-            .is_some()
-        {
-            return Ok(None);
-        }
-        let session = self.owned.session_store.get_session(session_id)?;
-        let Some(active_prompt) = self
-            .owned
-            .prompt_state_owner
-            .active_prompt_for_agent(&session, agent_id)
-        else {
-            return Ok(None);
-        };
-        if active_prompt.status() != crate::session::PromptStatus::Running {
-            return Err(DaemonError::LocalTransport {
-                operation: "steer agent message",
-                message: "target agent is stopping; message was not delivered".to_string(),
-            });
-        }
-        if active_prompt.is_external() {
-            return Err(DaemonError::LocalTransport {
-                operation: "steer agent message",
-                message: "agent messages cannot steer an externally started provider turn"
-                    .to_string(),
-            });
-        }
-        let provider_run = self
-            .owned
-            .provider_store
-            .get_run_for_agent(session_id, agent_id)
-            .ok_or_else(|| DaemonError::NoActiveProviderRun {
-                session_id: session_id.to_string(),
-            })?;
-        if provider_run.state() != crate::provider::ProviderRunState::Running {
-            return Err(DaemonError::InvalidProviderRunState {
-                provider_run_id: provider_run.id().to_string(),
-                state: provider_run.state(),
-                operation: "steer agent message",
-            });
-        }
-        Ok(Some(crate::app::KernelPromptDispatch {
-            session_id: session_id.to_string(),
-            provider_run_id: provider_run.id().to_string(),
-            agent_id: agent_id.to_string(),
-            prompt_id: prompt.id().to_string(),
-            target_active_prompt_id: Some(active_prompt.id().to_string()),
-            source_attachment_id: prompt.source_attachment_id().to_string(),
-            prompt: prompt.prompt().to_string(),
-            hidden_system_context: prompt.hidden_system_context().to_string(),
-            attachments: prompt.attachments().to_vec(),
-            prompt_origin: prompt.prompt_origin(),
-            external_provider: prompt.external_provider().map(str::to_string),
-            external_provider_session_id: prompt.external_provider_session_id().map(str::to_string),
-            external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
-            steering: true,
-        }))
     }
 
     fn ensure_agent_message_attachment(

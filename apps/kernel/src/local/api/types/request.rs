@@ -297,6 +297,7 @@ pub enum LocalDaemonRequest {
     CompletePrompt(CompletePromptRequest),
     CancelActivePrompt(CancelActivePromptRequest),
     SteerQueuedPrompt(SteerQueuedPromptRequest),
+    SteerActivePrompt(SteerActivePromptRequest),
     CancelQueuedPrompt(CancelQueuedPromptRequest),
     UpdateQueuedPrompt(UpdateQueuedPromptRequest),
     UpdateSessionConfig(UpdateSessionConfigRequest),

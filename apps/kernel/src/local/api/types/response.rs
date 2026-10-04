@@ -348,6 +348,7 @@ pub enum LocalDaemonResponse {
     },
     PromptCompleted { completion: PromptCompletion, },
     PromptCancelled { cancellation: PromptCancellation, },
+    ActivePromptSteered { prompt: PromptQueueItem, },
     QueuedPromptSteered {
         prompt: PromptQueueItem,
         session: RuntimeSession,

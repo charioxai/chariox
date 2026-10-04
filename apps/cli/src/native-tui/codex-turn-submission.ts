@@ -6,11 +6,13 @@ import { cancelActivePromptRequest, submitPromptRequest } from "../ipc-requests.
 import { preparePromptAttachmentsForSubmit } from "../prompt-attachment-transfer.js"
 import type { CodexJsonRpcMessage } from "./codex-json-rpc.js"
 import { extractCodexAttachments, extractCodexPrompt } from "./codex-prompt.js"
+import { bindCodexDisplayTurn } from "./codex-conversation-controls.js"
 
 export type CodexNativeBindingState = {
   promise: Promise<RuntimeProviderRun> | null
   run: RuntimeProviderRun | null
   structuredEndpoint?: string | null
+  displayTurns?: Map<string, { threadId: string, promptId: string }>
 }
 
 export async function handleCodexNativeTurnStart(
@@ -36,10 +38,17 @@ export async function handleCodexNativeTurnStart(
     const attachments = await preparePromptAttachmentsForSubmit(extractCodexAttachments(message.params), {
       inlineLocalFiles: options.inlineLocalAttachments,
     })
-    await options.client.send<Record<string, unknown>>(
+    const response = await options.client.send<{ PromptSubmitted: { outcome: {
+      Started?: { prompt: { id: string } }, Queued?: { prompt: { id: string } },
+    } } }>(
       submitPromptRequest(options.sessionId, options.attachmentId, options.agentId, prompt, attachments),
     )
-    const turnId = `chariox-native-${Date.now()}`
+    const outcome = response.PromptSubmitted?.outcome
+    const promptId = (outcome?.Started ?? outcome?.Queued)?.prompt.id
+    const threadId = message.params?.threadId
+    if (!promptId || typeof threadId !== "string") throw new Error("kernel did not return a native prompt identity")
+    const turnId = `chariox-native-${promptId}`
+    bindCodexDisplayTurn(options.bindState, threadId, turnId, promptId)
     sendClient({
       id: message.id,
       result: {

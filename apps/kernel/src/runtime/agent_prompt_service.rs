@@ -99,6 +99,13 @@ impl AgentPromptCommandService {
             .await
     }
 
+    pub(crate) async fn steer_active_prompt(
+        &self,
+        request: crate::local::SteerActivePromptRequest,
+    ) -> Result<PromptQueueItem, DaemonError> {
+        self.state.steer_active_prompt(request).await
+    }
+
     pub(crate) async fn cancel_queued_prompt(
         &self,
         session_id: &str,

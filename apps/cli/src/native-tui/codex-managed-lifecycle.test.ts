@@ -87,7 +87,7 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "s
       case "SteerActivePrompt":
         assert.deepEqual(payload, {
           session_id: "session", attachment_id: "attachment", target_agent_id: "agent",
-          expected_active_prompt_id: "home-prompt", prompt: "change direction", attachments: [],
+          expected_active_prompt_id: "home-prompt", prompt: "change direction\n", attachments: [],
         })
         await managedRequest("turn/steer", { threadId: "managed-thread", expectedTurnId: "managed-turn", input: [{ type: "text", text: payload.prompt }] })
         return { ActivePromptSteered: { prompt: { id: "home-steer" } } }
@@ -153,7 +153,7 @@ finally { clearTimeout(timer); socket.close(); }
         assert.deepEqual(interrupts, [{ threadId: "managed-thread", turnId: "managed-turn" }])
       } else if (mode === "steer" || mode === "compact" || mode === "controls") {
         const expected = []
-        if (mode !== "compact") expected.push({ method: "turn/steer", params: { threadId: "managed-thread", expectedTurnId: "managed-turn", input: [{ type: "text", text: "change direction" }] } })
+        if (mode !== "compact") expected.push({ method: "turn/steer", params: { threadId: "managed-thread", expectedTurnId: "managed-turn", input: [{ type: "text", text: "change direction\n" }] } })
         if (mode !== "steer") expected.push({ method: "thread/compact/start", params: { threadId: "managed-thread" } })
         assert.deepEqual(controls, expected)
         assert.deepEqual(promptContexts, mode === "steer" ? [false] : [false, true], "subsequent prompts must use the compacted managed conversation")

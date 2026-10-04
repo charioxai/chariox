@@ -31,6 +31,9 @@ pub(super) enum AgentCommand {
     SteerQueuedPrompt {
         request: crate::local::SteerQueuedPromptRequest,
     },
+    SteerActivePrompt {
+        request: crate::local::SteerActivePromptRequest,
+    },
     CancelQueuedPrompt {
         request: crate::local::CancelQueuedPromptRequest,
     },

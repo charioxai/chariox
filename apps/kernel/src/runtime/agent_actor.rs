@@ -345,6 +345,26 @@ impl AgentRuntime {
         .await
     }
 
+    pub(crate) async fn dispatch_prompt_steer_active(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+        request: crate::local::SteerActivePromptRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.store
+            .ensure_agent_prompt_access(
+                &request.target_agent_id,
+                &command_agent_actor_user_id(command),
+                "steer active prompt",
+            )
+            .await?;
+        self.dispatch_to_agent(
+            request.target_agent_id.clone(),
+            CommandTrace::from_command(command),
+            AgentCommand::SteerActivePrompt { request },
+        )
+        .await
+    }
+
     pub(crate) async fn dispatch_prompt_cancel_queued(
         &self,
         command: &crate::runtime::command::KernelCommand,

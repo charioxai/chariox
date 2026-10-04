@@ -310,6 +310,12 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             }
             metadata
         }
+        LocalDaemonRequest::SteerActivePrompt(request) => {
+            LocalRequestMetadata::new("prompt.active.steer", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+                .agent(&request.target_agent_id)
+        }
         LocalDaemonRequest::SteerQueuedPrompt(request) => {
             LocalRequestMetadata::new("prompt.queued.steer", Interactive)
                 .session(&request.session_id)
@@ -1006,6 +1012,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::SubmitPrompts(_)
         | LocalDaemonRequest::CancelActivePrompt(_)
         | LocalDaemonRequest::SteerQueuedPrompt(_)
+        | LocalDaemonRequest::SteerActivePrompt(_)
         | LocalDaemonRequest::CancelQueuedPrompt(_)
         | LocalDaemonRequest::UpdateQueuedPrompt(_)
         | LocalDaemonRequest::ResizeTerminal(_)

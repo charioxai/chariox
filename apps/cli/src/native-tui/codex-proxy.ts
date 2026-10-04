@@ -10,7 +10,7 @@ import {
 import { LocalIpcClient } from "../ipc.js"
 import { hiddenInstructionsStart, redactHiddenInstructionsFromJson } from "./hidden-instructions.js"
 import { createCodexKernelOutputProjection } from "./codex-kernel-output-projection.js"
-import { mapCodexNativeCompaction } from "./codex-conversation-controls.js"
+import { bindCodexDisplayTurn, handleCodexNativeTurnSteer, mapCodexNativeCompaction } from "./codex-conversation-controls.js"
 import {
   type CodexJsonRpcMessage,
   extractCodexThreadId,
@@ -215,6 +215,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     agentId: options.agentId,
     broadcast: broadcastToNativeTuis,
     debug: options.debug,
+    onTurnMapped: (threadId, turnId, promptId) => bindCodexDisplayTurn(options.bindState, threadId, turnId, promptId),
   })
   const projectionThreadTracker = createCodexProjectionThreadTracker({
     setThreadId: kernelOutputProjection.setThreadId,
@@ -333,6 +334,10 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       if (message.method === "turn/interrupt" && downstream.kind !== "kernel" && !ephemeral) {
         void handleCodexNativeTurnInterrupt(message, options,
           (response) => sendDownstream(downstream, response))
+        return
+      }
+      if (message.method === "turn/steer" && downstream.kind !== "kernel" && !ephemeral) {
+        void handleCodexNativeTurnSteer(message, options, (response) => sendDownstream(downstream, response))
         return
       }
       if (message.method === "thread/compact/start" && downstream.kind !== "kernel" && !ephemeral) {

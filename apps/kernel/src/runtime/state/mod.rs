@@ -352,6 +352,7 @@ pub(crate) use managed_activity_persistence::ManagedActivityObservation;
 mod metaagent_event_owned_state;
 mod metaagent_task_runtime_state;
 pub(crate) use metaagent_task_runtime_state::parse_meta_slash_command;
+mod active_prompt_steering;
 mod project_runtime_state;
 mod prompt;
 mod prompt_activity_owned_state;

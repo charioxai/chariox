@@ -20,6 +20,7 @@ export function createCodexKernelOutputProjection(options: {
   broadcast: (message: unknown) => void
   debug: (label: string, payload: unknown) => void
   nowMs?: () => number
+  onTurnMapped?: (threadId: string, turnId: string, promptId: string) => void
 }) {
   const nowMs = options.nowMs ?? Date.now
   let projectedThreadId: string | null = null
@@ -40,9 +41,10 @@ export function createCodexKernelOutputProjection(options: {
     durationMs: null,
   })
 
-  const startProjectedTurn = (timestampMs: number) => {
+  const startProjectedTurn = (timestampMs: number, promptId?: string | null) => {
     if (!projectedThreadId) return null
     const turnId = `chariox-projected-turn-${nextProjectedTurnId++}`
+    if (promptId) options.onTurnMapped?.(projectedThreadId, turnId, promptId)
     options.broadcast({
       jsonrpc: "2.0",
       method: "thread/status/changed",
@@ -136,7 +138,7 @@ export function createCodexKernelOutputProjection(options: {
       const timestampMs = recordTimestampMs(record)
 
       if (recordProjection.transcriptRole === "user") {
-        const turnId = startProjectedTurn(timestampMs)
+        const turnId = startProjectedTurn(timestampMs, record.prompt_id)
         if (!turnId) continue
         const itemId = `chariox-projected-user-${timestampMs}-${nextProjectedTurnId}`
         options.broadcast({
@@ -178,10 +180,10 @@ export function createCodexKernelOutputProjection(options: {
         })
         continue
       }
-      const itemKey = `${itemKind}:${recordProjection.mergeKey ?? "default"}`
+      const itemKey = `${record.prompt_id ?? ""}:${itemKind}:${recordProjection.mergeKey ?? "default"}`
       let itemProjection = projectedItems.get(itemKey)
       if (!itemProjection) {
-        const turnId = startProjectedTurn(timestampMs)
+        const turnId = startProjectedTurn(timestampMs, record.prompt_id)
         if (!turnId) continue
         const itemId = `chariox-projected-${itemKind}-${timestampMs}-${nextProjectedTurnId}`
         itemProjection = { key: itemKey, turnId, itemId, kind: itemKind, text: "", completedAtMs: timestampMs, timer: null }

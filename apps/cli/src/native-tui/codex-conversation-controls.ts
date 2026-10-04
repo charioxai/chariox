@@ -4,6 +4,43 @@ import type { LocalIpcClient } from "../ipc.js"
 import type { CodexJsonRpcMessage } from "./codex-json-rpc.js"
 import type { CodexNativeBindingState } from "./codex-turn-submission.js"
 import { getNativeProviderRun } from "./provider-run-control.js"
+import { steerActivePromptRequest } from "../ipc-requests.js"
+import { preparePromptAttachmentsForSubmit } from "../prompt-attachment-transfer.js"
+import { extractCodexAttachments, extractCodexPrompt } from "./codex-prompt.js"
+
+// MP-08 / MP-10: Both the turn/start reply and later output projections
+// identify the home prompt. Keep bounded display aliases, never provider IDs.
+export function bindCodexDisplayTurn(state: CodexNativeBindingState, threadId: string, turnId: string, promptId: string) {
+  const turns = state.displayTurns ??= new Map()
+  turns.set(turnId, { threadId, promptId })
+  if (turns.size > 64) turns.delete(turns.keys().next().value!)
+}
+
+export async function handleCodexNativeTurnSteer(
+  message: CodexJsonRpcMessage,
+  options: {
+    client: LocalIpcClient, sessionId: string, attachmentId: string, agentId: string,
+    bindState: CodexNativeBindingState, inlineLocalAttachments: boolean,
+  },
+  sendClient: (message: unknown) => void,
+) {
+  try {
+    const turnId = message.params?.expectedTurnId
+    const bound = typeof turnId === "string" ? options.bindState.displayTurns?.get(turnId) : undefined
+    if (!bound || bound.threadId !== message.params?.threadId) throw new Error("Codex display turn is not bound to a Chariox prompt")
+    const attachments = await preparePromptAttachmentsForSubmit(extractCodexAttachments(message.params), {
+      inlineLocalFiles: options.inlineLocalAttachments,
+    })
+    const response = await options.client.send<Record<string, unknown>>(steerActivePromptRequest(
+      options.sessionId, options.attachmentId, options.agentId, bound.promptId,
+      extractCodexPrompt(message.params), attachments,
+    ))
+    if (!("ActivePromptSteered" in response)) throw new Error("kernel did not admit active prompt steering")
+    sendClient({ id: message.id, result: { turnId } })
+  } catch (error) {
+    sendClient({ id: message.id, error: { code: -32000, message: error instanceof Error ? error.message : String(error) } })
+  }
+}
 
 // MP-08 / MP-10: A display thread is not the managed conversation. Resolve
 // the kernel-owned run on each control so a stale launch snapshot cannot

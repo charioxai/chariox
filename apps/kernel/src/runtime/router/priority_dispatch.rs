@@ -626,6 +626,11 @@ impl CommandRouter {
                     .dispatch_prompt_cancel(&command, request)
                     .await
             }),
+            LocalDaemonRequest::SteerActivePrompt(request) => Box::pin(async move {
+                self.agent_runtime
+                    .dispatch_prompt_steer_active(&command, request)
+                    .await
+            }),
             LocalDaemonRequest::SteerQueuedPrompt(request) => Box::pin(async move {
                 self.agent_runtime
                     .dispatch_prompt_steer_queued(&command, request)

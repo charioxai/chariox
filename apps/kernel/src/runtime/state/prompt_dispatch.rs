@@ -358,6 +358,7 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         prompt: &crate::session::PromptQueueItem,
+        expected_active_prompt_id: Option<&str>,
     ) -> Result<Option<String>, DaemonError> {
         let owned = &self.owned;
         let agent_id = prompt.target_agent_id();
@@ -372,6 +373,12 @@ impl KernelRuntimeState {
         else {
             return Ok(None);
         };
+        if expected_active_prompt_id.is_some_and(|expected| expected != active_prompt.id()) {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer active prompt",
+                message: "active prompt changed before steering".into(),
+            });
+        }
         if active_prompt.status() != crate::session::PromptStatus::Running {
             return Err(DaemonError::LocalTransport {
                 operation: "steer agent message",

@@ -248,6 +248,28 @@ export function steerQueuedPromptRequest(
   }
 }
 
+// MP-08 / MP-10: Admission targets one home turn and never queues or starts
+// a replacement turn if it has already settled.
+export const activePromptSteeringMinimumProtocolVersion = 422
+
+export function steerActivePromptRequest(
+  sessionId: string,
+  attachmentId: string,
+  targetAgentId: string,
+  expectedActivePromptId: string,
+  prompt: string,
+  attachments: PromptAttachmentPart[],
+) {
+  return { SteerActivePrompt: {
+    session_id: sessionId,
+    attachment_id: attachmentId,
+    target_agent_id: targetAgentId,
+    expected_active_prompt_id: expectedActivePromptId,
+    prompt,
+    attachments,
+  } }
+}
+
 export function cancelQueuedPromptRequest(
   sessionId: string,
   attachmentId: string,

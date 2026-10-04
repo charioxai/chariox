@@ -62,6 +62,18 @@ impl AgentRuntimeCommandExecutor {
                 target_agent_id,
             } => self.cancel_active_prompt(request, target_agent_id).await,
             AgentCommand::SteerQueuedPrompt { request } => self.steer_queued_prompt(request).await,
+            AgentCommand::SteerActivePrompt { mut request } => {
+                self.prompt_commands
+                    .ensure_attachment_in_session(&request.session_id, &request.attachment_id)
+                    .await?;
+                request.attachments = materialize_inline_prompt_attachments(
+                    &request.session_id,
+                    &request.target_agent_id,
+                    request.attachments,
+                )?;
+                let prompt = self.prompt_commands.steer_active_prompt(request).await?;
+                Ok(LocalDaemonResponse::ActivePromptSteered { prompt })
+            }
             AgentCommand::CancelQueuedPrompt { request } => {
                 self.cancel_queued_prompt(request).await
             }

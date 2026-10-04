@@ -217,6 +217,26 @@ Existing providers like OpenCode may continue to be adapted through their native
 
 ## 3.3.2 Native TUI Agents
 
+MP-08 / MP-10: local protocol **422** adds `SteerActivePrompt` with session,
+attachment, agent, required `expected_active_prompt_id`, visible prompt and
+attachments. The home agent actor admits it only against that exact running
+Chariox prompt; stale, cancelled, external or settled targets fail without
+creating a turn or a backlog item. `ActivePromptSteered { prompt }` reports
+admission through shared prompt assembly/history and local or leased provider
+dispatch. Relay peer 70 already carries the exact home target and is unchanged.
+Codex native `turn/steer` maps both reply and projected display turn IDs to
+home prompt IDs; its response retains the display turn ID. Utility threads
+keep their provider-native controls. `thread/compact/start` resolves the live
+managed provider conversation rather than the display thread.
+
+The MP-08 / MP-10 focused source drill consists of
+`mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt` in the kernel
+test binary plus the CLI `codex-managed-lifecycle.test` entry-point fixture:
+submit → steer → compact → follow-up, interrupt, cold launch and stale controls.
+Run alongside protocol shape/hash and native proxy utility/projection checks.
+These credential-free fixtures prove routing and admission; signed/live
+provider and ordinary-versus-Path-1 acceptance remain separate gates.
+
 MP-08 / MP-10 / MP-11 (owner decision 2026-10-02): credential copying remains
 unchanged across leased workers, managed-context imports and slices, including
 profile-scoped Claude Keychain export and the Vault setup-token remote path.
