@@ -9,5 +9,5 @@ export function nativeEncoder(){
  createInterface({input:child.stdout}).on('line',line=>{const value=JSON.parse(line),p=waiting.get(value.id);if(!p)return;waiting.delete(value.id);value.error?p.reject(Error(value.error)):p.resolve(value)});
  child.on('exit',code=>{for(const p of waiting.values())p.reject(Error(`MD-DISPLAY native encoder exited ${code}`));waiting.clear()});
  const request=value=>new Promise((resolve,reject)=>{const key=++id;waiting.set(key,{resolve,reject});child.stdin.write(JSON.stringify({id:key,...value})+'\n')});
- return {child,cost,reset:()=>request({reset:true}),async encode(png,timestamp){const value=await request({png:png.toString('base64'),timestamp,bitrate:Number(process.env.MD_BITRATE||2000000),crf:Number(process.env.MD_NATIVE_CRF||18)});cost.push(value.elapsed_ms);return value},async close(){child.stdin.end();await stopGroup(child)}};
+ return {child,cost,reset:()=>request({reset:true}),async encode(png,timestamp){const value=await request({png:png.toString('base64'),timestamp,bitrate:Number(process.env.MD_BITRATE||2000000),crf:Number(process.env.MD_NATIVE_CRF||18),preset:process.env.MD_NATIVE_PRESET||'ultrafast'});cost.push(value.elapsed_ms);return value},async close(){child.stdin.end();await stopGroup(child)}};
 }

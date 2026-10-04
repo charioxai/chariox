@@ -210,3 +210,9 @@ packets are forwarded to the same browser decoder/latency/pixel harness.
 The worker is reset per document and killed in `finally`; sampled owned CPU/RSS
 includes it. Mac/Windows software portability is a proposed path, not tested;
 this does not establish hardware encoder 4:4:4 support.
+
+MD-DISPLAY-02: `MD_NATIVE_PRESET=veryfast` probes better compression at added
+CPU cost; default stays ultrafast for the original ladder. `MD_NATIVE_TRACE=1`
+writes credential-free fixture/public H.264 packets in the evidence directory
+for independent decoder diagnosis. It must not be used against authenticated
+sites. The packet trace is diagnostic, not a production recording path.

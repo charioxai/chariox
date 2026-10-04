@@ -34,7 +34,7 @@ for line in sys.stdin:
                 codec.color_primaries = 1
                 codec.color_trc = 13
                 codec.options = {
-                    'preset': 'ultrafast', 'tune': 'zerolatency',
+                    'preset': request['preset'], 'tune': 'zerolatency',
                     'crf': str(request['crf']),
                     'x264-params': 'repeat-headers=1:keyint=60:scenecut=0:colormatrix=GBR:fullrange=on:'
                     f"vbv-maxrate={request['bitrate']//1000}:vbv-bufsize={request['bitrate']//500}",
