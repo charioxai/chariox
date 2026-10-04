@@ -65,7 +65,7 @@ try{
   const source=process.env.MD_BASELINE==='1'?await baseline(chromium,origin,output):await headedBrowser(chromium,output,'source',sourceScreen.number,sandbox);browsers.push(source);if(source.child)groups.push(source.child.pid);
   if(process.env.MD_BASELINE==='1'){installedBaseline=source;result.baseline=source.metadata;result.items.push('MD-DISPLAY-03');result.container_samples=[];result.topology='installed slice Xvfb/Chromium → existing read-only Selkies stdio adapter → loopback WebSocket → browser WebCodecs decoder; no hosted relay';}
   const viewer=await headedBrowser(chromium,output,'client',viewerScreen.number,sandbox);browsers.push(viewer);groups.push(viewer.child.pid);
-  result.browser={version:source.browser.version(),sandbox,dpr:2,canonical_css:[960,600],physical:[1920,1200],source_is_headed:true,client_is_headed:true};
+  result.browser={version:source.browser.version(),source_sandbox:installedBaseline?false:sandbox,client_sandbox:sandbox,dpr:2,canonical_css:[960,600],physical:[1920,1200],source_is_headed:true,client_is_headed:true};
   const sc=source.browser.contexts()[0],vc=viewer.browser.contexts()[0];sourcePage=sc.pages()[0];sourceCDP=await sc.newCDPSession(sourcePage);
   await sourceCDP.send('Emulation.setDeviceMetricsOverride',{width:960,height:600,deviceScaleFactor:2,mobile:false});
   const encoder=await vc.newPage(),video=await vc.newPage(),dom=await vc.newPage();
@@ -159,7 +159,7 @@ try{
   }
   // Public documentation is supplemental: actual network page, not a fixture.
   if(!installedBaseline)try{
-    await sourcePage.goto('https://chromedevtools.github.io/devtools-protocol/tot/Page/',{waitUntil:'domcontentloaded',timeout:30000});await installMirror();previous=new Map();send('dom',{kind:'reset'});await mirror(true,true);await dom.bringToFront();await pause(700);
+    await sourcePage.goto('https://chromedevtools.github.io/devtools-protocol/tot/Page/',{waitUntil:'domcontentloaded',timeout:30000});await sourcePage.locator('h1').first().waitFor({timeout:15000});await sourcePage.evaluate(()=>document.fonts.ready);await pause(1000);await installMirror();previous=new Map();send('dom',{kind:'reset'});await mirror(true,true);await dom.bringToFront();await pause(700);
     result.public_docs={url:sourcePage.url(),title:await sourcePage.title(),fidelity:await saveComparison('public-docs-dom',await capture(),await domSnapshot()),limitations:'no source input suite; external assets and pseudo-elements may drift'};
   }catch(e){result.public_docs={status:'RED',first_failing_seam:e.message}}
   result.status=process.exitCode?'RED':'PASS_PROTOTYPE';
