@@ -409,6 +409,80 @@ fn duplicate_app_bindings_claim_recovery_once_without_stealing_live_focus() {
 }
 
 #[test]
+fn explicit_slice_replacement_recovers_identity_without_room_invalidation() {
+    for activity in [0, 1, 2] {
+        let mut environment = ready_environment_with_agent();
+        let layout = super::AppPanelLayout::default();
+        environment.set_app_tabs(
+            std::collections::BTreeMap::from([("old-app".into(), ("app_1".into(), layout))]),
+            None,
+            true,
+        );
+        environment.reconcile_controller_tabs(
+            vec![observed_tab(
+                "old-app",
+                "old-doc",
+                "https://app.todo.invalid/",
+                "Todo",
+            )],
+            Some("old-app"),
+        );
+        let old = environment.snapshot().tabs[0].clone();
+        let generation = environment.snapshot().runtime_generation;
+        environment.prepare_app_recovery();
+        // A poll finishing before the stop must not consume its own identity.
+        environment.set_app_tabs(
+            std::collections::BTreeMap::from([("old-app".into(), ("app_1".into(), layout))]),
+            None,
+            true,
+        );
+        assert_eq!(
+            environment.snapshot().tabs[0].document_revision,
+            old.document_revision
+        );
+        // Suspending AppViews removes authority before the old browser exits.
+        environment.set_app_tabs(std::collections::BTreeMap::new(), None, true);
+        environment.reconcile_controller_tabs(vec![], None);
+        environment.reconcile_controller_tabs(
+            vec![
+                observed_tab("new-app", "new-doc", "https://app.todo.invalid/", "Todo"),
+                observed_tab("startup-blank", "blank-doc", "about:blank", "about:blank"),
+            ],
+            Some("startup-blank"),
+        );
+        let blank = environment.snapshot().focused_tab_id.unwrap();
+        match activity {
+            1 => environment.cancel_app_recovery_focus(), // explicit Tab choice
+            2 => {
+                environment
+                    .submit_action(EnvironmentActionRequest::computer_mutation(
+                        "agent-1",
+                        generation,
+                        "new-pointer-choice",
+                        Some(&blank),
+                    ))
+                    .unwrap();
+            }
+            _ => {}
+        }
+        environment.set_app_tabs(
+            std::collections::BTreeMap::from([("new-app".into(), ("app_1".into(), layout))]),
+            None,
+            true,
+        );
+        let after = environment.snapshot();
+        assert_eq!(after.runtime_generation, generation);
+        let app = after.tabs.iter().find(|tab| tab.app.is_some()).unwrap();
+        assert_eq!(app.tab_id, old.tab_id);
+        assert!(app.document_revision > old.document_revision);
+        assert_eq!(
+            after.focused_tab_id,
+            Some(if activity == 0 { old.tab_id } else { blank })
+        );
+    }
+}
+
+#[test]
 fn unclaimed_app_recovery_expires_at_the_next_physical_generation() {
     let mut environment = ready_environment_with_agent();
     let layout = super::AppPanelLayout::default();

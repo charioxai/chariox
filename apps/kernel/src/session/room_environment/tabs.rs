@@ -202,8 +202,9 @@ impl TabRegistry {
             .filter_map(|(tab_id, state)| {
                 let installation = &state.tab.app.as_ref()?.installation_id;
                 self.restoring_apps
-                    .contains_key(installation)
-                    .then(|| (tab_id.clone(), installation.clone()))
+                    .get(installation)
+                    .filter(|previous| previous.tab_id != *tab_id)
+                    .map(|_| (tab_id.clone(), installation.clone()))
             })
             .collect::<Vec<_>>();
         for (temporary_id, installation) in restored {
@@ -227,6 +228,12 @@ impl TabRegistry {
             }
             if self.focused_tab_id.is_none()
                 || self.focused_tab_id.as_deref() == Some(temporary_id.as_str())
+                || previous.focused
+                    && self
+                        .focused_tab_id
+                        .as_ref()
+                        .and_then(|id| self.tabs.get(id))
+                        .is_some_and(|tab| tab.tab.url == "about:blank" && tab.tab.app.is_none())
             {
                 self.focused_tab_id = Some(previous.tab_id.clone());
             }
@@ -358,18 +365,35 @@ impl TabRegistry {
         })
     }
 
+    pub(crate) fn prepare_app_recovery(&mut self) {
+        self.restoring_apps.clear();
+        for state in self.tabs.values() {
+            if let Some(app) = &state.tab.app {
+                let mut tab = state.tab.clone();
+                tab.focused = self.focused_tab_id.as_deref() == Some(tab.tab_id.as_str());
+                let previous = self
+                    .restoring_apps
+                    .entry(app.installation_id.clone())
+                    .or_insert_with(|| tab.clone());
+                if tab.focused {
+                    *previous = tab;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn cancel_app_recovery_focus(&mut self) {
+        for tab in self.restoring_apps.values_mut() {
+            tab.focused = false;
+        }
+    }
+
     pub(crate) fn clear(&mut self) {
         // Recovery belongs to one physical generation. A failed or uninstalled
         // view must not leave a durable claim over later browser generations.
         // Retry before a binding returns also starts a new generation and
         // deliberately drops its old claim; only this recovery can reclaim it.
-        self.restoring_apps.clear();
-        for state in self.tabs.values() {
-            if let Some(app) = &state.tab.app {
-                let tab = state.tab.clone();
-                self.restoring_apps.insert(app.installation_id.clone(), tab);
-            }
-        }
+        self.prepare_app_recovery();
         self.tabs.clear();
         self.tab_id_by_controller_target.clear();
         self.retired_tab_id_by_controller_target.clear();

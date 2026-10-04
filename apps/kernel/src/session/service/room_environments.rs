@@ -264,6 +264,24 @@ impl SessionService {
         })
     }
 
+    pub(crate) fn room_environment_prepare_app_recovery(
+        &mut self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.mutate_room_environment(session_id, |environments| {
+            environments.prepare_app_recovery(session_id)
+        })
+    }
+
+    pub(crate) fn room_environment_cancel_app_recovery_focus(
+        &mut self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.mutate_room_environment(session_id, |environments| {
+            environments.cancel_app_recovery_focus(session_id)
+        })
+    }
+
     pub(crate) fn set_room_environment_app_tabs(
         &mut self,
         session_id: &str,

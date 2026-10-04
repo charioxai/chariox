@@ -473,6 +473,8 @@ impl KernelRuntimeState {
         let binding = self
             .room_environment_controller_tab_binding(session_id, tab_id)
             .map_err(|error| environment_runtime_error("browser_controller.tab", error))?;
+        // A new explicit Tab operation wins over pre-stop App focus intent.
+        let _ = self.room_environment_cancel_app_recovery_focus(session_id);
         let RoomBrowserControllerResult::Tab {
             result: Some(result),
         } = self
