@@ -12,7 +12,7 @@ import { runCodexNativeTui } from "./codex.js"
 import { waitForNativeProviderRunReady } from "./provider-run-control.js"
 
 // MP-08 / MP-10: actual entry point + proxy with distinct display/managed turns.
-async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "steer" | "compact" | "controls") {
+async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "steer" | "compact" | "controls" | "stale") {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-codex-lifecycle-"))
   const reservation = net.createServer().listen(0, "127.0.0.1")
   await once(reservation, "listening")
@@ -83,7 +83,14 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "s
       case "SubmitPrompt":
         assert.equal(payload.target_agent_id, "agent")
         await managedRequest("turn/start", { threadId: "managed-thread", input: [{ type: "text", text: payload.prompt }] })
-        return { PromptSubmitted: {} }
+        return { PromptSubmitted: { outcome: { Started: { prompt: { id: "home-prompt", target_agent_id: "agent" } } } } }
+      case "SteerActivePrompt":
+        assert.deepEqual(payload, {
+          session_id: "session", attachment_id: "attachment", target_agent_id: "agent",
+          expected_active_prompt_id: "home-prompt", prompt: "change direction", attachments: [],
+        })
+        await managedRequest("turn/steer", { threadId: "managed-thread", expectedTurnId: "managed-turn", input: [{ type: "text", text: payload.prompt }] })
+        return { ActivePromptSteered: { prompt: { id: "home-steer" } } }
       case "CancelActivePrompt":
         assert.deepEqual(payload, { session_id: "session", attachment_id: "attachment", target_agent_id: "agent" })
         await managedRequest("turn/interrupt", { threadId: "managed-thread", turnId: "managed-turn" })
@@ -107,8 +114,17 @@ try {
 await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
 await request('initialize', { clientInfo: { name: 'codex-tui', version: 'fixture' } });
 await request('thread/start', {});
-if (['interrupt', 'steer', 'compact', 'controls'].includes(${JSON.stringify(mode)})) {
+if (['interrupt', 'steer', 'compact', 'controls', 'stale'].includes(${JSON.stringify(mode)})) {
  const result = await request('turn/start', { threadId: 'display-thread', input: [{ type: 'text', text: 'long prompt' }] });
+ if (${JSON.stringify(mode)} === 'stale') {
+   for (const params of [
+     { threadId: 'display-thread', expectedTurnId: 'unknown-turn' },
+     { threadId: 'other-thread', expectedTurnId: result.turn.id },
+   ]) {
+     try { await request('turn/steer', { ...params, input: [{ type: 'text', text: 'change direction' }] }); throw new Error('stale steer was admitted'); }
+     catch (error) { if (!error.message.includes('not bound')) throw error; }
+   }
+ }
  if (${JSON.stringify(mode)} === 'interrupt') await request('turn/interrupt', { threadId: 'display-thread', turnId: result.turn.id });
  if (['steer', 'controls'].includes(${JSON.stringify(mode)})) {
    const response = await request('turn/steer', { threadId: 'display-thread', expectedTurnId: result.turn.id, input: [{ type: 'text', text: 'change direction' }] });
@@ -141,7 +157,8 @@ finally { clearTimeout(timer); socket.close(); }
         if (mode !== "steer") expected.push({ method: "thread/compact/start", params: { threadId: "managed-thread" } })
         assert.deepEqual(controls, expected)
         assert.deepEqual(promptContexts, mode === "steer" ? [false] : [false, true], "subsequent prompts must use the compacted managed conversation")
-      } else assert.ok(polls >= 2, "must wait for asynchronous launch completion before starting the TUI")
+      } else if (mode === "stale") assert.deepEqual(controls, [], "unknown display identities must never reach the provider")
+      else assert.ok(polls >= 2, "must wait for asynchronous launch completion before starting the TUI")
     }
   } finally {
     if (previous === undefined) delete process.env.CHARIOX_CODEX_BIN
@@ -162,6 +179,7 @@ test("MP-08 MP-10 native entry point reports an ended launch before attaching", 
 test("MP-08 MP-10 native entry point steers the kernel managed turn", (t) => fixture(t, "steer"))
 test("MP-08 MP-10 native entry point compacts the conversation used for subsequent prompts", (t) => fixture(t, "compact"))
 test("MP-08 MP-10 native entry point steers then compacts the managed conversation", (t) => fixture(t, "controls"))
+test("MP-08 MP-10 native entry point rejects stale turn and foreign thread steering", (t) => fixture(t, "stale"))
 
 // MP-08 / MP-10: A launch that never settles has a bounded actionable failure.
 test("MP-08 MP-10 managed endpoint readiness timeout names the pending run", async () => {

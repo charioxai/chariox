@@ -1,5 +1,58 @@
 use super::*;
 
+// MP-08 / MP-10: Native display IDs must be translated to a home prompt
+// before this single admission. A stale control must never become a new turn.
+#[test]
+fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
+    let worktree = crate::test_support::TestWorktree::new("active-steering-admission");
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness.dispatch(LocalDaemonRequest::CreateSession(
+        worktree.session_request().with_agent_defaults(
+            crate::session::SessionAgentDefaults::new("dev-stub")),
+    )).unwrap() {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        other => panic!("unexpected response: {other:?}"),
+    };
+    harness.launch_workflow_test_provider(session.id(), agent.id());
+    let attachment = match harness.dispatch(LocalDaemonRequest::AttachToSession(
+        AttachToSessionRequest { session_id: session.id().into(), client_id: "steering".into(),
+            capability_level: ClientCapabilityLevel::FullTerminal },
+    )).unwrap() {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let active = match harness.dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+        session_id: session.id().into(), attachment_id: attachment.id().into(),
+        target_agent_id: Some(agent.id().into()), prompt: "original work".into(), attachments: vec![],
+    })).unwrap() {
+        LocalDaemonResponse::PromptSubmitted { outcome: PromptSubmissionOutcome::Started { prompt }, .. } => prompt,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let request = |expected: &str| serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
+        "SteerActivePrompt": {
+            "session_id": session.id(), "attachment_id": attachment.id(),
+            "target_agent_id": agent.id(), "expected_active_prompt_id": expected,
+            "prompt": "change direction", "attachments": []
+        }
+    })).expect("protocol must support atomic active-turn steering");
+    let error = harness.dispatch(request("old-home-prompt")).unwrap_err();
+    assert!(error.to_string().contains("active prompt changed"), "{error}");
+    let response = harness.dispatch(request(active.id())).unwrap();
+    assert!(serde_json::to_value(response).unwrap().get("ActivePromptSteered").is_some());
+    harness.with_app_mut(|app| {
+        let current = app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id()).unwrap().unwrap();
+        assert_eq!(current.id(), active.id());
+        assert!(app.prompt_owner_peek_next_queued_prompt(session.id(), agent.id()).unwrap().is_none(),
+            "active steering must not enter the user backlog");
+    });
+    harness.dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest { session_id: session.id().into() })).unwrap();
+    assert!(harness.dispatch(request(active.id())).is_err(), "settled steering must fail instead of starting work");
+    harness.with_app_mut(|app| {
+        assert!(app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id()).unwrap().is_none());
+        assert!(app.prompt_owner_peek_next_queued_prompt(session.id(), agent.id()).unwrap().is_none());
+    });
+}
+
 #[test]
 fn public_session_state_preserves_failed_settlement_termination_after_late_completion() {
     let worktree = crate::test_support::TestWorktree::new("turn-actions-settlement");
