@@ -142,3 +142,12 @@ fn positive_browser_loss_preserves_restore_attempts_but_real_errors_are_final() 
         ColdAppRestoreError::Failed(_)
     ));
 }
+
+#[test]
+fn local_room_has_no_slice_restore_gate() {
+    assert!(!cold_restore_waiting_for_slice(None));
+    assert!(!cold_restore_waiting_for_slice(Some(SliceStatus::Running)));
+    assert!(cold_restore_waiting_for_slice(Some(SliceStatus::Stopped)));
+    assert!(cold_restore_waiting_for_slice(Some(SliceStatus::Unhealthy)));
+    assert!(!browser_recovery_downtime("browser_controller_unreachable"));
+}

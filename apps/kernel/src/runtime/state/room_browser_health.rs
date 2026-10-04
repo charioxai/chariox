@@ -187,7 +187,7 @@ impl KernelRuntimeState {
         } else {
             EnvironmentComponent::Browser
         };
-        if diagnostic.is_some() {
+        if diagnostic.is_some_and(super::app_view_runtime::browser_recovery_downtime) {
             self.app_control()
                 .views()
                 .suspend_for_cold_start(session_id);

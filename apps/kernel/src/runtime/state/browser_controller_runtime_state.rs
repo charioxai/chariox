@@ -296,6 +296,21 @@ impl KernelRuntimeState {
             session_id,
             reconciliation.process.runtime_generation,
         )?;
+        let room_generation = self
+            .room_environment_snapshot(session_id)
+            .map_err(|error| environment_runtime_error("browser_controller.reconcile", error))?
+            .runtime_generation;
+        self.app_control().views().observe_browser_identity(
+            session_id,
+            room_generation,
+            &reconciliation.browser.resource_inventory.browser_ids,
+            &reconciliation
+                .browser
+                .tabs
+                .iter()
+                .map(|tab| tab.target_id.clone())
+                .collect::<Vec<_>>(),
+        );
         let focused_target_id = reconciliation.browser.focused_target_id.clone();
         let tabs = reconciliation
             .browser
@@ -494,6 +509,13 @@ impl KernelRuntimeState {
         result
             .validate(&binding.runtime_target_id, &binding.document_id, action)
             .map_err(|message| controller_route_error(&message))?;
+        if action == crate::runtime::browser_controller_tab::BrowserTabAction::Close {
+            // An acknowledged close is explicit user intent, even if Chromium
+            // restarts before the App poll observes the missing target.
+            self.app_control()
+                .views()
+                .unbind(session_id, &binding.runtime_target_id);
+        }
         self.reconcile_browser_controller_environment(session_id)
             .await
     }

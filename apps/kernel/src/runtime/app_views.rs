@@ -75,6 +75,9 @@ struct SessionViews {
     /// Target → (binding, registration number).
     tabs: HashMap<String, (AppViewBinding, u64)>,
     registrations: u64,
+    /// Physical browser identity from the existing authenticated inventory.
+    /// CDP connection generations alone do not prove a document was lost.
+    browser_identity: Option<(u64, Vec<String>)>,
     /// App Tabs the controller last reported open, bound or not.
     open_tabs: usize,
     pumping: bool,
@@ -110,6 +113,26 @@ struct SessionViews {
 }
 
 impl SessionViews {
+    fn suspend_targets(&mut self, lost: impl Fn(&str) -> bool) {
+        let targets: Vec<_> = self
+            .tabs
+            .keys()
+            .filter(|target| lost(target))
+            .cloned()
+            .collect();
+        for target in targets {
+            let (binding, _) = self.tabs.remove(&target).unwrap();
+            if !self.restoring.iter().any(|(old, _)| {
+                old.owner == binding.owner && old.installation == binding.installation
+            }) {
+                self.restoring.push((binding, 0));
+            }
+            self.called.remove(&target);
+        }
+        // Dropping senders cancels only the documents proved lost.
+        self.in_flight.retain(|_, call| !lost(&call.target));
+    }
+
     /// A (re)opened or reconnected Tab counts as new, and a failed
     /// reconnection's cooldown no longer applies to it.
     fn bind(&mut self, target: &str, mut binding: AppViewBinding) {
@@ -181,18 +204,50 @@ impl AppViews {
     pub(crate) fn suspend_for_cold_start(&self, session: &str) {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(views) = sessions.get_mut(session) {
-            for (_, (binding, _)) in views.tabs.drain() {
-                if !views.restoring.iter().any(|(old, _)| {
-                    old.owner == binding.owner && old.installation == binding.installation
-                }) {
-                    views.restoring.push((binding, 0));
-                }
-            }
-            // Dropping the senders cancels calls held by the old documents.
-            views.in_flight.clear();
+            views.suspend_targets(|_| true);
             views.open_tabs = 0;
             views.called.clear();
         }
+    }
+
+    pub(crate) fn has_missing_targets(&self, session: &str, open: &[String], up_to: u64) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session)
+            .is_some_and(|views| {
+                views
+                    .tabs
+                    .iter()
+                    .any(|(target, (_, registered))| *registered <= up_to && !open.contains(target))
+            })
+    }
+
+    pub(crate) fn observe_browser_identity(
+        &self,
+        session: &str,
+        room_generation: u64,
+        browser_ids: &[String],
+        open: &[String],
+    ) {
+        // Older controllers without inventory cannot prove a physical restart.
+        if browser_ids.is_empty() {
+            return;
+        }
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(views) = sessions.get_mut(session) else {
+            return;
+        };
+        if views
+            .browser_identity
+            .as_ref()
+            .is_some_and(|(generation, old)| *generation == room_generation && old != browser_ids)
+        {
+            // Targets created after the restart may already be registered.
+            // Preserve them; only the old browser's missing documents ended.
+            views.suspend_targets(|target| !open.iter().any(|id| id == target));
+        }
+        views.browser_identity = Some((room_generation, browser_ids.to_vec()));
     }
 
     pub(crate) fn remember_logical_tab(
@@ -1457,5 +1512,52 @@ mod reconnect_tests {
         views.retain_open("room", &[], views.registrations("room"));
         views.suspend_for_cold_start("room");
         assert!(views.cold_start_views("room").is_empty());
+    }
+    fn recovery_binding(installation: &str) -> AppViewBinding {
+        AppViewBinding {
+            installation: installation.into(),
+            ..binding_at(1)
+        }
+    }
+
+    #[test]
+    fn fast_browser_restart_preserves_missing_views_without_reloading_live_targets() {
+        let views = AppViews::default();
+        views.register("room", "old", recovery_binding("todo"));
+        views.register("room", "closed", recovery_binding("closed"));
+        views.observe_browser_identity(
+            "room",
+            1,
+            &["browser-pid-1".into()],
+            &["old".into(), "closed".into()],
+        );
+        let old_call = views.track_call("room", "old", Some("old-doc".into()));
+        views.unbind("room", "closed"); // an acknowledged close must stay closed
+        let up_to = views.registrations("room");
+        views.register("room", "new", recovery_binding("other"));
+        let live_call = views.track_call("room", "new", Some("new-doc".into()));
+        assert!(views.has_missing_targets("room", &[], up_to));
+        views.observe_browser_identity("room", 1, &["browser-pid-2".into()], &["new".into()]);
+        views.retain_open("room", &[], up_to); // the older poll cannot drop a new registration
+        assert_eq!(
+            views.cold_start_views("room"),
+            vec![recovery_binding("todo")]
+        );
+        assert!(old_call.is_cancelled());
+        assert!(!live_call.is_cancelled());
+        assert!(views.binding_state("room", "new").is_some());
+    }
+
+    #[test]
+    fn same_browser_reconnect_and_ordinary_close_do_not_restore_a_view() {
+        let views = AppViews::default();
+        views.register("room", "old", recovery_binding("todo"));
+        views.observe_browser_identity("room", 1, &["browser-pid-1".into()], &["old".into()]);
+        views.observe_browser_identity("room", 1, &["browser-pid-1".into()], &[]);
+        views.retain_open("room", &[], views.registrations("room"));
+        assert!(views.cold_start_views("room").is_empty());
+        views.register("room", "new", recovery_binding("todo"));
+        views.observe_browser_identity("room", 2, &["browser-pid-2".into()], &[]);
+        assert!(views.cold_start_views("room").is_empty()); // separate Room incarnation
     }
 }

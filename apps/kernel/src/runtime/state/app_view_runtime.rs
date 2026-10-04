@@ -225,11 +225,12 @@ impl KernelRuntimeState {
         while views.keep_pumping(&session_id) {
             polls.tick().await;
             if !views.cold_start_views(&session_id).is_empty() {
-                let Some(slice) = self.owned.slice_store.environment_slice(&session_id) else {
-                    views.forget_session(&session_id);
-                    continue;
-                };
-                if slice.status != crate::slice::SliceStatus::Running {
+                if cold_restore_waiting_for_slice(
+                    self.owned
+                        .slice_store
+                        .environment_slice(&session_id)
+                        .map(|slice| slice.status),
+                ) {
                     // An explicit stop retains intent while the worker is down.
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     continue;
@@ -279,6 +280,18 @@ impl KernelRuntimeState {
             failures = 0;
             polls.observed_calls(!batch.calls.is_empty());
             if let Some(open) = &batch.open_targets {
+                // A quick supervised restart may finish between polls. Prove
+                // whether the physical browser changed before treating missing
+                // targets as ordinary closes. A route error is inconclusive.
+                if views.has_missing_targets(&session_id, open, polled_up_to)
+                    && self
+                        .reconcile_browser_controller_environment(&session_id)
+                        .await
+                        .is_err()
+                {
+                    polls.failed();
+                    continue;
+                }
                 views.retain_open(&session_id, open, polled_up_to);
                 views.set_open_tabs(&session_id, open.len());
             }
@@ -1099,10 +1112,16 @@ impl From<AppRequestErrorCode> for ColdAppRestoreError {
     }
 }
 
-fn browser_recovery_downtime(message: &str) -> bool {
+fn cold_restore_waiting_for_slice(status: Option<crate::slice::SliceStatus>) -> bool {
+    // A local controller has no slice gate; it uses the same verified restore.
+    status.is_some_and(|status| status != crate::slice::SliceStatus::Running)
+}
+
+pub(super) fn browser_recovery_downtime(message: &str) -> bool {
     [
         "browser_debugger_unavailable",
         "browser_cdp_disconnected",
+        "browser_controller_lease_lost",
         "browser controller is not leased by Room ",
     ]
     .iter()
