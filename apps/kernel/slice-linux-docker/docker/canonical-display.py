@@ -237,6 +237,12 @@ def apply(width, height):
             try:
                 resize(width, height)
                 asyncio.run(refresh_stream(record, width, height))
+                # Starting the verification viewer can run the pinned
+                # streamer's RandR setup again and round CVT width to eight
+                # pixels. Encoded readback above proved the exact capture;
+                # restore the kernel's exact physical mode after that setup.
+                if geometry() != (width, height):
+                    resize(width, height)
                 if geometry() != (width, height):
                     raise DisplayError("canonical physical display changed during capture verification")
                 record["canonical_display"] = verified

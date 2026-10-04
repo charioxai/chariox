@@ -177,6 +177,15 @@ impl KernelRuntimeState {
         {
             return;
         }
+        // A verified periodic receipt also completes capture recovery, even
+        // when component health was already Ready. Ignore stale generations
+        // above before clearing the current runtime's recovery window.
+        if diagnostic.is_none() {
+            self.owned
+                .room_environment_health_probes
+                .startup_recovery
+                .reset(session_id);
+        }
         let state = if diagnostic.is_some() {
             EnvironmentComponentHealthState::Unavailable
         } else {
@@ -210,5 +219,121 @@ impl KernelRuntimeState {
         {
             let _ = sessions.transition_room_environment(session_id, EnvironmentLifecycle::Ready);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        app::{DaemonApp, KernelSessionService},
+        config::{CredentialVaultBackend, DaemonConfig},
+        runtime::router::CommandRouter,
+        session::{CanonicalViewport, CreateSessionRequest},
+    };
+    use std::time::Instant;
+    use tokio::sync::Mutex as AsyncMutex;
+
+    #[tokio::test]
+    async fn periodic_healthy_receipt_rearms_capture_recovery_after_old_deadline() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-periodic-capture-{:016x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let mut config = DaemonConfig::for_tests().with_session_history_root(root.join("history"));
+        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.credential_vault.backend = CredentialVaultBackend::ProcessMemory;
+        let mut app = DaemonApp::bootstrap(config).unwrap();
+        let (session, _) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "periodic-capture",
+                "periodic-capture",
+            ))
+            .unwrap();
+        let session = session.id().to_owned();
+        let runtime = CommandRouter::with_interactive_capacity(Arc::new(AsyncMutex::new(app)), 1)
+            .runtime_state();
+        let viewport = CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap();
+        let before = runtime.start_room_environment(&session, viewport).unwrap();
+        for component in [
+            EnvironmentComponent::BrowserController,
+            EnvironmentComponent::Browser,
+            EnvironmentComponent::Desktop,
+            EnvironmentComponent::Streamer,
+        ] {
+            runtime
+                .owned
+                .session_store
+                .update_room_environment_component_health(
+                    &session,
+                    component,
+                    EnvironmentComponentHealthState::Ready,
+                    None,
+                )
+                .unwrap();
+        }
+        runtime
+            .transition_room_environment(&session, EnvironmentLifecycle::Ready)
+            .unwrap();
+        let recovery = &runtime
+            .owned
+            .room_environment_health_probes
+            .startup_recovery;
+        let error = crate::error::DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "transport_error".into(),
+            message: "local transport `browser_controller.route` failed: browser controller `browser.reconcile` failed with viewport_apply_failed: capture unavailable".into(),
+            retryable: true,
+        };
+        let now = Instant::now();
+        assert_eq!(
+            recovery.after_start_error(&session, &error, now),
+            EnvironmentLifecycle::Degraded
+        );
+        runtime.observe_room_browser_health(
+            &session,
+            before.runtime_generation,
+            Some("browser_cdp_disconnected"),
+        );
+        assert_eq!(
+            runtime
+                .room_environment_snapshot(&session)
+                .unwrap()
+                .lifecycle,
+            EnvironmentLifecycle::Degraded
+        );
+        // A late healthy receipt cannot reset another generation's deadline.
+        runtime.observe_room_browser_health(&session, before.runtime_generation + 1, None);
+        let later = now + Duration::from_secs(121);
+        assert_eq!(
+            recovery.after_start_error(&session, &error, later),
+            EnvironmentLifecycle::Failed
+        );
+        runtime.observe_room_browser_health(&session, before.runtime_generation, None);
+        assert_eq!(
+            runtime
+                .room_environment_snapshot(&session)
+                .unwrap()
+                .lifecycle,
+            EnvironmentLifecycle::Ready
+        );
+        assert_eq!(
+            recovery.after_start_error(&session, &error, later),
+            EnvironmentLifecycle::Degraded
+        );
+        // An unchanged Ready health receipt must clear recovery as well.
+        runtime.observe_room_browser_health(&session, before.runtime_generation, None);
+        assert_eq!(
+            recovery.after_start_error(&session, &error, later + Duration::from_secs(121)),
+            EnvironmentLifecycle::Degraded
+        );
     }
 }
