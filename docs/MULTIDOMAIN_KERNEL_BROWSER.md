@@ -4,7 +4,7 @@ Protocol introduction: local 417. Integration current: 418/70 on OSS main
 `358491d66` plus Apps-on-main. See MULTIDOMAIN_INTEGRATION.md for merge-order
 renumbering and the bound App host.
 MD-1 is design, MD-2 host/browser and shared protocol, MD-3 focused runtime MCP,
-MD-4 Linux drill and recovery. These are not MP acceptance claims.
+MD-4 native drill and recovery, MD-5 shared Vault protection. These are not MP acceptance claims.
 
 The home kernel owns a lazy browser host per authenticated user. No session,
 Room, slice, container, grant, or private-window flag is involved. Room browser
@@ -32,6 +32,8 @@ it does not recreate CDP. Public commands contain stable tab IDs and generation
 checks, never debugger URLs, raw CDP, JavaScript, cookies or filesystem paths.
 Mutations serialize per user's browser. Control I/O runs off the async router.
 Failed mutations are returned, never replayed automatically.
+Only observational reconciliation retries a stale-document navigation race,
+with three bounded reads; it never recreates a tab or repeats input.
 
 A bounded supervisor restarts an exited browser on the next request; profile
 storage survives. Durable tab records restore URLs under the same Chariox tab
@@ -52,19 +54,23 @@ remote/leased runs are excluded. A small loader tool makes the capability known;
 the browser operation tool is advertised only after on-demand loading.
 No additional approval/grant path is introduced.
 
-Ordinary input is not a Vault operation. No secret-reading or secret-insertion
-endpoint is added. Text input into password/OTP fields is refused by this initial host adapter; structured
-observations reuse controller redaction. Vault authorization, target binding,
-protected-value tracking and screenshot suppression must be integrated before
-claiming Vault support for host tabs. Browser profiles remain private kernel
+Ordinary input is not a Vault operation. Ordinary text input into password/OTP fields is refused. MD-5 adds
+`chariox.kernel_browser_paste_secret` after on-demand loading: an opaque Vault
+credential handle plus observed tab/generation/document/node reference, never
+secret text. Only the host owner (local or configured Cloud identity) can use
+the host Vault. Collaborators keep separate browser profiles. The existing Room
+Vault service, unlock RuntimeInteraction and lifecycle read lock authorize the
+observed frame URL; focus, metadata and the editable password target are checked
+again after waits. The existing controller Fill enforces document/URL/masking
+and native-form submission. `submit=false` is the default. Browser profiles remain private kernel
 state. Arbitrary JavaScript and CDP are internal implementation seams only.
 
 ## MD-2: interfaces for appviews and display lanes
 
-`KernelBrowserHost::request(user_id, KernelBrowserCommand)` is the common
-sessionless tab/control interface. `app_view(user_id, BrowserAppViewRequest)` is
-kernel-internal and uses the SAME per-user controller, including App calls and
-responses; appviews retains installation trust, CSP and bridge authority.
+`KernelRuntimeState::kernel_browser_request(user_id, KernelBrowserCommand)` is
+the common sessionless tab/control interface. `kernel_browser_app_view(user_id,
+BrowserAppViewRequest)` is the kernel-internal App seam and uses the SAME
+per-user controller, including App calls and responses; appviews retains installation trust, CSP and bridge authority.
 App views must not use a synthetic Room or independently launch Chromium.
 
 The display seam is a tab frame source plus input sink: screenshot, subscribe,
@@ -80,7 +86,7 @@ Unit coverage: user profile separation, URL/input validation, focus revocation,
 protocol-417 serialization and stale generation rejection. Linux drill: explicit
 disposable state, local fixture, sessionless open/navigate, screenshot, focused
 MCP input, subscription, browser crash and kernel restart, exact owned cleanup.
-This does not close Mac streaming, client integration, Vault, multi-user security
+This does not close native Mac execution, client integration, multi-user security
 review, or any MP ledger item.
 
 Owner questions: final display source/transport and Mac display acceptance;
@@ -135,3 +141,45 @@ Chromium's [profile contract](https://chromium.googlesource.com/chromium/src/+/m
 allows the explicit separate user-data directory. Its [POSIX singleton implementation](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/chrome/browser/process_singleton_posix.cc)
 uses a hostname/PID symlink on current macOS as well as Linux; the host refuses
 a live owner before launch and leaves stale-lock recovery to Chromium.
+
+## MD-5: shared Vault observation protection
+
+The Room `RoomSecretObservations` implementation also stores user-domain
+protection in a separate namespace under `kernel-browser/observations`, sealed
+to the ordinary kernel runtime identity. Active and retired values survive
+browser/controller/kernel restart. Vault deletion, rotation and credential
+metadata changes retire matching dormant user profiles through the same Vault
+lifecycle lock. Retired values still scrub prior page echoes. Missing/corrupt
+provenance fences observations; shutdown remains available. No human clearance
+or reset can erase live provenance. This state is separate from Room stores and
+never cleared by closing a tab or stopping/restarting Chromium.
+
+A scope input/capture barrier surrounds requests; private controller policy is
+seeded before every operation. Shared CDP redaction runs before snapshot
+compaction, then the kernel scrubs reply/error metadata. URLs echoing protected
+values are scrubbed in observations and persisted as about:blank for restart,
+never saved as plaintext secret-bearing restore URLs. No secret-reading MCP
+endpoint exists. The obsolete unprotected host request/App methods are removed;
+appviews must use the unchanged async `kernel_browser_app_view` seam.
+
+PNG screenshots reuse the Room's trusted CDP region locator, including field,
+plaintext echo, iframe and opaque-media masks. A small bounded native PNG
+adapter applies the masks after capture. Content capture binds to the emulated
+CDP viewport rather than desktop window bounds; Room desktop binding stays
+unchanged. Unsupported/racing layouts use a
+whole-frame opaque mask. Screencast activity triggers that same protected
+screenshot path with one in-flight capture, a latest-frame bound and a 5Hz cap.
+Subscribers on one tab share one CDP source and acknowledgment. Raw protected
+screencast pixels never leave the controller. An opaque fallback is available
+immediately while a bound frame is pending, even without a repaint. This is a conservative frame source,
+not the display lane's final transport. The display lane must preserve the
+input/capture barrier, policy revision and protected pixel path for any new
+frame source; it must not consume raw CDP frames after secret insertion.
+
+MD-5 tests cover owner-only Vault admission, no secret arguments/results,
+focus revocation, dormant-profile retirement, sealed restart scrubbing, background
+content masks, pixel replacement and full-mask fallback. The native kernel replay
+also uses a disposable synthetic Vault/password fixture, deliberately echoes
+secret input, captures protected pixels, retires the credential and checks
+scrubbing/frames and process recovery. These checks do not establish a real
+provider/public-site login, Web/TUI projection or native Mac execution.

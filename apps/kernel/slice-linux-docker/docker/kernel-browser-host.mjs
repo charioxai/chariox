@@ -2,9 +2,12 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
 import { HostChromium } from "./kernel-browser-process.mjs";
+import { redactObservation } from "./browser-controller-snapshot.mjs";
+import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
 
 const viewport = { css_width: 1280, css_height: 800, device_scale_factor: 1,
   desktop_pixel_width: 1280, desktop_pixel_height: 800 };
@@ -27,10 +30,26 @@ export class KernelBrowserHost {
     this.streams = new Map();
     this.restoring = false;
     this.keepaliveTarget = null;
+    this.protection = { values: [], targets: [], unknown: false };
+  }
+  async protect(policy) {
+    if (!Array.isArray(policy.values) || policy.values.length > 256 || policy.values.some(value => typeof value !== "string" || !value) || !Array.isArray(policy.targets)) throw new Error("MD-5: invalid protection policy");
+    if (JSON.stringify(policy) === JSON.stringify(this.protection)) return {};
+    this.protection = policy;
+    if (this.browser) this.browser.protectedValues = new Set(policy.values);
+    // No frame captured before insertion/retirement can be returned afterward.
+    for (const stream of this.streams.values()) {
+      stream.latest = policy.unknown || policy.values.length ? this.maskedStreamFrame(stream) : null;
+    }
+    return {};
+  }
+  maskedStreamFrame(stream) {
+    return { generation: this.generation, tab_id: stream.tabId, mime_type: "image/png", data_base64: wholeFrameMask(),
+      width: viewport.css_width, height: viewport.css_height, sequence: ++stream.sequence };
   }
   async save() {
     const name = path.join(this.root, "tabs.json");
-    const data = { generation: this.generation, tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).map(({ tab_id, url }) => ({ tab_id, url })) };
+    const data = { generation: this.generation, tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).map(({ tab_id, url }) => ({ tab_id, url: redactObservation(url, this.protection.values) === url ? url : "about:blank" })) };
     const serialized = JSON.stringify(data);
     if (serialized === this.lastSaved) return;
     await writeFile(`${name}.new`, serialized, { mode: 0o600 });
@@ -53,6 +72,7 @@ export class KernelBrowserHost {
     }
     const endpoint = await this.chromium.start();
     this.browser = this.browserFactory(endpoint);
+    this.browser.protectedValues = new Set(this.protection.values);
     this.generation = saved.generation + 1;
     // Publish the new generation before any restoration, so old references never revive.
     this.restoring = true;
@@ -86,7 +106,16 @@ export class KernelBrowserHost {
     return { state: "stopped", generation: this.generation, tabs: [] };
   }
   async reconcile() {
-    const state = await this.browser.reconcile(viewport, { browserBarVisible: false });
+    let state;
+    // Restored pages can finish navigation between CDP document reads. Retry
+    // only this observation, never the mutation that led to reconciliation.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { state = await this.browser.reconcile(viewport, { browserBarVisible: false }); break; }
+      catch (error) {
+        if (error.code !== "stale_document_reference" || attempt === 2) throw error;
+        await delay(25);
+      }
+    }
     const byTarget = new Map([...this.tabs.values()].map(tab => [tab.target_id, tab]));
     this.tabs.clear();
     for (const tab of state.tabs.filter(tab => tab.target_id !== this.keepaliveTarget)) {
@@ -96,8 +125,8 @@ export class KernelBrowserHost {
     for (const [id, tab] of this.tabs) tab.tab_id = id;
     for (const [id, stream] of this.streams) if (!this.tabs.has(stream.tabId)) await this.removeStream(id);
     if (!this.restoring) await this.save();
-    return { state: "ready", generation: this.generation,
-      tabs: [...this.tabs.values()].map(({ target_id, ...tab }) => tab), viewport };
+    return redactObservation({ state: "ready", generation: this.generation,
+      tabs: [...this.tabs.values()].map(({ target_id, ...tab }) => tab), viewport }, this.protection.values);
   }
   async open(url, tabId = `host-tab-${randomUUID()}`) {
     if (this.tabs.size >= 128) throw new Error("MD-2: host tab limit reached");
@@ -151,7 +180,11 @@ export class KernelBrowserHost {
   }
   async screenshot(tab) {
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
-    const { data } = await connection.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false }, sessionId);
+    const data = await captureProtectedPage(this.browser, tab, this.protection.values,
+      this.protection.targets.filter(target => target.kind === "browser"), async () => {
+        const { data } = await connection.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false }, sessionId);
+        return data;
+      });
     if (typeof data !== "string" || data.length > 4 * 1024 * 1024) throw new Error("MD-2: frame exceeds limit");
     return { generation: this.generation, tab_id: tab.tab_id, mime_type: "image/png", data_base64: data, width: 1280, height: 800 };
   }
@@ -160,19 +193,44 @@ export class KernelBrowserHost {
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
     const id = `host-stream-${randomUUID()}`;
     const stream = { sessionId, tabId: tab.tab_id, latest: null, sequence: 0, expires: Date.now() + 60_000 };
+    const captureProtected = () => {
+      stream.latest ??= this.maskedStreamFrame(stream);
+      if (stream.capturing || this.protection.unknown || Date.now() < (stream.nextCapture ?? 0)) return;
+      stream.capturing = true;
+      stream.nextCapture = Date.now() + 200;
+      const policy = this.protection, generation = this.generation;
+      void this.screenshot(tab).then(frame => {
+        if (this.protection === policy && this.generation === generation && this.streams.get(id) === stream) {
+          stream.latest = { ...frame, sequence: ++stream.sequence };
+        }
+      }).catch(() => {}).finally(() => { stream.capturing = false; });
+    };
     stream.off = connection.subscribe(message => {
       if (message.method !== "Page.screencastFrame" || message.sessionId !== sessionId) return;
       const data = message.params?.data;
       if (typeof data === "string" && data.length <= 4 * 1024 * 1024 && Date.now() <= stream.expires) {
-        stream.latest = { generation: this.generation, tab_id: tab.tab_id, mime_type: "image/jpeg", data_base64: data,
-          width: viewport.css_width, height: viewport.css_height, sequence: ++stream.sequence };
+        const protectedPixels = this.protection.unknown || this.protection.values.length > 0;
+        if (!protectedPixels) {
+          stream.latest = { generation: this.generation, tab_id: tab.tab_id, mime_type: "image/jpeg", data_base64: data,
+            width: viewport.css_width, height: viewport.css_height, sequence: ++stream.sequence };
+        } else {
+          // Raw screencast timestamps cannot bind a masking layout. Use the
+          // same protected screenshot path, triggered by screencast activity.
+          // One capture at a time, at most 5Hz; never queue page frames.
+          captureProtected();
+        }
       }
-      void connection.send("Page.screencastFrameAck", { sessionId: message.params?.sessionId }, sessionId).catch(() => {});
+      // One CDP source per page; subscriber fan-out must not duplicate ACKs.
+      if ([...this.streams].find(([, current]) => current.sessionId === sessionId)?.[0] === id) {
+        void connection.send("Page.screencastFrameAck", { sessionId: message.params?.sessionId }, sessionId).catch(() => {});
+      }
     });
+    const alreadyStreaming = [...this.streams.values()].some(current => current.sessionId === sessionId);
     this.streams.set(id, stream);
     this.armExpiry(id, stream);
-    try { await connection.send("Page.startScreencast", { format: "jpeg", quality: 80, maxWidth: 1280, maxHeight: 800, everyNthFrame: 1 }, sessionId); }
+    try { if (!alreadyStreaming) await connection.send("Page.startScreencast", { format: "jpeg", quality: 80, maxWidth: 1280, maxHeight: 800, everyNthFrame: 1 }, sessionId); }
     catch (error) { clearTimeout(stream.timer); stream.off(); this.streams.delete(id); throw error; }
+    if (this.protection.unknown || this.protection.values.length) captureProtected();
     return { generation: this.generation, subscription_id: id };
   }
   armExpiry(id, stream) {
@@ -193,6 +251,7 @@ export class KernelBrowserHost {
   async request(command) {
     if (command.op === "stop") return this.stop();
     await this.start();
+    if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
     for (const [id, stream] of this.streams) if (Date.now() > stream.expires) await this.removeStream(id);
     if (["start", "state"].includes(command.op)) return this.reconcile();
     if (command.op === "open") return this.open(command.url);
@@ -231,7 +290,26 @@ export class KernelBrowserHost {
     try {
       if (request.method === "health") return { id: request.id, ok: true, result: { state: "ready", process_id: process.pid, diagnostic_code: null } };
       if (request.method === "shutdown") return { id: request.id, ok: true, result: await this.stop() };
-      if (request.method === "host.browser") return { id: request.id, ok: true, result: await this.request(request.params) };
+      if (request.method === "host.protect") return { id: request.id, ok: true, result: await this.protect(request.params) };
+      if (request.method === "host.secret") {
+        await this.start();
+        if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
+        const tab = await this.target(request.params);
+        if (tab.document_id !== request.params.document_id) throw new Error("MD-5: stale secret document");
+        await this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
+          node_ref: request.params.node_ref, action: request.params.action, timeout_ms: 10_000 });
+        await this.save();
+        return { id: request.id, ok: true, result: { inserted: true } };
+      }
+      if (request.method === "host.browser") {
+        const result = await this.request(request.params);
+        // Structured controller observations scrub before compaction; metadata
+        // and other host replies receive the same protection at this boundary.
+        if (!["screenshot", "poll"].includes(request.params?.op)) {
+          return { id: request.id, ok: true, result: redactObservation(result, this.protection.values) };
+        }
+        return { id: request.id, ok: true, result };
+      }
       // Kernel-internal App adapter; no public raw CDP dispatch.
       if (request.method.startsWith("browser.app.")) {
         const { _host_generation: generation, ...params } = request.params ?? {};

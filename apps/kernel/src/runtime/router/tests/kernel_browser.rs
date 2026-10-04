@@ -1,7 +1,7 @@
 //! MD-3/MD-4: focused MCP admission and opt-in real host-browser drill.
 use super::*;
 use crate::local::{KernelBrowserCommand, KernelBrowserInput, KernelBrowserRequest};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 fn run_test(test: fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>) {
     std::thread::Builder::new()
@@ -83,28 +83,33 @@ async fn focus_check() {
         .await
         .unwrap();
     assert!(names(first_token).contains(&"chariox.kernel_browser".into()));
+    assert!(names(first_token).contains(&"chariox.kernel_browser_paste_secret".into()));
     focus(&router, session.id(), second.id()).await;
     assert!(!names(first_token).contains(&"chariox.load_kernel_browser".into()));
-    assert!(
-        router
-            .dispatch_authenticated_runtime_tool_call(
-                first_token,
-                "chariox.kernel_browser",
-                json!({"command":{"op":"stop"}})
-            )
-            .await
-            .is_err()
-    );
-    assert!(
-        router
-            .dispatch_authenticated_runtime_tool_call(
-                second_token,
-                "chariox.kernel_browser",
-                json!({"command":{"op":"stop"}})
-            )
-            .await
-            .is_err()
-    );
+    assert!(router
+        .dispatch_authenticated_runtime_tool_call(
+            first_token,
+            "chariox.kernel_browser",
+            json!({"command":{"op":"stop"}})
+        )
+        .await
+        .is_err());
+    assert!(router
+        .dispatch_authenticated_runtime_tool_call(
+            first_token,
+            "chariox.kernel_browser_paste_secret",
+            json!({})
+        )
+        .await
+        .is_err());
+    assert!(router
+        .dispatch_authenticated_runtime_tool_call(
+            second_token,
+            "chariox.kernel_browser",
+            json!({"command":{"op":"stop"}})
+        )
+        .await
+        .is_err());
     router
         .dispatch_authenticated_runtime_tool_call(
             second_token,
@@ -152,9 +157,20 @@ fn kernel_browser_linux_integration_drill() {
             }
             let root =
                 std::path::PathBuf::from(std::env::var_os("CHARIOX_MD4_DRILL_ROOT").unwrap());
-            std::fs::write(root.join("MD4-PASS.txt"), "MD-4: kernel routing, focused MCP input, PNG, bounded stream, stale refs, browser crash, real kernel process restart and last-tab close passed; dev-stub provider, no model/Cloud/Mac/Vault acceptance.\n").unwrap();
+            std::fs::write(root.join("MD4-PASS.txt"), "MD-4: kernel routing, focused MCP input, PNG, bounded stream, stale refs, browser crash, real kernel process restart and last-tab close passed; MD-5 Vault injection, retired-value scrubbing and protected pixels passed; dev-stub provider, no model/Cloud/Web/TUI acceptance; native platform identified by replay receipt.\n").unwrap();
         }
     }
+}
+
+fn drill_config(home: &std::path::Path) -> DaemonConfig {
+    // MD-4/MD-5: normal product identity persistence, never a handcrafted key.
+    // The replay's clean environment binds this loader to disposable CHARIOX_HOME.
+    let mut config = DaemonConfig::load_from_env();
+    config.provider_process_orphan_ttl_ms = u64::MAX;
+    config.user_config.state.path = Some(home.join("state.db").display().to_string());
+    config.user_config_path = home.join("config.toml");
+    config.user_config.credential_vault.path = home.join("vault/vault.json").display().to_string();
+    config
 }
 
 async fn restart_check() {
@@ -162,9 +178,7 @@ async fn restart_check() {
     let home = std::path::PathBuf::from(std::env::var_os("CHARIOX_HOME").unwrap());
     let restored: Value =
         serde_json::from_slice(&std::fs::read(root.join("MD4-RESTART.json")).unwrap()).unwrap();
-    let mut config = DaemonConfig::for_tests();
-    config.user_config.state.path = Some(home.join("state.db").display().to_string());
-    config.user_config_path = home.join("config.toml");
+    let config = drill_config(&home);
     let router = CommandRouter::with_interactive_capacity(
         Arc::new(Mutex::new(DaemonApp::bootstrap(config).unwrap())),
         4,
@@ -173,13 +187,11 @@ async fn restart_check() {
     let outcome = std::panic::AssertUnwindSafe(async {
         let state = human(&router, KernelBrowserCommand::State).await;
         let id = restored["tab_id"].as_str().unwrap();
-        assert!(
-            state["tabs"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|tab| tab["tab_id"] == id && tab["url"] == restored["url"])
-        );
+        assert!(state["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tab| tab["tab_id"] == id && tab["url"] == restored["url"]));
         let generation = state["generation"].as_u64().unwrap();
         assert!(generation > restored["generation"].as_u64().unwrap());
         human(
@@ -198,12 +210,10 @@ async fn restart_check() {
             },
         )
         .await;
-        assert!(
-            human(&router, KernelBrowserCommand::State).await["tabs"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
+        assert!(human(&router, KernelBrowserCommand::State).await["tabs"]
+            .as_array()
+            .unwrap()
+            .is_empty());
     })
     .catch_unwind()
     .await;
@@ -265,7 +275,7 @@ async fn live_check() {
                         .unwrap();
                     let mut request = [0; 4096];
                     let _ = socket.read(&mut request);
-                    let body = "<!doctype html><title>MD-4 fixture</title><input style='position:absolute;left:20px;top:20px;width:300px;height:40px' oninput='document.querySelector(\"p\").textContent=this.value'><p style='margin-top:100px'>MD-4 ready</p>";
+                    let body = "<!doctype html><title>MD-4 fixture</title><input style='position:absolute;left:20px;top:20px;width:300px;height:40px' oninput='document.querySelector(\"p\").textContent=this.value'><p style='margin-top:100px'>MD-4 ready</p><input id='password' type='password' style='position:absolute;left:20px;top:180px;width:300px;height:40px' oninput='document.querySelector(\"p\").textContent=this.value'>";
                     let _ = write!(
                         socket,
                         "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -277,9 +287,55 @@ async fn live_check() {
             }
         }
     });
-    let mut config = DaemonConfig::for_tests();
-    config.user_config.state.path = Some(home.join("state.db").display().to_string());
-    config.user_config_path = home.join("config.toml");
+    let config = drill_config(&home);
+    std::fs::create_dir_all(home.join("vault")).unwrap();
+    crate::secret::create_chariox_encrypted_vault_for_test(
+        std::path::Path::new(&config.user_config.credential_vault.path),
+        "synthetic-md5-passphrase",
+    )
+    .unwrap();
+    crate::secret::unlock_chariox_encrypted_vault(
+        std::path::Path::new(&config.user_config.credential_vault.path),
+        "synthetic-md5-passphrase",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    crate::credential::CharioxCredentialRegistry::user()
+        .unwrap()
+        .upsert(crate::config::UserCredentialConfig {
+            id: "md5-login".into(),
+            description: None,
+            source: crate::config::UserCredentialSourceConfig::Vault {
+                key: "md5-login".into(),
+            },
+            allowed_hosts: vec!["127.0.0.1".into()],
+            allowed_uses: vec![crate::config::UserCredentialUse::Browser],
+            injection: crate::config::UserCredentialInjectionConfig::Browser,
+            metadata: None,
+        })
+        .unwrap();
+    crate::credential::CharioxCredentialRegistry::user()
+        .unwrap()
+        .upsert(crate::config::UserCredentialConfig {
+            id: "md5-wrong-host".into(),
+            description: None,
+            source: crate::config::UserCredentialSourceConfig::Vault {
+                key: "md5-login".into(),
+            },
+            allowed_hosts: vec!["example.com".into()],
+            allowed_uses: vec![crate::config::UserCredentialUse::Browser],
+            injection: crate::config::UserCredentialInjectionConfig::Browser,
+            metadata: None,
+        })
+        .unwrap();
+    let secret_service = crate::secret::RuntimeSecretService::with_vault_config(
+        vec![],
+        &config.user_config.credential_vault,
+    )
+    .unwrap();
+    secret_service
+        .set_vault_secret("md5-login", "synthetic-md5-protected-value")
+        .unwrap();
     let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new(
@@ -381,6 +437,153 @@ async fn live_check() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         assert!(saw_frame);
+        // MD-5: normal Vault/MCP path, including hostile plaintext echo on input.
+        let observed = human(
+            &router,
+            KernelBrowserCommand::Snapshot {
+                tab_id: id.clone(),
+                generation,
+            },
+        )
+        .await;
+        let node = observed["snapshot"]["dom_nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["attributes"]["id"] == "password")
+            .unwrap();
+        let secret_args = json!({"credential_id":"md5-login", "tab_id":id, "generation":generation, "document_id":observed["snapshot"]["document_id"], "node_ref":node["node_ref"]});
+        // MD-5: reject wrong-host handles and stale/non-password references before input.
+        for (field, value) in [
+            ("credential_id", json!("md5-wrong-host")),
+            ("document_id", json!("stale-document")),
+            (
+                "node_ref",
+                observed["snapshot"]["dom_nodes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|node| {
+                        node["node_name"] == "INPUT" && node["attributes"]["id"] != "password"
+                    })
+                    .unwrap()["node_ref"]
+                    .clone(),
+            ),
+        ] {
+            let mut invalid = secret_args.clone();
+            invalid[field] = value;
+            assert!(
+                router
+                    .dispatch_authenticated_runtime_tool_call(
+                        &token,
+                        "chariox.kernel_browser_paste_secret",
+                        invalid
+                    )
+                    .await
+                    .is_err(),
+                "MD-5: invalid secret target must be refused"
+            );
+        }
+        let paste = router
+            .dispatch_authenticated_runtime_tool_call(
+                &token,
+                "chariox.kernel_browser_paste_secret",
+                secret_args,
+            )
+            .await
+            .unwrap();
+        assert_eq!(paste.payload, json!({"inserted":true}));
+        let protected = human(
+            &router,
+            KernelBrowserCommand::Snapshot {
+                tab_id: id.clone(),
+                generation,
+            },
+        )
+        .await;
+        assert!(
+            !protected
+                .to_string()
+                .contains("synthetic-md5-protected-value"),
+            "MD-5: secret echo must be scrubbed"
+        );
+        assert!(protected.to_string().contains("[redacted]"));
+        let masked = human(
+            &router,
+            KernelBrowserCommand::Screenshot {
+                tab_id: id.clone(),
+                generation,
+            },
+        )
+        .await;
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(masked["data_base64"].as_str().unwrap())
+            .unwrap();
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        std::fs::write(root.join("MD5-masked.png"), png).unwrap();
+        // Delete via the existing product lifecycle. Old page echoes remain scrubbed.
+        router
+            .runtime_state
+            .revoke_vault_observation_values("md5-login")
+            .await
+            .unwrap();
+        secret_service.delete_vault_secret("md5-login").unwrap();
+        let retired = human(
+            &router,
+            KernelBrowserCommand::Snapshot {
+                tab_id: id.clone(),
+                generation,
+            },
+        )
+        .await;
+        assert!(
+            !retired
+                .to_string()
+                .contains("synthetic-md5-protected-value"),
+            "MD-5: retired echoes remain scrubbed"
+        );
+        assert!(retired.to_string().contains("[redacted]"));
+        let protected_stream = human(
+            &router,
+            KernelBrowserCommand::Subscribe {
+                tab_id: id.clone(),
+                generation,
+            },
+        )
+        .await;
+        let protected_id = protected_stream["subscription_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut saw_mask = false;
+        for _ in 0..50 {
+            let polled = human(
+                &router,
+                KernelBrowserCommand::Poll {
+                    subscription_id: protected_id.clone(),
+                    generation,
+                },
+            )
+            .await;
+            if !polled["frame"].is_null() {
+                assert_eq!(polled["frame"]["mime_type"], "image/png");
+                saw_mask = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            saw_mask,
+            "MD-5: protected frame source must produce opaque frames"
+        );
+        human(
+            &router,
+            KernelBrowserCommand::Unsubscribe {
+                subscription_id: protected_id,
+                generation,
+            },
+        )
+        .await;
         // Fault the exact browser selected by this lane-owned profile's singleton PID.
         let profile = router
             .runtime_state
@@ -397,13 +600,11 @@ async fn live_check() {
         tokio::time::sleep(Duration::from_millis(300)).await;
         let recovered = human(&router, KernelBrowserCommand::State).await;
         assert!(recovered["generation"].as_u64().unwrap() > generation);
-        assert!(
-            recovered["tabs"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|tab| tab["tab_id"] == id)
-        );
+        assert!(recovered["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tab| tab["tab_id"] == id));
         let stale = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
             command: KernelBrowserCommand::Screenshot {
                 tab_id: id.clone(),

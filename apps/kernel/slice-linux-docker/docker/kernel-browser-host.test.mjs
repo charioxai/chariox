@@ -1,7 +1,7 @@
 // MD-2/MD-4: focused adapter tests, not native-browser acceptance.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { KernelBrowserHost, navigationUrl } from "./kernel-browser-host.mjs";
@@ -102,6 +102,36 @@ test("MD-2: latest-frame subscription is bounded and invalidated by recovery", (
   chromium.child.exitCode = 1;
   await assert.rejects(host.request({ op: "poll", ...subscription }), /stale/);
 }));
+test("MD-4: reconciliation retries a navigation race without recreating a tab", () => using(async ({ host, sent }) => {
+  await host.request({ op: "open", url: "about:blank" });
+  const reconcile = host.browser.reconcile;
+  const creations = sent.filter(call => call.method === "Target.createTarget").length;
+  let reads = 0;
+  host.browser.reconcile = async (...args) => {
+    if (++reads < 3) throw Object.assign(new Error("changed document"), { code: "stale_document_reference" });
+    return reconcile(...args);
+  };
+  assert.equal((await host.request({ op: "state" })).tabs.length, 1);
+  assert.equal(reads, 3);
+  assert.equal(sent.filter(call => call.method === "Target.createTarget").length, creations);
+  host.browser.reconcile = async () => { throw Object.assign(new Error("unavailable"), { code: "different_error" }); };
+  await assert.rejects(host.request({ op: "state" }), /unavailable/);
+}));
+test("MD-5: multiple subscribers share one CDP source and acknowledgment", () => using(async ({ host, handlers, sent }) => {
+  const opened = await host.request({ op: "open", url: "about:blank" });
+  const binding = { tab_id: opened.tab_id, generation: opened.generation };
+  const first = await host.request({ op: "subscribe", ...binding });
+  const second = await host.request({ op: "subscribe", ...binding });
+  const starts = sent.filter(call => call.method === "Page.startScreencast");
+  assert.equal(starts.length, 1);
+  for (const handler of handlers) handler({ method: "Page.screencastFrame", sessionId: starts[0].session, params: { data: "frame", sessionId: 1 } });
+  assert.equal(sent.filter(call => call.method === "Page.screencastFrameAck").length, 1);
+  for (const subscription of [first, second]) assert.equal((await host.request({ op: "poll", ...subscription })).frame.data_base64, "frame");
+  await host.request({ op: "unsubscribe", ...first });
+  assert(!sent.some(call => call.method === "Page.stopScreencast"));
+  await host.request({ op: "unsubscribe", ...second });
+  assert.equal(sent.filter(call => call.method === "Page.stopScreencast").length, 1);
+}));
 test("MD-2: text input uses isolated focus checks and rejects secret fields", () => using(async ({ host, sent }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
   const binding = { tab_id: opened.tab_id, generation: opened.generation };
@@ -185,6 +215,48 @@ test("human Enter carries Chromium's native text event; key-up never retypes it"
     { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r", unmodifiedText: "\r" },
     { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
   ]);
+}));
+
+test("MD-5: protection flushes old frames and masks new/retired frames across recovery", () => using(async ({ host, handlers, chromium, sent }) => {
+  const opened = await host.request({ op: "open", url: "about:blank" });
+  const subscription = await host.request({ op: "subscribe", tab_id: opened.tab_id, generation: opened.generation });
+  const session = sent.find(call => call.method === "Page.startScreencast").session;
+  const emit = () => { for (const handler of handlers) handler({ method: "Page.screencastFrame", sessionId: session, params: { data: "unsafe-raw-pixels", sessionId: 1 } }); };
+  emit();
+  assert.equal((await host.request({ op: "poll", ...subscription })).frame.data_base64, "unsafe-raw-pixels");
+  const policy = { unknown: false, values: ["synthetic-only"], targets: [] };
+  await host.protect(policy);
+  assert.equal((await host.request({ op: "poll", ...subscription })).frame.mime_type, "image/png");
+  emit();
+  await host.protect(policy); // An unchanged policy must not erase every poll.
+  const protectedFrame = (await host.request({ op: "poll", ...subscription })).frame;
+  assert.equal(protectedFrame.mime_type, "image/png");
+  assert.notEqual(protectedFrame.data_base64, "unsafe-raw-pixels");
+  const capture = await host.request({ op: "screenshot", tab_id: opened.tab_id, generation: opened.generation });
+  assert.equal(capture.data_base64, protectedFrame.data_base64); // unbound mock layout => full mask
+  const second = await host.request({ op: "subscribe", tab_id: opened.tab_id, generation: opened.generation });
+  assert.equal((await host.request({ op: "poll", ...second })).frame.mime_type, "image/png"); // no repaint required
+  chromium.child.exitCode = 1;
+  await host.request({ op: "state" });
+  assert(host.browser.protectedValues.has("synthetic-only"));
+  await assert.rejects(host.request({ op: "poll", ...subscription }), /stale/);
+}));
+
+test("MD-5: unavailable observation policy fences captures and leaves shutdown available", () => using(async ({ host }) => {
+  const opened = await host.request({ op: "open", url: "about:blank" });
+  await host.protect({ unknown: true, values: [], targets: [] });
+  await assert.rejects(host.request({ op: "screenshot", tab_id: opened.tab_id, generation: opened.generation }), /registry/);
+  assert.equal((await host.request({ op: "stop" })).state, "stopped");
+}));
+test("MD-5: metadata scrubs echoes and never persists a secret-bearing restore URL", () => using(async ({ host }, root) => {
+  const opened = await host.request({ op: "open", url: "https://example.com/?q=synthetic-protected-value" });
+  await host.protect({ unknown: false, values: ["synthetic-protected-value"], targets: [] });
+  const state = await host.request({ op: "state" });
+  assert(!JSON.stringify(state).includes("synthetic-protected-value"));
+  const saved = await readFile(path.join(root, "tabs.json"), "utf8");
+  assert(!saved.includes("synthetic-protected-value"));
+  assert.equal(JSON.parse(saved).tabs[0].url, "about:blank");
+  assert.equal(JSON.parse(saved).tabs[0].tab_id, opened.tab_id);
 }));
 
  test("MD-2: native Mac discovery and launch are independent of X11", () => {

@@ -3,7 +3,6 @@ use super::browser_controller_process::{
     BrowserControllerProcessBackend, BrowserControllerProcessState,
     BrowserControllerProcessStdioBackend,
 };
-use crate::local::KernelBrowserCommand;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -32,8 +31,26 @@ impl KernelBrowserHost {
         }
     }
     pub(crate) fn profile_root(&self, user: &str) -> PathBuf {
-        self.root
-            .join(format!("{:x}", Sha256::digest(user.as_bytes())))
+        self.root.join(Self::profile_key(user))
+    }
+    pub(crate) fn profile_key(user: &str) -> String {
+        format!("{:x}", Sha256::digest(user.as_bytes()))
+    }
+    pub(crate) fn profile_keys(&self) -> Result<Vec<String>, String> {
+        let entries = match std::fs::read_dir(&self.root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(_) => return Err("MD-5: cannot enumerate browser profiles".into()),
+        };
+        let mut keys = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|_| "MD-5: cannot enumerate browser profiles")?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                keys.push(name);
+            }
+        }
+        Ok(keys)
     }
     pub(crate) fn set_focus(&self, user: &str, agent: Option<&str>) {
         let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
@@ -130,18 +147,13 @@ impl KernelBrowserHost {
             Ok(())
         }
     }
-    pub(crate) fn request(
-        &self,
-        user: &str,
-        command: KernelBrowserCommand,
-    ) -> Result<Value, String> {
-        self.request_as(user, None, command)
-    }
-    pub(crate) fn request_as(
+    pub(crate) fn protected_request(
         &self,
         user: &str,
         agent: Option<&str>,
-        command: KernelBrowserCommand,
+        method: &str,
+        params: Value,
+        policy: Value,
     ) -> Result<Value, String> {
         if let Some(agent) = agent {
             let state = self.inner.lock().map_err(|_| "MD-3: focus lock poisoned")?;
@@ -156,38 +168,15 @@ impl KernelBrowserHost {
             let state = self.inner.lock().map_err(|_| "MD-3: focus lock poisoned")?;
             require_loaded(&state, user, agent)?;
         }
-        if matches!(command, KernelBrowserCommand::Stop) {
+        if method == "host.browser" && params["op"] == "stop" {
             backend.stop()?;
             return Ok(serde_json::json!({ "state": "stopped", "tabs": [] }));
         }
         Self::ensure_ready(&mut backend)?;
-        let mut params =
-            serde_json::to_value(command).map_err(|_| "MD-2: invalid browser command")?;
-        if agent.is_some() {
-            // Browser input must not impersonate the human App channel. The
-            // focused App MCP adapter supplies a separate agent actor.
-            params["_agent_input"] = true.into();
-        }
-        backend.host_request("host.browser", params)
-    }
-    /// MD-2 appviews lane seam: trusted App requests use the same user controller.
-    pub(crate) fn app_view(
-        &self,
-        user: &str,
-        request: &super::browser_controller_app_view::BrowserAppViewRequest,
-        generation: Option<u64>,
-    ) -> Result<Value, String> {
-        let browser = self.backend(user)?;
-        let mut backend = browser
-            .lock()
-            .map_err(|_| "MD-2: browser operation lock poisoned")?;
-        self.require_running()?;
-        Self::ensure_ready(&mut backend)?;
-        let mut params = request.params();
-        if let Some(generation) = generation {
-            params["_host_generation"] = generation.into();
-        }
-        backend.host_request(request.method(), params)
+        let mut params = params;
+        if agent.is_some() { params["_agent_input"] = true.into(); }
+        backend.host_request("host.protect", policy)?;
+        backend.host_request(method, params)
     }
     pub(crate) fn shutdown(&self) -> Result<(), String> {
         let browsers = {
@@ -240,7 +229,7 @@ mod tests {
         let retained = host.clone();
         host.shutdown().unwrap();
         assert!(retained
-            .request("alice", KernelBrowserCommand::Start)
+            .protected_request("alice", None, "host.browser", serde_json::json!({"op":"start"}), Value::Null)
             .is_err());
     }
     #[test]
@@ -266,7 +255,13 @@ mod tests {
         host.set_focus("a", Some("agent2"));
         assert!(!host.is_loaded("a", "agent1"));
         assert!(host
-            .request_as("a", Some("agent1"), KernelBrowserCommand::State)
+            .protected_request(
+                "a",
+                Some("agent1"),
+                "host.browser",
+                serde_json::json!({"op":"state"}),
+                serde_json::Value::Null
+            )
             .is_err());
         assert!(!host.is_focused("b", "agent2"));
         host.set_focus("a", Some("agent1"));
