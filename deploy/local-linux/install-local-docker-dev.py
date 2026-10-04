@@ -112,8 +112,10 @@ for name, data in files:
     directory(target.parent, 0o755)
     publish(target, data, 0o555 if name.endswith('.sh') or name == '.local-public-tools/node' else 0o444)
 publish(root / 'source-manifest.json', manifest, 0o444)
-# Unique tag and iid receipt. No profile, credential or private state enters context.
-with tempfile.TemporaryDirectory(prefix='chariox-local-broker-build-', dir='/run') as scratch:
+# Buildx must execute here; /run is noexec on stock Debian cloud images.
+# Keep its private config beside the root-controlled public source, outside
+# the build context. No profile, credential or private state enters context.
+with tempfile.TemporaryDirectory(prefix='chariox-local-broker-build-', dir=root.parent) as scratch:
     iid = pathlib.Path(scratch) / 'image.id'
     config = pathlib.Path(scratch) / 'docker-config'
     plugins = config / 'cli-plugins'; plugins.mkdir(parents=True, mode=0o700)
