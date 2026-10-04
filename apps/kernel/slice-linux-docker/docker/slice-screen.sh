@@ -956,6 +956,8 @@ case "${1:-status}" in
   computer-key-stdin|computer_key_stdin) shift; computer_key_stdin "$@" ;;
   computer-clipboard-write-stdin|computer_clipboard_write_stdin) computer_clipboard_write_stdin ;;
   computer-clipboard-read|computer_clipboard_read) computer_clipboard_read ;;
+  computer-key-hold-stdin) require_screen_available; /opt/chariox-selkies/bin/python "${BASH_SOURCE[0]%/*}/slice-keyboard.py" hold-key "$2" ;;
+  pointer-hold) require_screen_available; /opt/chariox-selkies/bin/python "${BASH_SOURCE[0]%/*}/slice-keyboard.py" hold-button "$4" "$5" "$2" "$3" ;;
   computer-input-reset|computer_input_reset) computer_input_reset ;;
   key) shift; key "$@" ;;
   clipboard-get|clipboard_get) clipboard_get ;;
@@ -981,7 +983,7 @@ case "${1:-status}" in
   open-url|open_url) shift; open_url "$@" ;;
   *)
     cat >&2 <<EOF
-Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|pointer-click|pointer-drag|pointer-scroll|drag|move|scroll|type|computer-type-stdin|key|computer-key-stdin|computer-clipboard-write-stdin|computer-clipboard-read|computer-input-reset|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|secret-paste-submit-stdin|computer-secret-paste-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-dialog|browser-text|browser-wait-text|browser-wait-selector|browser-wait-idle|ocr|find-text|open-url
+Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|pointer-click|pointer-drag|pointer-scroll|drag|move|scroll|type|computer-type-stdin|key|computer-key-stdin|computer-key-hold-stdin|pointer-hold|computer-clipboard-write-stdin|computer-clipboard-read|computer-input-reset|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|secret-paste-submit-stdin|computer-secret-paste-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-dialog|browser-text|browser-wait-text|browser-wait-selector|browser-wait-idle|ocr|find-text|open-url
 EOF
     exit 2
     ;;

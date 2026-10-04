@@ -51,14 +51,14 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_MOUSE_TOOL.to_string(),
-            description: "Control the shared Chariox Computer pointer through the Room action authority. Actions: move, click, double_click, scroll, drag. Room scroll requires x and y; amount is vertical steps and horizontal_steps is horizontal steps.".to_string(),
+            description: "Control the shared Chariox Computer pointer through the Room action authority. Actions: move, click, double_click, scroll, drag, hold. Hold requires x, y and duration_ms (1-10000 ms) and releases automatically; cancel through the Room Action. Room scroll requires x and y; amount is vertical steps and horizontal_steps is horizontal steps.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["action"],
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["move", "click", "double_click", "scroll", "drag"]
+                        "enum": ["move", "click", "double_click", "scroll", "drag", "hold"]
                     },
                     "x": {"type": "integer"},
                     "y": {"type": "integer"},
@@ -66,6 +66,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     "to_y": {"type": "integer"},
                     "amount": {"type": "integer"},
                     "horizontal_steps": {"type": "integer"},
+                    "duration_ms": {"type": "integer", "minimum": 1, "maximum": 10000},
                     "button": {"type": "string", "enum": ["left", "middle", "right"]}
                 },
                 "additionalProperties": false
@@ -73,17 +74,18 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_KEYBOARD_TOOL.to_string(),
-            description: "Control the shared Chariox Computer keyboard through the Room action authority. Use action=type with text or action=key with an xdotool-compatible key name and optional repeat count.".to_string(),
+            description: "Control the shared Chariox Computer keyboard through the Room action authority. Use action=type with text or action=key with an xdotool-compatible key name and optional repeat count. Use action=hold with key and duration_ms (1-10000 ms) for an explicit press/hold/release within one Room Action; cancellation releases input. Hold keys must be base-layout key names; shifted keys need an explicit shift chord.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["action"],
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["type", "key"]
+                        "enum": ["type", "key", "hold"]
                     },
                     "text": {"type": "string"},
                     "key": {"type": "string"},
+                    "duration_ms": {"type": "integer", "minimum": 1, "maximum": 10000},
                     "repeat": {"type": "integer", "minimum": 1, "maximum": 32}
                 },
                 "additionalProperties": false

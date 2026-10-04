@@ -76,6 +76,18 @@ export type RoomEnvironmentInputTarget =
 
 export type RoomEnvironmentActionArguments =
   | {
+      kind: "keyboard_hold"
+      duration_ms: number
+    }
+  | {
+      kind: "pointer_hold"
+      x: number
+      y: number
+      button: "left" | "middle" | "right"
+      duration_ms: number
+      viewport_revision: number
+    }
+  | {
       kind: "pointer_click"
       x: number
       y: number

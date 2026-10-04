@@ -335,6 +335,10 @@ impl KernelRuntimeState {
                 } => Duration::from_millis(
                     crate::runtime::computer_input_action::keyboard_text_timeout_ms(input.as_str()) + 10_000,
                 ),
+                Command::ComputerInput { action:
+                    crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardHold { duration_ms, .. }
+                    | crate::transport::room_browser_controller::RoomComputerInputAction::PointerHold { duration_ms, .. }, ..
+                } => Duration::from_millis(u64::from(*duration_ms) + 15_000),
                 _ => Duration::from_secs(15),
             };
             self.send_room_slice_peer_request(&config, target, request(command), timeout)
@@ -659,6 +663,10 @@ async fn execute_local(
                     repeat,
                 } => {
                     super::tool_dispatch::run_room_keyboard_key(input, repeat, cancellation).await
+                }
+                action @ (crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardHold { .. }
+                    | crate::transport::room_browser_controller::RoomComputerInputAction::PointerHold { .. }) => {
+                    super::tool_dispatch::run_room_computer_hold(action, desktop_pixel_width, desktop_pixel_height, cancellation).await
                 }
                 crate::transport::room_browser_controller::RoomComputerInputAction::ClipboardWrite {
                     text,

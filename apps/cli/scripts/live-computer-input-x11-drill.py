@@ -255,6 +255,76 @@ def main():
             return {"selectedCharacters": len(selected), "copiedSelection": True, "nativeGeometryRetained": True, "arrowRepeats": 3}
         case("pointer.text-selection-key-repeat", selection_check)
 
+        def native_held():
+            return json.loads(execute(PYTHON, "-c", "from selkies.Xlib import display; import json; d=display.Display(); print(json.dumps({'keys':sum(n.bit_count() for n in d.query_keymap()),'buttons':d.screen().root.query_pointer().mask & 7936})); d.close()"))
+
+        def hold_check(kind):
+            prepare()
+            focus = json.loads(execute(PYTHON, "/opt/computer-source/slice-keyboard.py", "secret-target"))
+            before = len(receipt()["value"]["events"])
+            if kind == "key":
+                screen("computer-key-hold-stdin", 750, stdin=b"shift+F8")
+                down, up, field, value = "keydown", "keyup", "key", "F8"
+            else:
+                screen("pointer-hold", *point(100, 280), "left", 750)
+                down, up, field, value = "mousedown", "mouseup", "button", 0
+            events = receipt()["value"]["events"][before:]
+            presses = [e for e in events if e["kind"] == down and e.get(field) == value and not e.get("repeat")]
+            releases = [e for e in events if e["kind"] == up and e.get(field) == value]
+            assert len(presses) == len(releases) == 1, "hold must acknowledge one initial press and release"
+            elapsed = releases[0]["at"] - presses[0]["at"]
+            assert elapsed >= 650, "hold released before requested duration"
+            assert all(e["trusted"] for e in presses + releases), "hold input was not physical"
+            assert native_held() == {"keys": 0, "buttons": 0}, "hold left native input pressed"
+            if kind == "key":
+                assert json.loads(execute(PYTHON, "/opt/computer-source/slice-keyboard.py", "secret-target")) == focus, "keyboard hold changed native focus"
+            return {"initialPresses": 1, "releases": 1, "durationMs": elapsed, "heldAfter": native_held(), "trusted": True}
+        case("keyboard.hold-release", lambda: hold_check("key"))
+        case("pointer.hold-release", lambda: hold_check("button"))
+
+        def hold_cancel_check(signum):
+            prepare()
+            code = "import os; os.getpgrp()==os.getpid() or os.setsid(); open('" + ROOT + "/hold-pgid','w').write(str(os.getpid())); os.execv('/bin/bash',['bash','/opt/computer-source/slice-screen.sh','computer-key-hold-stdin','10000'])"
+            result = []
+            def held():
+                try:
+                    execute(PYTHON, "-c", code, stdin=b"shift+F8", accepted=(0, 137, 143), timeout=20)
+                    result.append(True)
+                except Exception as error:
+                    result.append(error)
+            worker = threading.Thread(target=held)
+            before = len(receipt()["value"]["events"])
+            worker.start()
+            wait(lambda: native_held()["keys"] == 2)
+            execute(PYTHON, "-c", "import os,signal; pid=int(open('" + ROOT + "/hold-pgid').read()); assert os.getpgid(pid)==pid; os.killpg(pid," + str(signum) + ")")
+            worker.join(10)
+            assert not worker.is_alive() and result == [True], "interrupted hold did not settle"
+            if signum == signal.SIGKILL:
+                # Existing kernel Action cancellation seam resets after process-group settlement.
+                screen("computer-input-reset")
+            wait(lambda: native_held() == {"keys": 0, "buttons": 0})
+            events = receipt()["value"]["events"][before:]
+            assert any(e["kind"] == "keyup" and e["key"] == "F8" and e["trusted"] for e in events), "cancel release acknowledgement missing"
+            time.sleep(.2)
+            assert native_held() == {"keys": 0, "buttons": 0}, "cancelled hold pressed input again"
+            return {"signal": int(signum), "released": True, "resetAfterKill": signum == signal.SIGKILL}
+        case("keyboard.hold-interrupt-release", lambda: hold_cancel_check(signal.SIGTERM))
+        case("keyboard.hold-cancel-reset", lambda: hold_cancel_check(signal.SIGKILL))
+
+        def rejected_hold_check():
+            for duration in [0, 10001]:
+                screen("computer-key-hold-stdin", duration, stdin=b"shift+F8", accepted=(1,))
+            screen("computer-key-hold-stdin", 100, stdin=b"NoSuchFixtureKey", accepted=(1,))
+            execute("xdotool", "keydown", "Shift_L")
+            before = native_held()
+            try:
+                screen("computer-key-hold-stdin", 100, stdin=b"F8", accepted=(1,))
+                assert native_held() == before, "failed hold released pre-existing foreign input"
+            finally:
+                screen("computer-input-reset")
+            return {"durationBounds": True, "unknownKeyRejected": True, "foreignHoldPreserved": True}
+        case("keyboard.hold-rejections", rejected_hold_check)
+
         def cancellation_check():
             prepare()
             # Kernel cancellation kills the owned process group and resets input.
@@ -322,6 +392,10 @@ def main():
             before = json.loads(execute(PYTHON, "/opt/computer-source/slice-keyboard.py", "secret-target"))
             text = "Editor Grüße 世界\nsecond line\n"
             screen("computer-type-stdin", stdin=text.encode())
+            screen("computer-key-hold-stdin", 750, stdin=b"shift+Left")
+            screen("computer-key-stdin", 1, stdin=b"ctrl+c")
+            assert screen("computer-clipboard-read").decode(), "editor hold did not create a physical selection"
+            assert native_held() == {"keys": 0, "buttons": 0}, "editor hold left native input pressed"
             screen("computer-key-stdin", 1, stdin=b"ctrl+s")
             wait(lambda: execute("cat", f"{ROOT}/document.txt").decode() == text)
             screen("protected-screenshot", f"{ROOT}/editor.png", stdin=b'{"unknown":false,"targets":[],"values":[]}')
@@ -333,7 +407,7 @@ def main():
             docker("cp", f"{name}:{ROOT}/editor.png", str(evidence / "editor.png"))
             return {"unicodeSave": True, "selectionCopy": True, "focusRetained": True}
         case("desktop.editor", editor_check)
-        report["gatesNotEstablished"] = ["IME preedit/composition", "public hold/release action (absent from G2 contract)",
+        report["gatesNotEstablished"] = ["IME preedit/composition", "live public Room hold/takeover (source tests separate from this helper run)",
             "human clipboard through Web transport", "Room/host-browser surface identity", "official provider model-visible image",
             "Web/local TUI/remote TUI", "signed ordinary/managed comparison", "Vault secret restrictions"]
     except Exception as error:

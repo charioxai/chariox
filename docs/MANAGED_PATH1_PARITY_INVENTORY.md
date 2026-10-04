@@ -1,5 +1,28 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 bounded Computer hold continuation, b204 (2026-10-04)
+
+Coordinator-allocated local protocol421 adds keyboard and pointer holds through
+existing human and provider Room input admission. Shared validation, redacted
+Action arguments and idempotency, cancellation, bound-worker execution and
+native release remain below clients; no managed-placement selector is added.
+`runtime/computer_input_action.rs` owns validation/history metadata;
+`runtime/state/tool_dispatch/slice/computer_hold.rs` adapts the physical helper;
+`slice-keyboard.py` owns native press/hold/release without refocusing or borrowing
+Unicode overlays. The relay envelope remains70 and old Computer enums reject
+unknown hold variants. Coordinator review of aggregate peer numbering remains
+pending; no peer number was chosen by this lane.
+
+A hold reserves desktop input until bounded release or cancellation. It does
+not add persistent per-actor down/up state across Actions. Kernel tests exercise
+the existing takeover, membership, generation and idempotency seams with fake
+native helpers; Xorg/Xvfb fixtures acknowledge physical timing, release and
+Mousepad focus. These proofs remain separate from actual official-provider MCP
+pixels, multidomain host-browser surfaces, live Web/TUI, IME, human clipboard,
+Vault, signed image and ordinary-versus-managed acceptance. Exact source,
+commands, exits, resources and cleanup are retained under the lane's external
+`b204/hold421/` evidence. No MP item closes or gains independent disposition.
+
 ## MP-08 / MP-10 / MP-11 shared Computer helper candidate, b204 (2026-10-04)
 
 Based on G2 `9334141d420f8a32393f206102c5b8b4a1b0b609`, the native

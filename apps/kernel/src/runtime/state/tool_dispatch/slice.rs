@@ -5,6 +5,8 @@ use wait_timeout::ChildExt;
 use crate::error::DaemonError;
 use crate::runtime::state::KernelRuntimeState;
 
+mod computer_hold;
+pub(crate) use computer_hold::run_room_computer_hold;
 mod computer_secret;
 mod controller_browser;
 mod controller_browser_compatibility;
@@ -1666,6 +1668,7 @@ mod tests {
     #[test]
     fn slice_mouse_args_map_to_screen_script_commands() {
         let args = crate::transport::runtime_tools::SliceMouseArgs {
+            duration_ms: None,
             action: "drag".to_string(),
             x: Some(10),
             y: Some(20),
@@ -1691,6 +1694,7 @@ mod tests {
     #[test]
     fn slice_keyboard_args_require_text_for_type() {
         let args = crate::transport::runtime_tools::SliceKeyboardArgs {
+            duration_ms: None,
             action: "type".to_string(),
             text: None,
             key: None,

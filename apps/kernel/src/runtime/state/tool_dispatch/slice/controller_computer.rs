@@ -77,6 +77,12 @@ fn room_computer_mouse_action(
 ) -> Result<RoomComputerInputAction, DaemonError> {
     let button = room_computer_pointer_button(args.button.as_deref())?;
     match args.action.as_str() {
+        "hold" => Ok(RoomComputerInputAction::PointerHold {
+            x: coordinate(args.x, "x")?,
+            y: coordinate(args.y, "y")?,
+            button,
+            duration_ms: required_duration(args.duration_ms)?,
+        }),
         "move" => Ok(RoomComputerInputAction::PointerMove {
             x: coordinate(args.x, "x")?,
             y: coordinate(args.y, "y")?,
@@ -123,6 +129,18 @@ fn room_computer_keyboard_action(
     args: SliceKeyboardArgs,
 ) -> Result<RoomComputerInputAction, DaemonError> {
     match args.action.as_str() {
+        "hold" => {
+            if args.repeat.is_some() || args.text.is_some() {
+                return Err(computer_tool_error(
+                    "invalid_hold",
+                    "hold accepts key and duration_ms only".into(),
+                ));
+            }
+            Ok(RoomComputerInputAction::KeyboardHold {
+                input: RoomComputerKeyboardInput::new(required_text(args.key, "key")?),
+                duration_ms: required_duration(args.duration_ms)?,
+            })
+        }
         "type" => Ok(RoomComputerInputAction::KeyboardText {
             input: RoomComputerKeyboardInput::new(required_text(args.text, "text")?),
         }),
@@ -141,6 +159,19 @@ fn room_computer_clipboard_write_action(args: SliceClipboardWriteArgs) -> RoomCo
     RoomComputerInputAction::ClipboardWrite {
         text: RoomComputerClipboardText::from_zeroizing(args.into_zeroizing()),
     }
+}
+
+fn required_duration(value: Option<u32>) -> Result<u32, DaemonError> {
+    let value = value.ok_or_else(|| {
+        computer_tool_error("missing_duration", "hold requires duration_ms".into())
+    })?;
+    crate::runtime::computer_input_action::validate_hold_duration(value).map_err(|error| {
+        computer_tool_error(
+            error.code(),
+            "hold duration must be between 1 and 10000 ms".into(),
+        )
+    })?;
+    Ok(value)
 }
 
 fn coordinate(value: Option<i64>, field: &'static str) -> Result<u32, DaemonError> {
@@ -220,6 +251,7 @@ mod tests {
     fn mouse_adapter_preserves_buttons_scroll_axes_and_coordinates() {
         assert_eq!(
             room_computer_mouse_action(SliceMouseArgs {
+                duration_ms: None,
                 action: "scroll".to_string(),
                 x: Some(640),
                 y: Some(400),
@@ -238,6 +270,7 @@ mod tests {
             }
         );
         assert!(room_computer_mouse_action(SliceMouseArgs {
+            duration_ms: None,
             action: "click".to_string(),
             x: Some(-1),
             y: Some(0),
@@ -254,6 +287,7 @@ mod tests {
     fn mouse_adapter_preserves_the_legacy_default_scroll_step() {
         assert_eq!(
             room_computer_mouse_action(SliceMouseArgs {
+                duration_ms: None,
                 action: "scroll".to_string(),
                 x: Some(640),
                 y: Some(400),
@@ -271,5 +305,44 @@ mod tests {
                 vertical_steps: 1,
             }
         );
+    }
+    #[test]
+    fn mp08_mp10_mp11_provider_hold_requires_an_explicit_bounded_duration() {
+        for wire in [
+            serde_json::json!({"action":"hold", "key":"shift+Left", "duration_ms":750}),
+            serde_json::json!({"action":"hold", "x":12, "y":24, "button":"right", "duration_ms":750}),
+        ] {
+            let action = if wire.get("key").is_some() {
+                room_computer_keyboard_action(serde_json::from_value(wire).unwrap()).unwrap()
+            } else {
+                room_computer_mouse_action(serde_json::from_value(wire).unwrap()).unwrap()
+            };
+            assert_eq!(
+                crate::runtime::computer_input_action::computer_input_action_metadata(&action, 1)
+                    .arguments
+                    .unwrap(),
+                match action {
+                    RoomComputerInputAction::KeyboardHold { .. } =>
+                        crate::session::EnvironmentActionArguments::KeyboardHold {
+                            duration_ms: 750
+                        },
+                    _ => crate::session::EnvironmentActionArguments::PointerHold {
+                        x: 12,
+                        y: 24,
+                        button: crate::session::EnvironmentPointerButton::Right,
+                        duration_ms: 750,
+                        viewport_revision: 1
+                    },
+                }
+            );
+        }
+        for wire in [
+            serde_json::json!({"action":"hold", "key":"Left"}),
+            serde_json::json!({"action":"hold", "key":"Left", "duration_ms":0}),
+            serde_json::json!({"action":"hold", "key":"Left", "duration_ms":10001}),
+            serde_json::json!({"action":"hold", "key":"Left", "duration_ms":10, "repeat":1}),
+        ] {
+            assert!(room_computer_keyboard_action(serde_json::from_value(wire).unwrap()).is_err());
+        }
     }
 }
