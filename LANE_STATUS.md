@@ -1,3 +1,13 @@
+# MD-DISPLAY-02 Phase 2 — native 4:4:4 ladder ACTIVE
+
+2026-10-05 — Browser encoder rejects 4:4:4 but browser decoder accepts it. Native
+PyAV/libx264rgb smoke at 2 Mbps: docs 51.0 dB / 106 ms median, media frozen
+71.7 dB / 181 ms; not acceptance. Explicit GBR/full-range/sRGB metadata fixes
+a retained pink-background RED frame. Full 0.5/1/2/4/8 Mbps ladder and public
+scroll next. RGB PNG remains exact but dense public scrolling is slow.
+MD-DISPLAY-03 untouched baseline settings/actual bytes recorded.
+MD-DISPLAY-04 seam proposal and owner questions remain review work.
+
 # MD-DISPLAY Phase 2 — codec ladder DONE; exact RGB validation ACTIVE
 
 2026-10-04 — MD-DISPLAY-02/03: 105 cells at clean `0a92ef8d9` (2,100 fixture input trials), one Selkies 2 Mbps form cell RED at measurement-stage decoder backlog. Kept untouched baseline and every target/actual bitrate. All 75 portable-video cells converge to exact RGB with paced settled tiles, but unrefined text still trails Selkies. Capture-only PNG pairs are exact. Browser-native PNG diff prototype improves text median from 188 to 98 ms; dirty-source smoke/no-op correction is diagnostic, not acceptance. Final exact RGB, hybrid and corrected baseline runs next. MD-DISPLAY-04 API proposal pending owner decision; no production protocol changes.

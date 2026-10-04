@@ -182,3 +182,31 @@ video curves retain their original pre-refinement score. Media frame dropping an
 scroll/large-region bandwidth are separate from settled pixel fidelity. Exact
 fixture pixels alone do not establish that moving media beats Selkies at the same
 latency, that this obeys a WAN hard cap, or that any authenticated site is safe.
+
+## MD-DISPLAY-02 native RGB H.264 profile probe
+
+The WebCodecs encoder rejects AVC High 4:4:4 here; the decoder accepts it.
+`native-encoder.py` uses PyAV 16.0.1 / Pillow 11.3.0, software `libx264rgb`,
+RGB24, five threads, ultrafast/zerolatency, CRF18 plus a 2-second VBV at the
+stated target. This is quality-driven constrained VBR, not CBR or an application
+byte cap. Full-range GBR/sRGB encoder VUI and decoder colour metadata are
+explicit: default decoder conversion produced a pink-background defect.
+Supported decoder config alone does not prove correct decoded pixels.
+
+Install these pinned binary wheels in a lane-owned external `MD_PY_TOOLS`
+directory using pip's `--target`; never use a provider profile or repository.
+The default is `/root/.chariox/dev/browser-resume-20260930/agents/display/tools-py`.
+Then run sequentially:
+
+```sh
+MD_MODES=native MD_NATIVE_CRF=18 MD_BITRATE=2000000 MD_PUBLIC=native MD_OUTPUT=/root/.codex/evidence/browser-resume-20260930/display/native-2m node experiments/multidomain-display/run.mjs
+```
+
+Repeat `MD_BITRATE` at 500000/1000000/2000000/4000000/8000000 for the ladder.
+`MD_FRAME_METRICS=1` adds timestamp-paired moving-frame PNG diagnostics; it also
+adds readback overhead and should be a separate run. Local PNG→Python base64
+IPC is a prototype adapter; it does not cross the measured WebSocket. Codec
+packets are forwarded to the same browser decoder/latency/pixel harness.
+The worker is reset per document and killed in `finally`; sampled owned CPU/RSS
+includes it. Mac/Windows software portability is a proposed path, not tested;
+this does not establish hardware encoder 4:4:4 support.
