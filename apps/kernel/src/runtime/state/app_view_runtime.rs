@@ -132,6 +132,7 @@ impl KernelRuntimeState {
             session_id,
             &opened.target_id,
             AppViewBinding {
+                logical_tab: None,
                 owner: owner.clone(),
                 installation: installation.to_owned(),
                 generation,
@@ -161,6 +162,7 @@ impl KernelRuntimeState {
         let _ = self
             .reconcile_browser_controller_environment(session_id)
             .await;
+        self.remember_app_logical_tabs(session_id, &views);
         let bound_agent_id = self.foreground_app(session_id, &opened.target_id).await;
         Ok(LocalDaemonResponse::AppViewOpened {
             installation_id: installation.to_owned(),
@@ -220,14 +222,16 @@ impl KernelRuntimeState {
         let views = self.app_control().views().clone();
         let mut failures = 0;
         let mut polls = super::app_view_poll::AppViewPoll::new();
+        let mut identity_probe_after = tokio::time::Instant::now();
         while views.keep_pumping(&session_id) {
             polls.tick().await;
             if !views.cold_start_views(&session_id).is_empty() {
-                let Some(slice) = self.owned.slice_store.environment_slice(&session_id) else {
-                    views.forget_session(&session_id);
-                    continue;
-                };
-                if slice.status != crate::slice::SliceStatus::Running {
+                if cold_restore_waiting_for_slice(
+                    self.owned
+                        .slice_store
+                        .environment_slice(&session_id)
+                        .map(|slice| slice.status),
+                ) {
                     // An explicit stop retains intent while the worker is down.
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     continue;
@@ -258,6 +262,13 @@ impl KernelRuntimeState {
                     polls.failed();
                     continue;
                 }
+                Err(error) if browser_recovery_downtime(&error.to_string()) => {
+                    // Positive browser/controller loss ends old document
+                    // authority but retains the user's open-view intent.
+                    views.suspend_for_cold_start(&session_id);
+                    polls.failed();
+                    continue;
+                }
                 Err(_) => {
                     failures += 1;
                     if failures >= MAX_POLL_FAILURES {
@@ -269,10 +280,15 @@ impl KernelRuntimeState {
             };
             failures = 0;
             polls.observed_calls(!batch.calls.is_empty());
-            if let Some(open) = &batch.open_targets {
-                views.retain_open(&session_id, open, polled_up_to);
-                views.set_open_tabs(&session_id, open.len());
-            }
+            retain_app_poll_targets(
+                &views,
+                &session_id,
+                &batch,
+                polled_up_to,
+                &mut identity_probe_after,
+                self.reconcile_browser_controller_environment(&session_id),
+            )
+            .await;
             self.reload_updated_app_views(&session_id, &views);
             // App Tabs are always marked; an older controller, which does not
             // lay pages out beside a panel, gets no panel.
@@ -343,6 +359,20 @@ impl KernelRuntimeState {
         session: &str,
         binding: &AppViewBinding,
     ) -> Result<(), ColdAppRestoreError> {
+        // A local Room's explicit Stop must win over pending recovery intent.
+        // Slice stops retain their existing intent behind the slice status gate.
+        if self.owned.slice_store.environment_slice(session).is_none()
+            && self.room_environment_snapshot(session).is_ok_and(|room| {
+                matches!(
+                    room.lifecycle,
+                    crate::session::EnvironmentLifecycle::Stopped
+                        | crate::session::EnvironmentLifecycle::Stopping
+                        | crate::session::EnvironmentLifecycle::Failed
+                )
+            })
+        {
+            return Err(AppRequestErrorCode::NotFound.into());
+        }
         // Acquire before reading assets: a Running slice can still be held by
         // slice.start while its attached agents relaunch. Admission refusals
         // are downtime, and spend neither restore nor polling failure budgets.
@@ -389,6 +419,15 @@ impl KernelRuntimeState {
         if let Some(page) = page {
             views.sent_page(session, &opened.target_id, page);
         }
+        // Reattach before publishing this target as a bound App view. A poll
+        // must never remember a temporary restored target's newly allocated Tab.
+        if let Some(tab) = &binding.logical_tab {
+            self.owned
+                .session_store
+                .write()
+                .restore_room_environment_app_tab(session, tab, &opened.target_id)
+                .map_err(|_| ColdAppRestoreError::Failed(AppRequestErrorCode::Conflict))?;
+        }
         views.register(
             session,
             &opened.target_id,
@@ -415,6 +454,26 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    fn remember_app_logical_tabs(
+        &self,
+        session_id: &str,
+        views: &crate::runtime::app_views::AppViews,
+    ) {
+        // Remember the home Tab only after projection, before any recovery
+        // detaches the physical target. Polls may refresh document revisions.
+        if let Ok(environment) = self.room_environment_snapshot(session_id) {
+            for target in views.layouts(session_id).keys() {
+                if let Ok(Some(tab_id)) =
+                    self.room_environment_tab_id_for_controller_target(session_id, target)
+                {
+                    if let Some(tab) = environment.tabs.iter().find(|tab| tab.tab_id == tab_id) {
+                        views.remember_logical_tab(session_id, target, tab.clone());
+                    }
+                }
+            }
+        }
+    }
+
     /// Marks the Room's App view Tabs. The Room draws each one's panel beside
     /// the App page, showing the session's focus agent.
     ///
@@ -431,6 +490,7 @@ impl KernelRuntimeState {
         else {
             return;
         };
+        self.remember_app_logical_tabs(session_id, views);
         if !app_panels {
             return;
         }
@@ -654,6 +714,7 @@ impl KernelRuntimeState {
             session_id,
             target_id,
             AppViewBinding {
+                logical_tab: None,
                 owner: owner.to_owned(),
                 installation: installation.to_owned(),
                 generation: view.generation,
@@ -935,6 +996,7 @@ mod tests {
     #[test]
     fn view_calls_run_as_the_views_owner_in_its_room() {
         let binding = AppViewBinding {
+            logical_tab: None,
             owner: "alice".into(),
             installation: "todo".into(),
             generation: 1,
@@ -1058,8 +1120,57 @@ impl From<AppRequestErrorCode> for ColdAppRestoreError {
     }
 }
 
+/// Calls have already been drained from the controller. An inconclusive
+/// identity check defers pruning only; it must never discard that call batch.
+async fn retain_app_poll_targets<F, T, E>(
+    views: &crate::runtime::app_views::AppViews,
+    session: &str,
+    batch: &BrowserAppViewCalls,
+    up_to: u64,
+    identity_probe_after: &mut tokio::time::Instant,
+    reconcile: F,
+) where
+    F: std::future::Future<Output = Result<T, E>>,
+{
+    let Some(open) = &batch.open_targets else {
+        return;
+    };
+    if views.has_missing_targets(session, open, up_to) {
+        if tokio::time::Instant::now() < *identity_probe_after {
+            return;
+        }
+        if reconcile.await.is_err() {
+            // Throttle only the identity probe; drained call delivery keeps its
+            // active cadence and always continues after this helper returns.
+            *identity_probe_after =
+                tokio::time::Instant::now() + super::app_view_poll::IDLE_INTERVAL;
+            return;
+        }
+    }
+    views.retain_open(session, open, up_to);
+    views.set_open_tabs(session, open.len());
+}
+
+fn cold_restore_waiting_for_slice(status: Option<crate::slice::SliceStatus>) -> bool {
+    // A local controller has no slice gate; it uses the same verified restore.
+    status.is_some_and(|status| status != crate::slice::SliceStatus::Running)
+}
+
+pub(super) fn browser_recovery_downtime(message: &str) -> bool {
+    [
+        "browser_debugger_unavailable",
+        "browser_cdp_disconnected",
+        "browser_controller_lease_lost",
+        "browser controller is not leased by Room ",
+    ]
+    .iter()
+    .any(|code| message.contains(code))
+}
+
 fn cold_restore_error(error: DaemonError) -> ColdAppRestoreError {
-    if crate::runtime::app_views::slice_busy(&error.to_string()) {
+    if crate::runtime::app_views::slice_busy(&error.to_string())
+        || browser_recovery_downtime(&error.to_string())
+    {
         ColdAppRestoreError::Busy
     } else {
         ColdAppRestoreError::Failed(AppRequestErrorCode::Conflict)

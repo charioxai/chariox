@@ -424,6 +424,7 @@ fn open_view(router: &CommandRouter, session: &str, target: &str, owner: &str, a
         session,
         target,
         crate::runtime::app_views::AppViewBinding {
+            logical_tab: None,
             owner: owner.into(),
             installation: app.into(),
             generation: 1,
