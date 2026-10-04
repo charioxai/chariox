@@ -9,6 +9,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { browserStateCleanupFailure, cleanupBrowserStateImages } from "./lib/browser-state-drill-cleanup.mjs"
 import { browserStateDrillImageConfig } from "./lib/browser-state-drill-image.mjs"
+import { assertLocalDevOwnedWorkspace } from "./lib/browser-state-local-dev-workspace.mjs"
 import { resolveBrowserStateDrillPaths } from "./lib/browser-state-drill-paths.mjs"
 import { startBrowserComputerFixture } from "./lib/browser-computer-fixture.mjs"
 import { startBrowserStateFixtureSidecar } from "./lib/browser-state-drill-fixture-sidecar.mjs"
@@ -221,6 +222,11 @@ async function run() {
     repositoryRoot: repoRoot,
     ...(workspaceFixture.localDev ? { managedSliceRoot: path.join(tempRoot, "slices") } : {}),
   })
+  if (workspaceFixture.localDev) {
+    const mounts = JSON.parse(await dockerText(["inspect", containerName, "--format", "{{json .Mounts}}"]));
+    const labels = JSON.parse(await dockerText(["volume", "inspect", `${containerName}-workspace`, "--format", "{{json .Labels}}"]));
+    assertLocalDevOwnedWorkspace({ mounts, labels, containerName, sliceId: slice.id, ownerUid: process.getuid() })
+  }
   const initialSlicePorts = structuredClone(slice.local_docker_ports)
   const initialDisplayUrl = slice.display_endpoint?.url
   assert.ok(initialSlicePorts?.novnc, "slice must retain its allocated display port")
@@ -1072,6 +1078,11 @@ async function cleanup() {
   if (workspaceFixture) {
     try {
       await cleanupBrowserStateDrillWorkspace(workspaceFixture)
+    if (workspaceFixture.localDev) {
+      const volume = await runCommand("docker", ["volume", "inspect", `${containerName}-workspace`], { timeoutMs: 20_000 })
+      assert.equal(volume.code, 1, "local DEV workspace volume must be removed by DeleteSlice")
+      assert.match(volume.stderr, /No such volume/i, "workspace absence must be a Docker absence response")
+    }
       fixtureWorkspaceRemoved = true
     } catch (error) {
       workspaceCleanupError = error

@@ -56,6 +56,7 @@ export async function prepareBrowserStateDrillWorkspace({
 export function browserStateDrillWorkspaceSliceOptions(fixture) {
   assert.ok(fixture && typeof fixture === "object", "browser-state workspace fixture is required")
   if (fixture.kind === "direct") return { workspaceMount: fixture.workspace }
+  if (fixture.localDev) return {}
   assert.equal(fixture.kind, "broker", "unknown browser-state workspace fixture kind")
   return { developmentSetup: { kind: "empty" } }
 }
