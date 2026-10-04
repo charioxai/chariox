@@ -1,0 +1,70 @@
+<!doctype html><html><head><meta charset="utf-8"><title>MD-DISPLAY viewer</title>
+<style>html,body{margin:0;width:960px;height:600px;overflow:hidden;background:white}canvas,iframe{display:block;width:960px;height:600px;border:0}</style></head><body>
+<canvas id="pixels" width="1920" height="1200"></canvas><iframe id="mirror" sandbox="allow-same-origin" hidden></iframe>
+<script>
+// MD-DISPLAY-02: trusted local viewer. Source scripts/URLs never become executable.
+const q=new URLSearchParams(location.search), role=q.get('role'), ws=new WebSocket(`ws://${location.host}/socket?role=${role}`);
+ws.binaryType='arraybuffer'; const canvas=document.querySelector('canvas'), ctx=canvas.getContext('2d',{willReadFrequently:true});
+const frame=document.querySelector('iframe'); let decoder,encoder,format,encoded=0,encoding=Promise.resolve(),encodingPending=0,records=new Map(),root;
+window.md={ready:false, errors:[], outputs:0, inputs:0, dimensions:[], codecSupport:[], lastSeq:0, patches:0,dropped:0};
+function send(value){if(ws.readyState===1)ws.send(JSON.stringify(value))}
+function pack(meta,bytes){const h=new TextEncoder().encode(JSON.stringify(meta)),a=new Uint8Array(4+h.length+bytes.length);new DataView(a.buffer).setUint32(0,h.length);a.set(h,4);a.set(bytes,4+h.length);return a}
+function unpack(data){const n=new DataView(data).getUint32(0);return [JSON.parse(new TextDecoder().decode(new Uint8Array(data,4,n))),new Uint8Array(data,4+n)]}
+async function painted(kind,timestamp){await new Promise(requestAnimationFrame);window.md.outputs++;send({kind:'painted',mode:kind,timestamp});checkProbe()}
+function checkProbe(){
+  let seq=0;
+  if(role==='dom'){
+    const n=frame.contentDocument.querySelector('[data-source-id="probe"]');seq=Number(n?.getAttribute('data-seq')||0);
+  }else {const r=window.md.probeRect;if(r)for(let i=0;i<5;i++)if(ctx.getImageData(Math.round((r.x+(i+.5)*r.width/5)*2),Math.round((r.y+r.height/2)*2),1,1).data[0]>128)seq|=1<<i;}
+  window.md.probeSeq=seq;
+  if(seq>window.md.lastSeq&&seq<=20){window.md.lastSeq=seq;send({kind:'probe',seq})}
+}
+function decoderInit(config){decoder?.close();decoder=new VideoDecoder({output:async f=>{ctx.drawImage(f,0,0,1920,1200);const t=f.timestamp;f.close();await painted('video',t)},error:e=>{window.md.errors.push(String(e));send({kind:'error',message:'decoder failed'})}});decoder.configure({...config,optimizeForLatency:true})}
+async function configureVideo(codec,width,height){
+  const config={codec,width,height,bitrate:Number(q.get('bitrate')||8000000),framerate:30,latencyMode:'realtime',hardwareAcceleration:'prefer-software'};
+  if(codec.startsWith('avc'))config.avc={format:'annexb'};
+  const support=await VideoEncoder.isConfigSupported(config);window.md.codecSupport.push({codec,supported:support.supported,width,height});
+  if(!support.supported)throw Error('unsupported encoder '+codec);
+  encoder?.close();encoder=new VideoEncoder({output:(chunk,metadata)=>{const bytes=new Uint8Array(chunk.byteLength);chunk.copyTo(bytes);const config=metadata.decoderConfig;if(config?.description)config.description=Array.from(new Uint8Array(config.description));ws.send(pack({kind:'chunk',type:chunk.type,timestamp:chunk.timestamp,config},bytes));encoded++},error:e=>window.md.errors.push(String(e))});
+  encoder.configure(config);format={width,height,codec};send({kind:'configured',config});
+}
+async function encodeImage(meta,bytes){
+  const bmp=await createImageBitmap(new Blob([bytes],{type:'image/png'}));window.md.dimensions.push([bmp.width,bmp.height]);
+  if(!format||format.width!==bmp.width||format.height!==bmp.height)await configureVideo(q.get('codec')||'vp09.00.10.08',bmp.width,bmp.height);
+  if(encoder.encodeQueueSize>2){bmp.close();send({kind:'dropped'});return}
+  const f=new VideoFrame(bmp,{timestamp:meta.timestamp});encoder.encode(f,{keyFrame:encoded%30===0});f.close();bmp.close();
+}
+function build(id,doc){const r=records.get(id);if(!r)return doc.createTextNode('');if('text'in r)return doc.createTextNode(r.text);const e=doc.createElement(r.tag);e.dataset.mdRef=id;if(r.sourceId)e.dataset.sourceId=r.sourceId;for(const[k,v]of Object.entries(r.style))e.style.setProperty(k,v);for(const[k,v]of Object.entries(r.attrs))e.setAttribute(k,v);if(r.value!==undefined)e.value=r.value;if(r.checked)e.checked=true;if(r.opaque){e.style.position=r.style.position;e.style.overflow='hidden';const image=doc.createElement('img');image.dataset.patch=id;image.style.cssText='width:100%;height:100%;display:block;pointer-events:none';e.append(image)}else for(const child of r.children)e.append(build(child,doc));return e}
+function domUpdate(update){
+  const doc=frame.contentDocument;for(const r of update.changed)records.set(r.id,r);for(const id of update.removed)records.delete(id);root=update.root;
+  const focused=doc.activeElement?.dataset.mdRef,selection=[doc.activeElement?.selectionStart,doc.activeElement?.selectionEnd];
+  const patches=new Map([...doc.querySelectorAll('[data-patch]')].map(n=>[n.dataset.patch,n.src]));
+  doc.body.replaceWith(build(root,doc));doc.documentElement.style.cssText='margin:0;background:white';
+  for(const[id,src]of patches){const e=doc.querySelector(`[data-patch="${id}"]`);if(e)e.src=src}
+  if(focused){const e=doc.querySelector(`[data-md-ref="${focused}"]`);e?.focus();if(e?.setSelectionRange&&selection[0]!==null)try{e.setSelectionRange(...selection)}catch{}}
+  frame.contentWindow.scrollTo(update.scrollX,update.scrollY);painted('dom',update.timestamp);
+}
+if(role==='dom'){
+  canvas.hidden=true;canvas.style.display='none';frame.hidden=false;
+  const doc=frame.contentDocument;doc.open();doc.write('<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src blob: data:; form-action \'none\'; base-uri \'none\'"></head><body></body></html>');doc.close();
+  doc.addEventListener('submit',e=>e.preventDefault());
+  doc.addEventListener('click',e=>{e.preventDefault();const target=e.target.closest('[data-md-ref]');if(!target)return;const r=target.getBoundingClientRect();send({kind:'input',action:'click',id:Number(target.dataset.mdRef),fx:(e.clientX-r.x)/r.width,fy:(e.clientY-r.y)/r.height});window.md.inputs++},true);
+  doc.addEventListener('input',e=>{send({kind:'input',action:'fill',id:Number(e.target.dataset.mdRef),value:e.target.value});window.md.inputs++},true);
+}
+canvas.addEventListener('click',e=>{const r=canvas.getBoundingClientRect();send({kind:'input',action:'coordinate',x:(e.clientX-r.x)*960/r.width,y:(e.clientY-r.y)*600/r.height});window.md.inputs++});
+ws.onopen=()=>{window.md.ready=true;send({kind:'ready'})};
+ws.onmessage=async e=>{
+  try{
+    if(typeof e.data==='string'){
+      const m=JSON.parse(e.data);if(m.kind==='dom')domUpdate(m);else if(m.kind==='reset'){records.clear();window.md.lastSeq=0}else if(m.kind==='reset-encoder'){encoder?.close();encoder=null;format=null;encoded=0}else if(m.kind==='reset-video'){decoder?.close();decoder=null;window.md.lastSeq=0}else if(m.kind==='decoder')decoderInit(m.config);else if(m.kind==='probe-geometry')window.md.probeRect=m.rect;
+      return;
+    }
+    const [meta,bytes]=unpack(e.data);
+    if(role==='encoder'){if(encodingPending>=2){window.md.dropped++;send({kind:'dropped'});return}encodingPending++;encoding=encoding.then(()=>encodeImage(meta,bytes)).catch(e=>{window.md.errors.push(String(e));send({kind:'error',message:'encoder failed'})}).finally(()=>encodingPending--)}
+    else if(meta.kind==='patch'){const e=frame.contentDocument.querySelector(`[data-patch="${meta.id}"]`);if(e){const old=e.src;e.src=URL.createObjectURL(new Blob([bytes],{type:'image/png'}));await e.decode();if(old.startsWith('blob:'))URL.revokeObjectURL(old);window.md.patches++;await painted('patch',meta.timestamp)}}
+    else if(meta.kind==='chunk'){if(decoder?.decodeQueueSize>8)throw Error('decoder backlog limit');if(meta.config){if(meta.config.description)meta.config.description=new Uint8Array(meta.config.description);decoderInit(meta.config)}decoder.decode(new EncodedVideoChunk({type:meta.type,timestamp:meta.timestamp,data:bytes}))}
+  }catch(e){window.md.errors.push(String(e));send({kind:'error',message:'viewer operation failed'})}
+};
+window.mdCapture=()=>canvas.toDataURL('image/png');
+window.mdFinish=async()=>{await encoding;await encoder?.flush();return window.md};
+</script></body></html>
