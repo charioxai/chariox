@@ -4,6 +4,20 @@ import test from "node:test"
 
 const script = await readFile(new URL("./live-docker-slice-browser-state-drill.mjs", import.meta.url), "utf8")
 
+test("MP-03/MP-08/MP-10: M20 delegates worker identity to kernel CreateSlice", async () => {
+  const match = script.match(/slice = unwrap\(await client\.send\(requests\.createSliceRequest\(\{[\s\S]*?\}\)\), "SliceCreated"\)\.slice/)
+  assert.ok(match, "production M20 CreateSlice call is required")
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
+  const create = new AsyncFunction("client", "requests", "workspaceFixture", "sliceName", "browserStateDrillWorkspaceSliceOptions", "unwrap", `let slice; ${match[0]}; return slice`)
+  let sent
+  await create({ send: async input => { sent = input; return { slice: { id: "slice-1" } } } },
+    { createSliceRequest: input => input }, { localDev: true }, "m20-test", () => ({}), result => result)
+  assert.equal(sent.name, "m20-test")
+  assert.equal(sent.backend, "local_docker")
+  assert.equal(Object.hasOwn(sent, "workerKernelRef"), false,
+    "a legacy caller identity is rejected by protected worker boot and cannot be discovered")
+})
+
 function loadRemoveContainerAndHomeVolume(docker) {
   const match = script.match(/^async function removeContainerAndHomeVolume\(\) \{[\s\S]*?^\}/m)
   assert.ok(match, "browser-state drill must define its container and home-volume removal operation")
