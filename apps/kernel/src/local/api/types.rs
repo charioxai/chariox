@@ -119,7 +119,7 @@ pub use workspace::*;
 /// Version 366 adds explicit kernel control capabilities to RelayStatus.
 /// Version 367 adds bounded, explicitly negotiated Unix guarded-control sessions.
 /// On the Apps branch, versions 344-367 carried the Apps contracts instead; a
-/// kernel at version 377 or later implements both lines:
+/// kernel at version 410 or later implements both lines:
 /// Version 344 merges the Chariox Apps contracts (branch protocols 288-297:
 /// App installation, upload, bindings, events, HTTP/Fetch, kernel operation
 /// approvals and publisher enrollment) onto the main protocol line.

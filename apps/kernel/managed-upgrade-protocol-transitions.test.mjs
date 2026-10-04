@@ -19,6 +19,8 @@ test("protocol 411 retains admitted predecessor contracts and rejects ambiguous 
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
   assert.equal(policy.protocol, runtimeProtocol)
   assert.equal(policy.protocol, 411)
+  // MP-07/MP-08: the reviewed Apps merge is 410; 377 belongs to G only.
+  assert.match(runtimeTypes, /kernel at version 410 or later implements both lines/)
   for (const list of [policy.upgradeFrom, policy.rollbackTo]) {
     assert.ok(Array.isArray(list) && list.length > 0 && list.length <= 16)
     assert.ok(list.every((version, index) => Number.isSafeInteger(version)
@@ -52,7 +54,7 @@ test("protocol 411 retains admitted predecessor contracts and rejects ambiguous 
       assert.equal(transition(oldRoot, version, newRoot, 411), "")
       assert.equal(transition(newRoot, 411, oldRoot, version), "")
     }
-    // Known G predecessors377/378 and Apps main410 are admitted; other branch numbers stay refused.
+    // Known G predecessors 377/378 and Apps main 410 are admitted; other branch numbers stay refused.
     for (const version of [312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index), ...Array.from({ length: 31 }, (_, index) => 379 + index)]) {
       const oldRoot = join(scratch, `protocol-${version}`)
       assert.throws(() => transition(oldRoot, version, newRoot, 411), /not reciprocally authorized/)
