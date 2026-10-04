@@ -18,8 +18,8 @@ pub(crate) use worker_identity::{
 pub(crate) use local_docker::managed_docker_broker_configured;
 pub(crate) use local_docker::{
     acknowledge_protected_home_restore, cleanup_replaced_saved_state_generation,
-    reconcile_local_docker_restore_acknowledgements, recover_local_docker_snapshot_pause,
-    recover_pending_local_docker_slice_backup_restore,
+    fresh_local_docker_observation_environment, reconcile_local_docker_restore_acknowledgements,
+    recover_local_docker_snapshot_pause, recover_pending_local_docker_slice_backup_restore,
     remove_local_docker_slice_backup_best_effort, require_supported_slice_capture_layout,
     restore_local_docker_slice_backup, SliceBackupRestoreResolution,
 };

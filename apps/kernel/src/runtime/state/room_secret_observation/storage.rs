@@ -11,6 +11,8 @@ const MAX_REGISTRY_BYTES: u64 = 32 * 1024 * 1024;
 struct Registry {
     values: Vec<String>,
     #[serde(default)]
+    retired_values: Vec<String>,
+    #[serde(default)]
     vault_keys: BTreeSet<String>,
     #[serde(default)]
     provenance_known: bool,
@@ -24,6 +26,7 @@ impl Drop for Registry {
     fn drop(&mut self) {
         use zeroize::Zeroize;
         self.values.zeroize();
+        self.retired_values.zeroize();
     }
 }
 
@@ -44,6 +47,11 @@ impl RoomSecretObservations {
             .map_err(|_| protection_error())?;
         let registry = Registry {
             values: protection.values.iter().map(|v| v.to_string()).collect(),
+            retired_values: protection
+                .retired_values
+                .iter()
+                .map(|v| v.to_string())
+                .collect(),
             vault_keys: protection.vault_keys.clone(),
             provenance_known: protection.provenance_known,
             targets: protection.targets.clone(),
@@ -118,20 +126,31 @@ impl RoomSecretObservations {
         .map_err(|_| protection_error())?;
         let mut registry: Registry =
             serde_json::from_slice(&plaintext.plaintext).map_err(|_| protection_error())?;
-        if registry.values.len() > 256
+        if registry.values.len() + registry.retired_values.len() > 256
             || registry.targets.len() > 256
             || registry.vault_keys.len() > 256
-            || registry.values.iter().any(String::is_empty)
+            || registry
+                .values
+                .iter()
+                .chain(&registry.retired_values)
+                .any(String::is_empty)
         {
             return Err(protection_error());
         }
-        let history_before_ms = if !registry.values.is_empty() || registry.unknown {
+        let history_before_ms = if !registry.values.is_empty()
+            || !registry.retired_values.is_empty()
+            || registry.unknown
+        {
             registry.history_before_ms.max(self.epoch)
         } else {
             registry.history_before_ms
         };
         Ok(Some(Protection {
             values: std::mem::take(&mut registry.values)
+                .into_iter()
+                .map(Zeroizing::new)
+                .collect(),
+            retired_values: std::mem::take(&mut registry.retired_values)
                 .into_iter()
                 .map(Zeroizing::new)
                 .collect(),
@@ -226,28 +245,67 @@ impl RoomSecretObservations {
             .map_err(|_| protection_error())
     }
 
-    // Caller holds the Room's exclusive capture/input barrier. Revocation keeps
-    // prior echoes closed without a human-clearance fallback.
+    pub(in crate::runtime::state) fn apply_disposition(
+        &self,
+        room: &str,
+        disposition: Disposition,
+    ) -> Result<(), DaemonError> {
+        match disposition {
+            Disposition::Retire => self.forget(room),
+            Disposition::ResetEnvironment => self.reset_environment(room),
+            Disposition::DeleteRoom => self.delete_room(room),
+        }
+    }
+
+    // Caller holds the exclusive capture/input barrier. Retired values cannot
+    // resolve credentials or match Vault keys, but keep prior echoes scrubbed.
     pub(in crate::runtime::state) fn forget(&self, room: &str) -> Result<(), DaemonError> {
         let room = self.room_key(room);
         self.blocked(room, false)?;
         let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
         let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
-        let replacement = Protection {
-            unknown: true,
+        protection.retired_values.append(&mut protection.values);
+        protection.vault_keys.clear();
+        protection.provenance_known = true;
+        protection.recovered_artifacts = true;
+        protection.history_before_ms = protection
+            .history_before_ms
+            .max(crate::session::unix_epoch_ms());
+        protection.revision = protection.revision.saturating_add(1);
+        if let Err(error) = self.persist_marker(room, protection) {
+            protection.unknown = true;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    // Only a verified fresh physical environment may clear a missing-value fence.
+    // Retain the historical boundary even though it has no remaining live echoes.
+    pub(in crate::runtime::state) fn reset_environment(
+        &self,
+        room: &str,
+    ) -> Result<(), DaemonError> {
+        let room = self.room_key(room);
+        let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
+        let protection = rooms.entry(room.into()).or_insert_with(|| {
+            self.initial(room).unwrap_or_else(|_| Protection {
+                unknown: true,
+                revision: self.epoch,
+                ..Default::default()
+            })
+        });
+        *protection = Protection {
             recovered_artifacts: true,
-            history_before_ms: crate::session::unix_epoch_ms(),
+            history_before_ms: protection
+                .history_before_ms
+                .max(crate::session::unix_epoch_ms()),
             revision: protection.revision.saturating_add(1),
             ..Default::default()
         };
-        // Memory stays closed on every deletion/write failure.
-        *protection = Protection {
-            unknown: true,
-            ..Default::default()
-        };
-        self.remove_registry(room)?;
-        self.persist_marker(room, &replacement)?;
-        *protection = replacement;
+        if let Err(error) = self.persist_marker(room, protection) {
+            protection.unknown = true;
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -264,9 +322,21 @@ impl RoomSecretObservations {
 
     pub(in crate::runtime::state) fn delete_room(&self, room: &str) -> Result<(), DaemonError> {
         // Keep an in-memory tombstone for already admitted late callbacks.
-        self.forget(room)?;
+        let room = self.room_key(room);
+        let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
+        rooms.insert(
+            room.into(),
+            Protection {
+                unknown: true,
+                ..Default::default()
+            },
+        );
         self.remove_registry(room)?;
-        std::fs::remove_file(self.marker(room)).map_err(|_| protection_error())?;
+        match std::fs::remove_file(self.marker(room)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(protection_error()),
+        }
         match std::fs::remove_file(self.history_marker(room)) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

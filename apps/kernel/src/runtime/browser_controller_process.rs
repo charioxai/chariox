@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -230,7 +230,7 @@ pub(crate) struct BrowserControllerProcessStdioBackend {
     process: Option<BrowserControllerChild>,
     next_request_id: u64,
     action_cancellation: Option<Arc<cancellation::CancellationSignal>>,
-    protected_values: Vec<zeroize::Zeroizing<String>>,
+    protected_values: BTreeMap<String, Vec<zeroize::Zeroizing<String>>>,
 }
 
 impl BrowserControllerProcessStdioBackend {
@@ -242,7 +242,7 @@ impl BrowserControllerProcessStdioBackend {
             process: None,
             next_request_id: 1,
             action_cancellation: None,
-            protected_values: Vec::new(),
+            protected_values: BTreeMap::new(),
         }
     }
 
@@ -393,7 +393,8 @@ impl BrowserControllerProcessStdioBackend {
                 params,
                 protected_values: self
                     .protected_values
-                    .iter()
+                    .values()
+                    .flatten()
                     .map(|value| value.as_str())
                     .collect(),
             },
@@ -1370,22 +1371,17 @@ pub(crate) struct BrowserControllerProcessStore {
 impl BrowserControllerProcessStore {
     pub(crate) fn protect_observation_values(
         &self,
+        room: &str,
         values: Vec<zeroize::Zeroizing<String>>,
     ) -> Result<(), String> {
         if let Some(ownership) = &self.ownership {
-            let mut ownership = ownership
+            ownership
                 .lock()
-                .map_err(|_| "controller supervisor lock poisoned")?;
-            for value in values {
-                if !ownership
-                    .supervisor
-                    .backend
-                    .protected_values
-                    .contains(&value)
-                {
-                    ownership.supervisor.backend.protected_values.push(value);
-                }
-            }
+                .map_err(|_| "controller supervisor lock poisoned")?
+                .supervisor
+                .backend
+                .protected_values
+                .insert(room.into(), values);
         }
         Ok(())
     }
@@ -1462,7 +1458,13 @@ impl BrowserControllerProcessStore {
         let mut ownership = ownership
             .lock()
             .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
-        ownership.release(session_id).map(Some)
+        let snapshot = ownership.release(session_id)?;
+        ownership
+            .supervisor
+            .backend
+            .protected_values
+            .remove(session_id);
+        Ok(Some(snapshot))
     }
 
     pub(crate) fn reconcile_browser(
@@ -1913,6 +1915,39 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
 
 #[cfg(test)]
 mod tests {
+    // MP-08/MP-10/MP-11: controller seeds live only as long as their Room lease.
+    #[test]
+    fn releasing_room_drops_its_scrub_values_without_dropping_other_rooms() {
+        let store = super::BrowserControllerProcessStore::new(
+            "true",
+            vec![],
+            std::time::Duration::from_secs(1),
+        );
+        store
+            .protect_observation_values(
+                "deleted",
+                vec![zeroize::Zeroizing::new("synthetic-deleted".into())],
+            )
+            .unwrap();
+        store
+            .protect_observation_values(
+                "retained",
+                vec![zeroize::Zeroizing::new("synthetic-retained".into())],
+            )
+            .unwrap();
+        store.release("deleted").unwrap();
+        let ownership = store.ownership.as_ref().unwrap().lock().unwrap();
+        assert!(!ownership
+            .supervisor
+            .backend
+            .protected_values
+            .contains_key("deleted"));
+        assert_eq!(
+            ownership.supervisor.backend.protected_values["retained"].len(),
+            1
+        );
+    }
+
     use std::collections::VecDeque;
     use std::fs;
     use std::path::{Path, PathBuf};

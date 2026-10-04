@@ -357,7 +357,10 @@ pub(crate) enum RoomBrowserControllerCommand {
     },
     ComputerSecretTarget,
     /// MP-08/MP-11: revoke retained values on an authenticated bound worker.
-    ClearSecretObservation,
+    ClearSecretObservation {
+        #[serde(default)]
+        disposition: SecretObservationDisposition,
+    },
     ComputerClipboardRead {
         actor_id: String,
         runtime_generation: u64,
@@ -381,6 +384,16 @@ pub(crate) enum RoomBrowserControllerCommand {
         target_id: String,
     },
     Release,
+}
+
+// MP-08/MP-10/MP-11: authenticated worker lifecycle, never human clearance.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SecretObservationDisposition {
+    #[default]
+    Retire,
+    ResetEnvironment,
+    DeleteRoom,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

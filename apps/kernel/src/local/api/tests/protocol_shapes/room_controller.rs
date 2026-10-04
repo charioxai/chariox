@@ -1018,48 +1018,66 @@ fn computer_secret_target_protocol_374_peer_67_is_hashed() {
     );
 }
 
-// MP-08/MP-10/MP-11: authenticated revocation without owner clearance on 411/70.
+// MP-08/MP-10/MP-11: authenticated retirement/reset/deletion on unshipped 411/70.
 #[test]
 fn secret_observation_revocation_wire_protocol_411_peer_70_is_hashed() {
-    use crate::transport::room_browser_controller::RoomBrowserControllerResult;
+    use crate::transport::room_browser_controller::{
+        RoomBrowserControllerResult, SecretObservationDisposition,
+    };
     use sha2::{Digest, Sha256};
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 411);
     assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 70);
-    let command =
-        serde_json::to_value(RoomBrowserControllerCommand::ClearSecretObservation).unwrap();
-    let legacy: RoomBrowserControllerCommand =
-        serde_json::from_value(serde_json::json!({"kind":"clear_secret_observation"})).unwrap();
-    assert!(matches!(
-        legacy,
-        RoomBrowserControllerCommand::ClearSecretObservation
-    ));
-    // Removed unshipped owner flags cannot turn revocation into clearance.
-    for clear_unknown in [false, true] {
-        let old: RoomBrowserControllerCommand = serde_json::from_value(
-            serde_json::json!({"kind":"clear_secret_observation", "clear_unknown":clear_unknown}),
-        )
+    for (disposition, wire, hash) in [
+        (
+            SecretObservationDisposition::Retire,
+            "retire",
+            "43ac01951683b1a086742fe1eb9c78932405d8c824db2ec0e554a44a3d0be87d",
+        ),
+        (
+            SecretObservationDisposition::ResetEnvironment,
+            "reset_environment",
+            "ceeccbf6748d5cba7d12a58fdeeae1fb9a9785bb8571c148815b592bcaff392a",
+        ),
+        (
+            SecretObservationDisposition::DeleteRoom,
+            "delete_room",
+            "6ab4c8584a11689bb93d19f2221f1e08c3a277b393dad0ebc35a0aeb1704d780",
+        ),
+    ] {
+        let command = serde_json::to_value(RoomBrowserControllerCommand::ClearSecretObservation {
+            disposition,
+        })
         .unwrap();
+        assert_eq!(
+            command,
+            serde_json::json!({"kind":"clear_secret_observation", "disposition":wire})
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&command).unwrap())
+            ),
+            hash
+        );
+    }
+    // Old unshipped commands remain retirement, never owner clearance.
+    for payload in [
+        serde_json::json!({"kind":"clear_secret_observation"}),
+        serde_json::json!({"kind":"clear_secret_observation", "clear_unknown":true}),
+    ] {
+        let legacy: RoomBrowserControllerCommand = serde_json::from_value(payload).unwrap();
         assert!(matches!(
-            old,
-            RoomBrowserControllerCommand::ClearSecretObservation
+            legacy,
+            RoomBrowserControllerCommand::ClearSecretObservation {
+                disposition: SecretObservationDisposition::Retire
+            }
         ));
     }
     let response =
         serde_json::to_value(RoomBrowserControllerResult::SecretObservationCleared).unwrap();
     assert_eq!(
-        command,
-        serde_json::json!({"kind":"clear_secret_observation"})
-    );
-    assert_eq!(
         response,
         serde_json::json!({"kind":"secret_observation_cleared"})
-    );
-    assert_eq!(
-        format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&command).unwrap())
-        ),
-        "0b51d367c657307a95c218d49cd379845c8b051b9d24dd91c652a9bc2aa74e08"
     );
     assert_eq!(
         format!(

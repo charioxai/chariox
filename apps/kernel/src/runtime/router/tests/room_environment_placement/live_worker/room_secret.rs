@@ -94,7 +94,12 @@ pub(super) async fn check(
 }
 
 // MP-08/MP-10/MP-11: lifecycle revocation reaches both authenticated registry owners.
-pub(super) async fn check_revocation(fixture: &LiveWorker, stopped: bool) {
+pub(super) async fn check_revocation(
+    fixture: &LiveWorker,
+    stopped: bool,
+    caller: &crate::runtime::state::KernelRuntimeState,
+    token: &str,
+) {
     use sha2::{Digest, Sha256};
     let room = &fixture.rooms[0];
     let marker = format!("{:x}", Sha256::digest(room.as_bytes()));
@@ -143,7 +148,7 @@ pub(super) async fn check_revocation(fixture: &LiveWorker, stopped: bool) {
         .join("room-observation-quarantine")
         .join(&marker)
         .with_extension("sealed");
-    let sealed = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let sealed = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     let plaintext = crate::transport::relay_crypto::decrypt_payload_for_private_key_bound(
         &fixture._worker_state.config.relay_private_key,
         &sealed,
@@ -170,6 +175,30 @@ pub(super) async fn check_revocation(fixture: &LiveWorker, stopped: bool) {
     slices
         .set_status(&slice.id, SliceStatus::Running, 3)
         .unwrap();
+    // The reconnect/presence callback settles obligations before any admission.
+    fixture
+        .home
+        .runtime_state
+        .retry_pending_slice_observation_revocations();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let sealed = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let plaintext = crate::transport::relay_crypto::decrypt_payload_for_private_key_bound(
+                &fixture._worker_state.config.relay_private_key,
+                &sealed,
+                b"room-vault-observation-registry-v1",
+                room.as_bytes(),
+            )
+            .unwrap();
+            let registry: Value = serde_json::from_slice(&plaintext.plaintext).unwrap();
+            if registry["values"].as_array().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("MP-08/MP-10/MP-11: reconnect retries retirement independently of Room admission");
     let admission = fixture
         .home
         .runtime_state
@@ -184,7 +213,7 @@ pub(super) async fn check_revocation(fixture: &LiveWorker, stopped: bool) {
             .join("room-observation-quarantine")
             .join(&marker)
             .with_extension("sealed");
-        let sealed = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let sealed = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         let plaintext = crate::transport::relay_crypto::decrypt_payload_for_private_key_bound(
             &state.config.relay_private_key,
             &sealed,
@@ -195,11 +224,56 @@ pub(super) async fn check_revocation(fixture: &LiveWorker, stopped: bool) {
         let registry: Value = serde_json::from_slice(&plaintext.plaintext).unwrap();
         assert!(
             registry["values"].as_array().unwrap().is_empty(),
-            "retired synthetic values must be removed on both home and worker"
+            "MP-08/MP-10/MP-11: retired values leave active provenance on both home and worker"
         );
         assert!(
-            registry["unknown"].as_bool().unwrap(),
-            "old page echoes remain fenced after revocation"
+            !registry["retired_values"].as_array().unwrap().is_empty(),
+            "MP-08/MP-10/MP-11: old echoes remain scrubbed on both home and worker"
         );
+        assert!(
+            !registry["unknown"].as_bool().unwrap(),
+            "MP-08/MP-10/MP-11: retired values preserve autonomous observation"
+        );
+    }
+    let status = caller
+        .dispatch_authenticated_runtime_tool_call(token, "slice_browser_status", json!({}))
+        .await
+        .expect("MP-08/MP-10/MP-11: worker observations continue autonomously after retirement");
+    assert!(status.ok);
+    assert!(!status
+        .payload
+        .to_string()
+        .contains("home-room-vault-regression-value"));
+    if stopped {
+        // MP-08/MP-10/MP-11: deletion while stopped must wipe the orphaned worker on start,
+        // independently of admission to the now-nonexistent home Room.
+        slices
+            .set_status(&slice.id, SliceStatus::Stopped, 4)
+            .unwrap();
+        fixture
+            .home
+            .runtime_state
+            .delete_session_id(room)
+            .await
+            .unwrap();
+        fixture
+            .home
+            .runtime_state
+            .mark_slice_running(&slice.id, None)
+            .unwrap();
+        let worker_registry = fixture
+            ._worker_state
+            .config
+            .private_runtime_state_root()
+            .join("room-observation-quarantine")
+            .join(&marker)
+            .with_extension("sealed");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while worker_registry.exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("MP-08/MP-10/MP-11: stopped deleted-Room obligation is delivered on slice start");
     }
 }

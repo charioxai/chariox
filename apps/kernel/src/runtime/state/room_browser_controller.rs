@@ -3,7 +3,7 @@ use crate::runtime::browser_controller_process::{
 };
 use crate::transport::room_browser_controller::{
     BrowserLifecycleOperation, RoomBrowserControllerCommand as Command,
-    RoomBrowserControllerResult as Response,
+    RoomBrowserControllerResult as Response, SecretObservationDisposition as Disposition,
 };
 
 use super::*;
@@ -25,7 +25,7 @@ impl KernelRuntimeState {
         let slice_id = match &request {
             RelayPeerRequest::RoomBrowserController {
                 slice_id, command, ..
-            } if !matches!(command, Command::ClearSecretObservation) => Some(slice_id),
+            } if !matches!(command, Command::ClearSecretObservation { .. }) => Some(slice_id),
             RelayPeerRequest::ObserveRoomComputer { slice_id, .. }
             | RelayPeerRequest::CaptureRoomScreenshot { slice_id, .. }
             | RelayPeerRequest::ReadRoomScreenshotChunk { slice_id, .. }
@@ -142,14 +142,14 @@ impl KernelRuntimeState {
         background_probe: bool,
         admission_deadline: Option<tokio::time::Instant>,
     ) -> Result<Response, DaemonError> {
-        if matches!(&command, Command::ClearSecretObservation) {
+        if let Command::ClearSecretObservation { disposition } = &command {
             let protection = &self.owned.room_secret_observations;
             let _guard = protection.barrier(session_id)?.write_owned().await;
             let slice = self.owned.slice_store.environment_slice(session_id);
             if let Some(slice) = &slice {
-                protection.defer_revocation(session_id, slice)?;
+                protection.defer_revocation(session_id, slice, *disposition)?;
             }
-            protection.forget(session_id)?;
+            protection.apply_disposition(session_id, *disposition)?;
             if let Some(slice) =
                 slice.filter(|slice| slice.status == crate::slice::SliceStatus::Running)
             {
@@ -235,6 +235,7 @@ impl KernelRuntimeState {
                 self.owned
                     .browser_controller_processes
                     .protect_observation_values(
+                        session_id,
                         protection.controller_values(session_id).unwrap_or_default(),
                     )
                     .map_err(|error| controller_route_error(&error))?;
@@ -290,7 +291,7 @@ impl KernelRuntimeState {
                 admission_deadline,
             )
             .await?;
-        if matches!(command, Command::ClearSecretObservation) {
+        if matches!(command, Command::ClearSecretObservation { .. }) {
             self.settle_slice_observation_revocations(&slice.id).await?;
             return Ok(Response::SecretObservationCleared);
         }
@@ -387,9 +388,15 @@ impl KernelRuntimeState {
             ));
         }
         let protection = &self.owned.room_secret_observations;
-        if matches!(&command, Command::ClearSecretObservation) {
+        if let Command::ClearSecretObservation { disposition } = &command {
             let _guard = protection.barrier(session_id)?.write_owned().await;
-            protection.forget(session_id)?;
+            protection.apply_disposition(session_id, *disposition)?;
+            if *disposition != Disposition::Retire {
+                self.owned
+                    .browser_controller_processes
+                    .release(session_id)
+                    .map_err(|error| controller_route_error(&error))?;
+            }
             return Ok(Response::SecretObservationCleared);
         }
         let secret_guard = if super::room_secret_observation::command_secret(&command).is_some() {
@@ -418,6 +425,7 @@ impl KernelRuntimeState {
             self.owned
                 .browser_controller_processes
                 .protect_observation_values(
+                    session_id,
                     protection.controller_values(session_id).unwrap_or_default(),
                 )
                 .map_err(|error| controller_route_error(&error))?;
@@ -937,7 +945,7 @@ async fn execute_local(
         Command::ComputerInput { .. } => {
             unreachable!("Computer input executes before the blocking controller path")
         }
-        Command::ClearSecretObservation => {
+        Command::ClearSecretObservation { .. } => {
             unreachable!("observation revocation executes before controller path")
         }
         Command::ComputerClipboardRead { .. } => {

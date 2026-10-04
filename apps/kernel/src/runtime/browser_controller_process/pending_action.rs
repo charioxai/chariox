@@ -65,7 +65,8 @@ impl StdioOwnership {
                 id: request_id,
                 protected_values: backend
                     .protected_values
-                    .iter()
+                    .values()
+                    .flatten()
                     .map(|value| value.as_str())
                     .collect(),
                 method: "browser.action",

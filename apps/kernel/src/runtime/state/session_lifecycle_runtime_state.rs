@@ -951,7 +951,7 @@ impl KernelRuntimeState {
             .protects_bytes(&session_id)
         {
             self.room_browser_controller_command(&session_id,
-                crate::transport::room_browser_controller::RoomBrowserControllerCommand::ClearSecretObservation).await?;
+                crate::transport::room_browser_controller::RoomBrowserControllerCommand::ClearSecretObservation { disposition: Default::default() }).await?;
         }
         self.append_session_durable_event(
             "session.deleted",
@@ -972,6 +972,16 @@ impl KernelRuntimeState {
         );
         owned.clear_session_prompt_runtime_state(&session_id);
         owned.remove_session_projection_after_durable_mutation(&session_id);
+        // MP-08/MP-10/MP-11: after commit, upgrade retirement to a worker wipe.
+        // A missed write is reconstructed from the orphaned slice on start/reconnect.
+        if let Some(slice) = owned.slice_store.environment_slice(&session_id) {
+            if owned.room_secret_observations.defer_revocation(
+                &session_id, &slice, crate::transport::room_browser_controller::SecretObservationDisposition::DeleteRoom,
+            ).is_err() {
+                tracing::warn!("MP-08/MP-10/MP-11: deleted Room worker wipe remains pending");
+            }
+            self.retry_slice_observation_revocations(&slice.id);
+        }
         for provider_run_id in terminated_run_ids {
             let (_, process_key) = self
                 .with_app_side_effect(|app| {

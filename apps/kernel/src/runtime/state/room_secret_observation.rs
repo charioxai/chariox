@@ -1,6 +1,6 @@
 //! MP-08/MP-10/MP-11: Room-scoped observation protection, below every client.
 //! Values use zeroizing memory and a private runtime-identity-sealed registry.
-//! Value-free migration/quarantine markers survive registry revocation.
+//! Retired values are scrub-only for the Room lifetime; deletion wipes them.
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -18,6 +18,7 @@ use super::KernelRuntimeState;
 use crate::error::DaemonError;
 use crate::transport::room_browser_controller::{
     RoomBrowserControllerCommand as Command, RoomBrowserControllerResult as Response,
+    SecretObservationDisposition as Disposition,
 };
 
 #[derive(Clone)]
@@ -29,13 +30,14 @@ pub(super) struct RoomSecretObservations {
     rooms: Arc<Mutex<BTreeMap<String, Protection>>>,
     barriers: Arc<Mutex<BTreeMap<String, Arc<tokio::sync::RwLock<()>>>>>,
     vault_lifecycle: Arc<tokio::sync::RwLock<()>>,
-    revocation_delivery: Arc<tokio::sync::Mutex<()>>,
+    revocation_delivery: Arc<Mutex<BTreeMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>>,
     pub(super) epoch: u64,
 }
 
 #[derive(Default)]
 struct Protection {
     values: Vec<Zeroizing<String>>,
+    retired_values: Vec<Zeroizing<String>>,
     vault_keys: BTreeSet<String>,
     provenance_known: bool,
     unknown: bool,
@@ -58,7 +60,8 @@ impl RoomSecretObservations {
             revocation_delivery: Default::default(),
             epoch: crate::session::unix_epoch_ms(),
         };
-        store.migration_failed = store.migrate_legacy_rooms(recovered).is_err();
+        store.migration_failed = store.migrate_legacy_rooms(recovered).is_err()
+            || store.migrate_flat_revocations().is_err();
         store
     }
 
@@ -170,11 +173,22 @@ impl RoomSecretObservations {
             .values
             .iter()
             .any(|existing| existing.as_str() == value);
-        if value.is_empty() || (!known && protection.values.len() >= 256) {
+        let retired = protection
+            .retired_values
+            .iter()
+            .any(|existing| existing.as_str() == value);
+        if value.is_empty()
+            || (!known
+                && !retired
+                && protection.values.len() + protection.retired_values.len() >= 256)
+        {
             protection.unknown = true;
             return Err(protection_error());
         }
         if !known {
+            protection
+                .retired_values
+                .retain(|existing| existing.as_str() != value);
             protection.values.push(Zeroizing::new(value.to_string()));
         }
         self.persist_marker(room, protection)?;
@@ -298,9 +312,9 @@ impl RoomSecretObservations {
         let rooms = self.rooms.lock().map_err(|_| protection_error())?;
         let protection = &rooms[room];
         serde_json::to_string(&serde_json::json!({
-            "unknown": protection.unknown || (!protection.values.is_empty() && protection.targets.is_empty()),
+            "unknown": protection.unknown,
             "targets": protection.targets,
-            "values": protection.values.iter().map(|value| value.as_str()).collect::<Vec<_>>(),
+            "values": protection.values.iter().chain(&protection.retired_values).map(|value| value.as_str()).collect::<Vec<_>>(),
         })).map(Zeroizing::new).map_err(|_| protection_error())
     }
 
@@ -329,9 +343,14 @@ impl RoomSecretObservations {
     ) -> Result<Vec<Zeroizing<String>>, DaemonError> {
         let room = self.room_key(room);
         self.require(room, false)?;
-        Ok(self.rooms.lock().map_err(|_| protection_error())?[room]
+        let rooms = self.rooms.lock().map_err(|_| protection_error())?;
+        let protection = &rooms[room];
+        Ok(protection
             .values
-            .clone())
+            .iter()
+            .chain(&protection.retired_values)
+            .cloned()
+            .collect())
     }
 
     pub(super) fn revision(&self, room: &str) -> Result<u64, DaemonError> {
@@ -341,8 +360,20 @@ impl RoomSecretObservations {
     }
 
     pub(super) fn scrub_error(&self, room: &str, error: DaemonError) -> DaemonError {
+        self.scrub_error_inner(room, error, true)
+    }
+
+    pub(super) fn scrub_runtime_error(&self, room: &str, error: DaemonError) -> DaemonError {
+        self.scrub_error_inner(room, error, false)
+    }
+
+    fn scrub_error_inner(&self, room: &str, error: DaemonError, observation: bool) -> DaemonError {
         let original = error.to_string();
-        match self.scrub(room, original.clone()) {
+        match if observation {
+            self.scrub(room, original.clone())
+        } else {
+            self.scrub_runtime_result(room, original.clone())
+        } {
             Ok(message) if message == original => error,
             Ok(message) => DaemonError::LocalTransport {
                 operation: "room.observation",
@@ -366,7 +397,9 @@ impl RoomSecretObservations {
             .lock()
             .map(|rooms| {
                 let protection = &rooms[room];
-                protection.unknown || !protection.values.is_empty()
+                protection.unknown
+                    || !protection.values.is_empty()
+                    || !protection.retired_values.is_empty()
             })
             .unwrap_or(true)
     }
@@ -378,17 +411,39 @@ impl RoomSecretObservations {
     ) -> Result<T, DaemonError> {
         let room = self.room_key(room);
         self.require(room, false)?;
+        self.scrub_values(room, input, true)
+    }
+
+    // A missing-value fence restricts observations, not workflow, messaging or
+    // credential mutations. Their results still scrub every available known value.
+    pub(super) fn scrub_runtime_result<T: Serialize + DeserializeOwned>(
+        &self,
+        room: &str,
+        input: T,
+    ) -> Result<T, DaemonError> {
+        self.scrub_values(room, input, false)
+    }
+
+    fn scrub_values<T: Serialize + DeserializeOwned>(
+        &self,
+        room: &str,
+        input: T,
+        observation: bool,
+    ) -> Result<T, DaemonError> {
+        let room = self.room_key(room);
+        self.blocked(room, false)?;
         let rooms = self.rooms.lock().map_err(|_| protection_error())?;
         let protection = &rooms[room];
-        // Recheck under the value lock: another insertion may follow the first require.
-        if protection.unknown {
+        // Recheck under the value lock: another mutation can follow admission.
+        if observation && protection.unknown {
             return Err(fenced_observation_error());
         }
-        if protection.values.is_empty() {
+        if protection.values.is_empty() && protection.retired_values.is_empty() {
             return Ok(input);
         }
         let mut value = serde_json::to_value(input).map_err(|_| protection_error())?;
         scrub_value(&mut value, &protection.values);
+        scrub_value(&mut value, &protection.retired_values);
         serde_json::from_value(value).map_err(|_| protection_error())
     }
 
@@ -600,7 +655,7 @@ fn secret_variants(secret: &str) -> Vec<Zeroizing<String>> {
 fn fenced_observation_error() -> DaemonError {
     DaemonError::LocalTransport {
         operation: "room.secret_observation.fenced",
-        message: "Room observation state is fenced: retained values were revoked or their registry is unavailable. Prior echoes remain withheld; capture retries cannot clear this state.".into(),
+        message: "Room observation state is fenced: the secret registry is unavailable. Prior echoes remain withheld until a clean environment is reprovisioned; capture retries cannot clear this state.".into(),
     }
 }
 

@@ -377,7 +377,7 @@ async fn legacy_room_migration_is_autonomous_and_permanently_withholds_only_prio
 }
 
 #[tokio::test]
-async fn vault_delete_and_rotation_remove_sealed_values_only_in_affected_rooms() {
+async fn vault_delete_and_rotation_retire_values_without_disabling_affected_rooms() {
     use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
     use crate::local::{LocalDaemonRequest, SetCredentialSecretRequest, DeleteCredentialSecretRequest};
     use crate::runtime::command::KernelCommand;
@@ -468,11 +468,11 @@ async fn vault_delete_and_rotation_remove_sealed_values_only_in_affected_rooms()
                 .unwrap()
                 .values
                 .is_empty(),
-            "MP-08/MP-10/MP-11: retired Vault value is not retained on disk"
+            "MP-08/MP-10/MP-11: retired Vault value leaves active provenance"
         );
         assert!(
-            store.require(&room.session_id, false).is_err(),
-            "MP-08/MP-10/MP-11: revoked page echoes remain protected without a human fallback"
+            store.require(&room.session_id, false).is_ok(),
+            "MP-08/MP-10/MP-11: rotation must remain autonomous and observable"
         );
         assert!(store.require("unrelated", false).is_ok());
         assert!(!store
@@ -779,22 +779,131 @@ fn empty_or_revoked_rooms_never_match_vault_keys() {
     }
 }
 
+// MP-08/MP-10/MP-11: revoked values are scrub-only, including after restart.
 #[test]
-fn fenced_observations_name_the_state_without_retry_or_human_clearance() {
+fn retired_values_scrub_prior_echoes_without_fencing_runtime_results() {
     let root = TestRoot::new();
-    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
-    store.register("room", "synthetic-only").unwrap();
+    let key = crate::transport::relay_crypto::generate_private_key_base64();
+    let path = root.path().join("observations");
+    let store = RoomSecretObservations::new(path.clone(), BTreeSet::new()).with_identity(&key);
+    store
+        .register_credential_source("room", Some("login"))
+        .unwrap();
+    store.register("room", "synthetic-retired-value").unwrap();
     store.forget("room").unwrap();
-    let error = store
-        .scrub("room", "benign tool result".to_string())
-        .unwrap_err()
-        .to_string();
-    assert!(
-        error.contains("Room observation state is fenced"),
-        "{error}"
+    let restarted = RoomSecretObservations::new(path, BTreeSet::new()).with_identity(&key);
+    for store in [&store, &restarted] {
+        assert_eq!(
+            store
+                .scrub("room", "workflow ack committed".to_string())
+                .unwrap(),
+            "workflow ack committed"
+        );
+        assert_eq!(
+            store
+                .scrub("room", "prior synthetic-retired-value echo".to_string())
+                .unwrap(),
+            "prior [redacted] echo"
+        );
+        assert!(store.require("room", true).is_ok());
+        let policy: serde_json::Value =
+            serde_json::from_str(&store.capture_policy("room").unwrap()).unwrap();
+        assert_eq!(policy["unknown"], false);
+        assert!(policy["values"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("synthetic-retired-value")));
+        assert!(!store.uses_vault_key("room", "login").unwrap());
+        assert!(store.protects_bytes("room"));
+        assert!(store.withholds_history("room", 0));
+    }
+    store
+        .register_credential_source("room", Some("new-login"))
+        .unwrap();
+    store.register("room", "synthetic-new-value").unwrap();
+    assert!(store.uses_vault_key("room", "new-login").unwrap());
+    assert!(!store.uses_vault_key("room", "login").unwrap());
+    assert_eq!(
+        store
+            .scrub(
+                "room",
+                "synthetic-retired-value synthetic-new-value".to_string()
+            )
+            .unwrap(),
+        "[redacted] [redacted]"
     );
-    assert!(!error.contains("retrying"));
-    assert!(!error.contains("manage"));
+}
+
+#[tokio::test]
+async fn worker_observation_reset_and_delete_are_authenticated_and_autonomous() {
+    use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
+    for disposition in ["reset_environment", "delete_room"] {
+        let room = TestRoom::new("observation-reset");
+        let mut config = room.runtime.owned.config_projection.snapshot();
+        config.room_environment_worker_binding =
+            Some(crate::config::RoomEnvironmentWorkerBinding {
+                home_kernel_id: "synthetic-home".into(),
+                home_public_key: config.relay_public_key.clone(),
+                session_id: room.session_id.clone(),
+                slice_id: "synthetic-slice".into(),
+                provisioned_slice_id: None,
+            });
+        room.runtime.owned.config_projection.update(config.clone());
+        let store = &room.runtime.owned.room_secret_observations;
+        store.register(&room.session_id, "synthetic-only").unwrap();
+        // Missing registries are a real lasting fence; a verified environment reset clears it.
+        store
+            .rooms
+            .lock()
+            .unwrap()
+            .get_mut(&room.session_id)
+            .unwrap()
+            .unknown = true;
+        let command: Command = serde_json::from_value(
+            serde_json::json!({"kind":"clear_secret_observation", "disposition":disposition}),
+        )
+        .unwrap();
+        assert!(room
+            .runtime
+            .execute_bound_room_browser_controller(
+                "wrong-home",
+                &config.relay_public_key,
+                &room.session_id,
+                "synthetic-slice",
+                command.clone()
+            )
+            .await
+            .is_err());
+        room.runtime
+            .execute_bound_room_browser_controller(
+                "synthetic-home",
+                &config.relay_public_key,
+                &room.session_id,
+                "synthetic-slice",
+                command,
+            )
+            .await
+            .unwrap();
+        if disposition == "reset_environment" {
+            assert!(
+                store.require(&room.session_id, true).is_ok(),
+                "MP-08/MP-10/MP-11: fresh environment is autonomously observable"
+            );
+            assert_eq!(
+                store
+                    .scrub(&room.session_id, "workflow ack".to_string())
+                    .unwrap(),
+                "workflow ack"
+            );
+            assert!(store.withholds_history(&room.session_id, 0));
+        } else {
+            assert!(
+                !store.registry_path(&room.session_id).exists(),
+                "MP-08/MP-10/MP-11: deleted worker Room retains no sealed values"
+            );
+            assert!(store.require(&room.session_id, true).is_err());
+        }
+    }
 }
 
 #[tokio::test]
@@ -895,11 +1004,18 @@ async fn stopped_or_unreachable_slice_defers_revocation_and_allows_room_deletion
             .await
             .expect("MP-08/MP-10/MP-11: an offline Room remains deletable");
         assert!(!store.registry_path(&room.session_id).exists());
-        assert_eq!(
-            store.pending_revocations(&slice).unwrap().len(),
-            1,
-            "Room teardown must retain the worker acknowledgement obligation"
-        );
+        let pending = store.pending_revocations(&slice).unwrap();
+        if destroyed {
+            room.runtime.retry_pending_slice_observation_revocations();
+            assert!(store.pending_revocations(&slice).unwrap().is_empty());
+        } else {
+            assert!(
+                pending
+                    .iter()
+                    .any(|record| record.disposition == Disposition::DeleteRoom),
+                "MP-08/MP-10/MP-11: Room teardown retains a worker wipe obligation"
+            );
+        }
     }
 }
 
@@ -992,29 +1108,283 @@ async fn dead_native_targets_are_pruned_from_the_sealed_kernel_registry() {
     }
 }
 
-
 #[test]
 fn pending_revocation_does_not_fence_a_new_slice_with_a_reused_local_id() {
     let root = TestRoot::new();
     let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
     let slices = crate::slice::SliceStore::default();
     let input = crate::slice::CreateSliceInput {
-        source_slice_ref: None, name: "reused".into(), backend: crate::slice::SliceBackendKind::LocalDocker,
-        os: "linux".into(), display_mode: crate::slice::SliceDisplayMode::Headed,
-        display_backend: Default::default(), workspace_id: None, worktree_id: None,
-        workspace_mount: None, development: None, worker_kernel_ref: None,
-        display_url: None, provider_auth: vec![], from_saved_state: None, now_ms: 1,
+        source_slice_ref: None,
+        name: "reused".into(),
+        backend: crate::slice::SliceBackendKind::LocalDocker,
+        os: "linux".into(),
+        display_mode: crate::slice::SliceDisplayMode::Headed,
+        display_backend: Default::default(),
+        workspace_id: None,
+        worktree_id: None,
+        workspace_mount: None,
+        development: None,
+        worker_kernel_ref: None,
+        display_url: None,
+        provider_auth: vec![],
+        from_saved_state: None,
+        now_ms: 1,
     };
     let original = slices.create("home", "machine", input.clone()).unwrap();
-    store.defer_revocation("deleted-room", &original).unwrap();
+    store
+        .defer_revocation("deleted-room", &original, Disposition::Retire)
+        .unwrap();
     // The product recovers its local sequence from retained slice records only.
     slices.delete(&original.id).unwrap();
     slices.restore_records(Vec::new());
-    let recreated = slices.create("home", "machine", crate::slice::CreateSliceInput {
-        now_ms: 2, ..input
-    }).unwrap();
+    let recreated = slices
+        .create(
+            "home",
+            "machine",
+            crate::slice::CreateSliceInput { now_ms: 2, ..input },
+        )
+        .unwrap();
     assert_eq!(recreated.id, original.id);
     assert_ne!(recreated.worker_kernel_ref, original.worker_kernel_ref);
-    assert!(store.pending_revocations(&recreated).unwrap().is_empty(),
-        "MP-08/MP-10/MP-11: an old worker revocation cannot fence a fresh physical slice");
+    assert!(
+        store.pending_revocations(&recreated).unwrap().is_empty(),
+        "MP-08/MP-10/MP-11: an old worker revocation cannot fence a fresh physical slice"
+    );
+}
+
+// MP-08/MP-10/MP-11: pending storage and network delivery are isolated per slice.
+fn pending_test_slice(slices: &crate::slice::SliceStore, name: &str) -> crate::slice::SliceRecord {
+    slices
+        .create(
+            "home",
+            "machine",
+            crate::slice::CreateSliceInput {
+                source_slice_ref: None,
+                name: name.into(),
+                backend: crate::slice::SliceBackendKind::LocalDocker,
+                os: "linux".into(),
+                display_mode: crate::slice::SliceDisplayMode::Headed,
+                display_backend: Default::default(),
+                workspace_id: None,
+                worktree_id: None,
+                workspace_mount: None,
+                development: None,
+                worker_kernel_ref: None,
+                display_url: None,
+                provider_auth: vec![],
+                from_saved_state: None,
+                now_ms: 1,
+            },
+        )
+        .unwrap()
+}
+
+fn find_pending_record(root: &std::path::Path) -> PathBuf {
+    for entry in std::fs::read_dir(root).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path
+            .extension()
+            .is_some_and(|ext| ext == "pending-revocation")
+        {
+            return path;
+        }
+        if entry.file_type().unwrap().is_dir() {
+            let found = find_pending_record(&path);
+            if found.exists() {
+                return found;
+            }
+        }
+    }
+    root.join("absent")
+}
+
+#[test]
+fn malformed_pending_revocation_only_blocks_its_own_slice() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    let slices = crate::slice::SliceStore::default();
+    let bad = pending_test_slice(&slices, "bad");
+    let good = pending_test_slice(&slices, "good");
+    store
+        .defer_revocation("bad-room", &bad, Disposition::Retire)
+        .unwrap();
+    std::fs::write(
+        find_pending_record(&store.root),
+        b"invalid synthetic record",
+    )
+    .unwrap();
+    assert!(store.pending_revocations(&bad).is_err());
+    assert!(
+        store.pending_revocations(&good).unwrap().is_empty(),
+        "MP-08/MP-10/MP-11: another slice's damaged record cannot close admission"
+    );
+}
+
+#[tokio::test]
+async fn unreachable_worker_does_not_hold_another_slices_delivery_lock() {
+    use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
+    let room = TestRoom::new("per-slice-revocation-lock");
+    let slices = &room.runtime.owned.slice_store;
+    let slow = pending_test_slice(slices, "slow");
+    let stopped = pending_test_slice(slices, "stopped");
+    let sink = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    slices
+        .set_status(&slow.id, crate::slice::SliceStatus::Running, 2)
+        .unwrap();
+    slices
+        .set_relay_endpoint(
+            &slow.id,
+            Some(crate::slice::SliceRelayEndpoint {
+                url: format!("ws://{}", sink.local_addr().unwrap()),
+                private: true,
+            }),
+            3,
+        )
+        .unwrap();
+    let store = &room.runtime.owned.room_secret_observations;
+    store
+        .defer_revocation("slow-room", &slow, Disposition::Retire)
+        .unwrap();
+    store
+        .defer_revocation("stopped-room", &stopped, Disposition::Retire)
+        .unwrap();
+    let slow_delivery = room.runtime.settle_slice_observation_revocations(&slow.id);
+    let fast_delivery = async {
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            room.runtime
+                .settle_slice_observation_revocations(&stopped.id),
+        )
+        .await
+        .expect("MP-08/MP-10/MP-11: stopped slice must not wait for unrelated network I/O")
+        .unwrap_err();
+    };
+    let _ = tokio::join!(slow_delivery, fast_delivery);
+}
+
+#[test]
+fn deleting_slice_garbage_collects_its_pending_revocations() {
+    use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
+    let room = TestRoom::new("deleted-slice-revocation-gc");
+    let slice = pending_test_slice(&room.runtime.owned.slice_store, "deleted");
+    let store = &room.runtime.owned.room_secret_observations;
+    store
+        .defer_revocation("deleted-room", &slice, Disposition::Retire)
+        .unwrap();
+    room.runtime.delete_slice(&slice.id).unwrap();
+    assert!(
+        store.pending_revocations(&slice).unwrap().is_empty(),
+        "MP-08/MP-10/MP-11: destroyed slices leave no undeliverable records"
+    );
+}
+
+#[test]
+fn missing_value_fences_observations_but_not_unrelated_runtime_results() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    store.register("room", "synthetic-known").unwrap();
+    store.rooms.lock().unwrap().get_mut("room").unwrap().unknown = true;
+    assert!(store.require("room", true).is_err());
+    assert!(store.scrub("room", "page text".to_string()).is_err());
+    assert_eq!(
+        store
+            .scrub_runtime_result("room", "workflow submitted synthetic-known".to_string())
+            .unwrap(),
+        "workflow submitted [redacted]"
+    );
+    assert_eq!(
+        store
+            .scrub_runtime_result("room", "credential rotation committed".to_string())
+            .unwrap(),
+        "credential rotation committed"
+    );
+}
+
+// MP-08/MP-10/MP-11: valid unshipped obligations survive the index migration.
+#[test]
+fn predecessor_flat_revocation_migrates_to_its_physical_slice_index() {
+    #[derive(Serialize)]
+    struct Legacy<'a> {
+        room: &'a str,
+        slice: &'a str,
+        worker_ref: &'a str,
+        created_at_ms: u64,
+    }
+    let root = TestRoot::new();
+    let path = root.path().join("observations");
+    let slices = crate::slice::SliceStore::default();
+    let slice = pending_test_slice(&slices, "legacy");
+    let store = RoomSecretObservations::new(path.clone(), BTreeSet::new());
+    let bytes = serde_json::to_vec(&Legacy {
+        room: "legacy-room",
+        slice: &slice.id,
+        worker_ref: &slice.worker_kernel_ref,
+        created_at_ms: slice.created_at_ms,
+    })
+    .unwrap();
+    let flat = path.join(format!("{:x}.pending-revocation", Sha256::digest(&bytes)));
+    std::fs::write(&flat, bytes).unwrap();
+    drop(store);
+    let restarted = RoomSecretObservations::new(path, BTreeSet::new());
+    assert!(!flat.exists());
+    assert_eq!(restarted.pending_revocations(&slice).unwrap().len(), 1);
+}
+
+#[test]
+fn later_retirement_cannot_replace_a_deleted_rooms_pending_wipe() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    let slice = pending_test_slice(&crate::slice::SliceStore::default(), "deleted");
+    store
+        .defer_revocation("room", &slice, Disposition::Retire)
+        .unwrap();
+    store
+        .defer_revocation("room", &slice, Disposition::DeleteRoom)
+        .unwrap();
+    store
+        .defer_revocation("room", &slice, Disposition::Retire)
+        .unwrap();
+    let pending = store.pending_revocations(&slice).unwrap();
+    assert_eq!(pending.len(), 2);
+    assert_eq!(pending[0].disposition, Disposition::Retire);
+    assert_eq!(pending[1].disposition, Disposition::DeleteRoom);
+}
+
+// MP-08/MP-10/MP-11: reset/wipe must repair an unreadable registry without reading values.
+#[test]
+fn fresh_environment_reset_and_room_delete_recover_a_corrupt_sealed_registry() {
+    for delete in [false, true] {
+        let root = TestRoot::new();
+        let key = crate::transport::relay_crypto::generate_private_key_base64();
+        let path = root.path().join("observations");
+        let store = RoomSecretObservations::new(path.clone(), BTreeSet::new()).with_identity(&key);
+        store.register("room", "synthetic-only").unwrap();
+        std::fs::write(
+            store.registry_path("room"),
+            b"synthetic corrupt sealed registry",
+        )
+        .unwrap();
+        let restarted = RoomSecretObservations::new(path, BTreeSet::new()).with_identity(&key);
+        assert!(restarted.require("room", true).is_err());
+        if delete {
+            restarted.delete_room("room").expect(
+                "MP-08/MP-10/MP-11: deletion wipes corrupt registries without restoring them",
+            );
+            assert!(!restarted.registry_path("room").exists());
+        } else {
+            restarted.reset_environment("room").expect(
+                "MP-08/MP-10/MP-11: proven fresh environment repairs unavailable protection",
+            );
+            assert!(restarted.require("room", true).is_ok());
+            assert!(restarted.withholds_history("room", 0));
+            assert!(restarted
+                .restore_registry("room")
+                .unwrap()
+                .unwrap()
+                .values
+                .is_empty());
+        }
+    }
 }

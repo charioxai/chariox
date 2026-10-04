@@ -58,39 +58,59 @@ Re-location and fresh capture retry at most three times. Exhaustion returns
 `observation redacted, retrying`; observations create no interaction or user wait.
 
 MP-08/MP-11 Vault removal, credential removal, source replacement and value
-rotation revoke the affected Rooms' retained values on home and bound workers.
-Private sealed values and zeroizing registry memory are removed; an empty sealed
-registry and value-free marker retain an unknown-state fence for prior echoes.
-Vault-key provenance scopes revocation to affected Rooms and distinguishes
+rotation retire the affected Rooms' active observation values on home and bound
+workers. Retired values remain zeroizing, scrub-only entries for that Room's
+lifetime, sealed with the existing runtime identity so restart cannot expose old
+echoes. They cannot resolve credentials, match Vault keys or authorize insertion.
+Targets and known-value text/pixel masking continue to protect prior echoes;
+rotation introduces no unknown state and the agent's committed credential write
+returns its normal scrubbed result. Room deletion removes both active and retired
+values. Controller seeds are Room-scoped and released with their controller lease.
+
+Vault-key provenance scopes retirement to affected Rooms and distinguishes
 non-Vault sources. Secret input holds a shared lifecycle fence from resolution
 through insertion; Vault mutation and Room deletion drain those inputs before
-revocation and persistence. Different Rooms can resolve and insert concurrently. Older registries with
-no provenance are revoked conservatively only while they retain values. New
-credential input cannot narrow that legacy revocation scope. Empty, migrated and
-already-revoked registries match no Vault keys and trigger no further revocation.
-Before deleting home values, the kernel persists a private value-free revocation
-obligation bound to the Room and each slice's creation time and canonical worker
-reference. Reuse of a deleted local slice ID cannot fence a fresh physical slice.
-Running workers receive a bounded immediate
-delivery attempt; a stopped, destroyed or unreachable slice cannot veto the home
-credential mutation or Room deletion. Pending obligations survive restart and
-Room deletion. Before admitting further provider work, prompts, Browser commands,
-Computer observations or display access, the home requires an authenticated
-worker acknowledgement on the same Room/slice binding. Delivery resumes
-automatically; no human recovery action exists. A pending acknowledgement returns
-a distinct `room.secret_observation.revocation_pending` error.
-Room deletion removes the home registry and markers after runtime teardown;
-cleanup faults keep the tombstone fenced and are logged without reporting an
-already-committed deletion as failed. Workers retain only empty unknown-state
-protection after acknowledging revocation.
+retirement and persistence. Different Rooms can resolve and insert concurrently.
+Older registries with no provenance retire conservatively only while they have
+active values. New input cannot narrow that legacy scope. Empty, migrated and
+already-retired registries match no Vault keys and cause no further retirement.
 
-There is no human observation-recovery interaction or clearance fallback.
-Vault management does not change Room observation protection. Lost or invalid
-secret registries and revoked values still fail closed to protect prior echoes.
-This lasting fence returns `room.secret_observation.fenced`, naming the state and
-explaining that capture retries cannot clear it. Storage failures name unavailable
-protection state. The bounded `observation redacted, retrying` response is reserved
-for transient capture/layout failures, not these lasting fences.
+Before changing home values, the kernel persists a private value-free worker
+obligation bound to the Room and the physical slice's creation time and canonical
+worker reference. Records and delivery locks are indexed per physical slice;
+one damaged record or unreachable worker cannot block another slice's admission.
+The unshipped flat predecessor records migrate once to that index on startup.
+Invalid legacy bindings fail closed during migration. Deleted-slice records are
+collected at deletion and reconnect, including records recovered after restart.
+Reuse of a local slice ID cannot fence a fresh physical slice.
+
+Running workers receive a bounded immediate delivery attempt. Stopped or
+unreachable slices cannot veto a home credential mutation or Room deletion.
+Pending obligations survive restart and Room deletion. Before further provider
+work, prompts, Browser commands, Computer observations or display access, the
+home requires an authenticated worker acknowledgement on the same Room/slice
+binding. Slice start, authenticated worker presence and home relay reconnect also
+retry delivery independently of Room admission. A pending acknowledgement returns
+`room.secret_observation.revocation_pending`. Deleted Rooms upgrade retirement
+to a worker wipe; orphaned slice bindings reconstruct a missed wipe after a
+teardown interruption. Starting the deleted Room's leftover slice wipes its
+sealed observation registry and controller seeds, without admission to that Room.
+Home cleanup errors are logged without reporting a committed deletion as failed.
+
+There is no human recovery interaction or clearance fallback. A lost or invalid
+registry still fences observation channels and terminal bytes, protecting unknown
+prior echoes. Unrelated workflow, messaging, Recall and credential-tool results
+continue through known-value scrubbing rather than failing after committed work.
+Successful fresh physical provisioning autonomously clears the home/worker fence
+and live masking state while retaining `history_before_ms`. This requires
+successful inventories proving both old container and home volume absent, no
+source slice and no saved-state restore. A stopped container, retained home,
+failed inventory, recovery start or metadata-only saved-state reset proves no
+such absence and cannot clear the fence. Fresh observations never reauthorize
+withheld history or recovered caches. Remaining missing-registry fences return
+`room.secret_observation.fenced`; storage failures name unavailable protection.
+`observation redacted, retrying` remains reserved for transient capture/layout
+failures, not lasting storage fences.
 
 MP-08/MP-11 OCR and find-text always re-capture through this masking helper,
 including requests carrying old artifact IDs. OCR runs only on a fresh masked PNG,
@@ -100,17 +120,22 @@ served. Recovered history and caches stay unavailable; fresh captures do not
 reauthorize old content.
 
 MP-08/MP-11 shared local protocol 411 / relay peer 70 are the unshipped G2
-protocol pair. `clear_secret_observation` revokes retained values and keeps
-observations unknown; it has no owner-clearance flag. Bound workers authenticate
-the same home/Room/slice scope as ordinary controller commands and return
-`secret_observation_cleared`. Snapshot/hash tests pin the corrected shape within
-411/70 under the review-lane instruction; no client minimum changes. Known-value
+protocol pair. `clear_secret_observation` carries the private authenticated
+lifecycle disposition `retire`, `reset_environment` or `delete_room`, and has no
+owner-clearance flag. Absent disposition and removed predecessor owner flags
+remain retirement. Bound workers authenticate the same home/Room/slice scope as
+ordinary controller commands and return `secret_observation_cleared` only after
+applying that disposition. Snapshot/hash tests pin all three corrected shapes
+within 411/70 under the explicit review-lane instruction; no client minimum
+changes. Known-value
 seeding and sealed registry metadata remain private kernel/controller contracts.
 
 MP-10 focused source and helper checks include false-positive benign observations,
 no human interactions, clean restart, autonomous one-time migration and permanent prior-history fencing,
-Vault revocation on both home and worker, deferred acknowledgement for stopped
-and unreachable slices, deletion cleanup faults, persistent native-XID pruning,
+Vault retirement on both home and worker, deferred acknowledgement for stopped
+and unreachable slices, deleted-Room wipe on slice start, per-slice parse/lock
+isolation and garbage collection, autonomous fresh-environment reset, deletion
+cleanup faults, persistent native-XID pruning,
 registry Room/identity binding, bounded
 retry, old-artifact recapture, trusted Browser geometry, copied text/canvas masking,
 and unchanged native focus checks. Real Chromium/X11 helper runs use synthetic

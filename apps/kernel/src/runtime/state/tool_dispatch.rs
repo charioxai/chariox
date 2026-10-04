@@ -240,13 +240,16 @@ impl KernelRuntimeState {
                     error = self
                         .owned
                         .room_secret_observations
-                        .scrub_error(&room, error);
+                        .scrub_runtime_error(&room, error);
                 }
                 return Err(error);
             }
         };
         for room in rooms {
-            result = self.owned.room_secret_observations.scrub(&room, result)?;
+            result = self
+                .owned
+                .room_secret_observations
+                .scrub_runtime_result(&room, result)?;
         }
         Ok(result)
     }

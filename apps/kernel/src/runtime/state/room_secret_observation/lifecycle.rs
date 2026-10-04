@@ -1,7 +1,29 @@
-//! MP-08/MP-10/MP-11: Vault revocation and credential lifecycle fences.
+//! MP-08/MP-10/MP-11: Vault retirement and autonomous environment lifecycle.
 use super::*;
 
 impl KernelRuntimeState {
+    // Called only after successful provisioning with absent old container/home,
+    // no saved state and no source slice. Metadata-only reset is insufficient.
+    pub(crate) async fn reset_fresh_slice_observation_environment(
+        &self,
+        slice: &crate::slice::SliceRecord,
+    ) -> Result<(), DaemonError> {
+        if let Some(room) = slice
+            .environment_session_id
+            .as_deref()
+            .filter(|room| self.owned.session_store.get_session(room).is_ok())
+        {
+            self.room_browser_controller_command(
+                room,
+                Command::ClearSecretObservation {
+                    disposition: Disposition::ResetEnvironment,
+                },
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn revoke_vault_observation_values(
         &self,
         key: &str,
@@ -13,8 +35,13 @@ impl KernelRuntimeState {
                 .room_secret_observations
                 .uses_vault_key(session.id(), key)?
             {
-                self.room_browser_controller_command(session.id(), Command::ClearSecretObservation)
-                    .await?;
+                self.room_browser_controller_command(
+                    session.id(),
+                    Command::ClearSecretObservation {
+                        disposition: Default::default(),
+                    },
+                )
+                .await?;
             }
         }
         Ok(())
