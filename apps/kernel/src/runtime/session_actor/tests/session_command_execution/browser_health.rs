@@ -494,3 +494,49 @@ async fn browser_health_receipt_attributes_controller_generation_without_stale_p
         "late controller receipts cannot mutate a newer Room generation"
     );
 }
+
+// MP-08 / MP-10: A foreground recovery supersedes an in-flight health receipt.
+#[tokio::test]
+async fn browser_health_receipt_after_foreground_recovery_cannot_reopen_recovery() {
+    use crate::runtime::browser_controller_process::BrowserControllerReconciliation;
+    use crate::transport::room_browser_controller::RoomBrowserControllerResult;
+    let (state, room, _tool, _) = fixture().await;
+    let before = state.room_environment_snapshot(&room).unwrap();
+    let process = state.ensure_browser_controller_process_started(&room).await.unwrap().unwrap();
+    let old_receipt = BrowserControllerReconciliation {
+        process: process.clone(),
+        browser: serde_json::from_value(serde_json::json!({
+            "browser_generation": 1, "event_cursor": 1, "tabs": [],
+            "focused_target_id": null,
+            "resource_inventory": {"browser_ids": [], "profile_ids": []},
+            "viewport": {"css_width": 1280, "css_height": 800, "device_scale_factor": 1,
+                "desktop_pixel_width": 1280, "desktop_pixel_height": 800}
+        })).unwrap(),
+    };
+    let mut newer = old_receipt.clone();
+    newer.process.runtime_generation += 1;
+    newer.browser.browser_generation += 1;
+    state.observe_browser_controller_reconciliation(&room, newer).unwrap();
+    let recovered = state.room_environment_snapshot(&room).unwrap();
+    assert_eq!(recovered.runtime_generation, before.runtime_generation);
+    assert_eq!(recovered.lifecycle, Lifecycle::Ready);
+    assert!(recovered.health.iter().all(|health| health.state == Health::Ready));
+    state.observe_room_browser_health_receipt(&room, before.runtime_generation,
+        Ok(RoomBrowserControllerResult::Reconciled { reconciliation: Some(old_receipt) }));
+    assert_eq!(state.room_environment_snapshot(&room).unwrap(), recovered,
+        "late controller A receipt must not degrade recovered controller B or invalidate references");
+    // The foreground B observation must still be authoritative afterward.
+    let mut fresh = process;
+    fresh.runtime_generation += 1;
+    let fresh = BrowserControllerReconciliation {
+        process: fresh,
+        browser: serde_json::from_value(serde_json::json!({
+            "browser_generation": 2, "event_cursor": 1, "tabs": [],
+            "focused_target_id": null,
+            "resource_inventory": {"browser_ids": [], "profile_ids": []},
+            "viewport": {"css_width": 1280, "css_height": 800, "device_scale_factor": 1,
+                "desktop_pixel_width": 1280, "desktop_pixel_height": 800}
+        })).unwrap(),
+    };
+    assert_eq!(state.observe_browser_controller_reconciliation(&room, fresh).unwrap(), recovered);
+}

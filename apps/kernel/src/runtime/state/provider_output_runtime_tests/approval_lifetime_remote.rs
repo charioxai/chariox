@@ -180,6 +180,29 @@ async fn approval_lifetime_remote_startup_before_binding_is_answerable() {
         .unwrap();
     assert_eq!(rx.try_recv().unwrap().status, "answered");
 }
+// MP-08 / MP-10 / MP-11: Historical projections cannot deny a new launch approval.
+#[tokio::test]
+async fn approval_lifetime_remote_startup_before_binding_with_ended_history_is_answerable() {
+    for observe_binding in [false, true] {
+        let f = home(None, false).await;
+        project_worker_run(&f, "previous-worker-run");
+        let mut old = f.runtime.owned.provider_store
+            .get_latest_run_for_agent(&f.session, &f.agent).unwrap();
+        old.mark_ended();
+        f.runtime.owned.provider_store.write().insert_run_for_test(old);
+        let mut rx = register(&f, false).await;
+        assert_pending(&f, &mut rx);
+        if observe_binding {
+            bind(&f, Some(&f.run));
+            project_worker_run(&f, &f.run);
+            assert_pending(&f, &mut rx);
+        }
+        f.runtime.resolve_runtime_interaction(&f.session, &f.id(), "allow", None)
+            .await.unwrap();
+        assert_eq!(rx.try_recv().unwrap().status, "answered");
+    }
+}
+
 #[tokio::test]
 async fn approval_lifetime_remote_startup_during_replacement_dispatch_expires_on_cancel() {
     let f = home(Some("previous-worker-run"), true).await;
