@@ -279,6 +279,13 @@ impl ProjectEnvironmentStore {
 pub struct ProjectEnvironmentLock {
     _file: File,
 }
+impl Drop for ProjectEnvironmentLock {
+    fn drop(&mut self) {
+        // A concurrent fork can retain this open file description until exec.
+        // Closing only our descriptor must not prolong the kernel's ownership.
+        let _ = fs2::FileExt::unlock(&self._file);
+    }
+}
 impl std::fmt::Debug for ProjectEnvironmentLock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ProjectEnvironmentLock")
@@ -335,5 +342,38 @@ impl ProjectEnvironmentStore {
                 .map_err(|_| environment_error("environment refresh lock failed"))?;
         }
         Ok(ProjectEnvironmentLock { _file: file })
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn dropping_adjustment_releases_lock_with_an_inherited_descriptor() {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(std::env::temp_dir().join(format!(
+            "chariox-inherited-project-lock-{:032x}",
+            rand::random::<u128>()
+        )));
+        let store = ProjectEnvironmentStore::new(&scratch.0);
+        let first = store.try_lock("project").unwrap();
+        // dup, like fork before exec, retains the same open file description.
+        // O_CLOEXEC cannot release that reference until the child execs.
+        let inherited = first._file.try_clone().unwrap();
+        assert!(store.try_lock("project").is_err());
+        drop(first);
+        let next = store.try_lock("project").unwrap();
+        assert!(store.try_lock("project").is_err());
+        drop(inherited);
+        // Closing the old inherited descriptor cannot release the new owner.
+        assert!(store.try_lock("project").is_err());
+        drop(next);
+        assert!(store.try_lock("project").is_ok());
     }
 }
