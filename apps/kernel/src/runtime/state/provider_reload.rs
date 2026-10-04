@@ -530,6 +530,25 @@ mod tests {
     fn provider_reload_fingerprint_matches_adapter_and_isolation_launch_inputs() {
         crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
+        // MP-08/MP-11: launch planning must not depend on installed provider CLIs.
+        let bin = crate::test_support::TestWorktree::new("reload-fingerprint-bin");
+        for (name, override_env) in [
+            ("codex", "CHARIOX_CODEX_BIN"),
+            ("claude", "CHARIOX_CLAUDE_BIN"),
+            ("opencode", "CHARIOX_OPENCODE_BIN"),
+        ] {
+            let executable = bin.path().join(name);
+            std::fs::write(&executable, "#!/bin/sh\nexit 0\n")
+                .expect("fake provider executable should exist");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+                    .expect("fake provider should be executable");
+            }
+            std::env::remove_var(override_env);
+        }
+        std::env::set_var("PATH", bin.path());
         let profile = crate::test_support::TestWorktree::new("reload-fingerprint-claude-profile");
         let previous = std::env::var_os("CHARIOX_MANAGED_PROVIDER_ISOLATION");
         std::env::remove_var("CHARIOX_MANAGED_PROVIDER_ISOLATION");
@@ -577,6 +596,11 @@ mod tests {
         }
         for (request, launch) in launches {
             let launch = launch.expect("official adapter launch plan should resolve");
+            assert_eq!(
+                launch.pty_program.as_deref(),
+                bin.path().join(&request.adapter_key).to_str(),
+                "launch should use the test-scoped provider executable"
+            );
             for isolated in [false, true] {
                 let mut launch = launch.clone();
                 if isolated {
