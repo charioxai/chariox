@@ -372,6 +372,81 @@ fn cold_app_recovery_reuses_the_logical_tab_only_after_verified_binding() {
 }
 
 #[test]
+fn duplicate_app_bindings_claim_recovery_once_without_stealing_live_focus() {
+    let mut environment = ready_environment_with_agent();
+    let layout = super::AppPanelLayout::default();
+    let mark = |targets: &[&str]| {
+        targets
+            .iter()
+            .map(|target| ((*target).to_string(), ("app_1".to_string(), layout)))
+            .collect()
+    };
+    environment.set_app_tabs(mark(&["old-app"]), Some("agent-1".into()), true);
+    environment.reconcile_controller_tabs(
+        vec![observed_tab(
+            "old-app",
+            "old-doc",
+            "https://app.todo.invalid/",
+            "Todo",
+        )],
+        Some("old-app"),
+    );
+    let old = environment.snapshot().tabs[0].tab_id.clone();
+    environment.invalidate_runtime_after_process_loss().unwrap();
+    environment.reconcile_controller_tabs(
+        vec![
+            observed_tab("new-a", "doc-a", "https://app.todo.invalid/", "Todo"),
+            observed_tab("new-b", "doc-b", "https://app.todo.invalid/", "Todo"),
+        ],
+        Some("new-b"),
+    );
+    let chosen = environment.snapshot().focused_tab_id.unwrap();
+    environment.set_app_tabs(mark(&["new-a", "new-b"]), Some("agent-1".into()), true);
+    let after = environment.snapshot();
+    assert_eq!(after.tabs.iter().filter(|tab| tab.tab_id == old).count(), 1);
+    assert_eq!(after.tabs.len(), 2);
+    assert_eq!(after.focused_tab_id, Some(chosen));
+}
+
+#[test]
+fn unclaimed_app_recovery_expires_at_the_next_physical_generation() {
+    let mut environment = ready_environment_with_agent();
+    let layout = super::AppPanelLayout::default();
+    environment.set_app_tabs(
+        std::collections::BTreeMap::from([("old-app".into(), ("app_1".into(), layout))]),
+        None,
+        true,
+    );
+    environment.reconcile_controller_tabs(
+        vec![observed_tab(
+            "old-app",
+            "old-doc",
+            "https://app.todo.invalid/",
+            "Todo",
+        )],
+        Some("old-app"),
+    );
+    let old = environment.snapshot().tabs[0].tab_id.clone();
+    environment.invalidate_runtime_after_process_loss().unwrap();
+    environment.invalidate_runtime_after_process_loss().unwrap();
+    environment.reconcile_controller_tabs(
+        vec![observed_tab(
+            "new-app",
+            "new-doc",
+            "https://app.todo.invalid/",
+            "Todo",
+        )],
+        Some("new-app"),
+    );
+    environment.set_app_tabs(
+        std::collections::BTreeMap::from([("new-app".into(), ("app_1".into(), layout))]),
+        None,
+        true,
+    );
+    assert_ne!(environment.snapshot().tabs[0].tab_id, old);
+}
+
+#[test]
 fn app_view_tabs_carry_their_app_and_panel_and_changes_emit_tabs_changed() {
     let mut environment = ready_environment_with_agent();
     environment.reconcile_controller_tabs(

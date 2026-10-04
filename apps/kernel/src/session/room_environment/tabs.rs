@@ -21,7 +21,7 @@ pub(crate) struct TabRegistry {
     order: Vec<String>,
     focused_tab_id: Option<String>,
     next_sequence: u64,
-    /// Logical App identities retained while the physical browser is down.
+    /// Logical App identities retained for the next physical browser generation.
     /// Only a new kernel-verified App binding may claim one, never a URL.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     restoring_apps: BTreeMap<String, EnvironmentTab>,
@@ -207,8 +207,12 @@ impl TabRegistry {
             })
             .collect::<Vec<_>>();
         for (temporary_id, installation) in restored {
-            let previous = self.restoring_apps.remove(&installation).unwrap();
-            let mut state = self.tabs.remove(&temporary_id).unwrap();
+            let Some(previous) = self.restoring_apps.remove(&installation) else {
+                continue;
+            };
+            let Some(mut state) = self.tabs.remove(&temporary_id) else {
+                continue;
+            };
             state.tab.tab_id = previous.tab_id.clone();
             state.tab.document_revision = state
                 .tab
@@ -221,7 +225,9 @@ impl TabRegistry {
                     *tab_id = previous.tab_id.clone();
                 }
             }
-            if self.focused_tab_id.as_deref() == Some(temporary_id.as_str()) || previous.focused {
+            if self.focused_tab_id.is_none()
+                || self.focused_tab_id.as_deref() == Some(temporary_id.as_str())
+            {
                 self.focused_tab_id = Some(previous.tab_id.clone());
             }
             self.tabs.insert(previous.tab_id, state);
@@ -353,6 +359,9 @@ impl TabRegistry {
     }
 
     pub(crate) fn clear(&mut self) {
+        // Recovery belongs to one physical generation. A failed or uninstalled
+        // view must not leave a durable claim over later browser generations.
+        self.restoring_apps.clear();
         for (tab_id, state) in &self.tabs {
             if let Some(app) = &state.tab.app {
                 let mut tab = state.tab.clone();
