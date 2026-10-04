@@ -1158,11 +1158,35 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
             app.provider_run_projection_store()
                 .get_for_agent(&session_id, &remote_agent_id)
                 .map(|run| (run.id().to_string(), run.state())),
+            app.provider_run_projection_store()
+                .list_for_session(&session_id)
+                .into_iter()
+                .map(|run| {
+                    (
+                        run.id().to_string(),
+                        run.state(),
+                        run.agent_instance_id() == Some(remote_agent_id.as_str()),
+                    )
+                })
+                .collect::<Vec<_>>(),
         )
+    };
+    let worker_projection_debug = {
+        let mut app = app_worker.lock().await;
+        let leased =
+            RemoteLeaseRuntime::new(&mut app).leased_agent_snapshot_for_test(&leased_agent_id);
+        leased.map(|leased| {
+            (
+                leased.active_home_prompt_id.is_some(),
+                app.providers()
+                    .get_latest_run_for_agent(&leased.backing_session_id, &leased.backing_agent_id)
+                    .map(|run| run.state()),
+            )
+        })
     };
     assert!(
         home_provider_running,
-        "home agent must project the running worker provider run before follow-up steering: {home_projection_debug:?}"
+        "home agent must project the running worker provider run before follow-up steering: home={home_projection_debug:?}, worker={worker_projection_debug:?}"
     );
     let (worker_provider_run_id, projected_provider_run_id) = {
         let app = app_home.lock().await;
