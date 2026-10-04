@@ -38,6 +38,11 @@ sudo python3 deploy/local-linux/install-local-docker-dev.py \
 
 The installer uses an isolated Docker configuration without authentication files
 and a uniquely named owned Buildx builder, removed after the build attempt.
+Buildx scratch uses a private directory beside the immutable source roots under
+`/usr/lib/chariox/slice-local-dev`, because `/run` may be mounted `noexec`.
+Normal completion and exceptions remove it. After a killed installer or power
+loss, an administrator may remove its remaining `chariox-local-broker-build-*`
+directory once that installer and its owned Buildx builder have stopped.
 It does not install a global plugin or prune shared caches. The helper build verifies the CLI hash, loader and Python/archive dependencies.
 A separate no-profile probe must negotiate successfully with the enrolled
 engine before enrollment is published. The installer publishes one root-owned

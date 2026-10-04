@@ -361,11 +361,12 @@ impl TabRegistry {
     pub(crate) fn clear(&mut self) {
         // Recovery belongs to one physical generation. A failed or uninstalled
         // view must not leave a durable claim over later browser generations.
+        // Retry before a binding returns also starts a new generation and
+        // deliberately drops its old claim; only this recovery can reclaim it.
         self.restoring_apps.clear();
-        for (tab_id, state) in &self.tabs {
+        for state in self.tabs.values() {
             if let Some(app) = &state.tab.app {
-                let mut tab = state.tab.clone();
-                tab.focused = self.focused_tab_id.as_deref() == Some(tab_id.as_str());
+                let tab = state.tab.clone();
                 self.restoring_apps.insert(app.installation_id.clone(), tab);
             }
         }

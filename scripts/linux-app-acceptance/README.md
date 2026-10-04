@@ -109,3 +109,11 @@ credentials to unblock them. Preserve the incomplete rows in the ledger.
 Before handoff, stop only the task's VM/containers/kernel, uninstall its fixtures,
 remove unused large build outputs, write the assigned evidence `REPORT.md` and
 checksums, and obtain the Mac evidence receipt before builder retirement.
+
+## Local Docker enrollment on noexec /run
+
+Run `noexec-docker-enrollment.sh INSTALLER INSTALLER_ARGS...` as root inside
+an owned Linux VM, forwarding the reviewed public input pins documented in
+`deploy/local-linux/LOCAL_DOCKER_DEV.md`. It executes the real enrollment, checks
+that `/run` remains `noexec`, and rejects Buildx scratch left after success.
+Keep the baseline failure and successful regression output in task evidence.
