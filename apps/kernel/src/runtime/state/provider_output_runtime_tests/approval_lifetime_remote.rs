@@ -514,3 +514,22 @@ async fn mp08_mp10_mp11_idle_home_review_expires_on_projected_exit() {
     f.runtime.owned.withdraw_stale_agent_interactions();
     f.assert_withdrawn(&mut receiver).await;
 }
+
+#[tokio::test]
+async fn mp08_mp10_mp11_active_worker_choice_retains_dispatch_pre_ack_allowance() {
+    let f = home(Some("previous-worker"), true).await;
+    let interaction = crate::session::RuntimeInteraction::new(
+        f.id(), &f.agent, crate::session::RuntimeInteractionKind::Choice,
+        crate::session::RuntimeInteractionLevel::Info, None, "Review setup",
+        vec![crate::session::RuntimeInteractionChoice::new("allow", "Allow", "allow", None)],
+        None, Some(900), None,
+    ).with_native_origin(Some(NativeInteractionOrigin::Prompt {
+        provider_run_id: f.run.clone(), prompt_id: "home-A".into(),
+    }));
+    let mut receiver = f.runtime.create_runtime_interaction_with_forwarding(
+        &f.session, interaction, Some(&context(&f, true)),
+    ).await.unwrap();
+    assert_pending(&f, &mut receiver);
+    f.runtime.resolve_runtime_interaction(&f.session, &f.id(), "allow", None).await.unwrap();
+    assert_eq!(receiver.await.unwrap().status, "answered");
+}
