@@ -5,6 +5,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { KernelBrowserHost, navigationUrl } from "./kernel-browser-host.mjs";
+import { candidates as macCandidates, launchEnvironment as macEnvironment } from "./kernel-browser-macos.mjs";
+import { launchEnvironment as linuxEnvironment } from "./kernel-browser-linux.mjs";
 import { launchArguments, HostChromium } from "./kernel-browser-process.mjs";
 
 function fixture(root) {
@@ -184,3 +186,16 @@ test("human Enter carries Chromium's native text event; key-up never retypes it"
     { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
   ]);
 }));
+
+ test("MD-2: native Mac discovery and launch are independent of X11", () => {
+  const candidates = macCandidates({ HOME: "/Users/md-test" });
+  assert(candidates.includes("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"));
+  assert(candidates.includes("/Users/md-test/Applications/Chromium.app/Contents/MacOS/Chromium"));
+  const environment = { HOME: "/private/drill/home", DISPLAY: ":99", XAUTHORITY: "/unused", WAYLAND_DISPLAY: "wayland-0" };
+  assert.deepEqual(macEnvironment(environment), { HOME: environment.HOME });
+  assert.equal(environment.DISPLAY, ":99");
+  assert.throws(() => linuxEnvironment({}, 0), /normal Unix user/);
+  assert.deepEqual(linuxEnvironment({ DISPLAY: ":99" }, 501), { DISPLAY: ":99" });
+  const args = launchArguments("/private/drill/profile", false);
+  assert(!args.some(arg => /headless|no-sandbox|password-store|mock-keychain/.test(arg)));
+ });

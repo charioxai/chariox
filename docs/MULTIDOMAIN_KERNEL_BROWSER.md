@@ -108,3 +108,30 @@ start a stopped browser; App instances/tabs are ephemeral and excluded from
 ordinary-tab restoration. Focused browser input/navigation/close is refused on live App tabs to
 preserve the human/agent App actor boundary. No separate Chromium or Room is
 created. App trust, tool queue and detached approvals remain in the App runtime.
+
+## MD-2 / MD-4: native macOS replay
+
+Host policy lives in `kernel-browser-linux.mjs` and `kernel-browser-macos.mjs`.
+macOS discovers installed Chromium, Chrome or Chrome for Testing under system
+and user Applications; `CHARIOX_KERNEL_BROWSER_EXECUTABLE` can select an absolute
+pinned build. Launch the bundle executable directly, with the same private
+per-user profile, dynamic loopback CDP and sandbox. No X11/Xvfb, screen-recording
+permission, Keychain export, mock keychain or default Chrome profile is used.
+CDP drives input and the existing screenshot/screencast frame source. Crash and
+kernel restart use the common supervisor and stable tab records.
+
+On the Mac, compile the native kernel test artifact under an external Cargo
+target directory (`cargo test -p chariox-kernel --lib --no-run`). Run:
+`node apps/kernel/slice-linux-docker/kernel-browser-macos-drill.mjs /absolute/kernel-tests /absolute/external/evidence`.
+The script starts disposable kernel router subprocesses with dev-stub MCP
+identity, a local fixture and a private HOME/CHARIOX_HOME, checks screenshot,
+MCP click/type, CDP frames, Chrome SIGKILL recovery, kernel restart and close.
+It never connects to a daemon listener (including :44240). This is native
+kernel/router evidence, not a provider model or Web/TUI transport acceptance.
+It records resource samples and binary hash and removes exact owned state only
+after checking process cleanup. Native Mac execution remains coordinator-owned.
+
+Chromium's [profile contract](https://chromium.googlesource.com/chromium/src/+/main/docs/user_data_dir.md)
+allows the explicit separate user-data directory. Its [POSIX singleton implementation](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/chrome/browser/process_singleton_posix.cc)
+uses a hostname/PID symlink on current macOS as well as Linux; the host refuses
+a live owner before launch and leaves stale-lock recovery to Chromium.
