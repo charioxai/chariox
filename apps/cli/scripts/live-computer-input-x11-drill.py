@@ -85,11 +85,14 @@ def main():
     def docker(*command, **kwargs):
         return run(["docker", *command], **kwargs)
 
+    def execute_args(*command):
+        return ["docker", "exec", "-i", "-u", "slice", "-e", "DISPLAY=:99", "-e",
+                f"CHARIOX_SLICE_DISPLAY_SERVER={args.server}", "-e", "CHARIOX_SLICE_ROOT=/opt/computer-source",
+                "-e", f"CHARIOX_SLICE_PRIVATE_ROOT={ROOT}", "-e", f"CHARIOX_SLICE_CHROME_PROFILE={ROOT}/profile",
+                name, *command]
+
     def execute(*command, **kwargs):
-        return docker("exec", "-i", "-u", "slice", "-e", "DISPLAY=:99", "-e",
-                      f"CHARIOX_SLICE_DISPLAY_SERVER={args.server}", "-e", "CHARIOX_SLICE_ROOT=/opt/computer-source",
-                      "-e", f"CHARIOX_SLICE_PRIVATE_ROOT={ROOT}", "-e", f"CHARIOX_SLICE_CHROME_PROFILE={ROOT}/profile",
-                      name, *command, **kwargs)
+        return run(execute_args(*command), **kwargs)
 
     def screen(*command, **kwargs):
         return execute("bash", "/opt/computer-source/slice-screen.sh", *map(str, command), **kwargs)
@@ -368,9 +371,7 @@ def main():
             assert binary.is_absolute() and binary.is_file(), "exact-source test binary missing"
             report["kernelTestBinary"] = str(binary)
             report["kernelTestBinarySha256"] = hashlib.sha256(binary.read_bytes()).hexdigest()
-            command = ["docker", "exec", "-i", "-u", "slice", "-e", "DISPLAY=:99", "-e",
-                       "CHARIOX_SLICE_ROOT=/opt/computer-source", "-e", f"CHARIOX_SLICE_PRIVATE_ROOT={ROOT}",
-                       name, PYTHON, f"{ROOT}/computer-input-fault.py"]
+            command = execute_args(PYTHON, f"{ROOT}/computer-input-fault.py")
             wrapper = evidence / "physical-screen-tool.sh"
             wrapper.write_text("#!/bin/sh\nexec " + shlex.join(command) + ' "$@"\n')
             wrapper.chmod(0o700)
