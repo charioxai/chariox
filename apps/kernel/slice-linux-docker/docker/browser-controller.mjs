@@ -196,7 +196,9 @@ export class BrowserControllerStdioServer {
     processId = process.pid,
     browser = new BrowserCdpClient(),
     resourceInventory = observeBrowserResources,
+    handleRequest = handleBrowserControllerRequest,
   } = {}) {
+    this.handleRequest = handleRequest;
     this.input = input;
     this.output = output;
     this.processId = processId;
@@ -369,7 +371,7 @@ export class BrowserControllerStdioServer {
         // Queued cancellation must terminalize before physical browser dispatch.
         const response = action?.controller.signal.aborted
           ? errorResponse(request.id, "browser_action_cancelled", "browser action was cancelled")
-          : await handleBrowserControllerRequest(request, {
+          : await server.handleRequest(request, {
               processId: server.processId,
               browser: server.browser,
               resourceInventory: server.resourceInventory,
