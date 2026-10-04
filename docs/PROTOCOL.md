@@ -3041,3 +3041,25 @@ must preserve browser user activation across kernel settlement (for example,
 show a fresh Copy/Open button after successful settlement). App iframe/Room gestures only create offers and never
 count as the human's acceptance. Clients exposing acceptance require protocol
 409; unrelated clients keep their existing minimum version.
+
+
+### Protocol 416: expired App receipt refusal
+
+Protocol 416 adds `AppRequestFailed {code: "receipt_expired"}` for an
+  evicted owner-scoped App control command identity. Controls keep durable
+  at-most-once response receipts for the newest 512 identities. On admission
+  pressure the least-recently-used eligible identity can be evicted only when
+  all its receipts are older than the existing 24-hour command retention
+  window; pending effects and unknown-age receipts are protected. Replays
+  update access order without extending that window. A synced SHA-256 identity
+  marker is committed before removing a response, and survives restart and
+  compaction: an evicted replay is refused and never re-executed, including
+  stop and uninstall. Marker storage is bounded to 50 MiB; reaching the bound
+  refuses new receipt-bearing work rather than deleting replay fences; fresh
+  Stop/Uninstall controls retain their capacity exception. In-memory markers
+  use fixed-size 32-byte digests under this separate storage bound. CLI, TUI and shared web
+  shell display an explicit receipt-expired message and do not retry it.
+  Once an identity is evicted, a protocol416 fence in the response journal is
+  preserved through compaction. Legacy kernels fail closed on that journal
+  rather than redispatch an expired identity after rollback; their App control
+  requests report storage unavailable until a supporting kernel is restored.

@@ -260,3 +260,19 @@ test("App slash inbox test preserves a single-quoted JSON payload and explains q
   assert.equal(requests.length, 2)
   assert.deepEqual(flashes, [])
 })
+
+test("TUI App slash command makes an expired receipt clear without retrying", async () => {
+  const flashes: [string, string][] = []
+  let sends = 0
+  await handleAppSlashCommand({
+    sendAppRequest: async request => {
+      sends += 1
+      assert.deepEqual(request, { ControlAppWorker: { installation_id: "install-1", action: "restart" } })
+      return { AppRequestFailed: { code: "receipt_expired" } }
+    },
+    appendNotice: message => assert.fail(message),
+    flashFooter: (message, kind) => { flashes.push([message, kind]) },
+  }, { kind: "app", raw: "/app restart install-1", args: ["restart", "install-1"] })
+  assert.equal(sends, 1)
+  assert.deepEqual(flashes, [["App receipt expired. This request was not re-executed; check the App state before issuing a new command.", "error"]])
+})

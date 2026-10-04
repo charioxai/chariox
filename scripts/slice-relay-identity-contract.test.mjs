@@ -9,6 +9,8 @@ const root = new URL("../", import.meta.url)
 const runtime = await readFile(new URL("apps/kernel/slice-linux-docker/docker/start-runtime.sh", root), "utf8")
 const start = runtime.match(/start_slice_kernel\(\) \{[\s\S]*?\n\}/)?.[0]
 assert.ok(start, "slice runtime has one kernel launch function")
+const readiness = runtime.match(/wait_for_kernel_auth_consumption\(\) \{[\s\S]*?\n\}/)?.[0]
+assert.ok(readiness, "slice launch retains its local-auth readiness helper")
 
 const vectors = JSON.parse(await readFile(new URL("fixtures/slice-worker-identity.json", root), "utf8")).cases
 
@@ -24,6 +26,7 @@ async function launch(identity, extraArguments = []) {
       "sleep() { :; }",
       "wait_for_screen_session() { :; }",
       "screen() { for argument in \"$@\"; do case \"$argument\" in CHARIOX_DAEMON_ID=*|CHARIOX_DAEMON_ALIAS=*|CHARIOX_MACHINE_ID=*) printf '%s\\n' \"$argument\" ;; esac; done; rm \"$KERNEL_LOCAL_AUTH_FILE\"; }",
+      readiness,
       start,
       `start_slice_kernel ${extraArguments.join(" ")}`,
     ].join("\n")
@@ -54,13 +57,13 @@ test("provider isolation probe uses the same canonical slice identity as the per
   ])
 })
 
-test("MP-08/MP-11 canonical signed relay admission is coordinated at local protocol 415 and peer protocol 69", async () => {
+test("MP-08/MP-11 canonical signed relay admission is coordinated at local protocol 416 and peer protocol 69", async () => {
   const [rust, client, peer] = await Promise.all([
     readFile(new URL("apps/kernel/src/local/api/types.rs", root), "utf8"),
     readFile(new URL("packages/kernel-client/src/kernel-types.ts", root), "utf8"),
     readFile(new URL("apps/kernel/src/transport/relay_peer.rs", root), "utf8"),
   ])
-  assert.equal(Number(rust.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+)/)?.[1]), 415)
-  assert.equal(Number(client.match(/LOCAL_DAEMON_PROTOCOL_VERSION = (\d+)/)?.[1]), 415)
+  assert.equal(Number(rust.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+)/)?.[1]), 416)
+  assert.equal(Number(client.match(/LOCAL_DAEMON_PROTOCOL_VERSION = (\d+)/)?.[1]), 416)
   assert.equal(Number(peer.match(/RELAY_PEER_PROTOCOL_VERSION: u32 = (\d+)/)?.[1]), 69)
 })

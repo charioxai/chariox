@@ -249,4 +249,5 @@ pub use workspace::*;
 /// Version 412 enforces local credentials and admitted terminal authority.
 /// Version 413 adds terminal sudo turns and critical approval receipts.
 /// Version 415 adds external sudo requests and requester attribution.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 415;
+/// Version 416 refuses evicted App control replays with `receipt_expired`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 416;

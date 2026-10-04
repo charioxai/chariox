@@ -14,6 +14,7 @@ impl Journal {
 impl Drop for Journal {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_file(self.0.with_extension("expired"));
     }
 }
 fn restart() -> LocalDaemonRequest {
@@ -361,7 +362,6 @@ async fn full_receipt_journal_keeps_effects_at_most_once_after_recovery() {
         };
         // Recovery compacts reservation/result pairs. Safety controls must
         // leave the loaded journal unchanged, including after that compaction.
-        let before = Sha256::digest(std::fs::read(&journal.0).unwrap());
         let old = command("fill-0", &request);
         assert_eq!(
             receipts
@@ -371,6 +371,7 @@ async fn full_receipt_journal_keeps_effects_at_most_once_after_recovery() {
                 .await,
             answer()
         );
+        let before = Sha256::digest(std::fs::read(&journal.0).unwrap());
         let new = command("new", &request);
         assert_eq!(
             receipts
@@ -424,4 +425,169 @@ async fn full_receipt_journal_keeps_effects_at_most_once_after_recovery() {
         }
         assert_eq!(Sha256::digest(std::fs::read(&journal.0).unwrap()), before);
     }
+}
+
+#[tokio::test]
+async fn identity_513_evicts_old_lru_and_refuses_every_control_replay_after_restart() {
+    let journal = Journal::new();
+    let receipts = AppRequestReceipts::new(journal.0.clone());
+    let request = restart();
+    for n in 0..crate::runtime_transport::COMMAND_RESULT_CACHE_LIMIT {
+        let input = command(&format!("retained-{n}"), &request);
+        assert_eq!(
+            receipts
+                .execute("alice", &input, &request, || async { answer() })
+                .await,
+            answer()
+        );
+    }
+    drop(receipts);
+    // Both acceptance and settlement are outside the existing 24-hour window.
+    let age = crate::session::unix_epoch_ms()
+        - crate::runtime_transport::command_cache::APP_RECEIPT_RETENTION_MS
+        - 60_000;
+    let records = std::fs::read_to_string(&journal.0)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+            value["completed_at_ms"] = age.into();
+            value["result"]["completed_at_ms"] = age.into();
+            serde_json::to_string(&value).unwrap() + "\n"
+        })
+        .collect::<String>();
+    std::fs::write(&journal.0, records).unwrap();
+    let receipts = AppRequestReceipts::new(journal.0.clone());
+    let touch = command("retained-0", &request);
+    assert_eq!(
+        receipts
+            .execute("alice", &touch, &request, || async {
+                panic!("touch re-executed")
+            })
+            .await,
+        answer()
+    );
+    drop(receipts); // LRU access order itself must survive restart.
+    let receipts = AppRequestReceipts::new(journal.0.clone());
+    let executions = Arc::new(AtomicUsize::new(0));
+    let counter = executions.clone();
+    let new = command("identity-513", &request);
+    assert_eq!(
+        receipts
+            .execute("alice", &new, &request, move || async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                answer()
+            })
+            .await,
+        answer()
+    );
+    drop(receipts);
+    let receipts = AppRequestReceipts::new(journal.0.clone());
+    let expected = LocalDaemonResponse::AppRequestFailed {
+        code: AppRequestErrorCode::ReceiptExpired,
+    };
+    for source in [
+        crate::runtime::command::KernelCommandSource::LocalCli,
+        crate::runtime::command::KernelCommandSource::LocalIpc,
+        crate::runtime::command::KernelCommandSource::RelayClient,
+    ] {
+        for request in [
+            restart(),
+            uninstall(),
+            LocalDaemonRequest::ControlAppWorker(ControlAppWorkerRequest {
+                installation_id: "app".into(),
+                action: AppWorkerAction::Stop,
+            }),
+        ] {
+            let mut input = command("retained-1", &request);
+            input.source = source.clone();
+            assert_eq!(
+                receipts
+                    .execute("alice", &input, &request, || async {
+                        panic!("expired identity re-executed, including a safety control")
+                    })
+                    .await,
+                expected
+            );
+        }
+    }
+    assert!(receipts.has_reserved("alice", "retained-1").await);
+    assert_eq!(
+        serde_json::to_value(&expected).unwrap(),
+        serde_json::json!({"AppRequestFailed": {"code": "receipt_expired"}})
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        receipts
+            .execute("alice", &touch, &restart(), || async {
+                panic!("retained identity re-executed")
+            })
+            .await,
+        answer()
+    );
+}
+
+#[tokio::test]
+async fn marker_capacity_preserves_fresh_stop_and_uninstall_controls() {
+    let journal = Journal::new();
+    let receipts = AppRequestReceipts::new(journal.0.clone());
+    let request = restart();
+    for n in 0..crate::runtime_transport::COMMAND_RESULT_CACHE_LIMIT {
+        let input = command(&format!("bounded-{n}"), &request);
+        assert_eq!(
+            receipts
+                .execute("alice", &input, &request, || async { answer() })
+                .await,
+            answer()
+        );
+    }
+    drop(receipts);
+    let age = crate::session::unix_epoch_ms()
+        - crate::runtime_transport::command_cache::APP_RECEIPT_RETENTION_MS
+        - 60_000;
+    let records = std::fs::read_to_string(&journal.0)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+            value["completed_at_ms"] = age.into();
+            value["result"]["completed_at_ms"] = age.into();
+            serde_json::to_string(&value).unwrap() + "\n"
+        })
+        .collect::<String>();
+    std::fs::write(&journal.0, records).unwrap();
+    let receipts = AppRequestReceipts::new(journal.0.clone());
+    let path = journal.0.with_extension("expired");
+    // Inject capacity after loading so this sparse fixture needs no 800k hashes.
+    std::fs::File::create(&path)
+        .unwrap()
+        .set_len(50 * 1024 * 1024)
+        .unwrap();
+    let before = std::fs::read(&journal.0).unwrap();
+    let input = command("new-restart", &request);
+    assert_eq!(
+        receipts
+            .execute("alice", &input, &request, || async {
+                panic!("capacity dispatched restart")
+            })
+            .await,
+        LocalDaemonResponse::AppRequestFailed {
+            code: AppRequestErrorCode::LimitExceeded
+        }
+    );
+    let stop = LocalDaemonRequest::ControlAppWorker(ControlAppWorkerRequest {
+        installation_id: "app".into(),
+        action: AppWorkerAction::Stop,
+    });
+    for control in [stop, uninstall()] {
+        let input = command("fresh-safety", &control);
+        assert_eq!(
+            receipts
+                .execute("alice", &input, &control, || async { answer() })
+                .await,
+            answer()
+        );
+    }
+    assert_eq!(std::fs::read(&journal.0).unwrap(), before);
+    assert_eq!(std::fs::metadata(path).unwrap().len(), 50 * 1024 * 1024);
 }
