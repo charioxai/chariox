@@ -258,15 +258,19 @@ impl DaemonApp {
         let is_current_run = self
             .providers
             .get_run_for_agent(session_id, agent_id)
+            .or_else(|| {
+                self.provider_run_projection
+                    .get_for_agent(session_id, agent_id)
+            })
             .is_some_and(|current| current.id() == provider_run.id());
         // Launch completion promotes queued prompts after the run becomes Running.
         // Focus reconciliation must keep that agent's current provider available.
         Ok(active_prompt.as_ref().is_some_and(|prompt| {
-            prompt
-                .durable_delivery_provider_run_id()
-                .map_or(is_current_run, |delivery_run_id| {
-                    delivery_run_id == provider_run.id()
-                })
+            crate::runtime::prompt_state::prompt_claims_provider_run(
+                prompt,
+                provider_run.id(),
+                is_current_run || session.active_provider_run_id() == Some(provider_run.id()),
+            )
         }) || (is_current_run && !queued_prompts.is_empty()))
     }
 
@@ -285,9 +289,10 @@ impl DaemonApp {
         else {
             return Ok(false);
         };
-        Ok(prompt.durable_delivery_provider_run_id().map_or_else(
-            || session.active_provider_run_id() == Some(provider_run.id()),
-            |delivery_run_id| delivery_run_id == provider_run.id(),
+        Ok(crate::runtime::prompt_state::prompt_claims_provider_run(
+            &prompt,
+            provider_run.id(),
+            session.active_provider_run_id() == Some(provider_run.id()),
         ))
     }
 }
