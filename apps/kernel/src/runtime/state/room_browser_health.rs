@@ -123,8 +123,17 @@ impl KernelRuntimeState {
     ) {
         let diagnostic = match result {
             Ok(Response::Reconciled {
-                reconciliation: Some(_),
-            }) => None,
+                reconciliation: Some(reconciliation),
+            }) => {
+                if self.observe_room_controller_health_generation(
+                    session_id,
+                    generation,
+                    reconciliation.process.runtime_generation,
+                ) {
+                    return;
+                }
+                None
+            }
             Err(error) if error.to_string().contains("browser_debugger_unavailable") => {
                 Some("browser_debugger_unavailable")
             }
@@ -155,6 +164,63 @@ impl KernelRuntimeState {
             Ok(_) | Err(_) => return,
         };
         self.observe_room_browser_health(session_id, generation, diagnostic);
+    }
+
+    /// Attribute a restarted controller through the normal recovery fence. A
+    /// background receipt may cross a foreground mutation, so it cannot project
+    /// its tabs or complete recovery. The next normal reconcile owns that work.
+    fn observe_room_controller_health_generation(
+        &self,
+        session_id: &str,
+        room_generation: u64,
+        controller_generation: u64,
+    ) -> bool {
+        // Match the foreground observer's lock order; fence the Room and update
+        // the controller generation under the same session-owner write lease.
+        let Ok(mut generations) = self.owned.browser_controller_generations.lock() else {
+            return true;
+        };
+        let mut sessions = self.owned.session_store.write();
+        let Ok(snapshot) = sessions.room_environment_snapshot(session_id) else {
+            return true;
+        };
+        if snapshot.runtime_generation != room_generation
+            || !matches!(
+                snapshot.lifecycle,
+                EnvironmentLifecycle::Ready | EnvironmentLifecycle::Degraded
+            )
+        {
+            return true;
+        }
+        match generations.get(session_id) {
+            Some((previous, pending)) if *previous == controller_generation => return *pending,
+            None => {
+                generations.insert(session_id.to_owned(), (controller_generation, false));
+                return false;
+            }
+            Some(_) => {}
+        }
+        if sessions
+            .begin_room_environment_browser_controller_recovery(session_id)
+            .is_err()
+        {
+            return true;
+        }
+        generations.insert(session_id.to_owned(), (controller_generation, true));
+        let _ = sessions.update_room_environment_component_health(
+            session_id,
+            EnvironmentComponent::BrowserController,
+            EnvironmentComponentHealthState::Starting,
+            Some("controller_restarted"),
+        );
+        let _ = sessions.update_room_environment_component_health(
+            session_id,
+            EnvironmentComponent::Browser,
+            EnvironmentComponentHealthState::Starting,
+            None,
+        );
+        let _ = sessions.transition_room_environment(session_id, EnvironmentLifecycle::Degraded);
+        true
     }
 
     pub(crate) fn observe_room_browser_health(
