@@ -254,7 +254,7 @@ impl KernelRuntimeState {
             let batch = match polled {
                 Ok(batch) => batch,
                 // Both end fast polling; only a genuine failure spends the budget.
-                Err(error) if crate::runtime::app_views::slice_busy(&error.to_string()) => {
+                Err(error) if app_view_controller_downtime(&error.to_string()) => {
                     polls.failed();
                     continue;
                 }
@@ -1078,8 +1078,17 @@ impl From<AppRequestErrorCode> for ColdAppRestoreError {
     }
 }
 
+// Display verification can fail while a cold stream is warming or being
+// resized. This is controller downtime, not rejection of the saved App view.
+// Keep both its restore attempts and its registered call authority intact.
+fn app_view_controller_downtime(message: &str) -> bool {
+    crate::runtime::app_views::slice_busy(message)
+        || message
+            .contains("browser controller `browser.reconcile` failed with viewport_apply_failed:")
+}
+
 fn cold_restore_error(error: DaemonError) -> ColdAppRestoreError {
-    if crate::runtime::app_views::slice_busy(&error.to_string()) {
+    if app_view_controller_downtime(&error.to_string()) {
         ColdAppRestoreError::Busy
     } else {
         ColdAppRestoreError::Failed(AppRequestErrorCode::Conflict)

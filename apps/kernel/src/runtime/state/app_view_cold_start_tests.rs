@@ -123,3 +123,37 @@ async fn running_slice_start_does_not_spend_restore_or_poll_failure_budgets() {
     .unwrap();
     assert!(views.cold_start_views(&session).is_empty());
 }
+
+#[test]
+fn viewport_verification_downtime_preserves_restore_and_poll_authority() {
+    let message = "browser controller `browser.reconcile` failed with viewport_apply_failed: canonical physical display apply failed";
+    let local = DaemonError::LocalTransport {
+        operation: "browser_controller.route",
+        message: message.into(),
+    };
+    let relay = DaemonError::RelayTransport {
+        operation: "read relay peer response",
+        code: "transport_error".into(),
+        message: local.to_string(),
+        retryable: true,
+    };
+    // App commands wrap the same fault in their existing unavailable envelope.
+    for error in [local, relay] {
+        let wrapped = open_error(&error.to_string());
+        assert!(app_view_controller_downtime(&wrapped.to_string()));
+        assert!(matches!(
+            cold_restore_error(error),
+            ColdAppRestoreError::Busy
+        ));
+        assert!(matches!(
+            cold_restore_error(wrapped),
+            ColdAppRestoreError::Busy
+        ));
+    }
+    let unavailable = open_error("This Room has no browser controller available.");
+    assert!(!app_view_controller_downtime(&unavailable.to_string()));
+    assert!(matches!(
+        cold_restore_error(unavailable),
+        ColdAppRestoreError::Failed(_)
+    ));
+}
