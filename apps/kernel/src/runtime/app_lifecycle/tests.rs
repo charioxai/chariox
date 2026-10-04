@@ -532,6 +532,7 @@ mod dormancy;
 mod first_install;
 mod local_update;
 mod notifications;
+mod registration;
 
 #[test]
 fn stale_manual_stop_selection_cannot_stop_a_foreground_replacement() {

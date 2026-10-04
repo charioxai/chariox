@@ -16,7 +16,7 @@ use crate::runtime::state::KernelRuntimeState;
 use crate::session::{RuntimeInteraction, RuntimeInteractionKind};
 use crate::transport::relay_peer::RemoteNativeInteractionContext;
 
-const REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER: Duration = Duration::from_secs(15);
+pub(crate) const REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER: Duration = Duration::from_secs(15);
 // A Claude permission hook outwaits a forwarded interaction's timeout and relay
 // buffer, with room for event pickup and the relay connection, so the deny it
 // resolves to still reaches Claude.
@@ -304,24 +304,26 @@ async fn request_runtime_interaction_with_timeout(
     let timeout = interaction.timeout_sec().map(Duration::from_secs);
     let timeout_session_id = session_id.to_string();
     let timeout_interaction_id = interaction.id().to_string();
-    let receiver = state
+    let mut receiver = state
         .create_runtime_interaction_with_forwarding(session_id, interaction, forwarding)
         .await?;
-    if let Some(timeout) = timeout {
-        let state = state.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(timeout).await;
-            let _ = state
-                .timeout_runtime_interaction(&timeout_session_id, &timeout_interaction_id)
-                .await;
-        });
-    }
-    let resolution = receiver
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation,
-            message: format!("interaction dropped before resolution: {error}"),
-        })?;
+    // The timer belongs to this wait, so answering or withdrawing the card
+    // cancels it. Expiry must return the home's actual timeout/default outcome.
+    let resolution = if let Some(timeout) = timeout {
+        tokio::select! {
+            biased;
+            resolution = &mut receiver => resolution,
+            _ = tokio::time::sleep(timeout) => {
+                state.timeout_runtime_interaction(&timeout_session_id, &timeout_interaction_id).await?;
+                receiver.await
+            }
+        }
+    } else {
+        receiver.await
+    }.map_err(|error| DaemonError::LocalTransport {
+        operation,
+        message: format!("interaction dropped before resolution: {error}"),
+    })?;
     Ok(ProviderNativeInteractionResolution {
         status: resolution.status.to_string(),
         choice_id: resolution.choice_id,

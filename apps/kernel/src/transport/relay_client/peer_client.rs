@@ -455,6 +455,23 @@ pub async fn send_peer_request_via_temporary_connection_with_timeout(
     request: RelayPeerRequest,
     response_timeout: Duration,
 ) -> Result<RelayPeerResponse, DaemonError> {
+    send_peer_request_via_temporary_connection_with_optional_timeout(
+        config,
+        target,
+        request,
+        Some(response_timeout),
+    )
+    .await
+}
+
+/// A human interaction without a deadline waits until its home card settles.
+/// Connection establishment is capped by the configured transport timeout.
+pub(crate) async fn send_peer_request_via_temporary_connection_with_optional_timeout(
+    config: &crate::config::DaemonConfig,
+    target: ClientTarget,
+    request: RelayPeerRequest,
+    response_timeout: Option<Duration>,
+) -> Result<RelayPeerResponse, DaemonError> {
     #[cfg(test)]
     {
         let mut trace = relay_discovery::TemporaryPeerTestTrace::new(config.relay_url.as_deref());
@@ -487,7 +504,7 @@ async fn send_peer_request_via_temporary_connection_with_timeout_inner(
     config: &crate::config::DaemonConfig,
     target: ClientTarget,
     request: RelayPeerRequest,
-    response_timeout: Duration,
+    response_timeout: Option<Duration>,
     #[cfg(test)] test_trace: &mut relay_discovery::TemporaryPeerTestTrace,
 ) -> Result<RelayPeerResponse, DaemonError> {
     let target_ref = target
@@ -546,11 +563,15 @@ async fn send_peer_request_via_temporary_connection_with_timeout_inner(
     )?;
     #[cfg(test)]
     test_trace.record("registered_peer_connect_started", None);
-    let (mut socket, _) = timeout(response_timeout, connect_async(&relay_url))
+    let transport_timeout = Duration::from_millis(config.relay_request_timeout_ms);
+    let connect_timeout = response_timeout
+        .map(|deadline| deadline.min(transport_timeout))
+        .unwrap_or(transport_timeout);
+    let (mut socket, _) = timeout(connect_timeout, connect_async(&relay_url))
         .await
         .map_err(|_| DaemonError::LocalTransport {
             operation: "connect temporary relay peer socket",
-            message: format!("timed out after {}ms", response_timeout.as_millis()),
+            message: format!("timed out after {}ms", connect_timeout.as_millis()),
         })?
         .map_err(|error| DaemonError::LocalTransport {
             operation: "connect temporary relay peer socket",
@@ -600,7 +621,9 @@ async fn send_peer_request_via_temporary_connection_with_timeout_inner(
             operation: "write temporary relay register",
             message: error.to_string(),
         })?;
-    let response_timeout_ms = u64::try_from(response_timeout.as_millis()).unwrap_or(u64::MAX);
+    let response_timeout_ms = response_timeout
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(u64::MAX);
     let trace = RelayPeerRequestTrace::new(&request_id, &target, "temporary", response_timeout_ms);
     socket
         .send(Message::Text(
@@ -628,7 +651,7 @@ async fn send_peer_request_via_temporary_connection_with_timeout_inner(
                 message,
             }
         })?;
-    let response = timeout(response_timeout, async {
+    let read_response = async {
         loop {
             match socket.next().await {
                 Some(Ok(Message::Text(text))) => {
@@ -747,8 +770,11 @@ async fn send_peer_request_via_temporary_connection_with_timeout_inner(
                 }
             }
         }
-    })
-    .await;
+    };
+    let response = match response_timeout {
+        Some(duration) => timeout(duration, read_response).await,
+        None => Ok(read_response.await),
+    };
     let result = response.unwrap_or_else(|_| {
         let message = format!(
             "timed out waiting for relay peer response after {}ms",
