@@ -12,6 +12,7 @@ import signal
 from pathlib import Path
 import subprocess
 import threading
+import tempfile
 import time
 import uuid
 
@@ -50,6 +51,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--state-root", type=Path, default=Path.home() / ".chariox/dev/computer-input-x11")
+    parser.add_argument("--test-binary", type=Path, help="MP-08/MP-10/MP-11 exact-source kernel test artifact for physical abnormal-exit reset")
     parser.add_argument("--server", choices=["Xorg", "Xvfb"], default="Xorg")
     args = parser.parse_args()
     evidence = args.output.resolve()
@@ -150,6 +153,10 @@ def main():
         watcher.start()
         execute("mkdir", "-p", ROOT)
         docker("cp", str(fixture_html), f"{name}:{ROOT}/computer-input-fixture.html")
+        for helper in ("computer-input-process.py", "computer-input-fault.py"):
+            file = Path(__file__).with_name("lib") / helper
+            report["helperSha256"][helper] = hashlib.sha256(file.read_bytes()).hexdigest()
+            docker("cp", str(file), f"{name}:{ROOT}/{helper}")
         docker("exec", "-u", "root", name, "chown", "slice:slice", f"{ROOT}/computer-input-fixture.html")
         if args.server == "Xorg":
             docker("exec", "-d", "-u", "root", name, "Xorg", ":99", "-config", "/opt/computer-source/xorg-dummy.conf",
@@ -327,11 +334,12 @@ def main():
 
         def hold_cancel_check(signum):
             prepare()
-            code = "import os; os.getpgrp()==os.getpid() or os.setsid(); open('" + ROOT + "/hold-pgid','w').write(str(os.getpid())); os.execv('/bin/bash',['bash','/opt/computer-source/slice-screen.sh','computer-key-hold-stdin','10000'])"
             result = []
             def held():
                 try:
-                    execute(PYTHON, "-c", code, stdin=b"shift+F8", accepted=(0, 137, 143), timeout=20)
+                    execute(PYTHON, f"{ROOT}/computer-input-process.py", "start", f"{ROOT}/hold-pgid",
+                            "/opt/computer-source/slice-screen.sh", "computer-key-hold-stdin", "10000",
+                            stdin=b"shift+F8", accepted=(0, 137, 143), timeout=20)
                     result.append(True)
                 except Exception as error:
                     result.append(error)
@@ -339,7 +347,7 @@ def main():
             before = len(receipt()["value"]["events"])
             worker.start()
             wait(lambda: native_held()["keys"] == 2)
-            execute(PYTHON, "-c", "import os,signal; pid=int(open('" + ROOT + "/hold-pgid').read()); assert os.getpgid(pid)==pid; os.killpg(pid," + str(signum) + ")")
+            execute(PYTHON, f"{ROOT}/computer-input-process.py", "signal", f"{ROOT}/hold-pgid", str(signum))
             worker.join(10)
             assert not worker.is_alive() and result == [True], "interrupted hold did not settle"
             if signum == signal.SIGKILL:
@@ -353,6 +361,49 @@ def main():
             return {"signal": int(signum), "released": True, "resetAfterKill": signum == signal.SIGKILL}
         case("keyboard.hold-interrupt-release", lambda: hold_cancel_check(signal.SIGTERM))
         case("keyboard.hold-cancel-reset", lambda: hold_cancel_check(signal.SIGKILL))
+
+        if args.test_binary:
+            import shlex
+            binary = args.test_binary.resolve()
+            assert binary.is_absolute() and binary.is_file(), "exact-source test binary missing"
+            report["kernelTestBinary"] = str(binary)
+            report["kernelTestBinarySha256"] = hashlib.sha256(binary.read_bytes()).hexdigest()
+            command = ["docker", "exec", "-i", "-u", "slice", "-e", "DISPLAY=:99", "-e",
+                       "CHARIOX_SLICE_ROOT=/opt/computer-source", "-e", f"CHARIOX_SLICE_PRIVATE_ROOT={ROOT}",
+                       name, PYTHON, f"{ROOT}/computer-input-fault.py"]
+            wrapper = evidence / "physical-screen-tool.sh"
+            wrapper.write_text("#!/bin/sh\nexec " + shlex.join(command) + ' "$@"\n')
+            wrapper.chmod(0o700)
+            def abnormal_exit_check():
+                prepare()
+                env = os.environ.copy()
+                env["CHARIOX_B204_PHYSICAL_SCREEN_TOOL"] = str(wrapper)
+                test = "runtime::state::computer_hold_tests::mp08_mp10_mp11_physical_child_death_resets_before_failed_acknowledgement"
+                argv = [str(binary), test, "--exact", "--ignored", "--test-threads=1"]
+                # This explicit physical test already owns isolation; the normal
+                # reexec drops external fixture handles from its environment.
+                state_root = args.state_root.resolve()
+                assert args.state_root.is_absolute() and not state_root.is_relative_to(REPO), "state must be absolute and outside repo"
+                state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+                with tempfile.TemporaryDirectory(prefix="r2-physical-", dir=state_root) as scratch:
+                    for key, relative in [("HOME", "home"), ("CHARIOX_HOME", "home/.chariox"),
+                                          ("TMPDIR", "tmp"), ("XDG_CONFIG_HOME", "config"),
+                                          ("XDG_STATE_HOME", "state"), ("XDG_CACHE_HOME", "cache"),
+                                          ("XDG_DATA_HOME", "data"), ("XDG_RUNTIME_DIR", "runtime")]:
+                        path = Path(scratch) / relative
+                        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+                        env[key] = str(path)
+                    env["CHARIOX_ISOLATED_ENV_TEST"] = test
+                    result = subprocess.run(argv, env=env, capture_output=True, timeout=90)
+                (evidence / "physical-kernel.log").write_bytes(result.stdout + result.stderr)
+                report["commands"].append({"argv": argv, "exitCode": result.returncode})
+                assert result.returncode == 0, "kernel did not release fatal-child input before failed acknowledgement"
+                assert native_held() == {"keys": 0, "buttons": 0}
+                events = receipt()["value"]["events"]
+                assert any(e["kind"] == "keyup" and e["key"] == "F8" and e["trusted"] for e in events)
+                assert any(e["kind"] == "mouseup" and e["trusted"] for e in events)
+                return {"signal": "SIGQUIT", "keyboardAndPointerReleasedBeforeFailedAck": True, "trusted": True}
+            case("input.abnormal-child-kernel-release", abnormal_exit_check)
 
         def rejected_hold_check():
             for duration in [0, 10001]:
@@ -371,17 +422,18 @@ def main():
         def cancellation_check():
             prepare()
             # Kernel cancellation kills the owned process group and resets input.
-            code = "import os; os.getpgrp()==os.getpid() or os.setsid(); open('" + ROOT + "/typing-pgid','w').write(str(os.getpid())); os.execv('/bin/bash',['bash','/opt/computer-source/slice-screen.sh','computer-type-stdin'])"
             future = []
             def type_held():
                 try:
-                    future.append(execute(PYTHON, "-c", code, stdin=b"x" * 400, accepted=(0, 137), timeout=40))
+                    future.append(execute(PYTHON, f"{ROOT}/computer-input-process.py", "start", f"{ROOT}/typing-pgid",
+                                          "/opt/computer-source/slice-screen.sh", "computer-type-stdin",
+                                          stdin=b"x" * 400, accepted=(0, 137), timeout=40))
                 except Exception as error:
                     future.append(error)
             worker = threading.Thread(target=type_held)
             worker.start()
             wait(lambda: 0 < len(receipt()["value"]["value"]) < 400)
-            execute(PYTHON, "-c", "import os,signal; pid=int(open('" + ROOT + "/typing-pgid').read()); assert os.getpgid(pid)==pid; os.killpg(pid,signal.SIGKILL)")
+            execute(PYTHON, f"{ROOT}/computer-input-process.py", "signal", f"{ROOT}/typing-pgid", str(signal.SIGKILL))
             worker.join(10)
             assert not worker.is_alive(), "cancelled helper did not settle"
             screen("computer-input-reset")
