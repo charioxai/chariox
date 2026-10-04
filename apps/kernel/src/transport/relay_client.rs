@@ -64,6 +64,7 @@ use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
 use incoming_envelopes::{handle_incoming_envelope, IncomingEnvelopeContext, RelayReconnectGate};
 #[cfg(test)]
 pub use peer_client::send_peer_request_via_relay;
+pub(crate) use peer_client::send_peer_request_via_temporary_connection_with_optional_timeout;
 pub(crate) use peer_client::{
     enqueue_peer_request_via_connected_relay_with_timeout,
     send_peer_request_to_known_kernel_via_relay,

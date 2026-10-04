@@ -19,7 +19,14 @@ pub(crate) fn isolate_environment_test() -> bool {
     }
     let root = super::TestWorktree::new("environment");
     let mut command = Command::new(std::env::current_exe().expect("test binary should resolve"));
-    command.args([name, "--exact", "--nocapture", "--test-threads=1"]);
+    // The parent already selected this test, including an explicitly requested ignored proof.
+    command.args([
+        name,
+        "--exact",
+        "--include-ignored",
+        "--nocapture",
+        "--test-threads=1",
+    ]);
     command.env_clear();
     // Preserve tool locations, never the kernel's bootstrap/provider state.
     for (key, value) in std::env::vars_os() {

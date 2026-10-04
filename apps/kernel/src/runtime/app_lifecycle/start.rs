@@ -213,9 +213,15 @@ pub(super) fn register(
         + migrate_from.map_or(Duration::ZERO, |_| {
             Duration::from_millis(chariox_app_runtime::worker_process::MIGRATION_TIMEOUT_MS)
         });
-    let registered = starting
-        .await_registered_blocking(registration)
-        .map_err(|_| LifecycleError::Registration)?;
+    let registered =
+        starting
+            .await_registered_blocking(registration)
+            .map_err(|error| match error {
+                crate::runtime::app_worker::AppWorkerError::Deadline => {
+                    LifecycleError::RegistrationDeadline
+                }
+                _ => LifecycleError::Registration,
+            })?;
     if context.control.stopped() {
         return Err(LifecycleError::Stopped);
     }
