@@ -26,6 +26,7 @@ import {
 import { startNativeKernelPumpLoop } from "./native-kernel-pump.js"
 import {
   requestNativeProviderRunLaunch,
+  waitForNativeProviderRunReady,
 } from "./provider-run-control.js"
 import { bridgeRemoteNativeProviderEndpoint } from "./remote-endpoint-bridge.js"
 import {
@@ -325,13 +326,14 @@ async function launchManagedNativeProviderRun(options: {
   model: string
   effort: string
 }): Promise<RuntimeProviderRun> {
-  return requestNativeProviderRunLaunch(options.client, {
+  const run = await requestNativeProviderRunLaunch(options.client, {
     sessionId: options.sessionId,
     provider: "codex",
     model: options.model,
     effort: options.effort,
     agentId: options.agentId,
   })
+  return waitForNativeProviderRunReady(options.client, run.id)
 }
 
 async function runCodexTui(options: {

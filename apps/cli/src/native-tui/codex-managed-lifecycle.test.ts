@@ -9,6 +9,7 @@ import test, { type TestContext } from "node:test"
 import WebSocket, { WebSocketServer } from "ws"
 import { LocalIpcClient } from "../ipc.js"
 import { runCodexNativeTui } from "./codex.js"
+import { waitForNativeProviderRunReady } from "./provider-run-control.js"
 
 // MP-08 / MP-10: actual entry point + proxy with distinct display/managed turns.
 async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended") {
@@ -126,3 +127,10 @@ finally { clearTimeout(timer); socket.close(); }
 test("MP-08 MP-10 native entry point interrupts the kernel managed turn", (t) => fixture(t, "interrupt"))
 test("MP-08 MP-10 native entry point waits for a cold managed endpoint", (t) => fixture(t, "cold"))
 test("MP-08 MP-10 native entry point reports an ended launch before attaching", (t) => fixture(t, "ended"))
+
+// MP-08 / MP-10: A launch that never settles has a bounded actionable failure.
+test("MP-08 MP-10 managed endpoint readiness timeout names the pending run", async () => {
+  const client = { send: async () => ({ ProviderRun: { provider_run: { id: "pending-run", state: "Starting" } } }) } as unknown as LocalIpcClient
+  await assert.rejects(waitForNativeProviderRunReady(client, "pending-run", { timeoutMs: 20, pollIntervalMs: 1 }),
+    /timed out.*pending-run \(Starting\)/)
+})

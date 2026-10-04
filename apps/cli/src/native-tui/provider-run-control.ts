@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises"
 import type { RuntimeProviderRun } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
 import {
@@ -50,6 +51,26 @@ export async function getNativeProviderRun(
 ): Promise<RuntimeProviderRun> {
   const response = await client.send<Record<string, unknown>>(getProviderRunRequest(providerRunId))
   return expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRun").provider_run
+}
+
+// MP-08 / MP-10: LaunchAccepted contains planned metadata. Running is
+// published only after the kernel finishes initializing the provider runtime.
+export async function waitForNativeProviderRunReady(
+  client: LocalIpcClient,
+  providerRunId: string,
+  options: { timeoutMs?: number, pollIntervalMs?: number } = {},
+): Promise<RuntimeProviderRun> {
+  const deadline = Date.now() + (options.timeoutMs ?? 60_000)
+  let latest: RuntimeProviderRun | null = null
+  while (Date.now() < deadline) {
+    latest = await getNativeProviderRun(client, providerRunId)
+    if (latest.state === "Ended" || latest.state === "Parked") {
+      throw new Error(`Codex provider run ${latest.state.toLowerCase()} before attach was ready: ${providerRunId}`)
+    }
+    if (latest.state === "Running") return latest
+    await sleep(Math.min(options.pollIntervalMs ?? 250, Math.max(0, deadline - Date.now())))
+  }
+  throw new Error(`timed out waiting for Codex provider run to become ready: ${providerRunId} (${latest?.state ?? "unknown"})`)
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {
