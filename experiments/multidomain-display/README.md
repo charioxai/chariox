@@ -156,3 +156,29 @@ Run the focused reconstruction/metric checks with:
 ```sh
 node --test experiments/multidomain-display/metrics.test.mjs experiments/multidomain-display/tiles.test.mjs
 ```
+
+MD-DISPLAY-02 Phase 2 also measures `MD_MODES=lossless`: CDP PNG frames go to
+native ImageBitmap/OffscreenCanvas decode/diff/PNG encode in the trusted prototype
+encoder browser, then an exact full frame or atomic dirty-tile batch crosses the
+WebSocket. Full PNG wins when it is smaller than the sum of tile payloads.
+Initial frames and batches are application-paced at `MD_BITRATE`; one complete
+image is a burst (up to the measured initial size), not a hard instantaneous
+network cap. At most eight tile sends await decode credit. Source acknowledgements
+wait for viewer presentation; superseded incoming capture frames can be dropped.
+Unchanged captures acknowledge a no-op instead of waiting for nonexistent paint.
+This browser avoids the slow JS PNG decompression path used in the first exact
+prototype; it is still a research device, not a shipping encoder dependency.
+
+```sh
+MD_PUBLIC=0 MD_MODES=lossless MD_BITRATE=2000000 MD_OUTPUT=/root/.codex/evidence/browser-resume-20260930/display/phase2-exact-2m node experiments/multidomain-display/run.mjs
+MD_PUBLIC=lossless MD_PAGES=docs MD_MODES=lossless MD_BITRATE=2000000 MD_OUTPUT=/root/.codex/evidence/browser-resume-20260930/display/phase2-public-exact node experiments/multidomain-display/run.mjs
+```
+
+The public supplement replays ten viewer wheel inputs on actual CDP documentation,
+checks source scrolling and first subsequent viewer output, then compares the
+settled exact projection. That proxy is not timestamp-paired physical scanout.
+Full-frame frozen comparisons in exact mode include a final convergence refresh;
+video curves retain their original pre-refinement score. Media frame dropping and
+scroll/large-region bandwidth are separate from settled pixel fidelity. Exact
+fixture pixels alone do not establish that moving media beats Selkies at the same
+latency, that this obeys a WAN hard cap, or that any authenticated site is safe.

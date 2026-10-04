@@ -18,8 +18,8 @@ if(output.startsWith(git('rev-parse','--show-toplevel')+'/'))throw Error('MD-DIS
 await mkdir(output,{recursive:true});
 const result={items:['MD-DISPLAY-01','MD-DISPLAY-02'],start:new Date().toISOString(),source:{commit:git('rev-parse','HEAD'),base:'9334141d420f8a32393f206102c5b8b4a1b0b609',dirty:git('status','--porcelain'),prototype_diff_sha256: null},topology:'headed host Chromium → CDP PNG → browser WebCodecs encoder → loopback plaintext WebSocket → browser decoder; isolated-world DOM → loopback WebSocket → scriptless iframe',scope:'credential-free display research; no production or hosted relay admission proof',runs:[],resource_samples:[],cleanup:{}};
 const {createHash}=await import('node:crypto');result.source.prototype_diff_sha256=createHash('sha256').update(git('diff','HEAD')).digest('hex');
-result.source.prototype_files={};for(const file of ['run.mjs','runtime.mjs','fixtures.mjs','mirror-source.js','metrics.mjs','viewer.html','selkies.mjs','package.json','tiles.mjs'])result.source.prototype_files[file]=createHash('sha256').update(await readFile(path.join(here,file))).digest('hex');
-const servers=[],screens=[],browsers=[],roles=new Map(),events=[],groups=[];let monitor,sampling=false,sourcePage,sourceCDP,world,activeMode,pending=new Map(),received=new Map(),byteCount={},inputStats=[],installedBaseline,activeProbe,ingress=new Map(),ingressLatency=new Map(),tileAcks=new Set(),traffic=[],metricSources=new Map(),frameMetrics=[],metricWrites=[],activePage,saveMetric,lastCast;
+result.source.prototype_files={};for(const file of ['run.mjs','runtime.mjs','fixtures.mjs','mirror-source.js','metrics.mjs','viewer.html','selkies.mjs','package.json','tiles.mjs','exact-codec.js'])result.source.prototype_files[file]=createHash('sha256').update(await readFile(path.join(here,file))).digest('hex');
+const servers=[],screens=[],browsers=[],roles=new Map(),events=[],groups=[];let monitor,sampling=false,sourcePage,sourceCDP,world,activeMode,pending=new Map(),received=new Map(),byteCount={},installedBaseline,activeProbe,ingress=new Map(),ingressLatency=new Map(),tileAcks=new Set(),traffic=[],metricSources=new Map(),frameMetrics=[],metricWrites=[],activePage,saveMetric,lastCast,exactWorking=false,exactPainted=new Set();
 const reportError=e=>events.push({kind:'harness-error',message:e.message});
 for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{requestStop();process.exitCode=130});
 const deadline=setTimeout(()=>{requestStop();process.exitCode=124},15*60*1000);
@@ -28,6 +28,7 @@ const send=(role,value)=>{const ws=roles.get(role);if(!ws||ws.readyState!==1)ret
 function pack(meta,bytes){const header=Buffer.from(JSON.stringify(meta)),length=Buffer.alloc(4);length.writeUInt32BE(header.length);return Buffer.concat([length,header,bytes])}
 async function input(m){
   if(m.kind!=='input')return;
+  if(m.action==='wheel'){await sourceCDP.send('Input.dispatchMouseEvent',{type:'mouseWheel',x:m.x,y:m.y,deltaX:m.dx,deltaY:m.dy});return}
   if(m.action==='coordinate'){await click(m.x,m.y);return}
   const target=await evaluate(`mdMirror.target(${Number(m.id)})`);
   if(!target||target.password)throw Error('MD-DISPLAY invalid/stale/protected target');
@@ -43,11 +44,12 @@ async function input(m){
 async function click(x,y){await sourceCDP.send('Input.dispatchMouseEvent',{type:'mousePressed',x,y,button:'left',clickCount:1});await sourceCDP.send('Input.dispatchMouseEvent',{type:'mouseReleased',x,y,button:'left',clickCount:1})}
 async function evaluate(expression){const r=await sourceCDP.send('Runtime.evaluate',{expression,contextId:world,returnByValue:true});if(r.exceptionDetails)throw Error('MD-DISPLAY isolated evaluation failed');return r.result.value}
 async function listen(handler){const server=createServer(handler);await new Promise(r=>server.listen(0,'127.0.0.1',r));servers.push(server);return server}
+const exactJS=await readFile(path.join(here,'exact-codec.js'));
 const viewerHTML=await readFile(path.join(here,'viewer.html'));
 const mirrorJS=await readFile(path.join(here,'mirror-source.js'),'utf8');
 const documentText=await readFile(path.resolve('docs/PROTOCOL.md'),'utf8');
 let otherOrigin;
-const handler=(req,res)=>{if(req.url.startsWith('/viewer')){res.setHeader('Content-Type','text/html');res.end(viewerHTML);return}const page=fixture(req.url.split('?')[0],otherOrigin,documentText);res.setHeader('Content-Type','text/html');res.statusCode=page?200:404;res.end(page||'Not found')};
+const handler=(req,res)=>{if(req.url==='/exact-codec.js'){res.setHeader('Content-Type','text/javascript');res.end(exactJS);return}if(req.url.startsWith('/viewer')){res.setHeader('Content-Type','text/html');res.end(viewerHTML);return}const page=fixture(req.url.split('?')[0],otherOrigin,documentText);res.setHeader('Content-Type','text/html');res.statusCode=page?200:404;res.end(page||'Not found')};
 try{
   result.resource_samples.push(await resources());guard(result.resource_samples.at(-1));
   const server=await listen(handler),other=await listen(handler);otherOrigin=`http://127.0.0.1:${other.address().port}`;const origin=`http://127.0.0.1:${server.address().port}`;
@@ -55,10 +57,12 @@ try{
   wss.on('connection',(ws,request)=>{const role=new URL(request.url,origin).searchParams.get('role');roles.set(role,ws);ws.on('message',(data,binary)=>{
     if(binary){if(role==='encoder'){count('encoded',data.length);send(activeMode==='hybrid'?'dom':'video',data)}return}
     const m=JSON.parse(data);events.push({...m,role,at_ms:performance.now()});
+    if(m.kind==='exact-noop'&&role==='encoder')exactPainted.add(m.timestamp);
     if(m.kind==='metric-frame'){const ref=metricSources.get(m.timestamp);if(ref){metricSources.delete(m.timestamp);metricWrites.push(saveMetric(ref,m,metricWrites.length))}}
-    if(m.kind==='tile-ack')tileAcks.add(m.id);
+    if(m.kind==='tile-ack'){tileAcks.add(m.id);send('encoder',{kind:'exact-credit',id:m.id})}
     if(m.kind==='input'){if(pending.has(activeProbe)&&!ingress.has(activeProbe))ingress.set(activeProbe,performance.now());input(m).catch(reportError)}
     if(m.kind==='probe'){const t=pending.get(m.seq);if(t!==undefined){received.set(m.seq,performance.now()-t);if(ingress.has(m.seq))ingressLatency.set(m.seq,performance.now()-ingress.get(m.seq));pending.delete(m.seq)}}
+    if(m.kind==='painted'&&m.mode==='exact')exactPainted.add(m.timestamp);
     if(m.kind==='painted'&&['video','dom'].includes(role)){if(installedBaseline)installedBaseline.ack(m.frame_id);else send('encoder',{kind:'ack',timestamp:m.timestamp})}
   })});
   let sourceScreen;
@@ -96,11 +100,12 @@ try{
     }
     return {node_count:snapshot.records.length,changed:changed.length,opaque:snapshot.opaque};
   }
-  const frameHandler=async f=>{try{lastCast=Buffer.from(f.data,'base64');const timestamp=Math.round(performance.now()*1000),metric=process.env.MD_FRAME_METRICS==='1'&&activePage==='media'&&metricSources.size+frameMetrics.length<3;if(metric)metricSources.set(timestamp,Buffer.from(f.data,'base64'));count('cdp_png',Buffer.from(f.data,'base64').length);send('encoder',pack({kind:'frame',timestamp,metric},Buffer.from(f.data,'base64')));await sourceCDP.send('Page.screencastFrameAck',{sessionId:f.sessionId})}catch(e){reportError(e)}};
+  const exact={reset(){exactPainted.clear();send('encoder',{kind:'reset-encoder'})},async push(bytes,timestamp){send('encoder',pack({kind:'frame',exact:true,timestamp},bytes));await until(()=>exactPainted.has(timestamp),'native exact frame presented',15000)}};
+  const frameHandler=async f=>{try{lastCast=Buffer.from(f.data,'base64');const timestamp=Math.round(performance.now()*1000),metric=process.env.MD_FRAME_METRICS==='1'&&activePage==='media'&&metricSources.size+frameMetrics.length<3;if(metric)metricSources.set(timestamp,Buffer.from(f.data,'base64'));count('cdp_png',Buffer.from(f.data,'base64').length);if(activeMode==='lossless'){if(!exactWorking){exactWorking=true;try{await exact.push(lastCast,timestamp)}finally{exactWorking=false}}}else send('encoder',pack({kind:'frame',timestamp,metric},Buffer.from(f.data,'base64')));await sourceCDP.send('Page.screencastFrameAck',{sessionId:f.sessionId})}catch(e){reportError(e)}};
   for(const name of (process.env.MD_PAGES||'docs,spa,form,media,iframe').split(',')){
     await sourcePage.goto(`${origin}/${name}`);await sourcePage.bringToFront();await installMirror();await pause(300);
     for(const mode of installedBaseline?['selkies']:(process.env.MD_MODES||'screencast,capture,dom').split(',')){
-      activeMode=mode;activePage=name;lastCast=null;frameMetrics=[];metricSources.clear();metricWrites=[];byteCount={};pending.clear();received.clear();ingress.clear();ingressLatency.clear();inputStats=[];events.length=0;traffic=[];tileAcks.clear();previous=new Map();send('dom',{kind:'reset'});send('encoder',{kind:'reset-encoder'});send('video',{kind:'reset-video'});
+      activeMode=mode;activePage=name;lastCast=null;exact.reset();frameMetrics=[];metricSources.clear();metricWrites=[];byteCount={};pending.clear();received.clear();ingress.clear();ingressLatency.clear();events.length=0;traffic=[];tileAcks.clear();previous=new Map();send('dom',{kind:'reset'});send('encoder',{kind:'reset-encoder'});send('video',{kind:'reset-video'});
       for(const p of [video,dom,encoder])await p.evaluate(()=>{Object.assign(md,{lastSeq:0,errors:[],outputs:0,inputs:0,dimensions:[],codecSupport:[],configs:[],patches:0})});
       // Reset only the test probe through its actual source page state by reloading.
       await sourceCDP.send('Emulation.setDeviceMetricsOverride',{width:960,height:600,deviceScaleFactor:2,mobile:false});await sourcePage.reload();await installMirror();await pause(200);
@@ -111,10 +116,10 @@ try{
       const mirrorFrame=async()=>{if(working)return;working=true;try{lastSnapshot=await mirror(name==='media'||name==='iframe',true)}catch(e){reportError(e)}finally{working=false}};
       if(mode==='hybrid'){lastSnapshot=await mirror(true,false);send('dom',{kind:'regions',regions:lastSnapshot.opaque});pump=setInterval(async()=>{if(working)return;working=true;try{lastSnapshot=await mirror(false,false)||lastSnapshot;send('dom',{kind:'regions',regions:lastSnapshot.opaque})}catch(e){reportError(e)}finally{working=false}},100)}
       if(mode==='selkies'){await installedBaseline.start((meta,bytes)=>send('video',pack(meta,bytes)),n=>count('selkies_video',n))}
-      else if(['screencast','hybrid'].includes(mode)){sourceCDP.on('Page.screencastFrame',frameHandler);await sourceCDP.send('Page.startScreencast',{format:'png',maxWidth:1920,maxHeight:1200,everyNthFrame:1})}
+      else if(['screencast','hybrid','lossless'].includes(mode)){sourceCDP.on('Page.screencastFrame',frameHandler);await sourceCDP.send('Page.startScreencast',{format:'png',maxWidth:1920,maxHeight:1200,everyNthFrame:1})}
       else if(mode==='capture'){await captureFrame();pump=setInterval(captureFrame,100)}
       else {await mirrorFrame();pump=setInterval(mirrorFrame,50)}
-      const client=['dom','hybrid'].includes(mode)?dom:video;await client.bringToFront();await pause(600);
+      const client=['dom','hybrid'].includes(mode)?dom:video;await client.bringToFront();await pause(600);if(mode==='lossless')await until(async()=>await video.evaluate(()=>md.outputs)>0,'exact initial base painted');const bootstrapMs=performance.now()-start;
       const step=await sourcePage.locator('#step').boundingBox();
       for(let seq=1;seq<=20;seq++){
         activeProbe=seq;
@@ -145,13 +150,17 @@ try{
       clearInterval(pump);await until(()=>!working,'pump settled before fidelity capture');
       await pause(250);
       if(mode==='dom'){await mirror(true,true);await pause(250)}else if(mode==='capture')await captureFrame();
-      const beforeOutputs=await video.evaluate(()=>md.outputs);await pause(200);
-      const ref=await capture();await pause(200);const actual=['dom','hybrid'].includes(mode)?await domSnapshot():await videoSnapshot();
+      await pause(200);
+      const ref=await capture();await pause(200);let actual=['dom','hybrid'].includes(mode)?await domSnapshot():await videoSnapshot();
+      // Settle producers before synchronous evidence work; avoid diagnostic decoder bursts.
+      if(mode==='selkies')await installedBaseline.stop();
+      if(['screencast','hybrid','lossless'].includes(mode)){await sourceCDP.send('Page.stopScreencast');sourceCDP.off('Page.screencastFrame',frameHandler);await until(()=>!exactWorking,'exact frame settled')}
+      if(mode==='lossless'){await exact.push(ref,Math.round(performance.now()*1000));actual=await videoSnapshot()}
       const captureFidelity=lastCast?await saveComparison(`${name}-${mode}-capture-only`,ref,lastCast):null;
       const fidelity=await saveComparison(`${name}-${mode}`,ref,actual),duration=(performance.now()-start)/1000;
       const activeBytes={...byteCount},activeTraffic=[...traffic];
       clearInterval(pump);await until(()=>!working,'pump settled');
-      if(['screencast','hybrid'].includes(mode)){await sourceCDP.send('Page.stopScreencast');sourceCDP.off('Page.screencastFrame',frameHandler)}
+      if(['screencast','hybrid','lossless'].includes(mode)){await sourceCDP.send('Page.stopScreencast');sourceCDP.off('Page.screencastFrame',frameHandler)}
       if(mode==='selkies')await installedBaseline.stop();
       await encoder.evaluate(()=>mdFinish());await pause(150);
       await Promise.all(metricWrites);
@@ -180,16 +189,27 @@ try{
         switching.video_to_dom_ms=performance.now()-back;switching.dom_bytes=(byteCount.dom||0)-domBefore;switching.definition='one switch per case; full DOM+PNG bootstrap back, first decoded video forward, includes automation; no WAN';
       }
       const clientStats=await client.evaluate(()=>window.md),encoderStats=await encoder.evaluate(()=>window.md);
-      const row={page:name,mode,status:received.size===20&&fidelity.comparable?'PASS_PROTOTYPE':'RED',codec:mode==='dom'?null:mode==='selkies'?installedBaseline.metadata.decoder_config?.codec:codec,duration_s:duration,target_bitrate_bps:Number(process.env.MD_BITRATE||8000000),rate_control:process.env.MD_RATE||'variable',moving_frame_metrics:frameMetrics,refinement,switching,traffic:activeTraffic,bytes:activeBytes,bytes_per_s:Object.fromEntries(Object.entries(activeBytes).map(([k,v])=>[k,v/duration])),latency:distribution([...received.values()]),capture_fidelity:captureFidelity,latency_definition:'trusted viewer click submission on harness clock → matching source probe painted/read back after viewer rAF; excludes physical monitor scanout',fidelity,interactions,mirror:lastSnapshot,client:clientStats,encoder:{codecSupport:encoderStats.codecSupport,configs:encoderStats.configs,dimensions:encoderStats.dimensions.slice(-5),errors:encoderStats.errors},errors:events.filter(e=>['error','harness-error','probe-timeout'].includes(e.kind))};
+      const row={page:name,mode,status:received.size===20&&fidelity.comparable?'PASS_PROTOTYPE':'RED',codec:['dom','lossless'].includes(mode)?null:mode==='selkies'?installedBaseline.metadata.decoder_config?.codec:codec,duration_s:duration,bootstrap_ms:bootstrapMs,exact_stream:mode==='lossless'?encoderStats.exactStats:null,target_bitrate_bps:Number(process.env.MD_BITRATE||8000000),rate_control:process.env.MD_RATE||'variable',moving_frame_metrics:frameMetrics,refinement,switching,traffic:activeTraffic,bytes:activeBytes,bytes_per_s:Object.fromEntries(Object.entries(activeBytes).map(([k,v])=>[k,v/duration])),latency:distribution([...received.values()]),capture_fidelity:captureFidelity,latency_definition:'trusted viewer click submission on harness clock → matching source probe painted/read back after viewer rAF; excludes physical monitor scanout',fidelity,interactions,mirror:lastSnapshot,client:clientStats,encoder:{codecSupport:encoderStats.codecSupport,configs:encoderStats.configs,dimensions:encoderStats.dimensions.slice(-5),errors:encoderStats.errors},errors:events.filter(e=>['error','harness-error','probe-timeout'].includes(e.kind))};
       const resourceAfter=await resources(groups),ticks=Math.max(0,resourceAfter.cpu_ticks-resourceBefore.cpu_ticks),sampled=result.resource_samples.slice(resourceIndex);
       row.latency_from_input_ingress=distribution([...ingressLatency.values()]);row.ingress_definition='harness receives viewer input to matching pixels/DOM after viewer rAF; excludes client uplink and physical scanout';
       row.resources={cpu_percent_of_one_core:100*ticks/100/((resourceAfter.monotonic_ms-resourceBefore.monotonic_ms)/1000),peak_owned_host_rss_bytes:Math.max(resourceBefore.rss_bytes,resourceAfter.rss_bytes,...sampled.map(s=>s.rss_bytes)),sample_interval_ms:1000,cpu_clock_ticks_per_second:100,definition:'owned host Chrome/Xvfb process groups plus harness; container cost is separately sampled for Selkies; exiting process CPU may be undercounted'};
-      result.runs.push(row);await writeFile(path.join(output,'results.json'),JSON.stringify(result,null,2));console.log(`MD-DISPLAY-02/03 ${name}/${mode}: p50=${row.latency.p50_ms?.toFixed(1)}ms PSNR=${fidelity.lossless?'lossless':fidelity.comparable?fidelity.psnr_db.toFixed(1):'incomparable'} bytes/s=${Math.round(activeBytes[mode==='dom'?'dom':mode==='selkies'?'selkies_video':'encoded']/duration)}`);
+      result.runs.push(row);await writeFile(path.join(output,'results.json'),JSON.stringify(result,null,2));console.log(`MD-DISPLAY-02/03 ${name}/${mode}: p50=${row.latency.p50_ms?.toFixed(1)}ms PSNR=${fidelity.lossless?'lossless':fidelity.comparable?fidelity.psnr_db.toFixed(1):'incomparable'} bytes/s=${Math.round(activeBytes[mode==='dom'?'dom':mode==='selkies'?'selkies_video':mode==='lossless'?'video':'encoded']/duration)}`);
       if(row.latency.n!==20||row.errors.length||clientStats.errors.length||!fidelity.comparable||(refinement&&!refinement.fidelity.lossless)||(refinement&&!refinement.dirty_update.fidelity.lossless)){row.status='RED';process.exitCode=1}
     }
   }
   // Public documentation is supplemental: actual network page, not a fixture.
-  if(!installedBaseline&&process.env.MD_PUBLIC!=='0')try{
+  if(!installedBaseline&&process.env.MD_PUBLIC==='lossless')try{
+    activeMode='lossless';activePage='public';pending.clear();metricSources.clear();tileAcks.clear();exact.reset();byteCount={};traffic=[];
+    await sourcePage.goto('https://chromedevtools.github.io/devtools-protocol/tot/Page/',{waitUntil:'domcontentloaded',timeout:30000});await sourcePage.waitForFunction(()=>document.body.innerText.includes('startScreencast'),{},{timeout:15000});await sourcePage.evaluate(()=>document.fonts.ready);await sourcePage.bringToFront();await pause(500);
+    send('video',{kind:'reset-video'});await video.evaluate(()=>md.outputs=0);sourceCDP.on('Page.screencastFrame',frameHandler);await sourceCDP.send('Page.startScreencast',{format:'png',maxWidth:1920,maxHeight:1200,everyNthFrame:1});await until(async()=>await video.evaluate(()=>md.outputs)>0,'public exact base',15000);await video.bringToFront();await video.mouse.move(400,300);
+    const samples=[],began=performance.now();
+    for(let i=0;i<10;i++){const n=await video.evaluate(()=>md.outputs),y=await sourcePage.evaluate(()=>scrollY),t=performance.now();await video.mouse.wheel(0,100);await until(async()=>await sourcePage.evaluate(()=>scrollY)>y&&await video.evaluate(()=>md.outputs)>n,'public wheel source and raster replay',15000);samples.push(performance.now()-t)}
+    await sourceCDP.send('Page.stopScreencast');sourceCDP.off('Page.screencastFrame',frameHandler);await until(()=>!exactWorking,'public exact pump settled');
+    const publicRef=await capture();await exact.push(publicRef,Math.round(performance.now()*1000));
+    result.public_exact={status:'MEASURED_UNACCEPTED',url:sourcePage.url(),title:await sourcePage.title(),target_bitrate_bps:Number(process.env.MD_BITRATE||8000000),duration_s:(performance.now()-began)/1000,bytes:byteCount.video,latency:distribution(samples),fidelity:await saveComparison('public-docs-exact',publicRef,await videoSnapshot()),exact_stream:await encoder.evaluate(()=>md.exactStats),limitations:'10 source scroll checks and first output after viewer wheel; includes automation/polling, not exact physical input-to-photon; no general-site or WAN acceptance'};
+  }catch(e){const publicRef=await capture();await exact.push(publicRef,Math.round(performance.now()*1000));
+    result.public_exact={status:'RED',first_failing_seam:e.message};try{await sourceCDP.send('Page.stopScreencast')}catch{}sourceCDP.off('Page.screencastFrame',frameHandler)}
+  else if(!installedBaseline&&process.env.MD_PUBLIC!=='0')try{
     await sourcePage.goto('https://chromedevtools.github.io/devtools-protocol/tot/Page/',{waitUntil:'domcontentloaded',timeout:30000});await sourcePage.waitForFunction(()=>document.body.innerText.includes('startScreencast'),{},{timeout:15000});await sourcePage.evaluate(()=>document.fonts.ready);await pause(1000);await installMirror();traffic=[];tileAcks.clear();previous=new Map();send('dom',{kind:'reset'});await mirror(true,true);await dom.bringToFront();await pause(700);
     result.public_docs={status:'MEASURED_UNACCEPTED',url:sourcePage.url(),title:await sourcePage.title(),fidelity:await saveComparison('public-docs-dom',await capture(),await domSnapshot()),limitations:'no source input suite; external assets and pseudo-elements may drift'};
   }catch(e){result.public_docs={status:'RED',first_failing_seam:e.message}}

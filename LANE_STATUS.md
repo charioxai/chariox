@@ -1,3 +1,7 @@
+# MD-DISPLAY Phase 2 — codec ladder DONE; exact RGB validation ACTIVE
+
+2026-10-04 — MD-DISPLAY-02/03: 105 cells at clean `0a92ef8d9` (2,100 fixture input trials), one Selkies 2 Mbps form cell RED at measurement-stage decoder backlog. Kept untouched baseline and every target/actual bitrate. All 75 portable-video cells converge to exact RGB with paced settled tiles, but unrefined text still trails Selkies. Capture-only PNG pairs are exact. Browser-native PNG diff prototype improves text median from 188 to 98 ms; dirty-source smoke/no-op correction is diagnostic, not acceptance. Final exact RGB, hybrid and corrected baseline runs next. MD-DISPLAY-04 API proposal pending owner decision; no production protocol changes.
+
 # MD-DISPLAY Phase 2 — fidelity at a stated budget
 
 2026-10-04 — MD-DISPLAY-02/03 measurement implementation ACTIVE from `8fdf12f67138bb234916356f147d2948c6ab2197`. Read frozen plans and owner discussion. Baseline inspection found installed Selkies defaults use quality-driven CRF plus paint-over; target bitrate is not actual throughput. Adding explicit rate-control ladder, settled PNG tiles, codec probes and selective hybrid switching. No production protocols changed or numbers allocated. Resource sample: 32 GiB available, 217 GiB disk free; floor 16/10 GiB.

@@ -7,7 +7,7 @@ export function dirtyTiles(reference, previous, PNG, size = 128) {
     let changed = !old || old.width !== image.width || old.height !== image.height;
     for (let j = y; !changed && j < y + height; j++) for (let i = x; !changed && i < x + width; i++) {
       const offset = (j * image.width + i) * 4;
-      changed = image.data.subarray(offset, offset + 3).compare(old.data.subarray(offset, offset + 3)) !== 0;
+      changed = image.data[offset] !== old.data[offset] || image.data[offset+1] !== old.data[offset+1] || image.data[offset+2] !== old.data[offset+2];
     }
     if (changed) {
       const tile = new PNG({width, height}); PNG.bitblt(image, tile, x, y, width, height, 0, 0);
