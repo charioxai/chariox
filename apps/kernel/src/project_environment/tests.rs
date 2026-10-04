@@ -92,7 +92,7 @@ fn mp08_env_parser_never_executes_shell_or_expands_values() {
 use crate::error::DaemonError;
 use crate::secret::CredentialVaultStore;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 #[derive(Default)]
@@ -154,8 +154,10 @@ fn fixture_manifest(entries: Vec<ProjectEnvironmentEntry>) -> ProjectEnvironment
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
-        let path =
-            std::env::temp_dir().join(format!("chariox-envlayer2-{}", rand::random::<u64>()));
+        Self::new_in(&std::env::temp_dir())
+    }
+    fn new_in(parent: &Path) -> Self {
+        let path = parent.join(format!("chariox-envlayer2-{}", rand::random::<u64>()));
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }
@@ -1721,7 +1723,8 @@ fn mp08_mp10_mp11_foreign_owned_mounted_config_is_private_and_transactional() {
     if unsafe { libc::geteuid() } != 0 {
         return;
     }
-    let fixture = Fixture::new();
+    // A UID-dropped worker must not depend on a private TMPDIR's ancestors.
+    let fixture = Fixture::new_in(Path::new("/tmp"));
     std::fs::set_permissions(&fixture.0, std::fs::Permissions::from_mode(0o775)).unwrap();
     let directory = std::ffi::CString::new(fixture.0.as_os_str().as_encoded_bytes()).unwrap();
     assert_eq!(unsafe { libc::chown(directory.as_ptr(), 0, 31001) }, 0);
