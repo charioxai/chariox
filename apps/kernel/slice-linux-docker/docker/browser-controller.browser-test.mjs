@@ -1297,6 +1297,117 @@ test("MP-08 P1 handler-backed targets remain document-bound and hit-tested", asy
     <script>document.getElementById('listener').addEventListener('click', function(){this.dataset.clicks=Number(this.dataset.clicks||0)+1})</script>` });
 });
 
+test("MP-08/MP-10/MP-11 P2 native temporal fills apply canonical values and one event pair", async () => {
+  await withController(async ({page, request}) => {
+    const cases = [["date", "2026-10-05"], ["time", "21:45"],
+      ["datetime-local", "2026-10-05T21:45"], ["month", "2026-10"], ["week", "2026-W40"]];
+    await page.setContent(cases.map(([type]) => `<label>${type}<input id="${type}" type="${type}"></label><br>`).join(""));
+    await page.evaluate(() => {
+      window.effects = [];
+      window.instanceWrites = 0;
+      for (const node of document.querySelectorAll("input")) {
+        const native = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+        Object.defineProperty(node, "value", {get() {return native.get.call(this)},
+          set(value) {window.instanceWrites++; native.set.call(this, value)}});
+        for (const kind of ["input", "change"]) node.addEventListener(kind, () => effects.push([node.id, kind, node.value]));
+      }
+    });
+    const target = (await request("browser.reconcile", {viewport})).result.tabs[0];
+    const snapshot = (await request("browser.snapshot", target)).result;
+    for (const [type, text] of cases) {
+      const node = snapshot.dom_nodes.find(n => n.attributes.id === type);
+      const fill = value => request("browser.action", {...target, node_ref: node.node_ref, action: {kind: "fill", text: value}});
+      const applied = await fill(text);
+      assert.equal(applied.ok, true, JSON.stringify(applied.error));
+      assert.equal(await page.locator(`[id="${type}"]`).inputValue(), text);
+      assert.equal((await fill(text)).ok, true);
+      const invalid = await fill("invalid temporal value");
+      assert.equal(invalid.error?.code, "browser_fill_invalid_value");
+      assert.equal(await page.locator(`[id="${type}"]`).inputValue(), text);
+    }
+    assert.deepEqual(await page.evaluate(() => effects), cases.flatMap(([type, text]) => [[type, "input", text], [type, "change", text]]));
+    assert.equal(await page.evaluate(() => instanceWrites), 0, "native setter bypasses framework instance value tracking");
+  });
+});
+
+test("MP-08/MP-10/MP-11 P2 native temporal fills reject unsafe targets before value events", async () => {
+  await withController(async ({page, request}) => {
+    await page.setContent(`<input id="date" type="date" value="2026-01-01"><script>
+      window.effects=[];for(const kind of ['input','change'])date.addEventListener(kind,()=>effects.push(kind));</script>`);
+    const target = (await request("browser.reconcile", {viewport})).result.tabs[0];
+    const node = (await request("browser.snapshot", target)).result.dom_nodes.find(n => n.attributes.id === "date");
+    const fill = action => request("browser.action", {...target, node_ref: node.node_ref,
+      action: {kind: "fill", text: "2026-10-05", ...action}, timeout_ms: 100});
+    assert.equal((await fill({append: true})).error?.code, "browser_fill_invalid");
+    for (const [attribute, code] of [["readonly", "browser_element_not_editable"], ["disabled", "browser_element_disabled"], ["hidden", "browser_element_not_visible"]]) {
+      await page.locator("#date").evaluate((n, attribute) => n.setAttribute(attribute, ""), attribute);
+      assert.equal((await fill({})).error?.code, code);
+      await page.locator("#date").evaluate((n, attribute) => n.removeAttribute(attribute), attribute);
+    }
+    await page.evaluate(() => {const cover=document.createElement("div");cover.id="cover";cover.style="position:fixed;inset:0;z-index:10;background:white";document.body.append(cover)});
+    assert.equal((await fill({})).error?.code, "browser_element_obscured");
+    assert.equal(await page.locator("#date").inputValue(), "2026-01-01");
+    await page.locator("#cover").evaluate(n => n.remove());
+    await page.locator("#date").evaluate(n => n.replaceWith(n.cloneNode()));
+    assert.equal((await fill({})).error?.code, "stale_element_reference");
+    assert.deepEqual(await page.evaluate(() => effects), []);
+    assert.equal(await page.locator("#date").inputValue(), "2026-01-01");
+  });
+});
+
+test("MP-08/MP-10/MP-11 P2 temporal event rejection and lost acknowledgements never replay", async () => {
+  await withController(async ({page, request, browser}) => {
+    await page.setContent(`<form onsubmit="event.preventDefault();window.submits++"><input id="date" type="date" value="2026-01-01"></form>
+      <script>window.effects=[];window.submits=0;window.reject=true;
+      date.addEventListener('input',()=>{effects.push('input');if(window.reject)date.value='2026-01-01'});
+      date.addEventListener('change',()=>effects.push('change'));</script>`);
+    const target = (await request("browser.reconcile", {viewport})).result.tabs[0];
+    const node = (await request("browser.snapshot", target)).result.dom_nodes.find(n => n.attributes.id === "date");
+    const fill = action => request("browser.action", {...target, node_ref: node.node_ref, action: {kind: "fill", text: "2026-10-05", ...action}});
+    assert.equal((await fill({submit: true})).error?.code, "browser_fill_not_applied");
+    assert.equal(await page.evaluate(() => submits), 0);
+    assert.deepEqual(await page.evaluate(() => effects), ["input", "change"]);
+    await page.evaluate(() => {window.reject=false;window.effects=[]});
+    const send = browser.connection.send.bind(browser.connection);
+    let mutationCalls = 0;
+    browser.connection.send = async (method, params, sessionId) => {
+      const result = await send(method, params, sessionId);
+      if (method === "Runtime.callFunctionOn" && params.functionDeclaration.includes("function temporalFunction(")) {
+        mutationCalls++;
+        throw new BrowserControllerError("browser_cdp_timeout", "fixture acknowledgement lost after temporal mutation");
+      }
+      return result;
+    };
+    assert.equal((await fill({})).error?.code, "browser_cdp_timeout");
+    assert.equal(mutationCalls, 1);
+    assert.equal(await page.locator("#date").inputValue(), "2026-10-05");
+    assert.deepEqual(await page.evaluate(() => effects), ["input", "change"]);
+    browser.connection.send = send;
+    assert.equal((await fill({text: "", submit: true})).ok, true);
+    assert.equal(await page.locator("#date").inputValue(), "");
+    assert.deepEqual(await page.evaluate(() => effects), ["input", "change", "input", "change"]);
+    assert.equal(await page.evaluate(() => submits), 1);
+  });
+});
+
+for (const layout of ["same-site", "isolated", "nested-isolated"]) {
+test(`MP-08/MP-10/MP-11 P2 native temporal fills stay bound to the observed ${layout} frame`, async () => {
+  await withCrossOriginFixture(async url => withController(async ({page, request}) => {
+    await page.goto(url);
+    const frame = layout === "nested-isolated" ? page.frameLocator("iframe").frameLocator("iframe") : page.frameLocator("iframe");
+    const field = frame.locator("input");
+    await field.waitFor();
+    const target = (await request("browser.reconcile", {viewport})).result.tabs[0];
+    const node = (await request("browser.snapshot", target)).result.dom_nodes.find(n => n.attributes.id === "time");
+    const result = await request("browser.action", {...target, node_ref: node.node_ref, action: {kind: "fill", text: "21:45:00"}});
+    assert.equal(result.ok, true, JSON.stringify(result.error));
+    assert.equal(await field.inputValue(), "21:45:00", "valid optional seconds remain intact");
+    assert.deepEqual(await field.evaluate(n => n.ownerDocument.defaultView.effects), ["input", "change"]);
+  }), {sameSite: layout === "same-site", nested: layout === "nested-isolated",
+    fieldMarkup: `<label>Time<input id="time" type="time"></label><script>window.effects=[];for(const kind of ['input','change'])document.querySelector('input').addEventListener(kind,()=>effects.push(kind))</script>`});
+});
+}
+
 test("MP-08 P2 native selects fill unique labels and values with one event pair", async () => {
   await withCrossOriginFixture(async (url) => withController(async ({ page, request }) => {
     await page.goto(`${url}field`);

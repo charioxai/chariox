@@ -1,4 +1,4 @@
-import { fillNativeSelect } from "./browser-controller-selection.mjs";
+import { fillNativeSelect, fillNativeTemporal } from "./browser-controller-selection.mjs";
 const DEFAULT_ACTION_TIMEOUT_MS = 5_000;
 const MAX_ACTION_TIMEOUT_MS = 5_000;
 const MIN_ACTION_TIMEOUT_MS = 100;
@@ -323,6 +323,7 @@ export function actionabilityFunction() {
     height: rect.height,
     editable,
     nativeSelect: this.tagName === "SELECT",
+    nativeTemporal: ["date", "time", "datetime-local", "month", "week"].includes(inputType),
     ...(crossOriginFrame ? { crossOriginFrame: true } : {}),
   };
 }
@@ -342,7 +343,8 @@ function readyGeometry(actionability, action) {
     height: actionability.height,
   };
   if (!Object.values(geometry).every(Number.isFinite)) return null;
-  return { ...geometry, nativeSelect: actionability.nativeSelect === true };
+  return { ...geometry, nativeSelect: actionability.nativeSelect === true,
+    nativeTemporal: actionability.nativeTemporal === true };
 }
 
 function sameGeometry(left, right) {
@@ -376,6 +378,18 @@ async function executeAction(
       await fillNativeSelect(connection, sessionId, objectId, action);
     } catch (error) {
       throw new BrowserActionError(error.code ?? "browser_selection_failed", error.message);
+    }
+    return { dialogOpened: false };
+  }
+  if (geometry.nativeTemporal) {
+    try {
+      await fillNativeTemporal(connection, sessionId, objectId, action);
+    } catch (error) {
+      throw new BrowserActionError(error.code ?? "browser_fill_failed", error.message);
+    }
+    if (action.submit) {
+      assertNotCancelled(signal);
+      await submitNearestForm(connection, sessionId, objectId);
     }
     return { dialogOpened: false };
   }
