@@ -72,6 +72,8 @@ mod app_host_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_validation_pump_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_view_host;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_view_poll;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_view_runtime;
@@ -80,6 +82,8 @@ mod config_runtime_state;
 mod critical_approval_passkey;
 mod kernel_access;
 mod sudo;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod user_app_view_runtime;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
 pub(crate) use sudo::{is_sudo_prompt, sudo_approval_receipt};

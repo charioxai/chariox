@@ -41,6 +41,7 @@ mod room_environment_placement;
 mod slice_disk_quota;
 mod slice_display;
 mod slice_logs;
+mod user_app_views;
 mod workflow_code;
 mod workspace_history_external;
 

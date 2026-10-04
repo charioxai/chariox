@@ -254,4 +254,5 @@ pub use workspace::*;
 /// Version 415 adds external sudo requests and requester attribution.
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
 /// Version 417 adds kernel-owned sessionless host browser control.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 417;
+/// Version 418 adds owner-scoped App views and detached approval projection outside Rooms.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 418;

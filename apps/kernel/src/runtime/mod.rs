@@ -156,3 +156,5 @@ pub(crate) mod workspace_search;
 pub(crate) mod workspace_worktrees;
 
 pub(crate) mod kernel_access;
+
+mod user_app_views;
