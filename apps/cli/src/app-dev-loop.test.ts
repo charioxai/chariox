@@ -1,10 +1,12 @@
 import assert from "node:assert/strict"
+import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
 import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, relative } from "node:path"
 import test from "node:test"
-import { AppDevLoop, ignored, type AppDevDeps, type AppDevPackOptions } from "./app-dev-loop.js"
+import { promisify } from "node:util"
+import { AppDevLoop, defaultAppDevKey, ignored, type AppDevDeps, type AppDevPackOptions } from "./app-dev-loop.js"
 import { AppFileInstaller } from "./app-install-file.js"
 import { handleAppSlashCommand } from "./app-command-handler.js"
 import { parseSlashCommand, sharedShellCommandForSlashCommand } from "./commands.js"
@@ -17,20 +19,22 @@ function deferred<T = void>() {
   return { promise, resolve }
 }
 
-async function fixture(t: test.TestContext) {
+async function fixture(t: test.TestContext, keyParts = ["keys", "app-publisher", "private"]) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "chariox-app-dev-test-")))
   t.after(() => rm(root, { recursive: true, force: true }))
   const app = join(root, "my-app")
   await mkdir(join(app, "bundle"), { recursive: true })
   await writeFile(join(app, "app.json"), "{}")
-  await mkdir(join(root, "keys"), { mode: 0o700 })
-  const key = join(root, "keys", "private")
-  await writeFile(join(key), Buffer.alloc(32), { mode: 0o600 })
-  return { root, app, key }
+  const home = join(root, "home")
+  const key = join(home, ".chariox", ...keyParts)
+  await mkdir(join(key, ".."), { recursive: true, mode: 0o700 })
+  // Invalid marker only: the mocked packer never reads or creates a signing key.
+  await writeFile(key, "Not a signing key; the packer is mocked.", { mode: 0o600 })
+  return { root, app, home, key }
 }
 
 /** Fake watcher, packer, installer and kernel list; no real watcher, helper or kernel runs. */
-function harness(f: { root: string, app: string, key: string }, options: { installed?: boolean, failure?: string } = {}) {
+function harness(f: { root: string, app: string, home: string, key: string }, options: { installed?: boolean, failure?: string } = {}) {
   const notices: string[] = []
   const packs: AppDevPackOptions[] = []
   const calls: { kind: "install" | "update", installation?: string, path: string, session: string }[] = []
@@ -51,7 +55,7 @@ function harness(f: { root: string, app: string, key: string }, options: { insta
     return { ...status }
   }
   const deps: AppDevDeps = {
-    cwd: f.root, home: join(f.root, "home"), debounceMs: 5, pollMs: 1,
+    cwd: f.root, home: f.home, debounceMs: 5, pollMs: 1,
     notice: message => { notices.push(message) },
     currentSession: () => "session-1",
     workspace: async () => { const dir = await mkdtemp(join(f.root, "work-")); workspaces.push(dir); return dir },
@@ -96,6 +100,66 @@ function harness(f: { root: string, app: string, key: string }, options: { insta
     hold() { const d = deferred(); gate = d.promise; return () => { gate = undefined; d.resolve() } },
   }
 }
+
+test("the default signing path uses the protected publisher namespace in the selected HOME", async t => {
+  const f = await fixture(t)
+  assert.equal(defaultAppDevKey(f.home), join(f.home, ".chariox", "keys", "app-publisher", "private"))
+  const h = harness(f)
+  const loop = new AppDevLoop(h.deps)
+  t.after(() => loop.dispose())
+  assert.deepEqual(await loop.start("my-app"), { directory: f.app, key: f.key })
+  await loop.settled()
+  assert.equal(h.packs[0]!.key, f.key)
+})
+
+test("missing-key guidance uses protected paths and private directory modes without creating a key", async t => {
+  const f = await fixture(t)
+  const home = join(f.root, "empty-home")
+  await mkdir(home)
+  const h = harness(f)
+  const loop = new AppDevLoop({ ...h.deps, home })
+  let instructions = ""
+  await assert.rejects(loop.start("my-app"), (error: Error) => {
+    instructions = error.message
+    assert.ok(instructions.startsWith(`No developer signing key at ${defaultAppDevKey(home)}.\n`))
+    return true
+  })
+  assert.ok(instructions.includes('--key-out "$HOME/.chariox/keys/app-publisher/private"'))
+  assert.ok(instructions.includes('--trust-out "$HOME/.chariox/keys/app-publisher/publisher.json"'))
+  assert.ok(instructions.includes('/app publisher enroll "$HOME/.chariox/keys/app-publisher/publisher.json"'))
+  assert.match(instructions, /--key PRIVATE for an existing key at its original location/)
+  assert.match(instructions, /do not generate a replacement or move it/)
+  assert.match(instructions, /directory 0700, private file 0600/)
+  assert.match(instructions, /same public fingerprint, and preserved backup history/)
+  assert.match(instructions, /separately protected backup.*signing and verifying a synthetic challenge/)
+  assert.doesNotMatch(instructions, /\.chariox\/dev\//)
+  assert.equal(h.packs.length, 0)
+  assert.equal(h.workspaces.length, 0)
+  await assert.rejects(stat(join(home, ".chariox")), /ENOENT/)
+  // Execute only the directory setup line in an empty synthetic HOME, never keygen.
+  const setup = instructions.split("\n").find(line => line.startsWith("  mkdir "))!
+  await promisify(execFile)("/bin/sh", ["-c", `umask 022\n${setup}`], { env: { HOME: home } })
+  for (const path of [join(home, ".chariox", "keys"), join(home, ".chariox", "keys", "app-publisher")]) {
+    assert.equal((await stat(path)).mode & 0o777, 0o700)
+  }
+  await assert.rejects(stat(defaultAppDevKey(home)), /ENOENT/)
+})
+
+test("an existing legacy path requires explicit --key and is kept at its original location", async t => {
+  const f = await fixture(t, ["dev", "app-publisher", "private"])
+  const h = harness(f)
+  const loop = new AppDevLoop(h.deps)
+  t.after(() => loop.dispose())
+  const before = await stat(f.key)
+  await assert.rejects(loop.start("my-app"), /No developer signing key at .*\.chariox\/keys\/app-publisher\/private/)
+  assert.equal(h.packs.length, 0)
+  assert.deepEqual(await loop.start("my-app", { key: relative(f.root, f.key) }), { directory: f.app, key: f.key })
+  await loop.settled()
+  assert.equal(h.packs[0]!.key, f.key)
+  const after = await stat(f.key)
+  assert.deepEqual([after.ino, after.size, after.mtimeMs, after.mode], [before.ino, before.size, before.mtimeMs, before.mode])
+  await assert.rejects(stat(defaultAppDevKey(f.home)), /ENOENT/)
+})
 
 test("first cycle packs outside the App directory and installs; later changes update", async t => {
   const f = await fixture(t)
@@ -222,7 +286,7 @@ async function lostBegin(t: test.TestContext, installed: boolean) {
   const packed: string[] = []
   let onChange: (() => void) | undefined
   const loop = new AppDevLoop({
-    cwd: f.root, debounceMs: 5, pollMs: 1, send, installer, notice: value => { notices.push(value) }, currentSession: () => "session-1",
+    cwd: f.root, home: f.home, debounceMs: 5, pollMs: 1, send, installer, notice: value => { notices.push(value) }, currentSession: () => "session-1",
     workspace: () => mkdtemp(join(f.root, "work-")),
     watch: (_directory, change) => { onChange = () => change("bundle/ui/app.js"); return { close() {} } },
     pack: async value => {
