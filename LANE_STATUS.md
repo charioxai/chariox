@@ -1,3 +1,17 @@
+# MD-DISPLAY Phase 2 — fidelity at a stated budget
+
+2026-10-04 — MD-DISPLAY-02/03 measurement implementation ACTIVE from `8fdf12f67138bb234916356f147d2948c6ab2197`. Read frozen plans and owner discussion. Baseline inspection found installed Selkies defaults use quality-driven CRF plus paint-over; target bitrate is not actual throughput. Adding explicit rate-control ladder, settled PNG tiles, codec probes and selective hybrid switching. No production protocols changed or numbers allocated. Resource sample: 32 GiB available, 217 GiB disk free; floor 16/10 GiB.
+
+## Owner questions
+
+MD-DISPLAY-04: production scope, supported clients/OS, motion and settled fidelity/latency/network budgets remain owner decisions; research continues independently.
+
+## Coordinator asks
+
+MD-DISPLAY-04: no protocol requested for research. kbrowser protocol 417 attachment will be a proposal only.
+
+---
+
 # MD-DISPLAY lane status
 
 2026-10-04 — MD-DISPLAY-01/02/03/04 research handoff READY; owner design decision pending.

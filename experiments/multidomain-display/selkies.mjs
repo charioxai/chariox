@@ -33,7 +33,13 @@ export async function baseline(chromium,origin,output) {
     metadata.browser_version=browser.version();
     metadata.streamer_source=await docker('exec',name,'python3','-c','import hashlib; from pathlib import Path; print(hashlib.sha256(Path("/opt/chariox-slice/slice-selkies.py").read_bytes()).hexdigest())');
     const reservation=createServer();await new Promise(r=>reservation.listen(0,'127.0.0.1',r));const displayPort=reservation.address().port;await new Promise(r=>reservation.close(r));metadata.loopback_port=displayPort;
-    await docker('exec','-e','DISPLAY=:99','-e','XDG_RUNTIME_DIR=/tmp/md-display-runtime','-e',`CHARIOX_SLICE_NOVNC_PORT=${displayPort}`,name,'/opt/chariox-selkies/bin/python','/opt/chariox-slice/slice-selkies.py','start');
+    const settings=process.env.MD_BASELINE_RATE==='cbr'?{rate_control_mode:'cbr',video_bitrate:Number(process.env.MD_BITRATE||8000000)/1000,use_paint_over_quality:process.env.MD_BASELINE_PAINT==='1'}:{};
+    metadata.requested_settings=settings;
+    metadata.default_settings={rate_control_mode:'crf',video_crf:25,video_bitrate_kbps:8000,use_paint_over_quality:true,video_paintover_crf:18,video_fullcolor:false,framerate:30};
+    metadata.settings_source='installed selkies/settings.py; same CLI/env parser selections recorded below; no live private config read';
+    const settingsEnv=Object.entries(settings).flatMap(([key,value])=>['-e',`SELKIES_${key.toUpperCase()}=${value}`]);
+    await docker('exec',...settingsEnv,'-e','DISPLAY=:99','-e','XDG_RUNTIME_DIR=/tmp/md-display-runtime','-e',`CHARIOX_SLICE_NOVNC_PORT=${displayPort}`,name,'/opt/chariox-selkies/bin/python','/opt/chariox-slice/slice-selkies.py','start');
+    metadata.resolved_parser_settings=JSON.parse(await docker('exec',...settingsEnv,name,'/opt/chariox-selkies/bin/python','-c',"from selkies.settings import AppSettings,SETTING_DEFINITIONS,software_h264_encoder; import json,sys; sys.argv=['probe','--mode=websockets','--encoder=h264enc','--use-cpu=true|locked','--framerate=30']; s=AppSettings(SETTING_DEFINITIONS); s.resolve_rate_control_default(); keys=['rate_control_mode','video_bitrate','video_crf','use_paint_over_quality','video_paintover_crf','video_fullcolor','framerate']; print(json.dumps({**{k:getattr(s,k,None) for k in keys},'software_h264_encoder':software_h264_encoder(),'initial_range_values':{d['name']:d.get('meta',{}).get('default_value') for d in SETTING_DEFINITIONS if d['name'] in keys and d.get('type')=='range'}}))"));
     return {browser,scratch:null,metadata,child:null,close,
       async sample(){return JSON.parse(await docker('stats','--no-stream','--format','{{json .}}',name))},
       async start(send,onFrame){

@@ -104,3 +104,55 @@ node experiments/multidomain-display/report.mjs /root/.codex/evidence/browser-re
 Open the output `index.html`; it binds rows to receipt hashes and lets a reviewer
 overlay source/viewer images or inspect amplified RGB error. Core fixture success
 and supplemental public-page failures are reported separately.
+
+## MD-DISPLAY-02/03 Phase 2 — budget curves and exact settled tiles
+
+From the lane worktree, run sequentially (no Rust):
+
+```sh
+MD_CAMPAIGN_OUTPUT=/root/.codex/evidence/browser-resume-20260930/display/phase2-curves node experiments/multidomain-display/campaign.mjs
+node experiments/multidomain-display/curves.mjs /root/.codex/evidence/browser-resume-20260930/display/phase2-curves
+MD_PUBLIC=0 MD_PAGES=docs,spa MD_MODES=dom MD_SWITCH=1 MD_BITRATE=2000000 MD_OUTPUT=/root/.codex/evidence/browser-resume-20260930/display/phase2-dom node experiments/multidomain-display/run.mjs
+MD_PUBLIC=0 MD_PAGES=media,iframe MD_MODES=hybrid MD_SWITCH=1 MD_CODEC=vp09.00.10.08 MD_BITRATE=2000000 MD_OUTPUT=/root/.codex/evidence/browser-resume-20260930/display/phase2-hybrid node experiments/multidomain-display/run.mjs
+```
+
+The campaign retains untouched Selkies CRF/paint-over defaults, then CBR Selkies,
+H.264 high-profile, VP9 and AV1 at 0.5/1/2/4/8 Mbps targets. `MD_METHODS`,
+`MD_RATES`, `MD_PAGES` narrow a campaign. Each child owns its cleanup; the parent
+records exact env, commands and exits. Same-CLI/env Selkies parser fields and
+initial range values are selected explicitly; private live configuration is
+never read. The campaign intentionally disables supplemental public navigation.
+
+`MD_RATE=constant|variable`, `MD_KEYMS=2000`, `MD_LATENCY=realtime` configure
+WebCodecs. These targets do not cap WebSocket traffic. The report plots both
+configured and observed rates, with one-second application peaks; it never
+asserts bandwidth fairness from a target alone. Capability probes include
+high-profile AVC, AVC/VP9 4:4:4 and HEVC. A supported probe is not a passed codec
+campaign. Input latency and initial decoded fidelity are scored before refinement.
+
+`MD_REFINE=1` stops/flushes the video pump on settled content, compares 128-pixel
+RGB tiles against the decoded screen, sends only differing PNG tiles paced at
+`MD_BITRATE`, with at most eight awaiting acknowledgement, then verifies exact
+pixels. A further native source click tests source dirty regions against the
+prior exact screen. Receipt fields include bytes, time and separate frame pairs.
+This explicit settled-stage prototype proves reconstruction and budget cost;
+it does not implement automatic idle detection, generation fencing, masks or
+loss recovery. A later video frame can overwrite the refinement. Production
+needs the epoch/revision contract proposed in MD-DISPLAY-04.
+
+`hybrid` retains DOM text/structure and crops decoded full-page video into only
+opaque regions. It encodes the whole source frame and rasterizes patches in the
+client, so it proves composition/input and exposes cost, not regional bandwidth
+savings. `MD_SWITCH=1` measures one DOM→first-video switch and full DOM+PNG
+bootstrap back; it is not a percentile distribution. `MD_FRAME_METRICS=1` takes
+up to three exact timestamp-paired CDP-frame→decoded RGB samples on moving media.
+Use it as a separate diagnostic: PNG readback/metric work adds load. Main curves
+use frozen pairs, not moving-frame equivalence. Capture-only comparisons isolate
+CDP PNG acquisition from video loss. CPU includes refinement/metric stages where
+enabled and the prototype encoder browser; container CPU remains separate.
+
+Run the focused reconstruction/metric checks with:
+
+```sh
+node --test experiments/multidomain-display/metrics.test.mjs experiments/multidomain-display/tiles.test.mjs
+```
