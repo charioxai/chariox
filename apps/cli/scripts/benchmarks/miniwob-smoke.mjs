@@ -10,8 +10,10 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 import { promisify } from 'node:util'
-import { LocalIpcClient } from '../../../../packages/kernel-client/dist/ipc.js'
-import * as r from '../../../../packages/kernel-client/dist/ipc-requests.js'
+const clientModuleRoot = process.env.MINIWOB_CLIENT_MODULE_ROOT
+assert.ok(clientModuleRoot && path.isAbsolute(clientModuleRoot), 'MP-08 / MP-10 absolute built client module root required')
+const { LocalIpcClient } = await import(`${clientModuleRoot}/ipc.js`)
+const r = await import(`${clientModuleRoot}/ipc-requests.js`)
 import { sanitizeDrillMetadata } from '../lib/drill-secrets.mjs'
 import { roomProviderToolName } from '../lib/room-provider-tool-record.mjs'
 import { observeKernelRpcErrors, rpcErrorRecord } from './round2/rpc-errors.mjs'
