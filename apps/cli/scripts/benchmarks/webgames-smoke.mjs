@@ -15,8 +15,9 @@ const clientModuleRoot = process.env.WEBGAMES_CLIENT_MODULE_ROOT ?? `${clientRoo
 assert.ok(path.isAbsolute(clientModuleRoot), 'MP-08 / MP-10 absolute built client module root required')
 const { LocalIpcClient } = await import(`${clientModuleRoot}/ipc.js`)
 const r = await import(`${clientModuleRoot}/ipc-requests.js`)
+const { assembleSessionHistoryFinalMessage } = await import(`${clientModuleRoot}/session-history-fragments.js`)
 import { sanitizeDrillMetadata } from '../lib/drill-secrets.mjs'
-import { roomProviderToolName } from '../lib/room-provider-tool-record.mjs'
+import { roomProviderToolName, roomProviderToolOutput } from '../lib/room-provider-tool-record.mjs'
 import { observeKernelRpcErrors, rpcErrorRecord } from './round2/rpc-errors.mjs'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..')
@@ -282,7 +283,7 @@ Use ONLY Chariox first-party slice_open_url and slice_browser_* tools. Observe t
     row.elapsedMs = Date.now() - started; row.timedOut = timedOut; row.turnLifecycle = turn?.lifecycle ?? null
     row.mutatingActions = row.actions.filter(a => !observationKinds.has(a.kind)).length
     // Hydrate the official transcript to audit the tool track, retaining only
-    // tool identity/status and permitted first-party input, never raw outputs.
+    // bounded, sanitized results from permitted first-party Browser tools.
     row.toolTrace = []; row.toolAuditComplete = true; const outputEntries = []; const transcriptEntries = []
     for (const blob of turn?.blobs ?? []) {
       if (!['provider_tool', 'provider_error', 'provider_output'].includes(blob.kind)) continue
@@ -297,9 +298,12 @@ Use ONLY Chariox first-party slice_open_url and slice_browser_* tools. Observe t
         try {
           const record = JSON.parse(item.entry.text), tool = roomProviderToolName(record.tool)
           const permitted = /^(?:slice_open_url|slice_browser_(?:status|find|text|wait_for_text|wait_for_idle|click|fill|submit|dialog|events|downloads|tab|history|upload))$/.test(tool)
-          if (permitted) transcriptEntries.push(sanitizeDrillMetadata(item))
+          if (permitted) transcriptEntries.push({ ...item, entry: { ...item.entry,
+            text: JSON.stringify(sanitizeDrillMetadata(record)) } })
           row.toolTrace.push({ id: record.id, tool, status: record.status, permitted,
-            ...(permitted ? { input: sanitizeDrillMetadata(record.input) } : {}) })
+            ...(permitted ? { input: sanitizeDrillMetadata(record.input),
+              output: sanitizeDrillMetadata(roomProviderToolOutput(record.output)),
+              error: sanitizeDrillMetadata(record.error ?? null) } : {}) })
         } catch { row.toolAuditComplete = false }
       }
     }
@@ -312,7 +316,11 @@ Use ONLY Chariox first-party slice_open_url and slice_browser_* tools. Observe t
       try { row.usageTokensTotal = unwrap(await client.send(r.getProviderRunRequest(providerRunId)), 'ProviderRun').provider_run.usage_tokens_total } catch { /* Explicitly unavailable; no billing guess. */ }
     }
     const inlineOutput = [...(turn?.entries ?? []), ...(turn?.summary ? [turn.summary] : [])].filter(x => x.entry?.kind === 'provider_output')
-    const finalOutput = [...outputEntries, ...inlineOutput].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0)).at(-1)?.entry.text ?? ''
+    let finalOutput = [...outputEntries, ...inlineOutput].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0)).at(-1)?.entry.text ?? ''
+    if (turn?.lifecycle === 'completed') {
+      try { finalOutput = assembleSessionHistoryFinalMessage(turn, [...outputEntries, ...inlineOutput]) }
+      catch (error) { row.finalAssemblyError = rpcErrorRecord(error); finalOutput = '' }
+    }
     await writeFile(`${evidence}/${runId}-${encodeURIComponent(template)}-final.txt`, finalOutput, { mode: 0o600 })
     await writeFile(`${evidence}/${runId}-${encodeURIComponent(template)}-transcript.json`, JSON.stringify(sanitizeDrillMetadata({ mpItems, entries: transcriptEntries }), null, 2), { mode: 0o600 })
     row.finalResponseSha256 = createHash('sha256').update(finalOutput).digest('hex')
@@ -322,7 +330,7 @@ Use ONLY Chariox first-party slice_open_url and slice_browser_* tools. Observe t
     row.firstFailingSeam = row.actions.find(a => a.kind === 'navigate' && a.state === 'failed') ? 'benchmark_navigation' : null
     row.harnessValid = !row.firstFailingSeam && !row.actions.some(a => a.mode !== 'browser')
       && row.toolAuditComplete && row.toolTrace.length > 0 && row.toolTrace.every(t => t.permitted)
-      && !row.providerError && (turn?.lifecycle === 'completed' || timedOut || budgetExceeded)
+      && !row.providerError && !row.finalAssemblyError && (turn?.lifecycle === 'completed' || timedOut || budgetExceeded)
     row.budgetExceeded = budgetExceeded || row.mutatingActions > report.maxMutatingActions || toolCalls.size > report.maxToolCalls
     row.reward = row.budgetExceeded ? 0 : row.reward
     row.termination = timedOut ? 'wall_timeout' : row.budgetExceeded ? 'action_budget' : 'agent_finished'
