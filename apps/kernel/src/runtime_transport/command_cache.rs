@@ -107,6 +107,9 @@ pub(crate) struct CommandFingerprint {
     session_id: Option<String>,
     attachment_id: Option<String>,
     request_hash: u64,
+    // MD-3: browser receipts are private to the authenticated terminal identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    browser_caller: Option<crate::runtime::command::KernelCaller>,
 }
 
 impl CommandFingerprint {
@@ -122,6 +125,8 @@ impl CommandFingerprint {
             session_id: command.session_id.clone(),
             attachment_id: command.attachment_id.clone(),
             request_hash: stable_hash64(&request_bytes),
+            browser_caller: matches!(request, LocalDaemonRequest::KernelBrowser(_))
+                .then(|| command.caller.clone()),
         }
     }
 }
@@ -666,6 +671,7 @@ impl CommandResultCache {
             session_id: None,
             attachment_id: None,
             request_hash: stable_hash64(bytes),
+            browser_caller: None,
         }
     }
 
@@ -677,6 +683,7 @@ impl CommandResultCache {
             session_id: None,
             attachment_id: None,
             request_hash: stable_hash64(command_type.as_bytes()),
+            browser_caller: None,
         }
     }
 
@@ -940,7 +947,8 @@ fn persistent_result_jsonl_bytes(entry: &PersistentCommandResult) -> io::Result<
 fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
     !matches!(
         fingerprint.command_type.as_str(),
-        "credential_enrollment.interaction.request"
+        "kernel_browser"
+            | "credential_enrollment.interaction.request"
             | "external_provider_session.list"
             | "interaction.respond"
             | "native_provider.interaction.request"

@@ -1043,3 +1043,80 @@ fn full_receipt_journal_uninstalls_and_fences_replayed_generation() {
         .join()
         .unwrap();
 }
+
+#[tokio::test]
+async fn md3_browser_relay_replay_binds_user_and_rechecks_admission() {
+    let root = TestRoot::new();
+    let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+    let router =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 8);
+    let cache = CommandResultCache::default();
+    let request = LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+        command: crate::local::KernelBrowserCommand::Open {
+            url: "about:blank".into(),
+        },
+    });
+    let command = KernelCommand::from_local_request_with_caller(
+        "browser-retry",
+        KernelCommandSource::RelayClient,
+        KernelCaller::from_relay_identity(caller("alice")),
+        None,
+        None,
+        &request,
+    );
+    let fingerprint = CommandFingerprint::from_command_and_request(&command, &request);
+    assert!(matches!(
+        cache.reserve("browser-retry", &fingerprint).await,
+        CommandReservation::Dispatch
+    ));
+    let response = serde_json::json!({"KernelBrowser":{"result":{"tab_id":"alice-private-tab"}}});
+    cache
+        .complete(
+            "browser-retry".into(),
+            fingerprint,
+            &KernelOutgoingFrame::Response {
+                request_id: "browser-retry".into(),
+                response: Box::new(Some(response.clone())),
+                error: None,
+            },
+        )
+        .await;
+    let sequence = AtomicU64::new(1);
+    let replay = |identity| {
+        dispatch_relay_client_request(
+            &router,
+            &sequence,
+            identity,
+            request.clone(),
+            Some("browser-retry".into()),
+            &cache,
+        )
+    };
+    // Same admitted caller gets the original receipt, so an open/input is not repeated.
+    match replay(Some(caller("alice"))).await {
+        RelayDispatchOutcome::Response(value) => assert_eq!(value, response),
+        _ => panic!("same caller lost its browser retry receipt"),
+    }
+    match replay(Some(caller("bob"))).await {
+        RelayDispatchOutcome::RelayError(error) => {
+            assert_eq!(error.code, "duplicate_command_conflict")
+        }
+        _ => panic!("another user received Alice's browser receipt"),
+    }
+    for identity in [
+        None,
+        Some(RelayCallerIdentity {
+            user_id: None,
+            ..caller("alice")
+        }),
+        Some(RelayCallerIdentity {
+            subject_kind: chariox_relay::auth::RelaySubjectKind::Service,
+            ..caller("alice")
+        }),
+    ] {
+        match replay(identity).await {
+            RelayDispatchOutcome::RelayError(error) => assert_eq!(error.code, "unauthorized"),
+            _ => panic!("browser cache bypassed terminal admission"),
+        }
+    }
+}

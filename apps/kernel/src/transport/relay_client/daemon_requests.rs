@@ -468,6 +468,15 @@ async fn dispatch_relay_client_request(
         None,
         &request,
     );
+    // MD-3: replay must not bypass current terminal admission. Caller identity
+    // comes from relay authentication, never the request or command ID.
+    if matches!(&request, LocalDaemonRequest::KernelBrowser(_)) && !command.is_terminal_caller() {
+        return RelayDispatchOutcome::RelayError(relay_error(
+            "unauthorized",
+            "MD-3: authenticated terminal required",
+            false,
+        ));
+    }
     let fingerprint = request_is_cacheable(&request)
         .then(|| CommandFingerprint::from_command_and_request(&command, &request));
     if let Some(fingerprint) = fingerprint.as_ref() {
