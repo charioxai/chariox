@@ -11,8 +11,10 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 const clientRoot = process.env.WEBGAMES_CLIENT_ROOT
 assert.ok(clientRoot && path.isAbsolute(clientRoot), 'MP-08 / MP-10 pinned client root required')
-const { LocalIpcClient } = await import(`${clientRoot}/packages/kernel-client/dist/ipc.js`)
-const r = await import(`${clientRoot}/packages/kernel-client/dist/ipc-requests.js`)
+const clientModuleRoot = process.env.WEBGAMES_CLIENT_MODULE_ROOT ?? `${clientRoot}/packages/kernel-client/dist`
+assert.ok(path.isAbsolute(clientModuleRoot), 'MP-08 / MP-10 absolute built client module root required')
+const { LocalIpcClient } = await import(`${clientModuleRoot}/ipc.js`)
+const r = await import(`${clientModuleRoot}/ipc-requests.js`)
 import { sanitizeDrillMetadata } from '../lib/drill-secrets.mjs'
 import { roomProviderToolName } from '../lib/room-provider-tool-record.mjs'
 import { observeKernelRpcErrors, rpcErrorRecord } from './round2/rpc-errors.mjs'
@@ -39,6 +41,8 @@ const observationKinds = new Set(['browser_status', 'browser_find', 'browser_tex
 const runId = `r2next-wg-${Date.now()}-${process.pid}`
 const model = process.env.WEBGAMES_MODEL ?? 'gpt-6.1-sol'
 const upstream = `${lane}/upstream`
+const siteRoot = process.env.WEBGAMES_SITE_ROOT ?? `${upstream}/webgames/webgames/dist`
+assert.ok(path.isAbsolute(siteRoot), 'MP-08 / MP-10 absolute WebGames build root required')
 const expectedCommit = process.env.WEBGAMES_SOURCE_COMMIT
 assert.match(expectedCommit ?? '', /^[a-f0-9]{40}$/)
 const exec = promisify(execFile)
@@ -155,7 +159,7 @@ try {
   await command('git', ['-C', clientRoot, 'diff', '--exit-code', expectedCommit, '--', 'packages/kernel-client', 'apps/kernel/slice-linux-docker'])
   report.source.clientAndProvisionerMatchRuntimeSource = expectedCommit
   report.source.provisionerSha256 = await hash(`${clientRoot}/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh`)
-  report.source.siteBuildSha256 = await hash(`${upstream}/webgames/webgames/dist/index.html`)
+  report.source.siteBuildSha256 = await hash(`${siteRoot}/index.html`)
   report.source.taskManifestSha256 = await hash(`${upstream}/webgames/evals/browseruse_webgames/webgames_tasks.jsonl`)
   assert.equal(manifest.unsigned, true)
   report.source.signatureValid = false
@@ -226,7 +230,7 @@ try {
   assert.equal((await docker(['exec', cname(), 'sha256sum', '/opt/chariox-slice/bin/chariox-kernel'])).split(/\s+/)[0], report.source.kernelSha256)
   stage = 'loopback-only official site'
   await docker(['exec', '-u', 'root', cname(), 'mkdir', '-p', '/tmp/benchwg/site'])
-  await docker(['cp', `${upstream}/webgames/webgames/dist/.`, `${cname()}:/tmp/benchwg/site`])
+  await docker(['cp', `${siteRoot}/.`, `${cname()}:/tmp/benchwg/site`])
   await docker(['cp', `${repo}/apps/cli/scripts/benchmarks/webgames-serve.py`, `${cname()}:/tmp/benchwg/serve.py`])
   await docker(['exec', '-d', '-u', 'slice', cname(), 'python3', '/tmp/benchwg/serve.py', '/tmp/benchwg/site'])
   await docker(['exec', '-u', 'slice', cname(), 'python3', '-c', 'import urllib.request; r=urllib.request.urlopen("http://127.0.0.1:8765/"); assert r.status==200; print("MP-08 / MP-10 loopback site ready")'])
