@@ -2,7 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 import type { RuntimeProviderRun } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
-import { submitPromptRequest } from "../ipc-requests.js"
+import { cancelActivePromptRequest, submitPromptRequest } from "../ipc-requests.js"
 import { preparePromptAttachmentsForSubmit } from "../prompt-attachment-transfer.js"
 import type { CodexJsonRpcMessage } from "./codex-json-rpc.js"
 import { extractCodexAttachments, extractCodexPrompt } from "./codex-prompt.js"
@@ -64,6 +64,26 @@ export async function handleCodexNativeTurnStart(
         message: error instanceof Error ? error.message : String(error),
       },
     })
+  }
+}
+
+// MP-08 / MP-10: Display thread/turn IDs are projections. Cancellation must
+// resolve the active prompt on the kernel, which owns the real provider turn.
+export async function handleCodexNativeTurnInterrupt(
+  message: CodexJsonRpcMessage,
+  options: { client: LocalIpcClient, sessionId: string, attachmentId: string, agentId: string },
+  sendClient: (message: unknown) => void,
+) {
+  try {
+    await options.client.send<Record<string, unknown>>(
+      cancelActivePromptRequest(options.sessionId, options.attachmentId, options.agentId),
+    )
+    sendClient({ id: message.id, result: {} })
+  } catch (error) {
+    sendClient({ id: message.id, error: {
+      code: -32000,
+      message: error instanceof Error ? error.message : String(error),
+    } })
   }
 }
 

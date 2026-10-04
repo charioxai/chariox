@@ -19,6 +19,7 @@ import {
 import { resolveCodexNativePermissionResponse } from "./codex-permission.js"
 import {
   handleCodexNativeTurnStart,
+  handleCodexNativeTurnInterrupt,
   type CodexNativeBindingState,
 } from "./codex-turn-submission.js"
 import {
@@ -326,6 +327,11 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
           options,
           (response) => sendDownstream(downstream, response),
         )
+        return
+      }
+      if (message.method === "turn/interrupt" && downstream.kind !== "kernel" && !ephemeral) {
+        void handleCodexNativeTurnInterrupt(message, options,
+          (response) => sendDownstream(downstream, response))
         return
       }
       forwardRequest(downstream, message)
