@@ -398,6 +398,15 @@ impl KernelRuntimeState {
         if let Some(page) = page {
             views.sent_page(session, &opened.target_id, page);
         }
+        // Reattach before publishing this target as a bound App view. A poll
+        // must never remember a temporary restored target's newly allocated Tab.
+        if let Some(tab) = &binding.logical_tab {
+            self.owned
+                .session_store
+                .write()
+                .restore_room_environment_app_tab(session, tab, &opened.target_id)
+                .map_err(|_| ColdAppRestoreError::Failed(AppRequestErrorCode::Conflict))?;
+        }
         views.register(
             session,
             &opened.target_id,
@@ -419,13 +428,6 @@ impl KernelRuntimeState {
         {
             views.forget_installation(&binding.owner, &binding.installation);
             return Err(AppRequestErrorCode::NotFound.into());
-        }
-        if let Some(tab) = &binding.logical_tab {
-            self.owned
-                .session_store
-                .write()
-                .restore_room_environment_app_tab(session, tab, &opened.target_id)
-                .map_err(|_| ColdAppRestoreError::Failed(AppRequestErrorCode::Conflict))?;
         }
         let _ = self.reconcile_browser_controller_environment(session).await;
         Ok(())
