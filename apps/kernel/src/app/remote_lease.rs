@@ -856,7 +856,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
         workspace_id: Option<&str>,
     ) -> Result<LeasedProjectEnvironmentSetupTarget, DaemonError> {
         // MP-08 / MP-10 / MP-11: placement does not decide setup admission.
-        // Ordinary kernels and slices execute their own authenticated leases.
+        // Ordinary kernels and slices execute their own authenticated leases,
+        // with the same explicit remote-lease opt-in as lease creation.
+        if !self.app.config.accept_remote_leases {
+            return Err(DaemonError::RemoteLeasesDisabled {
+                machine_id: self.app.config.host_machine_id.clone(),
+            });
+        }
         self.leased_project_target(
             leased_agent_id,
             home_session_id,
