@@ -412,6 +412,26 @@ impl KernelRuntimeState {
             return Err(AppRequestErrorCode::NotFound.into());
         }
         let _ = self.reconcile_browser_controller_environment(session).await;
+        self.publish_app_tabs(session, &views).await;
+        // Publishing the verified binding restores its logical Tab and focus.
+        // Bring the physical page to the same focus through the normal path.
+        if let Ok(environment) = self.room_environment_snapshot(session) {
+            if let Some(tab_id) = environment.focused_tab_id {
+                if self
+                    .room_environment_controller_tab_binding(session, &tab_id)
+                    .is_ok_and(|tab| tab.runtime_target_id == opened.target_id)
+                {
+                    let _ = self
+                        .manage_browser_environment_tab(
+                            session,
+                            &format!("app-restore-{:016x}", rand::random::<u64>()),
+                            &tab_id,
+                            crate::runtime::browser_controller_tab::BrowserTabAction::Activate,
+                        )
+                        .await;
+                }
+            }
+        }
         Ok(())
     }
 

@@ -311,6 +311,67 @@ fn controller_tab_reconciliation_preserves_identity_and_tracks_documents_and_foc
 }
 
 #[test]
+fn cold_app_recovery_reuses_the_logical_tab_only_after_verified_binding() {
+    for restart_while_down in [false, true] {
+        let mut environment = ready_environment_with_agent();
+        let layout = super::AppPanelLayout::default();
+        environment.set_app_tabs(
+            std::collections::BTreeMap::from([("old-app".into(), ("app_1".into(), layout))]),
+            Some("agent-1".into()),
+            true,
+        );
+        environment.reconcile_controller_tabs(
+            vec![observed_tab(
+                "old-app",
+                "old-document",
+                "https://app.todo.invalid/",
+                "Todo",
+            )],
+            Some("old-app"),
+        );
+        let before = environment.snapshot().tabs[0].clone();
+        environment.invalidate_runtime_after_process_loss().unwrap();
+        assert!(environment.snapshot().tabs.is_empty());
+        if restart_while_down {
+            environment =
+                serde_json::from_value(serde_json::to_value(&environment).unwrap()).unwrap();
+        }
+        environment.reconcile_controller_tabs(
+            vec![observed_tab(
+                "new-app",
+                "new-document",
+                "https://app.todo.invalid/",
+                "Todo",
+            )],
+            Some("new-app"),
+        );
+        // An origin is not authority: a same-URL page stays an ordinary Tab.
+        assert_ne!(environment.snapshot().tabs[0].tab_id, before.tab_id);
+        assert!(environment.snapshot().tabs[0].app.is_none());
+        environment.set_app_tabs(
+            std::collections::BTreeMap::from([("new-app".into(), ("app_1".into(), layout))]),
+            Some("agent-1".into()),
+            true,
+        );
+        let after = environment.snapshot();
+        assert_eq!(after.tabs.len(), 1);
+        assert_eq!(after.tabs[0].tab_id, before.tab_id);
+        assert!(after.tabs[0].document_revision > before.document_revision);
+        assert_eq!(
+            after.focused_tab_id.as_deref(),
+            Some(before.tab_id.as_str())
+        );
+        assert_eq!(
+            environment
+                .controller_tab_binding(&before.tab_id)
+                .unwrap()
+                .runtime_target_id,
+            "new-app"
+        );
+    }
+}
+
+#[test]
 fn app_view_tabs_carry_their_app_and_panel_and_changes_emit_tabs_changed() {
     let mut environment = ready_environment_with_agent();
     environment.reconcile_controller_tabs(

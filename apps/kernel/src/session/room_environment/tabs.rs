@@ -21,6 +21,10 @@ pub(crate) struct TabRegistry {
     order: Vec<String>,
     focused_tab_id: Option<String>,
     next_sequence: u64,
+    /// Logical App identities retained while the physical browser is down.
+    /// Only a new kernel-verified App binding may claim one, never a URL.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    restoring_apps: BTreeMap<String, EnvironmentTab>,
 }
 
 impl TabRegistry {
@@ -192,6 +196,37 @@ impl TabRegistry {
                 changed = true;
             }
         }
+        let restored = self
+            .tabs
+            .iter()
+            .filter_map(|(tab_id, state)| {
+                let installation = &state.tab.app.as_ref()?.installation_id;
+                self.restoring_apps
+                    .contains_key(installation)
+                    .then(|| (tab_id.clone(), installation.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (temporary_id, installation) in restored {
+            let previous = self.restoring_apps.remove(&installation).unwrap();
+            let mut state = self.tabs.remove(&temporary_id).unwrap();
+            state.tab.tab_id = previous.tab_id.clone();
+            state.tab.document_revision = state
+                .tab
+                .document_revision
+                .max(previous.document_revision.saturating_add(1));
+            self.tab_id_by_controller_target
+                .insert(state.controller_target_id.clone(), previous.tab_id.clone());
+            for tab_id in &mut self.order {
+                if *tab_id == temporary_id {
+                    *tab_id = previous.tab_id.clone();
+                }
+            }
+            if self.focused_tab_id.as_deref() == Some(temporary_id.as_str()) || previous.focused {
+                self.focused_tab_id = Some(previous.tab_id.clone());
+            }
+            self.tabs.insert(previous.tab_id, state);
+            changed = true;
+        }
         changed
     }
 
@@ -318,6 +353,13 @@ impl TabRegistry {
     }
 
     pub(crate) fn clear(&mut self) {
+        for (tab_id, state) in &self.tabs {
+            if let Some(app) = &state.tab.app {
+                let mut tab = state.tab.clone();
+                tab.focused = self.focused_tab_id.as_deref() == Some(tab_id.as_str());
+                self.restoring_apps.insert(app.installation_id.clone(), tab);
+            }
+        }
         self.tabs.clear();
         self.tab_id_by_controller_target.clear();
         self.retired_tab_id_by_controller_target.clear();
