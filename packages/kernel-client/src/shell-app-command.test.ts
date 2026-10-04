@@ -254,3 +254,16 @@ test("App quarantine shows explicit start recovery without relabelling ordinary 
   } })
   assert.equal(recovered.message, "todo · running")
 })
+
+test("App worker start causes distinguish readiness cancellation from deadline", async () => {
+  for (const suffix of ["cancelled", "deadline"]) {
+    const failure = `app_lifecycle_registration_${suffix}`
+    for (const action of ["worker", "start"]) {
+      const result = await executeAppCommand([action, "docs"], { send: async () => ({
+        AppWorker: { worker: { installation_id: "docs", phase: "failed", enabled: true, failure, updated_at_ms: 1 } },
+      }) })
+      assert.equal(result.message, `docs · failed · ${failure}`)
+      if (suffix === "cancelled") assert.doesNotMatch(result.message!, /deadline|timed out|timeout/)
+    }
+  }
+})
