@@ -311,3 +311,20 @@ pub(super) async fn serve_connection(
         .await;
     }
 }
+
+/// Stable across reconnects, and separate for each OS peer and admitted grant.
+pub(super) fn command_cache_id(peer: &ProcessIdentity, command: &KernelCommand) -> String {
+    serde_json::json!([
+        "unix-peer-command",
+        [
+            peer.pid,
+            peer.uid,
+            peer.start,
+            peer.version,
+            peer.executable
+        ],
+        command.caller.caller_id,
+        command.command_id,
+    ])
+    .to_string()
+}

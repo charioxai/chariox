@@ -174,7 +174,17 @@ fn kernel_access_client_child() {
                 if line == "exit" {
                     break;
                 }
-                if line == "subscriber" {
+                if let Some(payload) = line.strip_prefix("write-only ") {
+                    socket.send(Message::Text(payload.to_owned().into())).await.unwrap();
+                    println!("ACCESS {{\"written\":true}}");
+                } else if line == "reconnect" {
+                    // The parent observes the committed effect over TCP before
+                    // dropping this socket without reading its response.
+                    let (fresh, _) = client_async("ws://localhost/kernel",
+                        tokio::net::UnixStream::connect(Path::new(&root).join("run/k.sock")).await.unwrap()).await.unwrap();
+                    socket = fresh;
+                    println!("ACCESS {{\"reconnected\":true}}");
+                } else if line == "subscriber" {
                     let child = Command::new(std::env::current_exe().unwrap())
                         .args(["kernel_access_idle_descendant", "--ignored", "--nocapture"])
                         .env("CHARIOX_ACCESS_TEST_CLIENT", &root)
@@ -952,5 +962,82 @@ async fn external_sudo_unix_socket_requires_grant_projects_identity_and_expires_
             .unwrap()
             .contains("sudo request expired"),
         "{expired}"
+    );
+}
+
+#[tokio::test]
+async fn unix_mutation_response_loss_retries_once_with_live_grant_and_refuses_revocation() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    let grant_id = grant(&mut kernel, &mut holder).await;
+    let list = serde_json::json!({"ListAgents":{"session_id":SESSION}});
+    let before = kernel.request(list.clone()).await;
+    let before_count = before["response"]["AgentsListed"]["agents"]
+        .as_array()
+        .unwrap()
+        .len();
+    let mutation = serde_json::json!({"SpawnAgent":{
+        "session_id":SESSION,"provider":"dev-stub","alias":null,
+        "model":null,"effort":null,"worktree_id":null
+    }});
+    let command_id = "unix-lost-spawn-response";
+    let mut outgoing = frame(mutation.clone());
+    outgoing["command_id"] = command_id.into();
+    holder.command(&format!("write-only {outgoing}"));
+    assert_eq!(holder.result()["written"], true);
+    // Independently observe the mutation, without reading its Unix response.
+    timeout(Duration::from_secs(10), async {
+        loop {
+            let observed = kernel.request(list.clone()).await;
+            if observed["response"]["AgentsListed"]["agents"]
+                .as_array()
+                .unwrap()
+                .len()
+                == before_count + 1
+            {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    holder.command("reconnect");
+    assert_eq!(holder.result()["reconnected"], true);
+    let replayed = holder.cached_request(mutation.clone(), command_id);
+    assert!(replayed["error"].is_null(), "{replayed}");
+    let again = holder.cached_request(mutation.clone(), command_id);
+    assert_eq!(replayed["response"], again["response"]);
+    let after = kernel.request(list.clone()).await;
+    assert_eq!(
+        after["response"]["AgentsListed"]["agents"]
+            .as_array()
+            .unwrap()
+            .len(),
+        before_count + 1,
+        "a lost response and repeated retries must execute SpawnAgent exactly once"
+    );
+    kernel
+        .request(serde_json::json!({"RevokeKernelAccessGrant":{"grant_id":grant_id}}))
+        .await;
+    holder.command("reconnect");
+    assert_eq!(holder.result()["reconnected"], true);
+    assert_eq!(
+        holder.cached_request(mutation.clone(), command_id)["error"]["code"],
+        "kernel_access_denied"
+    );
+    // A new grant is a new authority scope, even with the same OS process and ID.
+    let fresh_grant = grant(&mut kernel, &mut holder).await;
+    assert_ne!(fresh_grant, grant_id);
+    let fresh = holder.cached_request(mutation, command_id);
+    assert!(fresh["error"].is_null(), "{fresh}");
+    assert_ne!(fresh["response"], replayed["response"]);
+    let after_fresh = kernel.request(list).await;
+    assert_eq!(
+        after_fresh["response"]["AgentsListed"]["agents"]
+            .as_array()
+            .unwrap()
+            .len(),
+        before_count + 2
     );
 }

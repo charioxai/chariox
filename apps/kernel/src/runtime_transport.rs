@@ -1277,14 +1277,29 @@ async fn handle_incoming_payload(
                 causation_id.clone(),
                 &request,
             );
-            let fingerprint = (peer.is_none()
-                && connection_class != KernelConnectionClass::ExternalAgent
+            // Unix admission above checks current peer/grant authority before
+            // any receipt lookup. Reconnects from that same authority share a
+            // reservation; another peer or grant has a separate command scope.
+            let cache_command_id = peer.map_or_else(
+                || command.command_id.clone(),
+                |peer| unix_access::command_cache_id(peer, &command),
+            );
+            let fingerprint = ((peer.is_some()
+                || connection_class != KernelConnectionClass::ExternalAgent)
                 && request_is_cacheable(&request))
-            .then(|| CommandFingerprint::from_command_and_request(&command, &request));
+            .then(|| {
+                if peer.is_some() {
+                    // Reuse the authenticated exact-request fingerprint used
+                    // by App receipts; the cache ID additionally scopes OS identity.
+                    CommandFingerprint::for_app_control(&command, &request)
+                } else {
+                    CommandFingerprint::from_command_and_request(&command, &request)
+                }
+            });
             if let Some(fingerprint) = fingerprint.as_ref() {
                 match runtime
                     .command_result_cache
-                    .reserve(&command.command_id, fingerprint)
+                    .reserve(&cache_command_id, fingerprint)
                     .await
                 {
                     CommandReservation::Wait(wait_rx) => {
@@ -1368,7 +1383,7 @@ async fn handle_incoming_payload(
                     if fingerprint.is_some() {
                         runtime
                             .command_result_cache
-                            .forget_pending(&command.command_id)
+                            .forget_pending(&cache_command_id)
                             .await;
                     }
                     runtime.transport_health.record_inbound_overload_rejection();
@@ -1420,7 +1435,6 @@ async fn handle_incoming_payload(
             let close_requested = Arc::clone(close_requested);
             tokio::spawn(async move {
                 let _permit = permit;
-                let command_id = command.command_id.clone();
                 let session_id = command.session_id.clone();
                 let attachment_id = command.attachment_id.clone();
                 let response = router.dispatch(command, request).await;
@@ -1441,7 +1455,7 @@ async fn handle_incoming_payload(
                 if let Some(fingerprint) = fingerprint {
                     runtime
                         .command_result_cache
-                        .complete(command_id, fingerprint, &outgoing)
+                        .complete(cache_command_id, fingerprint, &outgoing)
                         .await;
                 }
                 let _ = try_send_outgoing_frame(
