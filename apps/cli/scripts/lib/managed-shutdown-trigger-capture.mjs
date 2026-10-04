@@ -143,13 +143,16 @@ export async function runManagedShutdownTrigger(options, deps) {
   const waitForAction = (promise) => abortable(promise, context.cleanupStarted ? undefined : deps.signal)
   const askForAction = async (action, message) => {
     requireValue(USER_ACTIONS.has(action), "required user action is unsupported")
-    capture.requiredUserActions.push({ action, requestedAt: now().toISOString() })
+    const acknowledgement = { action, requestedAt: now().toISOString() }
+    capture.requiredUserActions.push(acknowledgement)
     await promptWithinDeadline(prompt, message, actionDeadline, {
       signal: deps.signal,
       remaining,
       setTimer: setActionTimeout,
       clearTimer: clearActionTimeout,
     })
+    // This records the operator reply, not independent proof of the UI action.
+    acknowledgement.acknowledgedAt = now().toISOString()
   }
   const product = createManagedShutdownProduct({
     deps,
@@ -160,6 +163,7 @@ export async function runManagedShutdownTrigger(options, deps) {
     waitForAction,
     remaining,
     now,
+    monotonic,
     pause,
     runId,
   })
@@ -179,6 +183,20 @@ export async function runManagedShutdownTrigger(options, deps) {
       pause,
       waitForAction,
     })
+    // MP-09/MP-10: the reviewed coordinator bridge can inspect provider power,
+    // retained storage/context, and normal restart before the driver's DELETE.
+    // Callback results stay in its external receipt; this is only a timing barrier.
+    if (deps.observeBeforeCleanup) {
+      capture.beforeCleanupObservation = { requestedAt: now().toISOString() }
+      await promptWithinDeadline((_, signal) => deps.observeBeforeCleanup({
+        target: structuredClone(context.target), scenario: options.scenario,
+        signal, remainingMs: () => remaining(actionDeadline),
+      }), "", actionDeadline, {
+        signal: deps.signal, remaining,
+        setTimer: setActionTimeout, clearTimer: clearActionTimeout,
+      })
+      capture.beforeCleanupObservation.completedAt = now().toISOString()
+    }
   } catch (error) {
     recordShutdownFailure(capture, "workflow", error, now().toISOString())
     context.workflowFailed = true
