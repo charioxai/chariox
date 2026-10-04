@@ -238,9 +238,12 @@ class ReconciliationTests(unittest.TestCase):
             return docker(*args, **kwargs)
         result = module.reconcile(IDENTITY, LABELS, request)
         self.assertEqual(result["legacyEntries"], 1)
+        self.assertEqual([args for args, _ in docker.writes], [("cp", "-", IDENTITY + ":" + module.UPLOAD_ROOT)])
         with tarfile.open(fileobj=io.BytesIO(docker.writes[0][1])) as proof:
-            self.assertEqual(proof.getmembers()[0].name, "legacy-container-retired.json")
-            self.assertEqual(json.load(proof.extractfile(proof.getmembers()[0]))["entries"], [entry])
+            member, = proof.getmembers()
+            self.assertEqual(member.name, "legacy-container-retired.json")
+            self.assertEqual((member.uid, member.gid, member.mode), (1001, 1001, 0o600))
+            self.assertEqual(json.load(proof.extractfile(member))["entries"], [entry])
 
     def test_legacy_root_stat_rejects_public_or_symlink_directory(self):
         for mode in (0x80000000 | 0o755, 0x08000000 | 0o700, 0o700):
