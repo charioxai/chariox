@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import path from "node:path"
+import { readLocalDevEnrollment, verifyInstalledLocalSource } from "../../../kernel/slice-linux-docker/protected-local-docker-authority.mjs"
 
 import {
   assertRoomRootlessWorkspaceFixture,
@@ -16,12 +17,20 @@ export async function prepareBrowserStateDrillWorkspace({
   repositoryRoot,
   homeRoot,
   verifyEngineAccess,
+  verifyLocalDevEnrollment = () => verifyInstalledLocalSource(readLocalDevEnrollment(process.getuid())),
 }) {
   const rawDirectRoot = env[browserStateDirectWorkspaceRootEnvironment]
   const directRoot = rawDirectRoot?.trim()
   const brokerSocket = env.CHARIOX_SLICE_DOCKER_BROKER_SOCKET?.trim()
   if (rawDirectRoot !== undefined && rawDirectRoot !== directRoot) {
     throw new Error(`${browserStateDirectWorkspaceRootEnvironment} must not contain surrounding whitespace`)
+  }
+  const localDev = env.M20_LOCAL_DEV_ENROLLMENT === "1"
+  if (env.M20_LOCAL_DEV_ENROLLMENT !== undefined && !localDev) {
+    throw new Error("M20_LOCAL_DEV_ENROLLMENT must be 1 when selected")
+  }
+  if (localDev && (directRoot || brokerSocket)) {
+    throw new Error("M20_LOCAL_DEV_ENROLLMENT cannot be combined with a direct workspace or injected broker")
   }
   if (directRoot && brokerSocket) {
     throw new Error(`${browserStateDirectWorkspaceRootEnvironment} cannot be combined with a slice Docker broker`)
@@ -33,6 +42,10 @@ export async function prepareBrowserStateDrillWorkspace({
       verifyEngineAccess,
     })
     return { kind: "direct", lease, workspace: lease.workspace }
+  }
+  if (localDev) {
+    await verifyLocalDevEnrollment()
+    return { kind: "broker", lease: null, workspace: null, localDev: true }
   }
   if (brokerSocket) return { kind: "broker", lease: null, workspace: null }
   throw new Error(

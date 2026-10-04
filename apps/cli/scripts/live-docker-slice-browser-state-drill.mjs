@@ -219,6 +219,7 @@ async function run() {
     fixture: workspaceFixture,
     slice,
     repositoryRoot: repoRoot,
+    ...(workspaceFixture.localDev ? { managedSliceRoot: path.join(tempRoot, "slices") } : {}),
   })
   const initialSlicePorts = structuredClone(slice.local_docker_ports)
   const initialDisplayUrl = slice.display_endpoint?.url
