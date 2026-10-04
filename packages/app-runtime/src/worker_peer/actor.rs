@@ -1,13 +1,13 @@
 use super::{
     transport::{self, FrameState, Outgoing},
-    validation, wall_ms, Broker, BrokerCancellation, BrokerRequest, Call, Channel, ControlEvent,
-    Message, PeerError, PeerLimits, RemoteError, Result,
+    validation, wall_ms, Broker, BrokerCancellation, BrokerRequest, Call, CancellationCause,
+    Channel, ControlEvent, Message, PeerError, PeerLimits, RemoteError, Result,
 };
 use crate::wire::{Failure, Outcome, Success, WIRE_VERSION};
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         Arc,
     },
     time::Duration,
@@ -30,7 +30,7 @@ struct Pending {
 }
 struct Active {
     cancel: watch::Sender<bool>,
-    deadline_cancelled: Arc<AtomicBool>,
+    cancellation_cause: Arc<AtomicU8>,
     deadline: Instant,
     replied: bool,
 }
@@ -279,12 +279,12 @@ impl Actor {
                 let deadline =
                     Instant::now() + Duration::from_millis(remaining).min(self.limits.max_deadline);
                 let (cancel, cancellation) = watch::channel(false);
-                let deadline_cancelled = Arc::new(AtomicBool::new(false));
+                let cancellation_cause = Arc::new(AtomicU8::new(CancellationCause::Teardown as u8));
                 self.active.insert(
                     id.clone(),
                     Active {
                         cancel,
-                        deadline_cancelled: deadline_cancelled.clone(),
+                        cancellation_cause: cancellation_cause.clone(),
                         deadline,
                         replied: false,
                     },
@@ -309,7 +309,7 @@ impl Actor {
                     method,
                     params,
                     deadline,
-                    cancellation: BrokerCancellation(cancellation, deadline_cancelled),
+                    cancellation: BrokerCancellation(cancellation, cancellation_cause),
                     callers,
                     open_calls: open_calls.into_iter().collect(),
                 };
@@ -366,8 +366,15 @@ impl Actor {
         };
         // Keep the first cause: an explicit cancellation that precedes the
         // timer must not be relabelled when maintenance later visits this id.
-        if !active.replied && code == "DEADLINE_EXCEEDED" {
-            active.deadline_cancelled.store(true, Ordering::Release);
+        if !active.replied {
+            let cause = match code {
+                "DEADLINE_EXCEEDED" => CancellationCause::Deadline,
+                "CANCELLED" => CancellationCause::Request,
+                _ => CancellationCause::Teardown,
+            };
+            active
+                .cancellation_cause
+                .store(cause as u8, Ordering::Release);
         }
         active.cancel.send_replace(true);
         if active.replied {

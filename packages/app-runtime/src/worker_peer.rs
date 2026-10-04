@@ -15,7 +15,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicU8, Ordering},
         Arc,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -88,26 +88,54 @@ impl PeerLimits {
 /// Cooperative cancellation is observable without dropping the broker future.
 /// Its admission slot remains held until that future actually returns.
 #[derive(Clone)]
-pub struct BrokerCancellation(watch::Receiver<bool>, Arc<AtomicBool>);
+pub struct BrokerCancellation(watch::Receiver<bool>, Arc<AtomicU8>);
+
+#[repr(u8)]
+enum CancellationCause {
+    Teardown,
+    Request,
+    Deadline,
+}
 impl BrokerCancellation {
     /// Host-owned cancellation signal for cross-crate readiness regression tests.
     #[cfg(feature = "test-fixtures")]
     pub fn fixture() -> (watch::Sender<bool>, Self) {
         let (sender, receiver) = watch::channel(false);
-        (sender, Self(receiver, Arc::new(AtomicBool::new(false))))
+        (
+            sender,
+            Self(
+                receiver,
+                Arc::new(AtomicU8::new(CancellationCause::Teardown as u8)),
+            ),
+        )
     }
 
     /// Publish timer cancellation in the same order as the peer actor.
     #[cfg(feature = "test-fixtures")]
     pub fn fixture_deadline_cancel(&self, sender: &watch::Sender<bool>) {
-        self.1.store(true, Ordering::Release);
+        self.1
+            .store(CancellationCause::Deadline as u8, Ordering::Release);
         sender.send_replace(true);
+    }
+
+    /// Publish an explicit request cancellation like the peer actor.
+    #[cfg(feature = "test-fixtures")]
+    pub fn fixture_request_cancel(&self, sender: &watch::Sender<bool>) {
+        self.1
+            .store(CancellationCause::Request as u8, Ordering::Release);
+        sender.send_replace(true);
+    }
+
+    /// An explicit worker Cancel frame stopped this request, rather than peer
+    /// teardown withdrawing authority to continue it.
+    pub fn cancelled_by_request(&self) -> bool {
+        self.1.load(Ordering::Acquire) == CancellationCause::Request as u8
     }
 
     /// The actor expired this request; the cancellation signal still stops its
     /// effects, but diagnostic consumers must retain the original timer cause.
     pub fn cancelled_by_deadline(&self) -> bool {
-        self.1.load(Ordering::Acquire)
+        self.1.load(Ordering::Acquire) == CancellationCause::Deadline as u8
     }
 
     pub fn is_cancelled(&self) -> bool {
@@ -321,7 +349,10 @@ mod cancellation_tests {
     async fn losing_last_sender_cancels_queued_work_without_a_value_change() {
         let (sender, receiver) = watch::channel(false);
         let other_sender = sender.clone();
-        let mut cancellation = BrokerCancellation(receiver, Arc::new(AtomicBool::new(false)));
+        let mut cancellation = BrokerCancellation(
+            receiver,
+            Arc::new(AtomicU8::new(CancellationCause::Teardown as u8)),
+        );
         drop(sender);
         assert!(!cancellation.is_cancelled());
         drop(other_sender);
@@ -335,7 +366,10 @@ mod cancellation_tests {
     #[tokio::test]
     async fn explicit_cancellation_survives_sender_close_and_async_observation() {
         let (sender, receiver) = watch::channel(false);
-        let mut cancellation = BrokerCancellation(receiver, Arc::new(AtomicBool::new(false)));
+        let mut cancellation = BrokerCancellation(
+            receiver,
+            Arc::new(AtomicU8::new(CancellationCause::Teardown as u8)),
+        );
         sender.send_replace(true);
         assert!(cancellation.is_cancelled());
         cancellation.cancelled().await;

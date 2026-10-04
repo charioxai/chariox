@@ -528,6 +528,8 @@ async fn cancelled_inbound_handler_keeps_its_slot_until_it_actually_finishes() {
             if request.id == "first" {
                 release.lock().await.take().unwrap().await.unwrap();
                 assert!(request.cancellation.is_cancelled());
+                assert!(request.cancellation.cancelled_by_request());
+                assert!(!request.cancellation.cancelled_by_deadline());
             }
             Ok(Value::Null)
         })

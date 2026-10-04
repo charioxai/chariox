@@ -512,6 +512,10 @@ mod registration_failure_tests {
             "app_lifecycle_registration_deadline"
         );
         assert_eq!(
+            registration_failure(AppWorkerError::Unavailable).to_string(),
+            "app_lifecycle_registration"
+        );
+        assert_eq!(
             registration_failure(AppWorkerError::Invalid).to_string(),
             "app_lifecycle_registration"
         );

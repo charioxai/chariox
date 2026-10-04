@@ -351,7 +351,10 @@ fn check_readiness_budget(
         AppOperationStopped::Cancelled if cancellation.cancelled_by_deadline() => {
             AppWorkerError::Deadline
         }
-        AppOperationStopped::Cancelled => AppWorkerError::Cancelled,
+        AppOperationStopped::Cancelled if cancellation.cancelled_by_request() => {
+            AppWorkerError::Cancelled
+        }
+        AppOperationStopped::Cancelled => AppWorkerError::Unavailable,
         AppOperationStopped::Deadline => AppWorkerError::Deadline,
     })
 }

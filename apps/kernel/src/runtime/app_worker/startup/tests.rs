@@ -48,7 +48,7 @@ fn readiness_owner(
     (scratch, starting, readiness, observed, events)
 }
 
-fn rejected_readiness(cancelled: bool, expired: bool, expected: AppWorkerError, code: &str) {
+fn rejected_readiness(stop: ReadinessStop, expired: bool, expected: AppWorkerError, code: &str) {
     let runtime = runtime();
     let fixture = Fixture::compile().unwrap();
     let (_scratch, starting, readiness, observed, _native_events) =
@@ -65,13 +65,19 @@ fn rejected_readiness(cancelled: bool, expired: bool, expected: AppWorkerError, 
         method: "worker.ready".into(),
         params: serde_json::json!({"tools": [], "events": [], "lifecycle": []}),
         deadline,
-        cancellation,
+        cancellation: cancellation.clone(),
         callers: vec![],
         open_calls: vec![],
     };
     // Cancel after dispatch constructed the future but before its first poll.
     let future = readiness.handle(request);
-    signal.send_replace(cancelled);
+    match stop {
+        ReadinessStop::Request => cancellation.fixture_request_cancel(&signal),
+        ReadinessStop::Eof => {
+            signal.send_replace(true);
+        }
+        ReadinessStop::Deadline => {}
+    }
     if !expired {
         assert!(tokio::time::Instant::now() < deadline);
     }
@@ -89,17 +95,42 @@ fn rejected_readiness(cancelled: bool, expired: bool, expected: AppWorkerError, 
 
 #[test]
 fn readiness_cancelled_before_deadline_reports_cancellation_and_reaps() {
-    rejected_readiness(true, false, AppWorkerError::Cancelled, "APP_READY_EXPIRED");
+    rejected_readiness(
+        ReadinessStop::Request,
+        false,
+        AppWorkerError::Cancelled,
+        "APP_READY_EXPIRED",
+    );
 }
 
 #[test]
 fn readiness_expired_without_cancellation_reports_deadline_and_reaps() {
-    rejected_readiness(false, true, AppWorkerError::Deadline, "APP_READY_EXPIRED");
+    rejected_readiness(
+        ReadinessStop::Deadline,
+        true,
+        AppWorkerError::Deadline,
+        "APP_READY_EXPIRED",
+    );
 }
 
 #[test]
 fn cancelled_readiness_keeps_cancellation_when_deadline_also_expired() {
-    rejected_readiness(true, true, AppWorkerError::Cancelled, "APP_READY_EXPIRED");
+    rejected_readiness(
+        ReadinessStop::Request,
+        true,
+        AppWorkerError::Cancelled,
+        "APP_READY_EXPIRED",
+    );
+}
+
+#[test]
+fn readiness_peer_teardown_before_first_poll_reports_unavailable_and_reaps() {
+    rejected_readiness(
+        ReadinessStop::Eof,
+        false,
+        AppWorkerError::Unavailable,
+        "APP_READY_EXPIRED",
+    );
 }
 
 #[test]
@@ -153,15 +184,28 @@ impl Broker for DispatchProbe {
 
 #[test]
 fn peer_ready_then_cancel_before_dispatch_reports_cancellation_and_reaps() {
-    peer_stopped_readiness(false);
+    peer_stopped_readiness(ReadinessStop::Request);
 }
 
 #[test]
 fn peer_readiness_timer_cancellation_reports_deadline_and_reaps() {
-    peer_stopped_readiness(true);
+    peer_stopped_readiness(ReadinessStop::Deadline);
 }
 
-fn peer_stopped_readiness(expire: bool) {
+#[test]
+fn peer_readiness_eof_before_dispatch_reports_unavailable_and_reaps() {
+    peer_stopped_readiness(ReadinessStop::Eof);
+}
+
+#[derive(Clone, Copy)]
+enum ReadinessStop {
+    Request,
+    Deadline,
+    Eof,
+}
+
+fn peer_stopped_readiness(stop: ReadinessStop) {
+    let expire = matches!(stop, ReadinessStop::Deadline);
     use chariox_app_runtime::wire::{Channel, Message, Sender, WIRE_VERSION};
     use std::sync::atomic::Ordering;
     use tokio::io::AsyncWriteExt;
@@ -196,7 +240,9 @@ fn peer_stopped_readiness(expire: bool) {
             id: "ready".into(),
         };
         let mut frames = vec![];
-        for message in std::iter::once(ready).chain((!expire).then_some(cancel)) {
+        for message in
+            std::iter::once(ready).chain(matches!(stop, ReadinessStop::Request).then_some(cancel))
+        {
             let bytes = serde_json::to_vec(&message).unwrap();
             frames.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
             frames.extend_from_slice(&bytes);
@@ -205,6 +251,11 @@ fn peer_stopped_readiness(expire: bool) {
         // executor. The reader queues both without yielding; receive processes
         // Cancel before the spawned request task can perform its dispatch check.
         runtime.block_on(worker.write_all(&frames)).unwrap();
+        if matches!(stop, ReadinessStop::Eof) {
+            // Ready and EOF are both available before the spawned handler can
+            // run, forcing actor teardown to cancel the undispatched request.
+            drop(worker);
+        }
         let (peer, _events, task) = {
             let _entered = runtime.enter();
             WorkerPeer::start(
@@ -231,16 +282,20 @@ fn peer_stopped_readiness(expire: bool) {
             .await
             .unwrap();
             peer.close();
-            tokio::time::timeout(Duration::from_secs(1), task.join())
+            let joined = tokio::time::timeout(Duration::from_secs(1), task.join())
                 .await
-                .unwrap()
                 .unwrap();
+            if matches!(stop, ReadinessStop::Eof) {
+                assert_eq!(joined, Err(chariox_app_runtime::worker_peer::PeerError::Io));
+            } else {
+                joined.unwrap();
+            }
             result
         });
-        let expected = if expire {
-            AppWorkerError::Deadline
-        } else {
-            AppWorkerError::Cancelled
+        let expected = match stop {
+            ReadinessStop::Request => AppWorkerError::Cancelled,
+            ReadinessStop::Deadline => AppWorkerError::Deadline,
+            ReadinessStop::Eof => AppWorkerError::Unavailable,
         };
         assert!(matches!(result, Err(error) if error == expected));
         assert_eq!(
