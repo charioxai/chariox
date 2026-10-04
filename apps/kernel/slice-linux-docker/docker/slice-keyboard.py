@@ -26,6 +26,20 @@ class SecretTargetChanged(Exception):
     pass
 
 
+class ComputerTextKeyboard(_XTestKeyboard):
+    def _find_spare_keycodes(self):
+        # MP-08/MP-10/MP-11: a NoSymbol keycode is not necessarily inert.
+        # Chromium can fall back to its hardware meaning (e.g. BrowserRefresh)
+        # when it cannot translate an overlay Unicode keysym. X11 keycodes 8
+        # and 92 have no hardware fallback in Chromium's core keycode table.
+        # Recycle these slots under the existing mapping-settle guard rather
+        # than lending text input media/navigation keycodes. Modifier-mapped
+        # or occupied slots remain excluded by the upstream discovery.
+        spares = [code for code in super()._find_spare_keycodes() if code in (8, 92)]
+        self._spare_set = frozenset(spares)
+        return spares
+
+
 def focused_target(connection):
     """MP-08: native focus identity/geometry only; never titles or field values."""
     focus = connection.get_input_focus().focus
@@ -73,7 +87,7 @@ def assert_secret_target(connection, expected_target):
 
 def type_text(text, expected_target=None):
     connection = display.Display()
-    keyboard = _XTestKeyboard(connection)
+    keyboard = ComputerTextKeyboard(connection)
     lifted = []
     active_keysym = None
     try:

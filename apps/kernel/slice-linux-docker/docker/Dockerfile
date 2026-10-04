@@ -130,6 +130,7 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     scrot \
     socat \
     tesseract-ocr \
+    tesseract-ocr-deu \
     tesseract-ocr-eng \
     tint2 \
     unzip \

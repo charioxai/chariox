@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- MP-08/MP-10/MP-11: physical input oracle, never a solver shortcut. -->
+<meta charset="utf-8">
+<title>Chariox shared Computer fixture</title>
+<style>
+  body { margin: 0; background: white; color: black; font: 24px sans-serif; }
+  textarea { position: absolute; left: 40px; top: 80px; width: 800px; height: 110px; font: 24px sans-serif; }
+  #pointer { position: absolute; left: 40px; top: 240px; width: 240px; height: 100px; background: #22aa44; }
+  #scroll { position: absolute; left: 380px; top: 240px; width: 300px; height: 100px; overflow: scroll; }
+  #scroll div { width: 1500px; height: 1500px; background: #dddddd; }
+  #ocr { position: absolute; left: 40px; top: 390px; font-size: 32px; }
+  #secret { position: absolute; left: 900px; top: 100px; width: 240px; height: 90px; background: #cc3344; }
+</style>
+<textarea aria-label="Text editor" autofocus></textarea>
+<div id="pointer">Pointer target</div>
+<div id="scroll"><div>Scroll target</div></div>
+<div id="ocr">Open Room<br><span style="font-size:48px">Open Room</span><br>Grüße Straße</div>
+<canvas id="secret" width="240" height="90"></canvas>
+<script>
+  const documentId = crypto.randomUUID()
+  const events = []
+  for (const kind of ["keydown", "keyup", "input", "compositionstart", "compositionupdate", "compositionend",
+                      "mousedown", "mouseup", "mousemove", "click", "dblclick", "contextmenu", "wheel"]) {
+    document.addEventListener(kind, event => {
+      if (events.length < 4096) events.push({ kind, target: event.target.id || event.target.tagName,
+        key: event.key, code: event.code, button: event.button, buttons: event.buttons,
+        x: event.clientX, y: event.clientY, trusted: event.isTrusted })
+      if (kind === "contextmenu") event.preventDefault()
+    })
+  }
+  // Read-only acknowledgement used by the evaluator. All tested mutations
+  // arrive from XTEST through production Computer helpers.
+  window.computerReceipt = () => ({ documentId, value: document.querySelector("textarea").value,
+    focused: document.activeElement.tagName, events,
+    scrollX: document.getElementById("scroll").scrollLeft, scrollY: document.getElementById("scroll").scrollTop,
+    scale: devicePixelRatio, viewport: [innerWidth, innerHeight],
+    geometry: Object.fromEntries(["pointer", "scroll", "ocr", "secret"].map(id => {
+      const rect = document.getElementById(id).getBoundingClientRect()
+      return [id, [rect.x, rect.y, rect.width, rect.height]]
+    })) })
+</script>
