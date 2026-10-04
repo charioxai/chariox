@@ -1104,12 +1104,12 @@ fn mp08_browser_round2_shape_hash_requires_protocol_integration_bump() {
         "fb9dc6bab87ec3e6c894a8897ed886b6aebd79bf80bc364ca2eaa887451db7d0"
     );
     assert_eq!(
-        LOCAL_DAEMON_PROTOCOL_VERSION.cmp(&410),
+        LOCAL_DAEMON_PROTOCOL_VERSION.cmp(&411),
         std::cmp::Ordering::Greater,
         "round-2 Browser contract needs an aggregate local protocol bump"
     );
     assert_eq!(
-        RELAY_PEER_PROTOCOL_VERSION.cmp(&69),
+        RELAY_PEER_PROTOCOL_VERSION.cmp(&70),
         std::cmp::Ordering::Greater,
         "round-2 Browser snapshot request crosses the peer contract"
     );
