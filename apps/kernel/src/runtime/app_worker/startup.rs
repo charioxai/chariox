@@ -3,11 +3,13 @@
 
 use super::*;
 use crate::durable_state::app_activation::CommittedAppActivation;
-use crate::runtime::app_operation_budget::AppOperationBudget;
+use crate::runtime::app_operation_budget::{AppOperationBudget, AppOperationStopped};
 use chariox_app_package::VerifiedPackage;
 use chariox_app_runtime::{
     wire::RemoteError,
-    worker_peer::{Broker, BrokerFuture, BrokerRequest, ControlEvent, PeerLimits},
+    worker_peer::{
+        Broker, BrokerCancellation, BrokerFuture, BrokerRequest, ControlEvent, PeerLimits,
+    },
     worker_readiness::ReadinessContract,
 };
 use serde_json::Value;
@@ -236,6 +238,20 @@ struct StartupBroker {
     report: Mutex<Option<oneshot::Sender<Result<ReadyReport, AppWorkerError>>>>,
 }
 impl Broker for StartupBroker {
+    fn request_not_dispatched(&self, request: &BrokerRequest) {
+        if request.method != "worker.ready" {
+            return;
+        }
+        if let Err(cause) = check_readiness_budget(
+            &AppOperationBudget::from_broker(request),
+            &request.cancellation,
+        ) {
+            if let Some(report) = self.report.lock().ok().and_then(|mut report| report.take()) {
+                let _ = report.send(Err(cause));
+                self.admission.stop();
+            }
+        }
+    }
     fn take_response_guard(
         &self,
         id: &str,
@@ -280,17 +296,10 @@ impl Broker for StartupBroker {
                 admission.stop();
                 return Err(remote("APP_READY_INVALID"));
             };
-            if let Err(cause) = budget.check() {
-                use crate::runtime::app_operation_budget::AppOperationStopped;
-                let (error, code) = match cause {
-                    AppOperationStopped::Cancelled => (AppWorkerError::Cancelled, "CANCELLED"),
-                    AppOperationStopped::Deadline => {
-                        (AppWorkerError::Deadline, "APP_READY_EXPIRED")
-                    }
-                };
+            if let Err(cause) = check_readiness_budget(&budget, &request.cancellation) {
+                let _ = report.send(Err(cause));
                 admission.stop();
-                let _ = report.send(Err(error));
-                return Err(remote(code));
+                return Err(remote("APP_READY_EXPIRED"));
             }
             match registration {
                 Ok(registration) => {
@@ -314,11 +323,7 @@ impl Broker for StartupBroker {
             let mut changed = admission.changed.subscribe();
             let mut cancellation = request.cancellation;
             loop {
-                if cancellation.is_cancelled() {
-                    admission.stop();
-                    return Err(remote("CANCELLED"));
-                }
-                if tokio::time::Instant::now() >= request.deadline {
+                if cancellation.is_cancelled() || tokio::time::Instant::now() >= request.deadline {
                     admission.stop();
                     return Err(remote("APP_READY_EXPIRED"));
                 }
@@ -328,7 +333,7 @@ impl Broker for StartupBroker {
                     Phase::Starting => {}
                 }
                 tokio::select! {
-                    _ = cancellation.cancelled() => { admission.stop(); return Err(remote("CANCELLED")); },
+                    _ = cancellation.cancelled() => { admission.stop(); return Err(remote("APP_READY_EXPIRED")); },
                     _ = tokio::time::sleep_until(request.deadline) => { admission.stop(); return Err(remote("APP_READY_EXPIRED")); },
                     result = changed.changed() => if result.is_err() { return Err(remote("APP_NOT_READY")); },
                 }
@@ -336,15 +341,25 @@ impl Broker for StartupBroker {
         })
     }
 }
+fn check_readiness_budget(
+    budget: &AppOperationBudget,
+    cancellation: &BrokerCancellation,
+) -> Result<(), AppWorkerError> {
+    budget.check().map_err(|cause| match cause {
+        // Observe the watch signal first: the actor publishes the timer cause
+        // before that signal, and it may cancel between our two observations.
+        AppOperationStopped::Cancelled if cancellation.cancelled_by_deadline() => {
+            AppWorkerError::Deadline
+        }
+        AppOperationStopped::Cancelled => AppWorkerError::Cancelled,
+        AppOperationStopped::Deadline => AppWorkerError::Deadline,
+    })
+}
+
 fn remote(code: &str) -> RemoteError {
     RemoteError {
         code: code.into(),
-        message: if code == "CANCELLED" {
-            "App readiness was cancelled"
-        } else {
-            "App worker is not available"
-        }
-        .into(),
+        message: "App worker is not available".into(),
         retryable: Some(false),
     }
 }

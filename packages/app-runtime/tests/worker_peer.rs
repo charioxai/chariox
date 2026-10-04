@@ -597,6 +597,7 @@ async fn remote_deadline_is_clamped_and_shutdown_waits_for_actual_broker_complet
             started.send(()).await.unwrap();
             release.lock().await.take().unwrap().await.unwrap();
             assert!(request.cancellation.is_cancelled());
+            assert!(request.cancellation.cancelled_by_deadline());
             Ok(Value::Null)
         })
     });

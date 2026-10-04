@@ -15,7 +15,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -88,13 +88,26 @@ impl PeerLimits {
 /// Cooperative cancellation is observable without dropping the broker future.
 /// Its admission slot remains held until that future actually returns.
 #[derive(Clone)]
-pub struct BrokerCancellation(watch::Receiver<bool>);
+pub struct BrokerCancellation(watch::Receiver<bool>, Arc<AtomicBool>);
 impl BrokerCancellation {
     /// Host-owned cancellation signal for cross-crate readiness regression tests.
     #[cfg(feature = "test-fixtures")]
     pub fn fixture() -> (watch::Sender<bool>, Self) {
         let (sender, receiver) = watch::channel(false);
-        (sender, Self(receiver))
+        (sender, Self(receiver, Arc::new(AtomicBool::new(false))))
+    }
+
+    /// Publish timer cancellation in the same order as the peer actor.
+    #[cfg(feature = "test-fixtures")]
+    pub fn fixture_deadline_cancel(&self, sender: &watch::Sender<bool>) {
+        self.1.store(true, Ordering::Release);
+        sender.send_replace(true);
+    }
+
+    /// The actor expired this request; the cancellation signal still stops its
+    /// effects, but diagnostic consumers must retain the original timer cause.
+    pub fn cancelled_by_deadline(&self) -> bool {
+        self.1.load(Ordering::Acquire)
     }
 
     pub fn is_cancelled(&self) -> bool {
@@ -140,6 +153,9 @@ pub trait Broker: Send + Sync + 'static {
     /// automatically. The implementation retains kernel-owned identity/policy;
     /// request params carry no authenticated owner, agent, grant or generation.
     fn handle(&self, request: BrokerRequest) -> BrokerFuture;
+    /// Finalize host bookkeeping for a request stopped before `handle` runs.
+    /// Must be nonblocking; it must not execute the request's broker effects.
+    fn request_not_dispatched(&self, _request: &BrokerRequest) {}
     /// Transfers bounded completion ownership after the handler has finished.
     /// Apps cannot construct or select this guard through the wire protocol.
     fn take_response_guard(&self, _request_id: &str) -> Option<Box<dyn ResponsePublication>> {
@@ -305,7 +321,7 @@ mod cancellation_tests {
     async fn losing_last_sender_cancels_queued_work_without_a_value_change() {
         let (sender, receiver) = watch::channel(false);
         let other_sender = sender.clone();
-        let mut cancellation = BrokerCancellation(receiver);
+        let mut cancellation = BrokerCancellation(receiver, Arc::new(AtomicBool::new(false)));
         drop(sender);
         assert!(!cancellation.is_cancelled());
         drop(other_sender);
@@ -319,7 +335,7 @@ mod cancellation_tests {
     #[tokio::test]
     async fn explicit_cancellation_survives_sender_close_and_async_observation() {
         let (sender, receiver) = watch::channel(false);
-        let mut cancellation = BrokerCancellation(receiver);
+        let mut cancellation = BrokerCancellation(receiver, Arc::new(AtomicBool::new(false)));
         sender.send_replace(true);
         assert!(cancellation.is_cancelled());
         cancellation.cancelled().await;

@@ -30,6 +30,7 @@ struct Pending {
 }
 struct Active {
     cancel: watch::Sender<bool>,
+    deadline_cancelled: Arc<AtomicBool>,
     deadline: Instant,
     replied: bool,
 }
@@ -278,10 +279,12 @@ impl Actor {
                 let deadline =
                     Instant::now() + Duration::from_millis(remaining).min(self.limits.max_deadline);
                 let (cancel, cancellation) = watch::channel(false);
+                let deadline_cancelled = Arc::new(AtomicBool::new(false));
                 self.active.insert(
                     id.clone(),
                     Active {
                         cancel,
+                        deadline_cancelled: deadline_cancelled.clone(),
                         deadline,
                         replied: false,
                     },
@@ -306,12 +309,13 @@ impl Actor {
                     method,
                     params,
                     deadline,
-                    cancellation: BrokerCancellation(cancellation),
+                    cancellation: BrokerCancellation(cancellation, deadline_cancelled),
                     callers,
                     open_calls: open_calls.into_iter().collect(),
                 };
                 self.handlers.spawn(async move {
                     if request.cancellation.is_cancelled() || Instant::now() >= request.deadline {
+                        broker.request_not_dispatched(&request);
                         return (
                             id,
                             Err(RemoteError {
@@ -360,6 +364,11 @@ impl Actor {
         let Some(active) = self.active.get_mut(id) else {
             return Ok(());
         };
+        // Keep the first cause: an explicit cancellation that precedes the
+        // timer must not be relabelled when maintenance later visits this id.
+        if !active.replied && code == "DEADLINE_EXCEEDED" {
+            active.deadline_cancelled.store(true, Ordering::Release);
+        }
         active.cancel.send_replace(true);
         if active.replied {
             return Ok(());
