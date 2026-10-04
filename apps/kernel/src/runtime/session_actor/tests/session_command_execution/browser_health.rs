@@ -533,6 +533,16 @@ async fn browser_health_receipt_after_foreground_recovery_cannot_reopen_recovery
     let mut newer = old_receipt.clone();
     newer.process.runtime_generation += 1;
     newer.browser.browser_generation += 1;
+    newer.browser.tabs = vec![
+        crate::runtime::browser_controller_process::BrowserControllerTabSnapshot {
+            target_id: "recovered-target".into(),
+            document_id: "recovered-document".into(),
+            url: "https://fixture.test/recovered".into(),
+            title: "Recovered page".into(),
+        },
+    ];
+    newer.browser.focused_target_id = Some("recovered-target".into());
+    let fresh = newer.clone();
     state
         .observe_browser_controller_reconciliation(&room, newer)
         .unwrap();
@@ -552,24 +562,43 @@ async fn browser_health_receipt_after_foreground_recovery_cannot_reopen_recovery
     );
     assert_eq!(state.room_environment_snapshot(&room).unwrap(), recovered,
         "late controller A receipt must not degrade recovered controller B or invalidate references");
+    // Delayed loss diagnostics must also be fenced after the foreground recovery.
+    state.observe_room_browser_health_receipt(
+        &room,
+        admission,
+        Err(crate::error::DaemonError::LocalTransport {
+            operation: "browser_controller.route",
+            message: "browser_debugger_unavailable".into(),
+        }),
+    );
+    assert_eq!(state.room_environment_snapshot(&room).unwrap(), recovered);
+    assert_eq!(recovered.tabs.len(), 1);
+    let binding = state
+        .room_environment_controller_tab_binding(&room, &recovered.tabs[0].tab_id)
+        .unwrap();
+    assert_eq!(binding.document_id, "recovered-document");
+    assert_eq!(binding.runtime_target_id, "recovered-target");
     // The foreground B observation must still be authoritative afterward.
-    let mut fresh = process;
-    fresh.runtime_generation += 1;
-    let fresh = BrowserControllerReconciliation {
-        process: fresh,
-        browser: serde_json::from_value(serde_json::json!({
-            "browser_generation": 2, "event_cursor": 1, "tabs": [],
-            "focused_target_id": null,
-            "resource_inventory": {"browser_ids": [], "profile_ids": []},
-            "viewport": {"css_width": 1280, "css_height": 800, "device_scale_factor": 1,
-                "desktop_pixel_width": 1280, "desktop_pixel_height": 800}
-        }))
-        .unwrap(),
-    };
+    let same_generation_admission = state
+        .admit_room_browser_health_probe(&room, before.runtime_generation)
+        .unwrap();
     assert_eq!(
         state
             .observe_browser_controller_reconciliation(&room, fresh)
             .unwrap(),
         recovered
+    );
+    state.observe_room_browser_health_receipt(
+        &room,
+        same_generation_admission,
+        Err(crate::error::DaemonError::LocalTransport {
+            operation: "browser_controller.route",
+            message: "browser_debugger_unavailable".into(),
+        }),
+    );
+    assert_eq!(
+        state.room_environment_snapshot(&room).unwrap(),
+        recovered,
+        "even an unchanged-generation foreground observation supersedes an older health probe"
     );
 }
