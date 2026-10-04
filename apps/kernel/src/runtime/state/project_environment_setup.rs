@@ -791,6 +791,7 @@ impl KernelRuntimeState {
         validate_operation_id(&operation_id)?;
         validate_commands(&validation_commands)?;
         let config = self.owned.config_projection.snapshot();
+        ensure_leased_worker_setup_enabled(&config)?;
         if target_worker_id != config.host_machine_id {
             return Err(setup_error(
                 "requested worker does not match this kernel's worker identity",

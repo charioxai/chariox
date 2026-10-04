@@ -54,6 +54,10 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Managed upgrade recovery ownership regression
+        # MP-07: the root journal ownership fixture would skip as the runner user.
+        run: sudo "$(command -v node)" --test --test-concurrency=1 deploy/managed-kernel/managed-update-recovery.test.mjs
+
   rust:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest

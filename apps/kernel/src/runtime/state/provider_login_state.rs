@@ -23,7 +23,6 @@ pub(in crate::runtime) enum ProviderLoginProcessBackend {
 pub(in crate::runtime) enum ProviderAuthProcessOperation {
     Login,
     Logout,
-    SetupToken,
 }
 
 /// Where the Chariox Vault prompt of a `claude setup-token` login points.
@@ -44,6 +43,8 @@ struct ClaudeSetupTokenSecrets {
     notes: String,
     token: Option<Zeroizing<String>>,
     new_vault_passphrase: Option<Zeroizing<String>>,
+    hidden_inputs: Vec<Zeroizing<String>>,
+    reader_finished: bool,
 }
 
 impl ClaudeSetupTokenSecrets {
@@ -59,6 +60,7 @@ pub(in crate::runtime) struct ClaudeSetupTokenLogin {
     /// concurrent status polls cannot interleave output or race the store.
     serial: Arc<tokio::sync::Mutex<()>>,
     pub vault_prompt: Option<ClaudeSetupTokenVaultPrompt>,
+    pub overwrite: bool,
 }
 
 impl Default for ClaudeSetupTokenLogin {
@@ -70,6 +72,7 @@ impl Default for ClaudeSetupTokenLogin {
             })),
             serial: Arc::new(tokio::sync::Mutex::new(())),
             vault_prompt: None,
+            overwrite: true,
         }
     }
 }
@@ -85,11 +88,51 @@ impl ClaudeSetupTokenLogin {
 
     fn process(&self, bytes: &[u8]) -> Vec<u8> {
         let mut secrets = self.secrets();
-        if let Some(screen) = secrets.screen.as_mut() {
+        let ClaudeSetupTokenSecrets {
+            screen,
+            screen_text,
+            hidden_inputs,
+            ..
+        } = &mut *secrets;
+        if let Some(screen) = screen.as_mut() {
             screen.process(bytes);
-            secrets.screen_text = screen.redacted_text();
+            *screen_text = screen.redacted_text_with_inputs(hidden_inputs);
         }
         secrets.projection()
+    }
+
+    /// The shared vt100 screen receives bytes before PTY queues/diagnostics.
+    /// Status reads project that screen; raw bytes never leave the reader.
+    pub fn read_private_output(&self, bytes: &[u8]) -> Vec<u8> {
+        if bytes.is_empty() {
+            self.secrets().reader_finished = true;
+        } else {
+            self.process(bytes);
+        }
+        Vec::new()
+    }
+
+    pub fn reader_finished(&self) -> bool {
+        self.secrets().reader_finished
+    }
+
+    pub fn hide_input(&self, input: &[u8]) -> Result<(), DaemonError> {
+        let input = std::str::from_utf8(input)
+            .map_err(|_| login_error("Claude authorization response must be UTF-8"))?
+            .trim_end_matches(['\r', '\n']);
+        if !input.is_empty() {
+            let mut secrets = self.secrets();
+            let retained_bytes: usize = secrets.hidden_inputs.iter().map(|value| value.len()).sum();
+            if retained_bytes + input.len() > MAX_PROVIDER_LOGIN_OUTPUT_BYTES {
+                return Err(login_error(
+                    "Claude authorization responses exceed the bounded login limit",
+                ));
+            }
+            secrets
+                .hidden_inputs
+                .push(Zeroizing::new(input.to_string()));
+        }
+        Ok(())
     }
 
     fn note(&self, note: &str) -> Vec<u8> {
@@ -122,6 +165,7 @@ impl ClaudeSetupTokenLogin {
         secrets.screen = None;
         secrets.token = None;
         secrets.new_vault_passphrase = None;
+        secrets.hidden_inputs.clear();
     }
 }
 
@@ -197,7 +241,6 @@ impl ProviderLoginProcessRecord {
         let title = match self.operation {
             ProviderAuthProcessOperation::Login => "Authenticate provider account",
             ProviderAuthProcessOperation::Logout => "Log out provider account",
-            ProviderAuthProcessOperation::SetupToken => "Authorize Claude setup token",
         };
         let message = if self.backend == ProviderLoginProcessBackend::Terminal {
             "Complete the provider-native terminal workflow. Its output is projected separately and responses are treated as secrets."
@@ -426,43 +469,15 @@ impl ProviderLoginProcessStore {
             for chunk in chunks {
                 projection = Some(login.process(&chunk));
             }
-            if let Some(projection) = projection {
-                record.output.clear();
-                record.append_projected_output(&projection);
-            }
+            let projection = projection.unwrap_or_else(|| login.secrets().projection());
+            record.output.clear();
+            record.append_projected_output(&projection);
         } else {
             for chunk in chunks {
                 record.append_projected_output(&chunk);
             }
         }
         record.updated_at_ms = now_ms;
-        Ok(record.status())
-    }
-
-    // Serialize cancellation with the atomic Vault commit. Never commit a cancelled workflow.
-    pub fn finish_setup_token(
-        &self,
-        owner: &str,
-        login_id: &str,
-        store: impl FnOnce() -> Result<(), DaemonError>,
-    ) -> Result<ProviderLoginStatus, DaemonError> {
-        let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        let record = owned_record_mut(&mut records, owner, login_id)?;
-        if record.state != ProviderLoginProcessState::Running {
-            return Ok(record.status());
-        }
-        let success = store().is_ok();
-        record.output.extend_from_slice(if success {
-            b"Claude setup token stored in Chariox Vault.\n"
-        } else {
-            b"Claude setup token capture or Vault storage failed; no token was stored.\n"
-        });
-        record.state = if success {
-            ProviderLoginProcessState::Succeeded
-        } else {
-            ProviderLoginProcessState::Failed
-        };
-        record.updated_at_ms = crate::session::unix_epoch_ms();
         Ok(record.status())
     }
 

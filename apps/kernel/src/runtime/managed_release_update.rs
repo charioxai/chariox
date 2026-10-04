@@ -311,8 +311,9 @@ impl ManagedReleaseUpdateClient {
 /// The root unit extracts the archive and runs the signed upgrade transaction with
 /// the installed release's tooling, resolved to its physical directory so the
 /// activation of `current` cannot swap scripts mid-transaction. MP-07: retain
-/// recovery inputs while a journal remains, including after interruption. The
-/// settled attempt reclaims them through the same owned storage helper.
+/// extracted recovery inputs while a journal remains, including after interruption.
+/// Reclaim the archive immediately after extraction; recovery needs no archive.
+/// The settled attempt reclaims scratch through the same owned storage helper.
 fn update_script(
     tooling_release: &Path,
     archive: &Path,
@@ -334,7 +335,7 @@ fn update_script(
          if pending; then run_upgrade 1; else \
          python3 '{tooling}/release-update-storage.py' prepare '{staging_root}' '{update_id}'; \
          python3 '{tooling}/extract-release.py' '{archive}' '{staging}/extracted' '{publication_root}'; \
-         TMPDIR='{staging}' run_upgrade 0; fi",
+         rm -f '{archive}'; TMPDIR='{staging}' run_upgrade 0; fi",
         staging = staging.display(),
         archive = archive.display(),
         staging_root = staging_root.display(),
@@ -654,14 +655,13 @@ mod tests {
         std::fs::rename(root.join("release"), root.join("releases/release")).unwrap();
         assert!(!restart().success());
         assert!(
-            archive.exists(),
-            "MP-07 pending recovery must retain its archive"
+            !archive.exists(),
+            "MP-07 extraction must reclaim the archive before activation/recovery"
         );
         assert!(
             staging.join(&update.update_id).exists(),
             "MP-07 retain owned scratch until recovery"
         );
-        std::fs::remove_file(&archive).unwrap(); // Old F already removed it.
         assert!(
             restart().success(),
             "MP-07 restart must reach recovery without an archive"

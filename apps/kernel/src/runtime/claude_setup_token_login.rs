@@ -4,8 +4,12 @@
 
 use zeroize::Zeroizing;
 
+use super::command::{command_caller_user_id, KernelCommand};
 use crate::error::DaemonError;
-use crate::local::{ProviderLoginProcessState, ProviderLoginStatus};
+use crate::local::{
+    LocalDaemonResponse, ProviderLoginProcessState, ProviderLoginStatus,
+    SetProviderAccountCredentialRequest, StartProviderLoginRequest,
+};
 use crate::runtime::state::{
     ClaudeSetupTokenStoreOutcome, ClaudeSetupTokenVaultPrompt, KernelRuntimeState,
     ProviderLoginProcessRecord, SetupTokenScan,
@@ -13,21 +17,88 @@ use crate::runtime::state::{
 
 pub(crate) const CLAUDE_SETUP_TOKEN_METHOD: &str = "setup_token";
 
-/// Finishes the login once the CLI printed a complete token or exited. Callers
-/// hold the login's serialization guard.
+/// MP-08/MP-11: credential creation is an adapter for StartProviderLogin,
+/// never a second PTY capture or Vault authority path.
+pub(super) async fn start(
+    runtime_state: &KernelRuntimeState,
+    command: &KernelCommand,
+    request: SetProviderAccountCredentialRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    if request.provider != "claude" || !request.value.is_empty() {
+        return Err(login_error(
+            "setup-token --run requires Claude and no credential value",
+        ));
+    }
+    let owner =
+        runtime_state.provider_account_authority_owner_user_id(&command_caller_user_id(command));
+    let profile = runtime_state.provider_account_profile_registry().get(
+        &owner,
+        "claude",
+        &request.account_profile,
+    )?;
+    if !request.overwrite {
+        let credential_id =
+            crate::provider::provider_account_credential_id(&owner, "claude", &profile.profile_id);
+        let exists = tokio::task::spawn_blocking(move || {
+            crate::credential::CharioxCredentialRegistry::user()?
+                .get(&credential_id)
+                .map(|value| value.is_some())
+        })
+        .await
+        .map_err(|error| login_error(&format!("check setup token replacement: {error}")))??;
+        if exists {
+            return Err(login_error("A setup token already exists for this profile; use --replace to authorize replacement"));
+        }
+    }
+    super::provider_auth_control::execute_start_provider_login_with_overwrite(
+        runtime_state,
+        &owner,
+        StartProviderLoginRequest {
+            provider: "claude".into(),
+            account_profile: profile.profile_id,
+            method: Some(CLAUDE_SETUP_TOKEN_METHOD.into()),
+        },
+        request.overwrite,
+    )
+    .await
+}
+
+/// Finishes the login after a successful CLI exit and the reader's final
+/// rendered screen. Callers hold the login's serialization guard.
 pub(super) async fn reconcile(
     runtime_state: &KernelRuntimeState,
     owner_user_id: &str,
     record: &ProviderLoginProcessRecord,
-    exited: bool,
+    process_state: &crate::pty::PtyProcessState,
     status: ProviderLoginStatus,
 ) -> Result<ProviderLoginStatus, DaemonError> {
     let store = runtime_state.provider_login_process_store();
-    if !exited
-        && store.capture_setup_token(owner_user_id, &record.login_id, false)?
-            == SetupTokenScan::Pending
+    // Wait for the reader's final screen and a successful CLI exit. Capturing
+    // an earlier row could miss a second token or a later provider failure.
+    if !process_state.is_exited()
+        || !record
+            .setup_token
+            .as_ref()
+            .is_some_and(|login| login.reader_finished())
     {
         return Ok(status);
+    }
+    if !matches!(
+        process_state,
+        crate::pty::PtyProcessState::Exited {
+            exit_code: Some(0),
+            signal: None
+        }
+    ) {
+        let _ = runtime_state
+            .with_app_side_effect(|app| app.pty_mut().remove_process(&record.login_id))
+            .await;
+        return fail(
+            runtime_state,
+            owner_user_id,
+            record,
+            "Claude setup-token did not exit successfully; nothing was stored.",
+        );
     }
     let remaining = runtime_state
         .with_app_side_effect(|app| app.pty_mut().drain_output(&record.login_id))
@@ -190,7 +261,16 @@ async fn store_token(
 ) -> Result<ProviderLoginStatus, DaemonError> {
     let store = runtime_state.provider_login_process_store();
     let outcome = runtime_state
-        .store_claude_setup_token(owner_user_id, &record.account_profile, token, passphrase)
+        .store_claude_setup_token(
+            owner_user_id,
+            &record.account_profile,
+            token,
+            record
+                .setup_token
+                .as_ref()
+                .is_some_and(|login| login.overwrite),
+            passphrase,
+        )
         .await;
     let now_ms = crate::session::unix_epoch_ms();
     match outcome {

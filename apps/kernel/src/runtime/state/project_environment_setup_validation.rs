@@ -423,8 +423,9 @@ pub(super) fn ensure_worker_validation_boundary(config: &DaemonConfig) -> Result
     // General kernels are the ordinary local-worker placement. They still
     // pass through the canonical workspace and sanitized-environment checks
     // below, but they do not have (and must not require) a disposable-worker
-    // receipt or a Cloud relay binding. Only the leased placement needs the
-    // authenticated activity allocation.
+    // receipt or a Cloud relay binding. General-role leased setup additionally
+    // requires explicit remote-lease opt-in and the authenticated lease target.
+    // Only RemoteLeaseWorker requires a confirmed activity allocation.
     if config.kernel_runtime_role == KernelRuntimeRole::General {
         return Ok(());
     }
@@ -1324,9 +1325,12 @@ pub(super) fn run_worker_validation_command(
     should_cancel: impl Fn() -> bool,
     overall_deadline: Option<Instant>,
 ) -> Result<(i32, usize, usize), String> {
-    // This child is spawned only by a confirmed disposable worker kernel after
-    // the provider run context and workspace have been fenced above. Keep the
-    // shell local to that worker boundary and do not route through the home
+    // MP-08/MP-11: General kernels use their ordinary provider/workspace
+    // authority; leased setup also requires explicit remote-lease opt-in and
+    // an authenticated lease. RemoteLeaseWorker additionally requires a
+    // confirmed allocation receipt. Both fence the provider context and
+    // canonical workspace before this child runs. Keep the shell local to
+    // that execution boundary and do not route through the home
     // kernel's general ShellCommandService.
     let (shell, shell_flag) = if cfg!(windows) {
         ("C:\\Windows\\System32\\cmd.exe", "/C")

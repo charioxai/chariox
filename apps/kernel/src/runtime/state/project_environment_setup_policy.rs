@@ -184,11 +184,23 @@ pub(super) fn actual_worker_platform() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
+/// MP-08/MP-11: General workers execute remote setup only while remote leases
+/// are explicitly enabled. Local setup has its own ordinary admission path.
+pub(super) fn ensure_leased_worker_setup_enabled(config: &DaemonConfig) -> Result<(), DaemonError> {
+    if !config.accept_remote_leases {
+        return Err(setup_error(
+            "leased project environment setup requires remote leases to be enabled",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn ensure_worker_setup_status_target(
     target: &crate::app::LeasedProjectEnvironmentSetupTarget,
     status: &ProjectEnvironmentSetupStatus,
     config: &DaemonConfig,
 ) -> Result<(), DaemonError> {
+    ensure_leased_worker_setup_enabled(config)?;
     if status.session_id != target.home_session_id || status.agent_id != target.home_agent_id {
         return Err(setup_error(
             "worker setup status does not match the leased home agent",
