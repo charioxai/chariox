@@ -290,6 +290,22 @@ impl RoomEnvironmentRegistry {
         Ok(environment.snapshot())
     }
 
+    pub(crate) fn restore_app_tab(
+        &mut self,
+        session_id: &str,
+        saved: &super::EnvironmentTab,
+        target: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_owned(),
+            })?;
+        environment.restore_app_tab(saved, target);
+        Ok(environment.snapshot())
+    }
+
     pub(crate) fn set_app_tabs(
         &mut self,
         session_id: &str,

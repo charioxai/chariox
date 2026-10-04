@@ -264,6 +264,22 @@ impl SessionService {
         })
     }
 
+    pub(crate) fn restore_room_environment_app_tab(
+        &mut self,
+        session_id: &str,
+        saved: &crate::session::EnvironmentTab,
+        target: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_owned(),
+            });
+        }
+        self.mutate_room_environment(session_id, |environments| {
+            environments.restore_app_tab(session_id, saved, target)
+        })
+    }
+
     pub(crate) fn set_room_environment_app_tabs(
         &mut self,
         session_id: &str,

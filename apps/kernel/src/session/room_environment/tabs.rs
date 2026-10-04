@@ -182,6 +182,45 @@ impl TabRegistry {
         changed
     }
 
+    /// Reattach kernel-held App intent after verified assets opened a new
+    /// physical target. Retire the old binding and invalidate its document;
+    /// ordinary user close/open reconciliation never calls this path.
+    pub(crate) fn restore_app_tab(&mut self, saved: &EnvironmentTab, target: &str) -> bool {
+        if self.tab_id_by_controller_target.get(target) == Some(&saved.tab_id) {
+            return false;
+        }
+        if let Some(temporary_id) = self.tab_id_by_controller_target.remove(target) {
+            self.tabs.remove(&temporary_id);
+            self.order.retain(|id| id != &temporary_id);
+            if self.focused_tab_id.as_ref() == Some(&temporary_id) {
+                self.focused_tab_id = Some(saved.tab_id.clone());
+            }
+        }
+        let mut tab = saved.clone();
+        if let Some(old) = self.tabs.remove(&saved.tab_id) {
+            tab.document_revision = tab.document_revision.max(old.tab.document_revision);
+            self.tab_id_by_controller_target
+                .remove(&old.controller_target_id);
+            self.remember_retired_controller_target(old.controller_target_id, saved.tab_id.clone());
+        }
+        tab.document_revision = tab.document_revision.saturating_add(1);
+        self.forget_retired_controller_target(target);
+        self.tab_id_by_controller_target
+            .insert(target.to_owned(), tab.tab_id.clone());
+        if !self.order.contains(&tab.tab_id) {
+            self.order.push(tab.tab_id.clone());
+        }
+        self.tabs.insert(
+            tab.tab_id.clone(),
+            TabState {
+                controller_target_id: target.to_owned(),
+                document_id: None,
+                tab,
+            },
+        );
+        true
+    }
+
     /// Marks App view Tabs by controller target; true when any Tab changed.
     pub(crate) fn set_apps(&mut self, apps: &BTreeMap<String, EnvironmentTabApp>) -> bool {
         let mut changed = false;
