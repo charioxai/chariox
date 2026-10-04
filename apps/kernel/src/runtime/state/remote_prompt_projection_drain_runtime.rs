@@ -303,20 +303,22 @@ impl KernelRuntimeState {
         Ok(RemotePromptRunBindingRecovery::Recovered)
     }
 
-    pub(super) async fn drain_active_remote_prompt_projections_for_session(
+    pub(super) fn spawn_active_remote_prompt_projection_drains_for_session(
         &self,
         session: &crate::session::RuntimeSession,
-    ) -> Result<(), DaemonError> {
+    ) {
         for agent_id in self
             .owned
             .prompt_state_owner
             .active_prompt_agent_ids(session)
         {
-            let _ = self
-                .drain_remote_prompt_projection_once(session.id(), &agent_id)
-                .await?;
+            if self
+                .remote_prompt_projection_drain_target(session.id(), &agent_id)
+                .is_some()
+            {
+                self.spawn_remote_prompt_projection_drain(session.id().to_string(), agent_id);
+            }
         }
-        Ok(())
     }
 
     async fn drain_remote_prompt_projection_once(

@@ -4805,3 +4805,6 @@ mod dispatch_settlement {
         .await;
     }
 }
+
+#[path = "tests/terminal_poll.rs"]
+mod terminal_poll;

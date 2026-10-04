@@ -342,8 +342,10 @@ impl KernelRuntimeState {
             self.observe_git_after_provider_activity_if_pending(provider_run_id)
                 .await;
         }
-        self.drain_active_remote_prompt_projections_for_session(&session)
-            .await?;
+        // Remote output is projected by the one claimed background drain.
+        // Client polling must not wait on a second worker RPC while the worker
+        // may be waiting for a home-owned runtime tool or provider operation.
+        self.spawn_active_remote_prompt_projection_drains_for_session(&session);
         let records = owned
             .terminal_stream
             .drain_output_records(session_id, attachment_id);
