@@ -54,6 +54,82 @@ jobs:
       - name: Test
         run: pnpm test
 
+  python:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify source revision
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Set up Node.js
+        # browser-lifecycle.py closes the owned browser through browser-cdp.mjs.
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Rust toolchain
+        # scripts/slice-capture-preflight.test.py compiles its harness with rustc.
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+
+      - name: Test Python scripts
+        # Every tracked Python test runs as its own script with the runner's
+        # stdlib python3, unprivileged; one failure does not hide the others.
+        # Excluded: both import the hash-pinned Selkies runtime (aiohttp,
+        # psutil), which exists only in the slice image venv. The slice image
+        # build runs docker/test_*.py (test_slice_selkies.py) in that venv.
+        #   apps/kernel/slice-linux-docker/docker/canonical-display.test.py
+        #   apps/kernel/slice-linux-docker/docker/test_slice_selkies.py
+        env:
+          PYTHONDONTWRITEBYTECODE: 1
+        run: |
+          failed=()
+          count=0
+          while IFS= read -r test_file; do
+            case "$test_file" in
+              apps/kernel/slice-linux-docker/docker/canonical-display.test.py | \
+              apps/kernel/slice-linux-docker/docker/test_slice_selkies.py) continue ;;
+            esac
+            count=$((count + 1))
+            echo "::group::$test_file"
+            if python3 -B "$test_file" </dev/null; then status=0; else status=$?; fi
+            echo "::endgroup::"
+            if [ "$status" -ne 0 ]; then
+              echo "::error file=$test_file::exited with status $status"
+              failed+=("$test_file")
+            fi
+          done < <(git ls-files -- ':(glob)**/*.test.py' ':(glob)**/*_test.py' ':(glob)**/test_*.py')
+          test "$count" -gt 0
+          echo "Ran $count Python test files; ${#failed[@]} failed."
+          if [ "${#failed[@]}" -gt 0 ]; then
+            printf 'FAILED %s\n' "${failed[@]}"
+            exit 1
+          fi
+
+      - name: Test root-only Python cases
+        # These files skip their root-only cases when unprivileged; the hosted
+        # runner is disposable, so run them again as root. The namespace cases
+        # of managed-extension-build.test.py stay behind their explicit opt-in
+        # (CHARIOX_RUN_PRIVILEGED_MOUNT_TESTS=1) and do not run here.
+        if: ${{ !cancelled() }}
+        run: |
+          failed=0
+          for test_file in \
+            scripts/docker-admission-lock.test.py \
+            apps/kernel/slice-linux-docker/test_development_workspace_access.py
+          do
+            sudo python3 -B "$test_file" || failed=1
+          done
+          exit "$failed"
+
   rust:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
