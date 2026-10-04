@@ -70,9 +70,8 @@ impl KernelRuntimeState {
 
     /// MP-08 / MP-10 / MP-11: a leased worker agent's kernel interaction
     /// (utility review, Vault input, provider login) is answered in the home
-    /// session. Like a provider-native approval, it is bound to the worker turn
-    /// that raised it, so the home withdraws it with that turn. Without a live
-    /// turn there is nothing to bind and the interaction stays local.
+    /// session. Bind to the current turn when present, or to the live provider
+    /// run for an idle review. The home withdraws it when that binding ends.
     pub(super) async fn leased_interaction_home_target(
         &self,
         session_id: &str,
@@ -95,7 +94,17 @@ impl KernelRuntimeState {
                     .provider_store
                     .get_run_for_agent(session_id, agent_id)
                     .and_then(|run| {
-                        self.capture_native_interaction_origin(session_id, agent_id, run.id())
+                        if run.state() != crate::provider::ProviderRunState::Running {
+                            return None;
+                        }
+                        Some(
+                            self.capture_native_interaction_origin(session_id, agent_id, run.id())
+                                .unwrap_or_else(|| {
+                                    crate::session::NativeInteractionOrigin::ProviderStartup {
+                                        provider_run_id: run.id().into(),
+                                    }
+                                }),
+                        )
                     })
                 else {
                     return Ok(None);
@@ -123,15 +132,19 @@ impl KernelRuntimeState {
                 .await?
             {
                 let interaction = interaction.with_native_origin(Some(origin));
-                let (tx, rx) = oneshot::channel();
+                let (mut tx, rx) = oneshot::channel();
                 let timeout = Duration::from_secs(
                     interaction.timeout_sec().unwrap_or(900).saturating_add(15),
                 );
                 tokio::spawn(async move {
-                    let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-                        &config, ClientTarget {daemon_id: Some(home_kernel_id), daemon_alias: None},
-                        RelayPeerRequest::ForwardNativeTurnInteraction {context, interaction}, timeout,
-                    ).await;
+                    let response = tokio::select! {
+                        biased;
+                        _ = tx.closed() => return,
+                        response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                            &config, ClientTarget {daemon_id: Some(home_kernel_id), daemon_alias: None},
+                            RelayPeerRequest::ForwardNativeTurnInteraction {context, interaction}, timeout,
+                        ) => response,
+                    };
                     if let Ok(RelayPeerResponse::NativeInteractionResolved { resolution }) =
                         response
                     {

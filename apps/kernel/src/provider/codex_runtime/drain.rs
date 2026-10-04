@@ -107,9 +107,9 @@ pub fn drain_codex_events(
         completion_recovery_evidence,
         std::time::Instant::now(),
     );
-    // MP-08 / MP-10 / MP-11: Ephemeral metadata threads have no durable turn list.
-    // Settle only their native item/completion notifications.
-    if authoritative_backfill_due && !state.ephemeral {
+    // MP-08 / MP-10 / MP-11: Fresh utility threads settle from notifications;
+    // ephemeral metadata threads also have no durable history to reconcile.
+    if authoritative_backfill_due && !state.ephemeral && !state.notification_only {
         backfill_completed_turn(
             &client,
             state,

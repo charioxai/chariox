@@ -66,6 +66,28 @@ impl KernelRuntimeOwnedState {
         {
             return false;
         }
+        // MP-08 / MP-10 / MP-11: An idle run remains projected after the
+        // dispatch binding clears. Its current projection is authoritative;
+        // a replacement run must never inherit the old review.
+        if remote.active_worker_provider_run_id.is_none() && lifetime.prompt_id.is_none() {
+            if let Some(run) = self
+                .provider_store
+                .get_latest_run_for_agent(session.id(), &lifetime.agent_id)
+            {
+                let expected = crate::provider::projected_leased_provider_run_id(
+                    &worker.leased_agent_id,
+                    &worker.provider_run_id,
+                );
+                let live = run.id() == expected
+                    && run.state() == crate::provider::ProviderRunState::Running;
+                if live {
+                    worker
+                        .binding_observed
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                return live;
+            }
+        }
         match remote.active_worker_provider_run_id.as_deref() {
             Some(id) if id == worker.provider_run_id => {
                 worker

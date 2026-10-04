@@ -144,7 +144,11 @@ impl KernelRuntimeOwnedState {
                             .unwrap_or_default(),
                         provider_run_id: context.worker_provider_run_id.clone(),
                         binding_observed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-                            false,
+                            // MP-08 / MP-10 / MP-11: Kernel choices raised by
+                            // an idle worker need an already live run. Only native
+                            // permissions retain the startup pre-ACK allowance.
+                            interaction.kind()
+                                != crate::session::RuntimeInteractionKind::Permission,
                         )),
                     }
                 });
