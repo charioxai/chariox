@@ -25,8 +25,10 @@ the instance and cancels its in-flight calls. `SubscribeUserAppViews` is a
 bounded cursor long poll over the ordinary kernel request transport: it
 returns the owner's complete view/interaction snapshot when it changes.
 Clients repeat with the returned cursor; no relay-side registry is needed.
-Instances are transient and end on kernel restart; installations and App data
-retain their existing durable lifecycle. Closing a frontend ends that view,
+Owner decision (2026-10-04): instances remain explicit-close ephemeral state
+and end on kernel restart. There is no reconnect grace, automatic eviction or
+restart restoration for this prototype; old instance/channel ids are invalid
+on restart. Installations and App data retain their existing durable lifecycle. Closing a frontend ends that view,
 not the shared installation worker. Disconnect/reconnect does not invent a
 new installation or session; clients close abandoned instances explicitly.
 
@@ -102,9 +104,28 @@ Only the user's currently focused home-kernel agent may discover/read/operate
 user-domain views through runtime MCP tools loaded on demand. Focus must be
 checked at discovery and again at dispatch, so a previously loaded tool loses
 access immediately when focus moves. Cross-kernel access is out of scope.
-This lane does not infer focus from a Room's foreground agent or turn an App
-view id into a provider token. The broader user-domain registry/focus lane
-must bind those on-demand tools to these owner-scoped kernel instances.
+Propose one kernel module, `runtime/user_domain_app_access.rs`, owning the
+selector and the on-demand tool-name table. Its canonical selector is
+`focused_user_domain_agent(owner) -> Option<FocusedAgentLease>`, where the
+lease records home kernel, admitted owner, agent id, exact provider run and
+focus revision. The kernel user-domain registry holds one explicitly selected
+home agent per owner; no focus exists until the user selects one. It does not
+infer focus from the most recent Room, foreground agent or provider activity.
+The module validates live owner membership, agent/run identity and revision
+both at discovery and immediately before dispatch. A focus change invalidates
+old leases/tools; it cancels in-flight access where the shared call budget allows.
+
+Proposed tool names in that single table: `chariox_user_app_views_list`,
+`chariox_user_app_view_read`, and `chariox_user_app_view_call`, loaded as the
+on-demand `user-app-views` runtime capability. List/read project owner instances
+and declared App data; read never exports a frontend bundle for execution in
+an agent. Call invokes the same installation tool queue with the admitted agent
+actor, exact run/turn provenance and no inferred room_id; it does not impersonate
+a human view. All three recheck the selector and owner, and none can answer
+RuntimeInteractions, fetch Vault material or gain window grants. View ids remain
+routing ids, not provider tokens. This is a proposal for the registry/MCP lane,
+not an implemented or allocated protocol extension. Keep selector and names in
+that one module so they can be renamed together without changing host policy.
 
 Existing `OpenAppView` and Room tab identities keep their behavior and wire
 shape. Room views do not silently move to the user domain. A client opening an
@@ -116,12 +137,8 @@ per instance. Human/agent simultaneous frontend editing remains deferred.
 ## Open questions
 
 - Final kernel Chromium host interface and display tiers (lane kbrowser, 417).
-- The broader user-domain registry's canonical focused-agent selector and
-  on-demand runtime MCP names; access must follow focus without window grants.
+- Ratify the proposed selector/tool-name table in `user_domain_app_access.rs`
+  when the broader user-domain registry/MCP lane implements it.
 - Native web origin provisioning and mobile/TUI frontend rendering policy.
-- Reconnect grace/automatic eviction policy for abandoned native instances;
-  current lifetime is explicit close or kernel restart, bounded per owner.
-- Whether views should be restored after kernel restart; current protocol
-  intentionally invalidates old instance/channel identities.
 - Kernel browser profile selection, display transport and App multi-interaction
   remain owner decisions outside this lane.
