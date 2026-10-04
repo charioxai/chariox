@@ -157,6 +157,9 @@ impl SignedSliceHarness {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn signed_slice_relay_preserves_kernel_authority_for_owner_confirmation_and_refresh() {
+    // Refresh persists the worker's key in the ambient Chariox config. The
+    // fixed identity vector must not share that pin with other tests or reruns.
+    crate::test_support::isolated_env_test!();
     let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../fixtures/slice-worker-identity.json"
@@ -164,6 +167,10 @@ async fn signed_slice_relay_preserves_kernel_authority_for_owner_confirmation_an
     .unwrap();
     let vector = &fixture["cases"][0];
     let worker_id = vector["workerKernelRef"].as_str().unwrap().to_owned();
+    assert!(
+        !DaemonConfig::relay_peer_public_key_entries().contains_key(&worker_id),
+        "signed-slice fixture must start without a persisted worker key"
+    );
     let machine_id = vector["machineId"].as_str().unwrap().to_owned();
     let owner_id = vector["ownerKernelId"].as_str().unwrap().to_owned();
     let (cloud_url, cloud_fixture) = cloud_token_fixture().await;
@@ -328,6 +335,11 @@ async fn signed_slice_relay_preserves_kernel_authority_for_owner_confirmation_an
             .worker_kernel_id
             .as_deref(),
         Some(worker_id.as_str())
+    );
+    assert_eq!(
+        DaemonConfig::relay_peer_public_key_entries().get(&worker_id),
+        Some(&worker_public_key),
+        "refresh must pin this fixture's authenticated worker key"
     );
     timeout(Duration::from_secs(5), cloud_fixture)
         .await
