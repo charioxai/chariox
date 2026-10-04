@@ -49,6 +49,8 @@ pub enum Mode {
     /// Writes during its migration, then fails before reporting the step.
     BadMigration,
     Lifecycle,
+    /// Acknowledges incoming events; a `text: "crash"` payload then kills it.
+    LifecycleInbox,
     LifecycleFailPrepare,
     LifecycleHangPrepare,
     LifecycleHangSuspend,
@@ -76,6 +78,7 @@ impl Mode {
             Self::Migrate => "sdk_migrate",
             Self::BadMigration => "sdk_bad_migration",
             Self::Lifecycle => "sdk_lifecycle",
+            Self::LifecycleInbox => "sdk_lifecycle_inbox",
             Self::LifecycleFailPrepare => "sdk_lifecycle_fail_prepare",
             Self::LifecycleHangPrepare => "sdk_lifecycle_hang_prepare_update",
             Self::LifecycleHangSuspend => "sdk_lifecycle_hang_suspend",

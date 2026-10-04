@@ -21,6 +21,9 @@ static int fixture_lifecycle_run(const struct cx_launch_record* record, const ch
       if (fixture_health_parse(response,names[i],id)==1) { event=names[i]; break; }
     if (!event && strstr(response,"\"method\":\"schedule.wake\"") &&
         fixture_request_id(response,id)==1) event="wake";
+    if (!event && !strcmp(mode,"sdk_lifecycle_inbox") &&
+        strstr(response,"\"method\":\"events.deliver\"") &&
+        fixture_request_id(response,id)==1) event="incoming";
     if (!event) { close(file); return 143; }
     size_t size=strlen(response);
     if (write(file,response,size)!=(ssize_t)size || write(file,"\n",1)!=1 || fsync(file)) { close(file); return 144; }
@@ -40,6 +43,12 @@ static int fixture_lifecycle_run(const struct cx_launch_record* record, const ch
     if (fixture_health_reply(id,(!strcmp(mode,"sdk_lifecycle_fail_prepare") && !strcmp(event,"prepare_update")) ||
         (!strcmp(mode,"sdk_lifecycle_fail_configuration_change") && !strcmp(event,"configuration_change")))!=1) {
       close(file); return 146;
+    }
+    if (!strcmp(event,"incoming") && strstr(response,"\"text\":\"crash\"")) {
+      // Let the acknowledgement settle before the deliberate native crash.
+      struct timespec remaining={0,100000000};
+      while (nanosleep(&remaining,&remaining)<0 && errno==EINTR) {}
+      raise(SIGKILL);
     }
     if (!strcmp(event,"shutdown")) { close(file); return 0; }
   }
