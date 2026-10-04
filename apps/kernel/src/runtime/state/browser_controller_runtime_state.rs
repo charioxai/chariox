@@ -493,12 +493,12 @@ impl KernelRuntimeState {
     pub(crate) async fn restore_browser_environment_tab_focus(
         &self,
         session_id: &str,
-        execution_id: &str,
         tab_id: &str,
     ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
+        let execution_id = format!("{:032x}", rand::random::<u128>());
         self.mutate_browser_environment_tab(
             session_id,
-            execution_id,
+            &execution_id,
             tab_id,
             crate::runtime::browser_controller_tab::BrowserTabAction::Activate,
             false,

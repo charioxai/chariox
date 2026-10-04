@@ -406,11 +406,7 @@ impl KernelRuntimeState {
                     .is_ok_and(|tab| tab.runtime_target_id == opened.target_id)
                 {
                     let _ = self
-                        .restore_browser_environment_tab_focus(
-                            session,
-                            &format!("app-restore-{:016x}", rand::random::<u64>()),
-                            &tab_id,
-                        )
+                        .restore_browser_environment_tab_focus(session, &tab_id)
                         .await;
                 }
             }

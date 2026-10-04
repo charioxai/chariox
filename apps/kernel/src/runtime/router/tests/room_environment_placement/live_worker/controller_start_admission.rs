@@ -103,7 +103,7 @@ async fn recovery_activation_preserves_focus() {
             Some(original.as_str())
         );
         let activated = runtime
-            .restore_browser_environment_tab_focus(room, "restore-focus", &original)
+            .restore_browser_environment_tab_focus(room, &original)
             .await
             .unwrap();
         assert_eq!(activated.focused_tab_id.as_deref(), Some(original.as_str()));
@@ -133,7 +133,7 @@ async fn recovery_activation_preserves_focus() {
         runtime
             .manage_browser_environment_tab(
                 room,
-                "choose-blank",
+                "00000000000000000000000000000002",
                 &blank,
                 crate::runtime::browser_controller_tab::BrowserTabAction::Activate,
             )
