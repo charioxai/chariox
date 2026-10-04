@@ -11,6 +11,7 @@ use crate::session::{PromptCompletion, PromptQueueItem};
 #[derive(Clone)]
 pub(crate) struct AgentPromptCommandService {
     state: KernelRuntimeState,
+    external_authority: Option<(String, crate::local::LocalDaemonRequest)>,
     provider_runtime_lanes: ProviderRunOperationLanes,
 }
 
@@ -49,21 +50,45 @@ impl AgentPromptDispatchContext {
 }
 
 impl AgentPromptCommandService {
+    pub(crate) fn record_meta_migration_notice(&self, session_id: &str, agent_id: &str) {
+        self.state
+            .record_meta_migration_notice(session_id, agent_id);
+    }
+
     pub(crate) fn new(
         state: KernelRuntimeState,
         provider_runtime_lanes: ProviderRunOperationLanes,
     ) -> Self {
         Self {
             state,
+            external_authority: None,
             provider_runtime_lanes,
         }
+    }
+
+    pub(crate) fn with_external_authority(
+        &self,
+        grant_id: String,
+        request: crate::local::LocalDaemonRequest,
+    ) -> Self {
+        let mut service = self.clone();
+        service.external_authority = Some((grant_id, request));
+        service
+    }
+
+    fn request_authority(&self) -> Option<(&str, &crate::local::LocalDaemonRequest)> {
+        self.external_authority
+            .as_ref()
+            .map(|(id, request)| (id.as_str(), request))
     }
 
     pub(crate) async fn submit_prepared_prompt(
         &self,
         prepared: KernelPreparedPromptSubmission,
     ) -> Result<KernelPromptSubmission, DaemonError> {
-        self.state.submit_prepared_prompt(prepared).await
+        self.state
+            .submit_prepared_prompt_with_external_authority(prepared, self.request_authority())
+            .await
     }
 
     pub(crate) async fn ensure_attachment_in_session(
@@ -83,7 +108,12 @@ impl AgentPromptCommandService {
         attachment_id: &str,
     ) -> Result<KernelPromptCancellation, DaemonError> {
         self.state
-            .cancel_agent_prompt(session_id, target_agent_id, attachment_id)
+            .cancel_agent_prompt_with_external_authority(
+                session_id,
+                target_agent_id,
+                attachment_id,
+                self.request_authority(),
+            )
             .await
     }
 
@@ -95,7 +125,13 @@ impl AgentPromptCommandService {
         prompt_id: &str,
     ) -> Result<KernelQueuedPromptSteer, DaemonError> {
         self.state
-            .steer_queued_prompt(session_id, target_agent_id, attachment_id, prompt_id)
+            .steer_queued_prompt_with_external_authority(
+                session_id,
+                target_agent_id,
+                attachment_id,
+                prompt_id,
+                self.request_authority(),
+            )
             .await
     }
 
@@ -137,7 +173,12 @@ impl AgentPromptCommandService {
         next_queued_prompt: Option<PromptQueueItem>,
     ) -> Result<PromptCompletion, DaemonError> {
         self.state
-            .complete_agent_prompt(session_id, target_agent_id, next_queued_prompt.as_ref())
+            .complete_agent_prompt_with_external_authority(
+                session_id,
+                target_agent_id,
+                next_queued_prompt.as_ref(),
+                self.request_authority(),
+            )
             .await
     }
 
@@ -165,6 +206,7 @@ impl AgentPromptCommandService {
         task_prompt: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         self.state
+            .with_external_command_authority(self.request_authority())
             .activate_meta_mode_for_prompt(session_id, agent_id, task_prompt)
             .await
     }

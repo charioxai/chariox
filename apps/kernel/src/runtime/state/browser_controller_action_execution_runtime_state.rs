@@ -53,12 +53,14 @@ impl KernelRuntimeState {
         input: RoomComputerInputAction,
         approved_generation: Option<u64>,
     ) -> Result<ComputerControllerActionExecution, DaemonError> {
+        self.authorize_current_external_command()?;
         let _execution_guard = self
             .owned
             .environment_execution_gates
             .for_room(session_id)
             .read_owned()
             .await;
+        self.authorize_current_external_command()?;
         let environment = self
             .reconcile_room_environment_actors(session_id, None)
             .map_err(action_environment_error)?;
@@ -127,6 +129,7 @@ impl KernelRuntimeState {
             }
         };
 
+        self.authorize_admitted_browser_action(session_id, &action_id)?;
         let current = self
             .room_environment_snapshot(session_id)
             .map_err(action_environment_error)?;
@@ -159,6 +162,7 @@ impl KernelRuntimeState {
                 ),
             )
             .await;
+        self.authorize_current_external_command()?;
         let terminal = match &execution {
             Ok(RoomBrowserControllerResult::ComputerInputApplied {
                 action_id: returned_action_id,
@@ -281,12 +285,14 @@ impl KernelRuntimeState {
     where
         F: Future<Output = Result<T, DaemonError>>,
     {
+        self.authorize_current_external_command()?;
         let _execution_guard = self
             .owned
             .environment_execution_gates
             .for_room(session_id)
             .read_owned()
             .await;
+        self.authorize_current_external_command()?;
         let actor_id = request.actor_id.clone();
         let runtime_generation = request.runtime_generation;
         let tab_preconditions = request.tab_preconditions.clone();
@@ -328,6 +334,7 @@ impl KernelRuntimeState {
             }
         };
 
+        self.authorize_admitted_browser_action(session_id, &action_id)?;
         let preconditions = self
             .room_environment_snapshot(session_id)
             .and_then(|current| {
@@ -364,6 +371,7 @@ impl KernelRuntimeState {
             }
             None => execution.await,
         };
+        self.authorize_current_external_command()?;
         let controller_restart_generation = match &result {
             Err(DaemonError::BrowserControllerRecoveryRequired { runtime_generation }) => {
                 Some(*runtime_generation)
@@ -445,6 +453,7 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let started = Instant::now();
         loop {
+            self.authorize_admitted_browser_action(session_id, action_id)?;
             if let Err(error) = self.ensure_browser_import_execution_allowed(session_id) {
                 let _ = self.cancel_unstarted_import_blocked_action(session_id, action_id);
                 return Err(action_environment_error(error));
@@ -483,6 +492,20 @@ impl KernelRuntimeState {
                 }
             }
         }
+    }
+
+    pub(super) fn authorize_admitted_browser_action(
+        &self,
+        session_id: &str,
+        action_id: &str,
+    ) -> Result<(), DaemonError> {
+        if let Err(error) = self.authorize_current_external_command() {
+            // Retire admitted but unexecuted work so a trusted action cannot
+            // promote a revoked command later. This is cleanup, not execution.
+            let _ = self.cancel_unstarted_import_blocked_action(session_id, action_id);
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn validate_browser_action_precondition(

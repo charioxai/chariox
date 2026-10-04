@@ -286,6 +286,9 @@ fn refused_preparation(mode: Mode, timeout: bool) {
     assert_eq!(installation.generation, 1);
     assert!(!installation.admission_paused);
     assert_eq!(installation.pending_generation, None);
+    // Worker reaping precedes completion of the retained owner's teardown.
+    // A start during that gap correctly returns Existing; wait before requesting a fresh owner.
+    wait(|| !control.lifecycle().has_pending_owner("alice", &id));
     // The old generation can be used again after its normal failed-worker backoff.
     control
         .lifecycle()
@@ -334,6 +337,7 @@ fn suspend_deadline_terminates_worker_without_dormancy_or_shutdown_overlap() {
     wait(|| all_reaped(&observations));
     assert!(!control.is_app_dormant("alice", "installed"));
     assert_eq!(names(&frames(&observations, 0)), ["startup", "suspend"]);
+    wait(|| !control.lifecycle().has_pending_owner("alice", "installed"));
     assert_eq!(
         store
             .app_worker_status("alice", "installed")
@@ -379,6 +383,8 @@ fn resume_deadline_keeps_worker_unpublished_and_never_overlaps_shutdown() {
         before.elapsed() >= Duration::from_secs(29) && before.elapsed() < Duration::from_secs(35)
     );
     assert_eq!(names(&frames(&observations, 1)), ["startup", "resume"]);
+    // Reaping precedes the owner's final durable status write.
+    wait(|| !control.lifecycle().has_pending_owner("alice", "installed"));
     assert_eq!(
         store
             .app_worker_status("alice", "installed")

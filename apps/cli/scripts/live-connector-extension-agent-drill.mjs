@@ -103,11 +103,11 @@ async function stopDaemon(child) {
   if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
 }
 
-async function waitForDaemon(kernelUrl) {
+async function waitForDaemon(kernelUrl, localAuthEnvironment) {
   const deadline = Date.now() + 30_000
   let lastError = null
   while (Date.now() < deadline) {
-    const client = new LocalIpcClient(kernelUrl)
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       await client.send(requests.listSessionsRequest())
       await client.close().catch(() => {})
@@ -347,8 +347,8 @@ async function main() {
       CHARIOX_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
       CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT: '1',
     })
-    await waitForDaemon(kernelUrl)
-    client = new LocalIpcClient(kernelUrl)
+    await waitForDaemon(kernelUrl, { CHARIOX_HOME: charioxHome })
+    client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: { CHARIOX_HOME: charioxHome } })
     await client.send(requests.setCredentialSecretRequest(vaultKey, secretValue))
     await registerConnector(client, root, api.port, vaultKey, adapterBinary)
     const session = unwrap(await client.send(requests.createSessionRequest(workspace, workspace, 'connector-extension-agent-drill')), 'SessionCreated').session

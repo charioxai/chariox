@@ -23,6 +23,7 @@ mod disposable_worker;
 mod event_publication;
 mod external_provider_session;
 mod history;
+mod kernel_access;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
@@ -57,6 +58,7 @@ pub use disposable_worker::*;
 pub use event_publication::*;
 pub use external_provider_session::*;
 pub use history::*;
+pub use kernel_access::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
@@ -241,4 +243,11 @@ pub use workspace::*;
 /// restart limit is exhausted. Recovery uses the existing explicit start action.
 /// Version 409 adds owner-mediated App clipboard and link acceptance.
 /// Version 410 adds owner-scoped named saved App data snapshot restore.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 410;
+/// Version 402 adds KA connection classes and critical-approval audit attribution.
+/// Version 403 adds shared owner passkey popup projection.
+/// Version 404 adds process-bound external access grants and lifetime configuration.
+/// Version 412 enforces local credentials and admitted terminal authority.
+/// Version 413 adds terminal sudo turns and critical approval receipts.
+/// Version 415 adds external sudo requests and requester attribution.
+/// Version 416 refuses evicted App control replays with `receipt_expired`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 416;

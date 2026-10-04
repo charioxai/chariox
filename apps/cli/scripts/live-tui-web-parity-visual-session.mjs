@@ -151,11 +151,11 @@ async function buildKernel() {
   return path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
 }
 
-async function waitForKernel(LocalIpcClient, listSessionsRequest, kernelUrl) {
+async function waitForKernel(LocalIpcClient, listSessionsRequest, kernelUrl, localAuthEnvironment) {
   const deadline = Date.now() + 20_000
   let lastError = null
   while (Date.now() < deadline) {
-    const client = new LocalIpcClient(kernelUrl)
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       await client.send(listSessionsRequest())
       await client.close().catch(() => {})
@@ -765,8 +765,8 @@ async function main() {
       env,
       stdio: ['ignore', 'ignore', 'inherit'],
     })
-    await waitForKernel(LocalIpcClient, requests.listSessionsRequest, kernelUrl)
-    client = new LocalIpcClient(kernelUrl)
+    await waitForKernel(LocalIpcClient, requests.listSessionsRequest, kernelUrl, env)
+    client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: env })
     const visual = await seedVisualSession(client, requests, workspace)
     const waitingRoom = await seedWaitingRoomSessions(client, requests, workspace)
 

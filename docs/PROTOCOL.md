@@ -450,7 +450,8 @@ Current implementation notes:
 
 - the TypeScript CLI now defaults to `ws://127.0.0.1:${CHARIOX_KERNEL_PORT:-43118}/kernel`
 - the Rust daemon process hosts that WebSocket listener directly
-- the older Unix-socket local IPC path still exists for daemon harnessing/tests and compatibility shims, but it is no longer the primary CLI transport
+- local credentials travel on the upgrade's `Authorization: Bearer <token>` header, not in any frame. A kernel started with `CHARIOX_KERNEL_LOCAL_AUTH_TOKEN(_FILE)` (managed and hosted workers) refuses upgrades without that token with HTTP 401. Any other kernel generates a fresh `chx_kat_`-prefixed token at each start and writes it to the owner-only file `<state dir>/kernel-local-auth/<port>.token`, where the state dir is `$CHARIOX_HOME/state`, `$XDG_STATE_HOME/chariox` or `$HOME/.local/state/chariox`. Local clients read that file on every connection to a loopback endpoint and present the token. Since protocol 412, upgrades without the token, or with a wrong one, receive HTTP 401 naming the token file and the Unix socket; refusals are logged (rate-limited, never the token itself)
+- the Unix socket serves the same websocket protocol with OS peer identity and process-bound access grants; an ungranted peer can only request access
 - the current wire shape now supports request/response plus pushed kernel events over one long-lived connection
 - subscriptions carry optional `resume_from_event_id`
 - the kernel emits monotonic in-process `event_id` values on pushed events
@@ -2549,6 +2550,195 @@ Workflow trigger and deployment direction:
   bounds the whole exchange by its request timeout. Unsupported negotiation, EOF,
   timeout, or capability mismatch fails closed, with no fallback connection or
   automatic mutation replay. Numeric versions never replace capability checks.
+  This describes the pre-KA framed Unix transport. KA protocol 404 replaces
+  that listener with the shared kernel websocket at `ws+unix://`, admitted by
+  OS process identity and session grants. First-party terminal control uses
+  the authenticated TCP or relay websocket path; an external Unix grant does
+  not authorize global disposable-worker or managed-environment controls.
+- protocol 402: every connection has a class from a fixed vocabulary:
+  `terminal` (the kernel's local token on TCP loopback, or a relay client with
+  a user id), `external_agent` (reserved for access grants, not assigned yet),
+  `kernel_agent` (an agent the kernel launched, by its per-run runtime MCP
+  bearer), `host` (`CHARIOX_KERNEL_LOCAL_AUTH_TOKEN(_FILE)`), `relay_peer`
+  (another kernel or a hosted service, by its relay identity) and
+  `unauthenticated` (neither: a laptop connection without its token in log
+  mode, a relay client without a user id). The kernel assigns it at admission,
+  records it on the caller and in command traces, and each
+  `critical_approval.passkey` event names it as `connection_class` (null for
+  the kernel's own callers). A `RespondToInteraction` `passkey` from a
+  `kernel_agent`, `host`, `relay_peer` or `external_agent` connection is
+  refused with `PASSKEY_NOT_ACCEPTED` before verification: it is not audited
+  and does not count toward the owner's limit. Nothing else changes; which
+  connections answer as terminals is unchanged until enforcement.
+- protocol 403: passkey popups (kernel access plan D1). Every passkey prompt
+  is a kernel-owned pending interaction; today each critical approval is one.
+  It is projected as a popup to every terminal connected as its owner,
+  attached to its session or not: every subscription, session or waiting
+  room, local or relayed, of a connection that may submit a passkey
+  (`terminal`, and `unauthenticated` until enforcement) carries the new event
+  `passkey_prompts_changed { prompts: [PasskeyPrompt] }` with the prompts
+  pending for that connection's user. It is sent when the subscription starts
+  (possibly empty) and whenever the set changes, and is never replayed. A
+  `PasskeyPrompt` holds only what the kernel registered: `kind`
+  (`critical_approval`), `session_id`, optional `session_alias`,
+  `interaction_id`, `title`, `message`, `approve_choice_id`,
+  `refuse_choice_id`, `requested_at_ms` and `expires_at_ms`. In a shared
+  session only the decision's owner gets it. It is answered with
+  `RespondToInteraction` on its session and interaction: the approve choice
+  with `passkey` (and optionally `passkey_remember_minutes`), or the refuse
+  choice without one, from any of the owner's terminals. The first verified
+  passkey or refusal resolves it and the prompt leaves every terminal's set;
+  a later answer is refused with `PASSKEY_ALREADY_ANSWERED` without
+  verifying, auditing or counting its passkey. Passkey answers are verified
+  one at a time and each holds its turn until its answer is applied, so of
+  two simultaneous right passkeys only the first is checked. A wrong passkey
+  answers nothing: the prompt stays open, and the failure is audited and
+  counts toward the lockout as in protocol 392. A kernel decision that
+  requires the passkey must have exactly one approve choice (marked
+  `requires_passkey`) and one refuse choice. At its deadline the prompt
+  leaves the set, a passkey sent for it is no longer checked, and the
+  decision times out to whoever raised it. Clients no longer ask for the
+  passkey inside their approval panels; it is typed only into the popup.
+- protocol 404: process-bound external agent access over the existing
+  `local_socket_path`. The kernel serves the same websocket envelopes on a
+  Unix socket with mode 0600 in an owned 0700 directory. It rejects other
+  UIDs, `Origin`, and bearer authorization headers. macOS identifies the
+  peer with `getpeereid` and `LOCAL_PEERTOKEN`, including the audit token's
+  process version. Linux uses `SO_PEERCRED` and the process start time.
+  Every use checks the process identity again to prevent PID reuse.
+
+  An unapproved Unix peer can only send `RequestKernelAccess` with
+  `session_id`, `holder_pid`, and optional `lifetime_minutes`. The holder
+  must be the peer or an OS-verified ancestor. The kernel raises an owner-only
+  passkey popup naming its verified executable, pid, session, and lifetime.
+  Grant and extension prompts have kind `access_grant` or `access_extension`,
+  `lifetime_minutes`, and `max_lifetime_minutes`. Approve needs a fresh
+  terminal passkey; the critical-approval remember window never applies.
+  The owner may choose a lifetime through the approve answer's numeric
+  `custom_reply`. Refuse needs no passkey.
+
+  `KernelAccessGranted` returns public `KernelAccessGrant` metadata, never
+  a credential. A grant authorizes the live holder and its OS descendants
+  for one session. Kernel-launched processes receive no external authority,
+  even if the holder is an ancestor of the kernel. Session IDs, references,
+  attachments, and every session in a batch are checked. `ListSessions`
+  returns only the granted session. Global requests fail closed. Saved workflow
+  artifacts live in kernel/user registries, so direct artifact creation, lookup,
+  enumeration, mutation, import, and artifact-target export are outside external
+  session grants even when their envelopes include a session ID. Session-local source
+  Apply/Run and exports targeting a workflow remain available. The scope
+  match covers every request variant without a fallback, so an undecided new
+  request fails compilation. A grant cannot answer kernel-owned decisions
+  or critical approvals, or submit a passkey.
+
+  `ListKernelAccessGrants` and `RevokeKernelAccessGrant { grant_id }` are
+  terminal-only and scoped to the caller's owned grants; a null grant id
+  revokes all of them. Expiry, explicit revoke, holder exit, session end,
+  passkey rotation, and kernel shutdown revoke authority. Idle subscriptions,
+  queued commands, cached replies, and event replay check live authority.
+  Workflow controls also recheck after provider-lane and cancellation-settlement
+  waits; remote workflow cancellation carries the same command authority.
+  Direct router paths retain the canonical grant/request too. Setup cancellation
+  rechecks after ordering gates, Meta cancellation retains authority, and local
+  PTY input and remote terminal sends recheck before enqueue.
+  Capability closures recheck before blocking shell/file/artifact effects. Room
+  controller commands recheck after relay discovery/enqueue and local blocking
+  waits; browser mutations recheck execution-gate and action-admission waits
+  before execution and home-state completion. Invalidated queued actions are
+  retired without execution. Stale remote binding recovery retains authority
+  through the app lock and worker discovery, before lease/account/agent creation
+  or home binding persistence. Local controller jobs recheck under the supervisor
+  ownership lock; computer helpers recheck inside their blocking process queue.
+  A Unix connection binds to its first approved or admitted grant and never
+  switches authority. Session references resolve once to an authorized session
+  ID before dispatch. A later approval on that socket creates a grant for
+  use on a fresh connection; existing subscriptions and queued frames keep
+  their original grant. Fresh connections select an eligible grant matching
+  the requested session. For unscoped requests, a holder's own grant takes
+  precedence over inherited grants.
+  Grants stay in memory and do not survive a restart. Durable grant events
+  record metadata and outcomes; terminal-answer and passkey verification
+  events correlate by interaction id. They contain no passkey or bearer.
+
+  TCP and relay access requests return a pointer to the Unix socket; neither
+  transport can use a grant. Existing TCP token and tokenless log-mode
+  behavior remains until enforcement. `LocalIpcClient` supports
+  `ws+unix:///absolute/socket`. `chariox access request --session <id>
+  [--holder-pid <pid>] [--minutes <minutes>] [--socket <path>]` waits for
+  the popup and prints public grant metadata. The default holder is the
+  CLI launcher's grandparent. Terminal controls are `chariox access list`,
+  `chariox access revoke <id|--all>`, `/kernel access list`, and
+  `/kernel access revoke <id|all>`.
+
+  Kernel user config settings are live runtime policy. Set/unset is supported;
+  unset restores the default. An extension popup is raised at the notice
+  time and a verified answer starts a new term.
+
+  ```toml
+  [kernel_access]
+  grant_default_minutes = 30
+  grant_max_minutes = 240
+  grant_extend_notice_minutes = 5
+  request_timeout_minutes = 10
+  ```
+- protocol 412: local access enforcement.
+
+  TCP websocket admission now requires the generated local token. Missing, wrong,
+  malformed and stale credentials receive HTTP 401 before command dispatch. Its
+  body names `<state>/kernel-local-auth/<port>.token` and the configured
+  `ws+unix:///absolute/socket` endpoint. `LocalIpcClient` reports that diagnostic
+  as a non-retryable `authentication_failed` error. It continues reading the
+  private token file for each reconnect; managed host-token kernels retain their
+  existing admission behavior and owner-decision reply routing. Hosts remain
+  unable to submit passkeys or answer credential prompts. Remember-window
+  approvals are restricted to the terminal class; host controllers cannot use them.
+  If the generated token file cannot be written or the listener address is
+  unavailable, startup fails before publishing local presence. First-party
+  clients send the local token only to loopback endpoints; direct LAN access,
+  including a non-loopback `CHARIOX_KERNEL_HOST`, is unsupported. Physical
+  devices use the Cloud/relay path.
+
+  Terminal authority follows the admitted `terminal` connection class, rather
+  than the command transport source. Only that class may submit a passkey or
+  receive owner passkey popups. Unauthenticated Unix peers can only request
+  access; approved external peers keep the process-bound, session-scoped grant
+  path from protocol 404 and cannot answer critical approvals. Relay identities,
+  per-run runtime MCP admission and the publication gateway keep their existing
+  credential paths. No first-party minimum version rises: token-aware clients
+  also work with older log-mode kernels, and this change adds no request or event
+  shape that a client requires.
+
+  Focused validation: `runtime_transport::tests::laptop_kernel_websocket_enforces_local_tokens`,
+  `runtime::command::tests::terminal_status_requires_the_admitted_terminal_class`,
+  `runtime_transport::tests::kernel_access_grants`, and
+  `apps/cli/scripts/lib/private-kernel-local-auth.kernel-test.mjs` (set
+  `CHARIOX_LOCAL_AUTH_KERNEL_BINARY` to the candidate binary). The private-kernel
+  drill checks both state-root conventions, control/event lanes and token rotation
+  without provisioning any provider account. Grant/passkey drills use temporary
+  test vaults. The owner's real passkey sitting remains separate.
+- protocol 413: terminal `/sudo <prompt>` raises a fresh-passkey popup of kind
+  `sudo`. The resulting authorization is kernel-memory state, attached to one
+  exact provider turn; yield and interruption consume its ephemeral binding.
+  Queued sudo never enters the durable prompt queue. `KernelAccessGrantsListed`
+  gains `sudo_turns`, public entry/terminal/agent/run/prompt attribution without a
+  credential or time expiry. `RevokeKernelAccessGrant` also revokes sudo entry
+  handles; a null id and passkey rotation revoke queued entries and interrupt
+  running sudo turns. The existing runtime MCP exposes `chariox_kernel_request`
+  to a live sudo turn. Critical replies use the shared interaction authority and
+  append `kernel_access.sudo_approval` receipts naming the turn and human entry.
+  No spawned/forked agent inherits elevation.
+- protocol 415: a live external grant holder may send
+  `RequestKernelSudo { agent_id, prompt }` over the Unix socket. The kernel
+  resolves the exact target to the granted session and raises the same `sudo`
+  popup, naming the OS-established executable/PID, target/session and full
+  requester-supplied prompt. Only host terminals answer it. The outcome is
+  `KernelSudoRequested { agent_id }`; no passkey is accepted from the requester.
+  `KernelSudoTurn.requester` optionally carries public grant metadata; its
+  `terminal_id` names the winning host terminal once authorized. Pending external
+  entries require a live grant through final dispatch and expire if unanswered.
+  Rotation, revoke all and session end revoke these entries as well. `/meta`
+  retains delegation-only behavior for one release and emits a notice pointing
+  to `/sudo`. See `KERNEL_SUDO.md` and `scripts/kernel-access-sudo-drill.sh`.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic
@@ -2736,6 +2926,7 @@ Queue and turn direction:
 - workflow turn delivery acknowledgment should use a runtime-owned `ack_workflow_turn` operation
 - a running turn should not re-open its input set mid-turn; newly arrived messages remain queued for a later turn
 
+
 ## 5.0 Capability, Session, Workflow, Security, and Versioning Details
 
 Detailed capability API baseline, Workspace Live Sync coordination, provider control operations, session/attachment semantics, workflow contracts, security semantics, compatibility rules, versioning strategy, and cross-platform terminal conformance now live in [PROTOCOL_CAPABILITY_SESSION_WORKFLOW.md](PROTOCOL_CAPABILITY_SESSION_WORKFLOW.md). Keep this main protocol document focused on scope, lanes, native provider behavior, envelope shape, current transport baseline, and command/workflow message direction.
@@ -2850,3 +3041,25 @@ must preserve browser user activation across kernel settlement (for example,
 show a fresh Copy/Open button after successful settlement). App iframe/Room gestures only create offers and never
 count as the human's acceptance. Clients exposing acceptance require protocol
 409; unrelated clients keep their existing minimum version.
+
+
+### Protocol 416: expired App receipt refusal
+
+Protocol 416 adds `AppRequestFailed {code: "receipt_expired"}` for an
+  evicted owner-scoped App control command identity. Controls keep durable
+  at-most-once response receipts for the newest 512 identities. On admission
+  pressure the least-recently-used eligible identity can be evicted only when
+  all its receipts are older than the existing 24-hour command retention
+  window; pending effects and unknown-age receipts are protected. Replays
+  update access order without extending that window. A synced SHA-256 identity
+  marker is committed before removing a response, and survives restart and
+  compaction: an evicted replay is refused and never re-executed, including
+  stop and uninstall. Marker storage is bounded to 50 MiB; reaching the bound
+  refuses new receipt-bearing work rather than deleting replay fences; fresh
+  Stop/Uninstall controls retain their capacity exception. In-memory markers
+  use fixed-size 32-byte digests under this separate storage bound. CLI, TUI and shared web
+  shell display an explicit receipt-expired message and do not retry it.
+  Once an identity is evicted, a protocol416 fence in the response journal is
+  preserved through compaction. Legacy kernels fail closed on that journal
+  rather than redispatch an expired identity after rollback; their App control
+  requests report storage unavailable until a supporting kernel is restored.

@@ -29,6 +29,7 @@ export async function startIsolatedKernel(label, rootDir, workspace, worktree, t
     stdio: ['ignore', 'ignore', 'inherit'],
   })
   const client = new LocalIpcClient(spawned.kernelUrl, {
+    localAuthEnvironment: spawned.env,
     kernelPingIntervalMs: 60_000,
     kernelMaxMissedPongs: 10,
   })

@@ -216,6 +216,8 @@ pub enum AppRequestErrorCode {
     Conflict,
     DigestMismatch,
     StorageUnavailable,
+    /// Protocol 416: this command identity was evicted; it must never execute again.
+    ReceiptExpired,
 }
 
 /// Protocol 345: owner-scoped App worker control. The kernel derives the

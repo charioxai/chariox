@@ -515,7 +515,7 @@ impl KernelRuntimeState {
                 {
                     return Ok(None);
                 }
-                app.refresh_remote_agent_binding(&refresh_agent_id)
+                app.refresh_remote_agent_binding_authorized(&refresh_agent_id, &|| Ok(()))
                     .map(Some)
             })
             .await?;

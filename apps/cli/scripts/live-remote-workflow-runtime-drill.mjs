@@ -228,8 +228,9 @@ function workflowEchoMcpConfig(mcpPath) {
   }
 }
 
-async function installWorkerWorkflowEchoMcp(workerKernelUrl, workspace) {
+async function installWorkerWorkflowEchoMcp(workerKernelUrl, workspace, localAuthEnvironment) {
   const workerClient = new LocalIpcClient(workerKernelUrl, {
+    localAuthEnvironment,
     kernelPingIntervalMs: 60_000,
     kernelMaxMissedPongs: 10,
   })
@@ -286,9 +287,10 @@ async function terminateChild(child, signal = 'SIGTERM') {
   }
 }
 
-async function waitForLocalDaemon(kernelUrl) {
+async function waitForLocalDaemon(kernelUrl, localAuthEnvironment) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     const probe = new LocalIpcClient(kernelUrl, {
+      localAuthEnvironment,
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
     })
@@ -379,6 +381,8 @@ async function main() {
     CHARIOX_RELAY_PORT: String(ports.relayPort),
     CHARIOX_RELAY_TOKEN: relayToken,
   }
+  const homeDaemonId = `workflow-home-${process.pid}-${Date.now()}`
+  const workerDaemonId = `workflow-worker-${process.pid}-${Date.now()}`
   const workerMachineId = `workflow-machine-worker-${process.pid}`
   const workerMachineAlias = `workflow-builder-${process.pid}`
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
@@ -420,7 +424,7 @@ async function main() {
         ports,
         rootDir,
         relayToken,
-        daemonId: `workflow-home-${process.pid}-${Date.now()}`,
+        daemonId: homeDaemonId,
         daemonAlias: 'home',
         machineId: `workflow-machine-home-${process.pid}`,
         machineAlias: `workflow-home-machine-${process.pid}`,
@@ -438,7 +442,7 @@ async function main() {
         ports,
         rootDir,
         relayToken,
-        daemonId: `workflow-worker-${process.pid}-${Date.now()}`,
+        daemonId: workerDaemonId,
         daemonAlias: 'worker',
         machineId: workerMachineId,
         machineAlias: workerMachineAlias,
@@ -451,15 +455,16 @@ async function main() {
       }),
     })
 
-    await waitForLocalDaemon(homeKernelUrl)
-    await waitForLocalDaemon(`ws://127.0.0.1:${ports.workerKernelPort}`)
+    await waitForLocalDaemon(homeKernelUrl, { ...process.env, XDG_STATE_HOME: path.join(rootDir, `${homeDaemonId}-xdg-state`) })
+    await waitForLocalDaemon(`ws://127.0.0.1:${ports.workerKernelPort}`, { ...process.env, XDG_STATE_HOME: path.join(rootDir, `${workerDaemonId}-xdg-state`) })
     if (options.scenario === 'mcp-echo-workflow') {
-      await installWorkerWorkflowEchoMcp(`ws://127.0.0.1:${ports.workerKernelPort}`, repoRoot)
+      await installWorkerWorkflowEchoMcp(`ws://127.0.0.1:${ports.workerKernelPort}`, repoRoot, { ...process.env, XDG_STATE_HOME: path.join(rootDir, `${workerDaemonId}-xdg-state`) })
     }
     await waitForRelayTarget(relayUrl, relayToken, 'home')
     await waitForRelayTarget(relayUrl, relayToken, 'worker')
 
     localClient = new LocalIpcClient(homeKernelUrl, {
+      localAuthEnvironment: { ...process.env, XDG_STATE_HOME: path.join(rootDir, `${homeDaemonId}-xdg-state`) },
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
     })

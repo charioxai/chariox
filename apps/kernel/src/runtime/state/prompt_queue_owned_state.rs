@@ -888,6 +888,15 @@ impl KernelRuntimeOwnedState {
                 session_id: session_id.to_string(),
             });
         };
+        if self
+            .prompt_state_owner
+            .prompt_is_sudo_bound(&session, agent_id, active_prompt.id())
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer queued prompt",
+                message: "queued prompts cannot steer a human-authorized sudo turn".into(),
+            });
+        }
         if active_prompt.is_external() {
             return Err(DaemonError::LocalTransport {
                 operation: "steer queued prompt",

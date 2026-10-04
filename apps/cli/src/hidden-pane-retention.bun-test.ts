@@ -150,7 +150,7 @@ test("hidden kernel approval dock releases 1,000 App consent cards", async () =>
   parent.add(dock)
   harness.renderer.root.add(parent)
   const surface = createKernelApprovalRenderer(harness.renderer, {
-    show() {}, choose() {}, cycleRemember() {}, submitPasskey() {},
+    show() {}, choose() {},
   })
   surface.assign(dock)
   try {

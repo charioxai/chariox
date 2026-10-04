@@ -140,11 +140,11 @@ function hasExtensionGrant(agent, kind, name) {
   return Array.isArray(agent?.extension_grants) && agent.extension_grants.some((grant) => grant.kind === kind && grant.name === name)
 }
 
-async function waitForDaemon(LocalIpcClient, kernelUrl) {
+async function waitForDaemon(LocalIpcClient, kernelUrl, localAuthEnvironment) {
   const deadline = Date.now() + 20_000
   let lastError = null
   while (Date.now() < deadline) {
-    const client = new LocalIpcClient(kernelUrl)
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       await withTimeout(
         client.send({ ListSessions: null }),
@@ -310,10 +310,10 @@ async function main() {
 
     const kernelBinary = await buildKernel(cargoTargetDir)
     daemon = await startDaemon(kernelBinary, env)
-    await waitForDaemon(LocalIpcClient, kernelUrl)
+    await waitForDaemon(LocalIpcClient, kernelUrl, env)
     log('daemon-ready', { kernelUrl })
 
-    client = new LocalIpcClient(kernelUrl)
+    client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: env })
     const created = unwrap(await client.send(createSessionRequest(workspace, workspace, 'm8-restart-session')), 'SessionCreated')
     const session = created.session
     sessionId = session.id
@@ -405,8 +405,8 @@ async function main() {
     log('daemon-crashed')
 
     daemon = await startDaemon(kernelBinary, env)
-    await waitForDaemon(LocalIpcClient, kernelUrl)
-    client = new LocalIpcClient(kernelUrl)
+    await waitForDaemon(LocalIpcClient, kernelUrl, env)
+    client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: env })
     log('daemon-restarted')
 
     const restored = await waitForState(

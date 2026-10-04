@@ -53,15 +53,13 @@ export class LocalIpcClient extends KernelClient {
 
   private async resolveAdvertisedProtocol(): Promise<AdvertisedProtocol> {
     const now = Date.now()
-    const presences = loadLocalKernelPresences(undefined, now)
-    let presence = presences.find(value => localKernelEndpoint(value) === this.socketPath)
-    if (presence?.protocolVersion === undefined && !/^wss?:\/\//i.test(this.socketPath)
-      && presences.some(value => value.protocolVersion !== undefined)) {
-      const reply = await super.send<{ RelayStatus?: { status?: { daemon_id?: string } } }>({ RelayStatus: null })
-      presence = presences.find(value => value.kernelId === reply.RelayStatus?.status?.daemon_id)
+    // Unix grants are session scoped and cannot probe global RelayStatus.
+    // Let the kernel's decode/authorization diagnostics handle unknown versions.
+    if (this.socketPath.startsWith("ws+unix://")) {
+      return { version: undefined, expiresAtMs: now + localKernelPresenceFreshnessMs }
     }
-    // Unix requests have no persistent connection lifecycle. An in-place kernel
-    // restart can retain the previous advertisement until expiry (at most 30 s).
+    const presences = loadLocalKernelPresences(undefined, now)
+    const presence = presences.find(value => localKernelEndpoint(value) === this.socketPath)
     return {
       version: presence?.protocolVersion,
       expiresAtMs: Math.min(now + localKernelPresenceFreshnessMs,

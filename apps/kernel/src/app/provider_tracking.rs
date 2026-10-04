@@ -8,6 +8,8 @@ use crate::provider::{AgentEndpointMode, OpenCodeProviderCatalog};
 pub(crate) struct TrackedProviderProcess {
     pub(crate) process_id: String,
     pub(crate) pid: Option<u32>,
+    // Captured once at launch, never refreshed from a possibly reused PID.
+    pub(crate) identity: Option<crate::runtime::kernel_access::process::ProcessIdentity>,
     pub(crate) endpoint_mode: AgentEndpointMode,
     pub(crate) process_label: String,
     pub(crate) started_at_ms: u64,

@@ -189,6 +189,13 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
     let PromptSubmissionOutcome::Started { prompt } = outcome else {
         panic!("meta slash prompt should start");
     };
+    assert!(app
+        .lock()
+        .await
+        .terminal_stream_store()
+        .notice_records()
+        .iter()
+        .any(|notice| notice.message.contains("/sudo <prompt> replaces /meta")));
     let active_meta_prompt_id = prompt.id().to_string();
     assert_eq!(prompt.prompt(), "Inspect the repo by delegation.");
     assert!(
