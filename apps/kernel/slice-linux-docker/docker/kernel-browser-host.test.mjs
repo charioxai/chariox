@@ -1,7 +1,7 @@
 // MD-2/MD-4: focused adapter tests, not native-browser acceptance.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { KernelBrowserHost, navigationUrl } from "./kernel-browser-host.mjs";
@@ -42,7 +42,7 @@ function fixture(root) {
     resolvePageTarget: async target => ({ connection, sessionId: `session-${target}` }),
     inputCapture: { run: async (_connection, _session, operation) => operation() },
   });
-  return { host: new KernelBrowserHost(root, { chromium, browserFactory }), chromium, handlers, sent };
+  return { host: new KernelBrowserHost(root, { chromium, browserFactory }), chromium, handlers, sent, pages };
 }
 
 async function using(callback) {
@@ -214,3 +214,41 @@ test("MD-5: metadata scrubs echoes and never persists a secret-bearing restore U
   const args = launchArguments("/private/drill/profile", false);
   assert(!args.some(arg => /headless|no-sandbox|password-store|mock-keychain/.test(arg)));
  });
+
+
+test("MD-4 reviewer R2: native unsupported URLs restore as blank without poisoning other tabs", () => using(async ({ host, chromium, pages }, root) => {
+  const opened = await host.request({ op: "open", url: "https://example.com/kept" });
+  pages.set("native-settings", { url: "chrome://settings/" });
+  const state = await host.request({ op: "state" });
+  const native = state.tabs.find(tab => tab.url === "chrome://settings/");
+  assert(native);
+  const saved = JSON.parse(await readFile(path.join(root, "tabs.json"), "utf8"));
+  assert.equal(saved.tabs.find(tab => tab.tab_id === native.tab_id).url, "about:blank");
+  // Recover legacy registries too, before the normalization existed.
+  saved.tabs.find(tab => tab.tab_id === native.tab_id).url = "chrome://settings/";
+  await writeFile(path.join(root, "tabs.json"), JSON.stringify(saved));
+  chromium.child.exitCode = 1;
+  const recovered = await host.request({ op: "state" });
+  assert.equal(recovered.tabs.find(tab => tab.tab_id === native.tab_id).url, "about:blank");
+  assert.equal(recovered.tabs.find(tab => tab.tab_id === opened.tab_id).url, "https://example.com/kept");
+  await host.request({ op: "close", tab_id: native.tab_id, generation: recovered.generation });
+}));
+
+test("MD-4 reviewer R3: discovery and legacy restoration stay within the durable tab limit", () => using(async ({ host, chromium, pages }, root) => {
+  const opened = await host.request({ op: "open", url: "https://example.com/kept" });
+  for (let i = 0; i < 130; i++) pages.set(`native-${i}`, { url: `https://example.com/${i}` });
+  const state = await host.request({ op: "state" });
+  assert.equal(state.tabs.length, 128);
+  assert(state.tabs.some(tab => tab.tab_id === opened.tab_id));
+  assert.equal(pages.size, 129); // includes the internal keepalive
+  const saved = JSON.parse(await readFile(path.join(root, "tabs.json"), "utf8"));
+  assert.equal(saved.tabs.length, 128);
+  saved.tabs.push({ tab_id: "host-tab-legacy-excess", url: "https://example.com/excess" });
+  await writeFile(path.join(root, "tabs.json"), JSON.stringify(saved));
+  chromium.child.exitCode = 1;
+  const recovered = await host.request({ op: "state" });
+  assert.equal(recovered.tabs.length, 128);
+  assert.equal(recovered.tabs[0].tab_id, opened.tab_id);
+  await host.request({ op: "close", tab_id: opened.tab_id, generation: recovered.generation });
+  assert.equal((await host.request({ op: "state" })).tabs.length, 127);
+}));
