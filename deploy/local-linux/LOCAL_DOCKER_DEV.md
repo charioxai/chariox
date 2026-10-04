@@ -218,6 +218,23 @@ bash deploy/local-linux/replay-storage-qualification.sh
 ```
 
 The replay retains the existing M20 assertions: real browser storage, installed
+editor/configuration/document. For protected DEV archives, the ordinary user
+cannot read the archive or inject corruption directly. On the isolated VM only,
+the operator may install `storage-qualification-fixture.py` as a root-owned
+mode-0555 public file under a root-controlled directory outside source. Grant
+the enrolled fixture user passwordless sudo for only `/usr/bin/python3` with
+that exact file and each of the arguments `verify`, `corrupt`, and `quarantine`.
+Use a root-owned mode-0440 sudoers drop-in validated with `visudo -cf`.
+Set `M20_STORAGE_FIXTURE_HELPER` to that absolute installed file in the replay.
+Its hash is retained in the source receipt. The helper accepts bounded kernel
+state metadata on stdin, requires the caller's enrolled protected artifact root,
+pins root-owned private files through no-follow descriptors, and never prints
+archive members or contents. Only the separate `corrupt-candidate` backup may
+be damaged; the known-good backup is refused. Restore and integrity rejection
+still run through the normal kernel/broker. This is operator fault injection
+on a disposable fixture VM, not a product permission or archive-export path.
+
+The complete replay covers
 editor/configuration/document, save plus container/home-volume destruction,
 recreation, external-service invalidation, offline service-worker behavior,
 corrupt-backup rejection, and repeated immutable named-backup restore. A RED

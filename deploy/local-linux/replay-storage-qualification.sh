@@ -23,6 +23,10 @@ for raw in sys.argv[2:4]:
 if Path(sys.argv[2]).exists(): raise SystemExit('MP-10: use a fresh runtime root per replay')
 PY
 export M20_USE_PREBUILT=1 M20_LOCAL_DEV_ENROLLMENT=1
+fixture_environment=()
+if [[ -n ${M20_STORAGE_FIXTURE_HELPER:-} ]]; then
+  fixture_environment+=("M20_STORAGE_FIXTURE_HELPER=$M20_STORAGE_FIXTURE_HELPER")
+fi
 # A clean environment prevents inherited provider homes or credentials from
 # entering this provider-free fixture. The kernel starts its enrolled broker.
 exec env -i \
@@ -35,6 +39,7 @@ exec env -i \
   M20_USE_PREBUILT=1 M20_LOCAL_DEV_ENROLLMENT=1 \
   M20_KERNEL_BINARY="$M20_KERNEL_BINARY" M20_SLICE_IMAGE="$M20_SLICE_IMAGE" \
   M20_RUNTIME_ROOT="$M20_RUNTIME_ROOT" M20_ARTIFACT_DIR="$M20_ARTIFACT_DIR" \
+  "${fixture_environment[@]}" \
   CHARIOX_SLICE_APPARMOR_PROFILE="${CHARIOX_SLICE_APPARMOR_PROFILE:-unconfined}" \
   CHARIOX_ROOM_DRILL_MEMORY_MB="${CHARIOX_ROOM_DRILL_MEMORY_MB:-2048}" \
   CHARIOX_SLICE_DOCKER_PROVISIONER="$source_root/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh" \
