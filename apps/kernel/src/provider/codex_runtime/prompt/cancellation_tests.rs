@@ -38,6 +38,48 @@ fn cancelled_codex_turn_without_hidden_context_keeps_thread_and_injects_nothing(
     cancelled_codex_turn_continuity(false, "");
 }
 
+async fn await_fixture_acknowledgement(
+    finished: &mut tokio::sync::oneshot::Receiver<()>,
+    deadline: Duration,
+) {
+    tokio::time::timeout(deadline, finished)
+        .await
+        .expect("Codex fixture did not acknowledge the follow-up")
+        .expect("Codex fixture stopped before acknowledging the follow-up");
+}
+
+#[test]
+fn missing_fixture_completion_times_out_and_unblocks_the_server() {
+    use std::io::Read;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (mut peer, _) = listener.accept().unwrap();
+    // Safety bound for a broken shutdown guard; success is driven by EOF.
+    peer.set_read_timeout(Some(FIXTURE_DEADLINE)).unwrap();
+    let (finished_tx, mut finished_rx) = tokio::sync::oneshot::channel();
+    let server = thread::spawn(move || {
+        let _hold_completion = finished_tx;
+        peer.read(&mut [0])
+    });
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _close_fixture_socket = CloseFixtureSocket(client.try_clone().unwrap());
+        runtime.block_on(await_fixture_acknowledgement(
+            &mut finished_rx,
+            Duration::ZERO,
+        ));
+    }));
+    assert!(
+        failure.is_err(),
+        "a missing completion must fail before join"
+    );
+    // The original client remains open: EOF proves the unwind guard shut it down.
+    assert_eq!(server.join().unwrap().unwrap(), 0);
+}
+
 fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str) {
     use crate::local::*;
     let worktree = crate::test_support::TestWorktree::new("codex-cancel-continuity");
@@ -303,6 +345,12 @@ fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str) {
             "thread-original",
             "user cancellation must preserve the conversation"
         );
+        // An adapter can buffer an RPC error and return Ok without starting turn two.
+        // Await its completion before join so that failure unwinds the socket guard.
+        harness.block_on_test_task(await_fixture_acknowledgement(
+            &mut finished_rx,
+            FIXTURE_DEADLINE,
+        ));
     }
     let (methods, applied_context) = server.join().unwrap();
     if !through_kernel && next_context.is_empty() {
