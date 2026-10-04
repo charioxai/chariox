@@ -239,6 +239,14 @@ impl TabRegistry {
             {
                 self.focused_tab_id = Some(previous.tab_id.clone());
             }
+            // Late events from a retired physical target must not be labelled
+            // as events from the live page that reclaimed this logical id.
+            self.retired_tab_id_by_controller_target
+                .retain(|_, id| *id != previous.tab_id);
+            self.retired_controller_targets.retain(|target| {
+                self.retired_tab_id_by_controller_target
+                    .contains_key(target)
+            });
             self.tabs.insert(previous.tab_id, state);
             changed = true;
         }

@@ -523,6 +523,7 @@ fn recovery_waits_until_the_old_live_tab_releases_its_identity() {
     let recovered = environment.snapshot();
     assert_eq!(recovered.tabs.len(), 1);
     assert_eq!(recovered.tabs[0].tab_id, old);
+    assert_eq!(environment.tab_id_for_controller_target("old-app"), None);
     assert_eq!(
         environment
             .controller_tab_binding(&old)
