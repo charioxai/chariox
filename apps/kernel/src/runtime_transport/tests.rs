@@ -2161,7 +2161,8 @@ fn restore_interruption_config(root: &Path) -> DaemonConfig {
     config.publication_control_state_root = Some(root.join("control"));
     config.user_config_path = root.join("config/chariox.toml");
     config.user_config.slices.root = Some(root.join("slices").display().to_string());
-    config.local_socket_path = root.join("kernel.sock");
+    config.local_socket_path =
+        DaemonConfig::default_local_socket_path(&format!("fixture:{}", root.display()));
     config
 }
 
