@@ -18,7 +18,7 @@ await mkdir(output,{recursive:true});
 const result={items:['MD-DISPLAY-01','MD-DISPLAY-02'],start:new Date().toISOString(),source:{commit:git('rev-parse','HEAD'),base:'9334141d420f8a32393f206102c5b8b4a1b0b609',dirty:git('status','--porcelain'),prototype_diff_sha256: null},topology:'headed host Chromium → CDP PNG → browser WebCodecs encoder → loopback plaintext WebSocket → browser decoder; isolated-world DOM → loopback WebSocket → scriptless iframe',scope:'credential-free display research; no production or hosted relay admission proof',runs:[],resource_samples:[],cleanup:{}};
 const {createHash}=await import('node:crypto');result.source.prototype_diff_sha256=createHash('sha256').update(git('diff','HEAD')).digest('hex');
 result.source.prototype_files={};for(const file of ['run.mjs','runtime.mjs','fixtures.mjs','mirror-source.js','metrics.mjs','viewer.html','selkies.mjs','package.json'])result.source.prototype_files[file]=createHash('sha256').update(await readFile(path.join(here,file))).digest('hex');
-const servers=[],screens=[],browsers=[],roles=new Map(),events=[],groups=[];let monitor,sourcePage,sourceCDP,world,activeMode,pending=new Map(),received=new Map(),byteCount={},inputStats=[],installedBaseline,activeProbe,ingress=new Map(),ingressLatency=new Map();
+const servers=[],screens=[],browsers=[],roles=new Map(),events=[],groups=[];let monitor,sampling=false,sourcePage,sourceCDP,world,activeMode,pending=new Map(),received=new Map(),byteCount={},inputStats=[],installedBaseline,activeProbe,ingress=new Map(),ingressLatency=new Map();
 const reportError=e=>events.push({kind:'harness-error',message:e.message});
 for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{requestStop();process.exitCode=130});
 const deadline=setTimeout(()=>{requestStop();process.exitCode=124},15*60*1000);
@@ -74,7 +74,6 @@ try{
   await encoder.goto(`${origin}/viewer?role=encoder&codec=${codec}`);await video.goto(`${origin}/viewer?role=video`);await dom.goto(`${origin}/viewer?role=dom`);
   for(const p of [encoder,video,dom])await p.waitForFunction(()=>window.md.ready);
   const probeSupport=await encoder.evaluate(async()=>Promise.all(['avc1.420033','vp09.00.10.08','av01.0.08M.08'].map(async codec=>({codec,supported:(await VideoEncoder.isConfigSupported({codec,width:1920,height:1200,bitrate:8000000,framerate:30,latencyMode:'realtime',hardwareAcceleration:'prefer-software'})).supported}))));result.codec_support=probeSupport;
-  let sampling=false;
   monitor=setInterval(async()=>{if(sampling)return;sampling=true;try{const r=await resources(groups);guard(r);result.resource_samples.push(r);if(installedBaseline)result.container_samples.push({at_ms:performance.now(),...(await installedBaseline.sample())})}catch(e){reportError(e);process.kill(process.pid,'SIGTERM')}finally{sampling=false}},1000);
   const capture=async()=>Buffer.from((await sourceCDP.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false,clip:{x:0,y:0,width:960,height:600,scale:1}})).data,'base64');
   const domCDP=await vc.newCDPSession(dom);
@@ -169,11 +168,14 @@ try{
   console.error(e.message);process.exitCode=1}
 finally{
   clearInterval(monitor);clearTimeout(deadline);
+  // Settle an already-running stats call before removing its exact container.
+  while(sampling)await pause(20);
   for(const b of browsers.reverse())try{await b.close()}catch(e){result.cleanup.browser_error=e.message;process.exitCode=1}
   for(const s of screens)await stopGroup(s.child);
   for(const ws of roles.values())ws.terminate();
   for(const s of servers)await new Promise(r=>s.close(r));
   const final=await resources(groups);result.resource_samples.push(final);result.cleanup.live_owned_processes=final.processes.filter(p=>p.state!=='Z'&&p.pid!==process.pid);result.cleanup.profiles_removed=true;result.cleanup.harness_pid_exits_with_command=process.pid;result.cleanup.servers_closed=servers.every(s=>!s.listening);
   if(result.cleanup.live_owned_processes.length){result.status='RED';process.exitCode=1}
+  if(process.exitCode)result.status='RED';
   result.finish=new Date().toISOString();result.exit_code=process.exitCode||0;await writeFile(path.join(output,'results.json'),JSON.stringify(result,null,2));console.log(`MD-DISPLAY-02 evidence ${output} exit=${result.exit_code}`);
 }

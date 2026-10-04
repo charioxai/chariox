@@ -45,7 +45,7 @@ export async function headedBrowser(chromium, output, name, screen, sandbox = tr
   try {
     const port=await until(async()=>{if(child.exitCode!==null)throw Error(`MD-DISPLAY ${name} Chrome exited ${child.exitCode}; see launch log`);try{return Number((await readFile(path.join(home,'DevToolsActivePort'),'utf8')).split('\n')[0])}catch{return null}},`${name} debugging port`);
     const browser=await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
-    return { child,browser,scratch,flags,sandbox, async close(){await browser.close();await stopGroup(child);await writeFile(path.join(output,`${name}-launch.log`),log.join(''));await rm(scratch,{recursive:true,force:true})} };
+    return { child,browser,scratch,flags,sandbox, async close(){try{await browser.close()}finally{await stopGroup(child);await writeFile(path.join(output,`${name}-launch.log`),log.join(''));await rm(scratch,{recursive:true,force:true})}} };
   } catch (error) {
     await stopGroup(child);await writeFile(path.join(output,`${name}-launch.log`),log.join(''));await rm(scratch,{recursive:true,force:true});throw error;
   }
