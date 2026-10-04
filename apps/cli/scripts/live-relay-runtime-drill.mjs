@@ -240,9 +240,9 @@ function nowStamp() {
   return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
 }
 
-async function waitForLocalDaemon(kernelUrl, workspace, worktree, daemonChild) {
+async function waitForLocalDaemon(kernelUrl, workspace, worktree, daemonChild, localAuthEnvironment) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
-    const probe = new LocalIpcClient(kernelUrl)
+    const probe = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       const session = unwrap(await probe.send(createSessionRequest(workspace, worktree, undefined, undefined, null, 'off')), 'SessionCreated').session
       await probe.send(endSessionRequest(session.id)).catch(() => {})
@@ -429,10 +429,10 @@ async function main() {
       { cwd: repoRoot, env: envs.daemonEnv },
     )
 
-    await waitForLocalDaemon(kernelUrl, options.workspace, options.worktree, daemonChild)
+    await waitForLocalDaemon(kernelUrl, options.workspace, options.worktree, daemonChild, envs.daemonEnv)
     await waitForRelayTarget(relayUrl, envs.relayToken, envs.daemonAlias)
 
-    localClient = new LocalIpcClient(kernelUrl)
+    localClient = new LocalIpcClient(kernelUrl, { localAuthEnvironment: envs.daemonEnv })
     const created = unwrap(await localClient.send(createSessionRequest(options.workspace, options.worktree, undefined, undefined, null, 'off')), 'SessionCreated')
     sessionId = created.session.id
     const defaultAgentId = created.agent.id

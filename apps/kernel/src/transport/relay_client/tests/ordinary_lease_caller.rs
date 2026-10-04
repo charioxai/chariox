@@ -294,7 +294,7 @@ async fn ordinary_lease_caller_binding_survives_restart_and_rejects_spoofs_async
     );
 
     let restarted_worker = Arc::new(Mutex::new(
-        DaemonApp::bootstrap(worker_config.clone()).expect("worker should restore same state"),
+        crate::test_support::bootstrap_after_test_owner_exit(worker_config.clone()).await,
     ));
     let restarted_state = restarted_worker.lock().await.relay_client_state();
     let (shutdown_restarted_tx, shutdown_restarted_rx) = watch::channel(false);

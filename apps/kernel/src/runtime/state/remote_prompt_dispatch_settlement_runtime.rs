@@ -250,6 +250,7 @@ impl KernelRuntimeState {
                     &session_id,
                     &agent_id,
                     settled_prompt.source_attachment_id(),
+                    None,
                 )
                 .await
             {

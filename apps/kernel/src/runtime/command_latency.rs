@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use crate::app::{ActivePromptState, ActiveTurnState};
 use crate::error::DaemonError;
-use crate::local::LocalDaemonResponse;
+use crate::local::{KernelConnectionClass, LocalDaemonResponse};
 use crate::runtime::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14,6 +14,7 @@ pub(crate) struct CommandTrace {
     command_type: String,
     trace_id: String,
     source: KernelCommandSource,
+    connection_class: Option<KernelConnectionClass>,
     priority: KernelCommandPriority,
     submitted_at_ms: u64,
 }
@@ -25,6 +26,7 @@ impl CommandTrace {
             command_type: command.command_type.clone(),
             trace_id: command.correlation_id.clone(),
             source: command.source.clone(),
+            connection_class: command.caller.connection_class,
             priority: command.priority.clone(),
             submitted_at_ms: command.submitted_at_ms,
         }
@@ -52,6 +54,7 @@ impl CommandTrace {
             "command_id": self.command_id,
             "command_type": self.command_type,
             "source": command_source_label(&self.source),
+            "connection_class": self.connection_class,
             "priority": command_priority_label(&self.priority),
             "submitted_at_ms": self.submitted_at_ms,
             "command_age_ms": elapsed_ms(self.submitted_at_ms, now_ms),
@@ -592,6 +595,20 @@ mod tests {
         assert_eq!(fields["command_type"], "daemon.health.get");
         assert_eq!(fields["priority"], "normal");
         assert_eq!(fields["command_age_ms"], 7);
+        // The kernel's own commands carry no connection class.
+        assert!(fields["connection_class"].is_null());
+    }
+
+    #[test]
+    fn command_trace_names_the_connection_class() {
+        let request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
+        let mut command = KernelCommand::from_local_request("cmd-health", None, None, &request);
+        command.caller.connection_class = Some(KernelConnectionClass::Terminal);
+        let trace = LaneCommandTrace::new(CommandTrace::from_command(&command), 130);
+
+        let fields = trace.dispatch_fields("session", "session-1", 145);
+
+        assert_eq!(fields["connection_class"], "terminal");
     }
 
     #[test]

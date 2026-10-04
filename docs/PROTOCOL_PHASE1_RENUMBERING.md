@@ -25,11 +25,17 @@ repositories use this one mapping:
 | local 396 | local 405 | native approval origin |
 | local 398 | local 407 | `AppWorkerPhase::Quarantined` |
 | local 400 | local 409 | App clipboard copy-out and link opening |
-| local 401 | local 410 | saved App data snapshot restore; the current `LOCAL_DAEMON_PROTOCOL_VERSION` |
-| local 402–406 (reserved) | local 411–415 | reserved for Phase 1 |
+| local 401 | local 410 | saved App data snapshot restore; Phase 1 main’s `LOCAL_DAEMON_PROTOCOL_VERSION` |
+| local 393 (KA) | local 402 | connection classes and audit attribution |
+| local 394 (KA) | local 403 | shared owner passkey popups |
+| local 395 (KA) | local 404 | process-bound access grants and lifetime settings |
+| local 403 (KA PR7) | local 412 | local token and terminal authority enforcement |
+| local 404 (KA PR8a) | local 413 | terminal sudo turn and critical receipts |
+| local 406 (KA PR8b) | local 415 | external sudo and Meta migration notice; current local protocol |
 | relay 58 | relay 69 | workflow event capability flags dropped; the current `RELAY_PEER_PROTOCOL_VERSION` |
 
-The Phase 1 numbers in 373–399 that are not listed were not used by a landed
-change; they map the same way. Builds and evidence recorded before 2026-10-03
+The remaining Phase 1 numbers map the same way. KA PR10 adds shell sudo
+entry routing using the existing protocol-415 shape. Relay stays at 69;
+no new allocation is used. Builds and evidence recorded before 2026-10-03
 report the original numbers: for example candidate `a3bd5b394` reported local
 372, which is now 381.

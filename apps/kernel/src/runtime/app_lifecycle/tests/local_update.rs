@@ -114,6 +114,8 @@ fn an_update_drains_the_old_worker_and_commits_only_a_healthy_new_generation() {
     assert_eq!(installation.generation, 1);
     assert_eq!(installation.pending_generation, None);
     assert!(!installation.admission_paused);
+    // The failure receipt precedes completion of the failed update's owner.
+    wait(|| !control.lifecycle().has_pending_owner("alice", &id));
     // The old generation was drained, not user-stopped: use starts it again.
     control
         .lifecycle()

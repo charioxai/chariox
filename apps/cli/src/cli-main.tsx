@@ -1,4 +1,6 @@
 import process from "node:process"
+import { runSudoCommand } from "./sudo-command.js"
+import { runAccessCommand } from "./access-command.js"
 
 import { render } from "@opentui/solid"
 
@@ -24,6 +26,8 @@ import { assertSolidClientBuild } from "./solid-client-build.js"
 async function main() {
   assertSolidClientBuild()
   const argv = process.argv.slice(2)
+  if (await runSudoCommand(argv)) return
+  if (await runAccessCommand(argv)) return
   if (await runAppCommand(argv)) return
   if (argv[0] === "logs") {
     await runLogViewer(argv.slice(1))

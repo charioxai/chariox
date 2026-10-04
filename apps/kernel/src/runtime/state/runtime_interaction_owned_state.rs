@@ -30,7 +30,8 @@ fn interaction_error(message: &str) -> DaemonError {
 
 impl KernelRuntimeOwnedState {
     /// The owner and operation of a pending decision whose chosen choice needs
-    /// the passkey, when the caller owns that decision.
+    /// the passkey, when the caller owns that decision and it has not expired
+    /// (its popup is closed then, so no passkey is checked for it).
     pub(super) fn passkey_gate(
         &self,
         session_id: &str,
@@ -43,6 +44,11 @@ impl KernelRuntimeOwnedState {
             .write()
             .get(interaction_id)
             .filter(|pending| pending.session_id == session_id)
+            .filter(|pending| {
+                pending
+                    .kernel_operation_deadline
+                    .is_none_or(|deadline| std::time::Instant::now() < deadline)
+            })
             .and_then(|pending| pending.kernel_operation_owner.clone())
             .filter(|owner| Some(owner.as_str()) == caller_user_id)?;
         let session = self.session_store.get_session(session_id).ok()?;
@@ -130,6 +136,32 @@ impl KernelRuntimeOwnedState {
         passkey_verified: bool,
         take_host: bool,
     ) -> Result<(), DaemonError> {
+        self.resolve_runtime_interaction_authorized(
+            session_id,
+            interaction_id,
+            choice_id,
+            custom_reply,
+            caller_user_id,
+            passkey_verified,
+            None,
+            None,
+            take_host,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn resolve_runtime_interaction_authorized(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        choice_id: &str,
+        custom_reply: Option<&str>,
+        caller_user_id: Option<&str>,
+        passkey_verified: bool,
+        sudo: Option<&crate::local::KernelSudoTurn>,
+        authorizing_terminal: Option<&str>,
+        take_host: bool,
+    ) -> Result<(), DaemonError> {
         let _mutation = self
             .pending_interactions
             .mutation
@@ -156,6 +188,16 @@ impl KernelRuntimeOwnedState {
                     message: format!("interaction {interaction_id} was not pending"),
                 })?
         };
+        if sudo.is_some()
+            && (pending.terminal_credential_owner.is_some()
+                || pending.passkey_prompt.as_ref().is_some_and(|prompt| {
+                    prompt.kind != crate::local::PasskeyPromptKind::CriticalApproval
+                }))
+        {
+            return Err(interaction_error(
+                "sudo cannot answer authority or credential prompts",
+            ));
+        }
         if pending.session_id != session_id || !pending.belongs_to(&self.session_store) {
             return Err(DaemonError::LocalTransport {
                 operation: "resolve runtime interaction",
@@ -171,6 +213,7 @@ impl KernelRuntimeOwnedState {
         if pending
             .kernel_operation_owner
             .as_deref()
+            .or(pending.terminal_credential_owner.as_deref())
             .is_some_and(|owner| Some(owner) != caller_user_id)
         {
             return Err(interaction_error(
@@ -227,17 +270,41 @@ impl KernelRuntimeOwnedState {
             "accept_host_action".to_owned()
         } else if let Some(choice) = interaction.choice(choice_id) {
             if let Some(reply) = custom_reply {
-                let custom_choice =
-                    interaction
-                        .custom_choice()
-                        .ok_or_else(|| DaemonError::LocalTransport {
+                if interaction
+                    .kernel_operation_id()
+                    .is_some_and(|id| id.starts_with("access-"))
+                    && choice.requires_passkey()
+                {
+                    let minutes = reply
+                        .parse::<u32>()
+                        .map_err(|_| interaction_error("Access lifetime must be whole minutes"))?;
+                    if minutes == 0
+                        || minutes
+                            > self
+                                .config_projection
+                                .snapshot()
+                                .user_config
+                                .kernel_access
+                                .grant_max_minutes
+                    {
+                        return Err(interaction_error("Access lifetime exceeds kernel policy"));
+                    }
+                    reply.to_owned()
+                } else {
+                    let custom_choice =
+                        interaction
+                            .custom_choice()
+                            .ok_or_else(|| {
+                                DaemonError::LocalTransport {
                             operation: "resolve runtime interaction",
                             message:
                                 "custom_reply is only valid for interactions with a custom choice"
                                     .to_string(),
-                        })?;
-                validate_runtime_interaction_custom_reply(custom_choice, reply)?;
-                reply.to_string()
+                        }
+                            })?;
+                    validate_runtime_interaction_custom_reply(custom_choice, reply)?;
+                    reply.to_string()
+                }
             } else {
                 choice.reply().to_string()
             }
@@ -276,14 +343,55 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Kernel operation decision expired"));
         }
-        let pending = self
-            .pending_interactions
-            .write()
-            .remove(interaction_id)
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "resolve runtime interaction",
-                message: format!("interaction {interaction_id} was not pending"),
-            })?;
+        let consume = || {
+            let mut access = (sudo.is_some() || authorizing_terminal.is_some())
+                .then(|| self.sudo_turns.lock().expect("access state poisoned"));
+            if let Some(terminal) = authorizing_terminal {
+                let turn = access
+                    .as_mut()
+                    .and_then(|state| state.get_mut(interaction_id))
+                    .ok_or_else(|| interaction_error("sudo request revoked before the decision"))?;
+                turn.terminal_id = terminal.into();
+            }
+            if let Some(turn) = sudo {
+                if access.as_ref().and_then(|state| state.get(&turn.entry_id)) != Some(turn) {
+                    return Err(interaction_error(
+                        "sudo turn was revoked before the decision",
+                    ));
+                }
+                self.durable_state_store.append_event(
+                    "kernel_access.sudo_approval",
+                    Some(interaction_id.into()),
+                    super::sudo_approval_receipt(turn, session_id, interaction_id, choice_id),
+                )?;
+            }
+            self.pending_interactions
+                .write()
+                .remove(interaction_id)
+                .ok_or_else(|| interaction_error("interaction is no longer pending"))
+        };
+        let pending = if let Some(turn) = sudo {
+            let source = sessions.get_session(&turn.session_id)?;
+            if source.status() == crate::session::SessionStatus::Ended {
+                return Err(interaction_error("sudo session ended"));
+            }
+            self.prompt_state_owner.with_running_prompt(
+                &source,
+                &turn.agent_id,
+                turn.prompt_id
+                    .as_deref()
+                    .ok_or_else(|| interaction_error("sudo turn not started"))?,
+                &turn.entry_id,
+                consume,
+            )?
+        } else {
+            consume()?
+        };
+        if pending.passkey_prompt.is_some() {
+            // Every terminal closes the popup; a later answer is told why.
+            self.passkey_prompts
+                .record_answered(session_id, interaction_id);
+        }
         let _ = session.remove_active_interaction(interaction_id);
         sessions.restore_session(session);
         activity_mutation.record();
@@ -364,6 +472,9 @@ impl KernelRuntimeOwnedState {
             return self.withdraw_agent_interaction_locked(interaction_id, &pending);
         }
         self.pending_interactions.write().remove(interaction_id);
+        if pending.passkey_prompt.is_some() {
+            self.passkey_prompts.record_change();
+        }
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let mut session = sessions.get_session(session_id)?.clone();

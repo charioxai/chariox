@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 mod credentials;
 mod env_loader;
 mod identity;
+mod kernel_access;
 mod pairings;
 mod paths;
 mod persisted_daemon;
@@ -35,6 +36,7 @@ pub use identity::prepare_protected_slice_identity;
 #[cfg(test)]
 use identity::{generate_identity_suffix, RuntimeIdentity};
 pub(crate) use identity::{load_or_create_managed_runtime_identity, ManagedRuntimeIdentity};
+pub use kernel_access::UserKernelAccessConfig;
 #[cfg(test)]
 use persisted_daemon::PersistedDaemonConfig;
 #[cfg(test)]
@@ -501,6 +503,8 @@ pub struct CharioxUserConfig {
     #[serde(default)]
     pub kernel: UserKernelConfig,
     #[serde(default)]
+    pub kernel_access: UserKernelAccessConfig,
+    #[serde(default)]
     pub workflow: UserWorkflowConfig,
     #[serde(default)]
     pub credential_vault: UserCredentialVaultConfig,
@@ -518,6 +522,7 @@ impl Default for CharioxUserConfig {
             ui: UserUiConfig::default(),
             relay: UserRelayConfig::default(),
             kernel: UserKernelConfig::default(),
+            kernel_access: UserKernelAccessConfig::default(),
             workflow: UserWorkflowConfig::default(),
             credential_vault: UserCredentialVaultConfig::default(),
         }

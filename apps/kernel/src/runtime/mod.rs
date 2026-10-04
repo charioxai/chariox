@@ -152,3 +152,5 @@ pub mod workspace_identity_monitor;
 pub(crate) mod workspace_repo_files;
 pub(crate) mod workspace_search;
 pub(crate) mod workspace_worktrees;
+
+pub(crate) mod kernel_access;

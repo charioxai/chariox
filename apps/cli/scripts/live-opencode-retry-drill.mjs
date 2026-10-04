@@ -150,7 +150,7 @@ try {
   } })
   for (const stream of [kernel.stdout, kernel.stderr]) stream.on('data', chunk => { startupOutput = (startupOutput + chunk.toString()).slice(-8192) })
   await waitFor(() => listening(port), 20000)
-  client = new LocalIpcClient(`ws://127.0.0.1:${port}`)
+  client = new LocalIpcClient(`ws://127.0.0.1:${port}`, { localAuthEnvironment: { CHARIOX_HOME: dirs.chariox } })
   await waitFor(() => send(requests.listSessionsRequest(), 'SessionsListed').then(() => true).catch(() => false), 20000)
   stage = 'session-create'
   session = (await send(requests.createSessionRequest(dirs.workspace, dirs.workspace, 'opencode-retry', { provider: 'managed-dev-stub' }), 'SessionCreated')).session

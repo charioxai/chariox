@@ -264,9 +264,9 @@ export async function destroyWorkspaceLiveSyncAgent({ client, destroyAgentReques
   await client.send(destroyAgentRequest(sessionId, agent.id)).catch(() => {})
 }
 
-export async function waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, workspace, worktree) {
+export async function waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, workspace, worktree, localAuthEnvironment) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const probe = new LocalIpcClient(kernelUrl)
+    const probe = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       const session = unwrap(await probe.send(createSessionRequest(workspace, worktree)), 'SessionCreated').session
       await probe.send(endSessionRequest(session.id)).catch(() => {})

@@ -100,9 +100,9 @@ function relayClient(relayUrl, relayToken, targetDaemonAlias, targetDaemonId = n
   })
 }
 
-async function waitForLocalDaemon(kernelUrl, workspace, worktree) {
+async function waitForLocalDaemon(kernelUrl, workspace, worktree, localAuthEnvironment) {
   for (let attempt = 0; attempt < 80; attempt += 1) {
-    const client = new LocalIpcClient(kernelUrl)
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       const session = unwrap(await client.send(createSessionRequest(workspace, worktree)), "SessionCreated").session
       await client.send(endSessionRequest(session.id)).catch(() => {})
@@ -296,10 +296,11 @@ async function main() {
       },
       stdio: ["ignore", "ignore", "inherit"],
     })
-    await waitForLocalDaemon(homeKernelUrl, workspace, workspace)
+    await waitForLocalDaemon(homeKernelUrl, workspace, workspace, { ...process.env, XDG_STATE_HOME: xdgStateHome })
     await waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias)
 
     client = new LocalIpcClient(homeKernelUrl, {
+      localAuthEnvironment: { ...process.env, XDG_STATE_HOME: xdgStateHome },
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
     })
