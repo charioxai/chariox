@@ -2,7 +2,6 @@ import { spawn } from "node:child_process"
 import { appendFileSync } from "node:fs"
 import path from "node:path"
 import process from "node:process"
-import { setTimeout as sleep } from "node:timers/promises"
 
 import {
   type RuntimeProviderRun,
@@ -16,16 +15,7 @@ import {
   parseKernelPort,
   parseNativeMode as parseMode,
   parseNativePermissions as parsePermissions,
-  reserveLocalPort as reservePort,
 } from "./launch-environment.js"
-import {
-  type CodexAppServerProcess,
-  releaseKernelPortLocks,
-  reserveCodexKernelServerPort,
-  startCodexAppServer,
-  startCodexAppServerInKernel,
-  stopCodexAppServerInKernel,
-} from "./codex-app-server.js"
 import {
   startCodexProxy,
   type CodexProxyServer,
@@ -71,7 +61,6 @@ type NativeCodexOptions = {
   mode: "build" | "plan"
   permissions: "required" | "yolo"
   initialPrompt?: string
-  serverInKernel: boolean
   grantMcps: string[]
   grantSkills: string[]
 }
@@ -89,13 +78,9 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       targetDaemonAlias: options.targetDaemonAlias,
     }
     : undefined)
-  let appServer: CodexAppServerProcess | null = null
-  let kernelServerPid: string | null = null
   let proxy: CodexProxyServer | null = null
   let endpointBridge: { close: () => Promise<void> } | null = null
   let pump: { stop: () => void } | null = null
-  let cleanupSessionId: string | null = null
-  let cleanupAttachmentId: string | null = null
 
   try {
     const remotePlacement = Boolean(options.machineRef || options.sliceRef)
@@ -110,8 +95,6 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       }, options.sliceRef)
     const session = created?.session ?? await resolveNativeSession(client, options.sessionRef!, workspace)
     const attachment = await attachNativeSession(client, session.id, options.clientId)
-    cleanupSessionId = session.id
-    cleanupAttachmentId = attachment.id
     const agent = created?.agent
       ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
       : await spawnNativeAgent(client, session.id, "codex", options.agentAlias, options.model, worktree, options.effort, options.mode, options.permissions, options.machineRef, options.sliceRef)
@@ -121,47 +104,21 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       run: null,
       structuredEndpoint: null,
     }
-    let providerSessionId: string | null = null
-    let upstreamEndpoint: string
-    let bindProviderEndpoint: string
-    if (options.serverInKernel && remotePlacement) {
-      const run = await launchManagedNativeProviderRun({
-        client,
-        sessionId: session.id,
-        agentId: agent.id,
-        model: options.model,
-        effort: options.effort,
-      })
-      if (!run.structured_endpoint) {
-        throw new Error("Codex managed native server did not expose an endpoint")
-      }
-      bindState.promise = Promise.resolve(run)
-      bindState.run = run
-      if (run.provider_session_id) {
-        providerSessionId = run.provider_session_id
-        debugNativeCodex("thread_observed", { threadId: run.provider_session_id })
-      }
-      upstreamEndpoint = run.structured_endpoint
-      bindProviderEndpoint = ""
-    } else if (options.serverInKernel) {
-      const port = await reserveCodexKernelServerPort()
-      upstreamEndpoint = `ws://127.0.0.1:${port}`
-      const listenHost = process.env.CHARIOX_CODEX_KERNEL_SERVER_BIND_HOST?.trim() || "127.0.0.1"
-      const listenEndpoint = `ws://${listenHost}:${port}`
-      kernelServerPid = await startCodexAppServerInKernel({
-        client,
-        sessionId: session.id,
-        attachmentId: attachment.id,
-        endpoint: upstreamEndpoint,
-        listenEndpoint,
-        workingDirectory: worktree,
-      })
-      bindProviderEndpoint = process.env.CHARIOX_CODEX_KERNEL_SERVER_PORT_RANGE ? upstreamEndpoint : ""
-    } else {
-      upstreamEndpoint = `ws://127.0.0.1:${await reservePort()}`
-      appServer = await startCodexAppServer(upstreamEndpoint, worktree)
-      bindProviderEndpoint = ""
+    // MP-08 / MP-10: Every native server uses the normal kernel adapter so
+    // granted MCPs and provider-account configuration reach the actual harness.
+    const run = await launchManagedNativeProviderRun({
+      client,
+      sessionId: session.id,
+      agentId: agent.id,
+      model: options.model,
+      effort: options.effort,
+    })
+    if (!run.structured_endpoint) {
+      throw new Error("Codex managed native server did not expose an endpoint")
     }
+    bindState.promise = Promise.resolve(run)
+    bindState.run = run
+    let upstreamEndpoint = run.structured_endpoint
     const bridgedEndpoint = await bridgeRemoteNativeProviderEndpoint(upstreamEndpoint, "Codex")
     upstreamEndpoint = bridgedEndpoint.endpoint
     endpointBridge = bridgedEndpoint
@@ -182,7 +139,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       throw new Error("Codex proxy did not expose a TCP port")
     }
     const proxyUrl = `ws://127.0.0.1:${proxyAddress.port}`
-    bindState.structuredEndpoint = bindProviderEndpoint || proxyUrl
+    bindState.structuredEndpoint = proxyUrl
     const sliceInventory = agent.remote_execution
       ? await loadNativeTuiSliceInventory(client)
       : { slices: [], error: null }
@@ -199,15 +156,13 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       providerLines: [
         `  app-server:     ${upstreamEndpoint}`,
         `  proxy:          ${proxyUrl}`,
-        ...(providerSessionId ? [`  codex thread:   ${providerSessionId}`] : []),
+        ...(run.provider_session_id ? [`  codex thread:   ${run.provider_session_id}`] : []),
       ],
       promptPolicy: "native prompts pass through; Chariox observes the session",
     }))
     pump = startNativeKernelPumpLoop(client, session.id, attachment.id, {
-      onTerminalRecords: remotePlacement
-        ? (records) => proxy?.projectKernelOutputToTui(records)
-        : undefined,
-      pollRuntimeNotices: !remotePlacement,
+      onTerminalRecords: (records) => proxy?.projectKernelOutputToTui(records),
+      pollRuntimeNotices: false,
       debug: debugNativeCodex,
       formatError,
     })
@@ -215,7 +170,6 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       proxyUrl,
       model: options.model,
       workingDirectory: worktree,
-      providerSessionId: remotePlacement ? null : providerSessionId,
       initialPrompt: options.initialPrompt,
     })
   } finally {
@@ -223,19 +177,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     if (proxy) {
       await new Promise<void>((resolve) => proxy!.close(() => resolve()))
     }
-    if (appServer && appServer.exitCode == null) {
-      appServer.kill("SIGTERM")
-      await Promise.race([
-        new Promise((resolve) => appServer?.once("exit", resolve)),
-        sleep(2_000),
-      ])
-      if (appServer.exitCode == null) appServer.kill("SIGKILL")
-    }
-    if (kernelServerPid) {
-      await stopCodexAppServerInKernel(client, cleanupSessionId, cleanupAttachmentId, kernelServerPid, worktree).catch(() => {})
-    }
     await endpointBridge?.close()
-    releaseKernelPortLocks()
     await client.close()
   }
 }
@@ -247,7 +189,6 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
     effort: "high",
     mode: "build",
     permissions: "yolo",
-    serverInKernel: false,
     grantMcps: [],
     grantSkills: [],
   }
@@ -326,7 +267,7 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
         options.initialPrompt = next()
         break
       case "--server-in-kernel":
-        options.serverInKernel = true
+        // Compatibility flag: native servers are always kernel-managed.
         break
       case "--grant-mcp":
         options.grantMcps.push(next())
@@ -356,12 +297,6 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
   if (options.socketPath && options.kernelPort) throw new Error("--socket cannot be used together with --kernel-port")
   if (options.machineRef && options.sliceRef) {
     throw new Error("--machine and --slice cannot be used together")
-  }
-  if (options.machineRef && !options.serverInKernel) {
-    throw new Error("--machine requires --server-in-kernel so the Codex app-server is launched by the worker kernel")
-  }
-  if (options.sliceRef && !options.serverInKernel) {
-    throw new Error("--slice requires --server-in-kernel so the Codex app-server is launched by the slice worker kernel")
   }
   if (positional[0] !== undefined) options.sessionRef = positional[0]
   return options
@@ -403,7 +338,6 @@ async function runCodexTui(options: {
   proxyUrl: string
   model: string
   workingDirectory: string
-  providerSessionId?: string | null
   initialPrompt?: string | undefined
 }): Promise<void> {
   const executable = process.env.CHARIOX_CODEX_BIN?.trim() || "codex"
@@ -418,9 +352,7 @@ async function runCodexTui(options: {
     "-m",
     options.model,
   ]
-  const args = options.providerSessionId
-    ? ["resume", ...baseArgs, options.providerSessionId]
-    : baseArgs
+  const args = baseArgs
   if (options.initialPrompt) args.push(options.initialPrompt)
   await new Promise<void>((resolve, reject) => {
     const child = spawn(executable, args, {

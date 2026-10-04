@@ -318,7 +318,7 @@ Native TUI hidden context:
 
 Provider-specific transport:
 
-- Codex uses a native WebSocket proxy in front of a Codex app-server endpoint and binds the observed Codex thread to the Chariox provider run.
+- Codex uses a native WebSocket proxy in front of a kernel-managed Codex app-server launched through the normal provider adapter (MP-08 / MP-10). Local, remote-worker, and slice placement all materialize agent grants through that adapter before the provider TUI connects. The proxy routes native prompts into the home kernel and projects kernel-managed turns into the native TUI; the existing leased-agent path selects worker execution. `--server-in-kernel` remains accepted for compatibility.
 - OpenCode uses a native HTTP proxy in front of a launcher-managed `opencode serve` endpoint. The kernel binds its provider run to the proxy endpoint, while the provider TUI attaches to the same proxy/provider session.
 - Claude Code has no stable provider UI/server split. Local and remote native TUI mode therefore use a kernel-owned PTY: the provider process runs where execution belongs, and the launcher streams/render-controls that PTY while the kernel projects prompts, output, attachments, status, and supported interactions back into the Chariox session.
 
