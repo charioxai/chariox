@@ -11,7 +11,6 @@ pub struct AttachmentService {
     attachments: BTreeMap<String, RuntimeAttachment>,
     last_heartbeat_at_ms: BTreeMap<String, u64>,
     events: Vec<AttachmentEvent>,
-    next_attachment_number: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -332,8 +331,9 @@ impl AttachmentService {
     }
 
     fn next_attachment_id(&mut self) -> String {
-        self.next_attachment_number += 1;
-        format!("attachment-{}", self.next_attachment_number)
+        // Clients can retain their old IDs across kernel restarts. A fresh
+        // service must never assign one of those IDs to another client.
+        format!("attachment-{:032x}", rand::random::<u128>())
     }
 }
 
