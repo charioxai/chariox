@@ -248,6 +248,7 @@ try {
       'high', 'build', 'yolo', undefined, undefined, slice.id, profile.profile_id)), 'AgentSpawned').agent
     assert.equal(agent.remote_execution.worker_kernel_id, slice.worker_kernel_id)
     report.sessionId = session.id
+    stage = `attach ${template}`
     const row = { mpItems, benchmark: 'WebGames', scope, task: template, repeat: 0,
       upstreamRevision: report.upstreamRevision, runId, model, agentId: agent.id, startedAt: new Date(started).toISOString(), harnessValid: false, evidenceComplete: false,
       leaderboard: report.leaderboard }
@@ -258,8 +259,10 @@ try {
     const prompt = `MP-08 / MP-10 WebGames smoke. Your task is: ${task.description}. You must go to http://127.0.0.1:8765/${task.path} and obtain the password for the game. To prove you have completed the task you must obtain and report the password for the game. If you do not have the password, you have not managed to complete the task.
 The supplied URL is SLICE-LOCAL: the site server runs on loopback INSIDE this same browser slice, not on the host kernel. Keep 127.0.0.1 exactly; do NOT replace it with host.docker.internal. This is not a host-local URL.
 Use ONLY Chariox first-party slice_open_url and slice_browser_* tools. Observe the rendered page; use returned opaque field IDs for actions. No shell, scripts, source inspection, HTTP, files, Computer tools, provider-native browser tools, or another browser. Do not inspect benchmark code, hidden answers, or grader data. One attempt only: do not reload or restart a failed game. Max 20 mutating Browser actions, 80 tool calls, 180 seconds. Stop if unsupported or failed and report honestly. Return the obtained password in your final reply, or state failure.`
+    stage = `prompt submit ${template}`
     const submitted = unwrap(await client.send(r.submitPromptRequest(session.id, attachment.id, agent.id, prompt, [])), 'PromptSubmitted')
     row.promptId = (submitted.outcome.Started ?? submitted.outcome.Queued).prompt.id
+    stage = `provider polling ${template}`
     let turn = null, timedOut = false, budgetExceeded = false
     const deadline = started + report.wallTimeoutMs
     while (Date.now() < deadline) {
@@ -284,6 +287,7 @@ Use ONLY Chariox first-party slice_open_url and slice_browser_* tools. Observe t
     row.mutatingActions = row.actions.filter(a => !observationKinds.has(a.kind)).length
     // Hydrate the official transcript to audit the tool track, retaining only
     // bounded, sanitized results from permitted first-party Browser tools.
+    stage = `history export ${template}`
     row.toolTrace = []; row.toolAuditComplete = true; const outputEntries = []; const transcriptEntries = []
     for (const blob of turn?.blobs ?? []) {
       if (!['provider_tool', 'provider_error', 'provider_output'].includes(blob.kind)) continue
@@ -324,6 +328,7 @@ Use ONLY Chariox first-party slice_open_url and slice_browser_* tools. Observe t
     await writeFile(`${evidence}/${runId}-${encodeURIComponent(template)}-final.txt`, finalOutput, { mode: 0o600 })
     await writeFile(`${evidence}/${runId}-${encodeURIComponent(template)}-transcript.json`, JSON.stringify(sanitizeDrillMetadata({ mpItems, entries: transcriptEntries }), null, 2), { mode: 0o600 })
     row.finalResponseSha256 = createHash('sha256').update(finalOutput).digest('hex')
+    stage = `official scoring ${template}`
     const graded = await score(template, finalOutput)
     row.reward = graded.reward; row.scorer = graded.scorer; row.finalResponsePresent = finalOutput.length > 0
     const toolCalls = new Map(row.toolTrace.map((t, i) => [t.id ?? i, t])); row.toolCalls = toolCalls.size
