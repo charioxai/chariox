@@ -1,10 +1,11 @@
 # MP-11 — b211scan
 
-## MP-11 — 2026-10-05, PR #848 reviewer fixes in progress
+## MP-11 — 2026-10-05, PR #848 reviewer fixes validated
 
 - Starting tool head: `5667ae4d8784e21607f616a3f551a42c6f8a6b68`; existing `agent/b211scan` branch retained.
-- P1 fixed: both frozen-Git tests fail in a depth-one checkout without G2 (2/2 RED). The Node CI job now fetches the exact pinned source; the same clone passes both tests after that step, with HEAD unchanged. Evidence: `reviewer-p1-{red,green}` receipts/logs. Public-origin and committed-head verification follow.
-- P2: add fail-first physical-column checks for BOM-prefixed fixture and committed blobs, then preserve the BOM in both strict UTF-8 decoders.
+- P1 commit: `fd0a17331`. Both frozen-Git tests fail in a depth-one checkout without G2 (2/2 RED). The Node CI job now fetches the exact pinned source; the same clone passes both tests after that step, with HEAD unchanged. Public GitHub origin verification also passed. Evidence: `reviewer-p1-{red,green,public-origin}` receipts/logs.
+- P2 fixed: both strict UTF-8 decoders retain U+FEFF with `ignoreBOM: true`. Four fail-first regressions cover fixture/committed-blob first-line columns (19 rather than 18) and both fragment boundary columns (2 rather than 1). Invalid UTF-8 remains rejected in both decoder paths; candidate disposition remains unreviewed. Evidence: `reviewer-p2-{red,green}` receipts/logs.
+- Complete scanner suite: **197/197 PASS, zero skips** (`reviewer-focused-suite`). The pending source delta was unchanged during validation. Historical rule/review modules remain unchanged. Final committed-head receipts and handoff mapping follow.
 - The 9,949-anchor semantic audit remains paused pending the owner decision. No runtime/protocol changes or approval repinning are in scope.
 - Initial resources: 66 GiB available disk and 19.95 GiB MemAvailable, above MP-11 lane floors. Node/Python only; coordinator retains publication.
 

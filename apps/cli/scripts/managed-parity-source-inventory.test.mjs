@@ -2210,6 +2210,77 @@ test("MP-11 binary source is rejected rather than silently omitted", () => {
   });
 });
 
+test("MP-11 BOM fixture decoding retains the first-line physical column", () => {
+  withFixture({}, (fixture) => {
+    const path = "apps/cli/src/bom-control.ts";
+    const selector = "CHARIOX_MANAGED_BOM_FIXTURE";
+    const text = '\ufeffconst control = "' + selector + '";\r\n';
+    fixture.addFile(path, text);
+    const report = collect(fixture);
+    const entry = report.entries.find((entry) => entry.selector === selector);
+    assert.equal(entry?.line, 1);
+    assert.equal(entry?.column, text.indexOf(selector) + 1);
+    assert.equal(entry?.contextHash, createHash("sha256").update(text.trim()).digest("hex"));
+    assert.equal(entry?.semanticDisposition.status, "unreviewed");
+    assert.equal(report.status, "fail");
+    fixture.addFile(path, Buffer.from([0xef, 0xbb, 0xbf, 0xc3, 0x28]));
+    assert.throws(() => collect(fixture), { code: "ERR_ENCODING_INVALID_ENCODED_DATA" });
+  });
+});
+
+test("MP-11 BOM Git blob decoding retains exact identity and first-line physical column", () => {
+  const root = mkdtempSync(join(tmpdir(), "chariox-mp11-bom-"));
+  const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
+  try {
+    git("init", "--quiet");
+    mkdirSync(join(root, "apps/cli/src"), { recursive: true });
+    const path = "apps/cli/src/bom-control.ts";
+    const selector = "CHARIOX_MANAGED_BOM_GIT";
+    const text = '\ufeffconst control = "' + selector + '";\r\n';
+    const commit = () => {
+      git("add", path);
+      git("-c", "user.name=MP-11 fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "MP-11 BOM fixture");
+      return git("rev-parse", "HEAD").trim();
+    };
+    writeFileSync(join(root, path), text);
+    const sourceCommit = commit();
+    const blob = git("rev-parse", "HEAD:" + path).trim();
+    const report = collectSourceInventory({ sourceRoot: root, expectedCommit: sourceCommit });
+    const entry = report.entries.find((entry) => entry.selector === selector);
+    assert.equal(report.source.commit, sourceCommit);
+    assert.equal(entry?.blob, blob);
+    assert.equal(entry?.line, 1);
+    assert.equal(entry?.column, text.indexOf(selector) + 1);
+    assert.equal(entry?.contextHash, createHash("sha256").update(text.trim()).digest("hex"));
+    assert.equal(entry?.semanticDisposition.status, "unreviewed");
+    assert.equal(report.status, "fail");
+    writeFileSync(join(root, path), Buffer.from([0xef, 0xbb, 0xbf, 0xc3, 0x28]));
+    const malformedCommit = commit();
+    assert.throws(() => collectSourceInventory({ sourceRoot: root, expectedCommit: malformedCommit }),
+      { code: "ERR_ENCODING_INVALID_ENCODED_DATA" });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+for (const suffix of [".tsfrag", ".mjsfrag"]) {
+  test("MP-11 BOM at an assembled " + suffix + " boundary retains physical and assembled columns", () => {
+    withFixture({}, (fixture) => {
+      const selector = "CHARIOX_MANAGED_BOM_FRAGMENT";
+      const fragments = ['const selector = "', '\ufeff' + selector + '";\nselector;'];
+      assert.equal(runInNewContext(fragments.join("")), "\ufeff" + selector);
+      const directory = fragmentFixture(fixture, suffix, fragments);
+      const report = collect(fixture);
+      const entry = report.entries.find((entry) => entry.selector === selector);
+      assert.equal(entry?.path, directory + "/part-002" + suffix);
+      assert.equal(entry?.line, 1);
+      assert.equal(entry?.column, 2);
+      assert.equal(entry?.fragmentSource.assembledColumn, fragments[0].length + 2);
+      assert.equal(entry?.fragmentSource.matchSegments[0].column, 2);
+      assert.equal(entry?.semanticDisposition.status, "unreviewed");
+      assert.equal(report.status, "fail");
+    });
+  });
+}
+
 test("MP-11 standard unified sections retain exact physical lines and old/new paths", () => {
   withFixture({}, (fixture) => {
     fixture.addFile("deploy/native-controls.patch", [
