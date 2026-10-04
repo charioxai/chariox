@@ -33,6 +33,12 @@ process.stdout.write(JSON.stringify({tabId:page.id,url:page.url,value:reply.resu
 """
 
 
+class DrillInterrupted(Exception):
+    # InterruptedError is an OSError that subprocess/IO can retry internally.
+    # A dedicated exception must escape those retry loops to reach cleanup.
+    pass
+
+
 def resources():
     memory = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
     disk = os.statvfs("/")
@@ -58,7 +64,7 @@ def main():
     watcher = None
 
     def interrupted(signum, _frame):
-        raise InterruptedError(f"MP-08/MP-10/MP-11 drill interrupted by signal {signum}")
+        raise DrillInterrupted(f"MP-08/MP-10/MP-11 drill interrupted by signal {signum}")
 
     for signum in (signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, interrupted)
@@ -106,7 +112,7 @@ def main():
         try:
             detail = action() or {}
             report["cases"].append({"id": label, "status": "PASS", "detail": detail})
-        except InterruptedError:
+        except DrillInterrupted:
             raise
         except Exception as error:
             report["cases"].append({"id": label, "status": "RED", "failure": str(error)})
