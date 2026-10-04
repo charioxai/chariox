@@ -6,7 +6,7 @@ is not established.** At a stated 2 Mbps PNG egress budget, small-change pages
 converge to exact RGB at 83–96 ms median. Native RGB H.264 reaches 51–72 dB on
 all frozen fixtures at a 2 Mbps VBV target and 80–153 ms median. Selkies remains
 faster on media/dense scrolling. Public scrolling defeats the native RGB
-ultrafast configuration; `veryfast` 8 Mbps only matches SelkiesCBR8 fidelity at
+ultrafast configuration; `veryfast` 8 Mbps only matches Selkies CBR 8 Mbps fidelity at
 more than twice the p95 latency. These are measured limits, not acceptance.
 
 MD-DISPLAY-04 recommendation: attach a transport-neutral frame/input seam to
@@ -192,15 +192,16 @@ lifecycle diagnosis or optimized regional encoder is claimed.
 ### MD-DISPLAY-02/03 — Evidence provenance and retained RED results
 
 Evidence stays under `/root/.codex/evidence/browser-resume-20260930/display/`.
-`phase2-review/report/index.html` provides configured/observed curves, raw
+`phase2-review-v2/report/index.html` provides configured/observed curves, raw
 per-cell rows, source/viewer opacity overlays and amplified diffs.
 `summary.json` binds rows to exact receipt SHA-256. `PHASE2_MANIFEST.json`
-will consolidate commands, exits, source identities, resources and cleanup. No source
+records commands, exits, source identities, resources and cleanup. No source
 identity is reassigned to the handoff commit.
 
 - Core codec/default-baseline matrix: clean `0a92ef8d9`,105 cells/2,100 clicks,
-  75 portable-video cells plus 30 baseline cells. SelkiesCBR2 form is RED at a
-  measurement-stage decoder queue bound; campaign exit1. The synchronous PNG
+  75 portable-video cells plus 30 baseline cells. Selkies CBR 2 Mbps form is RED at a
+  measurement-stage decoder queue bound; child exit 1. The old campaign did not
+  propagate child failures to its parent exit status. The synchronous PNG
   comparison left producers running and accumulated frames. Stop/settle before
   comparison corrects this harness seam. Clean `6a116581b` rerun passes all five
   CBR2 cases; raw failed cells stay visible rather than overwritten.
@@ -217,13 +218,31 @@ identity is reassigned to the handoff commit.
   diagnostics are clean `0fdeae013`. Pixel-quality failures remain unaccepted
   even when probe counts and process exit pass. Full identities are in manifest.
 
-Post-review source changes add guarded process ownership and awaited launch,
-stream-callback and campaign failure paths. **Historical Phase 1/2 measurements
-do not validate these changed files.** In particular `run.mjs`, `selkies.mjs`
-and `viewer.html` differ from Phase 1's measured blobs. There is no claim that
-all final files match those historical hashes. New lifecycle checks and focused
-post-review live receipts will be listed separately, with their exact hashes;
-the full historical ladder is not being relabelled as a rerun.
+Post-review clean source `a0c88cce7` has 39 fixture cases / 780 input trials:
+High H.264, VP9, AV1, paced exact RGB and native RGB at 2 Mbps; docs/SPA DOM
+switches; media/iframe hybrid switches; default and CBR2 baseline. All nine
+positive runs exit 0 with empty owned cleanup. The expected missing-Chrome run
+exits 1, writes a RED receipt and cleans acquired displays/profile/listeners.
+`review-recovery/clean-confirm/PROVENANCE.json` binds each receipt and all 14
+core module hashes, which match the final execution files. These are focused
+confirmations, **not** a rerun of the full historical bitrate ladder or new WAN,
+Vault, native-OS, physical scanout or production acceptance.
+
+Seventeen focused tests pass at clean `a0c88cce7`. The real installed-baseline
+callback fault run injects a send failure; it reaches the awaited failure path,
+writes RED/exit 1, and removes its labelled container/browser/stream. Unit tests
+also reject striped packets and malformed JSON. Safe signal tests cover invalid
+and unregistered IDs, readiness failure and owned descendant teardown. Campaign
+checks cover 0/1/124/130, signal/null exits, launch error and interruption; failure
+aggregation is a new fix, not a claim about historical parent statuses.
+
+Historical Phase 1/2 measurements do not validate changed lifecycle modules.
+In particular `run.mjs`, `selkies.mjs` and `viewer.html` differ from Phase 1's
+measured blobs. No historical receipt is assigned to the final head. The new
+report keeps native encoder presets and rate-control series separate; its own
+generator/file hash is recorded in `phase2-review-v2/report-validation.json`.
+The 187-row report, point/axis selection, paired images and opacity controls
+pass headed-browser validation; screenshots are retained outside Git.
 
 Phase 1 evidence remains historical: H.264 300 inputs at clean `e183160b6`,
 VP9/Selkies 100 each at clean `7f5cb0a11`; default Selkies 47–54 dB versus initial
@@ -288,25 +307,25 @@ separate. Exact/native columns use clean `ea08ec18b` / `18ff62cdc` respectively.
 | Page / method | RGB PSNR dB | Observed Mbps | Click p50 / p95 ms | Owned host CPU % of one core |
 | --- | ---: | ---: | ---: | ---: |
 | docs / Selkies default | 48.30 | 0.482 | 69.23 / 90.56 | 95 |
-| docs / Selkies CBR2 | 46.17 | 0.577 | 70.31 / 74.72 | 89 |
-| docs / Native RGB H.2642 | 51.06 | 0.917 | 95.24 / 125.57 | 115 |
-| docs / Exact PNG2 | exact | 0.499 | 96.25 / 115.81 | 108 |
+| docs / Selkies CBR 2 Mbps | 46.17 | 0.577 | 70.31 / 74.72 | 89 |
+| docs / Native RGB H.264, 2 Mbps | 51.06 | 0.917 | 95.24 / 125.57 | 115 |
+| docs / Exact PNG, 2 Mbps | exact | 0.499 | 96.25 / 115.81 | 108 |
 | spa / Selkies default | 53.68 | 0.165 | 69.53 / 71.06 | 87 |
-| spa / Selkies CBR2 | 51.46 | 0.321 | 74.41 / 95.24 | 101 |
-| spa / Native RGB H.2642 | 65.25 | 0.352 | 80.72 / 85.82 | 110 |
-| spa / Exact PNG2 | exact | 0.226 | 85.62 / 98.29 | 104 |
+| spa / Selkies CBR 2 Mbps | 51.46 | 0.321 | 74.41 / 95.24 | 101 |
+| spa / Native RGB H.264, 2 Mbps | 65.25 | 0.352 | 80.72 / 85.82 | 110 |
+| spa / Exact PNG, 2 Mbps | exact | 0.226 | 85.62 / 98.29 | 104 |
 | form / Selkies default | 53.55 | 0.138 | 82.31 / 94.91 | 79 |
-| form / Selkies CBR2 | 50.39 | 0.244 | 81.28 / 96.14 | 98 |
-| form / Native RGB H.2642 | 66.71 | 0.296 | 81.46 / 87.23 | 107 |
-| form / Exact PNG2 | exact | 0.206 | 83.21 / 90.59 | 98 |
+| form / Selkies CBR 2 Mbps | 50.39 | 0.244 | 81.28 / 96.14 | 98 |
+| form / Native RGB H.264, 2 Mbps | 66.71 | 0.296 | 81.46 / 87.23 | 107 |
+| form / Exact PNG, 2 Mbps | exact | 0.206 | 83.21 / 90.59 | 98 |
 | media / Selkies default | 47.23 | 0.253 | 71.50 / 90.02 | 87 |
-| media / Selkies CBR2 | 47.19 | 0.425 | 80.54 / 95.45 | 94 |
-| media / Native RGB H.2642 | 71.60 | 1.541 | 152.73 / 178.07 | 418 |
-| media / Exact PNG2 | exact | 1.410 | 231.23 / 312.37 | 331 |
+| media / Selkies CBR 2 Mbps | 47.19 | 0.425 | 80.54 / 95.45 | 94 |
+| media / Native RGB H.264, 2 Mbps | 71.60 | 1.541 | 152.73 / 178.07 | 418 |
+| media / Exact PNG, 2 Mbps | exact | 1.410 | 231.23 / 312.37 | 331 |
 | iframe / Selkies default | 52.02 | 0.188 | 70.68 / 71.57 | 82 |
-| iframe / Selkies CBR2 | 51.93 | 0.358 | 71.22 / 103.12 | 100 |
-| iframe / Native RGB H.2642 | 65.51 | 0.398 | 82.45 / 95.99 | 116 |
-| iframe / Exact PNG2 | exact | 0.226 | 87.95 / 99.69 | 113 |
+| iframe / Selkies CBR 2 Mbps | 51.93 | 0.358 | 71.22 / 103.12 | 100 |
+| iframe / Native RGB H.264, 2 Mbps | 65.51 | 0.398 | 82.45 / 95.99 | 116 |
+| iframe / Exact PNG, 2 Mbps | exact | 0.226 | 87.95 / 99.69 | 113 |
 
 **Best demonstrated exact-text configuration:** DPR2, 2 Mbps paced RGB PNG,
 128px dirty tiles/full-PNG size choice, at most 8 in-flight credits, atomic frame
@@ -348,18 +367,18 @@ moving-frame freshness or a general-site acceptance.
 
 | Mode / target | Frozen RGB PSNR | After-bootstrap Mbps | Wheel p50 / p95 ms | Bootstrap KiB |
 | --- | ---: | ---: | ---: | ---: |
-| Exact PNG8 | exact | 5.321 | 456.28 / 485.25 | 290.3 |
-| Selkies CBR2 | 23.81 | 1.103 | 59.38 / 86.40 | 9.5 |
-| Selkies CBR4 | 31.93 | 2.484 | 59.76 / 95.77 | 24.0 |
-| Selkies CBR8 | 37.45 | 5.430 | 59.96 / 75.48 | 58.2 |
+| Exact PNG, 8 Mbps | exact | 5.321 | 456.28 / 485.25 | 290.3 |
+| Selkies CBR 2 Mbps | 23.81 | 1.103 | 59.38 / 86.40 | 9.5 |
+| Selkies CBR 4 Mbps | 31.93 | 2.484 | 59.76 / 95.77 | 24.0 |
+| Selkies CBR 8 Mbps | 37.45 | 5.430 | 59.96 / 75.48 | 58.2 |
 | Native RGB ultrafast2 | 16.22 | 1.360 | 99.44 / 135.25 | 283.3 |
 | Native RGB ultrafast4 | 17.75 | 2.986 | 112.16 / 152.96 | 507.2 |
 | Native RGB ultrafast8 | 20.98 | 7.322 | 102.82 / 146.28 | 658.2 |
 | Native RGB veryfast4 | 20.12 | 3.596 | 117.85 / 141.83 | 306.8 |
 | Native RGB veryfast8 | 37.41 | 6.426 | 140.01 / 166.04 | 332.0 |
 
-Exact PNG8 is still slow (485 ms p95); 11 full images, maximum 356.5 KiB/frame,
-show why tile reuse cannot help much when most text moves. Exact PNG2 is 1572
+Exact PNG, 8 Mbps is still slow (485 ms p95); 11 full images, maximum 356.5 KiB/frame,
+show why tile reuse cannot help much when most text moves. Exact PNG, 2 Mbps is 1572
 ms p95 (older receipt totals include bootstrap; no steady rate inferred).
 Native ultrafast scrolling shows visibly bad prediction/colour artifacts even
 at 8 Mbps. Independent PyAV decoding of the saved 8 Mbps trace reproduces poor
