@@ -12,3 +12,22 @@ test('display recovery starts only the Selkies stream seam', async () => {
   await handlers.streamer_start()
   assert.deepEqual(calls, [['exec', '-u', 'slice', 'owned-slice', '/opt/chariox-selkies/bin/python', '/opt/chariox-slice/slice-selkies.py', 'start']])
 })
+
+test('MP-08 / MP-10 fault state exposes live attachment IDs without provider payloads', async () => {
+  const handlers = roomWebFaultHandlers({
+    requests: {
+      getSessionStateRequest: () => 'session',
+      getRoomEnvironmentStateRequest: () => 'environment',
+      listRoomEnvironmentActionHistoryRequest: () => 'actions',
+    },
+    getSessionId: () => 'room',
+    getClient: () => ({ send: async request => ({
+      session: { SessionState: { session: { attachment_ids: ['local-id', 'remote-id'] }, provider_run: { private_payload: 'excluded' } } },
+      environment: { RoomEnvironmentState: { environment: { environment_id: 'env' } } },
+      actions: { RoomEnvironmentActionHistoryListed: { page: { actions: [] } } },
+    })[request] }),
+  })
+  const state = await handlers.state()
+  assert.deepEqual(state.attachmentIds, ['local-id', 'remote-id'])
+  assert.equal(JSON.stringify(state).includes('private_payload'), false)
+})
