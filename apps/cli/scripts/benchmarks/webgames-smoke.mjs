@@ -56,6 +56,7 @@ await chmod(root, 0o711)
 const workspace = await mkdtemp('/tmp/benchwg-workspace-')
 await chmod(workspace, 0o777)
 const ownedChildren = [], slices = [], rows = [], resources = []
+const ownedAgents = new Set()
 let client, session, slice, agent, attachment, monitor, interrupted = false, stage = 'provenance'
 let commandSequence = 0
 const report = { experiment: 'r2next-unsigned', unsigned: true, effort: 'high', mpItems, runId, scope, taskOffset, taskCount, benchmark: 'WebGames', model, startedAt: new Date().toISOString(),
@@ -247,6 +248,7 @@ try {
     stage = `fresh Codex agent ${template}`
     agent = unwrap(await client.send(r.spawnAgentRequest(session.id, 'codex', `benchwg-${template}`, model, workspace,
       'high', 'build', 'yolo', undefined, undefined, slice.id, profile.profile_id)), 'AgentSpawned').agent
+    ownedAgents.add(agent.id)
     assert.equal(agent.remote_execution.worker_kernel_id, slice.worker_kernel_id)
     report.sessionId = session.id
     stage = `attach ${template}`
@@ -346,6 +348,9 @@ Use ONLY Chariox first-party slice_open_url and slice_browser_* tools. Observe t
     row.evidenceComplete = true
     await client.send(r.detachFromSessionRequest(attachment.id)); attachment = null
     await save('report', report)
+    // MP-08/MP-10/MP-11: retire only this completed, evidence-captured fresh agent.
+    stage = `agent retirement ${template}`
+    row.agentRetired = await client.send(r.destroyAgentRequest(session.id, agent.id)).then(() => { ownedAgents.delete(agent.id); return true }, () => false)
     console.log(`MP-08 / MP-10 ${scope} ${template} reward=${row.reward} valid=${row.harnessValid} elapsedMs=${row.elapsedMs}`)
   }
   report.completed = rows.length === taskCount && rows.every(row => row.evidenceComplete)
@@ -357,8 +362,13 @@ Use ONLY Chariox first-party slice_open_url and slice_browser_* tools. Observe t
   console.log(`MP-08 / MP-10 RED at ${stage}: ${error.message}`)
 } finally {
   stage = 'cleanup'; clearInterval(monitor)
-  const cleanup = { slices: [], processes: [], stateRemoved: false, workspaceRemoved: false }
+  const cleanup = { agents: [], slices: [], processes: [], stateRemoved: false, workspaceRemoved: false }
   if (client && attachment && agent) await client.send(r.cancelActivePromptRequest(session.id, attachment.id, agent.id)).catch(() => {})
+  // MP-08/MP-10/MP-11: remove registered agents before product slice deletion.
+  for (const agentId of ownedAgents) {
+    const destroyed = await client?.send(r.destroyAgentRequest(session.id, agentId)).then(() => true, () => false) ?? false
+    cleanup.agents.push({ id: agentId, destroyed })
+  }
   for (const s of slices.toReversed()) {
     const name = `chariox-slice-${s.name}`
     assert.ok(s.name.startsWith(runId))

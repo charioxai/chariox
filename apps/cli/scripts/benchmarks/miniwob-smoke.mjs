@@ -354,8 +354,13 @@ try {
 } finally {
   stage = 'cleanup'; clearInterval(monitor)
   grader?.stdin.end(); if (grader) await signalOwnedProcess(grader, 'SIGTERM')
-  const cleanup = { slices: [], processes: [], stateRemoved: false, workspaceRemoved: false }
+  const cleanup = { agents: [], slices: [], processes: [], stateRemoved: false, workspaceRemoved: false }
   if (client && attachment && agent) await client.send(r.cancelActivePromptRequest(session.id, attachment.id, agent.id)).catch(() => {})
+  // MP-08/MP-10/MP-11: retire the owned persistent agent before slice deletion.
+  if (client && session && agent) {
+    const destroyed = await client.send(r.destroyAgentRequest(session.id, agent.id)).then(() => true, () => false)
+    cleanup.agents.push({ id: agent.id, destroyed })
+  }
   for (const s of slices.toReversed()) {
     const name = `chariox-slice-${s.name}`
     assert.ok(s.name.startsWith(runId))
