@@ -179,6 +179,7 @@ struct KernelRuntimeOwnedState {
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
     room_secret_observations: room_secret_observation::RoomSecretObservations,
+    kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations,
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
@@ -443,6 +444,7 @@ mod structured_provider_output_runtime;
 mod terminal_runtime_state;
 mod tool_dispatch;
 mod kernel_browser_runtime;
+mod kernel_browser_secret_runtime;
 mod transport_runtime_state;
 mod workflow;
 mod workflow_access_owned_state;
@@ -785,6 +787,10 @@ impl KernelRuntimeState {
                     crate::runtime::browser_import_admission::BrowserImportAdmission::default(),
                 environment_execution_gates: Default::default(),
                 room_secret_observations,
+                kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations::new(
+                    config.private_runtime_state_root().join("kernel-browser/observations"),
+                    BTreeSet::new(),
+                ).with_identity(&config.relay_private_key),
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
                 room_browser_health_inflight: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
