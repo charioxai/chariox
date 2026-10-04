@@ -1386,19 +1386,48 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn removing_a_pty_process_terminates_its_descendants() {
-        let provider_run_id = "provider-run-with-descendant";
-        let mut manager = PtyManager::new();
-        manager
+        use std::io::{Read, Write};
+
+        const PROBE: &str = "CHARIOX_PTY_DESCENDANT_PROBE";
+        const TEST: &str = "pty::manager::tests::removing_a_pty_process_terminates_its_descendants";
+        if let Ok(endpoint) = std::env::var(PROBE) {
+            // This process is the shell's descendant. Retain this connection
+            // until killed; EOF on the parent side is its exit event, including
+            // while init has not yet reaped a zombie PID.
+            let mut socket = std::net::TcpStream::connect(endpoint).unwrap();
+            socket.write_all(&std::process::id().to_be_bytes()).unwrap();
+            assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+            return;
+        }
+
+        const RUN: &str = "provider-run-with-descendant";
+        struct PtyFixture(PtyManager);
+        impl Drop for PtyFixture {
+            fn drop(&mut self) {
+                let _ = self.0.remove_process(RUN);
+            }
+        }
+        let mut fixture = PtyFixture(PtyManager::new());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        fixture
+            .0
             .spawn(PtySpawnRequest {
                 process_key: "stub-pty:with-descendant".to_string(),
-                provider_run_id: provider_run_id.to_string(),
+                provider_run_id: RUN.to_string(),
                 program: "/bin/sh".to_string(),
                 args: vec![
                     "-lc".to_string(),
-                    "trap '' HUP TERM; sleep 30 & printf 'CHILD_PID=%s\\n' \"$!\"; wait"
-                        .to_string(),
+                    format!("trap '' HUP TERM; \"$CHARIOX_PTY_FIXTURE_EXE\" --exact {TEST} --nocapture & wait"),
                 ],
-                env: std::collections::BTreeMap::new(),
+                env: std::collections::BTreeMap::from([
+                    (PROBE.to_string(), endpoint),
+                    (
+                        "CHARIOX_PTY_FIXTURE_EXE".to_string(),
+                        std::env::current_exe().unwrap().display().to_string(),
+                    ),
+                ]),
                 env_remove: Vec::new(),
                 working_directory: None,
                 cols: 120,
@@ -1406,31 +1435,57 @@ mod tests {
             })
             .expect("PTY process with a descendant should spawn");
 
-        let output = wait_for_output(&mut manager, provider_run_id)
-            .into_iter()
-            .flat_map(|chunk| chunk.bytes)
-            .collect::<Vec<_>>();
-        let child_pid = String::from_utf8_lossy(&output)
-            .lines()
-            .find_map(|line| line.trim().strip_prefix("CHILD_PID="))
-            .and_then(|pid| pid.trim().parse::<u32>().ok())
-            .expect("descendant PID should be reported");
-        struct DescendantGuard(u32);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (mut socket, child_pid) = runtime.block_on(async {
+            use tokio::io::AsyncReadExt;
+            tokio::time::timeout(Duration::from_secs(30), async {
+                let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut pid = [0; 4];
+                socket.read_exact(&mut pid).await.unwrap();
+                (socket, u32::from_be_bytes(pid))
+            })
+            .await
+            .expect("PTY descendant did not acknowledge readiness")
+        });
+        struct DescendantGuard(Option<u32>);
         impl Drop for DescendantGuard {
             fn drop(&mut self) {
-                let _ = crate::runtime::process_health::terminate_process_tree(self.0);
+                if let Some(pid) = self.0 {
+                    let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+                }
             }
         }
-        let _guard = DescendantGuard(child_pid);
-
-        manager
-            .remove_process(provider_run_id)
+        let mut guard = DescendantGuard(Some(child_pid));
+        assert!(crate::runtime::process_health::process_running(child_pid));
+        assert_eq!(
+            unsafe { libc::getpgid(child_pid as libc::pid_t) },
+            fixture.0.process_id(RUN).unwrap().unwrap() as libc::pid_t,
+            "probe must belong to the managed PTY process group"
+        );
+        fixture
+            .0
+            .remove_process(RUN)
             .expect("PTY process tree cleanup should succeed");
 
-        assert!(
-            !crate::runtime::process_health::process_running(child_pid),
-            "removing the provider PTY left descendant PID {child_pid} running"
-        );
+        // SIGKILL delivery and descendant reaping are asynchronous. Observe the
+        // owned child's connection closing rather than requiring instant PID
+        // disappearance. Killing only the leader leaves this wait unsatisfied.
+        runtime.block_on(async {
+            use tokio::io::AsyncReadExt;
+            let mut byte = [0];
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(30), socket.read(&mut byte))
+                    .await
+                    .expect("removing the provider PTY left its descendant alive")
+                    .unwrap(),
+                0
+            );
+        });
+        guard.0 = None;
     }
 
     #[cfg(unix)]
