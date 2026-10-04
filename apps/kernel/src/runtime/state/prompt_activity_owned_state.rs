@@ -54,12 +54,11 @@ impl KernelRuntimeOwnedState {
         }
     }
 
-    /// Applies finished structured prompt jobs. Returns the follow-ups that an
-    /// abort acknowledgement promoted but left to the dispatcher (a turn
-    /// substitute's next turn, which moves to the configured profile); see
+    /// Applies finished structured prompt jobs. Returns queue recovery and abort
+    /// follow-ups for the shared runtime dispatcher; see
     /// `KernelRuntimeState::reap_structured_prompt_jobs_and_dispatch`.
-    pub(super) fn reap_structured_prompt_jobs(&self) -> Vec<crate::app::KernelPromptDispatch> {
-        let mut follow_ups = Vec::new();
+    pub(super) fn reap_structured_prompt_jobs(&self) -> WorkflowPromptDispatches {
+        let mut follow_ups = WorkflowPromptDispatches::default();
         self.provider_store
             .apply_finished_provider_run_selection_sync_jobs();
         for finished in self
@@ -217,7 +216,7 @@ impl KernelRuntimeOwnedState {
                         &finished.provider_run_id,
                         &diagnostic,
                     ) {
-                        Ok(Some(_)) => {
+                        Ok(Some(released_claim)) => {
                             self.record_failed_request(
                                 &finished.session_id,
                                 &finished.provider_run_id,
@@ -229,6 +228,14 @@ impl KernelRuntimeOwnedState {
                                 &failed_prompt,
                                 &diagnostic,
                             );
+                            // MP-08/MP-10: the retired run cannot deliver the accepted
+                            // backlog. Re-enter the normal Vault-aware queue path.
+                            follow_ups
+                                .project_queue_promotions
+                                .push((finished.session_id.clone(), finished.agent_id.clone()));
+                            if released_claim {
+                                follow_ups.extend(self.workflow_retry_blocked_claims());
+                            }
                         }
                         Ok(None) => {}
                         Err(settlement_error) => {
@@ -322,7 +329,7 @@ impl KernelRuntimeOwnedState {
                             Some(&finished.provider_run_id),
                         )
                     {
-                        follow_ups.extend(cancellation.dispatch);
+                        follow_ups.local.extend(cancellation.dispatch);
                     }
                 }
             }

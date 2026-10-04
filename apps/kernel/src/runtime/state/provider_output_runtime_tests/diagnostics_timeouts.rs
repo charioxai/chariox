@@ -7,62 +7,113 @@ async fn structured_submit_failure_schedules_queued_prompt_recovery_once() {
     let worktree = crate::test_support::TestWorktree::new("submit-failure-queued-recovery");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(worktree.session_request()).unwrap();
+        .create_session(worktree.session_request())
+        .unwrap();
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
-            session.id(), "submit-failure-client",
+            session.id(),
+            "submit-failure-client",
             crate::attachment::ClientCapabilityLevel::FullTerminal,
-        )).unwrap();
+        ))
+        .unwrap();
     let request = crate::provider::LaunchProviderRequest::new(
-        session.id(), "codex", "codex", "default", "fixture-model",
-    ).with_agent_id(agent.id());
+        session.id(),
+        "codex",
+        "codex",
+        "default",
+        "fixture-model",
+    )
+    .with_agent_id(agent.id());
     let mut run = crate::provider::RuntimeProviderRun::new(
-        "failed-structured-submit", &request,
+        "failed-structured-submit",
+        &request,
         crate::provider::ProviderLaunchResult {
             endpoint_mode: crate::provider::AgentEndpointMode::External,
             process_label: "submit-failure-fixture".into(),
-            pty_target: None, pty_program: None, pty_args: Vec::new(),
-            pty_env: Default::default(), pty_env_remove: Vec::new(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
             working_directory: None,
             structured_endpoint: Some("test-codex-runtime".into()),
         },
     );
-    run.set_resume_state(crate::provider::ProviderResumeState::from_codex_thread_id("fixture-thread"));
+    run.set_resume_state(crate::provider::ProviderResumeState::from_codex_thread_id(
+        "fixture-thread",
+    ));
     run.mark_running();
     app.providers_mut().insert_run_for_test(run.clone());
-    app.sessions.set_active_provider_run(session.id(), Some(run.id().into())).unwrap();
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().into()))
+        .unwrap();
     app.update_provider_run_projection(run.clone());
     for text in ["active submit", "accepted successor"] {
         let prompt = crate::session::PromptQueueItem::new(
-            app.sessions_mut().reserve_prompt_id(), attachment.id(), agent.id(),
-            text, crate::session::PromptStatus::Queued,
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            text,
+            crate::session::PromptStatus::Queued,
         );
-        app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false).unwrap();
+        app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .unwrap();
     }
-    let prompt_id = app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
-        .unwrap().unwrap().id().to_owned();
+    let prompt_id = app
+        .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+        .unwrap()
+        .unwrap()
+        .id()
+        .to_owned();
     app.mark_active_prompt_delivery(
-        session.id(), agent.id(), &prompt_id,
+        session.id(),
+        agent.id(),
+        &prompt_id,
         crate::session::DurablePromptDeliveryPhase::Dispatching,
-        Some(run.id().into()), Some("fixture-thread".into()),
-    ).unwrap();
+        Some(run.id().into()),
+        Some("fixture-thread".into()),
+    )
+    .unwrap();
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
-    runtime.owned.provider_store.push_finished_structured_prompt_submit_for_test(
-        session.id().into(), run.id().into(), agent.id().into(), prompt_id,
-        Err(crate::error::DaemonError::LocalTransport {
-            operation: "submit structured provider prompt", message: "fixture transport timeout".into(),
-        }),
-    );
+    runtime
+        .owned
+        .provider_store
+        .push_finished_structured_prompt_submit_for_test(
+            session.id().into(),
+            run.id().into(),
+            agent.id().into(),
+            prompt_id,
+            Err(crate::error::DaemonError::LocalTransport {
+                operation: "submit structured provider prompt",
+                message: "fixture transport timeout".into(),
+            }),
+        );
     let follow_ups = runtime.owned.reap_structured_prompt_jobs();
     let settled = runtime.owned.session_snapshot(session.id()).unwrap();
     assert!(settled.active_prompt_for_agent(agent.id()).is_none());
-    assert_eq!(settled.queued_prompts_for_agent(agent.id()).unwrap().len(), 1);
-    assert_eq!(runtime.owned.provider_store.get_run(run.id()).unwrap().state(),
-        crate::provider::ProviderRunState::Ended);
-    assert!(!follow_ups.is_empty(), "accepted backlog must receive a queue recovery follow-up");
-    assert!(runtime.owned.reap_structured_prompt_jobs().is_empty(),
-        "a consumed structured failure must not schedule recovery twice");
+    assert_eq!(
+        settled.queued_prompts_for_agent(agent.id()).unwrap().len(),
+        1
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(run.id())
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Ended
+    );
+    assert_eq!(
+        follow_ups.project_queue_promotions,
+        vec![(session.id().to_owned(), agent.id().to_owned())],
+        "accepted backlog must receive one queue recovery follow-up"
+    );
+    assert!(
+        runtime.owned.reap_structured_prompt_jobs().is_empty(),
+        "a consumed structured failure must not schedule recovery twice"
+    );
 }
 
 #[tokio::test]
