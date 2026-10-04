@@ -10,6 +10,7 @@ import {
 import { LocalIpcClient } from "../ipc.js"
 import { hiddenInstructionsStart, redactHiddenInstructionsFromJson } from "./hidden-instructions.js"
 import { createCodexKernelOutputProjection } from "./codex-kernel-output-projection.js"
+import { mapCodexNativeCompaction } from "./codex-conversation-controls.js"
 import {
   type CodexJsonRpcMessage,
   extractCodexThreadId,
@@ -332,6 +333,14 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       if (message.method === "turn/interrupt" && downstream.kind !== "kernel" && !ephemeral) {
         void handleCodexNativeTurnInterrupt(message, options,
           (response) => sendDownstream(downstream, response))
+        return
+      }
+      if (message.method === "thread/compact/start" && downstream.kind !== "kernel" && !ephemeral) {
+        void mapCodexNativeCompaction(message, options).then((mapped) => {
+          forwardRequest(downstream, mapped)
+        }).catch((error) => {
+          sendDownstream(downstream, { id: message.id, error: { code: -32000, message: formatError(error) } })
+        })
         return
       }
       forwardRequest(downstream, message)
