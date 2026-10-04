@@ -7,8 +7,9 @@ MD-4 Linux drill and recovery. These are not MP acceptance claims.
 The home kernel owns a lazy browser host per authenticated user. No session,
 Room, slice, container, grant, or private-window flag is involved. Room browser
 paths continue unchanged. Profile selection is one module: private
-`CHARIOX_HOME/state/kernel-browser/<sha256(user-id)>/profile`, one per user on
-this kernel. No cookie/profile synchronization or access from other kernels.
+`<kernel-state-root>/kernel-browser/<sha256(user-id)>/profile`, one per user on
+this kernel. The state root comes from the existing private kernel state path
+(default beneath `CHARIOX_HOME/kernels/<kernel-id>`). No cookie/profile synchronization or access from other kernels.
 
 ## MD-2: ownership and control
 
@@ -20,6 +21,8 @@ explicit headless mode exists for disposable drills. On macOS the same launcher
 selects native Chromium/Chrome from Applications (or an explicit executable),
 with the same separate profile. Windows is deferred.
 
+The host needs Node 22+ and a native Chromium installation; shared controller
+assets are embedded in the kernel and materialized under its private state.
 The existing BrowserCdpClient and controller stdio server handle reconciliation,
 document identity, navigation, snapshots and App interception. A host adapter
 adds process ownership, unattached tab identity and screen/input primitives;
@@ -31,7 +34,8 @@ Failed mutations are returned, never replayed automatically.
 A bounded supervisor restarts an exited browser on the next request; profile
 storage survives. Durable tab records restore URLs under the same Chariox tab
 IDs, with a new browser generation and document references. Old references and
-screen subscriptions fail after restart. Normal shutdown closes the browser
+screen subscriptions fail after restart. An internal blank target keeps headed Chromium alive when no user tabs are open;
+it is excluded from user tab lists and persistence. Normal shutdown closes the browser
 before killing remaining owned descendants. Controller stdin loss closes its
 browser. Startup fails safely if another process owns the profile; never adopt
 an unrelated user's Chrome or delete its locks.
@@ -47,7 +51,7 @@ the browser operation tool is advertised only after on-demand loading.
 No additional approval/grant path is introduced.
 
 Ordinary input is not a Vault operation. No secret-reading or secret-insertion
-endpoint is added. Password-targeted model text input is refused; structured
+endpoint is added. Text input into password/OTP fields is refused by this initial host adapter; structured
 observations reuse controller redaction. Vault authorization, target binding,
 protected-value tracking and screenshot suppression must be integrated before
 claiming Vault support for host tabs. Browser profiles remain private kernel
@@ -83,3 +87,15 @@ when two terminals select different agents for one user. Initial focus policy
 is last explicit kernel focus selection; closing a terminal does not regrant an
 older agent. Coordinator must pair this seam with appviews/display and arrange
 independent review and Mac evidence.
+
+MD-4 Linux replay: build `cargo test -p chariox-kernel --lib --no-run` under the
+allocated compile lock, then run the resulting test executable with
+`--ignored --exact runtime::router::tests::kernel_browser::kernel_browser_linux_integration_drill`.
+Use a normal Unix user, a clean environment, `CHARIOX_MD4_DRILL_ROOT=<disposable-root>`,
+`CHARIOX_HOME=<root>/home/chariox`, `HOME=<root>/home`, a short private `TMPDIR`,
+and `CHARIOX_KERNEL_BROWSER_EXECUTABLE=<native-Chromium>`,
+`CHARIOX_KERNEL_BROWSER_HEADLESS=1`. The host needs Chromium dependencies, fonts,
+and an OS policy permitting its sandbox. The drill boots the production kernel
+router with a dev-stub provider binding and restarts it in a second process; it does not execute a model or validate
+client/socket/relay projections. Keep `screenshot.png` and the run receipt as
+external evidence, then remove the exact owned state.

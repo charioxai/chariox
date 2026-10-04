@@ -229,6 +229,7 @@ pub(crate) struct BrowserControllerProcessStdioBackend {
     timeout: Duration,
     process: Option<BrowserControllerChild>,
     next_request_id: u64,
+    host: bool,
     action_cancellation: Option<Arc<cancellation::CancellationSignal>>,
     protected_values: BTreeMap<String, Vec<zeroize::Zeroizing<String>>>,
 }
@@ -241,10 +242,13 @@ impl BrowserControllerProcessStdioBackend {
             timeout,
             process: None,
             next_request_id: 1,
+            host: false,
             action_cancellation: None,
             protected_values: BTreeMap::new(),
         }
     }
+
+    pub(crate) fn for_host(mut self) -> Self { self.host = true; self }
 
     fn from_script(script_path: impl Into<PathBuf>, timeout: Duration) -> Self {
         let command = std::env::var_os(CONTROLLER_NODE_ENV)
@@ -271,6 +275,13 @@ impl BrowserControllerProcessStdioBackend {
         {
             use std::os::unix::process::CommandExt;
             command.process_group(0);
+        }
+        if self.host {
+            // MD-2: browser descendants receive OS display settings, never provider/control secrets.
+            command.env_clear();
+            for key in ["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "TMPDIR", "CHARIOX_KERNEL_BROWSER_EXECUTABLE", "CHARIOX_KERNEL_BROWSER_HEADLESS"] {
+                if let Some(value) = std::env::var_os(key) { command.env(key, value); }
+            }
         }
         let mut child = command.spawn().map_err(|error| {
             format!(
@@ -346,6 +357,11 @@ impl BrowserControllerProcessStdioBackend {
             self.timeout
         };
         self.request_serializable(method, &params, timeout)
+    }
+
+    // MD-2: bounded host adapter RPC; public callers never choose the method.
+    pub(crate) fn host_request(&mut self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+        self.request(method, params)?.into_result(method)
     }
 
     fn request_serializable<P: Serialize>(
@@ -572,6 +588,13 @@ impl BrowserControllerProcessStdioBackend {
             .map_err(|error| format!("failed to inspect browser controller: {error}"))?;
         drop(child);
         if status.is_some() {
+            // MD-2: a crashed host controller may leave Chromium in its owned process group.
+            if self.host {
+                if let Ok(pid) = i32::try_from(process_id) {
+                    #[cfg(unix)]
+                    let _ = unsafe { libc::kill(-pid, libc::SIGKILL) };
+                }
+            }
             self.process.take();
             return Ok(Some(process_id));
         }
