@@ -86,7 +86,7 @@ impl KernelRuntimeOwnedState {
                     }
                     crate::provider::ProviderRunState::Running => {
                         if active_run.client_interface().is_chariox()
-                            && !self.provider_run_has_active_prompt(&session_id, &active_run)?
+                            && !self.provider_run_has_prompt_work(&session_id, &active_run)?
                         {
                             let outcome = self
                                 .provider_store
@@ -136,7 +136,7 @@ impl KernelRuntimeOwnedState {
                     match active_run.state() {
                         crate::provider::ProviderRunState::Running => {
                             if active_run.client_interface().is_chariox()
-                                && !self.provider_run_has_active_prompt(session_id, &active_run)?
+                                && !self.provider_run_has_prompt_work(session_id, &active_run)?
                             {
                                 let outcome = self
                                     .provider_store

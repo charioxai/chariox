@@ -9,6 +9,19 @@ pub(crate) use profile_transition::AgentProfileTransitionClaim;
 
 pub(crate) const PROMPT_QUEUE_LIMIT: usize = 128;
 
+pub(crate) fn prompt_claims_provider_run(
+    prompt: &PromptQueueItem,
+    provider_run_id: &str,
+    unbound_run_selected: bool,
+) -> bool {
+    // An explicit delivery binding takes precedence over selection fallback.
+    prompt
+        .durable_delivery_provider_run_id()
+        .map_or(unbound_run_selected, |delivery_run_id| {
+            delivery_run_id == provider_run_id
+        })
+}
+
 #[derive(Debug, Clone, Default)]
 struct OwnedAgentPromptState {
     // Ephemeral: never copied from the durable session mirror.
