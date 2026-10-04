@@ -134,3 +134,9 @@ test("MP-08 MP-10 managed endpoint readiness timeout names the pending run", asy
   await assert.rejects(waitForNativeProviderRunReady(client, "pending-run", { timeoutMs: 20, pollIntervalMs: 1 }),
     /timed out.*pending-run \(Starting\)/)
 })
+
+test("MP-08 MP-10 managed endpoint readiness also bounds a stalled status RPC", async () => {
+  const client = { send: async () => new Promise(() => {}) } as unknown as LocalIpcClient
+  await assert.rejects(waitForNativeProviderRunReady(client, "stalled-run", { timeoutMs: 20 }),
+    /timed out.*stalled-run \(unknown\)/)
+})

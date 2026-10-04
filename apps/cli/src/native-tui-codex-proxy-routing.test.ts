@@ -59,7 +59,8 @@ test("native proxy forwards ephemeral utility turns without binding a Room run",
   }
   assert.equal((await response({ id: 1, method: "thread/start", params: { ephemeral: true } })).result.thread?.id, "utility-thread")
   assert.equal((await response({ id: 2, method: "turn/start", params: { threadId: "utility-thread", input: [{ type: "text", text: "Generate a title" }] } })).result.turn?.id, "utility-turn")
-  assert.deepEqual(requests.map((request) => request.method), ["thread/start", "turn/start"])
+  await response({ id: 3, method: "turn/interrupt", params: { threadId: "utility-thread", turnId: "utility-turn" } })
+  assert.deepEqual(requests.map((request) => request.method), ["thread/start", "turn/start", "turn/interrupt"])
   assert.deepEqual(kernelRequests, [])
   assert.deepEqual(kernelMessages, [])
   assert.equal(bindState.promise, null)
