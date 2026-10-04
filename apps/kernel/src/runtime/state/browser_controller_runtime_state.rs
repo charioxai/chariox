@@ -98,7 +98,10 @@ impl KernelRuntimeState {
             );
             let _ = self.transition_room_environment(
                 session_id,
-                super::room_browser_start_failure::lifecycle_after_start_error(&error),
+                self.owned
+                    .room_environment_health_probes
+                    .startup_recovery
+                    .after_start_error(session_id, &error, std::time::Instant::now()),
             );
             return Err(error);
         }
@@ -119,7 +122,15 @@ impl KernelRuntimeState {
                         None,
                     )
                     .map_err(|error| environment_runtime_error(operation, error))?;
-                self.complete_bound_slice_computer_start(session_id, environment, operation)
+                let result =
+                    self.complete_bound_slice_computer_start(session_id, environment, operation);
+                if result.is_ok() {
+                    self.owned
+                        .room_environment_health_probes
+                        .startup_recovery
+                        .reset(session_id);
+                }
+                result
             }
             Err(error) => {
                 let _ = self.update_room_environment_component_health(
@@ -130,7 +141,10 @@ impl KernelRuntimeState {
                 );
                 let _ = self.transition_room_environment(
                     session_id,
-                    super::room_browser_start_failure::lifecycle_after_start_error(&error),
+                    self.owned
+                        .room_environment_health_probes
+                        .startup_recovery
+                        .after_start_error(session_id, &error, std::time::Instant::now()),
                 );
                 Err(error)
             }
@@ -485,9 +499,43 @@ impl KernelRuntimeState {
         tab_id: &str,
         action: crate::runtime::browser_controller_tab::BrowserTabAction,
     ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
+        self.mutate_browser_environment_tab(session_id, execution_id, tab_id, action, true)
+            .await
+    }
+
+    /// Recovery activation fulfills the retained intent; it is not a new
+    /// user/agent Tab choice. Use the same binding, route and receipt checks.
+    pub(crate) async fn restore_browser_environment_tab_focus(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
+        let execution_id = format!("{:032x}", rand::random::<u128>());
+        self.mutate_browser_environment_tab(
+            session_id,
+            &execution_id,
+            tab_id,
+            crate::runtime::browser_controller_tab::BrowserTabAction::Activate,
+            false,
+        )
+        .await
+    }
+
+    async fn mutate_browser_environment_tab(
+        &self,
+        session_id: &str,
+        execution_id: &str,
+        tab_id: &str,
+        action: crate::runtime::browser_controller_tab::BrowserTabAction,
+        cancel_recovery_focus: bool,
+    ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
         let binding = self
             .room_environment_controller_tab_binding(session_id, tab_id)
             .map_err(|error| environment_runtime_error("browser_controller.tab", error))?;
+        // A new explicit Tab operation wins over pre-stop App focus intent.
+        if cancel_recovery_focus {
+            let _ = self.room_environment_cancel_app_recovery_focus(session_id);
+        }
         let RoomBrowserControllerResult::Tab {
             result: Some(result),
         } = self
@@ -1345,6 +1393,7 @@ fn transient_started_browser_error(error: &DaemonError) -> bool {
         "browser_debugger_unavailable",
         "browser_cdp_disconnected",
         "browser_cdp_socket_error",
+        "viewport_apply_failed",
     ]
     .iter()
     .any(|code| {

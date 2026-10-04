@@ -19,7 +19,7 @@ def load_keyboard():
     modules["selkies"].Xlib = xlib
     xlib.display = modules["selkies.Xlib.display"]
     modules["selkies.Xlib.ext"].xtest = modules["selkies.Xlib.ext.xtest"]
-    modules["selkies.input_handler"]._XTestKeyboard = Mock()
+    modules["selkies.input_handler"]._XTestKeyboard = object
     modules["selkies.input_handler"].character_to_layout_keysym = ord
     modules["selkies.input_handler"].universal_text_keysym = ord
     spec = importlib.util.spec_from_file_location("secret_keyboard", pathlib.Path(__file__).with_name("slice-keyboard.py"))
@@ -37,7 +37,7 @@ class SecretTargetTests(unittest.TestCase):
         self.connection.get_modifier_mapping.return_value = []
         self.module.display.Display = Mock(return_value=self.connection)
         self.keyboard = Mock()
-        self.module._XTestKeyboard = Mock(return_value=self.keyboard)
+        self.module._BrowserSafeTextKeyboard = Mock(return_value=self.keyboard)
         self.target = {"focus_window": 101, "active_window": 100,
                        "geometry": [20, 30, 200, 40], "window_geometry": [0, 0, 800, 600]}
 

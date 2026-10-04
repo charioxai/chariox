@@ -93,7 +93,7 @@ impl ProviderRunActivationState {
                     }
                     ProviderRunState::Running => {
                         if active_run.client_interface().is_chariox()
-                            && !app.provider_run_has_active_prompt(&session_id, &active_run)?
+                            && !app.provider_run_has_prompt_work(&session_id, &active_run)?
                         {
                             let outcome = app
                                 .providers
@@ -190,7 +190,7 @@ impl ProviderRunActivationState {
                 if locally_owned {
                     match active_run.state() {
                         ProviderRunState::Running => {
-                            if !app.provider_run_has_active_prompt(session_id, &active_run)? {
+                            if !app.provider_run_has_prompt_work(session_id, &active_run)? {
                                 let outcome = app
                                     .providers
                                     .park_run_provider_only(session_id, active_run_id)?;
