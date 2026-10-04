@@ -261,7 +261,6 @@ fn probe_error(message: String) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[cfg(unix)]
     #[test]
@@ -279,8 +278,8 @@ mod tests {
         let observed_environment = fixture.join("environment.json");
         let claude_config_dir = fixture.join("claude-account");
         let source = fixture.join("fake-claude-source.mjs");
-        let mut file = fs::File::create(&source).expect("fake Claude source file");
-        file.write_all(
+        fs::write(
+            &source,
             br#"#!/usr/bin/env node
 import { writeFileSync } from "node:fs"
 const expected = ["-p", "/usage", "--output-format", "json", "--no-session-persistence", "--no-chrome", "--tools", ""]
@@ -308,36 +307,16 @@ process.stdout.write(JSON.stringify({
 "#,
         )
         .expect("fake Claude source");
-        file.sync_all().expect("sync fake Claude source");
-        // A concurrent fork can retain our writable descriptor even after drop.
-        // Publish a separate executable inode from a child and wait for its exit;
-        // the parallel test process never holds that inode open for writing.
-        let published = Command::new("node")
-            .args([
-                "-e",
-                r#"
-const fs = require("node:fs");
-const [source, target] = process.argv.slice(1);
-const pending = `${target}.pending`;
-const fd = fs.openSync(pending, "wx", 0o700);
-try {
-  fs.writeFileSync(fd, fs.readFileSync(source));
-  fs.fsyncSync(fd);
-} finally {
-  fs.closeSync(fd);
-}
-fs.renameSync(pending, target);
-"#,
-            ])
+        // A concurrent fork can retain this process's writable descriptors.
+        // Like TestTool, install from a child and wait for it to exit: the
+        // parallel test process never holds the executable open for writing.
+        let installed = Command::new("install")
+            .args(["-m", "700"])
             .arg(&source)
             .arg(&executable)
-            .output()
-            .expect("publish fake Claude executable");
-        assert!(
-            published.status.success(),
-            "fake Claude publication failed: {}",
-            String::from_utf8_lossy(&published.stderr)
-        );
+            .status()
+            .expect("install fake Claude executable");
+        assert!(installed.success(), "install fake Claude: {installed}");
         let inherited_home = std::env::var("HOME").expect("test HOME");
         let environment = BTreeMap::from([
             (
@@ -370,9 +349,6 @@ fs.renameSync(pending, target);
             Duration::from_secs(5),
         )
         .expect("usage probe");
-        // Keep the source writable throughout execution: inherited source
-        // writers cannot make the separately published executable ETXTBSY.
-        drop(file);
 
         assert_eq!(usage.profile_id, "claude-2");
         assert_eq!(usage.meters.len(), 2);
