@@ -1,5 +1,7 @@
 import assert from "node:assert/strict"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { execFile } from "node:child_process"
+import { promisify } from "node:util"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -46,6 +48,34 @@ import {
 } from "./browser-computer-soak-runtime.mjs"
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..", "..")
+
+test("MP-08 / MP-10 / MP-11 source identity follows the provisioner's runtime roots", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-soak-source-"))
+  const fixture = path.join(root, "Project with spaces")
+  const run = promisify(execFile)
+  const options = { cwd: fixture, env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" } }
+  const runtime = path.join(fixture, "apps/kernel/slice-linux-docker")
+  try {
+    await mkdir(runtime, { recursive: true })
+    await mkdir(path.join(fixture, "packages/app-sdk"), { recursive: true })
+    await copyFile(path.join(repoRoot, "apps/kernel/slice-linux-docker/slice-command-guard.py"), path.join(runtime, "slice-command-guard.py"))
+    await copyFile(path.join(repoRoot, "apps/kernel/slice-linux-docker/home-archive-policy.json"), path.join(runtime, "home-archive-policy.json"))
+    await writeFile(path.join(runtime, "runtime-source-roots.txt"), "apps/kernel\npackages/app-sdk\n")
+    await writeFile(path.join(fixture, "packages/app-sdk/index.ts"), "export const revision = 1\n")
+    await run("git", ["init", "-q"], options)
+    await run("git", ["add", "."], options)
+    await run("git", ["-c", "user.name=fixture", "-c", "user.email=noreply@openai.com", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "MP-08 / MP-10 / MP-11 source fixture [skip ci]\n\nCo-Authored-By: GPT-6.1-sol (Codex) <noreply@openai.com>"], options)
+    const first = await captureSourceIdentity(fixture)
+    await writeFile(path.join(fixture, "packages/app-sdk/index.ts"), "export const revision = 2\n")
+    const changed = await captureSourceIdentity(fixture)
+    assert.equal(changed.commit, first.commit)
+    assert.notEqual(changed.runtimeSourceRevision, first.runtimeSourceRevision, "Apps source changes must invalidate runtime identity")
+    await writeFile(path.join(runtime, "runtime-source-roots.txt"), "")
+    await assert.rejects(captureSourceIdentity(fixture), /runtime-source-roots/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
 
 test("real soak defaults to eight hours with bounded active samples", () => {
   const options = parseBrowserComputerSoakArgs([], { repoRoot, homeDir: os.tmpdir() })
