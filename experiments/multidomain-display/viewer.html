@@ -5,12 +5,12 @@
 // MD-DISPLAY-02: trusted local viewer. Source scripts/URLs never become executable.
 const q=new URLSearchParams(location.search), role=q.get('role'), ws=new WebSocket(`ws://${location.host}/socket?role=${role}`);
 ws.binaryType='arraybuffer'; const canvas=document.querySelector('canvas'), ctx=canvas.getContext('2d',{willReadFrequently:true});
-const frame=document.querySelector('iframe'); let decoder,encoder,format,encoded=0,encoding=Promise.resolve(),encodingPending=0,records=new Map(),root;
+const frame=document.querySelector('iframe'); let decoder,encoder,format,encoded=0,encoding=Promise.resolve(),encodingPending=0,records=new Map(),root;const frameAcks=new Map();
 window.md={ready:false, errors:[], outputs:0, inputs:0, dimensions:[], codecSupport:[], lastSeq:0, patches:0,dropped:0};
 function send(value){if(ws.readyState===1)ws.send(JSON.stringify(value))}
 function pack(meta,bytes){const h=new TextEncoder().encode(JSON.stringify(meta)),a=new Uint8Array(4+h.length+bytes.length);new DataView(a.buffer).setUint32(0,h.length);a.set(h,4);a.set(bytes,4+h.length);return a}
 function unpack(data){const n=new DataView(data).getUint32(0);return [JSON.parse(new TextDecoder().decode(new Uint8Array(data,4,n))),new Uint8Array(data,4+n)]}
-async function painted(kind,timestamp){await new Promise(requestAnimationFrame);window.md.outputs++;send({kind:'painted',mode:kind,timestamp});checkProbe()}
+async function painted(kind,timestamp){await new Promise(requestAnimationFrame);window.md.outputs++;const frame_id=frameAcks.get(timestamp);frameAcks.delete(timestamp);send({kind:'painted',mode:kind,timestamp,frame_id});checkProbe()}
 function checkProbe(){
   let seq=0;
   if(role==='dom'){
@@ -62,7 +62,7 @@ ws.onmessage=async e=>{
     const [meta,bytes]=unpack(e.data);
     if(role==='encoder'){if(encodingPending>=2){window.md.dropped++;send({kind:'dropped'});return}encodingPending++;encoding=encoding.then(()=>encodeImage(meta,bytes)).catch(e=>{window.md.errors.push(String(e));send({kind:'error',message:'encoder failed'})}).finally(()=>encodingPending--)}
     else if(meta.kind==='patch'){const e=frame.contentDocument.querySelector(`[data-patch="${meta.id}"]`);if(e){const old=e.src;e.src=URL.createObjectURL(new Blob([bytes],{type:'image/png'}));await e.decode();if(old.startsWith('blob:'))URL.revokeObjectURL(old);window.md.patches++;await painted('patch',meta.timestamp)}}
-    else if(meta.kind==='chunk'){if(decoder?.decodeQueueSize>8)throw Error('decoder backlog limit');if(meta.config){if(meta.config.description)meta.config.description=new Uint8Array(meta.config.description);decoderInit(meta.config)}decoder.decode(new EncodedVideoChunk({type:meta.type,timestamp:meta.timestamp,data:bytes}))}
+    else if(meta.kind==='chunk'){if(decoder?.decodeQueueSize>8)throw Error('decoder backlog limit');if(meta.config){if(meta.config.description)meta.config.description=new Uint8Array(meta.config.description);decoderInit(meta.config)}if(meta.frame_id!==undefined)frameAcks.set(meta.timestamp,meta.frame_id);decoder.decode(new EncodedVideoChunk({type:meta.type,timestamp:meta.timestamp,data:bytes}))}
   }catch(e){window.md.errors.push(String(e));send({kind:'error',message:'viewer operation failed'})}
 };
 window.mdCapture=()=>canvas.toDataURL('image/png');

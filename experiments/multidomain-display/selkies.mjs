@@ -51,14 +51,14 @@ export async function baseline(chromium,origin,output) {
             for(let i=0;i<payload.length-7;i++)if(payload[i]===0&&payload[i+1]===0&&payload[i+2]===1&&(payload[i+3]&31)===7){codec='avc1.'+payload.subarray(i+4,i+7).toString('hex').toUpperCase();break}
             config={codec,codedWidth:width,codedHeight:height,optimizeForLatency:true};configured=true;metadata.decoder_config=config;
           }
-          if(configured)send({kind:'chunk',type:key?'key':'delta',timestamp:Math.round(performance.now()*1000),config},payload);
-          stream.stdin.write(JSON.stringify({kind:'control',text:`CLIENT_FRAME_ACK ${id}`})+'\n');
+          if(configured)send({kind:'chunk',type:key?'key':'delta',timestamp:Math.round(performance.now()*1000),frame_id:id,config},payload);
         });
         await until(()=>ready,'read-only installed Selkies adapter ready',15000);
         renew=setInterval(()=>stream.stdin.write('{"kind":"renew"}\n'),15000);
         metadata.packet_dimensions=packetDimensions;
       },
       async stop(){clearInterval(renew);stream?.stdin.end();if(stream)await Promise.race([new Promise(r=>stream.once('exit',r)),pause(5000)]);stream=null},
+      ack(id){if(stream&&Number.isInteger(id)&&id>=0&&id<=65535)stream.stdin.write(JSON.stringify({kind:'control',text:`CLIENT_FRAME_ACK ${id}`})+'\n')},
     };
   }catch(e){await close();throw e}
 }

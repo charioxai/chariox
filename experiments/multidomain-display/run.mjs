@@ -56,7 +56,7 @@ try{
     const m=JSON.parse(data);events.push({...m,role,at_ms:performance.now()});
     if(m.kind==='input'){if(pending.has(activeProbe)&&!ingress.has(activeProbe))ingress.set(activeProbe,performance.now());input(m).catch(reportError)}
     if(m.kind==='probe'){const t=pending.get(m.seq);if(t!==undefined){received.set(m.seq,performance.now()-t);if(ingress.has(m.seq))ingressLatency.set(m.seq,performance.now()-ingress.get(m.seq));pending.delete(m.seq)}}
-    if(m.kind==='painted'&&role==='video')send('encoder',{kind:'ack',timestamp:m.timestamp});
+    if(m.kind==='painted'&&role==='video'){if(installedBaseline)installedBaseline.ack(m.frame_id);else send('encoder',{kind:'ack',timestamp:m.timestamp})}
   })});
   let sourceScreen;
   if(process.env.MD_BASELINE!=='1'){sourceScreen=await display();screens.push(sourceScreen);groups.push(sourceScreen.child.pid)}
