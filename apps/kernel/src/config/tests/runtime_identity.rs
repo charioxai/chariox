@@ -860,3 +860,46 @@ fn persisted_daemon_cloud_profile_takes_precedence_over_cli_profile() {
     assert_eq!(profile.account_id, "daemon-account");
     assert_eq!(profile.relay_url, "wss://daemon-relay.example");
 }
+
+#[test]
+fn for_tests_resolves_temporary_aliases_before_opening_private_app_uploads() {
+    crate::test_support::isolated_env_test!();
+    let _environment = crate::env_lock::lock();
+    let root = fs::canonicalize(env::temp_dir()).unwrap().join(format!(
+        "chariox-test-temp-alias-{}",
+        generate_identity_suffix()
+    ));
+    fs::create_dir(&root).unwrap();
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
+    let real = root.join("real");
+    fs::create_dir(&real).unwrap();
+    let alias = root.join("system-alias");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+    env::set_var("TMPDIR", &alias);
+    let config = DaemonConfig::for_tests();
+    let database = config.durable_state_path();
+    assert!(database.starts_with(&real));
+    fs::create_dir_all(database.parent().unwrap()).unwrap();
+    let uploads = chariox_app_runtime::package_upload::PackageUploadStore::open_or_create(
+        &database,
+        Default::default(),
+        0,
+    )
+    .expect("canonical test-state root must admit private App uploads");
+    uploads
+        .begin(
+            "alice",
+            "alias-upload",
+            1,
+            &format!("sha256:{}", "0".repeat(64)),
+            1_000,
+            0,
+        )
+        .unwrap();
+}

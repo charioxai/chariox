@@ -298,6 +298,10 @@ impl DaemonConfig {
         // while its environment guard owns and will remove that directory.
         #[cfg(test)]
         let _environment = crate::env_lock::lock();
+        // macOS exposes its temporary root through /var -> /private/var.
+        // Private App storage rejects symlink ancestors, including system aliases.
+        let temporary_root =
+            std::fs::canonicalize(std::env::temp_dir()).expect("test temporary root must exist");
         static TEST_SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
 
         let index = TEST_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
@@ -311,11 +315,13 @@ impl DaemonConfig {
             std::process::id(),
             index
         ));
-        config.session_history_root_default = std::env::temp_dir()
-            .join("chariox-tests")
-            .join(format!("session-history-{}-{}", std::process::id(), index));
+        config.session_history_root_default = temporary_root.join("chariox-tests").join(format!(
+            "session-history-{}-{}",
+            std::process::id(),
+            index
+        ));
         config.user_config.history.operational.path = Some(
-            std::env::temp_dir()
+            temporary_root
                 .join("chariox-tests")
                 .join(format!(
                     "operational-history-{}-{}.db",
@@ -326,7 +332,7 @@ impl DaemonConfig {
                 .to_string(),
         );
         config.user_config.artifacts.operational.root = Some(
-            std::env::temp_dir()
+            temporary_root
                 .join("chariox-tests")
                 .join(format!(
                     "operational-artifacts-{}-{}",
@@ -337,7 +343,7 @@ impl DaemonConfig {
                 .to_string(),
         );
         config.user_config.artifacts.operational.index_path = Some(
-            std::env::temp_dir()
+            temporary_root
                 .join("chariox-tests")
                 .join(format!(
                     "operational-artifacts-{}-{}.db",
@@ -348,7 +354,7 @@ impl DaemonConfig {
                 .to_string(),
         );
         config.user_config.state.path = Some(
-            std::env::temp_dir()
+            temporary_root
                 .join("chariox-tests")
                 .join(format!("kernel-state-{}-{}", std::process::id(), index))
                 .join("state.db")

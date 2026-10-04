@@ -45,10 +45,13 @@ impl Fixture {
         Self::with_clipboard(mode, false)
     }
     pub(super) fn with_clipboard(mode: Mode, clipboard_write: bool) -> Self {
-        let scratch = Scratch(
+        let mut scratch = Scratch(
             std::env::temp_dir().join(format!("chariox-app-files-{:016x}", rand::random::<u64>())),
         );
         std::fs::create_dir(&scratch.0).unwrap();
+        // The saved-tree API refuses every symlink ancestor; resolve the
+        // trusted fixture root (including macOS's /var alias) before storing it.
+        scratch.0 = std::fs::canonicalize(&scratch.0).unwrap();
         let store = DurableKernelStateStore::open_owned(scratch.0.join("kernel.sqlite")).unwrap();
         let (bytes, publisher) = if clipboard_write {
             crate::durable_state::app_state::fixture_host_package()
