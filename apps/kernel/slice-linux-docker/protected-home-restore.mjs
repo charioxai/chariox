@@ -21,10 +21,12 @@ export function verifyFreshRestoreTarget(inspect, helper, volume, inventory) {
       || inspect.Mounts[0].Destination !== "/home-dst" || inspect.Mounts[0].RW !== true
       || Buffer.from(inventory).length !== 0) refuse("restore target is not a fresh, empty, owned home volume")
 }
-// Each read reopens the pinned descriptor's own inode, so a destroyed stream closes
-// only its private descriptor and never the caller's pinned one.
+// Each read opens its own descriptor for the pinned archive (/dev/fd reopens the
+// inode on Linux and duplicates the descriptor elsewhere), so a destroyed stream
+// closes only that descriptor and never the caller's pinned one. Positioned reads
+// (start: 0) make a shared offset irrelevant. Callers open it before spawning.
 function readPinnedArchive(fd) {
-  return createReadStream(null, {fd: openSync(`/proc/self/fd/${fd}`, constants.O_RDONLY), start: 0})
+  return createReadStream(null, {fd: openSync(`/dev/fd/${fd}`, constants.O_RDONLY), start: 0})
 }
 function waitForChild(child, label) {
   return new Promise((resolve, reject) => {
@@ -75,13 +77,14 @@ async function streamThroughChildren(children, streams, {deadlineMs, deadlineRea
   refuse(`archive stream to ${children[broken >= 0 ? broken : children.length - 1].label} failed (${failure?.code ?? "stream error"})`)
 }
 export async function validateCompressedArchive(fd, helper, environment, abort = () => {}, spawnProcess = spawn) {
+  const archive = readPinnedArchive(fd)
   const decoder = spawnProcess("/usr/bin/docker", ["exec", "-i", "-u", "root", helper, "zstd", "-dc"],
     {env: environment, stdio: ["pipe", "pipe", "ignore"]})
   const validator = spawnProcess("/usr/bin/python3", [join(dirname(fileURLToPath(import.meta.url)), "validate-home-archive.py")],
     {env: {PATH: "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1"}, stdio: ["pipe", "ignore", "ignore"]})
   await streamThroughChildren(
     [{child: decoder, label: "archive decompression"}, {child: validator, label: "archive validation"}],
-    [pipeline(readPinnedArchive(fd), decoder.stdin),
+    [pipeline(archive, decoder.stdin),
       pipeline(decoder.stdout, validator.stdin)],
     {deadlineMs: 10 * 60_000, deadlineReason: "archive validation exceeded 10 minutes", abort})
 }
@@ -94,6 +97,7 @@ export function requireRestoreVolumeReserve(docker, helper, reserveBytes = 10n *
   if (available * blockSize < reserveBytes) refuse(`restore volume has less than ${reserveBytes / 1024n ** 2n} MiB free`)
 }
 export async function extractCompressedArchive(fd, helper, environment, abort, spawnProcess = spawn) {
+  const archive = readPinnedArchive(fd)
   const child = spawnProcess("/usr/bin/docker", ["exec", "-i", "-u", "root", helper,
     "tar", "--zstd", "--no-same-owner", "--no-same-permissions", "-xf", "-", "-C", "/home-dst"],
     {env: environment, stdio: ["pipe", "ignore", "ignore"]})
@@ -109,7 +113,7 @@ export async function extractCompressedArchive(fd, helper, environment, abort, s
   }, 200)
   try {
     await streamThroughChildren([{child, label: "archive extraction"}],
-      [pipeline(readPinnedArchive(fd), child.stdin)],
+      [pipeline(archive, child.stdin)],
       {deadlineMs: 10 * 60_000, deadlineReason: "archive extraction exceeded 10 minutes", abort, stopReason: () => stopReason})
   } finally {
     clearInterval(reserve)
