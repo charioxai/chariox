@@ -45,6 +45,15 @@ const chromium = {
     switch (method) {
       case "SystemInfo.getProcessInfo": return (await uploadBrowser.ensure()).processInfo;
       case "Target.getTargets": {
+        const recoveryScene = join(dirname(pidFile), "recovery-blank-and-app-tabs");
+        if (existsSync(recoveryScene)) {
+          unlinkSync(recoveryScene);
+          state.popup = true;
+          state.url = "about:blank";
+          state.documentId = `worker-document-${++state.documentSequence}`;
+          state.focusedTarget = "worker-tab";
+          persist();
+        }
         const externalNavigation = join(dirname(pidFile), "external-browser-navigation");
         if (existsSync(externalNavigation)) {
           unlinkSync(externalNavigation);

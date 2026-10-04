@@ -484,11 +484,43 @@ impl KernelRuntimeState {
         tab_id: &str,
         action: crate::runtime::browser_controller_tab::BrowserTabAction,
     ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
+        self.mutate_browser_environment_tab(session_id, execution_id, tab_id, action, true)
+            .await
+    }
+
+    /// Recovery activation fulfills the retained intent; it is not a new
+    /// user/agent Tab choice. Use the same binding, route and receipt checks.
+    pub(crate) async fn restore_browser_environment_tab_focus(
+        &self,
+        session_id: &str,
+        execution_id: &str,
+        tab_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
+        self.mutate_browser_environment_tab(
+            session_id,
+            execution_id,
+            tab_id,
+            crate::runtime::browser_controller_tab::BrowserTabAction::Activate,
+            false,
+        )
+        .await
+    }
+
+    async fn mutate_browser_environment_tab(
+        &self,
+        session_id: &str,
+        execution_id: &str,
+        tab_id: &str,
+        action: crate::runtime::browser_controller_tab::BrowserTabAction,
+        cancel_recovery_focus: bool,
+    ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
         let binding = self
             .room_environment_controller_tab_binding(session_id, tab_id)
             .map_err(|error| environment_runtime_error("browser_controller.tab", error))?;
         // A new explicit Tab operation wins over pre-stop App focus intent.
-        let _ = self.room_environment_cancel_app_recovery_focus(session_id);
+        if cancel_recovery_focus {
+            let _ = self.room_environment_cancel_app_recovery_focus(session_id);
+        }
         let RoomBrowserControllerResult::Tab {
             result: Some(result),
         } = self
