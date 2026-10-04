@@ -60,9 +60,9 @@ def locate_regions(policy):
     if policy.get('unknown'):
         raise ObservationRedacted(RETRY_MESSAGE)
     regions = []
-    for target in policy.get('targets', []):
+    for target in list(policy.get('targets', [])):
         if target['kind'] == 'native':
-            from selkies.Xlib import display
+            from selkies.Xlib import display, error
             connection = display.Display()
             try:
                 # Re-locate this exact approved control even if focus now differs.
@@ -82,6 +82,9 @@ def locate_regions(policy):
                 if target['target']['active_window'] not in ancestors:
                     raise ObservationRedacted(RETRY_MESSAGE)
                 regions.append([translated.x, translated.y, geometry.width, geometry.height])
+            except error.BadWindow:
+                # X confirms that this exact approved window no longer exists.
+                policy['targets'].remove(target)
             finally:
                 connection.close()
         elif target['kind'] != 'browser':

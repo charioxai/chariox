@@ -3,7 +3,9 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+import sys
+import types
 from PIL import Image
 
 spec = importlib.util.spec_from_file_location('observation_mask', Path(__file__).with_name('slice-observation-mask.py'))
@@ -12,6 +14,27 @@ spec.loader.exec_module(module)
 
 
 class MaskTests(unittest.TestCase):
+    def test_destroyed_native_window_is_pruned_but_other_x_errors_fail_closed(self):
+        class BadWindow(Exception):
+            pass
+        window = Mock()
+        window.get_attributes.side_effect = BadWindow()
+        connection = Mock()
+        connection.create_resource_object.return_value = window
+        modules = {
+            'selkies': types.ModuleType('selkies'),
+            'selkies.Xlib': types.SimpleNamespace(display=types.SimpleNamespace(Display=lambda: connection), error=types.SimpleNamespace(BadWindow=BadWindow)),
+        }
+        target = {'kind': 'native', 'target': {'focus_window': 42, 'active_window': 42}}
+        policy = {'targets': [target]}
+        with patch.dict(sys.modules, modules):
+            self.assertEqual(module.locate_regions(policy), [])
+            self.assertEqual(policy['targets'], [])
+            self.assertTrue(connection.close.called)
+            window.get_attributes.side_effect = RuntimeError('transport failed')
+            with self.assertRaises(RuntimeError):
+                module.locate_regions({'targets': [target]})
+
     def test_only_inserted_region_is_masked_and_benign_pixels_survive(self):
         image = Image.new('RGB', (80, 40), 'white')
         masked = module.mask_image(image, [[20, 10, 20, 10]])
