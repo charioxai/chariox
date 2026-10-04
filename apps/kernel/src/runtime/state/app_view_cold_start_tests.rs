@@ -166,6 +166,13 @@ async fn stopped_local_room_does_not_acquire_browser_for_pending_restore() {
         .slice_store
         .environment_slice(&session)
         .is_none());
+    runtime
+        .start_room_environment(
+            &session,
+            CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap(),
+        )
+        .unwrap();
+    runtime.stop_room_environment(&session).unwrap();
     let binding = AppViewBinding {
         owner: "local".into(),
         installation: "todo".into(),
