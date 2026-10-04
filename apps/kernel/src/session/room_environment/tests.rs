@@ -483,6 +483,93 @@ fn explicit_slice_replacement_recovers_identity_without_room_invalidation() {
 }
 
 #[test]
+fn reclaimed_app_focus_survives_projection_until_activation_or_new_input() {
+    for activity in [0, 1, 2] {
+        let mut environment = ready_environment_with_agent();
+        let mark = |target: &str| {
+            std::collections::BTreeMap::from([(
+                target.into(),
+                ("app_1".into(), super::AppPanelLayout::default()),
+            )])
+        };
+        environment.set_app_tabs(mark("old-app"), None, true);
+        environment.reconcile_controller_tabs(
+            vec![observed_tab(
+                "old-app",
+                "old-doc",
+                "https://app.todo.invalid/",
+                "Todo",
+            )],
+            Some("old-app"),
+        );
+        let old = environment.snapshot().focused_tab_id.unwrap();
+        environment.prepare_app_recovery();
+        environment.set_app_tabs(std::collections::BTreeMap::new(), None, true);
+        environment.reconcile_controller_tabs(vec![], None);
+        let observations = || {
+            vec![
+                observed_tab("new-app", "new-doc", "https://app.todo.invalid/", "Todo"),
+                observed_tab("startup-blank", "blank-doc", "about:blank", "about:blank"),
+            ]
+        };
+        environment.reconcile_controller_tabs(observations(), Some("startup-blank"));
+        let blank = environment.snapshot().focused_tab_id.unwrap();
+        environment.set_app_tabs(mark("new-app"), None, true);
+        assert_eq!(
+            environment.snapshot().focused_tab_id.as_deref(),
+            Some(old.as_str())
+        );
+        // Layout publication and browser events can reconcile again before
+        // the restore coroutine sends its physical Activate command.
+        environment = serde_json::from_value(serde_json::to_value(&environment).unwrap()).unwrap();
+        // The verified live binding is runtime-owned and is republished after
+        // deserializing durable Room state.
+        environment.set_app_tabs(mark("new-app"), None, true);
+        environment.reconcile_controller_tabs(observations(), Some("startup-blank"));
+        assert_eq!(
+            environment.snapshot().focused_tab_id.as_deref(),
+            Some(old.as_str())
+        );
+        environment.reconcile_controller_tabs(observations(), Some("new-app"));
+        match activity {
+            1 => environment.cancel_app_recovery_focus(),
+            2 => {
+                environment
+                    .submit_action(EnvironmentActionRequest::computer_mutation(
+                        "agent-1",
+                        environment.snapshot().runtime_generation,
+                        "post-recovery-pointer-choice",
+                        Some(&old),
+                    ))
+                    .unwrap();
+            }
+            _ => {}
+        }
+        // A delayed blank observation after activation must not discard the
+        // restored focus, but a new explicit choice or input always wins.
+        environment.reconcile_controller_tabs(observations(), Some("startup-blank"));
+        assert_eq!(
+            environment.snapshot().focused_tab_id,
+            Some(if activity == 0 { old } else { blank })
+        );
+        // A different nonblank live page also ends the recovery focus intent.
+        let mut other = observations();
+        other[1] = observed_tab("startup-blank", "other-doc", "https://other.test/", "Other");
+        environment.reconcile_controller_tabs(other, Some("startup-blank"));
+        assert_eq!(
+            environment
+                .snapshot()
+                .tabs
+                .iter()
+                .find(|t| t.focused)
+                .unwrap()
+                .url,
+            "https://other.test/"
+        );
+    }
+}
+
+#[test]
 fn recovery_waits_until_the_old_live_tab_releases_its_identity() {
     let mut environment = ready_environment_with_agent();
     let layout = super::AppPanelLayout::default();

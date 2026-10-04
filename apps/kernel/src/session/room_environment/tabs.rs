@@ -25,6 +25,10 @@ pub(crate) struct TabRegistry {
     /// Only a new kernel-verified App binding may claim one, never a URL.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     restoring_apps: BTreeMap<String, EnvironmentTab>,
+    /// A reclaimed App waits for physical activation. Intermediate or delayed
+    /// startup-blank receipts must not replace its restored focus intent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recovered_app_focus: Option<String>,
 }
 
 impl TabRegistry {
@@ -171,7 +175,24 @@ impl TabRegistry {
 
         let observed_focus = focused_controller_target_id
             .and_then(|target_id| self.tab_id_by_controller_target.get(target_id).cloned());
-        let next_focus = observed_focus
+        let recovery_focus = self
+            .recovered_app_focus
+            .as_ref()
+            .filter(|id| {
+                self.tabs.get(*id).is_some_and(|tab| tab.tab.app.is_some())
+                    && observed_focus.as_ref().is_none_or(|observed| {
+                        observed == *id
+                            || self.tabs.get(observed).is_some_and(|tab| {
+                                tab.tab.url == "about:blank" && tab.tab.app.is_none()
+                            })
+                    })
+            })
+            .cloned();
+        if recovery_focus.is_none() {
+            self.recovered_app_focus = None;
+        }
+        let next_focus = recovery_focus
+            .or(observed_focus)
             .or_else(|| {
                 self.focused_tab_id
                     .as_ref()
@@ -238,6 +259,9 @@ impl TabRegistry {
                         .is_some_and(|tab| tab.tab.url == "about:blank" && tab.tab.app.is_none())
             {
                 self.focused_tab_id = Some(previous.tab_id.clone());
+                if previous.focused {
+                    self.recovered_app_focus = Some(previous.tab_id.clone());
+                }
             }
             // Late events from a retired physical target must not be labelled
             // as events from the live page that reclaimed this logical id.
@@ -317,6 +341,9 @@ impl TabRegistry {
         if self.focused_tab_id.as_deref() == Some(tab_id) {
             self.focused_tab_id = self.order.first().cloned();
         }
+        if self.recovered_app_focus.as_deref() == Some(tab_id) {
+            self.recovered_app_focus = None;
+        }
         Ok(())
     }
 
@@ -376,6 +403,7 @@ impl TabRegistry {
     }
 
     pub(crate) fn prepare_app_recovery(&mut self) {
+        self.recovered_app_focus = None;
         self.restoring_apps.clear();
         for state in self.tabs.values() {
             if let Some(app) = &state.tab.app {
@@ -393,6 +421,7 @@ impl TabRegistry {
     }
 
     pub(crate) fn cancel_app_recovery_focus(&mut self) {
+        self.recovered_app_focus = None;
         for tab in self.restoring_apps.values_mut() {
             tab.focused = false;
         }
