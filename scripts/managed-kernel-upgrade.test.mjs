@@ -138,8 +138,9 @@ test("repository release policy admits reviewed predecessors and matches the run
   const policy = JSON.parse(policyBytes)
   const runtimeTypes = await readFile(join(repositoryRoot, "apps/kernel/src/local/api/types.rs"), "utf8")
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
-  // Release F's reciprocal set (343, 367..376) plus the current protocol; unreleased 377..409 are not admitted.
-  const admittedProtocols = [343, ...Array.from({ length: 10 }, (_, index) => 367 + index), runtimeProtocol]
+  // Retain reviewed Release F/Phase 1 predecessors plus the current protocol.
+  // v416 fences legacy receipt readers when expiration markers exist.
+  const admittedProtocols = [343, ...Array.from({ length: 10 }, (_, index) => 367 + index), 410, 415, runtimeProtocol]
   assert.deepEqual(policy, {
     schemaVersion: 1,
     protocol: runtimeProtocol,
@@ -1995,10 +1996,13 @@ test("managed kernel upgrade accepts the schema 3 receipt a Path-1 kernel writes
 })
 
 // This signed installer fixture is not proof of real-binary state migration.
-test("managed kernel upgrade accepts the signed repository protocol fixture transition and rollback", async (context) => {
+test("managed kernel upgrade accepts the signed repository 415 to 416 fixture transition and rollback", async (context) => {
   const repositoryPolicy = JSON.parse(await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json"), "utf8"))
   const harness = await makeHarness(context, {
-    currentProtocol: 343,
+    currentProtocol: 415,
+    currentTransitionPolicy: { ...repositoryPolicy, protocol: 415,
+      upgradeFrom: repositoryPolicy.upgradeFrom.filter(version => version !== 416),
+      rollbackTo: repositoryPolicy.rollbackTo.filter(version => version !== 416) },
     targetProtocol: repositoryPolicy.protocol,
     targetTransitionPolicy: repositoryPolicy,
   })
