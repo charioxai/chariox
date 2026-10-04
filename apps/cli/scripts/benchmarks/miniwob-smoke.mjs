@@ -17,6 +17,7 @@ const r = await import(`${clientModuleRoot}/ipc-requests.js`)
 import { sanitizeDrillMetadata } from '../lib/drill-secrets.mjs'
 import { roomProviderToolName, roomProviderToolOutput } from '../lib/room-provider-tool-record.mjs'
 import { observeKernelRpcErrors, rpcErrorRecord } from './round2/rpc-errors.mjs'
+import { signalOwnedProcess } from './round2/owned-processes.mjs'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..')
 const lane = process.env.MINIWOB_LANE_ROOT
@@ -352,7 +353,7 @@ try {
   console.log(`MP-08 / MP-10 RED at ${stage}: ${error.message}`)
 } finally {
   stage = 'cleanup'; clearInterval(monitor)
-  grader?.stdin.end(); grader?.kill('SIGTERM')
+  grader?.stdin.end(); if (grader) await signalOwnedProcess(grader, 'SIGTERM')
   const cleanup = { slices: [], processes: [], stateRemoved: false, workspaceRemoved: false }
   if (client && attachment && agent) await client.send(r.cancelActivePromptRequest(session.id, attachment.id, agent.id)).catch(() => {})
   for (const s of slices.toReversed()) {
@@ -372,9 +373,9 @@ try {
   }
   await client?.close()
   for (const child of ownedChildren.toReversed()) {
-    if (child.exitCode === null) { try { process.kill(-child.pid, 'SIGTERM') } catch {} }
+    await signalOwnedProcess(child, 'SIGTERM', { detached: true })
     for (let n = 0; n < 20 && child.exitCode === null; n++) await sleep(250)
-    if (child.exitCode === null) { try { process.kill(-child.pid, 'SIGKILL') } catch {} }
+    await signalOwnedProcess(child, 'SIGKILL', { detached: true })
     cleanup.processes.push({ pid: child.pid, stopped: child.exitCode !== null || child.signalCode !== null })
   }
   await rm(root, { recursive: true }); cleanup.stateRemoved = true
