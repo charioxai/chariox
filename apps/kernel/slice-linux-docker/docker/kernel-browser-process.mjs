@@ -3,14 +3,19 @@ import { spawn } from "node:child_process";
 import { access, mkdir, readFile, readlink, unlink } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import * as linux from "./kernel-browser-linux.mjs";
+import * as macos from "./kernel-browser-macos.mjs";
+
+function platformPolicy(platform) {
+  if (platform === "linux") return linux;
+  if (platform === "darwin") return macos;
+  throw new Error("MD-2: kernel browser supports Linux and macOS only");
+}
 
 export async function executable(environment = process.env, platform = process.platform) {
   const candidates = environment.CHARIOX_KERNEL_BROWSER_EXECUTABLE
     ? [environment.CHARIOX_KERNEL_BROWSER_EXECUTABLE]
-    : platform === "darwin" ? [
-      "/Applications/Chromium.app/Contents/MacOS/Chromium",
-      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    ] : ["/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome"];
+    : platformPolicy(platform).candidates(environment);
   for (const candidate of candidates) {
     if (!path.isAbsolute(candidate)) throw new Error("MD-2: browser executable must be absolute");
     try { await access(candidate, 1); return candidate; } catch {}
@@ -35,9 +40,7 @@ export class HostChromium {
   }
   async start() {
     if (this.child && this.child.exitCode === null && this.child.signalCode === null) return this.endpoint;
-    if (process.platform === "linux" && process.getuid?.() === 0) {
-      throw new Error("MD-2: run the kernel browser as a normal Unix user; root Chromium is unsupported");
-    }
+    const environment = platformPolicy(process.platform).launchEnvironment(this.environment);
     const profile = path.join(this.root, "profile");
     await mkdir(profile, { recursive: true, mode: 0o700 });
     // Refuse a live profile owner before touching its debugger marker. Never
@@ -59,9 +62,9 @@ export class HostChromium {
     await unlink(path.join(profile, "DevToolsActivePort")).catch(error => {
       if (error.code !== "ENOENT") throw error;
     });
-    const child = spawn(await executable(this.environment), launchArguments(profile,
-      this.environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1"), {
-      stdio: "ignore", env: this.environment,
+    const child = spawn(await executable(environment), launchArguments(profile,
+      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1"), {
+      stdio: "ignore", env: environment,
     });
     this.child = child;
     let spawnFailed = false;

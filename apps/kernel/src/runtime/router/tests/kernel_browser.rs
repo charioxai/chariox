@@ -136,7 +136,7 @@ async fn focus_check() {
 }
 
 #[test]
-#[ignore = "MD-4: requires a sandbox-capable Linux host, explicit disposable CHARIOX_HOME and native Chromium"]
+#[ignore = "MD-4: requires a sandbox-capable Linux or macOS host, explicit disposable CHARIOX_HOME and native Chromium"]
 fn kernel_browser_linux_integration_drill() {
     match std::env::var("CHARIOX_MD4_PHASE").as_deref() {
         Ok("before") => run_test(|| Box::pin(live_check())),
