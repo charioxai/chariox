@@ -9,6 +9,11 @@ import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
 
+const TAB_LIMIT = 128;
+function restorationUrl(url) {
+  try { return navigationUrl(url); } catch { return "about:blank"; }
+}
+
 const viewport = { css_width: 1280, css_height: 800, device_scale_factor: 1,
   desktop_pixel_width: 1280, desktop_pixel_height: 800 };
 export function navigationUrl(raw) {
@@ -49,7 +54,7 @@ export class KernelBrowserHost {
   }
   async save() {
     const name = path.join(this.root, "tabs.json");
-    const data = { generation: this.generation, tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).map(({ tab_id, url }) => ({ tab_id, url: redactObservation(url, this.protection.values) === url ? url : "about:blank" })) };
+    const data = { generation: this.generation, tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url }) => ({ tab_id, url: redactObservation(url, this.protection.values) === url ? restorationUrl(url) : "about:blank" })) };
     const serialized = JSON.stringify(data);
     if (serialized === this.lastSaved) return;
     await writeFile(`${name}.new`, serialized, { mode: 0o600 });
@@ -67,7 +72,7 @@ export class KernelBrowserHost {
     let saved = { generation: 0, tabs: [] };
     try { saved = JSON.parse(await readFile(path.join(this.root, "tabs.json"), "utf8")); }
     catch (error) { if (error.code !== "ENOENT") throw new Error("MD-2: browser tab registry is unreadable; preserve it for recovery"); }
-    if (!Number.isSafeInteger(saved.generation) || saved.generation < 0 || !Array.isArray(saved.tabs) || saved.tabs.length > 128) {
+    if (!Number.isSafeInteger(saved.generation) || saved.generation < 0 || !Array.isArray(saved.tabs)) {
       throw new Error("MD-2: invalid browser tab registry");
     }
     const endpoint = await this.chromium.start();
@@ -89,9 +94,9 @@ export class KernelBrowserHost {
           await connection.send("Target.closeTarget", { targetId: target.targetId });
         }
       }
-      for (const tab of saved.tabs) {
+      for (const tab of saved.tabs.slice(0, TAB_LIMIT)) {
         if (typeof tab.tab_id !== "string" || !tab.tab_id.startsWith("host-tab-")) throw new Error("MD-2: invalid saved tab identity");
-        await this.open(navigationUrl(tab.url), tab.tab_id);
+        await this.open(restorationUrl(tab.url), tab.tab_id);
       }
       await this.save();
     } catch (error) { await this.stop(); throw error; }
@@ -118,7 +123,15 @@ export class KernelBrowserHost {
     }
     const byTarget = new Map([...this.tabs.values()].map(tab => [tab.target_id, tab]));
     this.tabs.clear();
-    for (const tab of state.tabs.filter(tab => tab.target_id !== this.keepaliveTarget)) {
+    const discovered = state.tabs.filter(tab => tab.target_id !== this.keepaliveTarget);
+    // Preserve already-adopted identities before accepting native/popup tabs.
+    discovered.sort((a, b) => Number(byTarget.has(b.target_id)) - Number(byTarget.has(a.target_id)));
+    for (const tab of discovered) {
+      if (this.tabs.size >= TAB_LIMIT) {
+        const connection = await this.browser.ensureConnection();
+        await connection.send("Target.closeTarget", { targetId: tab.target_id });
+        continue;
+      }
       const old = byTarget.get(tab.target_id);
       this.tabs.set(old?.tab_id ?? `host-tab-${randomUUID()}`, { ...tab, tab_id: old?.tab_id ?? null });
     }
@@ -129,7 +142,7 @@ export class KernelBrowserHost {
       tabs: [...this.tabs.values()].map(({ target_id, ...tab }) => tab), viewport }, this.protection.values);
   }
   async open(url, tabId = `host-tab-${randomUUID()}`) {
-    if (this.tabs.size >= 128) throw new Error("MD-2: host tab limit reached");
+    if (this.tabs.size >= TAB_LIMIT) throw new Error("MD-2: host tab limit reached");
     const connection = await this.browser.ensureConnection();
     const { targetId } = await connection.send("Target.createTarget", { url: navigationUrl(url) });
     this.tabs.set(tabId, { tab_id: tabId, target_id: targetId, url, title: "", document_id: "" });
