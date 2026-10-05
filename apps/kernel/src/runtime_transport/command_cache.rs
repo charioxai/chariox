@@ -125,7 +125,7 @@ impl CommandFingerprint {
             session_id: command.session_id.clone(),
             attachment_id: command.attachment_id.clone(),
             request_hash: stable_hash64(&request_bytes),
-            browser_caller: matches!(request, LocalDaemonRequest::KernelBrowser(_))
+            browser_caller: matches!(request, LocalDaemonRequest::KernelBrowser(_) | LocalDaemonRequest::Notes(_))
                 .then(|| command.caller.clone()),
         }
     }
@@ -949,6 +949,7 @@ fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
     !matches!(
         fingerprint.command_type.as_str(),
         "kernel_browser"
+            | "notes"
             | "credential_enrollment.interaction.request"
             | "external_provider_session.list"
             | "interaction.respond"

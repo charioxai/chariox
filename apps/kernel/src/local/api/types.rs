@@ -15,6 +15,8 @@ mod agent_prompt_schedule;
 mod agent_utility;
 mod apps;
 mod browser_import;
+mod kernel_browser;
+mod notes;
 mod capability;
 mod cloud_relay;
 mod config_capabilities;
@@ -51,6 +53,8 @@ pub use agent_prompt_schedule::*;
 pub use agent_utility::*;
 pub use apps::*;
 pub use browser_import::*;
+pub use kernel_browser::*;
+pub use notes::*;
 pub use capability::*;
 pub use cloud_relay::*;
 pub use config_capabilities::*;
@@ -254,4 +258,5 @@ pub use workspace::*;
 /// Version 415 adds external sudo requests and requester attribution.
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
 /// MD-2: version 417 adds kernel-owned sessionless host browser control.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 419;
+/// MD-N3 / MP-08 / MP-11: protocol 424 adds private notes and selection reports.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 424;

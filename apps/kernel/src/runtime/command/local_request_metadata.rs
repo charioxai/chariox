@@ -72,6 +72,7 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
     use KernelCommandPriority::{Background, Interactive, Normal};
 
     match request {
+        LocalDaemonRequest::Notes(_) => LocalRequestMetadata::new("notes", Normal),
         LocalDaemonRequest::KernelBrowser(_) => LocalRequestMetadata::new("kernel_browser", Normal),
         LocalDaemonRequest::BeginAppPublisherEnrollment(request) => {
             LocalRequestMetadata::new("app.publisher.begin", Interactive).optional_session(
@@ -562,6 +563,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListKernelAccessGrants(_) => "kernel_access.list",
         LocalDaemonRequest::RevokeKernelAccessGrant(_) => "kernel_access.revoke",
         LocalDaemonRequest::KernelBrowser(_) => "kernel_browser",
+        LocalDaemonRequest::Notes(_) => "notes",
         LocalDaemonRequest::BeginAppPublisherEnrollment(_) => "app.publisher.begin",
         LocalDaemonRequest::GetAppPublisherEnrollment(_) => "app.publisher.status",
         LocalDaemonRequest::CancelAppPublisherEnrollment(_) => "app.publisher.cancel",

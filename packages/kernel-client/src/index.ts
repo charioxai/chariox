@@ -84,3 +84,5 @@ export type * from "./kernel-events.js"
 export type * from "./kernel-transport-frames.js"
 export { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 export type * from "./kernel-types.js"
+
+export * from "./notes.js"

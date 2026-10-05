@@ -68,6 +68,7 @@ async function handleBrowserControllerRequestInner(
         },
       );
     }
+    if (request.method === "browser.notes.observe") return successResponse(request.id, await browser.observeNote(request.params));
     if (request.method === "browser.snapshot") {
       return successResponse(
         request.id,

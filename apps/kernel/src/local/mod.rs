@@ -7,6 +7,7 @@ pub(crate) mod provider_requests;
 pub(crate) mod test_support;
 
 pub(crate) use api::redact_client_response_value;
+pub use api::{NoteAnchor, NoteBox, NoteCommand, NoteRecord, NoteReply, NoteResult, NoteSelection, NoteSummary, NoteTextQuote, NoteWindow, NotesRequest};
 pub use api::{KernelBrowserCommand, KernelBrowserInput, KernelBrowserRequest};
 pub use api::{
     deployment_credential_enrollment_interaction_id,
