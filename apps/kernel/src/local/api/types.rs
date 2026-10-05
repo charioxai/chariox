@@ -15,7 +15,6 @@ mod agent_prompt_schedule;
 mod agent_utility;
 mod apps;
 mod browser_import;
-mod kernel_browser;
 mod capability;
 mod cloud_relay;
 mod config_capabilities;
@@ -24,6 +23,7 @@ mod disposable_worker;
 mod event_publication;
 mod external_provider_session;
 mod history;
+mod kernel_browser;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
@@ -50,7 +50,6 @@ pub use agent_prompt_schedule::*;
 pub use agent_utility::*;
 pub use apps::*;
 pub use browser_import::*;
-pub use kernel_browser::*;
 pub use capability::*;
 pub use cloud_relay::*;
 pub use config_capabilities::*;
@@ -59,6 +58,7 @@ pub use disposable_worker::*;
 pub use event_publication::*;
 pub use external_provider_session::*;
 pub use history::*;
+pub use kernel_browser::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
@@ -245,4 +245,4 @@ pub use workspace::*;
 /// Version 410 adds owner-scoped named saved App data snapshot restore.
 /// Version411 combines Apps Phase1 and Browser/Computer G2 with autonomous Vault observation masks (MP-08/MP-10/MP-11).
 /// MD-2: version 417 adds kernel-owned sessionless host browser control.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 417;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 419;

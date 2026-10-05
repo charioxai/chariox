@@ -26,6 +26,23 @@ pub(crate) enum KernelBrowserDisplayRequest {
         generation: u64,
     },
     Actors,
+    // MD-DISPLAY-04: codec adapters on the same protected capture/subscribe seam.
+    NegotiatedSubscribe {
+        tab_id: String,
+        generation: u64,
+        codecs: Vec<String>,
+        bitrate: u32,
+        device_scale_factor: u32,
+    },
+    EncodedCapture {
+        subscription_id: String,
+        generation: u64,
+        after_sequence: u64,
+    },
+    Attach {
+        subscription_id: String,
+        generation: u64,
+    },
 }
 
 const LOADER: &str = "chariox.load_kernel_browser";
@@ -42,6 +59,20 @@ struct BrowserToolArguments {
 fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value, DaemonError> {
     let request: BrowserToolArguments = serde_json::from_value(arguments)
         .map_err(|_| host_error("MD-3: invalid browser command".into()))?;
+    if matches!(
+        &request.command,
+        KernelBrowserCommand::DisplayCapture { .. }
+            | KernelBrowserCommand::DisplaySubscribe { .. }
+            | KernelBrowserCommand::DisplayNext { .. }
+            | KernelBrowserCommand::DisplayInput { .. }
+            | KernelBrowserCommand::DisplayTakeover { .. }
+            | KernelBrowserCommand::DisplayRelease { .. }
+            | KernelBrowserCommand::DisplayActors
+    ) {
+        return Err(host_error(
+            "MD-DISPLAY: terminal display adapter required".into(),
+        ));
+    }
     let input = matches!(&request.command, KernelBrowserCommand::Input { .. });
     if input
         && request
@@ -88,12 +119,83 @@ impl KernelRuntimeState {
         caller: &crate::runtime::command::KernelCommand,
         command: KernelBrowserCommand,
     ) -> Result<serde_json::Value, DaemonError> {
-        let (user, actor) = self.kernel_browser_terminal_context(caller)?;
-        let mut params = serde_json::to_value(command)
-            .map_err(|_| host_error("MD-2: invalid command".into()))?;
-        params["observed_by"] = serde_json::json!(actor);
-        self.kernel_browser_operation(&user, None, "host.browser", params)
-            .await
+        let request = match command {
+            KernelBrowserCommand::DisplayCapture { tab_id, generation } => {
+                KernelBrowserDisplayRequest::Capture { tab_id, generation }
+            }
+            KernelBrowserCommand::DisplaySubscribe {
+                tab_id,
+                generation,
+                codecs,
+                bitrate,
+                device_scale_factor,
+            } => KernelBrowserDisplayRequest::NegotiatedSubscribe {
+                tab_id,
+                generation,
+                codecs,
+                bitrate,
+                device_scale_factor,
+            },
+            KernelBrowserCommand::DisplayNext {
+                subscription_id,
+                generation,
+                after_sequence,
+            } => KernelBrowserDisplayRequest::EncodedCapture {
+                subscription_id,
+                generation,
+                after_sequence,
+            },
+            KernelBrowserCommand::DisplayInput {
+                tab_id,
+                generation,
+                document_id,
+                input,
+            } => KernelBrowserDisplayRequest::Input {
+                binding: crate::runtime::kernel_browser_host::KernelBrowserDocumentBinding {
+                    tab_id,
+                    generation,
+                    document_id,
+                },
+                input,
+            },
+            KernelBrowserCommand::DisplayTakeover { tab_id, generation } => {
+                KernelBrowserDisplayRequest::Takeover { tab_id, generation }
+            }
+            KernelBrowserCommand::DisplayRelease { tab_id, generation } => {
+                KernelBrowserDisplayRequest::Release { tab_id, generation }
+            }
+            KernelBrowserCommand::DisplayActors => KernelBrowserDisplayRequest::Actors,
+            command => {
+                let (user, actor) = self.kernel_browser_terminal_context(caller)?;
+                let mut params = serde_json::to_value(command)
+                    .map_err(|_| host_error("MD-2: invalid command".into()))?;
+                params["observed_by"] = serde_json::json!(actor);
+                return self
+                    .kernel_browser_operation(&user, None, "host.browser", params)
+                    .await;
+            }
+        };
+        if std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() != Ok("1") {
+            return Err(host_error(
+                "MD-DISPLAY: experimental display disabled".into(),
+            ));
+        }
+        Box::pin(self.kernel_browser_display_request(caller, request)).await
+    }
+    pub(crate) async fn kernel_browser_display_attach(
+        &self,
+        caller: &crate::runtime::command::KernelCommand,
+        subscription_id: String,
+        generation: u64,
+    ) -> Result<serde_json::Value, DaemonError> {
+        self.kernel_browser_display_request(
+            caller,
+            KernelBrowserDisplayRequest::Attach {
+                subscription_id,
+                generation,
+            },
+        )
+        .await
     }
     fn kernel_browser_terminal_context(
         &self,
@@ -126,6 +228,28 @@ impl KernelRuntimeState {
         let (user, actor) = self.kernel_browser_terminal_context(caller)?;
         let host = &self.owned.kernel_browser_host;
         let mut params = match request {
+            KernelBrowserDisplayRequest::NegotiatedSubscribe {
+                tab_id,
+                generation,
+                codecs,
+                bitrate,
+                device_scale_factor,
+            } => {
+                serde_json::json!({"op":"display_subscribe","tab_id":tab_id,"generation":generation,"codecs":codecs,"bitrate":bitrate,"device_scale_factor":device_scale_factor})
+            }
+            KernelBrowserDisplayRequest::EncodedCapture {
+                subscription_id,
+                generation,
+                after_sequence,
+            } => {
+                serde_json::json!({"op":"screenshot","display_subscription_id":subscription_id,"generation":generation,"after_sequence":after_sequence,"bound_frames":true})
+            }
+            KernelBrowserDisplayRequest::Attach {
+                subscription_id,
+                generation,
+            } => {
+                serde_json::json!({"op":"display_attach","subscription_id":subscription_id,"generation":generation})
+            }
             KernelBrowserDisplayRequest::Capture { tab_id, generation } => {
                 serde_json::json!({"op":"screenshot","tab_id":tab_id,"generation":generation,"bound_frames":true})
             }

@@ -937,7 +937,7 @@ export class LocalIpcClient {
         this.rejectPending(error instanceof Error ? error.message : String(error), lane)
         return
       }
-      this.lastReceivedEventId = frame.event_id
+      if (event.event !== "kernel_browser_frame") this.lastReceivedEventId = frame.event_id
       this.markKernelEventReceived()
       for (const handler of this.eventHandlers) {
         handler(event)
@@ -1333,8 +1333,10 @@ export class LocalIpcClient {
 }
 
 function runsAgainOnReplay(request: unknown): boolean {
-  return request !== null && typeof request === "object"
-    && Object.keys(request).some((kind) => KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY.has(kind))
+  if (request === null || typeof request !== "object") return false
+  const command = (request as { KernelBrowser?: { command?: { op?: string } } }).KernelBrowser?.command
+  return command?.op === "display_next"
+    || Object.keys(request).some((kind) => KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY.has(kind))
 }
 
 function kernelEventFromValue(value: unknown): KernelEvent {

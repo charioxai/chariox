@@ -301,6 +301,9 @@ impl BrowserControllerProcessStdioBackend {
                 "TMPDIR",
                 "CHARIOX_KERNEL_BROWSER_EXECUTABLE",
                 "CHARIOX_KERNEL_BROWSER_HEADLESS",
+                "CHARIOX_KERNEL_BROWSER_DISPLAY",
+                "CHARIOX_BROWSER_DISPLAY_PYTHON",
+                "CHARIOX_BROWSER_DISPLAY_TIMING",
             ] {
                 if let Some(value) = std::env::var_os(key) {
                     command.env(key, value);
@@ -440,7 +443,9 @@ impl BrowserControllerProcessStdioBackend {
             .process
             .as_mut()
             .ok_or_else(|| "browser controller is not running".to_string())?;
+        let ownership_at = Instant::now();
         process.owned_group.refresh();
+        crate::transport::kernel_browser_display::timing("process_identity_refresh", ownership_at);
         let mut stdin = process
             .stdin
             .lock()
@@ -537,7 +542,12 @@ impl BrowserControllerProcessStdioBackend {
                     return Err(format!("browser controller exited during `{method}`"))
                 }
             };
+            let ownership_at = Instant::now();
             process.owned_group.refresh();
+            crate::transport::kernel_browser_display::timing(
+                "process_identity_refresh",
+                ownership_at,
+            );
             if response.id == cancellation_request_id {
                 cancellation_acknowledged = true;
                 let accepted = response.ok

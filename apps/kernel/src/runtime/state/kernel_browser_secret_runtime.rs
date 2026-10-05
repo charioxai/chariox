@@ -61,7 +61,9 @@ impl KernelRuntimeState {
         }
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(user);
+        let at = std::time::Instant::now();
         let _barrier = protection.barrier(&scope)?.read_owned().await;
+        crate::transport::kernel_browser_display::timing("barrier", at);
         self.kernel_browser_bound_operation(user, admission.as_ref(), method, params, true)
             .await
     }
@@ -89,18 +91,25 @@ impl KernelRuntimeState {
         let (user, method) = (user.to_string(), method.to_string());
         let pixels =
             method == "host.browser" && (params["op"] == "screenshot" || params["op"] == "poll");
+        let display = method == "host.browser"
+            && params["op"] == "screenshot"
+            && params["display_subscription_id"].is_string();
+        let at = std::time::Instant::now();
         let mut result = tokio::task::spawn_blocking(move || {
             host.protected_request_admitted(&user, admission.as_ref(), &method, params, policy)
         })
         .await
         .map_err(|_| host_error("MD-5: browser task failed".into()))?
         .map_err(|message| protection.scrub_error(&scope, host_error(message)))?;
+        crate::transport::kernel_browser_display::timing("protected_host_ipc", at);
         if !protect {
             return Ok(result);
         }
         // Trusted masked pixel bytes are opaque; scrubbing base64 as text would
         // corrupt images for short Vault values. All metadata still gets scrubbed.
-        let pixel_path = if result.get("frame").is_some() {
+        let pixel_path = if display {
+            "/display_frame"
+        } else if result.get("frame").is_some() {
             "/frame/data_base64"
         } else {
             "/data_base64"
@@ -111,7 +120,22 @@ impl KernelRuntimeState {
             None
         };
         let mut result = protection.scrub(&scope, result)?;
-        if let Some(data) = data {
+        if let Some(mut data) = data {
+            if display && !data.is_null() {
+                // Opaque bytes are protected by the host; textual document/tab metadata is scrubbed.
+                let frame = data
+                    .as_object_mut()
+                    .ok_or_else(|| host_error("MD-DISPLAY: invalid protected frame".into()))?;
+                let payload = frame.remove("data_base64");
+                let tiles = frame.remove("tiles");
+                data = protection.scrub(&scope, data)?;
+                if let Some(payload) = payload {
+                    data["data_base64"] = payload;
+                }
+                if let Some(tiles) = tiles {
+                    data["tiles"] = tiles;
+                }
+            }
             if let Some(slot) = result.pointer_mut(pixel_path) {
                 *slot = data;
             }

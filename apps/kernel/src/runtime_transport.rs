@@ -1322,13 +1322,36 @@ async fn handle_incoming_payload(
                 let attachment_id = command.attachment_id.clone();
                 let response = router.dispatch(command, request).await;
                 let outgoing = match response {
-                    Ok(response) => KernelOutgoingFrame::Response {
-                        request_id,
-                        response: Box::new(Some(
-                            serde_json::to_value(response).unwrap_or(Value::Null),
-                        )),
-                        error: None,
-                    },
+                    Ok(response) => {
+                        let mut response = serde_json::to_value(response).unwrap_or(Value::Null);
+                        if let Some((_, _, event)) =
+                            crate::transport::kernel_browser_display::take_display_event(
+                                &mut response,
+                            )
+                        {
+                            if !try_send_outgoing_frame(
+                                &outgoing_tx,
+                                &close_tx,
+                                &close_requested,
+                                &runtime.transport_health,
+                                KernelOutgoingFrame::Event {
+                                    // MD-DISPLAY-04: no durable replay cursor.
+                                    // Per-display sequence lives inside frame.
+                                    event_id: 0,
+                                    event: Box::new(event),
+                                },
+                                None,
+                                None,
+                            ) {
+                                return;
+                            }
+                        }
+                        KernelOutgoingFrame::Response {
+                            request_id,
+                            response: Box::new(Some(response)),
+                            error: None,
+                        }
+                    }
                     Err(error) => KernelOutgoingFrame::Response {
                         request_id,
                         response: Box::new(None),

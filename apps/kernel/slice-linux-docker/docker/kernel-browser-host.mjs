@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { displayTiming, timestamp } from './kernel-browser-timing.mjs';
 import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
 import { HostChromium } from "./kernel-browser-process.mjs";
@@ -10,6 +11,9 @@ import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { assertNotCancelled, assertCurrentDocument } from "./browser-controller-actions.mjs";
 import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
+
+import { DisplayStream } from "./kernel-browser-display.mjs";
+import { DisplayCapture } from './kernel-browser-display-capture.mjs';
 
 const TAB_LIMIT = 128;
 function restorationUrl(url) {
@@ -29,12 +33,16 @@ export function navigationUrl(raw) {
 export class KernelBrowserHost {
   constructor(root, { chromium = new HostChromium(root), browserFactory = endpoint => new BrowserCdpClient({ debuggerEndpoint: endpoint }) } = {}) {
     this.root = root;
+    this.timing = displayTiming(root);
     this.chromium = chromium;
     this.browserFactory = browserFactory;
     this.browser = null;
     this.generation = 0;
     this.tabs = new Map();
     this.streams = new Map();
+    this.displays = new Map();
+    this.scales = new Map();
+    this.inputEpochs = new Map();
     this.restoring = false;
     this.keepaliveTarget = null;
     this.observedDocuments = new Map();
@@ -44,6 +52,7 @@ export class KernelBrowserHost {
     if (!Array.isArray(policy.values) || policy.values.length > 256 || policy.values.some(value => typeof value !== "string" || !value) || !Array.isArray(policy.targets)) throw new Error("MD-5: invalid protection policy");
     if (JSON.stringify(policy) === JSON.stringify(this.protection)) return {};
     this.protection = policy;
+    for (const stream of this.displays.values()) stream.invalidate();
     if (this.browser) this.browser.protectedValues = new Set(policy.values);
     // No frame captured before insertion/retirement can be returned afterward.
     for (const stream of this.streams.values()) {
@@ -66,6 +75,8 @@ export class KernelBrowserHost {
   }
   async start() {
     if (this.browser && this.chromium.child?.exitCode === null && this.chromium.child?.signalCode === null) return;
+    for (const stream of this.displays.values()) await stream.close();
+    this.displays.clear(); this.scales.clear(); this.inputEpochs.clear();
     await this.browser?.close();
     this.browser = null;
     for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
@@ -108,6 +119,8 @@ export class KernelBrowserHost {
   }
   async stop() {
     await this.chromium.stop(this.browser?.connection);
+    for (const stream of this.displays.values()) await stream.close();
+    this.displays.clear(); this.scales.clear();
     await this.browser?.close();
     this.browser = null;
     for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
@@ -154,23 +167,46 @@ export class KernelBrowserHost {
     return { ...state, tab_id: tabId };
   }
   async target(command) {
+    const started = timestamp();
     if (command.generation !== this.generation) throw new Error("MD-2: stale browser generation; refresh state");
     await this.reconcile();
+    this.timing('target_reconcile', started);
     const tab = this.tabs.get(command.tab_id);
     if (!tab) throw new Error("MD-2: host tab does not exist");
     return tab;
   }
-  async screenshot(tab) {
+  async displayTarget(command) {
+    if (command.generation !== this.generation) throw new Error("MD-DISPLAY: stale generation");
+    const stored = this.tabs.get(command.tab_id);
+    if (!stored) throw new Error("MD-DISPLAY: unknown tab");
+    const { connection, sessionId } = await this.browser.resolvePageTarget(stored.target_id);
+    const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
+    const document_id = frameTree?.frame?.loaderId;
+    if (typeof document_id !== "string" || !document_id) throw new Error("MD-DISPLAY: document unavailable");
+    // Observe this same native target without building an entire accessibility snapshot.
+    if (stored.document_id !== document_id) {
+      const { targetInfo } = await connection.send("Target.getTargetInfo", { targetId: stored.target_id });
+      Object.assign(stored, { document_id, url: targetInfo.url, title: targetInfo.title });
+      await this.save();
+    }
+    return { ...stored, document_id };
+  }
+  async screenshot(tab, clip = null) {
+    const started = timestamp();
+    const scale = this.scales.get(tab.tab_id) ?? 1;
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
     const data = await captureProtectedPage(this.browser, tab, this.protection.values,
       this.protection.targets.filter(target => target.kind === "browser"), async () => {
-        const { data } = await connection.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false }, sessionId);
+        const at = timestamp();
+        const { data } = await connection.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false, optimizeForSpeed: true, ...(clip ? { clip } : {}) }, sessionId);
+        this.timing(clip?.scale < 1 ? 'cdp_preview' : clip ? 'cdp_crop' : 'cdp_capture', at);
         return data;
-      });
+      }, scale, clip);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
+    this.timing('protected_capture', started);
     if (typeof data !== "string" || data.length > 4 * 1024 * 1024) throw new Error("MD-2: frame exceeds limit");
-    return { generation: this.generation, tab_id: tab.tab_id, document_id: tab.document_id, mime_type: "image/png", data_base64: data, width: 1280, height: 800 };
+    return { generation: this.generation, tab_id: tab.tab_id, document_id: tab.document_id, mime_type: "image/png", data_base64: data, width: Math.round((clip?.width ?? 1280) * scale * (clip?.scale ?? 1)), height: Math.round((clip?.height ?? 800) * scale * (clip?.scale ?? 1)) };
   }
   async subscribe(tab, boundFrames = false) {
     if (this.streams.size >= 16) throw new Error("MD-2: frame subscription limit reached");
@@ -223,6 +259,15 @@ export class KernelBrowserHost {
     stream.timer = setTimeout(() => { void this.removeStream(id); }, Math.max(1, stream.expires - Date.now()));
     stream.timer.unref?.();
   }
+  armDisplayExpiry(stream) {
+    clearTimeout(stream.timer);
+    stream.timer = setTimeout(() => {
+      if (this.displays.get(stream.subscription_id) !== stream) return;
+      this.displays.delete(stream.subscription_id);
+      void stream.close().catch(() => {});
+    }, Math.max(1, stream.expires - Date.now()));
+    stream.timer.unref?.();
+  }
   async removeStream(id) {
     const stream = this.streams.get(id);
     if (!stream) return;
@@ -247,6 +292,7 @@ export class KernelBrowserHost {
   async request(command, { signal } = {}) {
     const scope = command.focused_agent ? "focused-agent" : command.observed_by ?? "adapter";
     assertNotCancelled(signal);
+    if (command.op.startsWith("display_") && process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
     if (command.op === "stop") return this.stop();
     await this.start();
     assertNotCancelled(signal);
@@ -254,6 +300,24 @@ export class KernelBrowserHost {
     for (const [id, stream] of this.streams) if (Date.now() > stream.expires) await this.removeStream(id);
     if (["start", "state"].includes(command.op)) return this.observe(await this.reconcile(), null, scope);
     if (command.op === "open") return this.observe(await this.open(command.url, undefined, { signal }), null, scope);
+    for (const [id, stream] of this.displays) if (Date.now() > stream.expires) { await stream.close(); this.displays.delete(id); }
+    const encodedCapture = command.op === "screenshot" && typeof command.display_subscription_id === "string";
+    if (encodedCapture || command.op === "display_attach" || (command.op === "unsubscribe" && this.displays.has(command.subscription_id))) {
+      const stream = this.displays.get(command.display_subscription_id ?? command.subscription_id);
+      if (!stream || stream.observed_by !== scope || command.generation !== this.generation) throw new Error("MD-DISPLAY: stale or foreign display");
+      if (command.op === "unsubscribe") { await stream.close(); this.displays.delete(command.subscription_id); return { generation: this.generation, unsubscribed: true }; }
+      stream.expires = Date.now() + 60_000;
+      this.armDisplayExpiry(stream);
+      if (command.op === "display_attach") return { attached: true, generation: this.generation };
+      const tab = await this.displayTarget({ tab_id: stream.tab_id, generation: command.generation });
+      stream.capture ??= new DisplayCapture((clip) => this.screenshot(tab, clip), stream.device_scale_factor, this.timing);
+      const source = await stream.capture.next({ ...tab, input_epoch: this.inputEpochs.get(tab.tab_id) ?? 0 }, this.protection, stream.previous && command.after_sequence === stream.sequence, !stream.exact);
+      const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
+      try { await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id); }
+      catch (error) { stream.invalidate(); throw error; }
+      const frame = await stream.frame(source, source.document_id, command.after_sequence);
+      return { generation: this.generation, frame_sent: frame !== null, display_frame: frame };
+    }
     if (["poll", "unsubscribe"].includes(command.op)) {
       if (command.generation !== this.generation || !this.streams.has(command.subscription_id)) throw new Error("MD-2: stale frame subscription");
       const stream = this.streams.get(command.subscription_id);
@@ -265,7 +329,27 @@ export class KernelBrowserHost {
     const tab = await this.target(command);
     assertNotCancelled(signal);
     const binding = { target_id: tab.target_id, document_id: tab.document_id };
+    if (command.op === "display_subscribe") {
+      if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
+      if (!Array.isArray(command.codecs) || !command.codecs.includes("png") || command.codecs.length > 8 ||
+        !Number.isInteger(command.bitrate) || command.bitrate < 500_000 || command.bitrate > 8_000_000 ||
+        ![1, 2].includes(command.device_scale_factor) || this.displays.size >= 8) throw new Error("MD-DISPLAY: invalid display negotiation");
+      const scale = this.scales.get(tab.tab_id);
+      if (scale && scale !== command.device_scale_factor) throw new Error("MD-DISPLAY: canonical tab geometry is already selected");
+      const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
+      await connection.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: command.device_scale_factor, mobile: false }, sessionId);
+      this.scales.set(tab.tab_id, command.device_scale_factor);
+      const id = `host-display-${randomUUID()}`;
+      const codec = command.codecs.includes("vp09.00.10.08") ? "vp09.00.10.08" : "png";
+      const stream = new DisplayStream({ subscription_id: id, tab_id: tab.tab_id, observed_by: scope, bitrate: command.bitrate, device_scale_factor: command.device_scale_factor, codec }, { timing: this.timing });
+      this.displays.set(id, stream);
+      this.armDisplayExpiry(stream);
+      return { generation: this.generation, subscription_id: id, codec, bitrate: command.bitrate, device_scale_factor: command.device_scale_factor };
+    }
     if (command.op === "close") {
+      for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id) { await stream.close(); this.displays.delete(id); }
+      this.scales.delete(tab.tab_id);
+      this.inputEpochs.delete(tab.tab_id);
       for (const [id, stream] of this.streams) {
         if (stream.tabId === tab.tab_id) await this.removeStream(id);
       }
@@ -281,7 +365,8 @@ export class KernelBrowserHost {
     if (command.op === "input") {
       const observed = command.document_id ?? (command.focused_agent ? null : this.observedDocuments.get(scope)?.get(tab.tab_id));
       if (!observed || observed !== tab.document_id) throw new Error("MD-3: stale input document; observe the tab again");
-      try { await inputHostTab(this.browser, tab, command.input, { signal }); }
+      const at = timestamp();
+      try { await inputHostTab(this.browser, tab, command.input, { signal }); this.timing('cdp_input', at); }
       catch (error) {
         if (["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) {
           // Clear any dispatched key/button state before another actor can use
@@ -290,7 +375,11 @@ export class KernelBrowserHost {
         }
         throw error;
       }
-      return this.observe(await this.reconcile(), null, scope);
+      const post = timestamp();
+      this.inputEpochs.set(tab.tab_id, (this.inputEpochs.get(tab.tab_id) ?? 0) + 1);
+      const result = this.observe(await this.reconcile(), null, scope);
+      this.timing('input_post_reconcile', post);
+      return result;
     }
     if (command.op === "screenshot") {
       const frame = await this.screenshot(tab);
@@ -319,7 +408,9 @@ export class KernelBrowserHost {
         return { id: request.id, ok: true, result: { inserted: true } };
       }
       if (request.method === "host.browser") {
+        const at = timestamp();
         const result = await this.request(request.params, { signal });
+        this.timing(request.params.op === 'input' ? 'host_input' : 'host_capture_or_control', at);
         // Structured controller observations scrub before compaction; metadata
         // and other host replies receive the same protection at this boundary.
         if (!["screenshot", "poll"].includes(request.params?.op)) {

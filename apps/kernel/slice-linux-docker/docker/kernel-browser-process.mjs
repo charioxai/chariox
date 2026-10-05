@@ -23,12 +23,13 @@ export async function executable(environment = process.env, platform = process.p
   throw new Error("MD-2: install native Chromium or set CHARIOX_KERNEL_BROWSER_EXECUTABLE");
 }
 
-export function launchArguments(profile, headless) {
+export function launchArguments(profile, headless, display = false) {
   return [
     `--user-data-dir=${profile}`, "--remote-debugging-address=127.0.0.1",
     "--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check",
     "--disable-session-crashed-bubble", "--disable-background-networking",
-    "--window-size=1280,800", ...(headless ? ["--headless=new"] : []), "about:blank",
+    "--window-size=1280,800", ...(headless ? ["--headless=new"] : []),
+    ...(display ? ["--disable-frame-rate-limit"] : []), "about:blank",
   ];
 }
 
@@ -63,7 +64,7 @@ export class HostChromium {
       if (error.code !== "ENOENT") throw error;
     });
     const child = spawn(await executable(environment), launchArguments(profile,
-      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1"), {
+      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1"), {
       stdio: "ignore", env: environment,
     });
     this.child = child;
