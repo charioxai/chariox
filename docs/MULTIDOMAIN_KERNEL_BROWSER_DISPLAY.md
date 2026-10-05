@@ -582,3 +582,17 @@ migration are separate gates. PNG-only oversized first-frame/high-entropy pages
 retain the bounded-packet limitation; this campaign negotiated VP9 + PNG.
 Owner decisions remain the motion/WAN/fidelity budgets and final transport.
 No MD/MP acceptance item is closed by these component receipts.
+
+MD-DISPLAY-02 campaign replay (Linux root with `ip`, `tc`, `ethtool`, Xvfb and
+sandbox-capable Chrome already installed; supplied public tools include TypeScript):
+
+```sh
+MD_CASES=local:docs,wan40:docs,wan80:docs,wan150:docs,local:canvas,local:video,local:scroll \
+  MD_MOTION_MS=10000 node apps/browser-display/campaign.mjs \
+  /absolute/kernel-test-binary /absolute/external/evidence \
+  /absolute/node-tools /absolute/pyav-tools
+```
+
+The campaign aggregates failing/null child exits and interruptions into a failing
+shell status. Evidence directories must be new per run; retain previous RED
+receipts. Only exact namespace names created by that campaign may be removed.
