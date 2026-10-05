@@ -19,7 +19,7 @@ test('MD-DISPLAY crop pixels stay native; unchanged preview verifies missed fine
   // A one-pixel change not represented in the thumbnail must be read back.
   pixels[(700*1280+1000)*4]=0;calls.length=0;
   const verified=await capture.next(tab,policy,true);
-  assert.deepEqual(calls,['preview','full']);assert.deepEqual(verified.pixels.pixels,pixels);
+  assert.deepEqual(calls,['full']);assert.deepEqual(verified.pixels.pixels,pixels);
   calls.length=0;await capture.next(tab,{},true);assert.deepEqual(calls,['preview','full'],'policy replacement fences cached pixels');
   calls.length=0;await capture.next(tab,policy,false);assert.deepEqual(calls,['preview','full'],'lost credit base fences cache');
 });

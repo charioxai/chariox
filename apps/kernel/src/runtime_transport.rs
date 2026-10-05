@@ -1474,7 +1474,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 let outgoing = match response {
                     Ok(response) => {
                         let mut response = serde_json::to_value(response).unwrap_or(Value::Null);
-                        if let Some((_, sequence, event)) =
+                        if let Some((_, _, event)) =
                             crate::transport::kernel_browser_display::take_display_event(
                                 &mut response,
                             )
@@ -1485,7 +1485,9 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                                 &close_requested,
                                 &runtime.transport_health,
                                 KernelOutgoingFrame::Event {
-                                    event_id: sequence,
+                                    // MD-DISPLAY-04: no durable replay cursor.
+                                    // Per-display sequence lives inside frame.
+                                    event_id: 0,
                                     event: Box::new(event),
                                 },
                                 None,

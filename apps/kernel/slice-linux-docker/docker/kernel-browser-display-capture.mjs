@@ -21,20 +21,21 @@ export function changedClip(before, after, scale) {
 }
 export class DisplayCapture {
   constructor(capture, scale, timing = () => {}) { this.capture = capture; this.scale = scale; this.timing = timing; this.invalidate(); }
-  invalidate() { this.previous = null; this.preview = null; this.document = null; this.policy = null; }
-  async next(tab, policy, reusable) {
+  invalidate() { this.previous = null; this.preview = null; this.document = null; this.policy = null; this.needsVerification = false; this.inputEpoch = null; }
+  async next(tab, policy, reusable, forceFull = false) {
     if (!reusable || this.document !== tab.document_id || this.policy !== policy) this.invalidate();
     const capture = async clip => {
       const source = await this.capture(clip);
       if (source.document_id !== tab.document_id || source.tab_id !== tab.tab_id) { this.invalidate(); throw Error('MD-DISPLAY: capture binding changed'); }
       return source;
     };
-    const previewSource = await capture({ x:0,y:0,width:1280,height:800,scale:factor });
+    const verify = forceFull || (this.needsVerification && tab.input_epoch === this.inputEpoch);
+    const previewSource = verify ? null : await capture({ x:0,y:0,width:1280,height:800,scale:factor });
     let at = timestamp();
-    const preview = decodePng(previewSource.data_base64,this.scale);
-    if (preview.width !== 1280*this.scale*factor || preview.height !== 800*this.scale*factor) throw Error('MD-DISPLAY: preview geometry changed');
+    const preview = previewSource ? decodePng(previewSource.data_base64,this.scale) : this.preview;
+    if (previewSource && (preview.width !== 1280*this.scale*factor || preview.height !== 800*this.scale*factor)) throw Error('MD-DISPLAY: preview geometry changed');
     this.timing('preview_decode',at);
-    const clip = this.previous && this.preview && changedClip(this.preview,preview,this.scale*factor);
+    const clip = !verify && this.previous && this.preview && changedClip(this.preview,preview,this.scale*factor);
     let source, pixels;
     if (clip) {
       source = await capture(clip); at = timestamp();
@@ -54,6 +55,7 @@ export class DisplayCapture {
       source = { ...source, pixels };
     }
     this.previous = pixels; this.preview = preview; this.document = tab.document_id; this.policy = policy;
+    this.needsVerification = Boolean(clip); this.inputEpoch = tab.input_epoch;
     return source;
   }
 }

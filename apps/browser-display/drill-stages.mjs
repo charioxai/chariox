@@ -8,7 +8,7 @@ export function summarizeStages(receipt) {
   };
   for (const probe of receipt.probes ?? []) {
     const spans = [...(receipt.host_timings ?? []), ...(receipt.kernel_timings ?? []), ...(receipt.client_timings ?? [])]
-      .filter(span => span.started_ms >= probe.started_ms - 2 && span.ended_ms <= probe.presented_ms + 2);
+      .filter(span => span.started_ms >= probe.started_ms - 2 && span.ended_ms <= Math.max(probe.presented_ms,probe.credit_released_ms??0) + 2);
     for (const span of spans) add(span.stage, span.duration_ms);
     add('input_to_draw', probe.drawn_ms - probe.started_ms);
     add('draw_to_raf', probe.presented_ms - probe.drawn_ms);

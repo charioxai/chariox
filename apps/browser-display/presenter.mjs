@@ -25,17 +25,17 @@ export class BrowserDisplayPresenter {
     if (frame.kind === 'tiles' && (frame.base_sequence !== this.sequence || frame.document_id !== this.documentId)) throw new Error('MD-DISPLAY: repair base lost; subscribe afresh');
     this.busy = true;
     const at = performance.timeOrigin + performance.now();
-    const back = new OffscreenCanvas(frame.width, frame.height), context = back.getContext('2d');
+    const patch = frame.kind === 'tiles';
+    if (patch && (this.canvas.width !== frame.width || this.canvas.height !== frame.height)) { this.busy = false; throw new Error('MD-DISPLAY: repair canvas changed'); }
+    const back = patch ? null : new OffscreenCanvas(frame.width, frame.height), context = back?.getContext('2d');
     const bitmaps = [];
     try {
       if (frame.kind === 'tiles') {
         if (!Array.isArray(frame.tiles) || frame.tiles.length > 260) throw new Error('MD-DISPLAY: tile count');
-        context.drawImage(this.canvas, 0, 0);
         for (const tile of frame.tiles) {
           if (![tile.x, tile.y, tile.width, tile.height].every(Number.isSafeInteger) || tile.x < 0 || tile.y < 0 || tile.width < 1 || tile.width > 128 || tile.height < 1 || tile.height > 128 || tile.x + tile.width > frame.width || tile.y + tile.height > frame.height) throw new Error('MD-DISPLAY: tile geometry');
           const bitmap = await createImageBitmap(new Blob([bytes(tile.data_base64)], { type: 'image/png' })); bitmaps.push(bitmap);
           if (bitmap.width !== tile.width || bitmap.height !== tile.height) throw new Error('MD-DISPLAY: tile dimensions');
-          context.drawImage(bitmap, tile.x, tile.y);
         }
       } else if (frame.kind === 'png') {
         const bitmap = await createImageBitmap(new Blob([bytes(frame.data_base64)], { type: 'image/png' })); bitmaps.push(bitmap);
@@ -56,8 +56,14 @@ export class BrowserDisplayPresenter {
       if (this.closed) return false;
       this.onTiming('client_decode', at);
       const presented = performance.timeOrigin + performance.now();
-      this.canvas.width = frame.width; this.canvas.height = frame.height;
-      this.canvas.getContext('2d').drawImage(back, 0, 0);
+      if (patch) {
+        // All patches are decoded and validated before this synchronous commit.
+        const front = this.canvas.getContext('2d');
+        for (let i = 0; i < bitmaps.length; i++) front.drawImage(bitmaps[i], frame.tiles[i].x, frame.tiles[i].y);
+      } else {
+        this.canvas.width = frame.width; this.canvas.height = frame.height;
+        this.canvas.getContext('2d').drawImage(back, 0, 0);
+      }
       this.sequence = frame.sequence; this.documentId = frame.document_id;
       this.onTiming('client_present', presented);
       return true;
@@ -99,6 +105,13 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     });
     // Attach rejection immediately even when request fails first.
     event.catch(() => {});
+    const presented = event.then(async frame => {
+      if (!frame) return null;
+      if (!await presenter.present(frame)) throw new Error('MD-DISPLAY: rejected frame');
+      options.onPresented?.(frame);
+      return frame;
+    });
+    presented.catch(() => {});
     try {
       const at = performance.timeOrigin + performance.now();
       const receipt = await request({ op: 'display_next', subscription_id: binding.subscription_id, generation: binding.generation, after_sequence: presenter.sequence });
@@ -107,9 +120,9 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
       // Request receipts identify whether a frame was sent.
       if (!receipt.frame_sent) { pending?.resolve(null); return null; }
       const waitAt = performance.timeOrigin + performance.now();
-      const frame = await event;
+      const frame = await presented;
       onTiming('client_event_wait', waitAt);
-      await presenter.present(frame); return frame;
+      return frame;
     } finally { clearTimeout(timer); pending = null; creditOutstanding = false; }
   };
   return { binding, presenter, next,
