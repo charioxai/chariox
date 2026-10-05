@@ -23,3 +23,4 @@ export * from "./ipc-config-requests.js"
 export * from "./ipc-kernel-browser-requests.js"
 
 export * from "./notes.js"
+export * from "./ipc-screenshot-requests.js"

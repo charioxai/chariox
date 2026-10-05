@@ -10,6 +10,7 @@ import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { assertNotCancelled, assertCurrentDocument } from "./browser-controller-actions.mjs";
+import { captureRegionMasks } from "./kernel-browser-region-protection.mjs";
 import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
 
 import { DisplayStream } from "./kernel-browser-display.mjs";
@@ -192,11 +193,12 @@ export class KernelBrowserHost {
     }
     return { ...stored, document_id };
   }
-  async screenshot(tab, clip = null) {
+  async screenshot(tab, clip = null, protectedCapture = false) {
     const started = timestamp();
     const scale = this.scales.get(tab.tab_id) ?? 1;
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
+    const regionMasks = protectedCapture ? await captureRegionMasks(connection, sessionId) : null;
     const data = await captureProtectedPage(this.browser, tab, this.protection.values,
       this.protection.targets.filter(target => target.kind === "browser"), async () => {
         const at = timestamp();
@@ -205,9 +207,10 @@ export class KernelBrowserHost {
         return data;
       }, scale, clip);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
+    const protected_regions = protectedCapture ? await regionMasks.afterCapture() : undefined;
     this.timing('protected_capture', started);
     if (typeof data !== "string" || data.length > 4 * 1024 * 1024) throw new Error("MD-2: frame exceeds limit");
-    return { generation: this.generation, tab_id: tab.tab_id, document_id: tab.document_id, mime_type: "image/png", data_base64: data, width: Math.round((clip?.width ?? 1280) * scale * (clip?.scale ?? 1)), height: Math.round((clip?.height ?? 800) * scale * (clip?.scale ?? 1)) };
+    return { generation: this.generation, tab_id: tab.tab_id, document_id: tab.document_id, mime_type: "image/png", data_base64: data, width: Math.round((clip?.width ?? 1280) * scale * (clip?.scale ?? 1)), height: Math.round((clip?.height ?? 800) * scale * (clip?.scale ?? 1)), ...(protectedCapture ? { protected_regions } : {}) };
   }
   async subscribe(tab, boundFrames = false) {
     if (this.streams.size >= 16) throw new Error("MD-2: frame subscription limit reached");
@@ -389,7 +392,7 @@ export class KernelBrowserHost {
       return result;
     }
     if (command.op === "screenshot") {
-      const frame = await this.screenshot(tab);
+      const frame = await this.screenshot(tab, null, command._capture_protection === true);
       // MD-3: explicit binding is an internal display/MCP seam. Legacy 417
       // still emits its existing frame shape until the coordinator adapter lands.
       if (!command.focused_agent && !command.bound_frames) delete frame.document_id;
