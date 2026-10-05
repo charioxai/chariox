@@ -1,3 +1,17 @@
+# MP-11 latest review handoff — 2026-10-05
+
+MP-11 #879 round 2: `2358f266b` fixes the protocol-435 MCP consumer regression using explicit private provider execution through the existing kernel terminal path. Fail-first 10/10 consumer failures; focused 45/45 and adjacent 94/94 pass; CLI build passes; 26/26 Node entrypoints parse. Public MCP grant admission and observed process provenance replace private metadata reads; admission is not labelled tool execution. Evidence: `/root/.codex/evidence/browser-resume-20260930/mp11fix-879-consumers/REPORT.md`.
+
+MP-11 #868 review mapping on `mp11/fixes`: import/default captured registration/generation retirement fixes in `0b122df01`; Linux regression scope in `63059cc67`; receipts in `6cfb8fdde`. Focused 82/82; lint 36 allowed/0 violations. Full root Node entry retained RED (628 pass, 6 prerequisite failures, 24 skip); all six first failing seams pass focused prerequisite reruns, including owned disposable Unix-role container. Evidence: `/root/.codex/evidence/browser-resume-20260930/mp11fix-review/REPORT.md`.
+
+MP-11 publication isolation on `mp11/publication-run-isolation`, exact base `74e50b787`: fail-first `a08e6c687`, fix `6d1ddae65`. Cross-caller status/result/trace/SSE reads reproduced, then all lookups and refreshed reads bound to publication/caller identity. Full server tests 99/99. Evidence: `/root/.codex/evidence/browser-resume-20260930/mp11fix-publication/REPORT.md`.
+
+MP-11 Rust evidence: focused adapter launch tests passed 3/3 before the input-digest CJS addition; final CJS tested as a real owned subprocess. Redundant final Rust rerun cancelled while childless and still waiting for the shared compile slot (exit 143); no final-source Rust rerun claimed. Enumerated own compiler/dist outputs removed, protected infrastructure untouched.
+
+MP-11 inbox: #879 OAuth/shebang round 1 already addressed at published `1f691871d`; 13:30 three-P2 #868, 14:03 isolation and 14:30 #879 round 2 addressed above. No new inbox entry at last milestone check. The older 08:13 broader Rust/shell signal coverage item is a separate coordinator queue and is not claimed complete by this explicit review round. No protocol allocation or owner decision required for this batch. Commits local only, [skip ci]; no publishing/deployment/live provider-account acceptance.
+
+---
+
 # MP-11 F7 / PR #879 — FINAL local handoff
 
 MP-11 implementation head `5a568f3bc64995d9d3d63ba901ff51f4c50f7335`, branch `mp11/credential-access-fixes`, base `74e50b787`, previous published review head `ef8fc7621`. Local protocol **435**, peer **70** unchanged; no peer provider-run shape change or client minimum bump. Local [skip ci] commits only. F7 and both #879 findings are handled at source/fixture scope.
