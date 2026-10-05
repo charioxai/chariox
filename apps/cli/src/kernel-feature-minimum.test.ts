@@ -44,3 +44,12 @@ test("unknown versions and unrelated requests retain existing transport behavior
   }
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ ListSessions: null }, 388))
 })
+
+
+test("user App display uses allocated 418, browser surface 417; old kernels fail before input", () => {
+  for (const name of ["OpenUserAppView", "ListUserAppViews", "CloseUserAppView", "GetUserAppViewFrontend", "CallUserAppView", "SubscribeUserAppViews", "AnswerUserDomainInteraction"]) {
+    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 417), /418/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 418))
+  }
+  assert.throws(() => requireKernelFeatureProtocol({KernelBrowser: {command:{op:"input"}}},416), /417/)
+})
