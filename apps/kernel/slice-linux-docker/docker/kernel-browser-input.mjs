@@ -32,8 +32,11 @@ export async function inputHostTab(browser, tab, input, { signal } = {}) {
         await sendInput("Input.insertText", { text: input.text });
       } else if (input.kind === "key") {
         if (!["Tab", "Enter", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
-        await sendInput("Input.dispatchKeyEvent", { type: "keyDown", key: input.key });
-        await sendInput("Input.dispatchKeyEvent", { type: "keyUp", key: input.key });
+        const key = { key: input.key, code: input.key,
+          ...(input.key === "Enter" ? { windowsVirtualKeyCode: 13 } : {}) };
+        await sendInput("Input.dispatchKeyEvent", { type: "keyDown", ...key,
+          ...(input.key === "Enter" ? { text: "\r", unmodifiedText: "\r" } : {}) });
+        await sendInput("Input.dispatchKeyEvent", { type: "keyUp", ...key });
       } else {
         if (!Number.isInteger(input.x) || input.x < 0 || input.x >= viewport.css_width || !Number.isInteger(input.y) || input.y < 0 || input.y >= viewport.css_height) throw new Error("MD-2: pointer outside viewport");
         if (input.kind === "click") {

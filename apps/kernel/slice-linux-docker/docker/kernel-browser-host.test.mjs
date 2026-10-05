@@ -425,3 +425,13 @@ test("MD integration: target close revokes its frame subscription", () => using(
   assert(sent.some(call=>call.method==="Page.stopScreencast"));
   await assert.rejects(host.request({op:"poll",...stream}),/stale/);
 }));
+
+
+test("human Enter carries Chromium's native text event; key-up never retypes it", () => using(async ({ host, sent }) => {
+  const tab = await host.request({ op: "open", url: "about:blank" });
+  await host.request({ op: "input", tab_id: tab.tab_id, generation: tab.generation, input: { kind: "key", key: "Enter" } });
+  assert.deepEqual(sent.filter(call => call.method === "Input.dispatchKeyEvent").map(call => call.params), [
+    { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r", unmodifiedText: "\r" },
+    { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
+  ]);
+}));
