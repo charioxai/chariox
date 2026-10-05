@@ -65,11 +65,12 @@ export async function browseWaitingRoomKernelWorkspace(
   controlClient: LocalIpcClient,
   target: KernelClientTarget,
   applyInventory: (inventory: WaitingRoomInventory, client: LocalIpcClient) => Promise<void>,
+  getInventory: (client: LocalIpcClient) => Promise<WaitingRoomInventory> = getWaitingRoomInventory,
 ) {
   const connection = await openWaitingRoomKernelClient(controlClient, target)
   if (!connection) return
   try {
-    const inventory = await getWaitingRoomInventory(connection.client)
+    const inventory = await getInventory(connection.client)
     if (!target.isActive()) return
     if (inventory.kernelId !== target.kernelRef || inventory.machineId !== target.machineRef) {
       throw new Error("workspace inventory identity does not match the selected managed machine")
@@ -86,6 +87,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
   client: MutableLocalIpcClient
   cloudClient?: CloudClient
   kernelConnected?: () => boolean
+  getInventory?: (client: LocalIpcClient) => Promise<WaitingRoomInventory>
   clientId: string
   initialTargetKernelId?: string | null
   homeKernelId(): string | null
@@ -111,7 +113,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
     const sourceMachineId = connectedMachineId
     if (!targetKernelRef || targetKernelRef === "local" || targetKernelRef === currentKernelId) {
       if (connected && targetKernelRef && targetKernelRef !== "local") {
-        const inventory = await getWaitingRoomInventory(deps.client)
+        const inventory = await (deps.getInventory ?? getWaitingRoomInventory)(deps.client)
         if (!isActive()) return false
         connected(inventory)
       }
@@ -132,7 +134,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
     }
     let targetInventory: WaitingRoomInventory
     try {
-      targetInventory = await getWaitingRoomInventory(nextClient)
+      targetInventory = await (deps.getInventory ?? getWaitingRoomInventory)(nextClient)
     } catch (error) {
       await nextClient.close()
       throw error

@@ -1,3 +1,4 @@
+import { getCloudClientControlProfile } from "./cloud-client-control.js"
 import { appHostOperationIds, type AppHostTerminal } from "./app-host-action.js"
 import { getAppInstallationRequest } from "@chariox/kernel-client/ipc-requests"
 import type { AppInstallationSummary } from "@chariox/kernel-client/kernel-types"
@@ -593,12 +594,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getCloudRelayProfile: async () => deps.kernelConnected?.() === false
       ? await deps.cloudClient?.profile() ?? null
       : await getKernelCloudRelayProfile(client),
-    getCloudControlProfile: async () => {
-      const human = await deps.cloudClient?.humanProfile() ?? null
-      const kernel = deps.kernelConnected?.() === false ? null : await getKernelCloudRelayProfile(client)
-      if (human && kernel && (human.accountId !== kernel.accountId || new URL(human.apiUrl).origin !== new URL(kernel.apiUrl).origin)) throw new Error("Cloud account conflict; use a separate CHARIOX_HOME profile")
-      return human
-    },
+    getCloudControlProfile: () => getCloudClientControlProfile(deps.cloudClient, deps.kernelConnected?.() === false ? undefined : client),
     connectCloudRelay: () => connectKernelCloudRelay(client),
     saveCloudRelayProfile: async (profile) => {
       await saveRelayCloudProfile(profile)

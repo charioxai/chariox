@@ -1,4 +1,5 @@
 import { CloudClientCollaboration } from "./cloud-client-collaboration.js"
+import type { CloudControlProfile } from "./cloud-control-auth.js"
 import { RelayAuthRenewal } from "@chariox/kernel-client/relay-auth-renewal"
 import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { CloudClientCredentialStore, type CloudClientCredential } from "./cloud-client-credential-store.js"
@@ -26,10 +27,25 @@ export class CloudClient {
   constructor(readonly store = new CloudClientCredentialStore(), private readonly identity: () => RelayClientIdentity = () => createCliRelayIdentityStore().getOrCreate()) {}
 
   async profile(): Promise<RelayCloudProfile | null> { return publicRelayCloudProfile((await this.store.load())?.profile) }
-  async humanProfile(): Promise<(RelayCloudProfile & { cloudSessionToken: string }) | null> {
-    if (!await this.store.load()) return null
-    const value = await this.store.session(this.identity().publicKeyThumbprint)
-    return { ...publicRelayCloudProfile(value.profile)!, cloudSessionToken: value.accessToken }
+  async humanProfile(): Promise<CloudControlProfile | null> {
+    const value = await this.store.load()
+    if (!value) return null
+    const profile = publicRelayCloudProfile(value.profile)!
+    return {...profile, authenticatedFetch: (url, options) => this.authenticated(async credential => {
+      const target = new URL(url)
+      if (credential.profile.accountId !== profile.accountId || credential.profile.userId !== profile.userId || credential.clientId !== value.clientId || new URL(credential.profile.apiUrl).origin !== new URL(profile.apiUrl).origin || target.origin !== new URL(profile.apiUrl).origin) throw new CloudClientAuthError("profile_conflict")
+      if (target.username || target.password || (target.protocol !== "https:" && !(target.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(target.hostname)))) throw new CloudClientAuthError("insecure_auth_endpoint")
+      const headers = new Headers(options?.headers)
+      headers.set("accept", "application/json"); headers.set("content-type", "application/json")
+      headers.set("authorization", `Bearer ${credential.accessToken}`)
+      const response = await fetch(target, {...options, headers, redirect: "error", signal: options?.signal ?? AbortSignal.timeout(20_000)})
+      if (!response.ok) {
+        const body = await response.clone().json().catch(() => null)
+        const code = body?.error?.code
+        if (["session_invalid", "client_revoked", "refresh_reuse_detected"].includes(code)) throw new CloudClientAuthError(code)
+      }
+      return response
+    })}
   }
   async login(apiUrl: string, show: (verification: { verificationUrl: string; userCode: string }) => Promise<void> | void, expectedAccountId?: string): Promise<RelayCloudProfile> {
     const previous = await this.store.load()
