@@ -9,3 +9,5 @@ mod remote_queue;
 mod subscriptions;
 mod support;
 mod worker_steer_receipt_restart;
+
+pub(super) mod vault_drill;

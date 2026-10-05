@@ -2,6 +2,8 @@
 use super::*;
 use crate::local::{KernelBrowserCommand, KernelBrowserInput, KernelBrowserRequest};
 use serde_json::{json, Value};
+#[path = "kernel_browser/vault_checks.rs"]
+mod vault_checks;
 
 fn run_test(test: fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>) {
     tokio::runtime::Builder::new_multi_thread()
@@ -412,8 +414,9 @@ async fn live_check() {
                         .set_read_timeout(Some(Duration::from_secs(1)))
                         .unwrap();
                     let mut request = [0; 4096];
-                    let _ = socket.read(&mut request);
-                    let body = "<!doctype html><title>MD-4 fixture</title><input style='position:absolute;left:20px;top:20px;width:300px;height:40px' oninput='document.querySelector(\"p\").textContent=this.value'><p style='margin-top:100px'>MD-4 ready</p><input id='password' type='password' style='position:absolute;left:20px;top:180px;width:300px;height:40px' oninput='document.querySelector(\"p\").textContent=this.value'>";
+                    let count = socket.read(&mut request).unwrap_or(0);
+                    let is_child = String::from_utf8_lossy(&request[..count]).starts_with("GET /child ");
+                    let body = if is_child { "<!doctype html><input id=framepassword type=password style=\"position:absolute;left:20px;top:20px;width:300px;height:40px\" oninput='document.querySelector(\"p\").textContent=this.value'><p id=echo style=\"margin-top:100px\">Child ready</p>".to_string() } else { format!("<!doctype html><iframe src=\"http://localhost:{}/child\" style=\"position:absolute;left:20px;top:400px;width:400px;height:300px\"></iframe>", address.port()) + "<!doctype html><title>MD-4 fixture</title><input style='position:absolute;left:20px;top:20px;width:300px;height:40px' oninput='document.querySelector(\"p\").textContent=this.value'><p style='margin-top:100px'>MD-4 ready</p><input id='password' type='password' style='position:absolute;left:20px;top:180px;width:300px;height:40px' oninput='document.querySelector(\"p\").textContent=this.value'>" };
                     let _ = write!(
                         socket,
                         "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -466,6 +469,12 @@ async fn live_check() {
             metadata: None,
         })
         .unwrap();
+    crate::credential::CharioxCredentialRegistry::user().unwrap().upsert(crate::config::UserCredentialConfig {
+        id: "md5-child-login".into(), description: None,
+        source: crate::config::UserCredentialSourceConfig::Vault {key: "md5-login".into()},
+        allowed_hosts: vec!["localhost".into()], allowed_uses: vec![crate::config::UserCredentialUse::Browser],
+        injection: crate::config::UserCredentialInjectionConfig::Browser, metadata: None,
+    }).unwrap();
     let secret_service = crate::secret::RuntimeSecretService::with_vault_config(
         vec![],
         &config.user_config.credential_vault,
@@ -490,7 +499,8 @@ async fn live_check() {
         "default",
     );
     let token = run.runtime_mcp_auth_token().unwrap().to_string();
-    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let second = spawn_test_agent(&mut app, session.id(), "unfocused", "dev-stub");
+    let router = Arc::new(CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4));
     let result = std::panic::AssertUnwindSafe(async {
         let opened = human(
             &router,
@@ -789,14 +799,16 @@ async fn live_check() {
                 "MD-5: invalid secret target must be refused"
             );
         }
-        let paste = router
-            .dispatch_authenticated_runtime_tool_call(
-                &token,
-                "chariox.kernel_browser_paste_secret",
-                secret_args,
-            )
-            .await
-            .unwrap();
+        let pending_paste = router.dispatch_authenticated_runtime_tool_call(&token, "chariox.kernel_browser_paste_secret", secret_args.clone());
+        tokio::pin!(pending_paste);
+        assert!(tokio::time::timeout(Duration::from_millis(50), &mut pending_paste).await.is_err(), "Vault must require owner approval even while unlocked");
+        let approval = router.runtime_state.session_snapshot(session.id()).await.unwrap().active_interactions().first().unwrap().id().to_string();
+        let mut relay = crate::transport::relay_client::VaultRelayDrill::start(Arc::clone(&router), &config).await;
+        let answered = relay.request(LocalDaemonRequest::RespondToInteraction(crate::local::RespondToInteractionRequest {session_id: session.id().into(), interaction_id: approval.clone(), choice_id: "allow".into(), custom_reply: None, passkey: Some(crate::local::ApprovalPasskey::new("synthetic-md5-passphrase")), passkey_remember_minutes: None})).await;
+        assert!(matches!(answered, LocalDaemonResponse::InteractionResponded {..}));
+        relay.close().await;
+        let paste = pending_paste.await.unwrap();
+        assert!(router.dispatch_authenticated_runtime_tool_call(&token, "chariox.kernel_browser_paste_secret", secret_args).await.is_err(), "same document/node receipt must not execute again");
         assert_eq!(paste.payload, json!({"inserted":true}));
         let protected = human(
             &router,
@@ -826,6 +838,7 @@ async fn live_check() {
             .unwrap();
         assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
         std::fs::write(root.join("MD5-masked.png"), png).unwrap();
+        Box::pin(vault_checks::check(&router, &config, &token, session.id(), agent.id(), second.id(), &id, generation, &root, &format!("http://{address}/fixture"))).await;
         // Delete via the existing product lifecycle. Old page echoes remain scrubbed.
         router
             .runtime_state
@@ -962,7 +975,7 @@ async fn live_check() {
             .await
             .unwrap();
         assert_eq!(actors["input_ownership"][0]["target"]["id"], id);
-        std::fs::write(root.join("MD4-RESTART.json"), serde_json::to_vec(&json!({"tab_id": id, "generation": recovered["generation"], "url":format!("http://{address}/fixture")})).unwrap()).unwrap();
+        std::fs::write(root.join("MD4-RESTART.json"), serde_json::to_vec(&json!({"tab_id": id, "generation": recovered["generation"], "url":recovered["tabs"].as_array().unwrap().iter().find(|tab|tab["tab_id"]==id).unwrap()["url"]})).unwrap()).unwrap();
     });
     use futures_util::FutureExt;
     let outcome = result.catch_unwind().await;

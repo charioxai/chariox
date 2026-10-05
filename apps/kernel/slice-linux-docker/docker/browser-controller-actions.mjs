@@ -49,7 +49,7 @@ export async function performBrowserAction({
     attempts += 1;
     await assertContext();
     await assertCurrentDocument(connection, sessionId, targetId, documentId);
-    const objectId = await resolveBackendNode(connection, sessionId, backendNodeId);
+    const objectId = await resolveBackendNode(connection, sessionId, backendNodeId, normalizedAction.expectedDocumentUrl != null);
     try {
       const actionability = await inspectActionability(connection, sessionId, objectId);
       if (actionability.state === "detached") {
@@ -171,12 +171,30 @@ export async function assertCurrentDocument(connection, sessionId, targetId, doc
   }
 }
 
-async function resolveBackendNode(connection, sessionId, backendNodeId) {
+async function resolveBackendNode(connection, sessionId, backendNodeId, isolated = false) {
   let resolved;
   try {
+    let executionContextId;
+    if (isolated) {
+      // CDP owns frame/node identities. Do not ask page JavaScript (including
+      // overridden ownerDocument/defaultView getters) which realm owns a node.
+      const snapshot = await connection.send("DOMSnapshot.captureSnapshot", { computedStyles: [] }, sessionId);
+      const document = snapshot.documents?.find(document => document.nodes?.backendNodeId?.includes(backendNodeId));
+      const frameId = snapshot.strings?.[document?.frameId];
+      if (typeof frameId !== "string" || !frameId) {
+        throw new BrowserActionError("stale_element_reference", "browser secret target frame is unavailable");
+      }
+      const world = await connection.send("Page.createIsolatedWorld", {
+        frameId, worldName: "chariox-secret-fill", grantUniveralAccess: false,
+      }, sessionId);
+      executionContextId = world?.executionContextId;
+      if (!Number.isSafeInteger(executionContextId) || executionContextId <= 0) {
+        throw new BrowserActionError("browser_action_failed", "browser secret target isolated world is unavailable");
+      }
+    }
     resolved = await connection.send(
       "DOM.resolveNode",
-      { backendNodeId },
+      { backendNodeId, ...(isolated ? { executionContextId } : {}) },
       sessionId,
     );
   } catch (error) {
