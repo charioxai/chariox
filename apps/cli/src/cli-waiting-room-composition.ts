@@ -1,5 +1,7 @@
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import { createWaitingRoomWorkspaceController, createWaitingRoomWorkspacePlacementController, waitingRoomWorkspaceSelection } from "./waiting-room-workspace-controller.js"
+import type { CloudClient } from "./cloud-client.js"
+import { createCloudWaitingRoomController } from "./cloud-waiting-room-controller.js"
 import { randomUUID } from "node:crypto"
 import { mergeExternalProviderSessionsSorted } from "@chariox/kernel-client/external-provider-sessions"
 import { updateAgentConfig, updateAgentProfile } from "./agent-api.js"
@@ -102,6 +104,7 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliWaitingRoomCompositionDeps = {
+  cloudClient?: CloudClient
   client: any
   options: any
   appLogger: any
@@ -209,6 +212,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   })
   let workspacePlacementController: ReturnType<typeof createWaitingRoomWorkspacePlacementController> | undefined
   const kernelConnectionController = createWaitingRoomKernelConnectionController({
+    cloudClient: deps.cloudClient, kernelConnected: deps.kernelConnected,
     client: deps.client,
     clientId: deps.options.clientId,
     initialTargetKernelId: deps.options.targetDaemonId,
@@ -289,6 +293,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     updateSessionChrome: () => deps.updateSessionChrome(),
     syncCommandCenter: () => deps.syncCommandCenter(),
     refreshProviderCatalogForSelection: (state) => {
+      if (!deps.kernelConnected()) return
       const revision = ++providerCatalogSelectionRevision
       const executionLocation = state.sliceSelectionId && !["none", "new"].includes(state.sliceSelectionId)
         ? { kind: "slice" as const, slice_ref: state.sliceSelectionId }
@@ -386,11 +391,19 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     persistInventory: waitingRoomInventoryCache.persist,
     getLocalKernelPresences: loadLocalKernelPresences,
   })
+  const refreshCloudDirectory = createCloudWaitingRoomController({
+    client: deps.cloudClient, isKernelConnected: deps.kernelConnected,
+    setMachines: deps.setRemoteMachinesState, setKernels: deps.setRemoteKernelsState,
+    setStatus: deps.setWaitingRoomInventoryStatus,
+    reconcile: () => reconcileWaitingRoomProjection(deps.waitingRoomState()),
+  })
   const refreshWaitingRoomDataNow = async () => {
+    if (!deps.kernelConnected()) return refreshCloudDirectory()
     await waitingRoomInventoryRefreshController.refreshNow()
     await workspacePlacementController?.refreshDisabledWorkspace()
   }
   const refreshWaitingRoomData = async () => {
+    if (!deps.kernelConnected()) return refreshCloudDirectory()
     await waitingRoomInventoryRefreshController.refresh()
     await workspacePlacementController?.refreshDisabledWorkspace()
   }
@@ -418,7 +431,14 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     setDaemonDisconnected: deps.setDaemonDisconnected,
     refreshWaitingRoomData,
   })
-  const connectDetachedKernelFromWaitingRoom = detachedKernelConnectController.connect
+  const connectDetachedKernelFromWaitingRoom = async () => {
+    const selected = deps.waitingRoomState()
+    if (deps.cloudClient && !deps.kernelConnected() && await deps.cloudClient.profile()) {
+      if (!selected.selectedKernelRef || selected.selectedKernelRef === "local") throw new Error("Choose an online kernel from My kernels first")
+      await replaceClientForKernel(selected.selectedKernelRef, selected.selectedMachineRef)
+    }
+    await detachedKernelConnectController.connect()
+  }
 
   const replaceClientForKernel = kernelConnectionController.connect
 

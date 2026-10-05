@@ -1,3 +1,4 @@
+import type { CloudClient } from "./cloud-client.js"
 import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { LocalIpcClient } from "./ipc.js"
 import { loadLocalKernelPresences, localKernelEndpoint } from "./local-kernel-presence.js"
@@ -12,20 +13,22 @@ type KernelClientTarget = {
   isActive(): boolean
 }
 
-async function openWaitingRoomKernelClient(controlClient: LocalIpcClient, target: KernelClientTarget) {
+async function openWaitingRoomKernelClient(controlClient: LocalIpcClient, target: KernelClientTarget, cloud?: { client?: CloudClient; kernelConnected?: () => boolean }) {
   const issuingClient = "currentClient" in controlClient && typeof controlClient.currentClient === "function"
     ? controlClient.currentClient() as LocalIpcClient : controlClient
   const localPresence = loadLocalKernelPresences().find(presence => presence.kernelId === target.kernelRef)
-  const connection = localPresence ? null : await resolveKernelClientConnection(issuingClient, target)
-  if (!target.isActive()) return null
-  const client = localPresence
+  const useCloudClient = !localPresence && cloud?.client && !cloud.kernelConnected?.() && await cloud.client.profile()
+  const cloudTargetClient = useCloudClient ? await cloud!.client!.connect(target.kernelRef) : null
+  const connection = localPresence || cloudTargetClient ? null : await resolveKernelClientConnection(issuingClient, target)
+  if (!target.isActive()) { await cloudTargetClient?.close(); return null }
+  const client = cloudTargetClient ?? (localPresence
     ? new LocalIpcClient(localKernelEndpoint(localPresence))
     : new LocalIpcClient(connection!.relayUrl, {
         relayAuthToken: connection!.relayToken,
         relayIdentity: createCliRelayIdentityStore().getOrCreate(),
         targetDaemonId: connection!.targetDaemonId ?? undefined,
         targetDaemonAlias: connection!.targetDaemonAlias ?? undefined,
-      })
+      }))
   if (connection?.tokenExpiresAtMs) {
     const release = issuingClient.retainForRelayRenewal()
     client.startRelayAuthRenewal(connection.tokenExpiresAtMs, async () => {
@@ -81,6 +84,8 @@ export async function browseWaitingRoomKernelWorkspace(
 
 export function createWaitingRoomKernelConnectionController(deps: {
   client: MutableLocalIpcClient
+  cloudClient?: CloudClient
+  kernelConnected?: () => boolean
   clientId: string
   initialTargetKernelId?: string | null
   homeKernelId(): string | null
@@ -118,7 +123,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
       machineRef: machineRef === "local" ? deps.homeMachineId() : machineRef ?? null,
       clientId: deps.clientId,
       isActive,
-    })
+    }, { client: deps.cloudClient, kernelConnected: deps.kernelConnected })
     if (!connection) return false
     const nextClient = connection.client
     if (typeof deps.client.replaceClient !== "function") {

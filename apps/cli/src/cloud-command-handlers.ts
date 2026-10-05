@@ -22,6 +22,7 @@ import {
 } from "./deployed-workflow-command.js"
 
 export type CloudCommandHandlerDeps =
+  & { handleClientCloudCommand?: (args: string[]) => Promise<boolean> }
   & CloudCommandLifecycleDeps
   & CloudSessionCommandHandlerDeps
   & RelayCloudCommandHandlerDeps
@@ -97,6 +98,7 @@ export async function handleCloudSlashCommand(
   deps: CloudCommandHandlerDeps,
   command: Extract<ParsedSlashCommand, { kind: "cloud" }>,
 ): Promise<void> {
+  if (await deps.handleClientCloudCommand?.(command.args)) return
   const [area, action, ...args] = command.args
   if (!area || area === "open") {
     await openHostedCloud(deps)
