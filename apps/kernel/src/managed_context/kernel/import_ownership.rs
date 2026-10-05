@@ -11,6 +11,10 @@ pub(super) fn entry_fingerprint(path: &Path) -> Result<((u64, u64), String), Dae
             .map_err(|_| import_error("published entry path must be absolute"))?,
     )
     .map_err(|error| import_io_error("open published entry components", error))?;
+    entry_fingerprint_file(&file)
+}
+
+pub(super) fn entry_fingerprint_file(file: &File) -> Result<((u64, u64), String), DaemonError> {
     let metadata = file
         .metadata()
         .map_err(|error| import_io_error("inspect published entry", error))?;
@@ -28,7 +32,7 @@ pub(super) fn entry_fingerprint(path: &Path) -> Result<((u64, u64), String), Dae
         let mut hash = Sha256::new();
         let mut bytes = 0_u64;
         let mut entries = 0_u64;
-        hash_entry(&file, path, &mut hash, &mut bytes, &mut entries, 0)?;
+        hash_entry(file, &mut hash, &mut bytes, &mut entries, 0)?;
         Ok((identity, format!("{:x}", hash.finalize())))
     }
 }
@@ -36,7 +40,6 @@ pub(super) fn entry_fingerprint(path: &Path) -> Result<((u64, u64), String), Dae
 #[cfg(unix)]
 fn hash_entry(
     file: &File,
-    path: &Path,
     hash: &mut Sha256,
     bytes: &mut u64,
     entries: &mut u64,
@@ -65,6 +68,10 @@ fn hash_entry(
         let mut source = file
             .try_clone()
             .map_err(|error| import_io_error("clone published file", error))?;
+        use std::io::{Seek, SeekFrom};
+        source
+            .seek(SeekFrom::Start(0))
+            .map_err(|e| import_io_error("rewind published file", e))?;
         let mut buffer = [0; 65536];
         loop {
             let count = source
@@ -81,12 +88,8 @@ fn hash_entry(
         }
     } else if metadata.is_dir() {
         hash.update(b"directory");
-        let mut children = fs::read_dir(path)
-            .and_then(|children| children.collect::<Result<Vec<_>, _>>())
-            .map_err(|error| import_io_error("enumerate published tree", error))?;
-        children.sort_by_key(|entry| entry.file_name());
-        for child in children {
-            let name = child.file_name();
+        let children = directory_names(file, MAX_MATERIALIZED_CONTEXT_ENTRIES - *entries)?;
+        for name in children {
             let name_bytes = name.as_bytes();
             hash.update((name_bytes.len() as u64).to_le_bytes());
             hash.update(name_bytes);
@@ -153,7 +156,7 @@ fn hash_entry(
                 continue;
             }
             let child_file = unsafe { File::from_raw_fd(fd) };
-            hash_entry(&child_file, &child.path(), hash, bytes, entries, depth + 1)?;
+            hash_entry(&child_file, hash, bytes, entries, depth + 1)?;
         }
     } else {
         return Err(import_error("published tree contains a special file"));
@@ -179,4 +182,104 @@ fn hash_entry(
         ));
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn directory_names(file: &File, remaining: u64) -> Result<Vec<std::ffi::OsString>, DaemonError> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStringExt;
+    // A separate descriptor avoids sharing the directory cursor with another inspection.
+    let fd = unsafe {
+        libc::openat(
+            file.as_raw_fd(),
+            c".".as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(import_io_error(
+            "retain published tree directory",
+            io::Error::last_os_error(),
+        ));
+    }
+    let stream = unsafe { libc::fdopendir(fd) };
+    if stream.is_null() {
+        unsafe {
+            libc::close(fd);
+        }
+        return Err(import_io_error(
+            "enumerate published tree",
+            io::Error::last_os_error(),
+        ));
+    }
+    struct DirectoryStream(*mut libc::DIR);
+    impl Drop for DirectoryStream {
+        fn drop(&mut self) {
+            unsafe {
+                libc::closedir(self.0);
+            }
+        }
+    }
+    let stream = DirectoryStream(stream);
+    let mut names = Vec::new();
+    loop {
+        #[cfg(target_os = "linux")]
+        unsafe {
+            *libc::__errno_location() = 0;
+        }
+        #[cfg(target_os = "macos")]
+        unsafe {
+            *libc::__error() = 0;
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        return Err(import_error(
+            "descriptor-relative tree inspection is unsupported",
+        ));
+        let entry = unsafe { libc::readdir(stream.0) };
+        if entry.is_null() {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(0) {
+                return Err(import_io_error("enumerate published tree", error));
+            }
+            break;
+        }
+        let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+        if name == b"." || name == b".." {
+            continue;
+        }
+        if names.len() as u64 >= remaining {
+            return Err(import_error("published entry exceeds tree budget"));
+        }
+        names.push(std::ffi::OsString::from_vec(name.to_vec()));
+    }
+    names.sort();
+    Ok(names)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mp11_fingerprint_enumerates_the_retained_directory_after_path_replacement() {
+        let root = std::env::temp_dir().join(format!(
+            "mp11-fingerprint-pinned-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir_all(root.join("entry")).unwrap();
+        fs::create_dir_all(root.join("outside")).unwrap();
+        fs::write(root.join("entry/original"), b"imported").unwrap();
+        fs::write(root.join("outside/foreign"), b"user data").unwrap();
+        let pinned = File::open(root.join("entry")).unwrap();
+        let before = entry_fingerprint_file(&pinned).unwrap();
+        fs::rename(root.join("entry"), root.join("retained")).unwrap();
+        std::os::unix::fs::symlink(root.join("outside"), root.join("entry")).unwrap();
+        assert_eq!(entry_fingerprint_file(&pinned).unwrap(), before);
+        assert_eq!(
+            fs::read(root.join("outside/foreign")).unwrap(),
+            b"user data"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 }

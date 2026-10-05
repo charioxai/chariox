@@ -5,6 +5,9 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+#[cfg(unix)]
+use super::registry_paths::RegistryDirectory;
+
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -41,9 +44,29 @@ struct EntryIdentity {
     tree_sha256: String,
 }
 
+#[cfg(any(test, not(unix)))]
 pub(super) fn record_ordinary_entries(
     staging: &Path,
     home: &Path,
+    budget: &mut MaterializationBudget,
+) -> Result<(), DaemonError> {
+    #[cfg(unix)]
+    {
+        record_ordinary_entries_at(staging, &RegistryDirectory::root(home)?, budget)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (staging, home, budget);
+        Err(import_error(
+            "ordinary registry ownership requires Unix filesystem identity",
+        ))
+    }
+}
+
+#[cfg(unix)]
+pub(super) fn record_ordinary_entries_at(
+    staging: &Path,
+    home: &RegistryDirectory,
     budget: &mut MaterializationBudget,
 ) -> Result<(), DaemonError> {
     let mut entries = Vec::new();
@@ -61,9 +84,10 @@ pub(super) fn record_ordinary_entries(
     sync_directory(staging)
 }
 
+#[cfg(unix)]
 fn collect_entries(
     staged: &Path,
-    home: &Path,
+    home: &RegistryDirectory,
     relative: &Path,
     entries: &mut Vec<PublishedEntry>,
 ) -> Result<(), DaemonError> {
@@ -78,21 +102,21 @@ fn collect_entries(
             .ok_or_else(|| import_error("kernel context entry is not UTF-8"))?
             .to_string();
         if ORDINARY_REGISTRY_DIRECTORIES.contains(&relative.as_str()) {
+            // Validate even empty registry directories before Vault publication.
+            home.parent(&format!("{relative}/registry-parent-check"))?;
             collect_entries(staged, home, &path, entries)?;
             continue;
         }
-        match fs::symlink_metadata(home.join(&path)) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => entries.push(PublishedEntry {
-                relative,
-                identity: entry_identity(&staged.join(&path))?,
-            }),
-            Ok(_) => {
-                return Err(import_error(format!(
-                    "kernel context entry `{relative}` already exists in the ordinary registry"
-                )))
-            }
-            Err(error) => return Err(import_io_error("inspect ordinary registry", error)),
+        let (parent, name) = home.parent(&relative)?;
+        if !parent.absent(&name)? {
+            return Err(import_error(format!(
+                "kernel context entry `{relative}` already exists in the ordinary registry"
+            )));
         }
+        entries.push(PublishedEntry {
+            relative,
+            identity: entry_identity(&staged.join(&path))?,
+        });
     }
     Ok(())
 }
@@ -124,38 +148,83 @@ fn read_entries(root: &Path) -> Result<Vec<PublishedEntry>, DaemonError> {
 }
 
 pub(super) fn publish_ordinary_entries(root: &Path, home: &Path) -> Result<(), DaemonError> {
+    #[cfg(unix)]
+    {
+        publish_ordinary_entries_at(root, &RegistryDirectory::root(home)?)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (root, home);
+        Err(import_error(
+            "ordinary registry ownership requires Unix filesystem identity",
+        ))
+    }
+}
+
+#[cfg(unix)]
+pub(super) fn publish_ordinary_entries_at(
+    root: &Path,
+    home: &RegistryDirectory,
+) -> Result<(), DaemonError> {
     for entry in read_entries(root)? {
         let source = root.join("user").join(&entry.relative);
-        let destination = home.join(&entry.relative);
+        let (parent, name) = home.parent(&entry.relative)?;
         if !present(&source)? {
-            require_identity(&destination, &entry.identity)?;
+            require_registry_identity(&parent, &name, &entry.identity)?;
             continue;
         }
         require_identity(&source, &entry.identity)?;
-        let parent = destination
-            .parent()
-            .ok_or_else(|| import_error("published kernel context entry has no parent"))?;
-        fs::create_dir_all(parent)
-            .map_err(|error| import_io_error("create ordinary registry directory", error))?;
-        publish_directory_no_clobber(&source, &destination)?;
-        sync_directory(parent)?;
+        parent.publish(&source, &name)?;
         sync_directory(source.parent().expect("staged entry parent"))?;
     }
     Ok(())
 }
 
-pub(super) fn remove_ordinary_entries(root: &Path, home: &Path) -> Result<(), DaemonError> {
-    remove_ordinary_entries_with_phase_writer(root, home, |path, identity| {
-        write_json_file(path, identity, false, &mut MaterializationBudget::new())
-    })
+#[cfg(unix)]
+fn require_registry_identity(
+    parent: &RegistryDirectory,
+    name: &std::ffi::CStr,
+    expected: &EntryIdentity,
+) -> Result<(), DaemonError> {
+    let file = parent.open_entry(name)?;
+    let ((device, inode), tree_sha256) = super::import_ownership::entry_fingerprint_file(&file)?;
+    if (EntryIdentity {
+        device,
+        inode,
+        tree_sha256,
+    }) != *expected
+    {
+        return Err(import_error(
+            "published kernel context entry changed; preserving user data",
+        ));
+    }
+    Ok(())
 }
 
+pub(super) fn remove_ordinary_entries(root: &Path, home: &Path) -> Result<(), DaemonError> {
+    #[cfg(unix)]
+    {
+        remove_ordinary_entries_with_phase_writer(root, home, |path, identity| {
+            write_json_file(path, identity, false, &mut MaterializationBudget::new())
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (root, home);
+        Err(import_error(
+            "ordinary registry ownership requires Unix filesystem identity",
+        ))
+    }
+}
+
+#[cfg(unix)]
 fn remove_ordinary_entries_with_phase_writer(
     root: &Path,
     home: &Path,
     mut write_phase: impl FnMut(&Path, &EntryIdentity) -> Result<(), DaemonError>,
 ) -> Result<(), DaemonError> {
     let entries = read_entries(root)?;
+    let home = RegistryDirectory::root(home)?;
     let rollback = root.join(ROLLBACK_DIRECTORY);
     super::ensure_private_directory(&rollback)?;
     sync_directory(root)?;
@@ -163,7 +232,7 @@ fn remove_ordinary_entries_with_phase_writer(
         if present(&root.join("user").join(&entry.relative))? {
             continue;
         }
-        let destination = home.join(&entry.relative);
+        let (parent, name) = home.parent(&entry.relative)?;
         let detached = rollback.join(index.to_string());
         let deleting = rollback.join(format!("deleting-{index}.json"));
         let deletion_started = present(&deleting)?;
@@ -172,12 +241,11 @@ fn remove_ordinary_entries_with_phase_writer(
             continue;
         }
         if !present(&detached)? {
-            if !present(&destination)? {
+            if parent.absent(&name)? {
                 continue;
             }
-            require_identity(&destination, &entry.identity)?;
-            publish_directory_no_clobber(&destination, &detached)?;
-            sync_directory(destination.parent().expect("published entry parent"))?;
+            require_registry_identity(&parent, &name, &entry.identity)?;
+            parent.detach(&name, &detached)?;
             sync_directory(&rollback)?;
         }
         if deletion_started {
@@ -192,8 +260,8 @@ fn remove_ordinary_entries_with_phase_writer(
         } else if let Err(error) = require_identity(&detached, &entry.identity) {
             // A replacement racing the detach belongs to the user. Restore it
             // without clobbering a newer replacement, or retain it in this root.
-            let _ = publish_directory_no_clobber(&detached, &destination);
-            sync_directory(destination.parent().expect("published entry parent"))?;
+            let _ = parent.publish(&detached, &name);
+            parent.synchronize()?;
             sync_directory(&rollback)?;
             return Err(error);
         }
@@ -314,6 +382,53 @@ mod tests {
         let detached = rollback.join("0");
         fs::rename(home.join("skills/imported"), &detached).unwrap();
         detached
+    }
+
+    #[test]
+    fn mp11_f4_rollback_rejects_replaced_registry_parent() {
+        let (root, context, home) = fixture("registry-parent-replacement");
+        let _cleanup = FixtureCleanup(root.clone());
+        let retained = root.join("retained-skills");
+        let outside = root.join("outside");
+        fs::rename(home.join("skills"), &retained).unwrap();
+        fs::create_dir_all(outside.join("imported")).unwrap();
+        fs::write(outside.join("imported/foreign"), b"user data").unwrap();
+        std::os::unix::fs::symlink(&outside, home.join("skills")).unwrap();
+        assert!(remove_ordinary_entries(&context, &home).is_err());
+        assert_eq!(
+            fs::read(outside.join("imported/foreign")).unwrap(),
+            b"user data"
+        );
+        assert_eq!(
+            fs::read(retained.join("imported/original")).unwrap(),
+            b"imported"
+        );
+    }
+
+    #[test]
+    fn mp11_f4_publication_retains_root_descriptor_after_home_path_replacement() {
+        let (root, _context, home) = fixture("home-path-replacement");
+        let _cleanup = FixtureCleanup(root.clone());
+        let context = root.join("second-context");
+        fs::create_dir_all(context.join("user/skills/second")).unwrap();
+        fs::write(
+            context.join("user/skills/second/original"),
+            b"second import",
+        )
+        .unwrap();
+        let pinned = RegistryDirectory::root(&home).unwrap();
+        record_ordinary_entries_at(&context, &pinned, &mut MaterializationBudget::new()).unwrap();
+        let retained = root.join("retained-home");
+        let outside = root.join("outside");
+        fs::rename(&home, &retained).unwrap();
+        fs::create_dir_all(outside.join("skills")).unwrap();
+        std::os::unix::fs::symlink(&outside, &home).unwrap();
+        publish_ordinary_entries_at(&context, &pinned).unwrap();
+        assert_eq!(
+            fs::read(retained.join("skills/second/original")).unwrap(),
+            b"second import"
+        );
+        assert!(!outside.join("skills/second").exists());
     }
 
     #[test]

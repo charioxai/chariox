@@ -103,14 +103,17 @@ mod room_computer_readiness;
 mod room_computer_readiness_tests;
 use provider_output_deadline_store::ProviderOutputDeadlineStore;
 pub(crate) use provider_reload::*;
+#[cfg(all(
+    test,
+    any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))
+))]
+mod app_event_path_tests;
 mod browser_import_consent;
 mod browser_import_execution_gate;
 #[cfg(test)]
 mod computer_hold_tests;
 mod environment_execution_gate;
 mod event_delivery_runtime_state;
-#[cfg(all(test, any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
-mod app_event_path_tests;
 mod human_browser_action_runtime_state;
 mod human_environment_action_runtime_state;
 mod leased_agent_operations;

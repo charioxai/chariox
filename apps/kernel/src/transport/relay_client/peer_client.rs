@@ -245,7 +245,8 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
             message: "peer target must include daemon id or alias".into(),
         });
     };
-    let cleanup_resource = cleanup_request_resource(&request).map(|(code, id)| (code, id.to_string()));
+    let cleanup_resource =
+        cleanup_request_resource(&request).map(|(code, id)| (code, id.to_string()));
     let expected_public_key = target_public_key.to_string();
     let plaintext = serde_json::to_vec(&request).map_err(|error| DaemonError::LocalTransport {
         operation: "serialize relay peer request",

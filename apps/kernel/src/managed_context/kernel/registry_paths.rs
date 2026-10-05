@@ -133,69 +133,67 @@ impl RegistryDirectory {
             .map_err(|e| import_io_error("sync ordinary registry", e))
     }
 
-    pub(super) fn remove(&self, name: &std::ffi::CStr) -> Result<(), DaemonError> {
-        // Opening a child never follows a link. Unlinking a non-directory removes only its entry.
+    pub(super) fn open_entry(&self, name: &std::ffi::CStr) -> Result<File, DaemonError> {
         let fd = unsafe {
             libc::openat(
                 self.0.as_raw_fd(),
                 name.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
             )
         };
-        if fd >= 0 {
-            let directory = Self(unsafe { File::from_raw_fd(fd) });
-            let iter_fd = unsafe { libc::dup(directory.0.as_raw_fd()) };
-            if iter_fd < 0 {
-                return Err(import_io_error(
-                    "duplicate registry directory",
-                    io::Error::last_os_error(),
-                ));
-            }
-            let stream = unsafe { libc::fdopendir(iter_fd) };
-            if stream.is_null() {
-                unsafe {
-                    libc::close(iter_fd);
-                }
-                return Err(import_io_error(
-                    "read registry directory",
-                    io::Error::last_os_error(),
-                ));
-            }
-            let result = (|| {
-                loop {
-                    let entry = unsafe { libc::readdir(stream) };
-                    if entry.is_null() {
-                        break;
-                    }
-                    let child = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) };
-                    if child.to_bytes() == b"." || child.to_bytes() == b".." {
-                        continue;
-                    }
-                    directory.remove(child)?;
-                }
-                Ok(())
-            })();
-            unsafe {
-                libc::closedir(stream);
-            }
-            result?;
-        } else {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::NotFound {
-                return Ok(());
-            }
-            if !matches!(error.raw_os_error(), Some(libc::ENOTDIR | libc::ELOOP)) {
-                return Err(import_io_error("inspect registry removal", error));
-            }
-        }
-        let flags = if fd >= 0 { libc::AT_REMOVEDIR } else { 0 };
-        let result = unsafe { libc::unlinkat(self.0.as_raw_fd(), name.as_ptr(), flags) };
-        if result != 0 {
+        if fd < 0 {
             return Err(import_io_error(
-                "remove ordinary registry entry",
+                "open ordinary registry entry",
                 io::Error::last_os_error(),
             ));
         }
-        Ok(())
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+
+    pub(super) fn detach(
+        &self,
+        name: &std::ffi::CStr,
+        destination: &Path,
+    ) -> Result<(), DaemonError> {
+        let destination = std::ffi::CString::new(destination.as_os_str().as_bytes())
+            .map_err(|_| import_error("rollback path contains NUL"))?;
+        #[cfg(target_os = "linux")]
+        let result = unsafe {
+            libc::renameat2(
+                self.0.as_raw_fd(),
+                name.as_ptr(),
+                libc::AT_FDCWD,
+                destination.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        #[cfg(target_os = "macos")]
+        let result = unsafe {
+            libc::renameatx_np(
+                self.0.as_raw_fd(),
+                name.as_ptr(),
+                libc::AT_FDCWD,
+                destination.as_ptr(),
+                libc::RENAME_EXCL,
+            )
+        };
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        return Err(import_error(
+            "descriptor-relative registry rollback is unsupported",
+        ));
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if result != 0 {
+            return Err(import_io_error(
+                "detach ordinary registry entry",
+                io::Error::last_os_error(),
+            ));
+        }
+        self.synchronize()
+    }
+
+    pub(super) fn synchronize(&self) -> Result<(), DaemonError> {
+        self.0
+            .sync_all()
+            .map_err(|e| import_io_error("sync ordinary registry", e))
     }
 }

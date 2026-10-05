@@ -37,9 +37,9 @@ use super::{
 
 #[path = "ordinary_publication.rs"]
 mod ordinary_publication;
-use ordinary_publication::{
-    publish_ordinary_entries, record_ordinary_entries, remove_ordinary_entries,
-};
+#[cfg(any(test, not(unix)))]
+use ordinary_publication::record_ordinary_entries;
+use ordinary_publication::{publish_ordinary_entries, remove_ordinary_entries};
 #[path = "import_ownership.rs"]
 mod import_ownership;
 #[cfg(unix)]
@@ -165,7 +165,7 @@ pub fn import_kernel_context(
         )?;
         #[cfg(unix)]
         if let Some(home) = ordinary_root.as_ref() {
-            record_ordinary_entries_at(&staging, home, &mut budget)?;
+            ordinary_publication::record_ordinary_entries_at(&staging, home, &mut budget)?;
         }
         #[cfg(not(unix))]
         if let Some(home) = ordinary_user_root()? {
@@ -190,7 +190,7 @@ pub fn import_kernel_context(
         }
         #[cfg(unix)]
         if let Some(home) = ordinary_root.as_ref() {
-            publish_ordinary_entries_at(&request.capability_root, home)?;
+            ordinary_publication::publish_ordinary_entries_at(&request.capability_root, home)?;
         }
         #[cfg(not(unix))]
         if let Some(home) = ordinary_user_root()? {
@@ -2188,7 +2188,7 @@ mod tests {
             "symlinked registry parent was admitted before Vault publication"
         );
         fs::write(
-            staging.join(PUBLISHED_ENTRIES_NAME),
+            staging.join("published-entries.json"),
             b"[\"skills/imported\"]",
         )
         .unwrap();
