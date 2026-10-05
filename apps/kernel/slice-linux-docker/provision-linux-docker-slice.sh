@@ -527,6 +527,9 @@ refresh_slice_support_files() {
   fi
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-cdp.mjs" "browser CDP helper"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-actions.mjs" "Browser Controller actions module"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-actionability.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-actionability.mjs" "Browser Controller actionability module"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-interactions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-interactions.mjs" "Browser Controller interactions module"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-geometry.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-geometry.mjs" "Browser Controller geometry module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-selection.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-selection.mjs" "Browser Controller selection module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-text.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-text.mjs" "Browser Controller rendered text module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-input.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-input.mjs" "Browser Controller actions module"
@@ -586,6 +589,9 @@ refresh_slice_support_files() {
     /opt/chariox-slice/slice-screen.sh \
     /opt/chariox-slice/browser-cdp.mjs \
     /opt/chariox-slice/browser-controller-actions.mjs \
+    /opt/chariox-slice/browser-controller-actionability.mjs \
+    /opt/chariox-slice/browser-controller-interactions.mjs \
+    /opt/chariox-slice/browser-controller-geometry.mjs \
     /opt/chariox-slice/browser-controller-input.mjs \
     /opt/chariox-slice/browser-controller-cdp.mjs \
     /opt/chariox-slice/browser-controller-resources.mjs \
