@@ -19,6 +19,7 @@ const { assembleSessionHistoryFinalMessage } = await import(`${clientModuleRoot}
 import { sanitizeDrillMetadata } from '../lib/drill-secrets.mjs'
 import { roomProviderToolName, roomProviderToolOutput } from '../lib/room-provider-tool-record.mjs'
 import { observeKernelRpcErrors, rpcErrorRecord } from './round2/rpc-errors.mjs'
+import { permittedBrowserTool, navigationAudit } from './round2/browser-track.mjs'
 import { stopOwnedProcess } from './round2/owned-processes.mjs'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..')
@@ -304,7 +305,7 @@ Use ONLY Chariox first-party slice_open_url and slice_browser_* tools. Observe t
         if (item.entry.kind !== 'provider_tool') continue
         try {
           const record = JSON.parse(item.entry.text), tool = roomProviderToolName(record.tool)
-          const permitted = /^(?:slice_open_url|slice_browser_(?:status|find|text|wait_for_text|wait_for_idle|click|fill|submit|dialog|events|downloads|tab|history|upload))$/.test(tool)
+          const permitted = permittedBrowserTool(tool, { allowNavigation: true })
           if (permitted) transcriptEntries.push({ ...item, entry: { ...item.entry,
             text: JSON.stringify(sanitizeDrillMetadata(record)) } })
           row.toolTrace.push({ id: record.id, tool, status: record.status, permitted,
@@ -335,7 +336,7 @@ Use ONLY Chariox first-party slice_open_url and slice_browser_* tools. Observe t
     const graded = await score(template, finalOutput)
     row.reward = graded.reward; row.scorer = graded.scorer; row.finalResponsePresent = finalOutput.length > 0
     const toolCalls = new Map(row.toolTrace.map((t, i) => [t.id ?? i, t])); row.toolCalls = toolCalls.size
-    row.firstFailingSeam = row.actions.find(a => a.kind === 'navigate' && a.state === 'failed') ? 'benchmark_navigation' : null
+    Object.assign(row, navigationAudit(row.actions, row.toolTrace))
     row.harnessValid = !row.firstFailingSeam && !row.actions.some(a => a.mode !== 'browser')
       && row.toolAuditComplete && row.toolTrace.length > 0 && row.toolTrace.every(t => t.permitted)
       && !row.providerError && !row.finalAssemblyError && (turn?.lifecycle === 'completed' || timedOut || budgetExceeded)
