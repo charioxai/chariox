@@ -3,6 +3,25 @@ use super::*;
 use std::time::Instant;
 
 impl KernelBrowserHost {
+    // MP-11: use while holding the grant lock; never run authority callbacks here.
+    pub(super) fn check_admission_epoch(
+        state: &HostState,
+        admission: &KernelBrowserAdmission,
+    ) -> Result<(), String> {
+        if let Some(agent) = admission.agent.as_deref() {
+            require_loaded(state, &admission.user, agent, admission.capability)?;
+            if !Arc::ptr_eq(
+                &state.access.grant(&admission.user, agent)?.epoch,
+                &admission.epoch,
+            ) {
+                return Err(
+                    "MP-11: not_granted: browser grant changed; request fresh tools".into(),
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn set_focus(&self, user: &str, agent: Option<&str>) {
         self.inner
             .lock()
@@ -173,9 +192,12 @@ impl KernelBrowserHost {
         self.check_admission(admission)?;
         if let Some(admission) = admission {
             if let Some(agent) = admission.agent.as_deref() {
-                self.inner
+                let mut state = self
+                    .inner
                     .lock()
-                    .map_err(|_| "MP-11: grant lock unavailable")?
+                    .map_err(|_| "MP-11: grant lock unavailable")?;
+                Self::check_admission_epoch(&state, admission)?;
+                state
                     .access
                     .claim(&admission.user, agent, resource, sensitive)?;
             }
@@ -231,6 +253,7 @@ impl KernelBrowserHost {
             .inner
             .lock()
             .map_err(|_| "MP-11: grant lock unavailable")?;
+        Self::check_admission_epoch(&state, admission)?;
         state
             .access
             .prune_subscriptions(&admission.user, agent, Instant::now());

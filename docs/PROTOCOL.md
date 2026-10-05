@@ -32,6 +32,14 @@ commands require local 432. Existing multidomain feature minima remain 427.
 The focused MP-10 drill and protocol snapshots cover these changes; they do not
 alone establish ordinary/managed parity or official-provider wait behavior.
 
+MP-08 / MP-11: ordinary text and text-producing key events use the same
+Vault-only protected-target check, including password/OTP fields, focused
+frames and open nested shadow fields, for both focused and retained holders.
+Successful browser results are bound to the exact admission epoch under the
+grant lock before resource/subscription registration or inventory projection;
+revocation followed by refocus cannot adopt an old call's result into a fresh
+grant. A final live cancellation/provider-run check fences returned results.
+
 ## 1. Scope
 
 This document defines message classes and protocol contracts between:

@@ -599,3 +599,105 @@ fn mdaccess_idle_lapse_refuses_retained_keys_text_clicks_and_note_commits() {
         .unwrap_err()
         .contains("not_granted"));
 }
+
+// MP-08/MP-11: deterministic post-controller/pre-registration revoke/refocus race.
+#[test]
+fn mdaccess_revoked_open_cannot_populate_refocused_grant() {
+    check_result_epoch_race("open", true);
+}
+#[test]
+fn mdaccess_revoked_subscribe_cannot_populate_refocused_grant() {
+    check_result_epoch_race("subscribe", true);
+}
+#[test]
+fn mdaccess_revoked_snapshot_cannot_return_after_refocus() {
+    check_result_epoch_race("snapshot", true);
+}
+#[test]
+fn mdaccess_result_rechecks_provider_run_authority_before_return() {
+    check_result_epoch_race("snapshot", false);
+}
+fn check_result_epoch_race(op: &str, refocus: bool) {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-mdaccess-result-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+while IFS= read -r request; do
+  id=${request#*:}; id=${id%%,*}
+  case "$request" in
+    *'"method":"health"'*) result=$(printf '{"state":"ready","process_id":%s}' "$$") ;;
+    *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; exit 0 ;;
+    *'"op":"open"'*) result='{"generation":1,"tab_id":"late-tab","tabs":[{"tab_id":"late-tab","document_id":"d"}]}' ;;
+    *'"op":"subscribe"'*) result='{"generation":1,"subscription_id":"late-sub"}' ;;
+    *) result='{"generation":1,"tabs":[{"tab_id":"existing-tab","document_id":"d"}]}' ;;
+  esac
+  printf '{"id":%s,"ok":true,"result":%s}\n' "$id" "$result"
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    let backend = BrowserControllerProcessStdioBackend::new(
+        "/bin/sh",
+        vec![script.display().to_string()],
+        Duration::from_secs(2),
+    )
+    .for_host();
+    host.inner
+        .lock()
+        .unwrap()
+        .browsers
+        .insert("owner".into(), Arc::new(Mutex::new(backend)));
+    host.set_focus("owner", Some("agent"));
+    host.load("owner", "agent").unwrap();
+    host.backend("owner")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    let live = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let run = live.clone();
+    let admission = host
+        .admit("owner", "agent")
+        .unwrap()
+        .with_authority(move || run.load(std::sync::atomic::Ordering::Acquire));
+    let caller = host.clone();
+    host.inner.lock().unwrap().after_controller_check = Some(Arc::new(move || {
+        if refocus {
+            caller.revoke_agent("agent");
+            caller.set_focus("owner", Some("agent"));
+            caller.load("owner", "agent").unwrap();
+        } else {
+            live.store(false, std::sync::atomic::Ordering::Release);
+        }
+    }));
+    let mut params = json!({"op":op});
+    if op != "open" {
+        params["tab_id"] = "existing-tab".into();
+    }
+    let result = host.protected_request_admitted(
+        "owner",
+        Some(&admission),
+        "host.browser",
+        params,
+        json!({"values":[],"targets":[],"unknown":false}),
+    );
+    let state = host.inner.lock().unwrap();
+    let grant = state.access.grant("owner", "agent").unwrap();
+    let uncontaminated = !grant.resources.contains(&UserDomainResource::BrowserTab {
+        tab_id: "late-tab".into(),
+    }) && grant.subscriptions.is_empty();
+    drop(state);
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(
+        uncontaminated,
+        "MP-11: revoked result populated the fresh grant"
+    );
+    assert!(
+        result.unwrap_err().contains("not_granted"),
+        "MP-11: old request crossed result authority boundary"
+    );
+}

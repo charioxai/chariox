@@ -243,3 +243,33 @@ fn mdaccess_native_retained_keys_clicks_and_revoke() {
         assert!(fixture.input(input).unwrap_err().contains("not_granted"));
     }
 }
+
+#[test]
+#[ignore = "MP-10: sandbox-capable native Chromium and disposable CHARIOX_MDACCESS_DRILL_ROOT required"]
+fn mdaccess_native_protected_keys_require_vault_for_focused_and_retained() {
+    for markup in [
+        r#"<input id="field" type="password" style="height:30px">"#,
+        r#"<input id="field" autocomplete="one-time-code" style="height:30px">"#,
+        r#"<iframe id="field" srcdoc="<input autofocus>" style="height:60px"></iframe>"#,
+    ] {
+        let fixture = NativeInput::new(markup);
+        for focus in ["first", "second"] {
+            fixture.host.set_focus("owner", Some(focus));
+            for input in [
+                json!({"kind":"text","text":"fixture"}),
+                json!({"kind":"key","key":"a"}),
+                json!({"kind":"key","key":"é"}),
+                json!({"kind":"key","key":"Enter"}),
+                json!({"kind":"key","key":"Space"}),
+            ] {
+                let error = fixture.input(input).unwrap_err();
+                assert!(error.contains("kernel_browser_failed"), "MP-11: {error}");
+                let state = fixture.request(json!({"op":"state"})).unwrap();
+                assert_eq!(
+                    state["generation"], fixture.tab["generation"],
+                    "MP-08: pre-dispatch protection stopped Chromium"
+                );
+            }
+        }
+    }
+}

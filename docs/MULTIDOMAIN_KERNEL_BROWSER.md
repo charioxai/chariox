@@ -112,7 +112,10 @@ frame/document binding for public display clients requires a coordinator
 protocol allocation and client integration. It is not claimed accepted here.
 
 
-Ordinary input is not a Vault operation. Ordinary text input into password/OTP fields is refused. MD-5 adds
+Ordinary input is not a Vault operation. MP-08 / MP-11: ordinary text insertion
+and all text-producing keys into
+password/OTP or focused frame targets are refused before dispatch for both
+focused and retained grants; those targets require the Vault path. MD-5 adds
 `chariox.kernel_browser_paste_secret` after on-demand loading: an opaque Vault
 credential handle plus observed tab/generation/document/node reference, never
 secret text. Only the host owner (local or configured Cloud identity) can use

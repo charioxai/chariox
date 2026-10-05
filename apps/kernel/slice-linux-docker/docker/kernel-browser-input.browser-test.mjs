@@ -135,3 +135,26 @@ test("MP-11: retained input still checks revocation between paired native events
   await assert.rejects(host.request({op:'input',...bound,input:{kind:'key',key:'Tab'},_retained_agent:true},{signal:cancellation.signal}),{code:'browser_action_cancelled'});
   assert.deepEqual(events.map(e=>e.type),['keyDown']);
 }));
+
+
+for (const target of ['password','otp','shadow','frame']) for (const retained of [false,true])
+test(`MP-08/MP-10/MP-11: protected ${target} rejects ${retained ? "retained" : "focused"} text-producing keys`, () => native(`${field}<input id="password" type="password"><input id="otp" autocomplete="one-time-code"><div id="shadow"></div><iframe id="frame" srcdoc='<input id="inner">'></iframe>`, async ({host,bound,input,events,evaluate}) => {
+  await evaluate(`(() => {
+    const shadow=document.querySelector('#shadow').attachShadow({mode:'open'});
+    shadow.innerHTML='<input id="secret" type="password">';
+    window.effects=0;
+    for(const type of ['keydown','beforeinput','input']) document.addEventListener(type,()=>window.effects++);
+  })()`);
+  {
+    await evaluate(target==='shadow' ? "document.querySelector('#shadow').shadowRoot.querySelector('input').focus()" :
+      target==='frame' ? "document.querySelector('#frame').contentDocument.querySelector('#inner').focus()" : `document.querySelector('#${target}').focus()`);
+    for(const event of [
+      {kind:'text',text:'fixture'}, ...['a','é','😀',' ', 'Enter','Space'].map(key=>({kind:'key',key})),
+    ]) {
+      events.length=0;
+      await assert.rejects(input(event,{_retained_agent:retained}),/secret field input requires the Vault path/,`${target}/${retained}/${event.key??event.kind}`);
+      assert.equal(events.length,0); assert.equal(await evaluate('window.effects'),0);
+      assert.equal((await host.request({op:'state'})).generation,bound.generation);
+    }
+  }
+},false));

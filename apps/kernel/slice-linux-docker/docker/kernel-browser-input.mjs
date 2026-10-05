@@ -9,8 +9,26 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch } =
       await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
       assertNotCancelled(signal);
     };
+    // MP-11: all text-producing paths share the Vault-only target fence.
+    // The public key string and MCP schema are not security boundaries.
+    const checkTextTarget = async () => {
+      const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
+      const { executionContextId } = await connection.send("Page.createIsolatedWorld", {
+        frameId: frameTree.frame.id, worldName: "chariox-host-input", grantUniveralAccess: false,
+      }, sessionId);
+      const { result } = await connection.send("Runtime.evaluate", {
+        contextId: executionContextId,
+        expression: "(() => { let e = document.activeElement; while(e?.shadowRoot?.activeElement) e = e.shadowRoot.activeElement; return !!e && (e.type === 'password' || e.tagName === 'IFRAME' || /password|one-time-code/.test(e.autocomplete || '')); })()",
+        returnByValue: true,
+      }, sessionId);
+      if (result?.value !== false) throw new Error("MD-2: secret field input requires the Vault path");
+    };
     const sendInput = async (method, params) => {
       await check();
+      if (method === "Input.insertText" || (method === "Input.dispatchKeyEvent" && params.text)) {
+        await checkTextTarget();
+        await check();
+      }
       onDispatch?.();
       const result = await connection.send(method, params, sessionId);
       assertNotCancelled(signal);
@@ -20,16 +38,6 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch } =
       await check();
       if (input.kind === "text") {
         if (typeof input.text !== "string" || input.text.length > 16384) throw new Error("MD-2: input text exceeds limit");
-        const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
-        const { executionContextId } = await connection.send("Page.createIsolatedWorld", {
-          frameId: frameTree.frame.id, worldName: "chariox-host-input", grantUniveralAccess: false,
-        }, sessionId);
-        const { result } = await connection.send("Runtime.evaluate", {
-          contextId: executionContextId,
-          expression: "(() => { let e = document.activeElement; while(e?.shadowRoot?.activeElement) e = e.shadowRoot.activeElement; return !!e && (e.type === 'password' || e.tagName === 'IFRAME' || /password|one-time-code/.test(e.autocomplete || '')); })()",
-          returnByValue: true,
-        }, sessionId);
-        if (result?.value !== false) throw new Error("MD-2: secret field input requires the Vault path");
         await sendInput("Input.insertText", { text: input.text });
       } else if (input.kind === "key") {
         const printable = typeof input.key === "string" && /^[^\p{C}]$/u.test(input.key);

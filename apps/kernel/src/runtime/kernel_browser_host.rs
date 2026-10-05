@@ -26,6 +26,8 @@ pub(crate) struct KernelBrowserHost {
 struct HostState {
     browsers: BTreeMap<String, Arc<Mutex<BrowserControllerProcessStdioBackend>>>,
     stopped: bool,
+    #[cfg(test)]
+    after_controller_check: Option<Arc<dyn Fn() + Send + Sync>>,
     access: UserDomainAccess,
     actors: BTreeMap<String, Arc<Mutex<KernelBrowserActors>>>,
     loaded: BTreeSet<(String, String, KernelBrowserCapability)>,
@@ -246,18 +248,8 @@ impl KernelBrowserHost {
             if admission.cancellation.requested() {
                 return Err("MP-11: not_granted: browser authority revoked".into());
             }
-            if let Some(agent) = admission.agent.as_deref() {
-                let state = self.inner.lock().map_err(|_| "MD-3: focus lock poisoned")?;
-                require_loaded(&state, &admission.user, agent, admission.capability)?;
-                if !Arc::ptr_eq(
-                    &state.access.grant(&admission.user, agent)?.epoch,
-                    &admission.epoch,
-                ) {
-                    return Err(
-                        "MP-11: not_granted: browser grant changed; request fresh tools".into(),
-                    );
-                }
-            }
+            let state = self.inner.lock().map_err(|_| "MD-3: focus lock poisoned")?;
+            Self::check_admission_epoch(&state, admission)?;
         }
         Ok(())
     }
@@ -371,16 +363,18 @@ impl KernelBrowserHost {
             }
         }
         let mut params = params;
-        if admission.is_some_and(|admission| admission.agent.is_some()) {
+        if let Some(admission) = admission.filter(|admission| admission.agent.is_some()) {
+            let agent = admission.agent.as_deref().unwrap();
             params["_agent_input"] = true.into();
-            params["observed_by"] =
-                format!("agent:{}", admission.unwrap().agent.as_deref().unwrap()).into();
-            params["_subscription_owner"] = self
+            params["observed_by"] = format!("agent:{agent}").into();
+            let state = self
                 .inner
                 .lock()
-                .map_err(|_| "MP-11: grant lock unavailable")?
+                .map_err(|_| "MP-11: grant lock unavailable")?;
+            Self::check_admission_epoch(&state, admission)?;
+            params["_subscription_owner"] = state
                 .access
-                .grant(user, admission.unwrap().agent.as_deref().unwrap())?
+                .grant(user, agent)?
                 .subscription_owner
                 .clone()
                 .into();
@@ -456,6 +450,13 @@ impl KernelBrowserHost {
             action.finish(terminal);
         }
         self.check_admission(admission)?;
+        #[cfg(test)]
+        {
+            let hook = self.inner.lock().unwrap().after_controller_check.take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
         // Reconcile authority with full controller state before applying a
         // retained agent's projection; scoped inventory cannot remove another
         // actor's tabs or input ownership from the shared ledger.
@@ -471,6 +472,9 @@ impl KernelBrowserHost {
                     .inner
                     .lock()
                     .map_err(|_| "MP-11: grant lock unavailable")?;
+                // MP-11: revoke/refocus can replace the grant while reconciliation
+                // waits. Register/project only into this exact admitted epoch.
+                Self::check_admission_epoch(&state, admission)?;
                 if let Some(id) = payload.get("tab_id").and_then(Value::as_str) {
                     if request_params["op"] == "open" {
                         state.access.opened_tab(user, agent, id)?;
@@ -535,6 +539,8 @@ impl KernelBrowserHost {
                 }
             }
         }
+        // No grant lock across authority callbacks: they can read kernel state.
+        self.check_admission(admission)?;
         result
     }
     fn actor_model(&self, user: &str) -> Result<Arc<Mutex<KernelBrowserActors>>, String> {

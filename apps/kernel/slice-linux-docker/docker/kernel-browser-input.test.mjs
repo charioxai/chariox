@@ -3,13 +3,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 
-function fixture() {
+function fixture(protectedTarget = false) {
   const sent = [];
   const connection = { send: async (method, params) => {
     sent.push({ method, params });
     if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "f", loaderId: "doc" } } };
     if (method === "Page.createIsolatedWorld") return { executionContextId: 7 };
-    if (method === "Runtime.evaluate") return { result: { value: false } };
+    if (method === "Runtime.evaluate") return { result: { value: protectedTarget } };
     return {};
   } };
   return { sent, browser: { resolvePageTarget: async () => ({ connection, sessionId: "s" }), inputCapture: { run: async (_c, _s, fn) => fn() } } };
@@ -44,4 +44,22 @@ test("MP-08/MP-11: focused paired Tab still checks revocation on release",async(
   };
   await assert.rejects(inputHostTab(browser,tab,{kind:'key',key:'Tab'},{signal:cancellation.signal}),{code:'browser_action_cancelled'});
   assert.equal(sent.filter(call=>call.method==='Input.dispatchKeyEvent').length,1);
+});
+
+// MP-11: the public Rust key is an arbitrary string; the advertised MCP enum is not authority.
+test("MP-11: protected targets refuse every text-producing input in both grant modes", async () => {
+  for (const retained of [false, true]) for (const input of [
+    {kind:'text',text:'fixture'}, ...['a','é','😀',' ', 'Enter','Space'].map(key=>({kind:'key',key})),
+  ]) {
+    const {browser,sent}=fixture(true);
+    await assert.rejects(inputHostTab(browser,tab,input,{retained}), /secret field input requires the Vault path/);
+    assert.equal(sent.filter(({method})=>method.startsWith('Input.')).length,0);
+  }
+});
+test("MP-08/MP-11: protected targets retain non-text navigation", async () => {
+  for (const key of ['Tab','Shift+Tab','ArrowLeft','ArrowRight','Home','End','Escape']) {
+    const {browser,sent}=fixture(true);
+    await inputHostTab(browser,tab,{kind:'key',key});
+    assert.deepEqual(sent.filter(({method})=>method.startsWith('Input.')).map(({params})=>params.type),['keyDown','keyUp']);
+  }
 });

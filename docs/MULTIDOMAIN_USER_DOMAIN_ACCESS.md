@@ -44,6 +44,14 @@ observation masking, sensitive-action approvals and App validation/passkeys
 apply equally to focused and retained agents. Browser input cannot impersonate
 a human App frontend or answer approvals.
 
+MP-08 / MP-11: ordinary text and text-producing key events use the same
+Vault-only protected-target check, including password/OTP fields, focused
+frames and open nested shadow fields, for both focused and retained holders.
+Successful browser results are bound to the exact admission epoch under the
+grant lock before resource/subscription registration or inventory projection;
+revocation followed by refocus cannot adopt an old call's result into a fresh
+grant. A final live cancellation/provider-run check fences returned results.
+
 MP-11: the 16:35 owner decision supersedes review rounds 2–4. There is no
 retained-input classifier, listener inspection or keyboard allow-list based on
 focus. Every physical event checks its document and grant/run cancellation.
