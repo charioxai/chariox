@@ -1,3 +1,24 @@
+# MD-DISPLAY-02/04 — Phase 5 repair milestone
+
+2026-10-05: before campaign 740a7ffaa, Phase-4 binary 05387e1e4. All four
+static cases exact; local 78/92 ms, WAN40 172/193, WAN80 285/307,
+WAN150 457/490. First WAN campaign uses loopback's default MTU/offloads:
+exploratory, not final packet-loss realism. Final rerun will use namespace-only
+MTU1500 and disabled TSO/GSO/GRO. No host interface touched.
+
+MD-DISPLAY-02: moving canvas/video 0.79/0.89 fps; repeated PNG repair during
+motion is wasteful. Dense scroll RED at first oversized full exact repair
+(bound 1 MiB); campaign propagates exit 1 and cleans all seven namespaces.
+Two fail-first tests reproduce moving repair/oversized repair. Fix: repair only
+unchanged protected captures; batch large repairs as existing sequence-bound
+tiles (half-second negotiated byte budget, max192KB JSON, one tile minimum).
+Stable convergence remains exact; motion/lost base invalidates pending batches.
+Protocol shape/419 and feature flag unchanged. 41 focused Node checks pass;
+new binary/live rerun pending. No current-file measurement claim yet.
+
+MD-DISPLAY-04: native adapter design stubs stay unavailable/unregistered;
+no Mac/Windows validation. Review inbox still only handled 02:17 findings.
+
 # MD-DISPLAY-02/04 — Phase 5 active
 
 2026-10-05: resume from 6b288b330. Required plans and lane review inbox read;

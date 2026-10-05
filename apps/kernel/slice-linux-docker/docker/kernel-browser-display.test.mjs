@@ -90,3 +90,33 @@ test('MD-DISPLAY pacing credit is bounded and accrued, never unbounded idle burs
   assert.ok(stream.tokens<=16*1024);
   assert.ok(waits.at(-1)>500,'a large random frame still pays its byte budget after long idle');
 });
+test('MD-DISPLAY motion stays video until unchanged protected capture', async()=>{
+ const stream=new DisplayStream(binding,{encoder:{encode:async()=> 'YWJj',close:async()=>{}},now:()=>0,wait:async()=>{}});
+ assert.equal((await stream.frame(fixture(1),'d',0)).kind,'video');
+ assert.equal((await stream.frame(fixture(2),'d',1)).kind,'video');
+ assert.equal((await stream.frame(fixture(3),'d',2)).kind,'video');
+ assert.equal((await stream.frame(fixture(3),'d',3)).kind,'png');
+});
+test('MD-DISPLAY large exact repair is bounded, completes and invalidates on motion/lost base',async()=>{
+ const pixels=randomBytes(512*512*4);for(let i=3;i<pixels.length;i+=4)pixels[i]=255;
+ const source={generation:1,data_base64:encodePng(512,512,pixels)};
+ const stream=new DisplayStream(binding,{encoder:{encode:async()=> 'YWJj',close:async()=>{}},now:()=>0,wait:async()=>{}});
+ const actual=Buffer.alloc(pixels.length);
+ assert.equal((await stream.frame(source,'d',0)).kind,'video');
+ let patches=0;
+ for(let i=0;i<50;i++){
+  const frame=await stream.frame(source,'d',stream.sequence);
+  if(!frame)break;
+  assert.equal(frame.kind,'tiles');assert.equal(frame.base_sequence,frame.sequence-1);
+  assert.ok(Buffer.byteLength(JSON.stringify(frame))*4/3+1024<1024*1024);
+  for(const tile of frame.tiles){const p=decodePng(tile.data_base64);for(let y=0;y<p.height;y++)p.pixels.copy(actual,((tile.y+y)*512+tile.x)*4,y*p.width*4,(y+1)*p.width*4)}
+  patches++;
+ }
+ assert.ok(patches>1);assert.equal(stream.exact,true);assert.deepEqual(actual,pixels);
+ stream.invalidate();await stream.frame(source,'d',0);await stream.frame(source,'d',stream.sequence);
+ assert.equal(stream.exact,false);
+ const nextPixels=Buffer.from(pixels);nextPixels[0]^=255;
+ assert.equal((await stream.frame({generation:1,data_base64:encodePng(512,512,nextPixels)},'d',stream.sequence)).kind,'video');
+ assert.equal(stream.repair,null);
+ assert.equal((await stream.frame(source,'d',0)).kind,'video');assert.equal(stream.repair,null);
+});

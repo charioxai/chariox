@@ -63,9 +63,9 @@ export class PortableEncoder {
   }
 }
 
-export function dirtyTiles(previous, current, region = null) {
+export function dirtyTiles(previous, current, region = null, all = false) {
   const tiles = [];
-  if (!previous || previous.width !== current.width || previous.height !== current.height) return tiles;
+  if (!all && (!previous || previous.width !== current.width || previous.height !== current.height)) return tiles;
   const { width, height, pixels } = current;
   const left = region ? Math.floor(region.x / 128) * 128 : 0;
   const top = region ? Math.floor(region.y / 128) * 128 : 0;
@@ -73,7 +73,7 @@ export function dirtyTiles(previous, current, region = null) {
   const bottom = region ? Math.min(height, region.y + region.height) : height;
   for (let y = top; y < bottom; y += 128) for (let x = left; x < right; x += 128) {
     const w = Math.min(128, width - x), h = Math.min(128, height - y);
-    let changed = false;
+    let changed = all;
     for (let row = y; row < y + h && !changed; row++) {
       const offset = (row * width + x) * 4;
       changed = !pixels.subarray(offset, offset + w * 4).equals(previous.pixels.subarray(offset, offset + w * 4));
@@ -89,12 +89,12 @@ export function dirtyTiles(previous, current, region = null) {
 export class DisplayStream {
   constructor(binding, { encoder = new PortableEncoder(), now = () => performance.now(), wait = delay, timing = () => {} } = {}) {
     Object.assign(this, binding); this.encoder = encoder; this.now = now; this.wait = wait;
-    this.sequence = 0; this.previous = null; this.exact = false;
+    this.sequence = 0; this.previous = null; this.exact = false; this.repair = null;
     this.refillAt = now(); this.tokens = 0;
     this.expires = Date.now() + 60_000;
     this.timing = timing;
   }
-  invalidate() { this.previous = null; this.exact = false; this.capture?.invalidate(); }
+  invalidate() { this.previous = null; this.exact = false; this.repair = null; this.capture?.invalidate(); }
   async frame(source, documentId, afterSequence) {
     let at = timestamp();
     const current = source.pixels ?? decodePng(source.data_base64, this.device_scale_factor);
@@ -113,9 +113,25 @@ export class DisplayStream {
     const png = () => typeof source.data_base64 === 'function' ? source.data_base64() : source.data_base64;
     const full = () => ({ kind: 'png', data_base64: png() });
     const patch = { kind: 'tiles', base_sequence: this.sequence, tiles };
-    let payload;
-    if (same || (bound && this.previous && !this.exact)) payload = full();
-    else if (tiles.length && JSON.stringify(patch).length < Math.min(48_000, source.full_size_hint ?? JSON.stringify(full()).length)) payload = patch;
+    // Half a second of negotiated frame budget, including outer base64. One
+    // credit remains outstanding; narrow links reduce batch size/cadence.
+    const patchLimit = Math.min(192_000, Math.max(24_000, this.bitrate / 8 * .5 * .75 - 4096));
+    let payload, repair = null;
+    if (same && !this.exact) {
+      const exact = full();
+      if (JSON.stringify(exact).length <= patchLimit) payload = exact;
+      else {
+        const remaining = this.repair ?? dirtyTiles(null, current, null, true);
+        const batch = []; let size = 128;
+        for (const tile of remaining) {
+          const cost = JSON.stringify(tile).length + 1;
+          if (batch.length && size + cost > patchLimit) break;
+          batch.push(tile); size += cost;
+        }
+        payload = { kind:'tiles', base_sequence:this.sequence, tiles:batch };
+        repair = remaining.slice(batch.length);
+      }
+    } else if (tiles.length && JSON.stringify(patch).length < Math.min(patchLimit, source.full_size_hint ?? JSON.stringify(full()).length)) payload = patch;
     else if (this.codec === 'png') payload = full();
     else payload = { kind: 'video', codec: 'vp09.00.10.08', key: true, data_base64: await this.encoder.encode(png(), this.bitrate) };
     this.timing('select_encode', at); at = timestamp();
@@ -132,7 +148,8 @@ export class DisplayStream {
     await this.wait(Math.max(0, bytes - this.tokens) * 8000 / this.bitrate);
     this.tokens = Math.max(0, this.tokens - bytes); this.refillAt = this.now();
     this.timing('pacing', at);
-    this.document_id = documentId; this.previous = current; this.exact = payload.kind !== 'video'; this.sequence++;
+    this.document_id = documentId; this.previous = current; this.repair = repair?.length ? repair : null;
+    this.exact = payload.kind !== 'video' && !this.repair; this.sequence++;
     return packet;
   }
   async close() { clearTimeout(this.timer); this.invalidate(); await this.encoder.close(); }

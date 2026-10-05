@@ -21,7 +21,9 @@ try{
   let created=false;
   const ip=(...args)=>execFileSync('/usr/sbin/ip',args,{encoding:'utf8'});
   try{
-   ip('netns','add',namespace);created=true;ip('netns','exec',namespace,'ip','link','set','lo','up');
+   ip('netns','add',namespace);created=true;ip('netns','exec',namespace,'ip','link','set','lo','mtu','1500','up');
+   // Disable segmentation/coalescing only inside the freshly-owned namespace.
+   execFileSync('/usr/sbin/ip',['netns','exec',namespace,'ethtool','-K','lo','tso','off','gso','off','gro','off'],{stdio:'ignore'});record.mtu=1500;record.offloads='tso/gso/gro off';
    const env={...process.env,MD_WORKLOAD:workload,MD_NETEM_PROFILE:profile,MD_HOST_NETNS:await readlink('/proc/self/ns/net')};
    active=await launchOwned('/usr/sbin/ip',['netns','exec',namespace,process.execPath,fileURLToPath(new URL('./drill.mjs',import.meta.url)),binary,path.join(output,entry.replace(':','-')),tools,pytools],{detached:true,stdio:'inherit',env});
    const exit=await waitChild(active);Object.assign(record,exit);

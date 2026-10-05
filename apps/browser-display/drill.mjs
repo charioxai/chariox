@@ -149,7 +149,7 @@ try {
  // Permit bounded distinct refinements, then require an unchanged exact poll.
  receipt.idle_refinements=0;
  while(await page.evaluate(()=>mdStream.next())!==null){
-  if(++receipt.idle_refinements>5)throw Error('MD-DISPLAY: source did not settle');
+  if(++receipt.idle_refinements>300)throw Error('MD-DISPLAY: source did not settle');
  }
  const idleMs=Number(process.env.MD_IDLE_MS||0);
  if(idleMs){

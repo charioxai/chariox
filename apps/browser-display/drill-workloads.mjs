@@ -20,7 +20,7 @@ export async function measureWorkload({page,workload,pair,pause,resource,duratio
  // Record the frozen first-frame quality separately from its exact repair.
  const first=await page.evaluate(()=>mdStream.next());const frozen=await pair('motion-frozen-first');
  let refinements=0,exact=frozen;
- while(!exact.lossless&&refinements<8){await page.evaluate(()=>mdStream.next());refinements++;exact=await pair('motion-settled')}
+ while(!exact.lossless&&refinements<300){await page.evaluate(()=>mdStream.next());refinements++;exact=await pair('motion-settled')}
  if(!exact.lossless)throw Error('MD-DISPLAY: moving workload did not settle exactly');
  return {workload,duration_ms:motionEnd-started,presented_frames:samples.length,effective_fps:samples.length*1000/(motionEnd-started),
   cadence:distribution(cadence),samples,received_application_bytes:after.bytes-before.bytes,application_mbps:(after.bytes-before.bytes)*8/(motionEnd-started)/1000,
