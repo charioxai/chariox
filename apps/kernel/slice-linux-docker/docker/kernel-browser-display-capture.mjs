@@ -39,7 +39,7 @@ export class DisplayCapture {
       motionClip=null; forceFull=true;
     }
     const verify = forceFull || (this.needsVerification && tab.input_epoch === this.inputEpoch);
-    const previewSource = verify && !motionClip ? null : await capture({ x:0,y:0,width:1280,height:800,scale:factor });
+    const previewSource = verify && !motionClip ? null : await capture({ x:motionClip?.x??0,y:motionClip?.y??0,width:1280,height:800,scale:factor });
     let at = timestamp();
     const preview = previewSource ? decodePng(previewSource.data_base64,this.scale) : this.preview;
     if (previewSource && (preview.width !== 1280*this.scale*factor || preview.height !== 800*this.scale*factor)) throw Error('MD-DISPLAY: preview geometry changed');
