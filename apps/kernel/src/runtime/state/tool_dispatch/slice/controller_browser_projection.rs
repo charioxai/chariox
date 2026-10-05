@@ -808,6 +808,61 @@ mod tests {
     }
 
     #[test]
+    fn mp08_p2_native_range_observation_retains_value_and_constraints_only() {
+        let mut snapshot = room_snapshot(serde_json::json!([
+            node(1, None, "INPUT", ""),
+            node(2, None, "INPUT", "")
+        ]));
+        snapshot.dom_nodes[0].attributes.extend([
+            ("type".into(), "range".into()),
+            ("min".into(), "-1".into()),
+            ("max".into(), "1".into()),
+            ("step".into(), "0.2".into()),
+        ]);
+        snapshot.dom_nodes[1]
+            .attributes
+            .insert("type".into(), "password".into());
+        for (index, role, value) in [(0, "slider", "0.6"), (1, "textbox", "[redacted]")] {
+            snapshot
+                .accessibility_nodes
+                .push(RoomBrowserAccessibilityNode {
+                    element_ref: snapshot.dom_nodes[index].element_ref.clone(),
+                    parent_ref: None,
+                    child_refs: vec![],
+                    role: role.into(),
+                    name: "Control".into(),
+                    description: "".into(),
+                    value: value.into(),
+                    ignored: false,
+                    disabled: false,
+                    focused: false,
+                    states: vec![],
+                });
+        }
+        let status = serde_json::Value::Object(controller_browser_status_surfaces(Some(&snapshot)));
+        assert_eq!(status["fields"][0]["value"], "0.6");
+        assert_eq!(
+            status["fields"][0]["constraints"],
+            serde_json::json!({"min":"-1", "max":"1", "step":"0.2"})
+        );
+        assert_eq!(status["fields"][1]["value"], "");
+        assert!(status["fields"][1].get("constraints").is_none());
+        let found = controller_browser_find(&status, "slider", "field").unwrap();
+        assert_eq!(found["matches"][0], status["fields"][0]);
+        snapshot.dom_nodes[0]
+            .attributes
+            .retain(|key, _| key == "type");
+        let defaults = controller_browser_status_surfaces(Some(&snapshot));
+        assert_eq!(
+            defaults["fields"][0]["constraints"],
+            serde_json::json!({"min":"0", "max":"100", "step":"1"})
+        );
+        snapshot.accessibility_nodes[0].value = "[redacted]".into();
+        let redacted = controller_browser_status_surfaces(Some(&snapshot));
+        assert_eq!(redacted["fields"][0]["value"], "[redacted]");
+    }
+
+    #[test]
     fn mp08_p3_escaped_page_stays_valid_through_actual_provider_history_bounds() {
         let snapshot = room_snapshot(serde_json::json!([]));
         let page = crate::runtime::browser_controller_snapshot::BrowserTextPage {
@@ -965,7 +1020,9 @@ fn browser_element_summary(
                 .is_some_and(|value| value == "true")
     });
 
-    serde_json::json!({
+    let native_range = dom.is_some_and(|node| node.node_name.eq_ignore_ascii_case("input"))
+        && attribute("type").eq_ignore_ascii_case("range");
+    let mut summary = serde_json::json!({
         "kind": kind,
         "selector": serde_json::Value::Null,
         "field_id": element_ref,
@@ -980,8 +1037,24 @@ fn browser_element_summary(
         "disabled": disabled,
         "readOnly": read_only,
         "states": accessibility.map(|node| node.states.as_slice()).unwrap_or_default(),
-        "value": if matches!(role.to_ascii_lowercase().as_str(), "combobox" | "listbox") || dom.is_some_and(|node| node.node_name.eq_ignore_ascii_case("select")) {
+        "value": if native_range || matches!(role.to_ascii_lowercase().as_str(), "combobox" | "listbox") || dom.is_some_and(|node| node.node_name.eq_ignore_ascii_case("select")) {
             accessibility.map(|node| node.value.as_str()).unwrap_or_default()
         } else { "" },
-    })
+    });
+    if native_range {
+        let constraint = |name: &str, default: &str| {
+            let value = attribute(name);
+            if value.is_empty() {
+                default.to_string()
+            } else {
+                value.to_string()
+            }
+        };
+        summary["constraints"] = serde_json::json!({
+            "min": constraint("min", "0"),
+            "max": constraint("max", "100"),
+            "step": constraint("step", "1"),
+        });
+    }
+    summary
 }
