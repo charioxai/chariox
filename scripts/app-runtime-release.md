@@ -105,6 +105,38 @@ with `--codesign-identity -` (ad hoc) or a local identity, without notarization.
 It then checks everything above except the Developer ID facts. Without that flag
 it still signs its linker-signed files unchanged.
 
+
+MP-11-RD-F3: ordinary developer release execution requires explicit absolute
+`--builder-key`, `--signing-key`, and `--signer-inventory` paths under the
+operator's dedicated `~/.chariox/keys/` store. Directories must be operator-owned
+mode 0700; inputs must be operator-owned regular files mode 0600 without symlinks
+or hard links. The release command never creates, replaces or repairs keys.
+Missing keys require recovery of the approved identity or explicitly authorized
+rotation, not another release invocation. Legacy keys under `.chariox/dev/`
+remain protected assets; move them only through an operator-owned retention
+procedure, never dev cleanup.
+
+First provisioning and each authorized epoch rotation are separate operator
+operations. Before first use, establish an independently protected backup,
+restore it, derive its public key and sign/verify the synthetic challenge from
+`backupRestoreChallenge(role, epoch, publicKeySha256, scope)` in
+`app-runtime-local-signers.mjs`. Record the approved SPKI DER SHA-256 fingerprint
+and that proof in a protected `chariox.local-signers.v1` inventory, with a positive
+integer `epoch` and `signers.builder` / `signers.release` records containing
+`publicKeySha256` and `backupRestoreProof: { scope, signatureHex }`. Scope is
+`same-machine` or `off-device` and is signed with the challenge. Each role has a
+separate identity. Public trust pins and signing inputs must be reviewed and
+updated for an authorized rotation; retain public rotation history and prove
+new-key acceptance and old-key rejection at the consumer. Never modify signed
+artifacts.
+
+The proof verifies the restored identity against the approved fingerprint; it
+cannot prove physical backup custody. Keep ownership, purpose, date, protected
+backup locations and recovery gaps in private operator notes, excluded from
+cleanup. A same-machine proof does not establish machine-loss recovery. Claim
+that only after an approved off-device backup passes restoration. No keys or
+operator inventory belong on a builder or deployment target.
+
 The system installer must independently authorize the release key and digest,
 copy the graph into a root-owned version directory with traversable immutable
 directories, then atomically publish the separate fixed enrollment. The worker
