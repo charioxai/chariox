@@ -10,6 +10,7 @@ import {
   aliasSessionRequest,
   attachToSessionRequest,
   createSessionRequest,
+  createWorkspaceWorktreeRequest,
   deleteSessionRequest,
   detachFromSessionRequest,
   endSessionRequest,
@@ -43,7 +44,12 @@ export async function createSession(
   worktreePlacement?: Record<string, unknown> | null,
   projectSelection?: SessionProjectSelection | null,
 ): Promise<RuntimeSession> {
-  const resolvedWorktree = await resolvePendingWaitingRoomWorktreePath(workspace, worktree)
+  const resolvedWorktree = await resolvePendingWaitingRoomWorktreePath(workspace, worktree, {
+    createWorktree: async (workspacePath) => {
+      const response = await client.send<Record<string, unknown>>(createWorkspaceWorktreeRequest(workspacePath))
+      return expectVariant<{ worktree: { path: string } }>(response, "WorkspaceWorktreeCreated").worktree.path
+    },
+  })
   const response = await client.send<Record<string, unknown>>(
     createSessionRequest(
       workspace,

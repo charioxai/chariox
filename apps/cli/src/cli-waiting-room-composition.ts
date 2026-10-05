@@ -1,3 +1,5 @@
+import type { WaitingRoomState } from "./waiting-room-types.js"
+import { createWaitingRoomWorkspaceController, createWaitingRoomWorkspacePlacementController } from "./waiting-room-workspace-controller.js"
 import { randomUUID } from "node:crypto"
 import { mergeExternalProviderSessionsSorted } from "@chariox/kernel-client/external-provider-sessions"
 import { updateAgentConfig, updateAgentProfile } from "./agent-api.js"
@@ -192,6 +194,8 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   let directTargetKernelId = deps.options.targetDaemonId?.trim() || null
   let providerCatalogSelectionRevision = 0
   let managedEnvironmentCatalog: ManagedEnvironmentCatalog | undefined
+  let homeKernelId: string | null = null
+  let homeMachineId: string | null = null
   let sourceLaunchTarget: { workspaceId: string; worktreeId: string } | null | undefined
   const managedWaitingRoomRemote = () => ({
     ...(sourceLaunchTarget
@@ -205,8 +209,18 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
         }
       : {}),
   })
+  let selectWorkspaceForPlacement: ((state: WaitingRoomState) => void) | undefined
+  const waitingRoomWorkspaceController = createWaitingRoomWorkspaceController({
+    getWorkspace: deps.pendingWorkspaceTarget,
+    setWorkspace: deps.setPendingWorkspaceTarget,
+    setWorktree: deps.setPendingWorktreeTarget,
+    resetSelection: () => deps.setWaitingRoomState({ ...deps.waitingRoomState(), worktreeSelectionId: "", projectSelectionId: "default" }),
+    send: (request) => deps.client.send(request),
+    render: deps.rebuildTranscript,
+  })
   const waitingRoomReconcileController = createWaitingRoomReconcileController({
     getCurrentState: deps.waitingRoomState,
+    placementChanged: (state) => selectWorkspaceForPlacement?.(state),
     setWaitingRoomState: deps.setWaitingRoomState,
     setProjectedWaitingRoomState: deps.setWaitingRoomStateProjection,
     getSessions: deps.availableSessions,
@@ -323,6 +337,13 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
         profile?.realmId ?? null,
       ])
     },
+    applyWorkspaceInventory: (inventory) => {
+      if (!homeKernelId) {
+        homeKernelId = inventory.kernelId
+        homeMachineId = inventory.machineId
+      }
+      void waitingRoomWorkspaceController.applyInventory(inventory).catch((error) => deps.flashFooter(deps.formatError(error), "error"))
+    },
     setLaunchTarget: (target) => {
       sourceLaunchTarget = target
     },
@@ -375,7 +396,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     connected?: (inventory: WaitingRoomInventory) => void,
     retainPrevious?: (pivot: MutableLocalIpcClientPivot) => void,
   ): Promise<boolean> => {
-    const targetKernelRef = kernelRef?.trim()
+    const targetKernelRef = kernelRef?.trim() === "local" ? homeKernelId : kernelRef?.trim()
     const currentKernelId = deps.relayStatusState()?.daemon_id?.trim()
     const sourceTargetKernelId = directTargetKernelId
     if (!targetKernelRef || targetKernelRef === "local" || targetKernelRef === currentKernelId) {
@@ -392,7 +413,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       ? null
       : await resolveKernelClientConnection(deps.client, {
           kernelRef: targetKernelRef,
-          machineRef: machineRef ?? null,
+          machineRef: machineRef === "local" ? homeMachineId : machineRef ?? null,
           clientId: deps.options.clientId,
         })
     if (!isActive()) {
@@ -466,6 +487,16 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     deps.flashFooter(`connected to kernel ${localPresence?.kernelAlias ?? connection?.targetDaemonAlias ?? connection?.kernelId ?? targetKernelRef}`, "info")
     return isActive()
   }
+
+  selectWorkspaceForPlacement = createWaitingRoomWorkspacePlacementController({
+    getState: deps.waitingRoomState,
+    homeMachineId: () => homeMachineId,
+    managedEnvironments: () => managedEnvironmentCatalog?.environments ?? [],
+    beginMachineSelection: waitingRoomWorkspaceController.beginMachineSelection,
+    connect: replaceClientForKernel,
+    refresh: refreshWaitingRoomDataNow,
+    failure: (error) => deps.flashFooter(deps.formatError(error), "error"),
+  }).select
 
   const managedEnvironmentLaunchController = new WaitingRoomManagedEnvironmentLaunchController({
     createEnvironment: (input) => createManagedEnvironment(deps.client, input),
@@ -739,6 +770,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     },
     prepareSessionOwnerClient: async (launch) => {
       await replaceClientForKernel(launch.ownerKernelRef, launch.ownerMachineRef)
+      await waitingRoomWorkspaceController.applyInventory(await getWaitingRoomInventory(deps.client))
     },
     prepareManagedSessionLaunch,
     prepareExistingSessionClient: async (session) => {

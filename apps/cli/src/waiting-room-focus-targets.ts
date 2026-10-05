@@ -1,3 +1,4 @@
+import { waitingRoomWorktreeDisabledHint } from "./waiting-room-worktrees.js"
 import {
   externalProviderSessionPageHasMore,
   externalProviderSessionPageSessions,
@@ -132,7 +133,7 @@ export function waitingRoomFocusTargets(
     { focus: "model" as const, sessionIndex: 0 },
     { focus: "effort" as const, sessionIndex: 0 },
     { focus: "workspace" as const, sessionIndex: 0 },
-    { focus: "worktree" as const, sessionIndex: 0 },
+    ...(!waitingRoomWorktreeDisabledHint() ? [{ focus: "worktree" as const, sessionIndex: 0 }] : []),
     { focus: "live-sync" as const, sessionIndex: 0 },
     { focus: "collaborators" as const, sessionIndex: 0 },
     { focus: "slice" as const, sessionIndex: 0 },
