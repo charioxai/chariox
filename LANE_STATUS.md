@@ -1,3 +1,17 @@
+# MD-DISPLAY-02/04 — Phase 6 in progress
+
+2026-10-05: 26357c020 adds bounded four-credit window using the existing 419
+request/event shape and persistent realtime VP9 encoder/decoder. 19 focused
+Node checks pass; fail-first window receipt retained externally. Kernel build
+in slot2 in progress. Live latency/fps/fidelity remain unvalidated at this head.
+No acceptance item closes. Phase5 measurements retain their original sources.
+
+MD-DISPLAY-04 inbox: all entries through03:42 already mapped in prior handoff;
+no new entry. Signals audited: owned identity checks reject0/1/-1/NaN/missing
+PIDs before any signal. Initial exact-root process inventory has no lane drill
+leftovers. No host network/shared process changes. Free217GiB, MemAvailable53GiB.
+Evidence:/root/.codex/evidence/browser-resume-20260930/display/phase6/.
+
 # MD-DISPLAY-02/04 — Phase 5 final local handoff
 
 2026-10-05: execution/kernel build 933d6222d; documentation-only handoff follows.
