@@ -33,6 +33,7 @@ parser.add_argument("--upstream", required=True)
 parser.add_argument("--lane", required=True)
 parser.add_argument("--evidence", required=True)
 parser.add_argument("--compose-binary", required=True)
+parser.add_argument("--retain-failed-fixture", action="store_true", help="MP-10 keep lane-owned services for read-only readiness diagnosis")
 args = parser.parse_args()
 assert Path(args.compose_binary).is_absolute()
 source, lane, evidence = map(Path, [args.upstream, args.lane, args.evidence])
@@ -156,6 +157,7 @@ def collect_search_readiness():
         shops.append({"shop": i, "index": metadata["index"], "publishedProducts": metadata["publishedProducts"],
                       "expectedProducts": initial[i-1]["publishedProducts"]})
     ports = json.loads((root / "ports.json").read_text())
+    (evidence / "search-metadata.json").write_text(json.dumps({"mp_items": MP, "shops": shops}, indent=2) + "\n")
     return probe_search("http://127.0.0.1:" + str(ports["elasticsearch"]), shops)
 
 if args.operation == "probe":
@@ -327,8 +329,9 @@ try:
     (evidence / "sites-readiness.json").write_text(json.dumps(public, indent=2) + "\n")
     print("MP-08 / MP-10 isolated WebMall shops ready")
 except Exception as error:
-    failure = str(error) if isinstance(error, (RuntimeError, AssertionError)) else type(error).__name__
+    failure = str(error) if str(error).startswith("MP-10 ") else type(error).__name__
     (evidence / "sites-readiness.json").write_text(json.dumps({"mp_items": MP, "status": "RED", "firstFailingSeam": stage, "failure": failure}, indent=2) + "\n")
     print("MP-08 / MP-10 RED: " + stage + ": " + failure)
-    cleanup()
+    if not args.retain_failed_fixture:
+        cleanup()
     raise SystemExit(1)

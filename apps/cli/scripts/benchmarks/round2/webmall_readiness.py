@@ -64,8 +64,10 @@ def probe_search(endpoint, shops, request_json=None):
         count = request_json(f"/{index}/_count", query)
         if count.get("_shards", {}).get("failed") != 0:
             raise ValueError("MP-10 search shards incomplete")
-        if type(count.get("count")) is not int or count["count"] != expected:
-            raise ValueError("MP-10 indexed product count mismatch")
+        if type(count.get("count")) is not int:
+            raise ValueError("MP-10 indexed product count unavailable")
+        if count["count"] != expected:
+            raise ValueError(f"MP-10 indexed product count mismatch: shop {shop['shop']}, expected {expected}, observed {count['count']}")
         if generation() != before:
             raise ValueError("MP-10 index generation changed during probe")
         observed.append({**shop, "indexUuid": before, "indexedProducts": count["count"], "searchHealth": health["status"]})

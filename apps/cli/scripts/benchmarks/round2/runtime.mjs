@@ -21,12 +21,13 @@ const port = () => new Promise(resolve => {
   server.listen(0, '127.0.0.1', () => { const value = server.address().port; server.close(() => resolve(value)) })
 })
 
-export async function startOwnedRuntime({ lane, evidence, release, repo, clientRoot, image, accountHome, label, viewport }) {
+export async function startOwnedRuntime({ lane, evidence, release, repo, clientRoot, image, accountHome, label, viewport, sandboxCompatibility = true }) {
   for (const value of [lane, evidence, release, repo, clientRoot, accountHome]) assert(path.isAbsolute(value), 'MP-10 absolute runtime roots required')
   assert(lane.startsWith('/root/.chariox/dev/browser-resume-20260930/agents/r2next/'))
   assert(evidence.startsWith('/root/.codex/evidence/browser-resume-20260930/r2next/'))
   assert.match(label, /^r2next-[a-z0-9-]+$/)
   assert.match(image, /^sha256:[a-f0-9]{64}$/)
+  assert.equal(typeof sandboxCompatibility, 'boolean')
   await mkdir(evidence, { recursive: true, mode: 0o700 })
   await mkdir(lane, { recursive: true, mode: 0o700 })
   const root = await mkdtemp(`${lane}/runtime-`)
@@ -89,7 +90,7 @@ export async function startOwnedRuntime({ lane, evidence, release, repo, clientR
     const [{ LocalIpcClient }, requests] = await Promise.all(['ipc', 'ipc-requests'].map(name => import(pathToFileURL(`${clientRoot}/dist/${name}.js`))))
     for (const dir of ['home', 'runtime', 'codex', 'claude', 'opencode', 'config', 'data', 'cache', 'xdg-state']) await mkdir(`${root}/${dir}`, { mode: 0o700 })
     await exec('git', ['init', '-q', workspace])
-    await writeFile(`${root}/runtime/config.toml`, `version = 1\n[state]\npath = "${root}/state.db"\n[slices]\nroot = "${root}/slices"\n[slices.linux]\ndocker_image = "${image}"\nbuild_image = "never"\nallow_provider_sandbox_compatibility = true\nmemory_mb = 2048\ncpus = "1"\nscreen_width = ${viewport.width}\nscreen_height = ${viewport.height}\n[credential_vault]\nbackend = "process_memory"\npath = "${root}/vault.db"\nservice = "${label}"\nagent_management = "allow"\n`, { mode: 0o600 })
+    await writeFile(`${root}/runtime/config.toml`, `version = 1\n[state]\npath = "${root}/state.db"\n[slices]\nroot = "${root}/slices"\n[slices.linux]\ndocker_image = "${image}"\nbuild_image = "never"\nallow_provider_sandbox_compatibility = ${sandboxCompatibility}\nmemory_mb = 2048\ncpus = "1"\nscreen_width = ${viewport.width}\nscreen_height = ${viewport.height}\n[credential_vault]\nbackend = "process_memory"\npath = "${root}/vault.db"\nservice = "${label}"\nagent_management = "allow"\n`, { mode: 0o600 })
     const ports = []; for (let i = 0; i < 5; i++) ports.push(await port())
     const env = { PATH: process.env.PATH, LANG: 'C.UTF-8', HOME: `${root}/home`, CODEX_HOME: `${root}/codex`,
       CLAUDE_CONFIG_DIR: `${root}/claude`, OPENCODE_CONFIG_DIR: `${root}/opencode`, XDG_CONFIG_HOME: `${root}/config`,
