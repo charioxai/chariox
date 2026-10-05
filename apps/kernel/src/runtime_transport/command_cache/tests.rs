@@ -21,6 +21,13 @@ fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
     });
     assert!(!request_is_cacheable(&control));
     assert!(!request_is_cacheable(&uninstall));
+    for request in [
+        serde_json::json!({"OpenUserAppView":{"installation_id":"todo","host":"client_native"}}),
+        serde_json::json!({"CallUserAppView":{"view_id":"user-app-fixture","method":"increment","input":{}}}),
+    ] {
+        let request: LocalDaemonRequest = serde_json::from_value(request).unwrap();
+        assert!(!request_is_cacheable(&request));
+    }
     let client = include_str!("../../../../../packages/kernel-client/src/ipc.ts");
     let listed = client
         .split_once("KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY = new Set([")
@@ -33,7 +40,15 @@ fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
                 .collect::<Vec<_>>()
         })
         .expect("the kernel client lists the requests it never resends");
-    assert_eq!(listed, ["ControlAppWorker", "UninstallApp"]);
+    assert_eq!(
+        listed,
+        [
+            "ControlAppWorker",
+            "UninstallApp",
+            "OpenUserAppView",
+            "CallUserAppView"
+        ]
+    );
 }
 
 #[test]
