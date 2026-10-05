@@ -2,6 +2,59 @@
 use super::DaemonApp;
 use crate::error::DaemonError;
 
+// Private durable context, never admitted from serialized user prompts. Reuse the
+// existing prompt/private-state contract rather than introducing a wire shape.
+const REMOTE_META_RETIREMENT_PREFIX: &str = "kernel-remote-meta-retirement:";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct RemoteMetaRetirementIntent {
+    pub(crate) worker_kernel_id: String,
+    pub(crate) leased_agent_id: String,
+    pub(crate) execution_lease_id: String,
+}
+
+impl RemoteMetaRetirementIntent {
+    pub(crate) fn is_pending(prompt: &crate::session::PromptQueueItem) -> bool {
+        prompt
+            .hidden_system_context()
+            .starts_with(REMOTE_META_RETIREMENT_PREFIX)
+    }
+
+    pub(crate) fn read(prompt: &crate::session::PromptQueueItem) -> Result<Self, DaemonError> {
+        serde_json::from_str(
+            prompt
+                .hidden_system_context()
+                .strip_prefix(REMOTE_META_RETIREMENT_PREFIX)
+                .unwrap_or_default(),
+        )
+        .map_err(|_| Self::error("invalid durable remote Meta retirement intent"))
+    }
+
+    fn context(binding: &crate::agent::RemoteAgentBinding) -> Result<String, DaemonError> {
+        let intent = Self {
+            worker_kernel_id: binding.worker_kernel_id.clone(),
+            leased_agent_id: binding.leased_agent_id.clone(),
+            execution_lease_id: binding.execution_lease_id.clone(),
+        };
+        serde_json::to_string(&intent)
+            .map(|json| format!("{REMOTE_META_RETIREMENT_PREFIX}{json}"))
+            .map_err(|_| Self::error("could not encode remote Meta retirement intent"))
+    }
+
+    pub(crate) fn matches(&self, binding: &crate::agent::RemoteAgentBinding) -> bool {
+        self.worker_kernel_id == binding.worker_kernel_id
+            && self.leased_agent_id == binding.leased_agent_id
+            && self.execution_lease_id == binding.execution_lease_id
+    }
+
+    pub(crate) fn error(message: &str) -> DaemonError {
+        DaemonError::LocalTransport {
+            operation: "retire remote Meta agent",
+            message: message.into(),
+        }
+    }
+}
+
 const META_RETIREMENT_REASON: &str =
     "Meta tasks have been retired; use /sudo <prompt> and authorize it in the Chariox passkey popup";
 
@@ -20,7 +73,49 @@ impl DaemonApp {
                 if was_meta {
                     // The old active turn and internal Meta notifications must
                     // not restart with instructions to call retired tools.
-                    if let Some(prompt) = self
+                    if let Some(binding) = agent.remote_execution() {
+                        // Keep the exact home prompt, ACK and worker identity until
+                        // cancellation AND worker Meta-mode-off are acknowledged.
+                        // An idle lease also needs mode cleanup before ordinary work.
+                        if self
+                            .prompt_state_owner
+                            .active_prompt_for_agent(&session, agent.id())
+                            .is_none()
+                        {
+                            self.prompt_state_owner.submit_prepared_prompt(
+                                &session,
+                                crate::session::PromptQueueItem::new(
+                                    // Keep a cleanup-only identity outside the ordinary
+                                    // prompt allocator, including across another restart.
+                                    format!(
+                                        "meta-retirement:{}:{}",
+                                        agent.id(),
+                                        self.sessions.reserve_prompt_id()
+                                    ),
+                                    crate::scheduler::runtime::workflow_prompt_source_attachment_id(
+                                        "meta-retirement",
+                                    ),
+                                    agent.id(),
+                                    META_RETIREMENT_REASON,
+                                    crate::session::PromptStatus::Queued,
+                                ),
+                                false,
+                            )?;
+                        }
+                        let original = self
+                            .prompt_state_owner
+                            .begin_cancelling_active_prompt(&session, agent.id())
+                            .expect("remote retirement has an active intent");
+                        let replacement = original.clone().with_hidden_system_context(
+                            RemoteMetaRetirementIntent::context(binding)?,
+                        );
+                        self.prompt_state_owner.replace_active_prompt_if_matches(
+                            &session,
+                            agent.id(),
+                            &original,
+                            replacement,
+                        );
+                    } else if let Some(prompt) = self
                         .prompt_state_owner
                         .cancel_active_prompt_only(&session, agent.id())
                     {

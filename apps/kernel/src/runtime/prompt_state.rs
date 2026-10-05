@@ -866,6 +866,35 @@ impl PromptStateOwner {
         Ok(Some(active.clone()))
     }
 
+    /// Commit exact cancellation while queue admission cannot race its durable
+    /// write. A failed commit leaves both the active prompt and queue untouched.
+    pub(crate) fn finalize_active_prompt_cancellation_if_matches(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        expected: &PromptQueueItem,
+        commit: impl FnOnce(VecDeque<PromptQueueItem>) -> Result<bool, DaemonError>,
+    ) -> Result<Option<PromptQueueItem>, DaemonError> {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = owner.ensure_agent_state(session, agent_id);
+        if state.active_prompt.as_ref() != Some(expected)
+            || expected.status() != PromptStatus::Cancelling
+        {
+            return Ok(None);
+        }
+        if !commit(state.queued_prompts.clone())? {
+            return Ok(None);
+        }
+        let mut cancelled = state
+            .take_active_prompt()
+            .expect("exact active prompt checked above");
+        cancelled.set_status(PromptStatus::Cancelled);
+        Ok(Some(cancelled))
+    }
+
     pub(crate) fn finalize_active_prompt_cancellation(
         &self,
         session: &RuntimeSession,

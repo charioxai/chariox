@@ -1395,3 +1395,7 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
     .await
     .expect("the exact terminal projection should settle the cancelled prompt");
 }
+
+// MP-08 / MP-11: real leased worker retirement across home restart.
+#[path = "meta_retirement_tests.rs"]
+mod meta_retirement_tests;

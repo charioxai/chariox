@@ -409,6 +409,7 @@ mod provider_prompt_failure_runtime;
 mod provider_prompt_settlement_runtime;
 mod provider_substitute_runtime;
 mod relay_peer_runtime_state;
+mod remote_meta_retirement_runtime;
 mod remote_native_provider_launch;
 mod remote_prompt_claim_runtime;
 mod remote_prompt_dispatch_execution_runtime;
