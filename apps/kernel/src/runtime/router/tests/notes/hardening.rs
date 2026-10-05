@@ -95,15 +95,15 @@ pub(super) async fn check_native(
     assert!(router
         .dispatch_authenticated_runtime_tool_call(b, "chariox.load_notes", json!({}))
         .await
-        .is_err());
-    checks.push(json!({"case":"Room agent has no user-domain loader without explicit focus","surface":"browser/notes","client":"unfocused-agent","status":"PASS"}));
+        .is_err_and(|error| matches!(error, DaemonError::UserDomainRefused { .. })));
+    checks.push(json!({"case":"Room agent has no user-domain loader without explicit focus","surface":"browser/notes","client":"unfocused-agent","status":"PASS","refusals_attributed":true}));
     focus(router, session, second).await;
     for loader in ["chariox.load_notes", "chariox.load_kernel_browser"] {
         assert!(!names(a).contains(&loader.into()));
         assert!(router
             .dispatch_authenticated_runtime_tool_call(a, loader, json!({}))
             .await
-            .is_err());
+            .is_err_and(|error| matches!(error, DaemonError::UserDomainRefused { .. })));
     }
     assert!(!names(b).contains(&"chariox.read_note".into()));
     router
@@ -123,7 +123,7 @@ pub(super) async fn check_native(
                 json!({"note_id":note.note_id})
             )
             .await
-            .is_err());
+            .is_err_and(|error| matches!(error, DaemonError::UserDomainRefused { .. })));
         let current = router
             .dispatch_authenticated_runtime_tool_call(
                 b,
@@ -156,7 +156,7 @@ pub(super) async fn check_native(
                     json!({"command":{"op":"snapshot","tab_id":tab_id,"generation":generation}})
                 )
                 .await
-                .is_err());
+                .is_err_and(|error| matches!(error, DaemonError::UserDomainRefused { .. })));
             assert!(router
                 .dispatch_authenticated_runtime_tool_call(
                     b,
@@ -171,8 +171,8 @@ pub(super) async fn check_native(
                 .as_deref()
                 .is_some_and(|url| url.starts_with("https://app."))
             {
-                assert!(router.dispatch_authenticated_runtime_tool_call(b,"chariox.kernel_browser",json!({"command":{"op":"input","tab_id":tab_id,"generation":generation,"input":{"kind":"key","key":"Tab"}},"document_id":document})).await.is_err(), "focused browser tools must not act as the human App frontend");
-                checks.push(json!({"case":"focused agent can observe App host but cannot spoof human App input","surface":"user-App-host","client":"focused-agent/unfocused-agent","status":"PASS"}));
+                assert!(router.dispatch_authenticated_runtime_tool_call(b,"chariox.kernel_browser",json!({"command":{"op":"input","tab_id":tab_id,"generation":generation,"input":{"kind":"key","key":"Tab"}},"document_id":document})).await.is_err_and(|error| matches!(error, DaemonError::UserDomainRefused { .. })), "focused browser tools must not act as the human App frontend");
+                checks.push(json!({"case":"focused agent can observe App host but cannot spoof human App input","surface":"user-App-host","client":"focused-agent/unfocused-agent","status":"PASS","refusals_attributed":true}));
             }
         }
         let request = LocalDaemonRequest::Notes(NotesRequest {
@@ -183,7 +183,10 @@ pub(super) async fn check_native(
         let mut caller = terminal_command("MD-H-foreign-note", &request);
         caller.caller.user_id = Some("collaborator-fixture".into());
         assert!(
-            router.dispatch(caller, request).await.is_err(),
+            router
+                .dispatch(caller, request)
+                .await
+                .is_err_and(|error| matches!(error, DaemonError::UserDomainRefused { .. })),
             "Room membership does not grant private notes"
         );
         let list = LocalDaemonRequest::Notes(NotesRequest {
@@ -200,7 +203,7 @@ pub(super) async fn check_native(
             panic!("notes list expected")
         };
         assert!(listed.is_empty());
-        checks.push(json!({"case":"focus moves private notes atomically; Room collaborator cannot read owner records","surface":note.anchor.window,"client":"focused-agent/unfocused-agent/Room-member","status":"PASS"}));
+        checks.push(json!({"case":"focus moves private notes atomically; Room collaborator cannot read owner records","surface":note.anchor.window,"client":"focused-agent/unfocused-agent/Room-member","status":"PASS","refusals_attributed":true}));
     }
     focus(router, session, first).await;
     assert!(!names(a).contains(&"chariox.read_note".into()));
@@ -213,7 +216,7 @@ pub(super) async fn check_native(
                 json!({"note_id":note.note_id})
             )
             .await
-            .is_err());
+            .is_err_and(|error| matches!(error, DaemonError::UserDomainRefused { .. })));
         assert!(router
             .dispatch_authenticated_runtime_tool_call(
                 a,
@@ -221,7 +224,7 @@ pub(super) async fn check_native(
                 json!({"note_id":note.note_id})
             )
             .await
-            .is_err());
+            .is_err_and(|error| matches!(error, DaemonError::UserDomainRefused { .. })));
     }
     router
         .dispatch_authenticated_runtime_tool_call(a, "chariox.load_notes", json!({}))
@@ -237,7 +240,10 @@ pub(super) async fn check_native(
         None,
         &request,
     );
-    assert!(router.dispatch(command, request).await.is_err());
-    checks.push(json!({"case":"refocus clears both lazy tool grants; forged provider transport rejected","surface":"browser/notes","client":"focused-agent/relay-peer","status":"PASS"}));
+    assert!(router
+        .dispatch(command, request)
+        .await
+        .is_err_and(|error| matches!(error, DaemonError::UserDomainRefused { .. })));
+    checks.push(json!({"case":"refocus clears both lazy tool grants; forged provider transport rejected","surface":"browser/notes","client":"focused-agent/relay-peer","status":"PASS","refusals_attributed":true}));
     checks
 }

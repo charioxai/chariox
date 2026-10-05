@@ -10,6 +10,28 @@ impl CommandRouter {
         command: &KernelCommand,
         request: &mut LocalDaemonRequest,
     ) -> Result<(), DaemonError> {
+        // These public routes are human frontend channels; agents use the
+        // focus-admitted MCP seam. Refuse before generic session-grant lookup
+        // so expired/foreign grants cannot flatten the same admission denial.
+        if !command.is_terminal_caller()
+            && matches!(
+                request,
+                LocalDaemonRequest::KernelBrowser(_)
+                    | LocalDaemonRequest::Notes(_)
+                    | LocalDaemonRequest::CaptureVisibleRegion(_)
+                    | LocalDaemonRequest::OpenUserAppView(_)
+                    | LocalDaemonRequest::ListUserAppViews(_)
+                    | LocalDaemonRequest::CloseUserAppView(_)
+                    | LocalDaemonRequest::GetUserAppViewFrontend(_)
+                    | LocalDaemonRequest::CallUserAppView(_)
+                    | LocalDaemonRequest::SubscribeUserAppViews(_)
+                    | LocalDaemonRequest::AnswerUserDomainInteraction(_)
+            )
+        {
+            return Err(DaemonError::UserDomainRefused {
+                reason: crate::error::UserDomainRefusalReason::NotGranted,
+            });
+        }
         if let Some(authority) = command.external_grant_id() {
             let session = self
                 .runtime_state
@@ -115,5 +137,58 @@ impl CommandRouter {
             }
             _ => unreachable!(),
         }))
+    }
+}
+
+#[cfg(test)]
+mod user_domain_admission_tests {
+    use super::*;
+    use crate::runtime::command::KernelCommandSource;
+
+    #[test]
+    fn revoked_grants_and_transport_peers_get_the_same_bounded_frontend_refusal() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+                .unwrap();
+            let router = CommandRouter::with_interactive_capacity(
+                std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+                4,
+            );
+            for request in [
+                LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+                    command: crate::local::KernelBrowserCommand::State,
+                }),
+                LocalDaemonRequest::ListUserAppViews(crate::local::ListUserAppViewsRequest {}),
+            ] {
+                for class in [
+                    KernelConnectionClass::ExternalAgent,
+                    KernelConnectionClass::KernelAgent,
+                    KernelConnectionClass::RelayPeer,
+                    KernelConnectionClass::Unauthenticated,
+                ] {
+                    let mut command = KernelCommand::from_local_request_with_source(
+                        "invalid-admission",
+                        KernelCommandSource::RelayPeer,
+                        None,
+                        None,
+                        &request,
+                    );
+                    command.caller.connection_class = Some(class);
+                    command.caller.caller_id = "revoked-grant".into();
+                    let error = router
+                        .authorize_external_request(&command, &mut request.clone())
+                        .unwrap_err();
+                    assert!(matches!(error, DaemonError::UserDomainRefused {
+                        reason: crate::error::UserDomainRefusalReason::NotGranted
+                    }));
+                    assert_eq!(error.to_string(), "User-domain request refused");
+                }
+            }
+            router.runtime_state.shutdown_cleanup().await.unwrap();
+        });
     }
 }

@@ -272,6 +272,7 @@ impl KernelBrowserHost {
     ) -> Result<Value, String> {
         let admission = agent.map(|agent| self.admit(user, agent)).transpose()?;
         self.protected_request_admitted(user, admission.as_ref(), method, params, policy)
+            .map_err(|error| error.to_string())
     }
     pub(crate) fn admit(&self, user: &str, agent: &str) -> Result<KernelBrowserAdmission, String> {
         self.admit_for(user, agent, KernelBrowserCapability::Browser)
@@ -363,7 +364,7 @@ impl KernelBrowserHost {
         method: &str,
         params: Value,
         policy: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, crate::error::HostFailure> {
         if admission.is_some_and(|admission| admission.user != user) {
             return Err("MD-3: browser admission belongs to another user".into());
         }
@@ -413,7 +414,7 @@ impl KernelBrowserHost {
             params["_agent_input"] = true.into();
         }
         self.check_admission(admission)?;
-        backend.host_request("host.protect", policy)?;
+        backend.host_request_classified("host.protect", policy)?;
         self.check_admission(admission)?;
         let model = self.actor_model(user)?;
         let mutation = method == "host.secret"
@@ -425,7 +426,8 @@ impl KernelBrowserHost {
         let action = if mutation {
             // Reconcile the SAME supervised browser before ledger admission. Takeover
             // uses only the model lock, so it can cancel while CDP holds the backend.
-            let state = backend.host_request("host.browser", serde_json::json!({"op":"state"}))?;
+            let state = backend
+                .host_request_classified("host.browser", serde_json::json!({"op":"state"}))?;
             model
                 .lock()
                 .map_err(|_| "MD-3: actor lock poisoned")?

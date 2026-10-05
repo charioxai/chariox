@@ -2,7 +2,8 @@
 
 This validation targets union local protocol 427 / relay peer 74, initially on
 public union `32d4611a9`, then rerun on published stack-on-main `f3ad77def`.
-It changes test fixtures and documentation only, not protocol shapes.
+That initial lane changes test fixtures and documentation only. Attributed refusal
+hardening follows under local434/relay80; see [the refusal contract](MULTIDOMAIN_REFUSALS.md).
 
 ## Identities and access
 
@@ -101,3 +102,13 @@ key-up held-state controls. The shared actor tests cover cancellation of running
 controller input by human takeover and reject queued or disconnected actors.
 No client-only held-key protocol was added. Notes and captures enter only the
 initiating client's existing draft intake; no check sends a provider prompt.
+
+## Attributed refusal follow-up
+
+The md/refusals branch adds bounded kernel-issued reason codes and typed web/CLI
+projections under reservation434/80. The nine generic-error cases now require
+specific policy reasons, never arbitrary controller or transport failures.
+The live harness records each accepted code/reason/retryability/client class in
+the case receipt. Native agent/Room negatives require UserDomainRefused as well.
+Unknown and foreign IDs share not_granted without an existence leak.
+Validation is recorded in /w/evidence/md-refusals/REPORT.md FINAL.

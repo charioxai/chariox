@@ -1,4 +1,5 @@
 // MD-3: document-bound physical input, sharing Room cancellation and document checks.
+import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { assertCurrentDocument, assertNotCancelled } from "./browser-controller-actions.mjs";
 const viewport = { css_width: 1280, css_height: 800 };
 export async function inputHostTab(browser, tab, input, { signal, onDispatch } = {}) {
@@ -29,7 +30,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch } =
           expression: "(() => { let e = document.activeElement; while(e?.shadowRoot?.activeElement) e = e.shadowRoot.activeElement; return !!e && (e.type === 'password' || e.tagName === 'IFRAME' || /password|one-time-code/.test(e.autocomplete || '')); })()",
           returnByValue: true,
         }, sessionId);
-        if (result?.value !== false) throw new Error("MD-2: secret field input requires the Vault path");
+        if (result?.value !== false) throw new UserDomainRefusal("sensitive_requires_focus");
         await sendInput("Input.insertText", { text: input.text });
       } else if (input.kind === "key") {
         if (!["Tab", "Enter", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");

@@ -397,14 +397,36 @@ impl BrowserControllerProcessStdioBackend {
         self.request(method, params)?.into_result(method)
     }
 
+    pub(crate) fn host_request_classified(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, crate::error::HostFailure> {
+        let response = self
+            .request(method, params)
+            .map_err(crate::error::HostFailure::Other)?;
+        if self.host && !response.ok {
+            if let Some(reason) = response
+                .error
+                .as_ref()
+                .and_then(|error| crate::error::UserDomainRefusalReason::from_code(&error.code))
+            {
+                return Err(crate::error::HostFailure::Refused(reason));
+            }
+        }
+        response
+            .into_result(method)
+            .map_err(crate::error::HostFailure::Other)
+    }
+
     pub(crate) fn host_request_cancellable(
         &mut self,
         method: &str,
         params: serde_json::Value,
         signal: Option<Arc<BrowserCancellation>>,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<serde_json::Value, crate::error::HostFailure> {
         let previous = std::mem::replace(&mut self.action_cancellation, signal);
-        let result = self.host_request(method, params);
+        let result = self.host_request_classified(method, params);
         self.action_cancellation = previous;
         result
     }

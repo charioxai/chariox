@@ -1,4 +1,4 @@
-export const visibleRegionCaptureMinimumProtocolVersion = 427
+export const visibleRegionCaptureMinimumProtocolVersion = 434
 export type ScreenshotSurface =
   | {kind: "room"; session_id: string; attachment_id: string; runtime_generation: number; viewport_revision: number}
   | {kind: "kernel_browser"; tab_id: string; generation: number}
