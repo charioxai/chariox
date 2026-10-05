@@ -338,6 +338,17 @@ async fn two_local_terminal_check(router: &CommandRouter, tab: &str, generation:
         )
         .await
         .unwrap();
+    runtime
+        .kernel_browser_terminal_request(
+            &b,
+            KernelBrowserCommand::Navigate {
+                tab_id: tab.into(),
+                generation,
+                url: url.into(),
+            },
+        )
+        .await
+        .unwrap();
 }
 
 async fn live_check() {
