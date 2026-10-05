@@ -116,7 +116,7 @@ try {
     const encrypted=await api.encryptRelayPayload(daemonKey,JSON.stringify({command_id:'md-display-'+(id+1),request}),sender);
     timing('client_request_encrypt',started);
     const sent=stamp();const result=await control({kind:'client_request',target:{daemon_id:bootstrap.daemon_id},encrypted_request:encrypted.payload});
-    timing(request.KernelBrowser.command.op==='display_input'?'input_round_trip':'capture_or_control_round_trip',sent);return result;
+    timing(request.KernelBrowser?.command.op==='display_input'?'input_round_trip':'capture_or_control_round_trip',sent);return result;
    },onEvent:listener=>{listeners.add(listener);return()=>listeners.delete(listener)}};
   mdTransport.subscribeDisplay=binding=>control({kind:'client_subscribe',subscription_id:binding.subscription_id,target:{daemon_id:bootstrap.daemon_id},session_id:binding.subscription_id,attachment_id:String(binding.generation),client_public_key:sender.publicKeyBase64,subscription_scope:'kernel_browser_display',resume_from_event_id:null});
   mdTransport.unsubscribeDisplay=binding=>control({kind:'client_unsubscribe',subscription_id:binding.subscription_id,client_public_key:sender.publicKeyBase64});
@@ -192,6 +192,31 @@ try {
  await page.evaluate(()=>mdStream.release());
  receipt.agent_after_release=await agentProbe('PROBE_RELEASE');
  if(receipt.agent_after_release.rejected)throw Error('MD-DISPLAY: focused MCP input did not resume after release');
+ if(process.env.MD_REGION_CAPTURE==='1') {
+  // Keep the same subscription across real navigation, then capture via the
+  // authenticated human relay request and production native-pixel crop path.
+  const oldDocument=await page.evaluate(()=>mdStream.presenter.documentId);
+  await page.evaluate(async url=>{
+   await mdTransport.request({KernelBrowser:{command:{op:'navigate',tab_id:mdStream.binding.tab_id,generation:mdStream.binding.generation,url}}});
+   await mdStream.next();
+  },`${origin}/region`);
+  const captured=await page.evaluate(async()=>{
+   const binding=mdStream.binding;
+   return mdTransport.request({CaptureVisibleRegion:{capture_id:'mdval-dpr2-region',surface:{kind:'kernel_browser',tab_id:binding.tab_id,generation:binding.generation},
+    region:{x:95,y:95,width:230,height:30,viewport_width:1280,viewport_height:800,frame_width:2560,frame_height:1600}}});
+  });
+  const capture=captured.VisibleRegionCaptured?.capture;
+  if(!capture||capture.width!==460||capture.height!==60)throw Error('MD-CAPTURE: native DPR2 crop geometry');
+  const bytes=Buffer.from(capture.data_base64,'base64'),png=PNG.sync.read(bytes);
+  const black=(x,y)=>{const p=(y*png.width+x)*4;return png.data[p]===0&&png.data[p+1]===0&&png.data[p+2]===0&&png.data[p+3]===255};
+  const protectedPixels=[black(20,20),black(220,20),black(420,20)];
+  if(!protectedPixels.every(Boolean)||black(0,0))throw Error('MD-CAPTURE: protected native pixels or retained background incorrect');
+  await writeFile(path.join(output,'protected-region-dpr2.png'),bytes);
+  receipt.region_capture={status:'PASS',width:capture.width,height:capture.height,protected_pixels:protectedPixels,retained_background:true,source:'authenticated encrypted local relay -> kernel owner authority -> sandboxed native Chromium -> trusted masks -> raster crop'};
+  const newDocument=await page.evaluate(()=>mdStream.presenter.documentId);
+  if(!oldDocument||!newDocument||oldDocument===newDocument)throw Error('MD-DISPLAY: navigation did not refresh subscription document');
+  receipt.navigation_same_subscription={status:'PASS',before:oldDocument,after:newDocument};
+ }
  await page.evaluate(()=>mdStream.close());
  await writeFile(path.join(home,'STOP'),'MD-DISPLAY owned stop');
  const exit=await kernelExit;receipt.kernel_exit=exit;if(exit.code!==0)throw Error('MD-DISPLAY kernel drill failed');
