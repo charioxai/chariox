@@ -13,7 +13,7 @@ use chariox_event_protocol::{
     AegsConnectionTestEventResponse, AegsProviderActionRequest, AegsProviderResourceQuery,
     PublishEventRequest,
 };
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -1553,22 +1553,30 @@ pub fn read_secret(name: &str, file_name: &str) -> Result<Option<String>, String
     Ok(Some(value))
 }
 
-async fn read_body(request: Request<Incoming>) -> Result<Bytes, Response<Full<Bytes>>> {
-    let body = request.into_body().collect().await.map_err(|error_value| {
-        error(
-            StatusCode::BAD_REQUEST,
-            "invalid_body",
-            error_value.to_string(),
-        )
-    })?;
-    let body = body.to_bytes();
-    if body.len() > MAX_WEBHOOK_BYTES {
-        return Err(error(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "payload_too_large",
-            format!("webhook exceeds {MAX_WEBHOOK_BYTES} bytes"),
-        ));
-    }
+async fn read_body<B>(request: Request<B>) -> Result<Bytes, Response<Full<Bytes>>>
+where
+    B: hyper::body::Body<Data = Bytes> + Unpin,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    let body = Limited::new(request.into_body(), MAX_WEBHOOK_BYTES)
+        .collect()
+        .await
+        .map_err(|error_value| {
+            if error_value.downcast_ref::<LengthLimitError>().is_some() {
+                error(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "payload_too_large",
+                    format!("webhook exceeds {MAX_WEBHOOK_BYTES} bytes"),
+                )
+            } else {
+                error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_body",
+                    error_value.to_string(),
+                )
+            }
+        })?
+        .to_bytes();
     Ok(body)
 }
 
@@ -1701,6 +1709,77 @@ fn error(
 mod tests {
     use super::*;
     use chariox_event_protocol::AegsConnectionLifecycleState;
+
+    struct CountedBody {
+        frames: std::collections::VecDeque<Bytes>,
+        polled: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl hyper::body::Body for CountedBody {
+        type Data = Bytes;
+        type Error = Infallible;
+
+        fn poll_frame(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, Infallible>>> {
+            self.polled
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::task::Poll::Ready(
+                self.frames
+                    .pop_front()
+                    .map(|bytes| Ok(hyper::body::Frame::data(bytes))),
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn body_limit_stops_chunked_input_at_the_first_overflow() {
+        let polled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let body = CountedBody {
+            frames: [
+                Bytes::from(vec![b'x'; MAX_WEBHOOK_BYTES]),
+                Bytes::from_static(b"x"),
+                Bytes::from_static(b"must not be polled"),
+            ]
+            .into(),
+            polled: polled.clone(),
+        };
+        let response = read_body(Request::new(body)).await.unwrap_err();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(polled.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn body_limit_rejects_an_oversized_first_frame_without_polling_more() {
+        let polled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let body = CountedBody {
+            frames: [
+                Bytes::from(vec![b'x'; MAX_WEBHOOK_BYTES + 1]),
+                Bytes::from_static(b"must not be polled"),
+            ]
+            .into(),
+            polled: polled.clone(),
+        };
+        assert_eq!(
+            read_body(Request::new(body)).await.unwrap_err().status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        assert_eq!(polled.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn body_limit_accepts_empty_and_exact_limit() {
+        for length in [0, MAX_WEBHOOK_BYTES] {
+            let bytes = Bytes::from(vec![b'x'; length]);
+            assert_eq!(
+                read_body(Request::new(Full::new(bytes.clone())))
+                    .await
+                    .unwrap(),
+                bytes
+            );
+        }
+    }
 
     #[test]
     fn query_parser_rejects_duplicate_callback_parameters() {
