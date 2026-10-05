@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { shapeViewerLeg } from './drill-netem.mjs';
+import {assertIndependentNavigation} from './drill-navigation.mjs';
 import { drainRepairs } from './drill-settle.mjs';
 import { measureWorkload } from './drill-workloads.mjs';
 import { fixture } from './drill-fixtures.mjs';
@@ -232,7 +233,7 @@ try {
  const oldDocument=await page.evaluate(()=>mdStream.presenter.documentId);
  await page.evaluate(()=>mdStream.input({kind:'click',x:80,y:775}));await pause(200);
  const navigated=await page.evaluate(()=>mdStream.next());
- if(!navigated||navigated.document_id===oldDocument||navigated.kind!=='video')throw Error('MD-DISPLAY: navigation did not deliver fresh independent frame');
+ assertIndependentNavigation(navigated,oldDocument,await page.evaluate(()=>mdStream.binding.codec));
  const oldRejected=await page.evaluate(async document=>{try{await mdTransport.request({KernelBrowser:{command:{op:'display_input',tab_id:mdStream.binding.tab_id,generation:mdStream.binding.generation,document_id:document,input:{kind:'click',x:100,y:200}}}});return false}catch{return true}},oldDocument);
  if(!oldRejected)throw Error('MD-DISPLAY: navigated document accepted stale input');
  const navigation=await drainRepairs(()=>page.evaluate(()=>mdStream.next()));
