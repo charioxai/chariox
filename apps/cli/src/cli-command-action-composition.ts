@@ -196,6 +196,7 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliCommandActionCompositionDeps = {
+  userAppViews?: { handle(args: string[], sessionId?: string): Promise<boolean> }
   appHostTerminal?: AppHostTerminal
   lastViewedAppHostOperationId?: () => string | undefined
   appFileInstaller?: AppFileInstaller
@@ -492,6 +493,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     },
     sendWorkflowEventPublicationRequest: (request) => client.send(request),
     sendAppRequest: (request) => client.send(request),
+    ...(deps.userAppViews ? { userAppViews: deps.userAppViews } : {}),
     ...(deps.appFileInstaller ? { appFileInstaller: deps.appFileInstaller } : {}),
     ...(deps.appDevLoop ? { appDevLoop: deps.appDevLoop } : {}),
     ...(deps.appPublisherEnrollment ? { appPublisherEnrollment: deps.appPublisherEnrollment } : {}),

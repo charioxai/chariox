@@ -128,7 +128,8 @@ it runs lane kbrowser's ignored MD-4 drill: actual controller/Chromium, focused
 MCP input, screenshot/frame, browser crash, stale references, kernel process
 restart and last-tab close. Then it runs the ignored integrated App/browser drill:
 no Session while opening/calling/approving/closing the signed App, actual page
-`window.chariox.call`, real fixed ABI worker, synthetic passkey/one-use receipt,
+`window.chariox.call`, human Tab/type/Enter App call visible in the accessibility
+outline, real fixed ABI worker, synthetic passkey/one-use receipt,
 foreign-owner/provider denials, independent same-App targets/close, then a focused dev-stub provider's
 on-demand MCP tab in the same owner browser/profile. The App screenshot and
 receipts/logs go to evidence; fixture workers and browser host are shut down.
@@ -138,3 +139,12 @@ fixed worker** and synthetic encrypted vault. It does not prove production App
 worker sandbox execution, a live provider/model, real owner Vault, browser-client/
 relay projection, Cloud deployment or Mac acceptance. Those scopes are not
 implied by the screenshots. The Cloud headless prototype drill remains separate.
+
+
+The flagged TUI text tier is documented in MULTIDOMAIN_TUI_APP_VIEWS.md.
+Its runtime opt-in matches Cloud's build opt-in. The PTY component drill uses
+production projection/LocalIpcClient with a synthetic peer; the native host
+integration drill separately proves the actual kernel/Chromium boundary.
+This branch is replayed on #843 head a5c8dbcf1 (including both review fixes).
+Cloud's prototype is replayed on ee3a4d556 / G2 main 619486c69 and uses the
+shared G2 passkey popup. The original protocol merge-order matrix still applies.
