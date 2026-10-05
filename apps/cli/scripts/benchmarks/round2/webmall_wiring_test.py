@@ -16,15 +16,20 @@ class SearchWiring(unittest.TestCase):
 
     def test_complete_reset_precedes_each_shop_sync(self):
         source, function = self.reset_function(); calls = []
-        def docker(*args, **kwargs): calls.append(args); return "", 0
+        def docker(*args, **kwargs):
+            if args[0] == "top": return "PID PPID COMMAND\n100 1 httpd\n", 0
+            if "eval" in args: return "public metadata", 0
+            calls.append(args); return "", 0
         namespace = dict(PREFIX="r2next-webmall-r3", docker=docker,
+                         parse_search_metadata=lambda output: {"host": "http://elasticsearch:9200"},
                          inspect=lambda *args: {"Config": {"Labels": {"io.chariox.benchmark.lane": "r2next-webmall-r3"}}})
         exec(compile(ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])), str(source), "exec"), namespace)
         namespace["sync_search_indexes"]()
         self.assertEqual(len(calls), 8)
         for offset in range(0, 8, 2):
-            self.assertIn("delete_index($index)", calls[offset][-1])
+            self.assertEqual(calls[offset][3:], ("wp", "elasticpress", "clear-sync"))
             self.assertEqual(calls[offset + 1][3:6], ("wp", "elasticpress", "sync"))
+            self.assertIn("--setup", calls[offset + 1])
             self.assertEqual(calls[offset][2], calls[offset + 1][2])
 
     def test_unowned_shop_never_receives_index_reset(self):
@@ -35,6 +40,18 @@ class SearchWiring(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "unowned"):
             namespace["sync_search_indexes"]()
         self.assertEqual(calls, [])
+
+    def test_live_cli_worker_prevents_stale_metadata_clear(self):
+        source, function = self.reset_function(); calls = []
+        def docker(*args, **kwargs):
+            calls.append(args)
+            return "PID PPID COMMAND\n123 1 php\n", 0
+        namespace = dict(PREFIX="r2next-webmall-r3", docker=docker,
+                         inspect=lambda *args: {"Config": {"Labels": {"io.chariox.benchmark.lane": "r2next-webmall-r3"}}})
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])), str(source), "exec"), namespace)
+        with self.assertRaisesRegex(AssertionError, "live CLI"):
+            namespace["sync_search_indexes"]()
+        self.assertTrue(all(args[0] == "top" for args in calls))
 
     def test_plugin_effective_host_overrides_stale_stored_option(self):
         source = Path(os.environ.get("WEBMALL_FIXTURE_SOURCE", str(Path(__file__).resolve().parent.parent / "webmall-sites.py")))

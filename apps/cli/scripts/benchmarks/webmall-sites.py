@@ -161,14 +161,19 @@ def collect_search_readiness():
     return probe_search("http://127.0.0.1:" + str(ports["elasticsearch"]), shops)
 
 def sync_search_indexes():
-    # A restored plugin can carry stale documents through --setup. Rebuild each
-    # entire lane-owned product index, never remove a task-selected document.
+    # Restored or interrupted sync metadata can resume a stale partial run.
+    # Clear it only after proving no CLI sync is active in the owned container;
+    # --setup then rebuilds the entire index, never task-selected documents.
     for i in range(1, 5):
         name = PREFIX + f"-wordpress_shop{i}"
         obj = inspect("container", name)
         assert obj and obj["Config"]["Labels"].get("io.chariox.benchmark.lane") == PREFIX, "MP-10 refuse unowned search repair"
-        docker("exec", name, "wp", "eval", r'$host = \ElasticPress\Utils\get_host(); if (rtrim($host, "/") !== "http://elasticsearch:9200") { throw new \RuntimeException("MP-10 unowned search endpoint"); } $index = \ElasticPress\Indexables::factory()->get("post")->get_index_name(); if (!\ElasticPress\Elasticsearch::factory()->delete_index($index)) { throw new \RuntimeException("MP-10 index reset failed"); }', timeout=120)
-        docker("exec", name, "wp", "elasticpress", "sync", "--setup", "--yes", "--stop-on-error", timeout=300)
+        processes, _ = docker("top", name, "-eo", "pid,ppid,comm")
+        assert not any(line.split()[-1] in ("php", "wp") for line in processes.splitlines()[1:] if line.split()), "MP-10 live CLI sync prevents metadata repair"
+        output, _ = docker("exec", name, "wp", "eval", r'echo "\nMP10_PUBLIC_SEARCH=" . json_encode(["host" => \ElasticPress\Utils\get_host(), "index" => \ElasticPress\Indexables::factory()->get("post")->get_index_name(), "publishedProducts" => (int) wp_count_posts("product")->publish]) . "\n";')
+        parse_search_metadata(output)
+        docker("exec", name, "wp", "elasticpress", "clear-sync")
+        docker("exec", name, "wp", "elasticpress", "sync", "--setup", "--yes", "--stop-on-error", "--per-page=100", timeout=300)
 
 if args.operation == "repair-search":
     sync_search_indexes()
