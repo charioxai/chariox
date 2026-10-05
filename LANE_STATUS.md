@@ -1,3 +1,14 @@
+# MD-DISPLAY-04 — Review 03:42 milestone
+
+Fail-first-v2 proves stale loader closure on correct page; host now rebinds
+capture after navigation. Portable drill TypeScript comes from supplied tools,
+all fallible setup inside owned finally; deliberately blocked shared checkout
+now reaches expected missing-binary failure with clean teardown. Original empty
+scratch leak removed after exact inventory. 44 Node checks pass. Added real
+same-stream navigation + stale input to live cases, and awaited interruption
+cleanup. First repair binary built at 2cbfe5618; final review binary pending.
+No final live validation claim yet. Protocol 419, default-off flag unchanged.
+
 # MD-DISPLAY-02/04 — Phase 5 repair milestone
 
 2026-10-05: before campaign 740a7ffaa, Phase-4 binary 05387e1e4. All four

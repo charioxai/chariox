@@ -1,3 +1,17 @@
+# MD-DISPLAY-04 — Review 03:42 fixes ready; live proof pending
+
+Navigation fail-first-v2 binds the correct page target and fails only after its
+loader changes. Host recreates DisplayCapture on document change; stale input
+still fails. Drill now resolves TypeScript from supplied public tools inside
+owned cleanup. Process-local preload blocks /root/work/oss; fixed startup reaches
+intentional missing-binary failure and removes its scratch, original leaks an
+empty root (inventoried then removed). Final relocated live replay pending.
+44 Node tests pass. Full same-subscription navigation was added to every live
+case. SIGINT/SIGTERM route through owned drill cleanup; parent signals only its
+identity-bound positive child rather than killing its group before cleanup.
+No new wire shape/protocol number. Review inbox checked 03:42 findings handled
+as this batch; source/binary rebuild + final receipts will follow.
+
 # MD-DISPLAY-02/04 — Phase 5 implementation milestone (validation running)
 
 Local commits 740a7ffaa and 2cbfe5618; no publication. Protocol 419, flag off.

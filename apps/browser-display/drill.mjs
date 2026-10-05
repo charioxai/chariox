@@ -17,7 +17,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const [binary, output, tools, pytools] = process.argv.slice(2);
 if (![binary,output,tools,pytools].every(value => value && path.isAbsolute(value))) throw Error('MD-DISPLAY: provide absolute kernel-test binary, evidence directory, Node tools and PyAV tools');
 const require = createRequire(path.join(tools,'package.json'));
-const { chromium } = require('playwright-core'), { PNG } = require('pngjs');
+let chromium, PNG, relayCrypto;
 const pause = ms => new Promise(resolve => setTimeout(resolve,ms));
 const receipt = { item: 'MD-DISPLAY-02/04', status: 'RED', source: execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(), source_dirty: Boolean(execFileSync('git',['status','--porcelain'],{encoding:'utf8'}).trim()), commands: process.argv.slice(1), codec: 'vp09.00.10.08 + exact PNG/tiles', target_encrypted_bitrate: Number(process.env.MD_BITRATE || 2_000_000), css_geometry:[1280,800],dpr:2, transport:'production local scoped-auth relay + kernel encrypted request/event path', samples:[], cleanup:[] };
 await mkdir(output,{recursive:true});
@@ -26,11 +26,10 @@ let kernel, display, viewer, browser, server, ready, shaped;
 const workload=process.env.MD_WORKLOAD||'docs';
 receipt.workload=workload;
 let kernelExit;
-const ts=createRequire('/root/work/oss/package.json')('typescript');
-const relayCryptoSource=await readFile(path.resolve(here,'../../packages/kernel-client/src/browser-relay-crypto.ts'),'utf8');
-const relayCrypto=ts.transpileModule(relayCryptoSource,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText;
 const groups = [], errors = [], log = [];
+for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{receipt.interrupted=signal;errors.push(Error('MD-DISPLAY: interrupted '+signal))});
 async function resource() {
+ if(errors.length)throw errors[0];
  const mem=await readFile('/proc/meminfo','utf8'), disk=await statfs('/');
  const sample={at:new Date().toISOString(),at_ms:performance.now(),mem_available_bytes:Number(mem.match(/^MemAvailable:\s+(\d+)/m)[1])*1024,disk_free_bytes:Number(disk.bavail)*Number(disk.bsize),processes:[]};
  for(const name of await readdir('/proc')) {
@@ -43,6 +42,10 @@ async function resource() {
 }
 async function until(check,label,timeout=20000) {const end=Date.now()+timeout;while(Date.now()<end){if(errors.length)throw errors[0];const value=await check();if(value)return value;await pause(25);}throw Error('MD-DISPLAY timeout: '+label);}
 try {
+ const ts=require('typescript');
+ ({chromium}=require('playwright-core'));({PNG}=require('pngjs'));
+ const relayCryptoSource=await readFile(path.resolve(here,'../../packages/kernel-client/src/browser-relay-crypto.ts'),'utf8');
+ relayCrypto=ts.transpileModule(relayCryptoSource,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText;
  await resource();
  if(process.env.MD_RELAY==='0')throw Error('MD-DISPLAY: browser origins cannot attach to the native local socket; use the scoped relay drill');
  await chmod(root,0o755);
@@ -189,6 +192,16 @@ try {
  receipt.after_input_verification=await page.evaluate(async()=>{const frame=await mdStream.next();return frame?{kind:frame.kind,sequence:frame.sequence}:null});
  receipt.final_fidelity=await pair('after-input');
  if(!receipt.final_fidelity.lossless)throw Error('MD-DISPLAY: small-change pixels differ');
+ // Full navigation preserves the display subscription and rotates its source.
+ const oldDocument=await page.evaluate(()=>mdStream.presenter.documentId);
+ await page.evaluate(()=>mdStream.input({kind:'click',x:80,y:775}));await pause(200);
+ const navigated=await page.evaluate(()=>mdStream.next());
+ if(!navigated||navigated.document_id===oldDocument||navigated.kind!=='video')throw Error('MD-DISPLAY: navigation did not deliver fresh independent frame');
+ const oldRejected=await page.evaluate(async document=>{try{await mdTransport.request({KernelBrowser:{command:{op:'display_input',tab_id:mdStream.binding.tab_id,generation:mdStream.binding.generation,document_id:document,input:{kind:'click',x:100,y:200}}}});return false}catch{return true}},oldDocument);
+ if(!oldRejected)throw Error('MD-DISPLAY: navigated document accepted stale input');
+ let navigationPolls=0;while(await page.evaluate(()=>mdStream.next()))if(++navigationPolls>300)throw Error('MD-DISPLAY: navigated page did not settle');
+ receipt.navigation={independent_kind:navigated.kind,changed_document:true,stale_input_rejected:oldRejected,repair_polls:navigationPolls,fidelity:await pair('after-navigation')};
+ if(!receipt.navigation.fidelity.lossless)throw Error('MD-DISPLAY: navigated repair is not exact');
  // Explicit stale document must fail through the production input seam.
  const stale=await page.evaluate(async()=>{try{await mdTransport.request({KernelBrowser:{command:{op:'display_input',tab_id:mdStream.binding.tab_id,generation:mdStream.binding.generation,document_id:'stale-fixture-loader',input:{kind:'click',x:1190,y:28}}}});return false}catch{return true}});if(!stale)throw Error('MD-DISPLAY: stale document admitted');receipt.stale_document_rejected=true;
  receipt.takeover=await page.evaluate(()=>mdStream.takeover());
@@ -204,10 +217,11 @@ try {
  await writeFile(path.join(home,'STOP'),'MD-DISPLAY owned stop');
  const exit=await kernelExit;receipt.kernel_exit=exit;if(exit.code!==0)throw Error('MD-DISPLAY kernel drill failed');
  await writeFile(path.join(output,'kernel.log'),Buffer.concat(log));
+ if(errors.length)throw errors[0];
  receipt.status='PASS_LOCAL_COMPONENT';
  receipt.latency_goal={p50_ms:80,p95_ms:150,passed:receipt.latency.p50_ms<=80&&receipt.latency.p95_ms<=150};
  if(process.env.MD_REQUIRE_LATENCY==='1'&&!receipt.latency_goal.passed)throw Error('MD-DISPLAY: input-to-presentation latency goal remains RED');
-} catch(error) {receipt.status='RED';receipt.error=String(error.message);process.exitCode=1;}
+} catch(error) {receipt.status='RED';receipt.error=String(error.message);process.exitCode=receipt.interrupted?130:1;}
 finally {
  if(kernel&&kernel.exitCode===null&&kernel.signalCode===null) {await writeFile(path.join(root,'home','STOP'),'MD-DISPLAY cleanup stop').catch(()=>{});await Promise.race([kernelExit,pause(5000)]);}
  try {await browser?.close();await stopGroup(viewer);await stopGroup(kernel);await stopGroup(display);await pause(500);

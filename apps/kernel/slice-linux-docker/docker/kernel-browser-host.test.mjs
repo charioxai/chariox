@@ -378,3 +378,25 @@ test("MD-3: bound stream captures a document-bound source rather than annotating
   }
   assert.fail("bound stream frame never arrived");
 }));
+test('MD-DISPLAY navigation rebinds one display and still rejects old document input',()=>using(async({host,pages,connection})=>{
+ const {encodePng}=await import('./kernel-browser-pixels.mjs');
+ const flag=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try{
+  const opened=await host.request({op:'open',url:'http://127.0.0.1/one'}),target=host.tabs.get(opened.tab_id).target_id;
+  const send=connection.send;
+  connection.send=async(method,params,...rest)=>method==='Target.getTargetInfo'?{targetInfo:pages.get(params.targetId)}:send(method,params,...rest);
+  host.screenshot=async(tab,clip)=>{
+   const document=pages.get(target).document_id??`doc-${target}`;
+   assert.equal(tab.document_id,document,'capture must bind current native document');
+   const width=clip?clip.width*clip.scale:1280,height=clip?clip.height*clip.scale:800;
+   return {...tab,generation:opened.generation,data_base64:encodePng(width,height,Buffer.alloc(width*height*4,255))};
+  };
+  const b=await host.request({op:'display_subscribe',tab_id:opened.tab_id,generation:opened.generation,codecs:['png'],bitrate:2_000_000,device_scale_factor:1});
+  const next=sequence=>host.request({op:'screenshot',display_subscription_id:b.subscription_id,generation:b.generation,after_sequence:sequence});
+  const first=(await next(0)).display_frame;
+  pages.set(target,{url:'http://127.0.0.1/two',title:'two',document_id:'navigation-doc'});
+  const fresh=(await next(first.sequence)).display_frame;
+  assert.equal(fresh.document_id,'navigation-doc');assert.equal(fresh.kind,'png');assert.equal(fresh.sequence,first.sequence+1);
+  await assert.rejects(host.request({op:'input',tab_id:opened.tab_id,generation:opened.generation,document_id:first.document_id,input:{kind:'click',x:10,y:10}}),/stale input document/);
+ }finally{if(flag===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=flag}
+}));

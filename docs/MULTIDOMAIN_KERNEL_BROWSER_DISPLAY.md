@@ -182,7 +182,7 @@ node apps/browser-display/drill.mjs /absolute/kernel-test-binary \
   /absolute/external/evidence /absolute/node-tools /absolute/pyav-tools
 ```
 
-The Node tools directory needs `playwright-core` and `pngjs`; PyAV tools need
+The Node tools directory needs `playwright-core`, `pngjs` and `typescript`; PyAV tools need
 only public `av` and `av.libs`. The drill copies public dependencies and the test
 binary into a freshly allocated external scratch directory, then runs the real
 kernel as a non-root user. It launches its own Xvfb, opens a host tab through the
@@ -429,3 +429,10 @@ allocate any required protocol evolution, add AVC decoder-config/framing and
 negotiation coverage, and run native protected-image/slow-viewer/reconnect/Vault
 drills. Persistent inter prediction likewise needs an explicit decoder/base
 recovery contract. The current independent-frame wire shape remains unchanged.
+
+MD-DISPLAY-04 review 03:42: a document change recreates the native capture closure
+before its next protected screenshot. This keeps the same display subscription
+usable after full navigation while old document input remains refused. Drill
+TypeScript loads from the explicitly supplied Node tools under cleanup coverage;
+no shared checkout path is required. Campaign interruptions ask the owned drill
+to settle its children before namespace removal; unsafe/group IDs stay guarded.

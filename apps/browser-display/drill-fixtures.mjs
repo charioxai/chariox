@@ -17,5 +17,5 @@ export function fixture(path, otherOrigin, documentText) {
     case '/child': body = `<h1>External invoice</h1><label>Memo <input id="memo" value="From another origin"></label><button id="child-action">Approve fixture</button><p id="child-result">Pending</p>`; js = `document.querySelector('#child-action').onclick=()=>document.querySelector('#child-result').textContent='Approved';`; break;
     default: return null;
   }
-  return `<!doctype html><html><head><meta charset="utf-8"><title>MD-DISPLAY ${path}</title><style>${css}</style></head><body><header>Chariox · MD-DISPLAY research</header><main>${body}</main>${probe}${script}<script>${js}</script></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>MD-DISPLAY ${path}</title><style>${css}</style></head><body><header>Chariox · MD-DISPLAY research</header><main>${body}</main>${probe}<a href="/form" style="position:fixed;bottom:12px;left:12px;z-index:30">Next document</a>${script}<script>${js}</script></body></html>`;
 }

@@ -4,7 +4,7 @@ import { readlink, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { launchOwned, waitChild, stopGroup } from './drill-owned-process.mjs';
+import { launchOwned, waitChild, stopGroup, signalChild } from './drill-owned-process.mjs';
 import { profiles } from './drill-netem.mjs';
 const [binary,output,tools,pytools]=process.argv.slice(2);
 if(![binary,output,tools,pytools].every(p=>p&&path.isAbsolute(p)))throw Error('MD-DISPLAY: four absolute paths required');
@@ -12,7 +12,7 @@ await mkdir(output,{recursive:true});
 const cases=(process.env.MD_CASES||'local:docs,wan40:docs,wan80:docs,wan150:docs,local:canvas,local:video,local:scroll').split(',');
 const manifest={item:'MD-DISPLAY-02/04',source:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),cases:[],started_at:new Date().toISOString()};
 let active,interrupted=false;
-for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{interrupted=true;stopGroup(active).catch(()=>{process.exitCode=1})});
+for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{interrupted=true;signalChild(active,signal).catch(()=>{process.exitCode=1})});
 try{
  for(const entry of cases){
   if(interrupted)break;
