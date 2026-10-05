@@ -22,6 +22,49 @@ impl Drop for TestMetaRuntimeEnv {
     }
 }
 
+fn node_supports_workflow_code_typescript(node: &std::path::Path) -> bool {
+    std::process::Command::new(node)
+        .arg("--no-warnings")
+        .arg("--input-type=module")
+        .arg("-e")
+        .arg(
+            "const mod = await import('node:module'); if (typeof mod.stripTypeScriptTypes !== 'function') process.exit(1)",
+        )
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn mark_test_agent_controlled_by_metaagent(
+    app: &mut DaemonApp,
+    agent_id: &str,
+    metaagent_id: &str,
+) {
+    app.agents_mut()
+        .set_controlled_by_metaagent_id(agent_id, Some(metaagent_id.to_string()))
+        .expect("test agent should exist");
+}
+
+fn run_large_stack_async_test<Fut>(name: &str, test: fn() -> Fut)
+where
+    Fut: std::future::Future<Output = ()> + 'static,
+{
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(64 * 1024 * 1024)
+                .enable_all()
+                .build()
+                .expect("test runtime should build")
+                .block_on(test());
+        })
+        .expect("test thread should spawn")
+        .join()
+        .expect("test thread should not panic");
+}
+
 fn activate_test_agent_meta_mode(
     app: &mut DaemonApp,
     agent: crate::agent::AgentInstance,
@@ -84,3 +127,8 @@ async fn runtime_mcp_retires_meta_tools_for_regular_and_legacy_runs() {
         assert!(denied.to_string().contains("/sudo"));
     }
 }
+
+// These exercise trusted legacy settlement/source-package validation, not the
+// retired public MCP surface. Keep their common workflow regression coverage.
+mod workflow_code_crud;
+mod workflow_code_patterns;
