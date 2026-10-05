@@ -228,7 +228,8 @@ Use a root-owned mode-0440 sudoers drop-in validated with `visudo -cf`.
 Set `M20_STORAGE_FIXTURE_HELPER` to that absolute installed file in the replay.
 Its hash is retained in the source receipt. The helper accepts bounded kernel
 state metadata on stdin, requires the caller's enrolled protected artifact root,
-pins root-owned private files through no-follow descriptors, and never prints
+pins the user-owned kernel manifest and root-owned private capture metadata
+and archive through no-follow descriptors, and never prints
 archive members or contents. Only the separate `corrupt-candidate` backup may
 be damaged; the known-good backup is refused. Restore and integrity rejection
 still run through the normal kernel/broker. This is operator fault injection
@@ -258,3 +259,11 @@ DEV slice uninstaller. Preserve DEV enrollment and protected state until a
 reviewed removal procedure exists, or let the coordinator destroy this entire
 disposable VM after retained evidence and runtime-identity cleanup. Do not
 recursively remove a protected storage parent or delete shared images/locks.
+
+MP-03/MP-08/MP-10/MP-11 qualification limitation: a fresh kernel state starts
+Slice numbering again at `slice-1`, while the per-user DEV enrollment may still
+retain that Slice's protected private home and identity backup after Delete.
+If the new replay refuses `EEXIST`, preserve the retained state and report it.
+For independent fixture preparation use a fresh ordinary user with a separate
+supported enrollment on the isolated host. This avoids adoption or repair; it
+does not establish same-user repeated fresh-kernel cleanup or DEV uninstall.
