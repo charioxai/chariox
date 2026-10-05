@@ -15,6 +15,53 @@ new boot/machine/enrollment/relay identities, reviewed release, absence of old
 runtime residue, and retirement of the prior identity before the parity matrix
 or remaining acceptance gates run.
 
+## MP-11 owner narrowing and current gate (2026-10-05)
+
+The owner removed the requirement for an individual semantic record for every
+shipped lexical source anchor. This amendment supersedes the exhaustive gate
+in historical sections below. MP-11 now requires both (1) the MP-01 through
+MP-10 ordinary/managed matrix and every b211 CURRENT_INVENTORY parity item to
+be GREEN or have an evidence-backed, owner-visible RED disposition, and (2)
+current semantic reviews of security-critical trust-boundary code. Other source
+is covered by the reviewer workflow on every PR head and CI.
+
+Run `managed-parity-source-inventory.mjs --scope security-critical --parity-matrix
+/path/to/matrix.json`. The checked-in definition is
+`apps/cli/scripts/lib/managed-parity-security-scope.mjs`: Vault/credentials and
+provider accounts; relay admission/scopes/peer gating; release/image signing,
+trust pins and verification; sandbox/namespace/seccomp/AppArmor/cgroups; App
+capability admission/keys/host-action offers; kernel access/sudo/passkeys;
+process signals/kill guards; protected browser frames/masking/isolated capture.
+Directory rules include future siblings; content rules catch operations outside
+those directories. Unknown classes inside trust roots fail closed. Test-only
+paths are excluded except executable signal cleanup; mixed production/test
+files remain fully included.
+
+A narrowed anchor covers the complete exact Git blob for one trust-boundary
+class, including helpers with no managed-selector matches. Reviews use the
+existing source commit/tree and path/blob/line/column/symbol/category/selector/
+contextHash binding, with `category: security_critical`, line/column 1,
+`symbol: null`, class selector, and full-file SHA-256 context hash. The reviewer
+must inspect the full blob; a partial function check cannot approve the file.
+Unknown classes, unsupported formats, unverified security fragment assembly,
+stale/missing reviews and unresolved security findings block admission.
+
+The external parity file uses schema `chariox.mp11.behavioural-parity.v1`,
+`sourceCommit`, `sourceTree` and `rows`. Each row has `id`, `status` (GREEN/RED),
+`evidence`, and for RED an `ownerVisibleDisposition` pointing to the decision.
+Required IDs are MP-01..MP-10 and B211-KEY/B211-APP/B211-CAPTURE; additional rows
+must also be dispositioned. Other lanes own this matrix; this scanner validates
+its shape and binding, not the authenticity of external evidence. Missing/stale
+matrix evidence cannot be replaced by source tests. Admission is per scanned
+repository; overall MP-11 additionally requires both OSS and Cloud review
+coverage. A missing Cloud scan remains pending, regardless of the OSS result.
+
+`--scope full-inventory` (the default) retains the exhaustive lexical inventory
+and diagnostic status but is non-gating: successful enumeration exits 0 even
+when lexical reviews are incomplete. Security mode exits 0 only when both
+conditions pass, 1 for an open gate, and 2 for malformed inputs/source failures.
+No product protocol is changed and no live acceptance item closes by this tool.
+
 ## MP-11 shipped scanner repair and current review scope (2026-10-04)
 
 Lane b211scan repairs the product scanner against frozen OSS

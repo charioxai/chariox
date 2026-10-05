@@ -875,7 +875,7 @@ test("an inspected blob gets only provisional grouping and never independent app
       .every((entry) => entry.semanticDisposition.gateEffect === "fail_closed"));
     assert.equal(report.status, "fail");
     assert.equal(report.summary.allowedReleaseDeployment, 0);
-    assert.equal(report.inventoryTool.modules.length, 9);
+    assert.equal(report.inventoryTool.modules.length, 11);
     assert.match(report.inventoryTool.bundleSha256, /^[a-f0-9]{64}$/);
   });
 });
@@ -2497,5 +2497,18 @@ test("MP-11 native source symlink cannot be mistaken for an inventoried implemen
   withFixture({}, (fixture) => {
     fixture.addFile("apps/app-worker/src/control.cc", "outside/control.cc", "120000");
     assert.throws(() => collect(fixture), /unsupported source mode/);
+  });
+});
+
+// MP-11: narrowed mode uses whole immutable blobs even without selector matches.
+test("MP-11 security mode emits exact-blob anchors and cannot pass without parity", () => {
+  withFixture({}, fixture => {
+    const report = collectSourceInventory({ ...fixture, sourceRoot: fixture.root, scope: "security-critical" });
+    assert.equal(report.gating, true);
+    assert.equal(report.status, "fail");
+    assert.ok(report.entries.length > 0);
+    assert.ok(report.entries.every(e => e.category === "security_critical" && e.line === 1 && e.column === 1));
+    assert.equal(report.securityScope.gate.parity.status, "pending");
+    assert.equal(report.fullInventory.gating, false);
   });
 });

@@ -15,6 +15,9 @@ import { sourceRuleCandidates, sourceClassification, groupSourceClassifications,
 import { currentDeclarationCandidates } from "./lib/managed-parity-current-declarations.mjs";
 import { CURRENT_SEMANTIC_REVIEWS } from "./lib/managed-parity-current-reviews.mjs";
 
+import { classifySecurityPath, SECURITY_CLASSES, SECURITY_SCOPE_SCHEMA, evaluateParityMatrix, evaluateSecurityGate } from "./lib/managed-parity-security-scope.mjs";
+import { SECURITY_SEMANTIC_REVIEWS } from "./lib/managed-parity-security-reviews.mjs";
+
 export const INVENTORY_SCHEMA = "chariox.managed-parity.source-inventory.v2";
 // These approvals are bound to a historical source only. They must not be
 // rebound when the inventory runs against a newer checkout.
@@ -24,6 +27,9 @@ export const DEFAULT_SOURCE_REF = "HEAD";
 const INVENTORY_TOOL_PATH = "apps/cli/scripts/managed-parity-source-inventory.mjs";
 const INVENTORY_TOOL_MODULES = [
   ["./managed-parity-source-inventory.mjs", INVENTORY_TOOL_PATH],
+  ["./lib/managed-parity-security-scope.mjs", "apps/cli/scripts/lib/managed-parity-security-scope.mjs"],
+  ["./lib/managed-parity-security-reviews.mjs", "apps/cli/scripts/lib/managed-parity-security-reviews.mjs"],
+
   ["./lib/managed-parity-semantic-reviews.mjs", "apps/cli/scripts/lib/managed-parity-semantic-reviews.mjs"],
   ["./lib/managed-parity-patch-source.mjs", "apps/cli/scripts/lib/managed-parity-patch-source.mjs"],
   ["./lib/managed-parity-source-rules.mjs", "apps/cli/scripts/lib/managed-parity-source-rules.mjs"],
@@ -129,6 +135,7 @@ const SCANNABLE_EXTENSIONS = new Set([
   ".container",
   ".dockerfile",
   ".env",
+  ".entitlements",
   ".fish",
   ".js",
   ".jsx",
@@ -225,7 +232,6 @@ const NON_INVENTORIED_PRODUCTION_EXTENSIONS = new Set([
   ".charioxignore",
   ".css",
   ".dockerignore",
-  ".entitlements",
   ".example",
   ".gitignore",
   ".gitkeep",
@@ -399,9 +405,12 @@ const SEMANTIC_DISPOSITIONS = new Set([
 // are not semantic approvals because they contain no independent reviewer
 // metadata. New approvals must bind the complete current source/candidate
 // anchor and the review that authorized the classification.
-export const DEFAULT_SEMANTIC_DISPOSITIONS = Object.freeze([...FROZEN_SEMANTIC_REVIEWS, ...CURRENT_SEMANTIC_REVIEWS]);
+export const DEFAULT_SEMANTIC_DISPOSITIONS = Object.freeze([...FROZEN_SEMANTIC_REVIEWS, ...CURRENT_SEMANTIC_REVIEWS, ...SECURITY_SEMANTIC_REVIEWS]);
 
 const OWNED_DIRTY_PATHS = new Set([
+  "apps/cli/scripts/lib/managed-parity-security-scope.mjs",
+  "apps/cli/scripts/lib/managed-parity-security-reviews.mjs",
+  "apps/cli/scripts/lib/managed-parity-security-scope.test.mjs",
   "apps/cli/scripts/lib/managed-parity-current-reviews.mjs",
   "apps/cli/scripts/lib/managed-parity-current-declarations.mjs",
   "apps/cli/scripts/lib/managed-parity-semantic-reviews.mjs",
@@ -413,9 +422,13 @@ const OWNED_DIRTY_PATHS = new Set([
   "apps/cli/scripts/managed-parity-source-inventory.mjs",
   "apps/cli/scripts/managed-parity-source-inventory.test.mjs",
   "docs/MANAGED_PATH1_PARITY_INVENTORY.md",
+  "docs/BROWSER_COMPUTER_USE_END_TO_END_PLAN.md",
 ]);
 
 const SELF_EXCLUDED_PATHS = new Set([
+  "apps/cli/scripts/lib/managed-parity-security-scope.mjs",
+  "apps/cli/scripts/lib/managed-parity-security-reviews.mjs",
+  "apps/cli/scripts/lib/managed-parity-security-scope.test.mjs",
   "apps/cli/scripts/lib/managed-parity-current-reviews.mjs",
   "apps/cli/scripts/lib/managed-parity-current-declarations.mjs",
   "apps/cli/scripts/lib/managed-parity-semantic-reviews.mjs",
@@ -794,7 +807,7 @@ function validateSemanticReview(review) {
     || !validSha(anchor.blob) || !Number.isInteger(anchor.line) || anchor.line < 1
     || !Number.isInteger(anchor.column) || anchor.column < 1
     || !(anchor.symbol === null || (typeof anchor.symbol === "string" && anchor.symbol))
-    || !REQUIRED_CATEGORIES.includes(anchor.category)
+    || !(REQUIRED_CATEGORIES.includes(anchor.category) || anchor.category === "security_critical")
     || typeof anchor.selector !== "string" || !anchor.selector
     || !/^[0-9a-f]{64}$/.test(anchor.contextHash ?? "")
     || !SEMANTIC_DISPOSITIONS.has(review.disposition)
@@ -930,7 +943,10 @@ export function collectSourceInventory({
   expectedTree = null,
   sourceRef = DEFAULT_SOURCE_REF,
   claimedDispositions = [],
+  scope = "full-inventory",
+  parityMatrix = null,
 } = {}) {
+  if (!["full-inventory", "security-critical"].includes(scope)) throw new Error(`unknown MP-11 scope: ${scope}`);
   if (!sourceRoot || !isAbsolute(sourceRoot)) throw new Error("sourceRoot must be an absolute path");
   const source = {
     ref: sourceRef,
@@ -1130,6 +1146,42 @@ export function collectSourceInventory({
       ? "pass"
       : "fail",
   };
+  report.scope = scope;
+  report.gating = scope === "security-critical";
+  if (scope === "security-critical") {
+    // MP-11: scan physical files before fragment assembly; each anchor binds the
+    // complete blob, including unknown lexical classes and zero-match helpers.
+    const securityEntries = files.flatMap(file => classifySecurityPath(file.path, file.text).map(securityClass => {
+      const finding = { path: file.path, blob: file.blob, line: 1, column: 1,
+        symbol: null, category: "security_critical", selector: securityClass,
+        contextHash: sha256(file.text) };
+      const semanticDisposition = resolveSemanticDisposition(finding, source, semanticReviewIndex);
+      return { ...finding, securityClass, candidateOrigin: "security_whole_blob",
+        affectedBehavior: SECURITY_CLASSES[securityClass]?.purpose ?? "MP-11 unknown trust-boundary class",
+        applicableMpIds: ["MP-11"], semanticDisposition,
+        candidateId: sha256(stableJson({ commit: source.commit, tree: source.tree, ...finding })) };
+    }));
+    const securityReviews = semanticReviews.filter(review => review.anchor.category === "security_critical"
+      && review.sourceCommit === source.commit && review.sourceTree === source.tree);
+    const applied = new Set(securityEntries.map(entry => entry.semanticDisposition.reviewId));
+    const staleReviews = securityReviews.filter(review => !applied.has(review.independentReview.reviewId)).length;
+    // Old managed-selector declaration ranges do not define narrowed admission.
+    // Unverified assemblies touching security files still block observation.
+    const securityPaths = new Set(securityEntries.map(entry => entry.path));
+    const securityGaps = fragments.gaps.filter(gap => !gap.path || securityPaths.has(gap.path));
+    const parity = evaluateParityMatrix(parityMatrix, source);
+    const gate = evaluateSecurityGate({ entries: securityEntries, gaps: securityGaps, staleReviews, parity });
+    report.fullInventory = { summary: report.summary, status: report.status, gating: false };
+    report.entries = securityEntries;
+    report.semanticReviews = report.semanticReviews.map(review => review.sourceCommit === source.commit
+      && review.sourceTree === source.tree && securityReviews.some(r => r.id === review.id)
+      ? { ...review, status: applied.has(review.independentReviewId) ? "applied" : "source_drift" } : review);
+    report.securityScope = { schema: SECURITY_SCOPE_SCHEMA, anchorUnit: "complete exact Git blob per trust-boundary class",
+      classes: Object.fromEntries(Object.keys(SECURITY_CLASSES).map(name => [name, securityEntries.filter(e => e.securityClass === name).length])), gate };
+    report.summary = gate.summary;
+    report.sourceAuditGaps = securityGaps;
+    report.status = gate.status;
+  }
   return stable(report);
 }
 
@@ -1140,6 +1192,8 @@ export function parseArgs(argv) {
     expectedCommit: null,
     expectedTree: null,
     sourceRef: DEFAULT_SOURCE_REF,
+    scope: "full-inventory",
+    parityMatrixPath: null,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -1148,6 +1202,8 @@ export function parseArgs(argv) {
     else if (argument === "--expect-source-commit") options.expectedCommit = argv[++index];
     else if (argument === "--expect-source-tree") options.expectedTree = argv[++index];
     else if (argument === "--source-ref") options.sourceRef = argv[++index];
+    else if (argument === "--scope") options.scope = argv[++index];
+    else if (argument === "--parity-matrix") options.parityMatrixPath = resolve(argv[++index]);
     else if (argument === "--help") options.help = true;
     else throw new Error(`unknown argument: ${argument}`);
   }
@@ -1157,7 +1213,7 @@ export function parseArgs(argv) {
 export function runCli(argv = process.argv.slice(2), io = { write: (value) => process.stdout.write(value), error: (value) => process.stderr.write(value) }) {
   const options = parseArgs(argv);
   if (options.help) {
-    io.write("usage: node managed-parity-source-inventory.mjs [--root DIR] [--source-ref REF] [--expect-source-commit SHA] [--expect-source-tree TREE] [--output FILE]\n");
+    io.write("usage: node managed-parity-source-inventory.mjs [--root DIR] [--source-ref REF] [--expect-source-commit SHA] [--expect-source-tree TREE] [--output FILE] [--scope full-inventory|security-critical] [--parity-matrix FILE]\n");
     return 0;
   }
   try {
@@ -1166,6 +1222,8 @@ export function runCli(argv = process.argv.slice(2), io = { write: (value) => pr
       sourceRef: options.sourceRef,
       expectedCommit: options.expectedCommit,
       expectedTree: options.expectedTree,
+      scope: options.scope,
+      parityMatrix: options.parityMatrixPath ? JSON.parse(readFileSync(options.parityMatrixPath, "utf8")) : null,
     });
     const output = stableJson(report);
     if (options.output) {
@@ -1173,7 +1231,7 @@ export function runCli(argv = process.argv.slice(2), io = { write: (value) => pr
     } else {
       io.write(output);
     }
-    return report.status === "pass" ? 0 : 1;
+    return !report.gating || report.status === "pass" ? 0 : 1;
   } catch (error) {
     io.error(`${error instanceof Error ? error.message : String(error)}\n`);
     return 2;

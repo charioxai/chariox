@@ -1,3 +1,24 @@
+# MP-11 — mp11narrow current lane (2026-10-05)
+
+## MP-11 — Scope/gate milestone implemented; review batch in progress
+
+- Owner narrowing replaces the exhaustive semantic gate with behavioural MP-01..MP-10 + B211-KEY/APP/CAPTURE dispositions and exact-blob reviews for trust boundaries only.
+- Current OSS target `74e50b787a5919ee5c3d580c5b088989fd4a1adf`, tree `3cb4ef5c883e8d358d0beab455797ded180a2406`; GitHub full-SHA fetch verified. Read-only lane-owned source worktree `/root/work/agent-mp11narrow-source`. No Cloud checkout at `f1ad79056` found; Cloud pending.
+- Scope definition, whole-file/class anchors, external matrix binding, unknown-class refusal and non-gating full inventory are implemented. Classifier/gate tests and existing suite passed 210/210 before final test-signal/entitlement coverage additions; final validation pending.
+- Current narrowed inventory: 1,046 file/class anchors, 26 unknown class anchors. Over ~600, so prioritized Vault/credentials, relay admission, signing/trust and sandbox reviews; exact remainder will be retained.
+- MP-11 source review found expired Vault leases can be revived by extension after an awaited management reply. Product code stays unchanged; finding/fix proposal goes to external REPORT.md.
+- Node/Python/read-only source only; no compile/protocol allocation/push/PR/CI/deployment/provider/container/key creation. Initial disk 65 GiB free and MemAvailable 15.07 GiB. Subsequent samples remain above floors.
+
+## MP-11 — Coordinator asks
+
+- Supply current external behavioural matrix for MP-01..MP-10 plus b211 CURRENT_INVENTORY parity items; this lane does not disposition other lanes' rows.
+- Cloud exact-head security scan/review at `f1ad79056` remains pending.
+- No protocol number needed. Coordinator owns publication and product-finding assignments.
+
+## MP-11 — Owner questions
+
+- No new owner question blocks scope implementation. The approved >~600 priority/remainder provision applies.
+
 # MP-11 — b211scan
 
 ## MP-11 — PR #848 reviewer fixes ready for coordinator publication
