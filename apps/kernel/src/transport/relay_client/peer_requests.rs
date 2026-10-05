@@ -8,6 +8,7 @@ use chariox_relay::protocol::{
 };
 use tokio::sync::RwLock;
 
+use crate::error::DaemonError;
 use crate::runtime::router::CommandRouter;
 use crate::transport::relay_crypto;
 use crate::transport::relay_peer::{
@@ -171,7 +172,27 @@ pub(super) async fn handle_daemon_peer_request(
                         .await
                 }
             };
-            if authorization.is_err() {
+            if let Err(error) = authorization {
+                // Caller identity/enrollment was authenticated above. When a
+                // restart lost both the resource and its caller map, report its
+                // absence only for cleanup. Existing/mismatched owners remain
+                // unauthorized, and other operations retain their auth gating.
+                let absent_cleanup = matches!(
+                    (&request, &error),
+                    (
+                        RelayPeerRequest::DestroyLeasedAgent { .. },
+                        DaemonError::LeasedAgentNotFound { .. }
+                    ) | (
+                        RelayPeerRequest::DestroyExecutionLease { .. },
+                        DaemonError::ExecutionLeaseNotFound { .. }
+                    )
+                );
+                if absent_cleanup {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
                 return RelayRequestOutcome {
                     encrypted_response: None,
                     error: Some(relay_error(

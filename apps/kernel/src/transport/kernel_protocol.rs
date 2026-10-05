@@ -836,6 +836,9 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::RelayTransport { retryable, .. } => {
             kernel_error("local_transport_error", error, *retryable)
         }
+        DaemonError::RelayPeerCleanupAbsent { .. } => {
+            kernel_error("local_transport_error", error, false)
+        }
         DaemonError::LocalTransport { .. } => kernel_error("local_transport_error", error, true),
         DaemonError::PtySpawn { .. } => kernel_error("pty_spawn_failed", error, true),
         DaemonError::PtyCleanup { .. } => kernel_error("pty_cleanup_failed", error, true),

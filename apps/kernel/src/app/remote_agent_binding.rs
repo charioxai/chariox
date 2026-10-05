@@ -1386,47 +1386,7 @@ impl DaemonApp {
                     .to_string(),
             });
         }
-        let relay_config = self.relay_config_for_remote_execution(&remote_execution);
-        let target = ClientTarget {
-            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-            daemon_alias: None,
-        };
-        let use_connected_relay =
-            self.hosted_shared_slice_uses_connected_relay(&remote_execution.worker_kernel_id);
-        match self.send_remote_binding_request_authorized(
-            &relay_config,
-            target.clone(),
-            RelayPeerRequest::DestroyLeasedAgent {
-                leased_agent_id: remote_execution.leased_agent_id.clone(),
-            },
-            use_connected_relay,
-            authorize,
-        )? {
-            RelayPeerResponse::LeasedAgentDestroyed { .. } => {}
-            other => {
-                return Err(DaemonError::LocalTransport {
-                    operation: "destroy remote leased agent before moving local",
-                    message: format!("unexpected peer response: {other:?}"),
-                });
-            }
-        }
-        match self.send_remote_binding_request_authorized(
-            &relay_config,
-            target,
-            RelayPeerRequest::DestroyExecutionLease {
-                lease_id: remote_execution.execution_lease_id.clone(),
-            },
-            use_connected_relay,
-            &|| Ok(()), // Cleanup of an already destroyed agent cannot depend on its grant.
-        )? {
-            RelayPeerResponse::ExecutionLeaseDestroyed { .. } => {}
-            other => {
-                return Err(DaemonError::LocalTransport {
-                    operation: "destroy remote execution lease before moving local",
-                    message: format!("unexpected peer response: {other:?}"),
-                });
-            }
-        }
+        self.destroy_remote_execution_binding(&remote_execution, authorize)?;
         let moved = self.agents.clear_remote_execution(agent.id())?;
         self.durable_state_store().append_event(
             "agent.updated",
@@ -1455,7 +1415,7 @@ impl DaemonApp {
         };
         let use_connected_relay =
             self.hosted_shared_slice_uses_connected_relay(&remote_execution.worker_kernel_id);
-        match self.send_remote_binding_request_authorized(
+        let agent_cleanup = self.send_remote_binding_request_authorized(
             &relay_config,
             target.clone(),
             RelayPeerRequest::DestroyLeasedAgent {
@@ -1463,16 +1423,14 @@ impl DaemonApp {
             },
             use_connected_relay,
             authorize,
-        )? {
-            RelayPeerResponse::LeasedAgentDestroyed { .. } => {}
-            other => {
-                return Err(DaemonError::LocalTransport {
-                    operation: "destroy remote leased agent",
-                    message: format!("unexpected peer response: {other:?}"),
-                });
-            }
-        }
-        match self.send_remote_binding_request_authorized(
+        );
+        self.reconcile_remote_cleanup_response(
+            remote_execution,
+            &remote_execution.leased_agent_id,
+            "leased_agent_not_found",
+            agent_cleanup,
+        )?;
+        let lease_cleanup = self.send_remote_binding_request_authorized(
             &relay_config,
             target,
             RelayPeerRequest::DestroyExecutionLease {
@@ -1480,11 +1438,58 @@ impl DaemonApp {
             },
             use_connected_relay,
             &|| Ok(()), // Cleanup of an already destroyed agent cannot depend on its grant.
-        )? {
-            RelayPeerResponse::ExecutionLeaseDestroyed { .. } => Ok(()),
-            other => Err(DaemonError::LocalTransport {
-                operation: "destroy remote execution lease",
-                message: format!("unexpected peer response: {other:?}"),
+        );
+        self.reconcile_remote_cleanup_response(
+            remote_execution,
+            &remote_execution.execution_lease_id,
+            "execution_lease_not_found",
+            lease_cleanup,
+        )
+    }
+
+    fn reconcile_remote_cleanup_response(
+        &self,
+        binding: &RemoteAgentBinding,
+        resource_id: &str,
+        missing_code: &'static str,
+        response: Result<RelayPeerResponse, DaemonError>,
+    ) -> Result<(), DaemonError> {
+        match response {
+            Ok(RelayPeerResponse::LeasedAgentDestroyed { leased_agent_id })
+                if missing_code == "leased_agent_not_found" && leased_agent_id == resource_id =>
+            {
+                Ok(())
+            }
+            Ok(RelayPeerResponse::ExecutionLeaseDestroyed { lease_id })
+                if missing_code == "execution_lease_not_found" && lease_id == resource_id =>
+            {
+                Ok(())
+            }
+            Err(DaemonError::RelayPeerCleanupAbsent {
+                worker_kernel_id,
+                resource_id: absent_id,
+                code,
+            }) if worker_kernel_id == binding.worker_kernel_id
+                && absent_id == resource_id
+                && code == missing_code =>
+            {
+                self.durable_state_store().append_event(
+                    "agent.worker_cleanup.already_absent",
+                    None,
+                    serde_json::json!({
+                        "worker_kernel_id": worker_kernel_id,
+                        "execution_lease_id": binding.execution_lease_id,
+                        "leased_agent_id": binding.leased_agent_id,
+                        "missing_resource_id": absent_id,
+                        "code": code,
+                    }),
+                )?;
+                Ok(())
+            }
+            Err(error) => Err(error),
+            Ok(other) => Err(DaemonError::LocalTransport {
+                operation: "destroy remote execution binding",
+                message: format!("unexpected peer cleanup response: {other:?}"),
             }),
         }
     }
@@ -2978,3 +2983,70 @@ mod tests {
 
 #[cfg(test)]
 mod recovery_tests;
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_reconciliation_requires_bound_worker_resource_and_phase() {
+        let app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let binding: RemoteAgentBinding = serde_json::from_value(serde_json::json!({
+            "worker_kernel_id":"worker", "worker_machine_id":"machine",
+            "execution_lease_id":"lease", "leased_agent_id":"agent"
+        }))
+        .unwrap();
+        for (worker, resource, code) in [
+            ("other-worker", "agent", "leased_agent_not_found"),
+            ("", "agent", "leased_agent_not_found"),
+            ("worker", "other-agent", "leased_agent_not_found"),
+            ("worker", "agent", "execution_lease_not_found"),
+        ] {
+            assert!(app
+                .reconcile_remote_cleanup_response(
+                    &binding,
+                    "agent",
+                    "leased_agent_not_found",
+                    Err(DaemonError::RelayPeerCleanupAbsent {
+                        worker_kernel_id: worker.into(),
+                        resource_id: resource.into(),
+                        code
+                    })
+                )
+                .is_err());
+        }
+        assert!(
+            app.reconcile_remote_cleanup_response(
+                &binding,
+                "agent",
+                "leased_agent_not_found",
+                Err(DaemonError::RelayTransport {
+                    operation: "test",
+                    code: "leased_agent_not_found".into(),
+                    message: "unverified absence".into(),
+                    retryable: false
+                })
+            )
+            .is_err(),
+            "a code alone is insufficient"
+        );
+        assert!(app
+            .reconcile_remote_cleanup_response(
+                &binding,
+                "agent",
+                "leased_agent_not_found",
+                Ok(RelayPeerResponse::LeasedAgentDestroyed {
+                    leased_agent_id: "other-agent".into()
+                })
+            )
+            .is_err());
+        let receipts = app
+            .durable_state_store()
+            .load_events_by_kind("agent.worker_cleanup.already_absent")
+            .unwrap();
+        assert!(
+            receipts.is_empty(),
+            "rejected replies must not be recorded as cleanup"
+        );
+    }
+}

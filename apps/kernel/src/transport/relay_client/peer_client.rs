@@ -209,6 +209,10 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
             operation: "send relay peer request",
             message: "peer target must include daemon id or alias".to_string(),
         })?;
+    let cleanup_resource =
+        cleanup_request_resource(&request).map(|(code, id)| (code, id.to_string()));
+    let expected_kernel_id = target.daemon_id.clone();
+    let expected_public_key = target_public_key.to_string();
     let plaintext = serde_json::to_vec(&request).map_err(|error| DaemonError::LocalTransport {
         operation: "serialize relay peer request",
         message: error.to_string(),
@@ -293,7 +297,15 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
                 Some(&error.message),
                 Some(&envelope.from_daemon_id),
             );
-            return Err(relay_transport_error("read relay peer response", error));
+            return Err(cleanup_peer_error(
+                "read relay peer response",
+                error,
+                cleanup_resource
+                    .as_ref()
+                    .map(|(code, id)| (*code, id.as_str())),
+                expected_kernel_id.as_deref(),
+                &envelope.from_daemon_id,
+            ));
         }
         let encrypted_response = match envelope.encrypted_response {
             Some(encrypted_response) => encrypted_response,
@@ -328,6 +340,21 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
                 return Err(error);
             }
         };
+        if expected_kernel_id
+            .as_deref()
+            .is_some_and(|id| id != envelope.from_daemon_id)
+            || decrypted.sender_public_key != expected_public_key
+        {
+            trace.log_completed(
+                "identity_mismatch",
+                Some("peer response identity mismatch"),
+                Some(&envelope.from_daemon_id),
+            );
+            return Err(DaemonError::LocalTransport {
+                operation: "authenticate relay peer response",
+                message: "peer response identity mismatch".to_string(),
+            });
+        }
         match serde_json::from_slice::<RelayPeerResponse>(&decrypted.plaintext) {
             Ok(response) => {
                 trace.log_completed("success", None, Some(&envelope.from_daemon_id));
@@ -790,9 +817,12 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
                                 Some(&error.message),
                                 Some(&from_daemon_id),
                             );
-                            return Err(relay_transport_error(
+                            return Err(cleanup_peer_error(
                                 "read temporary relay peer response",
                                 error,
+                                cleanup_request_resource(&request),
+                                Some(&kernel.kernel_id),
+                                &from_daemon_id,
                             ));
                         }
                         let encrypted_response = encrypted_response.ok_or_else(|| {
@@ -907,6 +937,42 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
     })
     .await;
     result
+}
+
+fn cleanup_request_resource(request: &RelayPeerRequest) -> Option<(&'static str, &str)> {
+    match request {
+        RelayPeerRequest::DestroyLeasedAgent { leased_agent_id } => {
+            Some(("leased_agent_not_found", leased_agent_id.as_str()))
+        }
+        RelayPeerRequest::DestroyExecutionLease { lease_id } => {
+            Some(("execution_lease_not_found", lease_id.as_str()))
+        }
+        _ => None,
+    }
+}
+
+// Outer errors are not encrypted. Trust only the authenticated relay route:
+// RelayServer forwards a pending peer response solely from its registered target
+// and writes from_daemon_id itself. Never infer absence from a transport error,
+// a retryable error, another peer, an unresolved alias-only target, or another request kind.
+fn cleanup_peer_error(
+    operation: &'static str,
+    error: chariox_relay::protocol::RelayError,
+    missing: Option<(&'static str, &str)>,
+    expected_kernel_id: Option<&str>,
+    from_daemon_id: &str,
+) -> DaemonError {
+    if let (Some(worker), Some((code, resource_id))) = (expected_kernel_id, missing) {
+        if !worker.is_empty() && worker == from_daemon_id && !error.retryable && error.code == code
+        {
+            return DaemonError::RelayPeerCleanupAbsent {
+                worker_kernel_id: worker.to_string(),
+                resource_id: resource_id.to_string(),
+                code,
+            };
+        }
+    }
+    relay_transport_error(operation, error)
 }
 
 pub(super) async fn resolve_pending_peer_response(

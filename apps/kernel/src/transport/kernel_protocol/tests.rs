@@ -51,6 +51,18 @@ fn relay_transport_errors_keep_the_stable_local_transport_projection() {
 }
 
 #[test]
+fn verified_cleanup_absence_keeps_existing_wire_error_codes() {
+    let error = DaemonError::RelayPeerCleanupAbsent {
+        worker_kernel_id: "worker".into(),
+        resource_id: "agent".into(),
+        code: "leased_agent_not_found",
+    };
+    let local = map_kernel_error(&error);
+    assert_eq!(local.code, "local_transport_error");
+    assert!(!local.retryable);
+}
+
+#[test]
 fn terminal_output_event_batches_stay_under_json_byte_cap() {
     let records = (0..20)
         .map(|index| TerminalOutputRecord {

@@ -198,3 +198,119 @@ async fn cleanup_uses_the_slice_private_relay() {
         serde_json::from_value(slice["Slice"]["slice"].clone()).unwrap();
     assert!(slice.agent_ids.is_empty());
 }
+
+#[test]
+fn room_environment_worker_cleanup_finalizes_when_live_lease_state_is_lost() {
+    crate::test_support::isolated_env_test!();
+    run_test(cleanup_when_live_lease_state_is_lost);
+}
+
+async fn cleanup_when_live_lease_state_is_lost() {
+    cleanup_after_worker_state_loss(false).await;
+}
+
+#[test]
+fn room_environment_worker_cleanup_finalizes_after_worker_restart() {
+    crate::test_support::isolated_env_test!();
+    run_test(cleanup_after_worker_restart);
+}
+
+async fn cleanup_after_worker_restart() {
+    cleanup_after_worker_state_loss(true).await;
+}
+
+async fn cleanup_after_worker_state_loss(restart: bool) {
+    let mut fixture = LiveWorker::start().await;
+    fixture.create_slice().await;
+    let placement = fixture.placement();
+    let spawned = dispatch_json(
+        &fixture.home,
+        json!({"SpawnAgent": {
+            "session_id":fixture.rooms[0], "provider":"managed-dev-stub", "model":"default",
+            "slice_ref":"desktop", "worktree_placement":placement
+        }}),
+    )
+    .await
+    .unwrap();
+    let agent_id = spawned["AgentSpawned"]["agent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    if restart {
+        // Drop the worker connector and bootstrap a fresh kernel against the same
+        // durable store: both live leases and volatile caller/tombstone maps vanish.
+        let task = fixture.tasks.pop().unwrap();
+        task.abort();
+        let _ = task.await;
+        // Release the old store's ownership fence before reacquiring it.
+        fixture.worker = Arc::clone(&fixture.home);
+        let app = crate::test_support::bootstrap_after_test_owner_exit(
+            fixture._worker_state.config.clone(),
+        )
+        .await;
+        fixture.worker = Arc::new(CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            2,
+        ));
+        let state = fixture.worker.app.lock().await.relay_client_state();
+        fixture.tasks.push(tokio::spawn(
+            crate::transport::relay_client::run_daemon_relay_connector_with_router(
+                Arc::clone(&fixture.worker),
+                Arc::clone(&state),
+                fixture.shutdown.subscribe(),
+            ),
+        ));
+        timeout(Duration::from_secs(10), async {
+            while !state.read().await.connected() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("restarted worker registered");
+    } else {
+        crate::app::RemoteLeaseRuntime::new(&mut *fixture.worker.app.lock().await)
+            .forget_live_leases_for_test();
+    }
+    let destroyed = dispatch_json(
+        &fixture.home,
+        json!({"DestroyAgent": {
+            "session_id":fixture.rooms[0], "agent_id":agent_id
+        }}),
+    )
+    .await;
+    let listed = dispatch_json(
+        &fixture.home,
+        json!({"ListAgents":{"session_id":fixture.rooms[0]}}),
+    )
+    .await
+    .unwrap();
+    let slice = dispatch_json(&fixture.home, json!({"GetSlice":{"slice_ref":"desktop"}}))
+        .await
+        .unwrap();
+    let receipts = fixture
+        .home
+        .app
+        .lock()
+        .await
+        .durable_state_store()
+        .load_events_by_kind("agent.worker_cleanup.already_absent")
+        .unwrap();
+    fixture.stop().await;
+    destroyed.expect("bound worker absence must finalize home cleanup");
+    assert_eq!(
+        receipts.len(),
+        2,
+        "both cleanup phases record worker absence"
+    );
+    assert!(receipts
+        .iter()
+        .all(|event| event.payload["worker_kernel_id"] == "environment-worker"));
+    assert!(listed["AgentsListed"]["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["id"] != agent_id));
+    let slice: crate::slice::SliceRecord =
+        serde_json::from_value(slice["Slice"]["slice"].clone()).unwrap();
+    assert!(slice.agent_ids.is_empty());
+}
