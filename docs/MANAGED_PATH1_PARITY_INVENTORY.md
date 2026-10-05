@@ -1,5 +1,22 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 shared Computer helper candidate, b204 (2026-10-04)
+
+Based on G2 `9334141d420f8a32393f206102c5b8b4a1b0b609`, the native
+`slice-keyboard.py` overlay pool now excludes hardware-action fallback keycodes.
+`slice-text-finder.py` applies Unicode NFC query matching, preserves distinct
+overlapping OCR labels and uses the Environment's installed supported language
+models under bounded enumeration/recognition. The Docker image adds the German
+model. These policies are common to ordinary and managed Computer helper paths;
+no managed selector, provider adapter or serialized kernel/client shape changes.
+The source has a physical Xorg/Xvfb and Mousepad fixture described in
+`docs/SHARED_COMPUTER_INPUT_FIXTURE.md`, plus adversarial Room/image receipt tests.
+Exact source/results and cleanup are retained externally under
+`/root/.codex/evidence/browser-resume-20260930/b204/`. Independent exact-head
+review, signed image rebuild, official-provider MCP images, Room/host-browser
+identity, physical Web/TUI and fresh ordinary/managed comparison remain open.
+No MP item closes. The historical dispositions below retain their source binding.
+
 Historical audit ledger (2026-09-26) · scoped OSS review baseline: `d3f47513bda80ea222b6cd7e4d1e6b9d106038b9` (tree `08b8cd11bd31a69c3ed0d9b7b2066b6cb07196fd`); published OSS source baseline: `4c8b979430d2dca6662de0b478a8b75b7ac3b231`; retained prior audit OSS baseline: `dbfebe394707c7b5c85a2ee02aa5999e5e9e44b4`; Cloud source baseline last inspected: `73d82d3d3b578cb3da54dbb5a58dfcffd083b58e` (stale; not refreshed in this pass).
 
 This is a source inventory for the canonical gate in

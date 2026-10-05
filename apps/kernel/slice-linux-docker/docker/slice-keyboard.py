@@ -22,25 +22,27 @@ from selkies.input_handler import (
 )
 
 
-class _BrowserSafeTextKeyboard(_XTestKeyboard):
-    """Keep text overlays away from Chromium's physical accelerators.
+class SecretTargetChanged(Exception):
+    pass
 
-    Xorg can report browser/media and function keycodes as NoSymbol. Chromium
-    still handles their physical code: an overlay character on BrowserRefresh
-    reloads the page rather than typing it. Keep the main text-key range only,
-    excluding controls and F1..F12. Selkies retains its bounded recycling.
-    """
+
+class ComputerTextKeyboard(_XTestKeyboard):
+    def _find_spare_keycodes(self):
+        # MP-08/MP-10/MP-11: a NoSymbol keycode is not necessarily inert.
+        # Chromium can fall back to its hardware meaning (e.g. BrowserRefresh)
+        # when it cannot translate an overlay Unicode keysym. X11 keycodes 8
+        # and 92 have no hardware fallback in Chromium's core keycode table.
+        # Recycle these slots under the existing mapping-settle guard rather
+        # than lending text input media/navigation keycodes. Modifier-mapped
+        # or occupied slots remain excluded by the upstream discovery.
+        spares = [code for code in super()._find_spare_keycodes() if code in (8, 92)]
+        self._spare_set = frozenset(spares)
+        return spares
 
     @staticmethod
     def _text_accelerator(keycode):
         return (keycode >= 104 or keycode in (9, 22, 23, 36, 66, 95, 96)
                 or 67 <= keycode <= 78)
-
-    def _find_spare_keycodes(self):
-        slots = [code for code in super()._find_spare_keycodes()
-                 if not self._text_accelerator(code)]
-        self._spare_set = frozenset(slots)
-        return slots
 
     def _resolve(self, keysym):
         code, modifiers, group = super()._resolve(keysym)
@@ -57,8 +59,6 @@ class _BrowserSafeTextKeyboard(_XTestKeyboard):
         return code, modifiers, group
 
 
-class SecretTargetChanged(Exception):
-    pass
 
 
 def focused_target(connection):
@@ -108,7 +108,7 @@ def assert_secret_target(connection, expected_target):
 
 def type_text(text, expected_target=None):
     connection = display.Display()
-    keyboard = _BrowserSafeTextKeyboard(connection)
+    keyboard = ComputerTextKeyboard(connection)
     lifted = []
     active_keysym = None
     try:

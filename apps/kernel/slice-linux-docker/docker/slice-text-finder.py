@@ -5,6 +5,26 @@ import io
 import json
 import subprocess
 import sys
+import unicodedata
+
+
+def normalized_text(text):
+    return " ".join(unicodedata.normalize("NFC", text).casefold().split())
+
+
+def recognition_languages():
+    # MP-08/MP-10/MP-11: installed language models are an Environment capability,
+    # shared by ordinary and managed workers. Never infer a language from hidden
+    # page state. Keep the model set bounded and omit Tesseract's OSD/script data.
+    supported = ("eng", "deu", "fra", "spa", "ita", "por", "rus", "ukr",
+                 "chi_sim", "chi_tra", "jpn", "kor", "ara", "hin")
+    result = subprocess.run(["tesseract", "--list-langs"], check=True, capture_output=True,
+                            text=True, encoding="utf-8", timeout=2)
+    installed = set(result.stdout.splitlines())
+    languages = [name for name in supported if name in installed]
+    if len(languages) > 8:
+        raise ValueError("too many OCR language models for a bounded observation")
+    return "+".join(languages) or "eng"
 
 
 def main(argv):
@@ -13,7 +33,7 @@ def main(argv):
     if len(argv) != 3:
         print("usage: slice-text-finder.py QUERY TESSERACT_TSV", file=sys.stderr)
         return 2
-    query = " ".join(argv[1].casefold().split())
+    query = normalized_text(argv[1])
     if not query:
         print("query must not be empty", file=sys.stderr)
         return 2
@@ -47,16 +67,17 @@ def parse_lines(handle):
 
 
 def recognize_image(image, query):
-    normalized = " ".join(query.casefold().split()) if query is not None else None
+    normalized = normalized_text(query) if query is not None else None
     if normalized == "":
         raise ValueError("query must not be empty")
     text_lines, matches = [], []
+    languages = recognition_languages()
     # Automatic page segmentation misses small windows on a dark desktop.
     # Keep its layout coverage and add a block pass, in original pixel space.
     # In-memory TSV also avoids concurrent reads sharing one temporary file.
     for mode in (3, 6):
         result = subprocess.run(
-            ["tesseract", image, "stdout", "-l", "eng", "--psm", str(mode), "tsv"],
+            ["tesseract", image, "stdout", "-l", languages, "--psm", str(mode), "tsv"],
             check=True, capture_output=True, text=True, encoding="utf-8", timeout=15,
         )
         lines = parse_lines(io.StringIO(result.stdout))
@@ -81,10 +102,16 @@ def recognize_image(image, query):
 
 
 def same_target(a, b):
+    # MP-08/MP-10/MP-11: segmentation passes may disagree on word bounds.
+    # Coalesce the same label at nearly the same place, never a broad label
+    # containing a second query hit or two substantially shifted occurrences.
+    if normalized_text(a["text"]) != normalized_text(b["text"]):
+        return False
     width = max(0, min(a["left"] + a["width"], b["left"] + b["width"]) - max(a["left"], b["left"]))
     height = max(0, min(a["top"] + a["height"], b["top"] + b["height"]) - max(a["top"], b["top"]))
-    smaller = min(a["width"] * a["height"], b["width"] * b["height"])
-    return smaller > 0 and width * height >= smaller * 0.5
+    intersection = width * height
+    union = a["width"] * a["height"] + b["width"] * b["height"] - intersection
+    return union > 0 and intersection >= union * 0.75
 
 
 def find_matches(query, lines):
@@ -92,7 +119,7 @@ def find_matches(query, lines):
     seen_boxes = set()
     for words in lines:
         normalized_words = [
-            " ".join((row.get("text") or "").strip().casefold().split())
+            normalized_text(row.get("text") or "")
             for row in words
         ]
         searchable = " ".join(normalized_words)
