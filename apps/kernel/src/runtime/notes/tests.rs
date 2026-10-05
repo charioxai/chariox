@@ -175,3 +175,44 @@ fn notes_capture_polling_reuses_receipt_and_bounds_untrusted_input() {
         .is_err());
     assert!(store.create("alice", &first.selection_id, "").is_err());
 }
+
+#[test]
+fn notes_stable_tab_listing_survives_browser_generation_change() {
+    let root = crate::test_support::TestWorktree::new("mdnotes-generation");
+    let store = NoteStore::new(root.path().to_path_buf());
+    let mut original = anchor();
+    original.window = NoteWindow::KernelBrowser {
+        tab_id: "stable-tab".into(),
+        generation: 1,
+    };
+    let selection = store.selection("alice", original.clone(), None).unwrap();
+    let note = store
+        .create("alice", &selection.selection_id, "explain")
+        .unwrap();
+    let restored = NoteWindow::KernelBrowser {
+        tab_id: "stable-tab".into(),
+        generation: 2,
+    };
+    assert_eq!(
+        store.list("alice", &restored, "alice").unwrap()[0].note_id,
+        note.note_id
+    );
+    assert!(store.list("bob", &restored, "bob").unwrap().is_empty());
+    assert!(store
+        .list(
+            "alice",
+            &NoteWindow::KernelBrowser {
+                tab_id: "other-tab".into(),
+                generation: 2
+            },
+            "alice"
+        )
+        .unwrap()
+        .is_empty());
+    original.window = restored;
+    let fresh = store.selection("alice", original, None).unwrap();
+    assert_ne!(
+        fresh.selection_id, selection.selection_id,
+        "new selections must keep their generation fence"
+    );
+}

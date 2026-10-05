@@ -24,7 +24,9 @@ shadow roots and owned frames. Ambiguous matches do not silently pick one.
 Closed shadow roots and selections spanning separate DOM roots return no
 selection. Quote size, frame/root count and text indexing are bounded. A changed
 or unavailable page retains the original quote, with `missing`, `ambiguous` or
-`unavailable` state. Read refreshes browser anchors. The observer creates no DOM
+`unavailable` state. Read refreshes browser anchors. Durable host-tab listing follows stable tab
+identity across browser generations; re-anchoring uses the current observed
+generation, while new selection capture still rejects stale generations. The observer creates no DOM
 nodes or page-visible bindings. No note UI is injected into the browser/App.
 Existing Vault observation barriers and scrubbing apply to controller results.
 
@@ -47,7 +49,8 @@ uses `SubmitPrompt`; Ask itself never creates, dispatches or resolves a prompt.
 TUI note UI is deferred by the owner.
 
 MD-N4: `chariox.load_notes` loads list/read/reply/resolve tools on demand using
-kbrowser's existing focus loader and epoch. Only one authenticated local provider
+kbrowser's existing focus loader and epoch. Browser and notes tool loading are
+independent; loading either capability never exposes the other. Only one authenticated local provider
 run for the user's currently focused agent can discover or call them. Both
 session and user-domain focus are checked on every call; focus revocation fences
 results and commits. Remote/leased agent access remains out of scope with the
@@ -57,3 +60,16 @@ Room membership. Terminal users can manage only their own notes.
 MD-N5 validation receipts live outside the repository. Source/unit/native drills
 are separate proof; none closes MP-08, MP-10 or MP-11 or proves Cloud overlay,
 real provider execution, hosted relay, macOS or fresh-machine acceptance.
+
+MD-N5 native drill: run the ignored
+`runtime::router::tests::notes::live::notes_user_and_room_native_integration_drill`
+with an explicit disposable `CHARIOX_HOME` below `CHARIOX_MDNOTES_DRILL_ROOT`,
+as a normal Unix user with native sandboxed Chromium and usable fonts. Set
+`CHARIOX_KERNEL_BROWSER_EXECUTABLE`, `CHARIOX_KERNEL_BROWSER_HEADLESS=1`, and
+`CHARIOX_MDNOTES_DRIVER` to `notes-drill-driver.mjs`; use that same driver as
+`CHARIOX_BROWSER_CONTROLLER_SCRIPT`. The driver serves the normal stdio controller
+and scopes its real process/profile inventory to its own launched Chromium child.
+This fixture does not supply a Docker PID namespace or verify slice provisioning.
+It provides genuine DOM selection stimuli, including page-world forgery, to the
+normal kernel host and Room controller paths. Receipt output contains fixture
+checks only; remove all fixture browser profiles and product identities afterward.
