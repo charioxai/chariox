@@ -1,7 +1,8 @@
 # Multidomain multi-user and multi-client validation
 
 This validation targets union local protocol 427 / relay peer 74, initially on
-public union `32d4611a9`. It changes test fixtures only, not protocol shapes.
+public union `32d4611a9`, then rerun on published stack-on-main `f3ad77def`.
+It changes test fixtures and documentation only, not protocol shapes.
 
 ## Identities and access
 
@@ -47,7 +48,7 @@ the separate Cloud live drill exercises signed App package admission and channel
 Cloud's `apps/web/scripts/multidomain-hardening-live-drill.mjs` drives the real
 browser → local relay → kernel topology, two owner browser contexts, a separately
 authenticated collaborator, local CLI transport under the disposable Unix owner,
-remote CLI transport, and the full local TUI. The existing parent live harness
+remote CLI transport, and both full local and remote TUIs. The parent live harness
 owns provisioning, process pinning, teardown and release acceptance limitations.
 No hosted Cloud, real accounts, provider model prompts or runtime proxy is used.
 
@@ -56,7 +57,30 @@ is an expected regression receipt. On the rebased/fixed stack, set it to `0` so
 that the same failure is fatal. The probe asserts decoded PNG dimensions and
 samples native pixels at the protected field's scaled coordinates. A failed
 transport or invalid geometry is always fatal, never an expected pixel failure.
-The coordinator must request the rerun when `md/stack-on-main` is published.
+The published-stack rerun requires DPR2 green and preserves strict, structured
+per-case authorization/stale-reference rejection checks.
+
+## Published-stack result
+
+On `f3ad77def`, the native Room/user browser/App drill, focused Rust and protocol
+snapshots pass. The real relay/browser captures mask the protected field at both
+DPR1 and DPR2. Both full TUIs open, list, project, call through keyboard actions,
+capture into their own draft and close a shared-host App on the same kernel.
+
+Nine live negatives remain unproven: foreign tab snapshot/screenshot, foreign
+browser capture, foreign note-window observation, forged references, stale input
+documents in browser and App, replayed capture correlation across identities, and
+stale-generation capture. The kernel sanitizes these into a generic host failure;
+that response cannot establish the expected authorization/stale-reference check.
+These are failed validation cases, not demonstrated cross-user data disclosure.
+Do not count arbitrary errors as successful security denials.
+
+The evidence-only collection adapter delays the aggregate failure until all full
+client positives finish. It preserves every individual failed assertion and a
+nonzero final exit, without changing product code or refusal classification.
+Exact commands, provenance, matrix and cleanup are recorded externally in
+`/w/evidence/md-hardening/stack-main/`. The kernel still needs attributable safe
+refusal information before these nine cases can satisfy release acceptance.
 
 ## Scope and limits
 
