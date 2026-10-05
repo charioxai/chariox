@@ -1,3 +1,4 @@
+import { privateClientEnvironment } from "./lib/native-tui-remote-execution.mjs"
 #!/usr/bin/env node
 import assert from "node:assert/strict"
 import { randomUUID } from "node:crypto"
@@ -310,7 +311,7 @@ async function main() {
 
     const { LocalIpcClient } = await import("../../../packages/kernel-client/dist/ipc.js")
     const requests = await import("../../../packages/kernel-client/dist/ipc-requests.js")
-    daemon = spawn(kernelBinary, [], { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"] })
+    daemon = spawn(kernelBinary, [], { cwd: repoRoot, env: privateClientEnvironment(env), stdio: ["ignore", "pipe", "pipe"] })
     daemon.stdout.on("data", (chunk) => { daemonStdout += chunk.toString() })
     daemon.stderr.on("data", (chunk) => { daemonStderr += chunk.toString() })
     await waitForKernel(LocalIpcClient, requests.listSessionsRequest, kernelUrl, env)
@@ -343,8 +344,6 @@ async function main() {
     const cliArgs = [
       "-q",
       "/dev/null",
-      "env",
-      ...Object.entries(env).map(([key, value]) => `${key}=${value}`),
       "bun",
       cliDist,
       "--kernel-url", kernelUrl,
@@ -355,7 +354,7 @@ async function main() {
       "--model", "unattached-tui-drill-model",
       "--client-id", `unattached-tui-drill-${process.pid}`,
     ]
-    cli = spawn("script", cliArgs, { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"] })
+    cli = spawn("script", cliArgs, { cwd: repoRoot, env: privateClientEnvironment(env), stdio: ["ignore", "pipe", "pipe"] })
     cli.stdout.on("data", (chunk) => { cliStdout += chunk.toString() })
     cli.stderr.on("data", (chunk) => { cliStderr += chunk.toString() })
     const cliStartupFailure = new Promise((resolve) => {

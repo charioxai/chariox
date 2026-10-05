@@ -1,3 +1,4 @@
+import { privateClientEnvironment } from "./lib/native-tui-remote-execution.mjs"
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
 import net from 'node:net'
@@ -518,7 +519,7 @@ async function main() {
     const { cliDist, kernelBinary } = await ensureCliBuilt()
 
     if (!options.noSpawnDaemon) {
-      daemon = spawn(kernelBinary, [], { cwd: repoRoot, env, stdio: ['ignore', 'ignore', 'inherit'] })
+      daemon = spawn(kernelBinary, [], { cwd: repoRoot, env: privateClientEnvironment(env), stdio: ['ignore', 'ignore', 'inherit'] })
       await waitForKernel(kernelUrl, options.noSpawnDaemon ? process.env : env)
     }
     log('kernel-ready', { kernelUrl })
@@ -572,8 +573,6 @@ async function main() {
     const cliArgs = [
       '-q',
       '/dev/null',
-      'env',
-      ...Object.entries(env).map(([key, value]) => `${key}=${value}`),
       'bun',
       cliDist,
       '--kernel-url', kernelUrl,
@@ -586,7 +585,7 @@ async function main() {
       '--effort', effort,
       '--client-id', `workspace-live-sync-permission-drill-cli-${process.pid}`,
     ]
-    cli = spawn('script', cliArgs, { cwd: repoRoot, env, stdio: ['ignore', 'pipe', 'pipe'] })
+    cli = spawn('script', cliArgs, { cwd: repoRoot, env: privateClientEnvironment(env), stdio: ['ignore', 'pipe', 'pipe'] })
 
     await waitForSocket(automationSocket)
     automation = createAutomationClient(automationSocket)

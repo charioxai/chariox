@@ -2515,7 +2515,7 @@ async function startRemoteTui({ tempRoot }) {
     env,
     connectionArgs: [
       "--relay-url", `ws://127.0.0.1:${relayPort}`,
-      "--relay-token", remoteTuiRelayToken,
+      "--relay-token-env", "CHARIOX_DRILL_ROOM_RELAY_TOKEN",
       "--target-daemon-id", homeDaemonId,
     ],
   })
@@ -2585,6 +2585,7 @@ function remoteTuiEnvironment(tempRoot) {
   return {
     ...env,
     HOME: remoteTuiHome,
+    CHARIOX_DRILL_ROOM_RELAY_TOKEN: remoteTuiRelayToken,
   }
 }
 

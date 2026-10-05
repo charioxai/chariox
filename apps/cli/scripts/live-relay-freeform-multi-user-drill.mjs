@@ -14,7 +14,7 @@ import {
 } from './lib/drill-runtime-helpers.mjs'
 import {
   assertHetznerTcpPortAvailable,
-  remoteEnvCommand,
+  spawnRemoteEnv,
   seedLocalOpenCodeRuntimeProfile,
   shellQuote,
   sshArgs,
@@ -455,14 +455,14 @@ async function main() {
       if (remoteRelayCheck.code !== 0) {
         throw new Error(`Hetzner relay binary is not available in ${options.hetznerRepo}\n${remoteRelayCheck.stdout}\n${remoteRelayCheck.stderr}`)
       }
-      relay = spawn('ssh', sshArgs(options, remoteEnvCommand({
+      relay = spawnRemoteEnv(options, {
         CHARIOX_REMOTE_REPO: options.hetznerRepo,
         CHARIOX_RELAY_FREEFORM_MULTI_USER_ROOT: remoteRelayRoot,
         CHARIOX_RELAY_HOST: '127.0.0.1',
         CHARIOX_RELAY_PORT: String(ports.relayPort),
         CHARIOX_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
         CHARIOX_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
-      }, `mkdir -p ${shellQuote(remoteRelayRoot)}; echo $$ > ${shellQuote(path.posix.join(remoteRelayRoot, 'relay.pid'))}; exec ./apps/relay/target/debug/chariox-relay`)), {
+      }, `mkdir -p ${shellQuote(remoteRelayRoot)}; echo $$ > ${shellQuote(path.posix.join(remoteRelayRoot, 'relay.pid'))}; exec ./apps/relay/target/debug/chariox-relay`, {
         stdio: ['ignore', 'ignore', 'inherit'],
       })
       relayTunnel = spawn('ssh', [

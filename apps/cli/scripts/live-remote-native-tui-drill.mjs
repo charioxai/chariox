@@ -47,7 +47,7 @@ import {
   hetznerNativeRuntimeTempDir,
   prepareHetznerClaudeWorkspaceTrust,
   prepareHetznerWorktree,
-  remoteEnvCommand,
+  spawnRemoteEnv,
   removeExecutionFile,
   removeHetznerNativeRuntimePaths,
   removeHetznerWorktree,
@@ -513,13 +513,13 @@ async function main() {
       .then(() => symlink(path.join(realHomeDir, ".codex"), path.join(homeDir, ".codex"), "dir"))
       .catch(() => {})
     if (options.hetznerWorker) {
-      relay = spawn("ssh", sshArgs(options, remoteEnvCommand({
+      relay = spawnRemoteEnv(options, {
         CHARIOX_REMOTE_REPO: options.hetznerRepo,
         CHARIOX_RELAY_HOST: "127.0.0.1",
         CHARIOX_RELAY_PORT: String(ports.relayPort),
         CHARIOX_RELAY_TOKEN: relayToken,
         RUST_MIN_STACK: rustMinStack,
-      }, "./apps/relay/target/debug/chariox-relay")), {
+      }, "./apps/relay/target/debug/chariox-relay", {
         stdio: ["ignore", "ignore", "inherit"],
       })
       relayTunnel = spawn("ssh", [
@@ -586,7 +586,7 @@ async function main() {
     await waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias)
     if (options.standardHomeWorker) {
       if (options.hetznerWorker) {
-        workerKernel = spawn("ssh", sshArgs(options, remoteEnvCommand({
+        workerKernel = spawnRemoteEnv(options, {
           CHARIOX_REMOTE_REPO: options.hetznerRepo,
           RUST_MIN_STACK: rustMinStack,
           PATH: `/root/.bun/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
@@ -611,7 +611,7 @@ async function main() {
           CHARIOX_SESSION_HISTORY_DIR: path.posix.join(remoteRuntimeRoot, "worker-history"),
           CHARIOX_CAPABILITY_ISOLATION_ROOT: workerCapabilityRoot,
           TMPDIR: remoteTempDir,
-        }, `mkdir -p ${shellQuote(remoteRuntimeParent)} && ./apps/kernel/target/debug/chariox-kernel`)), {
+        }, `mkdir -p ${shellQuote(remoteRuntimeParent)} && ./apps/kernel/target/debug/chariox-kernel`, {
           stdio: ["ignore", "ignore", "inherit"],
         })
       } else {
