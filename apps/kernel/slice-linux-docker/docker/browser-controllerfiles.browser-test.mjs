@@ -203,6 +203,25 @@ test("MP-08/MP-10/MP-11 actual CDP upload/download and passive capture fixture",
   assert.equal((await request("browser.action", { ...current, node_ref: send.node_ref, action: { kind: "click" } })).ok, true);
   await until(async () => fixture.receipts[1]);
   assertControllerfilesReceipt(fixture.receipts[1], expected);
+  // MP-08/MP-10/MP-11: visible child-frame trigger + hidden child input,
+  // discovered by the shared multi-document snapshot, with exact byte receipts.
+  await evaluate(`new Promise(resolve => { const frame = document.createElement('iframe'); frame.id = 'child-upload'; frame.onload = () => resolve(true); frame.src = ${JSON.stringify(fixture.origin)}; document.body.prepend(frame); })`);
+  const childSnapshot = await request("browser.snapshot", current);
+  assert.equal(childSnapshot.ok, true, childSnapshot.error?.code);
+  const childDocument = childSnapshot.result.dom_documents.find(document => document.owner_node_ref);
+  assert.ok(childDocument, "same-origin child document is observed");
+  const childChooser = childSnapshot.result.dom_nodes.find(node => node.document_index === childDocument.document_index && node.node_name === "BUTTON" && node.attributes.id === "choose");
+  assert.ok(childChooser, "visible child trigger has an ordinary backend reference");
+  assert.match(childChooser.node_ref, /^backend:/);
+  const childChosen = await request("browser.upload", { ...current, node_ref: childChooser.node_ref,
+    artifact_files: expected.map(file => ({ display_name: file.name, mime_type: file.type,
+      data_base64: file.bytes.toString("base64"), size_bytes: file.bytes.length, sha256: createHash("sha256").update(file.bytes).digest("hex") })) });
+  assert.equal(childChosen.ok, true, childChosen.error?.code);
+  const childSend = childSnapshot.result.dom_nodes.find(node => node.document_index === childDocument.document_index && node.node_name === "BUTTON" && node.attributes.id === "send");
+  assert.equal((await request("browser.action", { ...current, node_ref: childSend.node_ref, action: { kind: "click" } })).ok, true);
+  await until(async () => fixture.receipts[2]);
+  assertControllerfilesReceipt(fixture.receipts[2], expected);
+  await evaluate("document.querySelector('#child-upload').remove(); true");
   // MP-08/MP-10/MP-11: no Vault registration, real separate renderer, actual
   // composited bytes. A top-session DOM snapshot cannot see this password.
   const iframeUrl = new URL("/isolated-login", fixture.origin); iframeUrl.hostname = "localhost";
@@ -224,7 +243,7 @@ test("MP-08/MP-10/MP-11 actual CDP upload/download and passive capture fixture",
   await evaluate("document.querySelector('#isolated-login').remove(); true");
   const result = { mp: ["MP-08", "MP-10", "MP-11"], scope: "controller/Chromium fixture only",
     inputUpload: true, missingDenied: true, cancelNoPartialReuse: true, downloadExactBytes: true,
-    downloadCancelNoPartialReuse: true, isolatedIframePasswordMask: true,
+    downloadCancelNoPartialReuse: true, isolatedIframePasswordMask: true, sameOriginChildChooser: true,
     capture: { sha256: createHash("sha256").update(image).digest("hex"), sizeBytes: image.length,
       targetId: current.target_id, documentId: before, viewport }, passiveEventsRedacted: true, controllerImageArtifact: true, controllerDownloadArtifact: true, controllerPassiveHar: true,
     chooser: { ok: chosen.ok, diagnostic: chosen.error?.code ?? null },

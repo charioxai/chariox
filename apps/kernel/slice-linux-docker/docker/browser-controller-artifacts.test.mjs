@@ -93,7 +93,9 @@ for (const scenario of ["matching", "wrong_session", "wrong_frame", "navigated",
         calls.push({ method, params });
         if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "frame-a", loaderId: loader } } };
         if (method === "DOM.resolveNode") return { object: { objectId: params.backendNodeId === 1 ? "chooser" : "input" } };
-        if (method === "Runtime.callFunctionOn") return { result: { value: "invalid" } };
+        if (method === "Runtime.callFunctionOn") return { result: params.returnByValue ? { value: "invalid" } : { objectId: "document-a" } };
+        if (method === "DOM.describeNode") return { node: { backendNodeId: 100 } };
+        if (method === "DOMSnapshot.captureSnapshot") return { strings: ["frame-a"], documents: [{ frameId: 0, nodes: { backendNodeId: [100] } }] };
         return {};
       },
       waitForEvent() { return { cancel() {}, promise: Promise.resolve(scenario === "no_chooser" ? null : { sessionId: scenario === "wrong_session" ? "session-b" : "session-a", params: { frameId: scenario === "wrong_frame" ? "frame-b" : "frame-a", backendNodeId: 2, mode: "selectSingle" } }) }; },
@@ -106,5 +108,45 @@ for (const scenario of ["matching", "wrong_session", "wrong_frame", "navigated",
     if (scenario === "matching") await upload; else await assert.rejects(upload);
     assert.equal(calls.filter(call => call.method === "DOM.setFileInputFiles").length, scenario === "matching" ? 1 : 0);
     assert.deepEqual(calls.filter(call => call.method === "Page.setInterceptFileChooserDialog").at(-1).params, { enabled: false });
+  });
+}
+
+// MP-08/MP-10/MP-11: same-renderer child controls have ordinary backend refs.
+for (const scenario of ["matching", "unrelated_frame", "child_navigation", "ancestor_navigation", "input_document_mismatch", "missing_control_document"]) {
+  test(`MP-08/MP-10/MP-11 child-frame chooser ${scenario}`, async t => {
+    const root = await mkdtemp(path.join(tmpdir(), "chariox-b207-child-chooser-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const file = path.join(root, "report.txt"); await writeFile(file, "child bytes");
+    const calls = []; let childLoader = "child-doc"; let parentLoader = "parent-doc";
+    const connection = {
+      async send(method, params) {
+        calls.push({ method, params });
+        if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "top", loaderId: "top-doc" }, childFrames: [
+          { frame: { id: "parent", loaderId: parentLoader, parentId: "top" }, childFrames: [
+            { frame: { id: "child", loaderId: childLoader, parentId: "parent" } }] },
+          { frame: { id: "unrelated", loaderId: "unrelated-doc", parentId: "top" } }] } };
+        if (method === "DOM.resolveNode") return { object: { objectId: params.backendNodeId === 1 ? "chooser" : "input" } };
+        if (method === "Runtime.callFunctionOn") return { result: params.returnByValue ? { value: "invalid" } : {
+          objectId: scenario === "input_document_mismatch" && params.objectId === "input" ? "unrelated-document" : "child-document" } };
+        if (method === "DOM.describeNode") return { node: { backendNodeId: params.objectId === "unrelated-document" ? 200 : 100 } };
+        if (method === "DOMSnapshot.captureSnapshot") return { strings: ["child", "unrelated"], documents:
+          scenario === "missing_control_document" ? [] : [{ frameId: 0, nodes: { backendNodeId: [100] } }, { frameId: 1, nodes: { backendNodeId: [200] } }] };
+        return {};
+      },
+      waitForEvent() { return { cancel() {}, promise: Promise.resolve({ sessionId: "session", params: {
+        frameId: scenario === "unrelated_frame" ? "unrelated" : "child", backendNodeId: 2, mode: "selectSingle" } }) }; },
+    };
+    let exposed = false;
+    const upload = uploadBrowserFiles({ connection, sessionId: "session", targetId: "target", documentId: "top-doc", nodeRef: "backend:1",
+      filePaths: [file], uploadRoots: [root],
+      stageUploads: async ({ files }) => ({ files, markExposed() { exposed = true; }, discard() {} }),
+      clickChooser: async ({ withInput }) => withInput(async () => {
+        if (scenario === "child_navigation") childLoader = "new-child-doc";
+        if (scenario === "ancestor_navigation") parentLoader = "new-parent-doc";
+      }),
+    });
+    if (scenario === "matching") await upload; else await assert.rejects(upload);
+    assert.equal(exposed, scenario === "matching");
+    assert.equal(calls.filter(call => call.method === "DOM.setFileInputFiles").length, scenario === "matching" ? 1 : 0);
   });
 }
