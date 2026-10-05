@@ -1,23 +1,25 @@
-# MP-11 — mp11narrow current lane (2026-10-05)
+# MP-11 — mp11narrow FINAL (2026-10-05)
 
-## MP-11 — Scope/gate milestone implemented; review batch in progress
+## MP-11 — Local handoff complete; acceptance OPEN / RED
 
-- Owner narrowing replaces the exhaustive semantic gate with behavioural MP-01..MP-10 + B211-KEY/APP/CAPTURE dispositions and exact-blob reviews for trust boundaries only.
-- Current OSS target `74e50b787a5919ee5c3d580c5b088989fd4a1adf`, tree `3cb4ef5c883e8d358d0beab455797ded180a2406`; GitHub full-SHA fetch verified. Read-only lane-owned source worktree `/root/work/agent-mp11narrow-source`. No Cloud checkout at `f1ad79056` found; Cloud pending.
-- Scope definition, whole-file/class anchors, external matrix binding, unknown-class refusal and non-gating full inventory are implemented. Classifier/gate tests and existing suite passed 210/210 before final test-signal/entitlement coverage additions; final validation pending.
-- Current narrowed inventory: 1,046 file/class anchors, 26 unknown class anchors. Over ~600, so prioritized Vault/credentials, relay admission, signing/trust and sandbox reviews; exact remainder will be retained.
-- MP-11 source review found expired Vault leases can be revived by extension after an awaited management reply. Product code stays unchanged; finding/fix proposal goes to external REPORT.md.
-- Node/Python/read-only source only; no compile/protocol allocation/push/PR/CI/deployment/provider/container/key creation. Initial disk 65 GiB free and MemAvailable 15.07 GiB. Subsequent samples remain above floors.
+- Owner narrowing implemented: BOTH external MP-01..MP-10 + b211 parity dispositions and exact-blob security-critical reviews. Checked-in eight-class directory/content definition fails closed for unknown trust-root classes; whole-file/class anchors catch zero-match helpers. Full inventory is diagnostic/non-gating. Amendments are in both canonical plan and scanner inventory doc.
+- Local commits: `dee49c6c6` (scope/gate/tests/docs), `2da5b417c` (39 exact current reviews, findings and strict verdict/malformed-scope checks). All [skip ci], required co-author; no publication by this lane.
+- Exact OSS `74e50b787a5919ee5c3d580c5b088989fd4a1adf`, tree `3cb4ef5c883e8d358d0beab455797ded180a2406`: **1,046 narrowed anchors / 906 files**. **39 records / 30 complete files reviewed**, 35 OK and four FINDING records across three seams. **1,007 remaining**, including 26 unknown-class files. Over ~600, so owner-authorized prioritization/remainder used; no blanket approval or claim of exhaustive completion.
+- MP-11 findings (product unchanged): P2 Vault extension can revive an expired cached lease after awaiting management reply (`secret/vault.rs:486`); P2 raw process-group guard gaps in host observer (`managed-browser-computer-parity-host-observer.mjs:42`) and macOS storage CI (`test-app-storage-macos-ci.mjs:50`). Concrete fixes/regressions are in external REPORT.md FINAL; static review, no live exploit claim. B211-KEY's old default is corrected at the current source, without inventing live parity disposition.
+- Focused Node checks **213/213 PASS**, zero skips. Exact OSS narrowed scan exit **1**: current reviews/findings/unknowns plus external matrix still open. Full inventory diagnostic exit **0**. Independent Python/Git verifies **1,046 anchors + 39 records**, zero binding errors; all eleven tool module hashes match `2da5b417c`.
+- Cloud requested `f1ad79056` **PENDING**: no checkout at that head found. Existing Cloud checkout was neither scanned nor changed. External parity matrix remains owned by other lanes; no MP-01..MP-11 acceptance item closes.
+- Final receipt minima **16.52 GiB MemAvailable / 61.26 GiB free disk**. Node/Python only; no Rust/provider/kernel/container/credential/key/port/build output, protocol allocation, push/PR/comment/CI/merge/deploy or protected-host contact. Own source-only worktree removed after exact identity/clean check; implementation and small public-source evidence retained. Shared infrastructure untouched.
+- REVIEW_INBOX.md absent after both milestone batches and final handoff; prior PR #848 fixes remain mapped. Evidence: `/root/.codex/evidence/browser-resume-20260930/mp11narrow/REPORT.md`, review records, remainder index, scans, commands/exits/resources and cleanup receipt. Coordinator handoff: PUSH_READY.md.
 
 ## MP-11 — Coordinator asks
 
-- Supply current external behavioural matrix for MP-01..MP-10 plus b211 CURRENT_INVENTORY parity items; this lane does not disposition other lanes' rows.
-- Cloud exact-head security scan/review at `f1ad79056` remains pending.
-- No protocol number needed. Coordinator owns publication and product-finding assignments.
+- Publish/review local scanner commits; no protocol allocation needed.
+- Assign F1/F2 source fixes, remaining class/review work and Cloud exact-head scan.
+- Supply current MP-01..MP-10 + B211-KEY/APP/CAPTURE evidence/dispositions; this lane does not own their acceptance matrix.
 
 ## MP-11 — Owner questions
 
-- No new owner question blocks scope implementation. The approved >~600 priority/remainder provision applies.
+- No new owner-only decision blocks this authorized handoff. Overall semantic/parity/Cloud gates remain open; owner-authorized >~600 priority/remainder exception was used.
 
 # MP-11 — b211scan
 

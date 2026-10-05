@@ -1,3 +1,12 @@
+# MP-11 — mp11narrow local commits ready for coordinator source review
+
+- `dee49c6c6e304f0866ea730fd9967965a6cba962`: owner narrowing, checked-in scope definition, whole-blob security anchors, external parity gate, classifier/gate tests and CI test-command wiring. Full inventory stays non-gating.
+- `2da5b417cade4dff2d7a15159453cfcc05f33a4f`: 39 exact current OSS semantic records, explicit verdict/severity validation, malformed-scope refusal regression and findings. Product source unchanged.
+- MP-11 final focused checks: **213/213 PASS**, independent 1,046-anchor/39-record Git bindings pass, eleven tool module hashes verified against committed tool. No Rust or GitHub CI run.
+- MP-11 gate remains RED: **1,007 reviews pending** (including 26 unknown classes), four finding records across three seams, external behavioural matrix and Cloud `f1ad79056` pending. Owner's >~600 priority/remainder provision applies. No per-anchor approval required for ordinary noncritical source; no live acceptance claimed.
+- Evidence/report/findings/fix proposals/cleanup: `/root/.codex/evidence/browser-resume-20260930/mp11narrow/REPORT.md` FINAL.
+- MP-11 review-inbox mapping: REVIEW_INBOX.md absent after scope commit, after semantic commit and at final handoff; no unhandled entries. Prior PR #848 reviewer P1/P2 mapping below remains unchanged. Independent scanner-tool review and publication belong to coordinator; no push/PR/comment/merge/deploy by this lane.
+
 # MP-11 — reviewable scanner repair, not acceptance-ready
 
 Branch: `agent/b211scan`, based on OSS `9334141d420f8a32393f206102c5b8b4a1b0b609`.
