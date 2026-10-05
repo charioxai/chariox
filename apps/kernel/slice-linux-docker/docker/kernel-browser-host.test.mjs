@@ -7,6 +7,8 @@ import { PassThrough } from "node:stream";
 import readline from "node:readline";
 import { BrowserControllerStdioServer } from "./browser-controller.mjs";
 import path from "node:path";
+import { BrowserInputCapture } from "./browser-controller-input.mjs";
+import { inputHostTab } from "./kernel-browser-input.mjs";
 import { KernelBrowserHost, navigationUrl } from "./kernel-browser-host.mjs";
 import { candidates as macCandidates, launchEnvironment as macEnvironment } from "./kernel-browser-macos.mjs";
 import { launchEnvironment as linuxEnvironment } from "./kernel-browser-linux.mjs";
@@ -378,3 +380,24 @@ test("MD-3: bound stream captures a document-bound source rather than annotating
   }
   assert.fail("bound stream frame never arrived");
 }));
+
+// MD-3: a visible host tab may have DOM focus while another native window owns
+// keyboard focus. CDP input must reach that target without activating the OS window.
+test("MD-3: visible user-domain text input establishes target-local focus", async () => {
+  let focused = false;
+  const inserted = [], calls = [];
+  const connection = { async send(method, params) {
+    calls.push(method);
+    if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "frame", loaderId: "doc" } } };
+    if (method === "Page.createIsolatedWorld") return { executionContextId: 1 };
+    if (method === "Runtime.evaluate") return { result: { value: params.expression.includes("visibilityState") } };
+    if (method === "Emulation.setFocusEmulationEnabled") focused = params.enabled;
+    if (method === "Input.insertText" && focused) inserted.push(params.text);
+    return {};
+  } };
+  const browser = { inputCapture: new BrowserInputCapture(), resolvePageTarget: async () => ({connection,sessionId:"page"}) };
+  await inputHostTab(browser, {target_id:"target",document_id:"doc"}, {kind:"text",text:"fixture text"});
+  assert.deepEqual(inserted, ["fixture text"]);
+  assert.equal(focused, false, "MD-3: release temporary target focus after input");
+  assert(!calls.includes("Page.bringToFront") && !calls.includes("Target.activateTarget"));
+});
