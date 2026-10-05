@@ -337,7 +337,7 @@ pub(super) fn ensure_claude_headless_onboarding_state_at(
         state_options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
     let existing_state = match state_options.open(state_path) {
-        Ok(mut file) => {
+        Ok(file) => {
             let metadata = file
                 .metadata()
                 .map_err(|error| DaemonError::LocalTransport {

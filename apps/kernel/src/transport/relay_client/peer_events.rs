@@ -137,40 +137,20 @@ pub(super) async fn handle_daemon_peer_event(
                 message: error.to_string(),
             }
         })?;
-    match event {
-        RelayPeerEvent::LeasedRuntimeProjection {
-            home_session_id,
-            home_agent_id,
-            provider_run_id,
-            provider_run,
-            prompts,
-            output_chunks,
-            notices,
-            completions,
-        } => {
-            router
-                .relay_project_remote_runtime_projection(
-                    crate::runtime::relay_peer_authority::RemoteProjectionAuthority {
-                        peer: crate::runtime::relay_peer_authority::RelayPeerAuthority {
-                            kernel_id: stable_sender_id.into(),
-                            public_key: sender_public_key,
-                            sender_bound: verified_sender,
-                        },
-                        expected_binding: None,
-                        expected_prompt_id: None,
-                    },
-                    &home_session_id,
-                    &home_agent_id,
-                    &provider_run_id,
-                    provider_run,
-                    prompts,
-                    output_chunks,
-                    notices,
-                    completions,
-                )
-                .await?;
-        }
-    }
+    router
+        .relay_project_remote_runtime_projection(
+            crate::runtime::relay_peer_authority::RemoteProjectionAuthority {
+                peer: crate::runtime::relay_peer_authority::RelayPeerAuthority {
+                    kernel_id: stable_sender_id.into(),
+                    public_key: sender_public_key,
+                    sender_bound: verified_sender,
+                },
+                expected_binding: None,
+                expected_prompt_id: None,
+            },
+            event,
+        )
+        .await?;
     Ok(())
 }
 

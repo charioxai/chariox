@@ -121,19 +121,21 @@ async fn projected_remote_completion_admits_queued_prompt_before_ordered_deliver
         std::time::Duration::from_secs(2),
         fixture.runtime.project_relay_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-1"),
-            &fixture.session_id,
-            &fixture.agent_id,
-            "provider-run-current",
-            None,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![crate::transport::relay_peer::RelayProjectedCompletion {
-                message_id: "queued-completion-ordering".to_string(),
-                completed_at_ms: crate::session::unix_epoch_ms(),
-                home_prompt_id: Some(completed_prompt_id),
-                provider_termination: None,
-            }],
+            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: fixture.session_id.to_string(),
+                home_agent_id: fixture.agent_id.to_string(),
+                provider_run_id: "provider-run-current".to_string(),
+                provider_run: None,
+                prompts: Vec::new(),
+                output_chunks: Vec::new(),
+                notices: Vec::new(),
+                completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                    message_id: "queued-completion-ordering".to_string(),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                    home_prompt_id: Some(completed_prompt_id),
+                    provider_termination: None,
+                }],
+            },
         ),
     )
     .await
@@ -330,19 +332,21 @@ async fn ordinary_completion_dispatches_workflow_head_after_projection() {
             runtime
                 .project_relay_remote_runtime_projection(
                     crate::runtime::relay_peer_authority::test_projection_authority("worker-1"),
-                    &session_id,
-                    &agent_id,
-                    "provider-run-current",
-                    None,
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    vec![crate::transport::relay_peer::RelayProjectedCompletion {
-                        message_id: "ordinary-completes-before-workflow".to_string(),
-                        completed_at_ms: crate::session::unix_epoch_ms(),
-                        home_prompt_id: Some(completed_prompt_id),
-                        provider_termination: None,
-                    }],
+                    crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                        home_session_id: session_id.to_string(),
+                        home_agent_id: agent_id.to_string(),
+                        provider_run_id: "provider-run-current".to_string(),
+                        provider_run: None,
+                        prompts: Vec::new(),
+                        output_chunks: Vec::new(),
+                        notices: Vec::new(),
+                        completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                            message_id: "ordinary-completes-before-workflow".to_string(),
+                            completed_at_ms: crate::session::unix_epoch_ms(),
+                            home_prompt_id: Some(completed_prompt_id),
+                            provider_termination: None,
+                        }],
+                    },
                 )
                 .await
         }
@@ -459,19 +463,21 @@ async fn rejected_ordered_queued_dispatch_uses_shared_sender_failure_semantics()
         .runtime
         .project_relay_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-1"),
-            &fixture.session_id,
-            &fixture.agent_id,
-            "provider-run-current",
-            None,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![crate::transport::relay_peer::RelayProjectedCompletion {
-                message_id: "reject-queued-dispatch".to_string(),
-                completed_at_ms: crate::session::unix_epoch_ms(),
-                home_prompt_id: Some(completed_prompt_id),
-                provider_termination: None,
-            }],
+            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: fixture.session_id.to_string(),
+                home_agent_id: fixture.agent_id.to_string(),
+                provider_run_id: "provider-run-current".to_string(),
+                provider_run: None,
+                prompts: Vec::new(),
+                output_chunks: Vec::new(),
+                notices: Vec::new(),
+                completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                    message_id: "reject-queued-dispatch".to_string(),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                    home_prompt_id: Some(completed_prompt_id),
+                    provider_termination: None,
+                }],
+            },
         )
         .await
         .expect("completion projection should return before delivery");
@@ -709,19 +715,21 @@ async fn project_ordinary_completion(fixture: &RoomManifestFixture, prompt_id: S
         .runtime
         .project_relay_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-1"),
-            &fixture.session_id,
-            &fixture.agent_id,
-            "provider-run-current",
-            None,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![crate::transport::relay_peer::RelayProjectedCompletion {
-                message_id: "ordinary-completion-for-workflow-successor".to_string(),
-                completed_at_ms: crate::session::unix_epoch_ms(),
-                home_prompt_id: Some(prompt_id),
-                provider_termination: None,
-            }],
+            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: fixture.session_id.to_string(),
+                home_agent_id: fixture.agent_id.to_string(),
+                provider_run_id: "provider-run-current".to_string(),
+                provider_run: None,
+                prompts: Vec::new(),
+                output_chunks: Vec::new(),
+                notices: Vec::new(),
+                completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                    message_id: "ordinary-completion-for-workflow-successor".to_string(),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                    home_prompt_id: Some(prompt_id),
+                    provider_termination: None,
+                }],
+            },
         )
         .await
         .expect("ordinary completion should promote the queued workflow prompt");

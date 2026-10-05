@@ -473,23 +473,25 @@ async fn remote_runtime_projection_records_metaagent_turn_completion_event() {
         .runtime_state
         .project_relay_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-1"),
-            session.id(),
-            worker.id(),
-            "remote:worker:provider-run-1",
-            None,
-            Vec::new(),
-            vec![crate::transport::relay_peer::RelayProjectedOutputChunk {
-                kind: crate::terminal::TerminalOutputKind::ProviderOutput,
-                merge_key: Some("assistant-1".to_string()),
-                bytes: b"remote output".to_vec(),
-            }],
-            Vec::new(),
-            vec![crate::transport::relay_peer::RelayProjectedCompletion {
-                message_id: "assistant-msg-1".to_string(),
-                completed_at_ms: 1234,
-                home_prompt_id: None,
-                provider_termination: None,
-            }],
+            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: session.id().to_string(),
+                home_agent_id: worker.id().to_string(),
+                provider_run_id: "remote:worker:provider-run-1".to_string(),
+                provider_run: None,
+                prompts: Vec::new(),
+                output_chunks: vec![crate::transport::relay_peer::RelayProjectedOutputChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("assistant-1".to_string()),
+                    bytes: b"remote output".to_vec(),
+                }],
+                notices: Vec::new(),
+                completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                    message_id: "assistant-msg-1".to_string(),
+                    completed_at_ms: 1234,
+                    home_prompt_id: None,
+                    provider_termination: None,
+                }],
+            },
         )
         .await
         .expect("runtime projection should succeed");

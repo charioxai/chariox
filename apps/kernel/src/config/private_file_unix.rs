@@ -64,6 +64,8 @@ fn write_before_publish(
         }
         parent.sync_all()
     })();
+    // MP-11: stat device/inode typedef widths differ across Unix targets.
+    #[allow(clippy::unnecessary_cast)]
     if result.is_err() {
         let mut current: libc::stat = unsafe { std::mem::zeroed() };
         if unsafe {

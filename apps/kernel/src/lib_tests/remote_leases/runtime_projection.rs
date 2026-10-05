@@ -111,19 +111,21 @@ fn assert_stale_worker_snapshot_preserves_selected_profile(active_worker_run: Op
     let outcome = RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
-            session.id(),
-            agent.id(),
-            stale_run.id(),
-            Some(stale_run.clone()),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![RelayProjectedCompletion {
-                message_id: "old-completion".into(),
-                completed_at_ms: crate::session::unix_epoch_ms(),
-                home_prompt_id: Some("previous-home-prompt".into()),
-                provider_termination: None,
-            }],
+            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: session.id().to_string(),
+                home_agent_id: agent.id().to_string(),
+                provider_run_id: stale_run.id().to_string(),
+                provider_run: Some(stale_run.clone()),
+                prompts: Vec::new(),
+                output_chunks: Vec::new(),
+                notices: Vec::new(),
+                completions: vec![RelayProjectedCompletion {
+                    message_id: "old-completion".into(),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                    home_prompt_id: Some("previous-home-prompt".into()),
+                    provider_termination: None,
+                }],
+            },
         )
         .unwrap();
     assert!(!outcome.accepted);
@@ -196,14 +198,16 @@ fn native_worker_snapshot_can_establish_run_binding_without_home_dispatch() {
     let outcome = RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
-            session.id(),
-            agent.id(),
-            run.id(),
-            Some(run.clone()),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: session.id().to_string(),
+                home_agent_id: agent.id().to_string(),
+                provider_run_id: run.id().to_string(),
+                provider_run: Some(run.clone()),
+                prompts: Vec::new(),
+                output_chunks: Vec::new(),
+                notices: Vec::new(),
+                completions: Vec::new(),
+            },
         )
         .unwrap();
     assert!(outcome.accepted);
@@ -298,19 +302,21 @@ fn remote_workflow_completion_preserves_worker_provider_failure_diagnostic() {
     let outcome = RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
-            session.id(),
-            agent.id(),
-            "worker-run-1",
-            Some(worker_run),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![RelayProjectedCompletion {
-                message_id: "failed-turn-1".into(),
-                completed_at_ms: crate::session::unix_epoch_ms(),
-                home_prompt_id: Some(prompt.id().into()),
-                provider_termination: None,
-            }],
+            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: session.id().to_string(),
+                home_agent_id: agent.id().to_string(),
+                provider_run_id: "worker-run-1".to_string(),
+                provider_run: Some(worker_run),
+                prompts: Vec::new(),
+                output_chunks: Vec::new(),
+                notices: Vec::new(),
+                completions: vec![RelayProjectedCompletion {
+                    message_id: "failed-turn-1".into(),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                    home_prompt_id: Some(prompt.id().into()),
+                    provider_termination: None,
+                }],
+            },
         )
         .unwrap();
     let current = app.sessions().get_session(session.id()).unwrap();
@@ -416,18 +422,20 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
     RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
-            session.id(),
-            agent.id(),
-            "remote:worker:provider-run-1",
-            None,
-            Vec::new(),
-            vec![RelayProjectedOutputChunk {
-                kind: TerminalOutputKind::ProviderOutput,
-                merge_key: Some("assistant-1".to_string()),
-                bytes: b"remote output".to_vec(),
-            }],
-            vec!["remote notice".to_string()],
-            vec![projected_completion.clone(), projected_completion],
+            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: session.id().to_string(),
+                home_agent_id: agent.id().to_string(),
+                provider_run_id: "remote:worker:provider-run-1".to_string(),
+                provider_run: None,
+                prompts: Vec::new(),
+                output_chunks: vec![RelayProjectedOutputChunk {
+                    kind: TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("assistant-1".to_string()),
+                    bytes: b"remote output".to_vec(),
+                }],
+                notices: vec!["remote notice".to_string()],
+                completions: vec![projected_completion.clone(), projected_completion],
+            },
         )
         .expect("projection should succeed");
 
@@ -565,19 +573,21 @@ fn remote_runtime_projection_preserves_authoritative_provider_termination() {
     RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
-            session.id(),
-            agent.id(),
-            "remote:worker:provider-run-exited",
-            None,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![RelayProjectedCompletion {
-                message_id: "provider-exit-1".to_string(),
-                completed_at_ms: 9_999,
-                home_prompt_id: Some(prompt.id().to_string()),
-                provider_termination: Some(termination.clone()),
-            }],
+            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: session.id().to_string(),
+                home_agent_id: agent.id().to_string(),
+                provider_run_id: "remote:worker:provider-run-exited".to_string(),
+                provider_run: None,
+                prompts: Vec::new(),
+                output_chunks: Vec::new(),
+                notices: Vec::new(),
+                completions: vec![RelayProjectedCompletion {
+                    message_id: "provider-exit-1".to_string(),
+                    completed_at_ms: 9_999,
+                    home_prompt_id: Some(prompt.id().to_string()),
+                    provider_termination: Some(termination.clone()),
+                }],
+            },
         )
         .expect("termination projection should settle");
 
@@ -642,14 +652,16 @@ fn stale_remote_completion_replay_does_not_complete_the_next_prompt() {
     RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
-            session.id(),
-            agent.id(),
-            "remote:worker:provider-run-1",
-            None,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![stale_completion.clone()],
+            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: session.id().to_string(),
+                home_agent_id: agent.id().to_string(),
+                provider_run_id: "remote:worker:provider-run-1".to_string(),
+                provider_run: None,
+                prompts: Vec::new(),
+                output_chunks: Vec::new(),
+                notices: Vec::new(),
+                completions: vec![stale_completion.clone()],
+            },
         )
         .expect("first completion should project");
     let _ = app
@@ -674,14 +686,16 @@ fn stale_remote_completion_replay_does_not_complete_the_next_prompt() {
     RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
-            session.id(),
-            agent.id(),
-            "remote:worker:provider-run-1",
-            None,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![stale_completion],
+            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: session.id().to_string(),
+                home_agent_id: agent.id().to_string(),
+                provider_run_id: "remote:worker:provider-run-1".to_string(),
+                provider_run: None,
+                prompts: Vec::new(),
+                output_chunks: Vec::new(),
+                notices: Vec::new(),
+                completions: vec![stale_completion],
+            },
         )
         .expect("stale replay should be ignored");
 
@@ -730,19 +744,21 @@ fn native_completion_correlation_distinguishes_durable_and_native_prompts() {
     RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
-            session.id(),
-            agent.id(),
-            "remote:worker:provider-run-1",
-            None,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![RelayProjectedCompletion {
-                message_id: "prior-native-completion".to_string(),
-                completed_at_ms: 1234,
-                home_prompt_id: None,
-                provider_termination: None,
-            }],
+            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: session.id().to_string(),
+                home_agent_id: agent.id().to_string(),
+                provider_run_id: "remote:worker:provider-run-1".to_string(),
+                provider_run: None,
+                prompts: Vec::new(),
+                output_chunks: Vec::new(),
+                notices: Vec::new(),
+                completions: vec![RelayProjectedCompletion {
+                    message_id: "prior-native-completion".to_string(),
+                    completed_at_ms: 1234,
+                    home_prompt_id: None,
+                    provider_termination: None,
+                }],
+            },
         )
         .expect("unscoped native completion should be ignored");
 
@@ -760,19 +776,21 @@ fn native_completion_correlation_distinguishes_durable_and_native_prompts() {
     RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
-            session.id(),
-            agent.id(),
-            "remote:worker:provider-run-1",
-            None,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![RelayProjectedCompletion {
-                message_id: "current-home-completion".to_string(),
-                completed_at_ms: 5678,
-                home_prompt_id: Some(prompt.id().to_string()),
-                provider_termination: None,
-            }],
+            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: session.id().to_string(),
+                home_agent_id: agent.id().to_string(),
+                provider_run_id: "remote:worker:provider-run-1".to_string(),
+                provider_run: None,
+                prompts: Vec::new(),
+                output_chunks: Vec::new(),
+                notices: Vec::new(),
+                completions: vec![RelayProjectedCompletion {
+                    message_id: "current-home-completion".to_string(),
+                    completed_at_ms: 5678,
+                    home_prompt_id: Some(prompt.id().to_string()),
+                    provider_termination: None,
+                }],
+            },
         )
         .expect("scoped home completion should settle the prompt");
 
@@ -790,22 +808,24 @@ fn native_completion_correlation_distinguishes_durable_and_native_prompts() {
     RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
-            session.id(),
-            agent.id(),
-            "remote:worker:provider-run-1",
-            None,
-            vec![crate::transport::relay_peer::RelayProjectedPrompt {
-                prompt_id: "native-prompt".to_string(),
-                text: "native-origin prompt".to_string(),
-            }],
-            Vec::new(),
-            Vec::new(),
-            vec![RelayProjectedCompletion {
-                message_id: "native-completion".to_string(),
-                completed_at_ms: 6789,
-                home_prompt_id: None,
-                provider_termination: None,
-            }],
+            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: session.id().to_string(),
+                home_agent_id: agent.id().to_string(),
+                provider_run_id: "remote:worker:provider-run-1".to_string(),
+                provider_run: None,
+                prompts: vec![crate::transport::relay_peer::RelayProjectedPrompt {
+                    prompt_id: "native-prompt".to_string(),
+                    text: "native-origin prompt".to_string(),
+                }],
+                output_chunks: Vec::new(),
+                notices: Vec::new(),
+                completions: vec![RelayProjectedCompletion {
+                    message_id: "native-completion".to_string(),
+                    completed_at_ms: 6789,
+                    home_prompt_id: None,
+                    provider_termination: None,
+                }],
+            },
         )
         .expect("unscoped completion should settle a native-origin prompt");
 

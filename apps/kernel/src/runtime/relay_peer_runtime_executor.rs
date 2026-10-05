@@ -10,10 +10,9 @@ use crate::runtime_transport::WatchResult;
 use crate::session::{PromptCancellation, PromptCompletion, PromptSubmissionOutcome};
 use crate::skill::CharioxSkillPackage;
 use crate::transport::relay_peer::{
-    RelayPeerEvent, RelayProjectEnvironmentSetupStatus, RelayProjectedCompletion,
-    RelayProjectedOutputChunk, RelayProjectedPrompt, RelayPromptAttachment, RemoteGitObservation,
-    RemoteGitTurnContext, RemoteMcpAvailability, RemoteMcpCheckContext, RemoteSkillMaterialization,
-    RemoteSkillSyncContext, RequiredRemoteMcp,
+    RelayPeerEvent, RelayProjectEnvironmentSetupStatus, RelayPromptAttachment,
+    RemoteGitObservation, RemoteGitTurnContext, RemoteMcpAvailability, RemoteMcpCheckContext,
+    RemoteSkillMaterialization, RemoteSkillSyncContext, RequiredRemoteMcp,
 };
 
 pub(crate) async fn ensure_relay_subscription_attachment(
@@ -578,26 +577,9 @@ pub(crate) async fn drain_relay_leased_runtime_projection(
 pub(crate) async fn project_relay_remote_runtime_projection(
     runtime_state: &KernelRuntimeState,
     authority: crate::runtime::relay_peer_authority::RemoteProjectionAuthority,
-    session_id: &str,
-    agent_id: &str,
-    provider_run_id: &str,
-    provider_run: Option<crate::provider::RuntimeProviderRun>,
-    prompts: Vec<RelayProjectedPrompt>,
-    output_chunks: Vec<RelayProjectedOutputChunk>,
-    notices: Vec<String>,
-    completions: Vec<RelayProjectedCompletion>,
+    event: crate::transport::relay_peer::RelayPeerEvent,
 ) -> Result<(), DaemonError> {
     runtime_state
-        .project_relay_remote_runtime_projection(
-            authority,
-            session_id,
-            agent_id,
-            provider_run_id,
-            provider_run,
-            prompts,
-            output_chunks,
-            notices,
-            completions,
-        )
+        .project_relay_remote_runtime_projection(authority, event)
         .await
 }

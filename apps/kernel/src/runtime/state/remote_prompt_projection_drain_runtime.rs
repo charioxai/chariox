@@ -464,31 +464,8 @@ impl KernelRuntimeState {
         authority: crate::runtime::relay_peer_authority::RemoteProjectionAuthority,
         event: crate::transport::relay_peer::RelayPeerEvent,
     ) -> Result<(), DaemonError> {
-        match event {
-            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
-                home_session_id,
-                home_agent_id,
-                provider_run_id,
-                provider_run,
-                prompts,
-                output_chunks,
-                notices,
-                completions,
-            } => {
-                self.project_relay_remote_runtime_projection(
-                    authority,
-                    &home_session_id,
-                    &home_agent_id,
-                    &provider_run_id,
-                    provider_run,
-                    prompts,
-                    output_chunks,
-                    notices,
-                    completions,
-                )
-                .await
-            }
-        }
+        self.project_relay_remote_runtime_projection(authority, event)
+            .await
     }
 }
 

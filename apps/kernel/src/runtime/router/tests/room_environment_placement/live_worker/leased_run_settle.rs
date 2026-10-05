@@ -138,14 +138,16 @@ async fn check_cleanup(fixture: &mut LiveWorker, finished: bool) {
         .home
         .relay_project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-1"),
-            &room,
-            agent,
-            &worker_run_id,
-            Some(worker_snapshot),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: room.to_string(),
+                home_agent_id: agent.to_string(),
+                provider_run_id: worker_run_id.to_string(),
+                provider_run: Some(worker_snapshot),
+                prompts: Vec::new(),
+                output_chunks: Vec::new(),
+                notices: Vec::new(),
+                completions: Vec::new(),
+            },
         )
         .await
         .expect_err("a deleted agent cannot accept a late worker projection");

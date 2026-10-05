@@ -10,9 +10,9 @@ enum ReleasedProviderRunResponse {
     },
     AgentForked {
         source_agent_id: String,
-        agent: crate::agent::AgentInstance,
+        agent: Box<crate::agent::AgentInstance>,
         provider_run: crate::provider::RuntimeProviderRun,
-        session: crate::session::RuntimeSession,
+        session: Box<crate::session::RuntimeSession>,
     },
 }
 
@@ -103,9 +103,11 @@ fn mp11_released416_turn_undo_and_agent_fork_shape_is_versioned() {
     session_value["last_used_at_ms"] = serde_json::json!(1_000);
     let fork_response = ReleasedProviderRunResponse::AgentForked {
         source_agent_id: "agent-1".to_string(),
-        agent,
+        agent: Box::new(agent),
         provider_run: serde_json::from_value(run_value).expect("provider run should decode"),
-        session: serde_json::from_value(session_value).expect("session snapshot should decode"),
+        session: Box::new(
+            serde_json::from_value(session_value).expect("session snapshot should decode"),
+        ),
     };
 
     let snapshot = serde_json::json!([undo_request, fork_request, undo_response, fork_response]);

@@ -887,15 +887,22 @@ impl<'a> RemoteLeaseRuntime<'a> {
     pub(crate) fn project_remote_runtime_projection(
         &mut self,
         authority: crate::runtime::relay_peer_authority::RemoteProjectionAuthority,
-        session_id: &str,
-        agent_id: &str,
-        provider_run_id: &str,
-        provider_run: Option<crate::provider::RuntimeProviderRun>,
-        prompts: Vec<RelayProjectedPrompt>,
-        output_chunks: Vec<RelayProjectedOutputChunk>,
-        notices: Vec<String>,
-        completions: Vec<RelayProjectedCompletion>,
+        event: crate::transport::relay_peer::RelayPeerEvent,
     ) -> Result<RemoteRuntimeProjectionOutcome, DaemonError> {
+        let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+            home_session_id,
+            home_agent_id,
+            provider_run_id,
+            provider_run,
+            prompts,
+            output_chunks,
+            notices,
+            completions,
+        } = event;
+        let session_id = home_session_id.as_str();
+        let agent_id = home_agent_id.as_str();
+        let provider_run_id = provider_run_id.as_str();
+
         let _ = self.app.sessions.get_session(session_id)?;
         let mut outcome = RemoteRuntimeProjectionOutcome::default();
         let agent = self.app.agents.get_agent(agent_id)?;
@@ -2879,19 +2886,21 @@ mod explicit_completion_tests {
         let projected = RemoteLeaseRuntime::new(&mut app)
             .project_remote_runtime_projection(
                 crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_agent_id,
-                &provider_run_id,
-                None,
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                vec![RelayProjectedCompletion {
-                    message_id: "active-prompt-complete".to_string(),
-                    completed_at_ms: crate::session::unix_epoch_ms(),
-                    home_prompt_id: Some(active_prompt_id),
-                    provider_termination: None,
-                }],
+                crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    home_session_id: leased_agent.backing_session_id.to_string(),
+                    home_agent_id: leased_agent.backing_agent_id.to_string(),
+                    provider_run_id: provider_run_id.to_string(),
+                    provider_run: None,
+                    prompts: Vec::new(),
+                    output_chunks: Vec::new(),
+                    notices: Vec::new(),
+                    completions: vec![RelayProjectedCompletion {
+                        message_id: "active-prompt-complete".to_string(),
+                        completed_at_ms: crate::session::unix_epoch_ms(),
+                        home_prompt_id: Some(active_prompt_id),
+                        provider_termination: None,
+                    }],
+                },
             )
             .expect("completion should admit the detached ordinary head");
 
@@ -2939,19 +2948,21 @@ mod explicit_completion_tests {
         let projected = RemoteLeaseRuntime::new(&mut app)
             .project_remote_runtime_projection(
                 crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_agent_id,
-                &provider_run_id,
-                None,
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                vec![RelayProjectedCompletion {
-                    message_id: "ordinary-prompt-complete".to_string(),
-                    completed_at_ms: crate::session::unix_epoch_ms(),
-                    home_prompt_id: Some(ordinary.id().to_string()),
-                    provider_termination: None,
-                }],
+                crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    home_session_id: leased_agent.backing_session_id.to_string(),
+                    home_agent_id: leased_agent.backing_agent_id.to_string(),
+                    provider_run_id: provider_run_id.to_string(),
+                    provider_run: None,
+                    prompts: Vec::new(),
+                    output_chunks: Vec::new(),
+                    notices: Vec::new(),
+                    completions: vec![RelayProjectedCompletion {
+                        message_id: "ordinary-prompt-complete".to_string(),
+                        completed_at_ms: crate::session::unix_epoch_ms(),
+                        home_prompt_id: Some(ordinary.id().to_string()),
+                        provider_termination: None,
+                    }],
+                },
             )
             .expect("ordinary completion should advance the workflow");
 
@@ -3051,14 +3062,16 @@ mod mp11_projection_admission_tests {
             RemoteLeaseRuntime::new(app)
                 .project_remote_runtime_projection(
                     authority,
-                    session_id,
-                    agent.id(),
-                    "run",
-                    None,
-                    vec![],
-                    vec![],
-                    vec![],
-                    vec![],
+                    crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                        home_session_id: session_id.to_string(),
+                        home_agent_id: agent.id().to_string(),
+                        provider_run_id: "run".to_string(),
+                        provider_run: None,
+                        prompts: vec![],
+                        output_chunks: vec![],
+                        notices: vec![],
+                        completions: vec![],
+                    },
                 )
                 .unwrap()
                 .accepted
@@ -3100,14 +3113,16 @@ mod mp11_projection_admission_tests {
         let outcome = RemoteLeaseRuntime::new(&mut app)
             .project_remote_runtime_projection(
                 crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
-                session.id(),
-                agent.id(),
-                "foreign-run",
-                None,
-                Vec::new(),
-                Vec::new(),
-                vec!["foreign-notice".into()],
-                Vec::new(),
+                crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    home_session_id: session.id().to_string(),
+                    home_agent_id: agent.id().to_string(),
+                    provider_run_id: "foreign-run".to_string(),
+                    provider_run: None,
+                    prompts: Vec::new(),
+                    output_chunks: Vec::new(),
+                    notices: vec!["foreign-notice".into()],
+                    completions: Vec::new(),
+                },
             )
             .unwrap();
         assert!(

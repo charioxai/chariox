@@ -112,7 +112,7 @@ impl OwnedProcessSignals {
     }
 
     pub(crate) fn kill_group(&mut self) -> io::Result<bool> {
-        self.group_with(&snapshot()?, |pid| send_signal(pid))
+        self.group_with(&snapshot()?, send_signal)
     }
 
     pub(crate) fn kill_owned_processes(&mut self) -> io::Result<()> {

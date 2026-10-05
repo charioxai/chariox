@@ -819,14 +819,16 @@ mod tests {
                     .with_app_side_effect(|app| {
                         crate::app::RemoteLeaseRuntime::new(app).project_remote_runtime_projection(
                             authority,
-                            &session,
-                            &agent,
-                            "worker-run-1",
-                            None,
-                            vec![],
-                            vec![],
-                            vec!["must not project".into()],
-                            vec![],
+                            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                                home_session_id: session.to_string(),
+                                home_agent_id: agent.to_string(),
+                                provider_run_id: "worker-run-1".to_string(),
+                                provider_run: None,
+                                prompts: vec![],
+                                output_chunks: vec![],
+                                notices: vec!["must not project".into()],
+                                completions: vec![],
+                            },
                         )
                     })
                     .await
