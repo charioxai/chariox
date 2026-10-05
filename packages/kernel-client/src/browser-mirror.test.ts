@@ -3,7 +3,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { validateMirrorNode,validateMirrorPacket,mirrorCanonicalJson,mirrorTreeCanonicalJson,mirrorSandboxCsp } from './browser-mirror-security.js'
-import { browserMirrorMinimumProtocolVersion,attachBrowserMirror } from './browser-mirror.js'
+import { browserMirrorMinimumProtocolVersion,attachBrowserMirror,BrowserMirrorRenderer } from './browser-mirror.js'
 import type { MirrorPacket } from './browser-mirror-types.js'
 const packet=():MirrorPacket=>({subscription_id:'s',tab_id:'t',generation:1,document_id:'d',sequence:1,base_sequence:null,reset:true,hash:'a'.repeat(64),root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'div',children:[]}],removed:[],resources:[],tiles:[],fonts:[],scroll:{x:0,y:0},focused:null,selection:null,css_width:1280,css_height:800,device_scale_factor:1})
 test('MP-11: scripts, active markup, event handlers, URLs and CSS exfiltration are refused',()=>{
@@ -47,4 +47,10 @@ test('MP-08/MP-11: cached tree hash preserves canonical bytes across retained an
  assert.equal(mirrorTreeCanonicalJson(tree,cache),mirrorCanonicalJson(tree));assert.equal(mirrorTreeCanonicalJson(tree,cache),mirrorCanonicalJson(tree));
  const changed=validateMirrorPacket({...p,reset:false,nodes:[{...p.nodes[0]!,style:{color:'rgb(1, 2, 3)'}}]},base);tree.nodes=[...changed.values()];
  assert.equal(mirrorTreeCanonicalJson(tree,cache),mirrorCanonicalJson(tree));
+});
+
+test('MP-08/MP-11: sorted Rust style maps cannot reset vendor paint properties after assignment',()=>{
+ const properties=new Map<string,string>();const element={removeAttribute(){properties.clear()},style:{setProperty(key:string,value:string){if(key==='all')properties.clear();properties.set(key,value)}}} as unknown as HTMLElement;
+ const renderer=Object.create(BrowserMirrorRenderer.prototype) as {resources:Map<string,string>;style(element:HTMLElement,style:Record<string,string>):void};renderer.resources=new Map();
+ renderer.style(element,{'-webkit-text-stroke-width':'2px',all:'initial',color:'black'});assert.equal(properties.get('-webkit-text-stroke-width'),'2px');assert.equal(properties.get('color'),'black');
 });

@@ -114,7 +114,9 @@ stylesheets. These prevent redundant layout invalidation during SPA batches. It 
 geometry before each next call and requests sticky per-region video fallback for
 layout, text or color drift at a 0.5 CSS px geometry threshold. Full-root drift
 uses a stable inert full-video document. Tiles occupy integer source raster
-positions independently of fractional control boxes. Mask overlays use the same
+positions independently of fractional control boxes. Protected placeholders
+preserve border-box dimensions and inline replaced-frame layout. The renderer applies `all:initial` before vendor properties regardless of
+serialized map ordering. Mask overlays use the same
 outward floor/ceil plus four native pixels as protected source captures. The
 source hash is checked every packet. Runtime compositor pixel comparison still
 needs a reviewed client readback seam; geometry/text/color checks cannot detect
@@ -144,7 +146,8 @@ a viewer rAF callback after native compositor readback verifies the expected
 binary acknowledgement, using its source geometry (including scrollbars). This
 matches the display lane's software endpoint, not physical monitor timing. The
 synthetic kernel adapter uses bounded same-origin loopback HTTP JSON; it is a
-fixture transport, not a production Cloud proxy or encrypted relay validation.
+fixture transport with Rust-style sorted maps, not a production Cloud proxy or
+encrypted relay validation.
 Automation receives packet JSON strings rather than recursively serialized JS
 objects, so large diagnostic returns do not dominate the transport measurement. The
 latency gates are input p50 <=80 ms / p95 <=120 ms, mutation p50 <=80 ms and long

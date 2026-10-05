@@ -68,7 +68,10 @@ export class BrowserMirrorRenderer {
   }
   private style(element:HTMLElement,style:Record<string,string>):void {
     element.removeAttribute('style')
+    // MP-08/MP-11: Rust map ordering places vendor keys before `all`. Reset first.
+    if(style.all)element.style.setProperty('all',style.all)
     for(const [key,value]of Object.entries(style)) {
+      if(key==='all')continue
       if(key.startsWith('animation')||key.startsWith('transition'))continue // sampled computed state
       const ref=value.startsWith('resource:')?this.resources.get(value.slice(9)):null
       element.style.setProperty(key,value.startsWith('resource:')?(ref?`url("${ref}")`:'none'):value)
@@ -92,7 +95,7 @@ export class BrowserMirrorRenderer {
     }
     // MP-10: child/text changes do not invalidate unchanged sanitized styles.
     if(!previous||JSON.stringify(previous.style??{})!==JSON.stringify(record.style??{}))this.style(element,record.style??{})
-    if(record.kind==='mask'){element.style.appearance='none';element.style.borderStyle='solid';element.style.boxShadow='none';element.style.borderRadius='0';if(record.tag==='input'||record.tag==='textarea'){(element as HTMLInputElement).readOnly=true;(element as HTMLInputElement).disabled=true}element.style.background='black';element.style.color='transparent';element.style.borderColor='black';element.setAttribute('aria-label','Protected content')}
+    if(record.kind==='mask'){element.style.boxSizing='border-box';if(record.tag==='div'&&(!record.style?.display||record.style.display==='inline'))element.style.display='inline-block';element.style.appearance='none';element.style.borderStyle='solid';element.style.boxShadow='none';element.style.borderRadius='0';if(record.tag==='input'||record.tag==='textarea'){(element as HTMLInputElement).readOnly=true;(element as HTMLInputElement).disabled=true}element.style.background='black';element.style.color='transparent';element.style.borderColor='black';element.setAttribute('aria-label','Protected content')}
     if(record.kind==='tile'||record.kind==='mask') {
       element.style.width=`${record.box?.width??0}px`;element.style.height=`${record.box?.height??0}px`;element.style.position='relative';element.style.overflow='hidden';element.style.background='black'
     }
