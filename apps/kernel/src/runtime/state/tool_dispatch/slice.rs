@@ -8,6 +8,7 @@ use crate::runtime::state::KernelRuntimeState;
 mod computer_secret;
 mod controller_browser;
 mod controller_browser_compatibility;
+mod controller_browser_geometry;
 mod controller_browser_projection;
 mod controller_browser_runtime;
 mod controller_computer;
@@ -355,6 +356,13 @@ impl KernelRuntimeState {
                     run_slice_screen_command(vec!["browser-fill".to_string(), selector, args.text])
                         .await?;
                 return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
+            }
+            crate::transport::runtime_tools::SLICE_BROWSER_INTERACT_TOOL => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_interact",
+                    message: "target-bound input requires the long-running Room browser controller"
+                        .into(),
+                });
             }
             crate::transport::runtime_tools::SLICE_BROWSER_CLICK_TOOL => {
                 let args = serde_json::from_value::<

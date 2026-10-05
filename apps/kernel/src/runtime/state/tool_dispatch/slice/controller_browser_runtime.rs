@@ -135,6 +135,14 @@ impl KernelRuntimeState {
                 self.controller_browser_fill_tool_result(session_id, slice_id, agent_id, args)
                     .await
             }
+            SLICE_BROWSER_INTERACT_TOOL => {
+                let args = parse_controller_tool_arguments::<SliceBrowserInteractArgs>(
+                    arguments,
+                    "runtime_tool_slice_browser_interact",
+                )?;
+                self.controller_browser_interact_tool_result(session_id, slice_id, agent_id, args)
+                    .await
+            }
             SLICE_BROWSER_CLICK_TOOL => {
                 let args = parse_controller_tool_arguments::<SliceBrowserClickArgs>(
                     arguments,

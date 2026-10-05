@@ -1,4 +1,5 @@
 import { renderedNodes, renderedSnapshotText } from "./browser-controller-text.mjs";
+import { computedAppearanceByNode, SNAPSHOT_COMPUTED_STYLES, withComputedAppearance } from "./browser-controller-geometry.mjs";
 const DEFAULT_MAX_NODES = 5_000;
 const DEFAULT_MAX_STRING_LENGTH = 2_048;
 const DEFAULT_MAX_ATTRIBUTES = 32;
@@ -39,7 +40,7 @@ export async function captureBrowserSnapshot({
     connection.send(
       "DOMSnapshot.captureSnapshot",
       {
-        computedStyles: ["visibility", "opacity", "display"],
+        computedStyles: SNAPSHOT_COMPUTED_STYLES,
         includeDOMRects: true,
         includePaintOrder: false,
       },
@@ -263,6 +264,7 @@ function compactDomSnapshot(rawSnapshot, options) {
       ? nodes.backendNodeId
       : [];
     const layoutBounds = boundsByNodeIndex(document?.layout);
+    const appearance = computedAppearanceByNode(document?.layout, strings, options.maxStringLength);
     const rendered = renderedNodes(document, strings);
     const clickable = new Set(nodes.isClickable?.index ?? []);
     const contentDocuments = rareDataByIndex(nodes.contentDocumentIndex);
@@ -324,12 +326,12 @@ function compactDomSnapshot(rawSnapshot, options) {
           ? compactString(rendered.get(nodeIndex) ?? text, options.maxStringLength) : "",
         clickable: clickable.has(nodeIndex),
         rendered: rendered.has(nodeIndex),
-        attributes: compactAttributes(
+        attributes: withComputedAppearance(compactAttributes(
           strings,
           arrayValue(nodes.attributes, nodeIndex),
           nodeName,
           options,
-        ),
+        ), appearance.get(nodeIndex), options.maxAttributes),
         bounds: layoutBounds.get(nodeIndex) ?? null,
       });
     }

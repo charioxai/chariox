@@ -45,6 +45,8 @@ pub(super) fn controller_browser_status_surfaces(
     let mut buttons = Vec::new();
     let mut links = Vec::new();
     let mut focused_element = serde_json::Value::Null;
+    let (elements, elements_truncated) =
+        super::controller_browser_geometry::browser_geometry_elements(&snapshot.dom_nodes);
     for reference in references {
         let accessibility_node = accessibility.get(reference).copied();
         let dom_node = dom.get(reference).copied();
@@ -84,6 +86,11 @@ pub(super) fn controller_browser_status_surfaces(
         ("fields".to_string(), serde_json::Value::Array(fields)),
         ("buttons".to_string(), serde_json::Value::Array(buttons)),
         ("links".to_string(), serde_json::Value::Array(links)),
+        ("elements".to_string(), serde_json::Value::Array(elements)),
+        (
+            "elements_truncated".to_string(),
+            serde_json::Value::Bool(elements_truncated),
+        ),
         ("focusedElement".to_string(), focused_element),
         (
             "snapshot_revision".to_string(),
@@ -106,6 +113,8 @@ pub(super) fn controller_browser_status_compatibility(
         "fields": surfaces.get("fields").cloned().unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
         "buttons": surfaces.get("buttons").cloned().unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
         "links": surfaces.get("links").cloned().unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
+        "elements": surfaces.get("elements").cloned().unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
+        "elements_truncated": surfaces.get("elements_truncated").cloned().unwrap_or(serde_json::Value::Bool(false)),
         "snapshot_revision": surfaces.get("snapshot_revision").cloned().unwrap_or(serde_json::Value::Null),
     })
 }
@@ -115,7 +124,7 @@ pub(super) fn controller_browser_find(
     query: &str,
     kind: &str,
 ) -> Result<serde_json::Value, String> {
-    if !matches!(kind, "field" | "button" | "link" | "any") {
+    if !matches!(kind, "field" | "button" | "link" | "element" | "any") {
         return Err(format!("unsupported browser element kind `{kind}`"));
     }
     let query_lower = query.to_ascii_lowercase();
@@ -124,7 +133,11 @@ pub(super) fn controller_browser_find(
         ("field", "fields"),
         ("button", "buttons"),
         ("link", "links"),
+        ("element", "elements"),
     ] {
+        if kind == "any" && candidate_kind == "element" {
+            continue;
+        }
         if kind != "any" && kind != candidate_kind {
             continue;
         }
@@ -144,6 +157,8 @@ pub(super) fn controller_browser_find(
                         "placeholder",
                         "text",
                         "type",
+                        "tag",
+                        "class",
                     ]
                     .into_iter()
                     .filter_map(|key| candidate.get(key).and_then(serde_json::Value::as_str))
@@ -157,6 +172,7 @@ pub(super) fn controller_browser_find(
         "kind": kind,
         "diagnostic": matches.is_empty().then_some("No rendered target matched within bounded discovery; refresh, try kind=any, or inspect the shared Computer view."),
         "matches": matches,
+        "elements_truncated": kind == "element" && status["elements_truncated"] == true,
     }))
 }
 
@@ -622,6 +638,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mp08_rendered_geometry_is_bounded_and_keeps_noninteractive_targets() {
+        let mut snapshot = room_snapshot(serde_json::json!([
+            node(1, None, "DIV", ""),
+            node(2, None, "DIV", "")
+        ]));
+        snapshot.dom_nodes[0].attributes.extend([
+            ("id".into(), "outline".into()),
+            ("class".into(), "shape".into()),
+            ("chariox-rendered-border-top-style".into(), "dashed".into()),
+            ("value".into(), "do-not-project".into()),
+        ]);
+        snapshot.dom_nodes[1].rendered = false;
+        let status = serde_json::Value::Object(controller_browser_status_surfaces(Some(&snapshot)));
+        assert_eq!(status["elements"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            status["elements"][0]["appearance"]["border-top-style"],
+            "dashed"
+        );
+        assert!(status["elements"][0]["bounds"].is_object());
+        assert!(!status.to_string().contains("do-not-project"));
+        assert_eq!(
+            controller_browser_find(&status, "shape", "element").unwrap()["matches"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let node = snapshot.dom_nodes[0].clone();
+        snapshot.dom_nodes = (0..129)
+            .map(|i| {
+                let mut n = node.clone();
+                n.element_ref = format!("element-{i}");
+                n
+            })
+            .collect();
+        let bounded = controller_browser_status_surfaces(Some(&snapshot));
+        assert_eq!(bounded["elements"].as_array().unwrap().len(), 128);
+        assert_eq!(bounded["elements_truncated"], true);
+    }
+
+    #[test]
     fn controller_browser_find_preserves_opaque_references_and_kind_filtering() {
         let status = serde_json::json!({
             "fields": [{"field_id": "element-1", "label": "Email", "text": ""}],
@@ -1040,6 +1097,7 @@ fn browser_element_summary(
         "value": if native_range || matches!(role.to_ascii_lowercase().as_str(), "combobox" | "listbox") || dom.is_some_and(|node| node.node_name.eq_ignore_ascii_case("select")) {
             accessibility.map(|node| node.value.as_str()).unwrap_or_default()
         } else { "" },
+        "bounds": dom.and_then(|node| node.bounds),
     });
     if native_range {
         let constraint = |name: &str, default: &str| {

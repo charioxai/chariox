@@ -713,6 +713,7 @@ fn canonical_room_browser_runtime_tool(tool_name: &str) -> Option<&'static str> 
                 | SLICE_KEYBOARD_TOOL
                 | SLICE_CLIPBOARD_WRITE_TOOL
                 | SLICE_OPEN_URL_TOOL
+                | SLICE_BROWSER_INTERACT_TOOL
                 | SLICE_BROWSER_CLICK_TOOL
                 | SLICE_BROWSER_FILL_TOOL
                 | SLICE_BROWSER_SUBMIT_TOOL
@@ -815,6 +816,7 @@ mod tests {
             SLICE_BROWSER_TAB_TOOL,
             SLICE_BROWSER_HISTORY_TOOL,
             SLICE_OPEN_URL_TOOL,
+            SLICE_BROWSER_INTERACT_TOOL,
             SLICE_BROWSER_CLICK_TOOL,
             SLICE_BROWSER_FILL_TOOL,
             SLICE_BROWSER_SUBMIT_TOOL,

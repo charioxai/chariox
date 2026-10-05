@@ -10,6 +10,17 @@ pub(crate) const MAX_BROWSER_ACTION_TIMEOUT_MS: u64 = 5_000;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum BrowserLocatorAction {
     Click,
+    Press {
+        key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_value: Option<String>,
+    },
+    Drag {
+        delta_x: i32,
+        delta_y: i32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_value: Option<String>,
+    },
     Fill {
         text: String,
         append: bool,
@@ -24,6 +35,14 @@ impl std::fmt::Debug for BrowserLocatorAction {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Click => formatter.write_str("Click"),
+            Self::Press { key, .. } => formatter.debug_struct("Press").field("key", key).finish(),
+            Self::Drag {
+                delta_x, delta_y, ..
+            } => formatter
+                .debug_struct("Drag")
+                .field("delta_x", delta_x)
+                .field("delta_y", delta_y)
+                .finish(),
             Self::Submit => formatter.write_str("Submit"),
             Self::Fill { append, submit, .. } => formatter
                 .debug_struct("Fill")
@@ -39,6 +58,46 @@ impl BrowserLocatorAction {
     pub(crate) fn validate(&self) -> Result<(), String> {
         match self {
             Self::Click | Self::Submit => Ok(()),
+            Self::Press {
+                key,
+                expected_value,
+            } => {
+                if !matches!(
+                    key.as_str(),
+                    "ArrowLeft"
+                        | "ArrowRight"
+                        | "ArrowUp"
+                        | "ArrowDown"
+                        | "Home"
+                        | "End"
+                        | "PageUp"
+                        | "PageDown"
+                        | "Enter"
+                        | "Escape"
+                        | "Tab"
+                        | "Space"
+                        | "Backspace"
+                        | "Delete"
+                ) {
+                    return Err("unsupported target-bound browser key".into());
+                }
+                validate_expected_range_value(expected_value.as_deref())
+            }
+            Self::Drag {
+                delta_x,
+                delta_y,
+                expected_value,
+            } => {
+                if !(-2048..=2048).contains(delta_x)
+                    || !(-2048..=2048).contains(delta_y)
+                    || (*delta_x == 0 && *delta_y == 0)
+                {
+                    return Err(
+                        "browser drag requires nonzero deltas within 2048 CSS pixels".into(),
+                    );
+                }
+                validate_expected_range_value(expected_value.as_deref())
+            }
             Self::Fill {
                 text,
                 expected_document_url,
@@ -65,6 +124,8 @@ impl BrowserLocatorAction {
     pub(crate) fn kind(&self) -> &'static str {
         match self {
             Self::Click => "click",
+            Self::Press { .. } => "press",
+            Self::Drag { .. } => "drag",
             Self::Fill { .. } => "fill",
             Self::Submit => "submit",
         }
@@ -73,6 +134,19 @@ impl BrowserLocatorAction {
     pub(crate) fn controller_value(&self) -> serde_json::Value {
         match self {
             Self::Click => serde_json::json!({ "kind": "click" }),
+            Self::Press {
+                key,
+                expected_value,
+            } => serde_json::json!({
+                "kind": "press", "key": key, "expected_value": expected_value,
+            }),
+            Self::Drag {
+                delta_x,
+                delta_y,
+                expected_value,
+            } => serde_json::json!({
+                "kind": "drag", "delta_x": delta_x, "delta_y": delta_y, "expected_value": expected_value,
+            }),
             Self::Fill {
                 text,
                 append,
@@ -88,6 +162,19 @@ impl BrowserLocatorAction {
             Self::Submit => serde_json::json!({ "kind": "submit" }),
         }
     }
+}
+
+fn validate_expected_range_value(value: Option<&str>) -> Result<(), String> {
+    if let Some(value) = value {
+        if value.len() > 64
+            || value.trim() != value
+            || value.is_empty()
+            || !value.parse::<f64>().is_ok_and(f64::is_finite)
+        {
+            return Err("expected range value must be a finite numeric string".into());
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -280,6 +367,39 @@ pub(crate) fn validate_browser_action_timeout(timeout_ms: u64) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mp08_bounded_interactions_reject_invalid_keys_deltas_and_values() {
+        for action in [
+            BrowserLocatorAction::Press {
+                key: "Control+L".into(),
+                expected_value: None,
+            },
+            BrowserLocatorAction::Press {
+                key: "ArrowRight".into(),
+                expected_value: Some("NaN".into()),
+            },
+            BrowserLocatorAction::Drag {
+                delta_x: i32::MIN,
+                delta_y: 0,
+                expected_value: None,
+            },
+            BrowserLocatorAction::Drag {
+                delta_x: 0,
+                delta_y: 0,
+                expected_value: None,
+            },
+        ] {
+            assert!(action.validate().is_err());
+        }
+        let action = BrowserLocatorAction::Press {
+            key: "ArrowRight".into(),
+            expected_value: Some("13".into()),
+        };
+        assert!(action.validate().is_ok());
+        assert!(!format!("{action:?}").contains("13"));
+        assert_eq!(action.controller_value()["expected_value"], "13");
+    }
 
     #[test]
     fn browser_actions_bound_fill_text_timeout_and_controller_identity() {
