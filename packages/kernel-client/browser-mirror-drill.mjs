@@ -40,7 +40,7 @@ if(process.argv[2]!=='child') {
     await writeFile(path.join(root,'fonts.conf'),`<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd"><fontconfig><dir>${root}/sysroot/usr/share/fonts</dir><cachedir>${root}/home/font-cache</cachedir></fontconfig>`);
     await writeFile(path.join(root,'chromium-launcher'),`#!/bin/sh\nexport LD_LIBRARY_PATH='${root}/sysroot/usr/lib/x86_64-linux-gnu'\nexport FONTCONFIG_FILE='${root}/fonts.conf'\nexec '${chromeDir}/chrome' "$@" 2>>'${root}/evidence/chromium.log'\n`,{mode:0o755});
     for(const name of ['home','evidence']){await mkdir(path.join(root,name),{mode:0o700});await chown(path.join(root,name),65534,65534);}
-    const child=spawn(process.execPath,[path.join(root,'run.mjs'),'child',root],{uid:65534,gid:65534,cwd:root,env:{PATH:'/usr/bin:/bin',HOME:path.join(root,'home'),TMPDIR:path.join(root,'home'),CHARIOX_KERNEL_BROWSER_HEADLESS:'1',CHARIOX_KERNEL_BROWSER_MIRROR:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1'},stdio:['ignore','pipe','pipe']});
+    const child=spawn(process.execPath,[path.join(root,'run.mjs'),'child',root],{uid:65534,gid:65534,cwd:root,env:{PATH:'/usr/bin:/bin',HOME:path.join(root,'home'),TMPDIR:path.join(root,'home'),CHARIOX_KERNEL_BROWSER_HEADLESS:'1',CHARIOX_KERNEL_BROWSER_MIRROR:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_MIRROR_DRILL_REVIEW_ONLY:process.env.CHARIOX_MIRROR_DRILL_REVIEW_ONLY??''},stdio:['ignore','pipe','pipe']});
     let logs='';for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{logs+=chunk.toString();if(logs.length>65536)logs=logs.slice(-65536)});
     code=await new Promise(resolve=>child.once('exit',exit=>resolve(exit??1)));
     await cp(path.join(root,'evidence'),output,{recursive:true});
@@ -84,7 +84,7 @@ if(process.argv[2]!=='child') {
     // Playwright's recursive JS-object serializer is not a product transport.
     const nextPacket=async()=>JSON.parse(await viewer.evaluate(async()=>JSON.stringify(await window.mirror.next())));
     receipt.environment={node:process.version,chromium:browser.version(),bridge:'bounded same-origin loopback HTTP with recursively sorted JSON maps; no Playwright RPC bridge, Rust or relay'};
-    for(const dpr of [1,2])for(const kind of ['docs','forms','spa','shadow','frames','media','long']){
+    for(const dpr of process.env.CHARIOX_MIRROR_DRILL_REVIEW_ONLY?[]:[1,2])for(const kind of ['docs','forms','spa','shadow','frames','media','long']){
       const opened=await source.request({op:'open',url:`${originUrl}/${kind}`,observed_by:'drill'}),generation=opened.generation,tab_id=opened.tab_id;
       const prepared=await source.request({op:'mirror_subscribe',tab_id,generation,device_scale_factor:dpr,observed_by:'drill'});
       await source.request({op:'navigate',tab_id,generation,url:`${originUrl}/${kind}`,observed_by:'drill'});
@@ -188,6 +188,35 @@ if(process.argv[2]!=='child') {
       await viewer.evaluate(serial=>window.mirror.renderer.apply(JSON.parse(serial)),JSON.stringify(opaque));const maskedLayout=await viewer.evaluate(()=>window.mirror.renderer.layoutFidelity());assert(maskedLayout.max_error_css_px<=0.5,'MP-10 protected inline frame placeholder preserves surrounding geometry');assert.equal(maskedLayout.text_mismatches,0);assert.equal(maskedLayout.color_mismatches,0);await viewer.evaluate(()=>window.mirror.close());
       receipt.security.push({check:'explicitly protected same-origin iframe retains full-region pixel mask, drops descendants and preserves surrounding layout',passed:true});
       await source.request({op:'close',tab_id:tab.tab_id,generation:opened.generation,observed_by:'drill'});
+    }
+    // MP-08/MP-10/MP-11: renderer event paths, rather than direct mirror.input.
+    {
+      const opened=await source.request({op:'open',url:`${originUrl}/forms`,observed_by:'drill'}),tab=source.tabs.get(opened.tab_id),connection=await source.browser.ensureConnection(),sessionId=await source.browser.ensureTargetSession(connection,tab.target_id);
+      await connection.send('Runtime.evaluate',{expression:`document.querySelector('main').insertAdjacentHTML('beforeend','<div contenteditable="true" style="width:200px;height:40px">Editor:</div><iframe style="position:absolute;left:300px;top:200px;width:320px;height:100px;border:3px solid #aaa" src="/nested"></iframe>')`,returnByValue:true},sessionId);
+      await viewer.goto(viewerUrl);await viewerCdp.send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:1,mobile:false});await viewer.waitForFunction(()=>typeof window.start==='function');await viewer.evaluate(binding=>window.start(binding),{tab_id:tab.tab_id,generation:opened.generation,device_scale_factor:1});
+      await nextPacket();
+      assert.equal(await viewer.evaluate(()=>window.mirror.renderer.frame.contentDocument.querySelector('[contenteditable]')?.isContentEditable),true,'MP-08: contenteditable survives sanitization');
+      const edit=viewer.frameLocator('#mirror > iframe').locator('[contenteditable]');await edit.click();await edit.press('End');await edit.pressSequentially('Z');await viewer.evaluate(()=>window.mirror.renderer.inputChain);
+      assert.equal((await connection.send('Runtime.evaluate',{expression:'document.querySelector("[contenteditable]").textContent',returnByValue:true},sessionId)).result.value,'Editor:Z','MP-08: real beforeinput reaches the original rich editor');
+      receipt.security.push({check:'contenteditable real renderer click/key/beforeinput updates the original editor',passed:true});
+      const nested=viewer.frameLocator('#mirror > iframe').frameLocator('iframe'),button=nested.locator('button');
+      // Hydration is asynchronous on the original origin; ensure the source frame.
+      await connection.send('Runtime.evaluate',{expression:`(()=>{let doc=document.querySelector('iframe').contentDocument;doc.querySelector('button').onclick=()=>doc.querySelector('button').textContent='Clicked';doc.body.insertAdjacentHTML('beforeend','<div contenteditable="true">Nested:</div>')})()`,returnByValue:true},sessionId);
+      for(let i=0;i<8;i++)await nextPacket();
+      await viewer.evaluate(()=>{window.actions=[];const renderer=window.mirror.renderer,send=renderer.input;renderer.input=(action,epoch)=>{window.actions.push(action);return send(action,epoch)}});
+      await button.click();await viewer.evaluate(()=>window.mirror.renderer.inputChain);await writeFile(path.join(root,'evidence','nested-event-debug.json'),JSON.stringify(await viewer.evaluate(()=>{const r=window.mirror.renderer,doc=r.frame.contentDocument.querySelector('iframe').contentDocument;return {actions:window.actions,bound:r.boundDocuments?.has(doc),elements:[...doc.querySelectorAll('*')].map(n=>({tag:n.tagName,text:n.textContent,id:r.ids.get(n),mapped:r.dom.get(r.ids.get(n))===n}))}})));assert.equal(await viewer.evaluate(()=>window.actions.filter(a=>a.kind==='click'||a.kind==='coordinate'&&a.input.kind==='click').length),1,'MP-08: nested click binds once after eight packets');
+      assert.equal((await connection.send('Runtime.evaluate',{expression:'document.querySelector("iframe").contentDocument.querySelector("button").textContent',returnByValue:true},sessionId)).result.value,'Clicked');
+      await nextPacket();await viewer.evaluate(()=>window.actions=[]);const childEditor=nested.locator('[contenteditable]');await childEditor.click();await childEditor.press('End');await childEditor.pressSequentially('Q');await viewer.evaluate(()=>window.mirror.renderer.inputChain);assert.equal(await viewer.evaluate(()=>window.actions.filter(a=>a.kind==='text').length),1,'MP-08: nested printable text binds once');
+      assert.equal((await connection.send('Runtime.evaluate',{expression:'document.querySelector("iframe").contentDocument.querySelector("[contenteditable]").textContent',returnByValue:true},sessionId)).result.value,'Nested:Q');
+      receipt.security.push({check:'offset nested native tile + eight reconciliations: exactly one real click/text/key event each',passed:true});
+      // Force the observer-unavailable seam through the real host path. The full
+      // fallback uses the normal protected screenshot and coordinate input.
+      const read=source.mirror.evaluate.bind(source.mirror);source.mirror.evaluate=async(world,expression)=>{if(expression.includes('.read('))throw Error('MP-10 synthetic observer failure');return read(world,expression)};
+      await connection.send('Runtime.evaluate',{expression:`document.querySelector('body').style.height='3000px'`,returnByValue:true},sessionId);await nextPacket();
+      await viewer.evaluate(()=>{const doc=window.mirror.renderer.frame.contentDocument,tile=doc.querySelector('body > div');tile.dispatchEvent(new doc.defaultView.WheelEvent('wheel',{bubbles:true,clientX:100,clientY:300,deltaY:400}))});await viewer.evaluate(()=>window.mirror.renderer.inputChain);
+      await new Promise(resolve=>setTimeout(resolve,100));assert((await connection.send('Runtime.evaluate',{expression:'scrollY',returnByValue:true},sessionId)).result.value>0,'MP-08: opaque fallback wheel scrolls the original page');
+      receipt.security.push({check:'full-frame observer fallback renderer wheel scrolls the original page by coordinates',passed:true});source.mirror.evaluate=read;
+      await viewer.evaluate(()=>window.mirror.close());await source.request({op:'close',tab_id:tab.tab_id,generation:opened.generation,observed_by:'drill'});
     }
     // MP-11: synthetic Vault policy exercises the actual isolated observer and
     // trusted protection hooks. No provider/profile/account credentials used.

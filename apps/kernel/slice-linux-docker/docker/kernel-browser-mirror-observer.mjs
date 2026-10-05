@@ -94,6 +94,8 @@ function installMirrorObserver(initialStyles = {}) {
         }
         record.attributes={};
         for(const attr of node.attributes) if((attributes.has(attr.name)||tag==='slot'&&attr.name==='name') && attr.value.length<=2048 && !tainted(attr.value)) record.attributes[attr.name]=attr.value;
+        // MP-08/MP-11: preserve inert editing semantics, never arbitrary values.
+        if(node.hasAttribute('contenteditable'))record.attributes.contenteditable=['true','false','plaintext-only'].includes(node.contentEditable)?node.contentEditable:(node.isContentEditable?'true':'false');
         // No name/id/data-* attributes, URLs, event handlers, provider/page secrets.
         if(tag==='input' && !['text','search','email','url','number','tel','checkbox','radio','range','button','submit','reset','date','time','color','hidden'].includes(record.attributes.type??'text')) record.attributes.type='text';
         if(['input','textarea','select'].includes(tag)&&typeof node.value==='string'&&node.value.length>16384)throw new Error('mirror form bounds');
@@ -158,6 +160,23 @@ function installMirrorObserver(initialStyles = {}) {
     }
     return {root,nodes,removed,incremental,resources,fonts,scroll:{x:scrollX,y:scrollY},revision,selection,focused:ids.get(focused)??null};
   };
+  // MP-11: an admitted older packet may not retarget an element that moved or
+  // changed after the latest sample. Validate again in the real isolated world.
+  const validate = expected => {
+    for(const record of expected??[]) {
+      const node=live.get(record.id);
+      if(!node?.isConnected||maskedNodes.has(node))throw new Error('mirror changed/protected live target');
+      if(record.kind==='text'){if(node.nodeType!==3||node.data!==record.text)throw new Error('mirror changed live text');continue;}
+      if(node.nodeType!==1)throw new Error('mirror changed live element');
+      const current=box(node);
+      if(record.box&&Object.keys(current).some(key=>Math.abs(current[key]-record.box[key])>0.5))throw new Error('mirror changed live geometry');
+      for(const [key,value]of Object.entries(record.attributes??{})) {
+        const actual=key==='contenteditable'?(['true','false','plaintext-only'].includes(node.contentEditable)?node.contentEditable:(node.isContentEditable?'true':'false')):node.getAttribute(key);
+        if(actual!==value)throw new Error('mirror changed live attribute');
+      }
+    }
+    return true;
+  };
   const locate = request => {
     const node=live.get(request.node_id);
     if(!node || !node.isConnected || node.nodeType!==1 || node.matches('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],input[type=password]') || /password|one-time-code|cc-/i.test(node.autocomplete??'')) throw new Error('mirror stale/protected node');
@@ -185,5 +204,5 @@ function installMirrorObserver(initialStyles = {}) {
     if(!Array.isArray(keys)||keys.length>12000)throw new Error('mirror geometry bounds');
     return keys.map(key=>{const node=live.get(key);if(!node?.isConnected||node.nodeType!==3||maskedNodes.has(node))throw new Error('mirror unavailable text geometry');const range=node.ownerDocument.createRange();range.selectNodeContents(node);return {id:key,rects:[...range.getClientRects()].map(r=>({x:r.x,y:r.y,width:r.width,height:r.height}))};});
   };
-  globalThis.__charioxMirror=Object.freeze({read,locate,focus,select,textRuns});return true;
+  globalThis.__charioxMirror=Object.freeze({read,locate,focus,select,validate,textRuns});return true;
 }

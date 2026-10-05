@@ -25,6 +25,16 @@ SHA-256 hash of the canonical sanitized tree against the real source snapshot.
 Mirror packets are excluded from command-result retention and automatic replay.
 Unknown input outcomes are never retried.
 
+MP-08/MP-11: input admits the latest eight issued sequences, each at most two
+seconds old, on the same caller/subscription/tab/generation/document. Both bounds
+apply. Navigation, policy change, close and expiry clear admission. Old targets
+are checked against their observed and current identities, current protection,
+selection text/offsets and pointer geometry; the isolated world checks connected
+nodes, live geometry/attributes and existing focus/hit guards before dispatch.
+The exact `MP-11: stale mirror input epoch` marker is reserved for sequence-only
+refusal before dispatch. Document/policy/target/later-fence failures never carry
+that retry marker. The existing command deduplication remains authoritative.
+
 The observer runs in the existing #607 isolated world. A MutationObserver watches
 light DOM, open shadows and accessible nested documents. On credit it samples
 current computed style, values, selection/focus and scroll, then sends a diff.
@@ -90,7 +100,10 @@ Element actions resolve through the current isolated-world node map, check the
 live document, visibility/occlusion and protection, and then enter ordinary
 kernel browser input. Focus is checked again after page focus handlers, including
 redirected focus. Click, text, scroll, key, selection and IME composition are
-supported, with ordinary coordinate input as a fallback. Source selection drives
+supported, with ordinary coordinate input as a fallback. Sanitized
+contenteditable state preserves rich editors; opaque tile wheels use root
+coordinate input, including full-frame fallback. Nested document listeners bind
+once per Document identity independently of CSP meta reconciliation. Source selection drives
 the existing Notes observer; clients do not submit page text as a note authority.
 Region captures retain canonical browser coordinates and the existing protected
 capture route. Mirror input shares the video actor ledger, takeover, cancellation,
@@ -172,3 +185,12 @@ its benchmark as this component run. Production Cloud/relay/WAN parity, OS-level
 IME, animated media performance, Room rollout, macOS replay and current security
 anchor semantic review remain acceptance work. MP-11 does not require exact-blob
 review of unrelated non-security source.
+
+## MP-08/MP-11 round3 renderer sync
+
+The coordinator's exact WeakSet patch hunks are applied. Its published
+`d2ca081586619123df576a5f634d8ce85550a9e8ec46aebd69e498d8c6ba5c93`
+hash refers to round1 renderer bytes plus that patch; round2 already changed the
+renderer. Cloud must import the current complete file and repin its actual
+SHA-256. The evidence manifest records both base and final renderer hashes; no
+claim of byte identity with the older Cloud pin is made.

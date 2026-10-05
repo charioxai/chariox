@@ -1,7 +1,7 @@
 // MP-11: independent client validation precedes DOM construction or Blob creation.
 import type { MirrorNode, MirrorPacket } from './browser-mirror-types.js'
 export const mirrorTags = new Set('html head body div span p a article section main header footer nav aside h1 h2 h3 h4 h5 h6 ul ol li dl dt dd pre code blockquote b strong i em u s small sub sup br hr table thead tbody tfoot tr th td caption colgroup col input textarea button select option optgroup label fieldset legend form details summary dialog img figure figcaption picture source slot iframe'.split(' '))
-const attributes = new Set('title alt role aria-label aria-hidden aria-expanded aria-checked aria-selected aria-disabled slot dir lang colspan rowspan span type placeholder disabled readonly multiple size rows cols wrap open start reversed value checked selected'.split(' '))
+const attributes = new Set('title alt role aria-label aria-hidden aria-expanded aria-checked aria-selected aria-disabled slot dir lang colspan rowspan span type placeholder disabled readonly multiple size rows cols wrap open start reversed value checked selected contenteditable'.split(' '))
 const forbiddenCss = /url\s*\(|image-set\s*\(|(?:-webkit-)?image\s*\(|expression\s*\(|@|\\|[<>]|[\u0000-\u0008]/i
 export const mirrorSandboxCsp = "default-src 'none'; script-src 'none'; connect-src 'none'; img-src blob:; font-src blob:; style-src 'unsafe-inline'; frame-src 'self' about:; base-uri 'none'; form-action 'none'; object-src 'none'"
 export function validateMirrorStyle(style: Record<string,string>): void {
@@ -13,6 +13,7 @@ export function validateMirrorNode(node: MirrorNode): void {
   if(!/^n[1-9][0-9]*$/.test(node.id) || !Array.isArray(node.children) || node.children.length>12000 || !['element','text','shadow','document','frame','mask','tile'].includes(node.kind)) throw Error('MP-11: invalid mirror node')
   if(node.tag && !mirrorTags.has(node.tag)) throw Error('MP-11: active mirror element')
   if(node.attributes) for(const [key,value] of Object.entries(node.attributes)) if(!(attributes.has(key)||node.tag==='slot'&&key==='name') || typeof value!=='string' || value.length>2048) throw Error('MP-11: unsafe mirror attribute')
+  if(node.attributes?.contenteditable && !['true','false','plaintext-only'].includes(node.attributes.contenteditable))throw Error('MP-11: unsafe mirror editable state')
   if(node.attributes?.type && !['text','search','email','url','number','tel','checkbox','radio','range','button','submit','reset','date','time','color','hidden'].includes(node.attributes.type)) throw Error('MP-11: protected/active form type')
   if(node.text!==undefined && (typeof node.text!=='string' || node.text.length>2097152)) throw Error('MP-11: invalid mirror text')
   if(node.style) validateMirrorStyle(node.style)

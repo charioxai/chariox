@@ -133,3 +133,36 @@ test('MP-11: delayed mirror focus cannot dispatch after protection invalidation'
  const {service,host}=fixture(),sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),packet=await service.next(next(sub.subscription_id),'a');
  const resolved=await service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:sub.subscription_id,sequence:packet.sequence,action:{kind:'focus',node_id:'n1'}},'a');host.protection={values:['fixture'],targets:[],unknown:false};service.invalidate();await assert.rejects(resolved.perform(),/policy|stale/);
 });
+
+// MP-08/MP-11: exact Cloud admission window; sequence refusal dispatches nothing.
+test('MP-11: previous issued input epoch remains admitted while next packet is in flight',async()=>{
+ const {service}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+ const first=await service.next(next(s.subscription_id),'a');await service.next(next(s.subscription_id,first.sequence),'a');
+ const result=await service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:first.sequence,action:{kind:'click',node_id:'n1'}},'a');assert(result.input);
+});
+test('MP-11: input epoch window is exactly latest eight issued sequences and two seconds',async()=>{
+ const {service}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+ for(let sequence=0;sequence<9;sequence++)await service.next(next(s.subscription_id,sequence),'a');
+ const input=sequence=>service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence,action:{kind:'key',key:'Tab'}},'a');
+ for(const sequence of [0,1,10])await assert.rejects(input(sequence),/MP-11: stale mirror input epoch/);
+ for(let sequence=2;sequence<=9;sequence++)assert((await input(sequence)).input);
+ const stream=service.streams.get(s.subscription_id);for(const epoch of stream.epochs)epoch.issuedAt=Date.now()-2001;
+ await assert.rejects(input(9),/MP-11: stale mirror input epoch/);assert.equal(stream.epochs.length,0);
+});
+test('MP-11: old epoch cannot retarget changed, removed, protected nodes or selection offsets',async()=>{
+ for(const change of ['changed','removed','protected']){
+  const {service,state}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');const first=await service.next(next(s.subscription_id),'a');
+  if(change==='changed')state.snapshot.nodes[0].box.x=2;
+  if(change==='removed'){state.snapshot.nodes[0].children=[];state.snapshot.nodes.pop();}
+  if(change==='protected'){state.snapshot.nodes[1]={...state.snapshot.nodes[1],kind:'mask',text:''};}
+  await service.next(next(s.subscription_id,first.sequence),'a');
+  const action=change==='changed'?{kind:'click',node_id:'n1'}:{kind:'selection',anchor_id:'n2',anchor_offset:0,focus_id:'n2',focus_offset:7};
+  await assert.rejects(service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:first.sequence,action},'a'),error=>!error.message.includes('stale mirror input epoch'));
+ }
+});
+test('MP-11: document/policy failures never use the sequence-only retry marker',async()=>{
+ const {service,host,state}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');const first=await service.next(next(s.subscription_id),'a');
+ const input=()=>service.resolveInput({tab_id:'t',document_id:state.document},{subscription_id:s.subscription_id,sequence:first.sequence,action:{kind:'key',key:'Tab'}},'a');
+ state.document='new';await assert.rejects(input(),error=>!error.message.includes('stale mirror input epoch'));state.document='d';
+ host.protection={values:[],targets:[],unknown:false};service.invalidate();await assert.rejects(input(),error=>!error.message.includes('stale mirror input epoch'));
+});

@@ -29,6 +29,7 @@ export class BrowserMirrorRenderer {
   private loaded:Promise<void>
   private disposed=false
   private applying=false
+  private boundDocuments=new WeakSet<Document>()
   private inputChain:Promise<void>=Promise.resolve()
   private removers:Array<()=>void>=[]
   constructor(private container:HTMLElement,private input:(action:KernelBrowserMirrorAction,epoch?:{sequence:number;document_id:string})=>Promise<unknown>,private failure:(error:unknown)=>void) {
@@ -53,13 +54,15 @@ export class BrowserMirrorRenderer {
     this.inputChain=this.inputChain.then(async()=>{if(!this.disposed)await this.input(action,epoch)}).catch(this.failure)
   }
   private bindEvents(doc:Document):void {
+    if(this.boundDocuments.has(doc))return
+    this.boundDocuments.add(doc)
     let lastComposition:string|null=null
     const target=(event:Event):Node=>event.composedPath()[0] as Node
     const point=(event:MouseEvent):{x:number;y:number}=>{let x=event.clientX,y=event.clientY;for(let view:Window|null=doc.defaultView;view&&view!==this.frame.contentWindow;view=view.parent){const frame=view.frameElement as HTMLElement|null;if(!frame)throw Error('MP-11: detached mirror frame');const box=frame.getBoundingClientRect();x+=box.x+frame.clientLeft;y+=box.y+frame.clientTop}return {x:Math.floor(x),y:Math.floor(y)}}
     const id=(node:Node|null):string|undefined=>node ? this.ids.get(node) : undefined
     const on=(kind:string,fn:EventListener):void=>{doc.addEventListener(kind,fn,true);this.removers.push(()=>doc.removeEventListener(kind,fn,true))}
     on('click',event=>{event.preventDefault();const node=id(target(event));if(node){const record=this.records.get(node);if(record?.kind==='mask')return;if(record?.kind==='tile'){const mouse=event as MouseEvent;this.enqueue({kind:'coordinate',input:{kind:'click',...point(mouse)}})}else this.enqueue({kind:'click',node_id:node})}})
-    on('wheel',event=>{event.preventDefault();const wheel=event as WheelEvent,node=id(target(event));if(node)this.enqueue({kind:'scroll',node_id:node,delta_x:Math.trunc(wheel.deltaX),delta_y:Math.trunc(wheel.deltaY)})})
+    on('wheel',event=>{event.preventDefault();const wheel=event as WheelEvent,node=id(target(event));if(!node)return;const record=this.records.get(node);if(record?.kind==='mask')return;const delta_x=Math.trunc(wheel.deltaX),delta_y=Math.trunc(wheel.deltaY);if(record?.kind==='tile')this.enqueue({kind:'coordinate',input:{kind:'scroll',...point(wheel),delta_x,delta_y}});else this.enqueue({kind:'scroll',node_id:node,delta_x,delta_y})})
     on('keydown',event=>{const key=(event as KeyboardEvent).key;if(['Tab','Enter','Escape','Backspace','Delete','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(key)){event.preventDefault();this.enqueue({kind:'key',key})}})
     on('beforeinput',event=>{const input=event as InputEvent;event.preventDefault();if(input.isComposing||input.inputType.includes('Composition')||input.data===lastComposition)return;const node=id(target(event));if(node&&input.data)this.enqueue({kind:'text',node_id:node,text:input.data})})
     on('compositionupdate',event=>{event.preventDefault();const e=event as CompositionEvent,node=id(target(event));if(node)this.enqueue({kind:'composition',node_id:node,text:e.data,selection_start:e.data.length,selection_end:e.data.length})})
@@ -164,7 +167,8 @@ export class BrowserMirrorRenderer {
         const {record,frame}=frames[i]!;const nested=frame.contentDocument;if(!nested)throw Error('MP-11: nested mirror unavailable')
         const documentRecord=next.get(record.children[0]!)!;build(documentRecord.id,nested);const html=build(documentRecord.children[0]!,nested)
         if(html && html!==nested.documentElement){if(nested.documentElement)nested.documentElement.replaceWith(html);else nested.appendChild(html)}
-        if(!nested.head.querySelector('meta[http-equiv]')){const meta=nested.createElement('meta');meta.httpEquiv='Content-Security-Policy';meta.content=mirrorSandboxCsp;nested.head.prepend(meta);this.bindEvents(nested)}
+        if(!nested.head.querySelector('meta[http-equiv]')){const meta=nested.createElement('meta');meta.httpEquiv='Content-Security-Policy';meta.content=mirrorSandboxCsp;nested.head.prepend(meta)}
+        this.bindEvents(nested)
       }
       this.doc.head.querySelectorAll('style[data-mirror-fonts],style[data-mirror-pseudo]').forEach(n=>n.remove())
       const fontStyle=this.doc.createElement('style');fontStyle.dataset.mirrorFonts='true'

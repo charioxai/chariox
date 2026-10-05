@@ -14,7 +14,7 @@ const lifetime=60000,maxWire=4*1024*1024;
 const videoSnapshot=()=>({root:'n9007199254740991',nodes:[{id:'n9007199254740991',parent:null,children:['n9007199254740988','n9007199254740990'],kind:'element',tag:'html',style:{margin:'0px'}},{id:'n9007199254740988',parent:'n9007199254740991',children:[],kind:'element',tag:'head'},{id:'n9007199254740990',parent:'n9007199254740991',children:['n9007199254740989'],kind:'element',tag:'body',style:{margin:'0px'}},{id:'n9007199254740989',parent:'n9007199254740990',children:[],kind:'tile',tag:'div',box:{x:0,y:0,width:1280,height:800},reason:'observer_bounds_or_unavailable'}],resources:[],fonts:[],scroll:{x:0,y:0},focused:null,selection:null});
 export class MirrorService {
   constructor(host) {this.host=host;this.streams=new Map();this.expiry=setInterval(()=>this.expire(),5000);this.expiry.unref?.();}
-  invalidate() {for(const stream of this.streams.values()){stream.previous=null;stream.observed=null;stream.resources.clear();stream.cache.clear();stream.policy=null;}}
+  invalidate() {for(const stream of this.streams.values()){stream.previous=null;stream.observed=null;stream.resources.clear();stream.cache.clear();stream.policy=null;stream.epochs=[];}}
   clear() {this.streams.clear();}
   removeTab(tabId) {for(const [id,s] of this.streams)if(s.tab_id===tabId)this.streams.delete(id);}
   expire() {for(const [id,s] of this.streams)if(Date.now()>s.expires)this.streams.delete(id);}
@@ -54,7 +54,7 @@ export class MirrorService {
     await connection.send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:command.device_scale_factor,mobile:false},sessionId);
     this.host.scales.set(tab.tab_id,command.device_scale_factor);
     const subscription_id=`host-mirror-${randomUUID()}`;
-    this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});
+    this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,epochs:[],previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});
     return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:command.device_scale_factor};
   }
   async next(command,scope,{signal}={}) {
@@ -64,8 +64,8 @@ export class MirrorService {
     mark('target');
     this.assertWebTab(tab);assertNotCancelled(signal);const world=await this.world(tab),policy=this.host.protection;
     mark('world');
-    if(stream.document_id!==tab.document_id) {stream.previous=null;stream.observed=null;stream.resources.clear();stream.cache.clear();stream.fallback.clear();}
-    if(stream.policy!==policy) {stream.previous=null;stream.observed=null;stream.resources.clear();stream.cache.clear();}
+    if(stream.document_id!==tab.document_id) {stream.previous=null;stream.observed=null;stream.epochs=[];stream.resources.clear();stream.cache.clear();stream.fallback.clear();}
+    if(stream.policy!==policy) {stream.previous=null;stream.observed=null;stream.epochs=[];stream.resources.clear();stream.cache.clear();}
     if(!Array.isArray(command.drift_nodes)||command.drift_nodes.length>64||command.drift_nodes.some(id=>!stream.previous?.nodes.some(n=>n.id===id&&n.kind==='element'))) throw new Error('MP-11: invalid drift report');
     for(const id of command.drift_nodes)stream.fallback.add(id);
     // Registered Vault target geometry and plaintext/media echoes use the SAME
@@ -158,7 +158,7 @@ export class MirrorService {
     // MP-11: protection updates may interleave with awaited CDP/resource work.
     // No packet or private base captured under an old policy may escape afterward.
     if(this.host.protection!==policy||this.host.generation!==command.generation||this.streams.get(command.subscription_id)!==stream) {
-      stream.previous=null;stream.observed=null;stream.policy=null;stream.resources.clear();stream.cache.clear();
+      stream.previous=null;stream.observed=null;stream.policy=null;stream.epochs=[];stream.resources.clear();stream.cache.clear();
       throw new Error('MP-11: stale mirror protection policy or subscription');
     }
     const hash=stream.hasher.hash(source),reset=!stream.previous||command.after_sequence!==stream.sequence||stream.document_id!==tab.document_id;
@@ -169,14 +169,23 @@ export class MirrorService {
     const packet={subscription_id:command.subscription_id,tab_id:tab.tab_id,generation:command.generation,document_id:tab.document_id,sequence:stream.sequence+1,base_sequence:reset?null:stream.sequence,reset,hash,root:source.root,nodes:changed,removed,fonts:source.fonts,scroll:source.scroll,focused:source.focused,selection:source.selection??null,resources,tiles:tileFrame??[],css_width:1280,css_height:800,device_scale_factor:this.host.scales.get(tab.tab_id)??1};
     if(JSON.stringify(packet).length>maxWire)throw new Error('MP-11: mirror packet exceeds bound; use display fallback');
     stream.sequence++;stream.previous=source;stream.document_id=tab.document_id;stream.policy=policy;stream.resources=material.resources;
+    // MP-11: only committed/issued epochs are eligible; no future or guessed input.
+    stream.epochs.push({sequence:stream.sequence,issuedAt:Date.now(),nodes:new Map(source.nodes.map(n=>[n.id,JSON.stringify(n)])),focused:source.focused,fullFallback:stream.fullFallback});
+    stream.epochs=stream.epochs.filter(e=>Date.now()-e.issuedAt<=2000).slice(-8);
     mark('hash_diff_serialize');this.host.timing?.('mirror_total',started);
     return packet;
   }
   async resolveInput(tab,input,scope,signal) {
     this.assertWebTab(tab);const stream=this.require(input.subscription_id,scope,this.host.generation);
-    if(stream.tab_id!==tab.tab_id||stream.document_id!==tab.document_id||stream.sequence!==input.sequence||stream.policy!==this.host.protection)throw new Error('MP-11: stale mirror input epoch');
+    if(stream.tab_id!==tab.tab_id||stream.document_id!==tab.document_id)throw new Error('MP-11: stale mirror input document');
+    if(stream.policy!==this.host.protection)throw new Error('MP-11: stale mirror protection policy');
+    stream.epochs=stream.epochs.filter(e=>Date.now()-e.issuedAt<=2000).slice(-8);
+    const epoch=stream.epochs.find(e=>e.sequence===input.sequence);
+    // This marker ONLY means sequence admission refused before any CDP/input
+    // work. A later fence or changed target is never a sequence-only refusal.
+    if(!epoch)throw new Error('MP-11: stale mirror input epoch');
     const generation=this.host.generation;
-    const assertEpoch=()=>{if(this.require(input.subscription_id,scope,generation)!==stream||stream.policy!==this.host.protection)throw new Error('MP-11: stale mirror protection policy');};
+    const assertEpoch=()=>{if(this.require(input.subscription_id,scope,generation)!==stream||stream.policy!==this.host.protection||stream.document_id!==tab.document_id||!stream.epochs.includes(epoch)||Date.now()-epoch.issuedAt>2000)throw new Error('MP-11: stale mirror protection policy or admitted input');};
     const action=input.action;
     if(stream.fullFallback && !['coordinate','key'].includes(action?.kind))throw new Error('MP-11: full video fallback requires coordinate input');
     if(!action||typeof action.kind!=='string'||['text','composition'].includes(action.kind)&&(typeof action.text!=='string'||action.text.length>16384)||action.kind==='composition'&&(!Number.isInteger(action.selection_start)||!Number.isInteger(action.selection_end)||action.selection_start<0||action.selection_start>action.text.length||action.selection_end<action.selection_start||action.selection_end>action.text.length))throw new Error('MP-11: invalid mirror input');
@@ -184,15 +193,33 @@ export class MirrorService {
     for(const id of action.kind==='selection'?[action.anchor_id,action.focus_id]:action.kind==='key'||action.kind==='coordinate'?[]:[action.node_id]) {
       const record=records.get(id);if(!record||record.kind==='mask'||action.kind==='selection'&&record.kind!=='text')throw new Error('MP-11: protected or unknown mirror input');
     }
+    const unchanged=id=>{
+      const record=records.get(id),old=epoch.nodes.has(id)?JSON.parse(epoch.nodes.get(id)):null;
+      if(!record||!old||record.kind==='mask'||record.kind!==old.kind||record.tag!==old.tag||record.parent!==old.parent)return false;
+      // Printable edits may change a field's value without replacing its target.
+      // Selection offsets and pointer geometry must still refer to the old view.
+      if(action.kind==='selection'&&record.text!==old.text)return false;
+      if(['click','coordinate'].includes(action.kind)&&JSON.stringify(record.box)!==JSON.stringify(old.box))return false;
+      return JSON.stringify(record.attributes??{})===JSON.stringify(old.attributes??{});
+    };
+    const targets=action.kind==='selection'?[action.anchor_id,action.focus_id]:['key','coordinate'].includes(action.kind)?[]:[action.node_id];
+    if(targets.some(id=>!unchanged(id)))throw new Error('MP-11: changed or unknown mirror input target');
+    if(action.kind==='selection')for(const [id,offset]of [[action.anchor_id,action.anchor_offset],[action.focus_id,action.focus_offset]])if(!Number.isInteger(offset)||offset<0||offset>(records.get(id)?.text?.length??0))throw new Error('MP-11: invalid mirror selection endpoint');
+    if(action.kind==='key'&&(epoch.focused!==stream.previous.focused||epoch.focused&&!unchanged(epoch.focused)))throw new Error('MP-11: changed mirror focus');
+    if(action.kind==='coordinate') {
+      if(epoch.fullFallback!==stream.fullFallback)throw new Error('MP-11: changed mirror coordinate surface');
+      const point=action.input;
+      if(point?.kind==='click'||point?.kind==='scroll')for(const record of records.values())if(record.box&&point.x>=record.box.x&&point.x<record.box.x+record.box.width&&point.y>=record.box.y&&point.y<record.box.y+record.box.height&&!unchanged(record.id))throw new Error('MP-11: changed mirror coordinate target');
+    }
     const world=await this.world(tab);assertNotCancelled(signal);assertEpoch();
-    const call=async method=>{assertNotCancelled(signal);assertEpoch();await assertCurrentDocument(world.connection,world.sessionId,tab.target_id,tab.document_id);assertEpoch();const result=await this.evaluate(world,`globalThis.__charioxMirror.${method}(${JSON.stringify(action)})`);assertEpoch();return result;};
+    const call=async method=>{assertNotCancelled(signal);assertEpoch();await assertCurrentDocument(world.connection,world.sessionId,tab.target_id,tab.document_id);assertEpoch();const result=await this.evaluate(world,`(()=>{globalThis.__charioxMirror.validate(${JSON.stringify(targets.map(id=>records.get(id)))});return globalThis.__charioxMirror.${method}(${JSON.stringify(action)})})()`);assertEpoch();return result;};
     if(action.kind==='selection')return {perform:()=>call('select')};
     if(action.kind==='focus')return {perform:()=>call('focus')};
-    if(action.kind==='coordinate')return {input:action.input};
-    if(action.kind==='key')return {input:{kind:'key',key:action.key}};
+    if(action.kind==='coordinate')return {input:action.input,guard:assertEpoch};
+    if(action.kind==='key')return {input:{kind:'key',key:action.key},guard:assertEpoch};
     const point=await call('locate');
-    if(action.kind==='click')return {input:{kind:'click',...point}};
-    if(action.kind==='scroll')return {input:{kind:'scroll',...point,delta_x:action.delta_x,delta_y:action.delta_y}};
+    if(action.kind==='click')return {input:{kind:'click',...point},guard:assertEpoch};
+    if(action.kind==='scroll')return {input:{kind:'scroll',...point,delta_x:action.delta_x,delta_y:action.delta_y},guard:assertEpoch};
     if(action.kind==='text'||action.kind==='composition')return {perform:async send=>{
       await call('focus');assertNotCancelled(signal);assertEpoch();
       if(action.kind==='text')return send('Input.insertText',{text:action.text});
