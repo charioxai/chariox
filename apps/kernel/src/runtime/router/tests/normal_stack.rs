@@ -8,7 +8,7 @@ async fn normal_dispatch_construction_fits_default_thread_stack() {
     let request = LocalDaemonRequest::GetTerminalCommandCatalog(
         crate::local::GetTerminalCommandCatalogRequest {},
     );
-    let command = crate::runtime::command::remote_command_for_request(&request, Some("alice"));
+    let command = remote_command_for_request(&request, Some("alice"));
     // CI enlarges libtest stacks; explicitly retain Rust's ordinary 2 MiB here.
     std::thread::Builder::new()
         .stack_size(2 * 1024 * 1024)
