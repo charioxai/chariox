@@ -1,5 +1,4 @@
 import { createAccessCommandController } from "./access-command-controller.js"
-import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client"
 import { parseKeypress } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { onCleanup } from "solid-js"
@@ -231,8 +230,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     }
   }
   const accessCommands = createAccessCommandController({
-    client: { localDaemonProtocolVersion: LOCAL_DAEMON_PROTOCOL_VERSION,
-      send: request => deps.client.send(request) },
+    client: deps.client,
     appendNotice: deps.appendNotice,
   })
   accessCommands.start()

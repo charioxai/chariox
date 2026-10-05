@@ -1,6 +1,9 @@
 import type { KernelBrowserCommand, UserDomainGrant, UserDomainGrantEvent, UserDomainResource } from "./kernel-types-kernel-browser.js"
 
 export const userDomainAccessMinimumProtocol = 432
+// LocalIpcClient has a 5s response-stall watchdog and no per-request options.
+// Keep each owner observation below that watchdog on every client transport.
+export const userDomainGrantPollWaitMs = 1000
 export type UserDomainAccessClient = {
   readonly localDaemonProtocolVersion?: number
   send<T>(request: unknown, options?: { signal?: AbortSignal; timeoutMs?: number; retryOnTimeout?: boolean; beforeSend?: () => void }): Promise<T>
@@ -96,7 +99,7 @@ export class UserDomainAccessController {
     try {
       this.apply(await this.request({ op: "list_grants" }, revision, signal))
       while (!signal.aborted && revision === this.revision) {
-        this.apply(await this.request({ op: "subscribe_grants", after: this.snapshot!.cursor, wait_ms: 25000 }, revision, signal))
+        this.apply(await this.request({ op: "subscribe_grants", after: this.snapshot!.cursor, wait_ms: userDomainGrantPollWaitMs }, revision, signal))
       }
     } catch (error) {
       if (!signal.aborted && revision === this.revision) {

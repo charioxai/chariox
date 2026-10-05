@@ -1,7 +1,31 @@
+import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client"
 import { UserDomainAccessController, userDomainGrantExpiry, userDomainResourceLabel, userDomainUseNotice, type UserDomainAccessClient } from "@chariox/kernel-client/user-domain-access"
 
-export function createAccessCommandController(deps: { client: UserDomainAccessClient; appendNotice(message: string): void }) {
-  const access = new UserDomainAccessController({ client: () => deps.client, bindingKey: () => "owner-terminal" })
+type AccessTransport = UserDomainAccessClient & {
+  readonly socketPath?: string
+  currentClient?(): UserDomainAccessClient
+  onClientChanged?(handler: () => void): () => void
+}
+
+export function createAccessCommandController(deps: { client: AccessTransport; appendNotice(message: string): void }) {
+  const selectedClient = () => deps.client.currentClient?.() ?? deps.client
+  let selected: UserDomainAccessClient | null = null
+  let adapter: UserDomainAccessClient | null = null
+  const access = new UserDomainAccessController({
+    client: () => {
+      const client = selectedClient()
+      if (client !== selected) {
+        selected = client
+        // Pin reads to this transport, rather than a facade that can pivot mid-request.
+        adapter = {
+          localDaemonProtocolVersion: client.localDaemonProtocolVersion ?? LOCAL_DAEMON_PROTOCOL_VERSION,
+          send: request => client.send(request),
+        }
+      }
+      return adapter
+    },
+    bindingKey: () => deps.client.socketPath ?? "owner-terminal",
+  })
   let lastNotice = ""
   const unsubscribe = access.subscribe(() => {
     const notice = access.snapshot?.notice
@@ -9,18 +33,21 @@ export function createAccessCommandController(deps: { client: UserDomainAccessCl
     if (key && key !== lastNotice) deps.appendNotice(userDomainUseNotice(notice!)!)
     lastNotice = key
   })
+  const unsubscribeClient = deps.client.onClientChanged?.(() => access.sync())
   return {
     start: () => access.sync(),
-    stop: () => { unsubscribe(); access.stop() },
+    stop: () => { unsubscribeClient?.(); unsubscribe(); access.stop() },
     async handle(args: string[]): Promise<void> {
       if (args.length && !(args.length === 1 && args[0] === "list") && !(args.length === 2 && args[0] === "revoke" && args[1])) {
         throw new Error("Usage: /access [list | revoke <agent-id>|all]")
       }
       access.sync()
       // A command must get fresh authority, including when an earlier feed failed.
-      const response = await deps.client.send<{ KernelBrowser?: { result?: import("@chariox/kernel-client/kernel-types").UserDomainGrantEvent }; Error?: { message?: string } }>({ KernelBrowser: { command: args[0] === "revoke"
+      const client = selectedClient()
+      const response = await client.send<{ KernelBrowser?: { result?: import("@chariox/kernel-client/kernel-types").UserDomainGrantEvent }; Error?: { message?: string } }>({ KernelBrowser: { command: args[0] === "revoke"
         ? { op: "revoke_grants", agent_id: args[1] === "all" ? null : args[1] }
         : { op: "list_grants" } } })
+      if (client !== selectedClient()) throw new Error("Kernel changed during access command; refresh access.")
       const snapshot = response.KernelBrowser?.result
       if (!snapshot || snapshot.event !== "user_domain_grants_changed") throw new Error(response.Error?.message ?? "Access grants require kernel protocol 432.")
       deps.appendNotice([

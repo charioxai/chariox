@@ -23,7 +23,7 @@ test("grant consumers alone require 432 and send nothing to older kernels", () =
 })
 test("cursor feed observes retained use and suppresses repeats, revoke cancels authority", async () => {
   const h = fixture(); h.controller.sync(); await tick()
-  assert.deepEqual(h.requests[1], { KernelBrowser: { command: { op: "subscribe_grants", after: 1, wait_ms: 25000 } } })
+  assert.deepEqual(h.requests[1], { KernelBrowser: { command: { op: "subscribe_grants", after: 1, wait_ms: 1000 } } })
   const notice = { agent_id: "a", resource: grant.resources[0]!, at_ms: 500 }
   h.pending[0]!.resolve({ KernelBrowser: { result: event(2, [grant], notice) } }); await tick()
   assert.equal(h.controller.lastObservedRetainedUse(grant), 500)
