@@ -48,6 +48,43 @@ test("TUI restores the selected machine's workspace across Mac Linux Mac and kee
   } finally { clearWaitingRoomWorktreeInventory() }
 })
 
+test("TUI cancels a deferred A to B selection when returning to A and restores inventory", async () => {
+  const h = harness()
+  let state = { selectedMachineRef: "mac", selectedKernelRef: "mac-1" } as WaitingRoomState
+  let finishConnection!: () => void
+  const connection = new Promise<void>(resolve => { finishConnection = resolve })
+  const refreshed: string[] = []
+  const placement = createWaitingRoomWorkspacePlacementController({
+    getState: () => state, homeMachineId: () => "mac",
+    beginMachineSelection: h.controller.beginMachineSelection,
+    connect: async (_, machine, isActive) => {
+      if (machine === "linux") await connection
+      return isActive()
+    },
+    refresh: async () => {
+      refreshed.push(state.selectedMachineRef!)
+      await h.controller.applyInventory(inventory(state.selectedMachineRef!, "/Users/miguel"))
+    },
+    failure: error => { throw error },
+  })
+  try {
+    await h.controller.applyInventory(inventory("mac", "/Users/miguel"))
+    state = { ...state, selectedMachineRef: "linux", selectedKernelRef: "linux-1" }
+    placement.select(state)
+    assert.equal(h.workspace(), "")
+    state = { ...state, selectedMachineRef: "mac", selectedKernelRef: "mac-1" }
+    placement.select(state)
+    assert.equal(h.workspace(), "/Users/miguel/project")
+    assert.equal(h.worktree(), "/Users/miguel/project")
+    finishConnection()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(refreshed, ["mac"])
+    assert.equal(waitingRoomWorktreeOptions()[0]?.id, "existing:/Users/miguel/project")
+    await h.controller.applyInventory(inventory("mac", "/elsewhere"))
+    assert.equal(h.workspace(), "/Users/miguel/project")
+  } finally { finishConnection(); clearWaitingRoomWorktreeInventory() }
+})
+
 for (const repositoryState of ["not-repository", "unborn"] as const) {
   test(`TUI disables ${repositoryState} worktrees and session launch skips creation`, async () => {
     const h = harness(repositoryState)

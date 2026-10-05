@@ -67,7 +67,7 @@ export function normalizeWaitingRoomWorktreeSelectionId(selectionId?: string | n
     return selectionId
   }
   const current = options.find((option) => option.kind === "existing" && option.isCurrent)
-  return current?.id ?? options[0]?.id ?? CREATE_WORKTREE_OPTION_ID
+  return current?.id ?? options[0]?.id ?? ""
 }
 
 export function cycleWaitingRoomWorktreeSelectionId(
@@ -76,7 +76,7 @@ export function cycleWaitingRoomWorktreeSelectionId(
 ) {
   const options = waitingRoomWorktreeOptions()
   if (options.length === 0) {
-    return selectionId ?? CREATE_WORKTREE_OPTION_ID
+    return ""
   }
   const currentId = normalizeWaitingRoomWorktreeSelectionId(selectionId)
   const index = Math.max(0, options.findIndex((option) => option.id === currentId))
