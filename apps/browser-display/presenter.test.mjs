@@ -65,6 +65,10 @@ test('MD-DISPLAY persistent decoder accepts key/delta and CSS motion pixels; rej
    await assert.rejects(presenter.present({...frame,key:false,sequence:4}),/base lost/);
    assert.equal(await presenter.present({...frame,key:true,sequence:5}),true);
    assert.equal(created,2);assert.equal(canvas.width,2560);
+   assert.equal(await presenter.present({...frame,key:false,sequence:6},()=>false),true);
+   assert.equal(presenter.didDraw,false);assert.equal(presenter.sequence,6);
+   assert.equal(await presenter.present({...frame,key:false,sequence:7}),true);
+   assert.equal(presenter.didDraw,true);assert.equal(created,2);
  }finally{presenter.close();globalThis.VideoDecoder=oldDecoder;globalThis.EncodedVideoChunk=oldChunk;globalThis.OffscreenCanvas=oldCanvas}
  assert.equal(closed,2);
 });

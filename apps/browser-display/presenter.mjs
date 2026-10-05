@@ -17,7 +17,7 @@ export class BrowserDisplayPresenter {
     this.busy = false; this.closed = false;
     this.onTiming = onTiming;
   }
-  async present(frame) {
+  async present(frame, shouldDraw = () => true) {
     if (this.closed) return false;
     if (this.busy) throw new Error('MD-DISPLAY: await presentation before granting next credit');
     if (frame.subscription_id !== this.binding.subscription_id || frame.generation !== this.binding.generation || frame.tab_id !== this.binding.tab_id || frame.sequence <= this.sequence) return false;
@@ -61,6 +61,12 @@ export class BrowserDisplayPresenter {
       } else throw new Error('MD-DISPLAY: unsupported frame');
       if (this.closed) return false;
       this.onTiming('client_decode', at);
+      if (!shouldDraw()) {
+        this.sequence=frame.sequence; this.documentId=frame.document_id; this.didDraw=false;
+        this.onTiming('client_drop_stale', performance.timeOrigin+performance.now());
+        return true;
+      }
+      this.didDraw=true;
       const presented = performance.timeOrigin + performance.now();
       if (patch) {
         // All patches are decoded and validated before this synchronous commit.
@@ -93,13 +99,15 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   let pending = null, stopped = false, creditOutstanding = false;
   let running = false, failure = null, presentation = Promise.resolve(), active = new Set();
   const frames = [], arrivals = [];
+  let latest = null;
   let queuedBytes = 0;
   const accept = frame => {
     const size = JSON.stringify(frame).length;
     if (frames.length >= 8 || queuedBytes + size > 1024 * 1024) throw Error('MD-DISPLAY: credited receive window exceeded');
+    latest=frame;
     const presented = presentation.then(async () => {
-      if (!await presenter.present(frame)) throw Error('MD-DISPLAY: rejected window frame');
-      options.onPresented?.(frame);
+      if (!await presenter.present(frame,()=>frame.kind !== 'video' || latest.kind !== 'video' || latest.document_id !== frame.document_id || latest.sequence <= frame.sequence)) throw Error('MD-DISPLAY: rejected window frame');
+      if(presenter.didDraw !== false) options.onPresented?.(frame);
     });
     presentation=presented;
     presented.catch(error => { failure=error; running=false; });
@@ -162,7 +170,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     const ordered = receiptOrder.then(async () => {
       const receipt = await response;
       onTiming('frame_credit_round_trip', at);
-      if (!receipt.frame_sent) { await new Promise(resolve => setTimeout(resolve,33)); return; }
+      if (!receipt.frame_sent) { await new Promise(resolve => setTimeout(resolve,8)); return; }
       let timer;
       const item = await Promise.race([receive(), new Promise((_,reject) => {
         timer=setTimeout(() => reject(Error('MD-DISPLAY: window event timeout')),30000);
