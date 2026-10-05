@@ -2015,3 +2015,226 @@ mod mp11_ingress_tests {
         assert!(!String::from_utf8_lossy(&bytes).contains("synthetic-client-secret"));
     }
 }
+
+#[cfg(test)]
+mod mp11_delivery_http_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    struct SignedProvider;
+    impl AegsProvider for SignedProvider {
+        fn generator_id(&self) -> &'static str {
+            "dev.chariox.github"
+        }
+        fn provider_slug(&self) -> &'static str {
+            "github"
+        }
+        fn normalize_webhook(
+            &self,
+            input: WebhookInput<'_>,
+            _: &crate::WebhookRoute,
+        ) -> Result<crate::NormalizedEvent, String> {
+            let signature = input
+                .headers
+                .get("x-signature")
+                .ok_or("signature missing")?;
+            if !crate::verify_hmac_sha256_hex(input.body, signature, "synthetic-webhook-key") {
+                return Err("signature invalid".into());
+            }
+            Ok(event())
+        }
+    }
+    fn event() -> crate::NormalizedEvent {
+        crate::NormalizedEvent {
+            occurrence_id: "occurrence".into(),
+            event_type: "event".into(),
+            occurred_at: "2026-10-05T00:00:00Z".into(),
+            connection_scope: "scope".into(),
+            prompt: "fixture".into(),
+            metadata: serde_json::Value::Null,
+            reply_context: None,
+        }
+    }
+    // This fake AEDS accepts real HTTP and records calls. Stop/join even on assertion failure.
+    struct PublisherFixture {
+        url: String,
+        calls: Arc<AtomicUsize>,
+        stop: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+    impl PublisherFixture {
+        fn new() -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/events", listener.local_addr().unwrap());
+            listener.set_nonblocking(true).unwrap();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let stop = Arc::new(AtomicBool::new(false));
+            let count = calls.clone();
+            let done = stop.clone();
+            let thread = std::thread::spawn(move || {
+                while !done.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            stream
+                                .set_read_timeout(Some(Duration::from_secs(2)))
+                                .unwrap();
+                            let mut header = Vec::new();
+                            while !header.ends_with(b"\r\n\r\n") {
+                                let mut byte = [0];
+                                stream.read_exact(&mut byte).unwrap();
+                                header.push(byte[0]);
+                                assert!(header.len() < 8192);
+                            }
+                            let header = String::from_utf8(header).unwrap();
+                            let length: usize = header
+                                .lines()
+                                .find_map(|line| {
+                                    line.split_once(':')
+                                        .filter(|(name, _)| {
+                                            name.eq_ignore_ascii_case("content-length")
+                                        })
+                                        .map(|(_, value)| value.trim().parse().unwrap())
+                                })
+                                .unwrap();
+                            assert!(length < 8192);
+                            stream.read_exact(&mut vec![0; length]).unwrap();
+                            count.fetch_add(1, Ordering::SeqCst);
+                            let body = r#"{"occurrence_id":"occurrence","accepted_route_count":1,"delivery_ids":[],"duplicate":false}"#;
+                            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(2))
+                        }
+                        Err(error) => panic!("fixture accept: {error}"),
+                    }
+                }
+            });
+            Self {
+                url,
+                calls,
+                stop,
+                thread: Some(thread),
+            }
+        }
+    }
+    impl Drop for PublisherFixture {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            let _ = self.thread.take().unwrap().join();
+        }
+    }
+    async fn signed_webhook(server: Arc<AegsServer>) -> serde_json::Value {
+        use hmac::Mac;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/webhooks/github/connection",
+            listener.local_addr().unwrap()
+        );
+        let serving = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            http1::Builder::new()
+                .keep_alive(false)
+                .serve_connection(
+                    TokioIo::new(stream),
+                    service_fn(move |request| {
+                        let server = server.clone();
+                        async move { Ok::<_, Infallible>(server.handle(request).await) }
+                    }),
+                )
+                .await
+                .unwrap();
+        });
+        let body = "synthetic-webhook";
+        let mut mac =
+            <hmac::Hmac<sha2::Sha256> as Mac>::new_from_slice(b"synthetic-webhook-key").unwrap();
+        mac.update(body.as_bytes());
+        let signature: String = mac
+            .finalize()
+            .into_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let response = tokio::task::spawn_blocking(move || {
+            ureq::AgentBuilder::new()
+                .timeout(Duration::from_secs(3))
+                .build()
+                .post(&url)
+                .set("x-signature", &signature)
+                .set("connection", "close")
+                .send_string(body)
+                .unwrap()
+                .into_json::<serde_json::Value>()
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        serving.await.unwrap();
+        response
+    }
+    #[tokio::test]
+    async fn mp11_signed_late_webhook_and_selected_test_event_do_not_publish_after_revoke() {
+        let publisher = PublisherFixture::new();
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .upsert_ready_connection("connection", "owner", "github", &serde_json::Value::Null, 1)
+            .unwrap();
+        let claim = crate::SubscriptionClaim {
+            binding_id: "binding".into(),
+            generator_id: "dev.chariox.github".into(),
+            connection_id: "connection".into(),
+            connection_scope: "scope".into(),
+            event_interest_key: "interest".into(),
+            event_type: "event".into(),
+            event_type_version: 1,
+            filter: serde_json::Value::Null,
+            revision: 1,
+            active: true,
+        };
+        store
+            .reconcile("owner", &claim.generator_id, &[claim.clone()])
+            .unwrap();
+        let server = Arc::new(AegsServer {
+            producer_id: claim.generator_id.clone(),
+            management_token: None,
+            management_public_key: None,
+            management_issuer: "fixture".into(),
+            management_url: None,
+            manifest_digest: None,
+            publisher: AedsPublisher::new(&claim.generator_id, None, &publisher.url),
+            store: store.clone(),
+            provider: Arc::new(SignedProvider),
+            action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        });
+        assert_eq!(
+            signed_webhook(server.clone()).await["matched_interest_count"],
+            1
+        );
+        assert_eq!(publisher.calls.load(Ordering::SeqCst), 1);
+        let selected_test_event = event();
+        store.revoke_connection("connection", "owner", 2).unwrap();
+        assert_eq!(
+            signed_webhook(server.clone()).await["matched_interest_count"],
+            0
+        );
+        assert!(
+            !server
+                .publish_normalized_event(selected_test_event, Some("connection"))
+                .await
+                .unwrap()
+                .accepted
+        );
+        assert_eq!(publisher.calls.load(Ordering::SeqCst), 1);
+        store
+            .upsert_ready_connection("connection", "owner", "github", &serde_json::Value::Null, 3)
+            .unwrap();
+        assert_eq!(
+            signed_webhook(server.clone()).await["matched_interest_count"],
+            0
+        );
+        store
+            .reconcile("owner", &claim.generator_id, &[claim])
+            .unwrap();
+        assert_eq!(signed_webhook(server).await["matched_interest_count"], 1);
+        assert_eq!(publisher.calls.load(Ordering::SeqCst), 2);
+    }
+}
