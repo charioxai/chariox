@@ -3244,3 +3244,16 @@ and release tree while retaining private kernel state and directory identity.
 No VM provisioning/deletion or runtime proxy is involved. Relay peer protocol
 inherits 73 from the ownership base; native/web minimums are unchanged for existing behavior. The SSH
 commands themselves require a local-444-capable kernel/client pair.
+
+MP-07 / MP-08 / MP-11 self-setup reuses the owner-managed install core and
+existing device enrollment; local 444/relay 70 are unchanged. Generic Setup
+creates a separate user service/root/ports and invokes a pre-daemon stdin
+bootstrap. Kernel device flow uses the existing `KERNEL` start/poll exchange,
+public verification URL/code and #888 key/machine/owner profile admission.
+Browser codes use the same ticket poll variant on a fresh independent identity;
+no ticket travels in CLI argv/environment/files or terminal requests. The
+ambiguous browser-code case on an existing enrolled root fails closed. Human
+terminal login and kernel enrollment retain separate credentials. Cloud remains
+approval/ticket/directory control plane; authenticated local readiness and the
+ordinary encrypted relay/runtime paths remain kernel-owned. See
+[Setup implementation](../apps/setup/README.md) for lifecycle and evidence limits.

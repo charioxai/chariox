@@ -7,6 +7,7 @@ import { Readable } from "node:stream"
 import { fileURLToPath } from "node:url"
 
 const assets = [
+  ["upgrade.mjs", new URL("./upgrade.mjs", import.meta.url)],
   ["remote.mjs", new URL("./remote.mjs", import.meta.url)],
   ["extract-release.py", new URL("../../../deploy/managed-kernel/extract-release.py", import.meta.url)],
   ["verify-image-release.mjs", new URL("../../../deploy/managed-kernel/verify-image-release.mjs", import.meta.url)],

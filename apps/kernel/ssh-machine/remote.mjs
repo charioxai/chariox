@@ -6,15 +6,17 @@ import { createServer } from "node:net"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
+import { recoverUpgrade, upgradeRelease } from "./upgrade.mjs"
+
 const FORMAT = "chariox.ssh-machine-install.v1"
 const here = dirname(fileURLToPath(import.meta.url))
 const digestOf = bytes => `sha256:${createHash("sha256").update(bytes).digest("hex")}`
 const fail = message => { throw new Error(message) }
 export function validateRequest(r) {
   if (!r || typeof r !== "object" || Array.isArray(r) || Object.keys(r).some(k => !["action", "installId", "port", "releaseDigest"].includes(k))) fail("invalid SSH install request")
-  if (!["install", "start", "stop", "remove", "inspect"].includes(r.action)) fail("invalid SSH install action")
+  if (!["install", "start", "stop", "remove", "upgrade", "repair", "inspect"].includes(r.action)) fail("invalid SSH install action")
   if (!/^[a-z][a-z0-9-]{0,47}$/.test(r.installId ?? "")) fail("install ID must be 1-48 lowercase letters, digits or hyphens")
-  if (!Number.isInteger(r.port) || r.port < 1024 || r.port > 65534 || [43118, 43119, 43120].includes(r.port)) fail("choose a distinct unprivileged loopback port, other than the ordinary 43118 default")
+  if (!Number.isInteger(r.port) || r.port < 1024 || r.port > 65534 || [43117, 43118, 43119, 43120].includes(r.port)) fail("choose a distinct unprivileged loopback port, other than the ordinary 43118 default")
   if (!/^sha256:[a-f0-9]{64}$/.test(r.releaseDigest ?? "")) fail("a pinned signed release digest is required")
 }
 function installLockDiagnostic(lock) {
@@ -31,7 +33,7 @@ async function directory(path, create) {
   if (!m && create) { await mkdir(path, { mode: 0o700 }); m = await lstat(path) }
   if (!m || !m.isDirectory() || m.isSymbolicLink() || m.uid !== process.getuid() || (m.mode & 0o022)) fail("install path must be a user-owned directory without links or shared write access")
 }
-async function tree(home, relative, create = true) {
+export async function tree(home, relative, create = true) {
   let p = home
   for (const part of relative.split("/")) { p = join(p, part); await directory(p, create) }
   return p
@@ -45,12 +47,12 @@ async function existingTree(home, relative) {
   }
   return p
 }
-async function regular(path, max = 65536) {
+export async function regular(path, max = 65536) {
   const m = await lstat(path)
   if (!m.isFile() || m.isSymbolicLink() || m.uid !== process.getuid() || (m.mode & 0o022) || m.size > max) fail("install control file must be a bounded user-owned regular file")
   return readFile(path)
 }
-async function command(program, args, capture = false, input, env = process.env) {
+export async function command(program, args, capture = false, input, env = process.env) {
   const child = spawn(program, args, { env, stdio: [input ? "pipe" : "ignore", capture ? "pipe" : "ignore", "ignore"] })
   if (input) { child.stdin.on("error", () => {}); child.stdin.end(JSON.stringify(input)) }
   let out = "", failure
@@ -77,9 +79,9 @@ function quote(value) {
   return `"${value.replaceAll("%", "%%").replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`
 }
 // MP-07 / MP-11: an install must not inherit another kernel's state or transport.
-const isolatedKernelEnvironment = ["CHARIOX_MANAGED_PROVIDER_TOPOLOGY", "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT", "CHARIOX_CAPABILITY_ISOLATION_ROOT", "CHARIOX_MANAGED_PROVIDER_ISOLATION", "CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE", "CHARIOX_MANAGED_PROVIDER_BWRAP", "CHARIOX_MANAGED_PROVIDER_HOME", "CHARIOX_SLICE_ROOT", "CHARIOX_SLICE_DOCKER_BROKER_SOCKET", "CHARIOX_SLICE_DOCKER_BROKER_FD", "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED", "CHARIOX_RELAY_TOKEN", "CHARIOX_CLOUD_RELAY_CONFIG_JSON", "CHARIOX_CLOUD_RELAY_CONFIG_PATH", "CHARIOX_DAEMON_ID", "CHARIOX_MACHINE_ID", "CHARIOX_DAEMON_ALIAS", "CHARIOX_MACHINE_ALIAS", "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN", "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE", "CHARIOX_LOG_DIR", "CHARIOX_PUBLICATION_CONTROL_STATE_DIR", "CHARIOX_DAEMON_SOCKET", "CHARIOX_SESSION_HISTORY_DIR", "CHARIOX_RELAY_URL", "CHARIOX_MANAGED_SLICE_RELAY_OWNER_PUBLIC_KEY", "CHARIOX_KERNEL_RUNTIME_ROLE", "CHARIOX_REMOTE_LEASE_CAPACITY", "CHARIOX_LEASE_WORKER_HOME_CALLER", "CHARIOX_SLICE_OWNER_MACHINE_ID", "CHARIOX_AEDS_URL", "CHARIOX_AEDS_TOKEN", "CHARIOX_EVENT_ENVIRONMENT_ID", "CHARIOX_EVENT_REGISTRY_URL", "CHARIOX_AEGS_MANAGEMENT_TARGETS_FILE", "CHARIOX_AEGS_MANAGEMENT_TARGETS_JSON"]
-export function unitFor(home, r, root) {
-  return `[Unit]\nDescription=Chariox SSH machine ${r.installId}\n\n[Service]\nType=simple\nEnvironment=${quote(`HOME=${home}`)}\nEnvironment=${quote(`CHARIOX_HOME=${home}/.chariox/dev/ssh-machines/${r.installId}`)}\nEnvironment=${quote(`PATH=${process.env.PATH}`)}\nEnvironment=CHARIOX_KERNEL_HOST=127.0.0.1\nEnvironment=CHARIOX_KERNEL_PORT=${r.port}\nEnvironment=CHARIOX_MCP_HOST=127.0.0.1\nEnvironment=CHARIOX_MCP_PORT=${r.port + 1}\nUnsetEnvironment=${isolatedKernelEnvironment.join(" ")}\nExecStart=${quote(`${root}/current/usr/local/bin/chariox-kernel`)}\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n`
+export const isolatedKernelEnvironment = ["CHARIOX_MANAGED_PROVIDER_TOPOLOGY", "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT", "CHARIOX_CAPABILITY_ISOLATION_ROOT", "CHARIOX_MANAGED_PROVIDER_ISOLATION", "CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE", "CHARIOX_MANAGED_PROVIDER_BWRAP", "CHARIOX_MANAGED_PROVIDER_HOME", "CHARIOX_SLICE_ROOT", "CHARIOX_SLICE_DOCKER_BROKER_SOCKET", "CHARIOX_SLICE_DOCKER_BROKER_FD", "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED", "CHARIOX_RELAY_TOKEN", "CHARIOX_CLOUD_RELAY_CONFIG_JSON", "CHARIOX_CLOUD_RELAY_CONFIG_PATH", "CHARIOX_DAEMON_ID", "CHARIOX_MACHINE_ID", "CHARIOX_DAEMON_ALIAS", "CHARIOX_MACHINE_ALIAS", "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN", "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE", "CHARIOX_LOG_DIR", "CHARIOX_PUBLICATION_CONTROL_STATE_DIR", "CHARIOX_DAEMON_SOCKET", "CHARIOX_SESSION_HISTORY_DIR", "CHARIOX_RELAY_URL", "CHARIOX_MANAGED_SLICE_RELAY_OWNER_PUBLIC_KEY", "CHARIOX_KERNEL_RUNTIME_ROLE", "CHARIOX_REMOTE_LEASE_CAPACITY", "CHARIOX_LEASE_WORKER_HOME_CALLER", "CHARIOX_SLICE_OWNER_MACHINE_ID", "CHARIOX_AEDS_URL", "CHARIOX_AEDS_TOKEN", "CHARIOX_EVENT_ENVIRONMENT_ID", "CHARIOX_EVENT_REGISTRY_URL", "CHARIOX_AEGS_MANAGEMENT_TARGETS_FILE", "CHARIOX_AEGS_MANAGEMENT_TARGETS_JSON"]
+export function unitFor(home, r, root, kernelPath = "usr/local/bin/chariox-kernel") {
+  return `[Unit]\nDescription=Chariox SSH machine ${r.installId}\n\n[Service]\nType=simple\nEnvironment=${quote(`HOME=${home}`)}\nEnvironment=${quote(`CHARIOX_HOME=${home}/.chariox/dev/ssh-machines/${r.installId}`)}\nEnvironment=${quote(`PATH=${process.env.PATH}`)}\nEnvironment=CHARIOX_KERNEL_HOST=127.0.0.1\nEnvironment=CHARIOX_KERNEL_PORT=${r.port}\nEnvironment=CHARIOX_MCP_HOST=127.0.0.1\nEnvironment=CHARIOX_MCP_PORT=${r.port + 1}\nUnsetEnvironment=${isolatedKernelEnvironment.join(" ")}\nExecStart=${quote(`${root}/current/${kernelPath}`)}\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n`
 }
 async function verifyImage(image, digest, pins, stage) {
   await command("node", [join(stage, "verify-image-release.mjs"), image, digest, join(pins, "release-public-pin"), "path1", join(pins, "builder-public-pin")])
@@ -104,6 +106,11 @@ async function portFree(port) {
     server.listen({ host: "127.0.0.1", port, exclusive: true }, yes)
   })
   await new Promise((yes, no) => server.close(e => e ? no(e) : yes()))
+}
+function kernelEnvironment(home, stateRelative, r) {
+  const env = { ...process.env, HOME: home, CHARIOX_HOME: `${home}/${stateRelative}`, CHARIOX_KERNEL_HOST: "127.0.0.1", CHARIOX_KERNEL_PORT: String(r.port), CHARIOX_MCP_HOST: "127.0.0.1", CHARIOX_MCP_PORT: String(r.port + 1) }
+  for (const key of Object.keys(env)) if (key.startsWith("CHARIOX_") && !["CHARIOX_HOME", "CHARIOX_KERNEL_HOST", "CHARIOX_KERNEL_PORT", "CHARIOX_MCP_HOST", "CHARIOX_MCP_PORT"].includes(key)) delete env[key]
+  return env
 }
 // MP-07 / MP-08 / MP-11: service mutations belong only to this invocation.
 async function serviceState(serviceManager, service) {
@@ -146,17 +153,25 @@ async function inspectMachine(r, home, stage, serviceManager) {
   return { installId:r.installId,status:"installed",releaseDigest:r.releaseDigest,enrolled:false }
 }
 // serviceManager is a test seam, never supplied by serialized requests or environment flags.
-export async function runMachine(r, { home = process.env.HOME, stage = here, enrollment, kernelCommand, serviceManager = (args, capture) => command("systemctl", ["--user", ...args], capture) } = {}) {
+export async function runMachine(r, { home = process.env.HOME, stage = here, enrollment, enrollKernel, kernelCommand, releaseAdapter, serviceDefinition, serviceManager = (args, capture) => command("systemctl", ["--user", ...args], capture) } = {}) {
   validateRequest(r)
-  if (r.action === "start" && !enrollment) fail("bounded owner-managed enrollment input required")
+  const verify = releaseAdapter?.verify ?? verifyImage
+  const kernelPath = releaseAdapter?.kernelPath ?? "usr/local/bin/chariox-kernel"
+  const manifestPath = releaseAdapter?.manifestPath ?? "usr/lib/chariox/release-manifest.json"
+  const installing = ["install", "upgrade", "repair"].includes(r.action)
+  if (r.action === "start" && !enrollment && !enrollKernel) fail("bounded owner-managed enrollment input required")
 
   if (!home || !home.startsWith("/") || home === "/" || resolve(home) !== home || await realpath(home) !== home) fail("user HOME must be an absolute canonical non-root directory")
   await directory(home, false)
-  if (r.action === "inspect") return inspectMachine(r,home,stage,serviceManager)
-  const service = `chariox-ssh-${r.installId}.service`
-  const installParent = await tree(home, ".local/share/chariox/ssh-machines", r.action === "install")
+  if (r.action === "inspect") {
+    if (releaseAdapter || serviceDefinition) fail("SSH inspection requires the original image/service contract")
+    return inspectMachine(r, home, stage, serviceManager)
+  }
+  const service = serviceDefinition?.name ?? `chariox-ssh-${r.installId}.service`
+  const renderUnit = () => serviceDefinition?.render(home, r, root, kernelPath) ?? unitFor(home, r, root, kernelPath)
+  const installParent = await tree(home, ".local/share/chariox/ssh-machines", installing)
   const root = join(installParent, r.installId)
-  const unitDir = await tree(home, ".config/systemd/user", r.action === "install")
+  const unitDir = await tree(home, serviceDefinition?.relativeDirectory ?? ".config/systemd/user", installing)
   const unitPath = join(unitDir, service)
   const markerPath = join(root, "install.json")
   const stateRelative = `.chariox/dev/ssh-machines/${r.installId}`
@@ -182,22 +197,36 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
     if (rootMeta) {
       await directory(root, false)
       const expected = ["builder-public-pin", "current", "install.json", "release-public-pin", "releases"]
+      if (await metadata(join(root, "upgrade.json"))) {
+        expected.push("upgrade.json")
+        for (const name of [".current-new", "install.json.new"]) if (await metadata(join(root, name))) expected.push(name)
+      }
       if (await metadata(join(root, "removal.json"))) expected.push("removal.json")
       expected.sort()
       if (JSON.stringify((await readdir(root)).sort()) !== JSON.stringify(expected)) fail("unexpected material in install root; retain it and resolve ownership before uninstall")
       marker = JSON.parse(await regular(markerPath))
-      if (marker.format !== FORMAT || marker.installId !== r.installId || marker.service !== service || marker.port !== r.port || marker.releaseDigest !== r.releaseDigest) fail("existing install identity differs; use explicit upgrade rather than replacing it")
+      if (marker.format !== FORMAT || marker.installId !== r.installId || marker.service !== service || marker.port !== r.port || (marker.releaseDigest !== r.releaseDigest && r.action !== "upgrade")) fail("existing install identity differs; use explicit upgrade rather than replacing it")
       if (fields.FragmentPath && fields.FragmentPath !== unitPath) fail("service name belongs to another installation")
       removing = await pendingRemoval(root, marker, serviceManager)
-      if ((!removing || await metadata(unitPath)) && digestOf(await regular(unitPath)) !== marker.unitDigest) fail("user service was changed; refusing to control it")
       if (removing && r.action !== "remove") fail("removal in progress; retry remove before reinstalling")
-      const current = await lstat(join(root, "current"))
-      if (!current.isSymbolicLink() || await readlink(join(root, "current")) !== `releases/${r.releaseDigest.slice(7)}`) fail("active release pointer was changed")
+      const missingUnit = !await metadata(unitPath)
+      if (!(missingUnit && (removing || r.action === "repair")) && digestOf(await regular(unitPath)) !== marker.unitDigest) fail("user service was changed; refusing to control it")
       await directory(join(root, "releases"), false)
-      await directory(join(root, "releases", r.releaseDigest.slice(7)), false)
-      if (JSON.stringify(await readdir(join(root, "releases"))) !== JSON.stringify([r.releaseDigest.slice(7)])) fail("unexpected release material; explicit upgrade required")
+      const releases = await readdir(join(root, "releases"))
+      if (releases.some(digest => !/^[a-f0-9]{64}$/.test(digest))) fail("unexpected release material")
+      marker = await recoverUpgrade({ root, markerPath, marker, r, service, stage, verify, serviceManager })
+      const current = await lstat(join(root, "current"))
+      if (!current.isSymbolicLink() || await readlink(join(root, "current")) !== `releases/${marker.releaseDigest.slice(7)}`) fail("active release pointer was changed")
+      await directory(join(root, "releases"), false)
+      await directory(join(root, "releases", marker.releaseDigest.slice(7)), false)
       if (r.action !== "stop") {
-        await verifyImage(join(root, "releases", r.releaseDigest.slice(7)), r.releaseDigest, root, stage)
+        await verify(join(root, "releases", marker.releaseDigest.slice(7)), marker.releaseDigest, root, stage)
+      }
+      if (!await metadata(unitPath) && r.action === "repair") {
+        const unit = renderUnit()
+        if (digestOf(Buffer.from(unit)) !== marker.unitDigest) fail("repair cannot change service policy")
+        await writeFile(unitPath, unit, { mode: 0o600, flag: "wx" })
+        await serviceManager(["daemon-reload"])
       }
     } else if (await metadata(unitPath) || fields.LoadState !== "not-found" || fields.FragmentPath) {
       fail("service name belongs to another installation")
@@ -206,6 +235,7 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
       if (!marker) fail("no owned install found")
       if (!removing) await serviceManager(["disable", "--now", service])
       if (r.action === "remove") {
+        for (const digest of await readdir(join(root, "releases"))) await verify(join(root, "releases", digest), `sha256:${digest}`, root, stage)
         if (!removing) {
           const state = await serviceState(serviceManager, service)
           if (state.active || state.enabled) fail("removal requires an owned stopped, disabled service")
@@ -220,13 +250,12 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
     }
     if (r.action === "start") {
       if (!marker) fail("no owned install found")
-      if (!enrollment || Object.keys(enrollment).sort().join(",") !== "apiUrl,ticket,userId" || typeof enrollment.ticket !== "string" || !enrollment.ticket || enrollment.ticket.length > 4096 || typeof enrollment.userId !== "string" || !enrollment.userId) fail("bounded owner-managed enrollment input required")
-      const env = { ...process.env, HOME: home, CHARIOX_HOME: `${home}/${stateRelative}`, CHARIOX_KERNEL_HOST: "127.0.0.1", CHARIOX_KERNEL_PORT: String(r.port), CHARIOX_MCP_HOST: "127.0.0.1", CHARIOX_MCP_PORT: String(r.port + 1) }
-      for (const key of Object.keys(env)) if (key.startsWith("CHARIOX_") && !["CHARIOX_HOME", "CHARIOX_KERNEL_HOST", "CHARIOX_KERNEL_PORT", "CHARIOX_MCP_HOST", "CHARIOX_MCP_PORT"].includes(key)) delete env[key]
-      const invoke = kernelCommand ?? (async (args, input) => JSON.parse(await command(join(root, "current/usr/local/bin/chariox-kernel"), args, true, input, env)))
-      const identity = await invoke(["--owner-managed-enroll-stdin"], enrollment)
-      enrollment.ticket = ""
-      if (!identity || identity.userId !== enrollment.userId || !identity.kernelId || !identity.machineId || !identity.publicKeyThumbprint) fail("target enrollment identity does not match the owner")
+      if (!enrollKernel && (!enrollment || Object.keys(enrollment).sort().join(",") !== "apiUrl,ticket,userId" || typeof enrollment.ticket !== "string" || !enrollment.ticket || enrollment.ticket.length > 4096 || typeof enrollment.userId !== "string" || !enrollment.userId)) fail("bounded owner-managed enrollment input required")
+      const env = kernelEnvironment(home, stateRelative, r)
+      const invoke = kernelCommand ?? (async (args, input) => JSON.parse(await command(join(root, "current", kernelPath), args, true, input, env)))
+      const identity = enrollKernel ? await enrollKernel(invoke) : await invoke(["--owner-managed-enroll-stdin"], enrollment)
+      if (enrollment) enrollment.ticket = ""
+      if (!identity || (enrollment && identity.userId !== enrollment.userId) || !identity.kernelId || !identity.machineId || !identity.publicKeyThumbprint) fail("target enrollment identity does not match the owner")
       const prior = await serviceState(serviceManager, service)
       let enabledHere = false, startedHere = false
       try {
@@ -241,17 +270,20 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
         throw error
       }
     }
-    if (marker) return { installId: r.installId, status: "installed", releaseDigest: marker.releaseDigest, enrolled: false }
-    await portFree(r.port)
-    await portFree(r.port + 1)
+    if (marker && (r.action !== "upgrade" || marker.releaseDigest === r.releaseDigest)) return { installId: r.installId, status: "installed", releaseDigest: marker.releaseDigest, enrolled: false }
+    if (!marker) { await portFree(r.port); await portFree(r.port + 1) }
     scratch = await mkdtemp(join(installParent, `.${r.installId}.stage-`))
     const image = join(scratch, "image")
-    await command("python3", [join(stage, "extract-release.py"), join(stage, "release.tar.gz"), image])
-    await verifyImage(image, r.releaseDigest, stage, stage)
-    const protocol = (await command(join(image, "usr/local/bin/chariox-kernel"), ["--print-local-daemon-protocol-version"], true)).trim()
+    if (releaseAdapter?.extract) await releaseAdapter.extract(image, stage)
+    else await command("python3", [join(stage, "extract-release.py"), join(stage, "release.tar.gz"), image])
+    // An upgrade trusts the original independent pins; changing keys is not upgrading.
+    await verify(image, r.releaseDigest, marker ? root : stage, stage)
+    const protocol = (await command(join(image, kernelPath), ["--print-local-daemon-protocol-version"], true)).trim()
     if (!/^\d+$/.test(protocol) || Number(protocol) < 479) fail("chosen release requires owner-managed bootstrap protocol 479 or newer")
-    const manifest = JSON.parse(await readFile(join(image, "usr/lib/chariox/release-manifest.json")))
-    const unit = unitFor(home, r, root)
+    const manifest = JSON.parse(await readFile(join(image, manifestPath)))
+    const unit = renderUnit()
+    // Keep staging and the exclusive install lock through activation or rollback.
+    if (marker) return await upgradeRelease({ root, markerPath, marker, r, image, manifest, stage, verify, serviceManager, kernelCommand, kernelPath, env: kernelEnvironment(home, stateRelative, r), service })
     const state = await tree(home, stateRelative)
     if (!oldState) await writeFile(join(state, "ssh-install-owner.json"), JSON.stringify({ format: FORMAT, installId: r.installId, port: r.port, service }), { flag: "wx", mode: 0o600 })
     const pending = join(scratch, "install")
@@ -276,7 +308,7 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
     await rm(lock, { recursive: true })
   }
 }
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (typeof Bun === "undefined" && process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     if (Number(process.versions.node.split(".")[0]) < 22) fail("Node >=22 required")
     if (process.argv.length !== 3) fail("one bounded installer input required")

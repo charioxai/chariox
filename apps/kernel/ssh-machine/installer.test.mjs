@@ -146,6 +146,19 @@ test("MP-07/MP-08 a signed pre-BYOM kernel release cannot publish an install", a
   assert.deepEqual(await readdir(join(h.home,".config/systemd/user")),[])
 })
 
+test("MP-07/MP-11 repair recreates only a missing marked service, retaining runtime state", async t => {
+  const h = await harness(t); await runMachine(h.request, h.options)
+  const unit = join(h.home, ".config/systemd/user/chariox-ssh-byom-test.service")
+  const previous = await readFile(unit)
+  await rm(unit)
+  assert.equal((await runMachine({ ...h.request, action: "repair" }, h.options)).status, "installed")
+  assert.deepEqual(await readFile(unit), previous)
+})
+test("MP-07/MP-11 explicit upgrade accepts same release idempotently", async t => {
+  const h = await harness(t); await runMachine(h.request, h.options)
+  assert.equal((await runMachine({ ...h.request, action: "upgrade" }, h.options)).status, "installed")
+})
+
 test("MP-08/MP-11 inspection recognizes published signed installs and refuses changed service ownership", async t => {
   const h = await harness(t); await runMachine(h.request, h.options)
   assert.equal((await runMachine({ ...h.request, action:"inspect" }, h.options)).status,"installed")

@@ -41,7 +41,9 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
             return Ok(());
         }
         mode @ (kernel_arguments::Command::OwnerManagedEnroll
-        | kernel_arguments::Command::OwnerManagedReady) => {
+        | kernel_arguments::Command::OwnerManagedReady
+        | kernel_arguments::Command::OwnerManagedSelfEnroll
+        | kernel_arguments::Command::OwnerManagedDeviceEnroll) => {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -52,7 +54,13 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
             return runtime.block_on(async {
                 match mode {
                     kernel_arguments::Command::OwnerManagedEnroll => {
-                        chariox_kernel::owner_managed_bootstrap::enroll_from_stdin().await
+                        chariox_kernel::owner_managed_bootstrap::enroll_from_stdin(true).await
+                    }
+                    kernel_arguments::Command::OwnerManagedSelfEnroll => {
+                        chariox_kernel::owner_managed_bootstrap::enroll_from_stdin(false).await
+                    }
+                    kernel_arguments::Command::OwnerManagedDeviceEnroll => {
+                        chariox_kernel::owner_managed_bootstrap::enroll_device_from_stdin().await
                     }
                     kernel_arguments::Command::OwnerManagedReady => {
                         chariox_kernel::owner_managed_bootstrap::wait_ready().await
