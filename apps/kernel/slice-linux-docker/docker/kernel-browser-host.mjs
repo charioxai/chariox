@@ -132,8 +132,12 @@ export class KernelBrowserHost {
         await connection.send("Input.insertText", { text: input.text }, sessionId);
       } else if (input.kind === "key") {
         if (!["Tab", "Enter", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
-        await connection.send("Input.dispatchKeyEvent", { type: "keyDown", key: input.key }, sessionId);
-        await connection.send("Input.dispatchKeyEvent", { type: "keyUp", key: input.key }, sessionId);
+        // Enter needs its native text event for Chromium's default form/button action.
+        const key = { key: input.key, code: input.key,
+          ...(input.key === "Enter" ? { windowsVirtualKeyCode: 13 } : {}) };
+        await connection.send("Input.dispatchKeyEvent", { type: "keyDown", ...key,
+          ...(input.key === "Enter" ? { text: "\r", unmodifiedText: "\r" } : {}) }, sessionId);
+        await connection.send("Input.dispatchKeyEvent", { type: "keyUp", ...key }, sessionId);
       } else {
         if (!Number.isInteger(input.x) || input.x < 0 || input.x >= viewport.css_width || !Number.isInteger(input.y) || input.y < 0 || input.y >= viewport.css_height) throw new Error("MD-2: pointer outside viewport");
         if (input.kind === "click") {

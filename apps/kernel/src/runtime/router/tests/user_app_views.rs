@@ -404,6 +404,7 @@ fn run_drill(stall: bool, browser: bool) {
                     assert_ne!(view.view_id, second.view_id);
                     assert_ne!(view.browser.as_ref().unwrap().tab_id, second.browser.as_ref().unwrap().tab_id);
                     check_browser_page(&router, &second, &observed, 3).await;
+                    check_browser_keyboard(&router, &second, &observed).await;
                     let second_browser = second.browser.as_ref().unwrap();
                     let stream = browser_request(&router, KernelBrowserCommand::Subscribe {
                         tab_id: second_browser.tab_id.clone(), generation: second_browser.generation,
@@ -668,4 +669,35 @@ async fn check_focused_browser_tab(
         )
         .await
         .unwrap();
+}
+
+// The TUI forwards human keys over this shared protocol, never through a Room.
+async fn check_browser_keyboard(
+    router: &CommandRouter,
+    view: &UserAppView,
+    observed: &chariox_app_runtime::worker_process::test_fixture::Observation,
+) {
+    let browser = view.browser.as_ref().unwrap();
+    for input in [
+        KernelBrowserInput::Key { key: "Tab".into() },
+        KernelBrowserInput::Text { text: "TUI keyboard fixture".into() },
+        KernelBrowserInput::Key { key: "Enter".into() },
+    ] {
+        browser_request(router, KernelBrowserCommand::Input {
+            tab_id: browser.tab_id.clone(), generation: browser.generation, input,
+        }).await;
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let page = browser_request(router, KernelBrowserCommand::Snapshot {
+                tab_id: browser.tab_id.clone(), generation: browser.generation,
+            }).await;
+            if page.to_string().contains("Keyboard App channel {\\\"ok\\\":true}") { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }).await.expect("human keyboard App channel reply in accessibility projection");
+    assert_eq!(observed.tool_invocations(), 4);
+    let last = observed.tool_requests().unwrap().last().unwrap().clone();
+    assert_eq!(last["params"]["input"]["text"], "TUI keyboard fixture");
+    assert_eq!(last["context"]["actor"], serde_json::json!({"kind":"human","id":"alice"}));
 }
