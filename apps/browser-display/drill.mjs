@@ -196,7 +196,7 @@ try {
  receipt.status='PASS_LOCAL_COMPONENT';
  receipt.latency_goal={p50_ms:80,p95_ms:150,passed:receipt.latency.p50_ms<=80&&receipt.latency.p95_ms<=150};
  if(process.env.MD_REQUIRE_LATENCY==='1'&&!receipt.latency_goal.passed)throw Error('MD-DISPLAY: input-to-presentation latency goal remains RED');
-} catch(error) {receipt.error=String(error.message);process.exitCode=1;}
+} catch(error) {receipt.status='RED';receipt.error=String(error.message);process.exitCode=1;}
 finally {
  if(kernel&&kernel.exitCode===null&&kernel.signalCode===null) {await writeFile(path.join(root,'home','STOP'),'MD-DISPLAY cleanup stop').catch(()=>{});await Promise.race([kernelExit,pause(5000)]);}
  try {await browser?.close();await stopGroup(viewer);await stopGroup(kernel);await stopGroup(display);await pause(500);
