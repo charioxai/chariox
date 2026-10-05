@@ -213,27 +213,61 @@ fn mdaccess_native_retained_state_cannot_restart_after_human_stop() {
 
 #[test]
 #[ignore = "MP-10: sandbox-capable native Chromium and disposable CHARIOX_MDACCESS_DRILL_ROOT required"]
-fn mdaccess_native_retained_shortcut_refuses_and_editing_navigation_work() {
+fn mdaccess_native_retained_keys_clicks_refuse_and_scroll_works() {
     let fixture = NativeInput::new(
-        r#"<input id="field" style="height:30px"><button id="pay"
-      onkeydown="if(event.key==='Delete'){submitted++;status()}" onkeyup="if(event.key==='Delete'){submitted++;status()}">Approve payment</button>"#,
+        r#"<input id="field" style="height:30px" onkeydown="submitted++;status()" onkeyup="submitted++;status()">
+        <button id="pay" onclick="submitted++;status()">Search</button><div style="height:3000px"></div>"#,
     );
-    fixture.input(json!({"kind":"key","key":"Tab"})).unwrap();
+    let stream = fixture.request(fixture.bound("subscribe")).unwrap();
     fixture.host.set_focus("owner", Some("second"));
-    let error = fixture
-        .input(json!({"kind":"key","key":"Delete"}))
-        .unwrap_err();
-    assert!(error.contains("sensitive_requires_focus"), "MP-11: {error}");
-    assert!(fixture.status().starts_with("submitted=0 "));
-    fixture
-        .input(json!({"kind":"key","key":"Shift+Tab"}))
-        .unwrap();
-    fixture
-        .input(json!({"kind":"text","text":"routine"}))
-        .unwrap();
-    fixture
-        .input(json!({"kind":"key","key":"Backspace"}))
-        .unwrap();
+    for key in [
+        "Tab",
+        "Shift+Tab",
+        "Enter",
+        "Space",
+        "Delete",
+        "Backspace",
+        "ArrowLeft",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowDown",
+        "Home",
+        "End",
+        "Escape",
+        "a",
+        "F1",
+        "Control+a",
+    ] {
+        let error = fixture.input(json!({"kind":"key","key":key})).unwrap_err();
+        assert!(
+            error.contains("sensitive_requires_focus"),
+            "MP-11: {key}: {error}"
+        );
+    }
+    for input in [
+        json!({"kind":"click","x":30,"y":25}),
+        json!({"kind":"text","text":"denied"}),
+    ] {
+        assert!(fixture
+            .input(input)
+            .unwrap_err()
+            .contains("sensitive_requires_focus"));
+    }
+    assert_eq!(fixture.status(), "submitted=0 releases=0 focus=field");
+    for command in [
+        json!({"op":"navigate","url":"about:blank"}),
+        json!({"op":"close"}),
+    ] {
+        let mut params = fixture.bound(command["op"].as_str().unwrap());
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(command.as_object().unwrap().clone());
+        assert!(fixture
+            .request(params)
+            .unwrap_err()
+            .contains("not_focused_agent"));
+    }
     fixture
         .input(json!({"kind":"scroll","x":10,"y":10,"delta_x":0,"delta_y":100}))
         .unwrap();
@@ -241,4 +275,8 @@ fn mdaccess_native_retained_shortcut_refuses_and_editing_navigation_work() {
         fixture.request(json!({"op":"state"})).unwrap()["generation"],
         fixture.tab["generation"]
     );
+    fixture.request(json!({"op":"poll","subscription_id":stream["subscription_id"],"generation":stream["generation"]})).unwrap();
+    fixture.host.set_focus("owner", Some("first"));
+    fixture.input(json!({"kind":"key","key":"Delete"})).unwrap();
+    assert_eq!(fixture.status(), "submitted=2 releases=0 focus=field");
 }

@@ -262,8 +262,28 @@ impl KernelBrowserHost {
         state
             .access
             .prune_subscriptions(&admission.user, agent, Instant::now());
-        if matches!(params["op"].as_str(), Some("open" | "start" | "stop")) {
-            require_focus(&state, &admission.user, agent)?;
+        if method == "host.browser" && state.access.focused(&admission.user) != Some(agent) {
+            if params["op"] == "input" && params["input"]["kind"] != "scroll" {
+                return Err("MP-11: sensitive_requires_focus: user-domain keyboard, text and click input requires focus".into());
+            }
+            if !matches!(
+                params["op"].as_str(),
+                Some(
+                    "state"
+                        | "snapshot"
+                        | "screenshot"
+                        | "subscribe"
+                        | "poll"
+                        | "unsubscribe"
+                        | "display_subscribe"
+                        | "display_attach"
+                        | "note_selection"
+                        | "note_reanchor"
+                        | "input"
+                )
+            ) {
+                return Err("MP-11: not_focused_agent: user-domain mutations require focus; retained access allows only observation and scroll".into());
+            }
         }
         if params["op"] == "subscribe"
             && state

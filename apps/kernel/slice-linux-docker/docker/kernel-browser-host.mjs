@@ -8,7 +8,7 @@ import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
 import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
-import { inputHostTab, sensitiveHostInput } from "./kernel-browser-input.mjs";
+import { inputHostTab } from "./kernel-browser-input.mjs";
 import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from "./browser-controller-actions.mjs";
 import { captureRegionMasks } from "./kernel-browser-region-protection.mjs";
 import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
@@ -304,6 +304,16 @@ export class KernelBrowserHost {
     const scope = command.observed_by ?? (command.focused_agent ? "focused-agent" : "adapter");
     assertNotCancelled(signal);
     if (command.op.startsWith("display_") && process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
+    // MP-11: retained authority is observation plus wheel only, never activation.
+    if (command._retained_agent === true) {
+      if (command.op === "input" && command.input?.kind !== "scroll") {
+        throw new BrowserActionError("sensitive_requires_focus", "MP-11: user-domain keyboard, text and click input requires focus");
+      }
+      if (!["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe",
+        "display_subscribe", "display_attach", "note_selection", "note_reanchor", "input"].includes(command.op)) {
+        throw new BrowserActionError("not_focused_agent", "MP-11: user-domain mutations require focus; retained access allows only observation and scroll");
+      }
+    }
     if (command.op === "stop") return this.stop();
     await this.start({ signal, retained: command._retained_agent === true });
     assertNotCancelled(signal);
@@ -383,7 +393,7 @@ export class KernelBrowserHost {
       if (!observed || observed !== tab.document_id) throw new Error("MD-3: stale input document; observe the tab again");
       const at = timestamp();
       let dispatched = false;
-      try { await inputHostTab(this.browser, tab, command.input, { signal, requireRoutine: command._retained_agent === true, onDispatch: () => { dispatched = true; } }); this.timing('cdp_input', at); }
+      try { await inputHostTab(this.browser, tab, command.input, { signal, retained: command._retained_agent === true, onDispatch: () => { dispatched = true; } }); this.timing('cdp_input', at); }
       catch (error) {
         if (dispatched || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) {
           // Clear any dispatched key/button state before another actor can use
@@ -419,11 +429,6 @@ export class KernelBrowserHost {
         const owners = new Set(request.params.subscription_owners ?? []);
         for (const [id, stream] of this.streams) if (ids.has(id) || owners.has(stream.owner)) await this.removeStream(id);
         return { id: request.id, ok: true, result: { revoked: true } };
-      }
-      if (request.method === "host.input_sensitive") {
-        const tab = await this.target(request.params);
-        if (tab.document_id !== request.params.document_id) throw new Error("MP-11: stale sensitivity document");
-        return { id: request.id, ok: true, result: { sensitive: await sensitiveHostInput(this.browser, tab, request.params.input) } };
       }
       if (request.method === "host.secret") {
         await this.start({ signal, retained: request.params?._retained_agent === true });

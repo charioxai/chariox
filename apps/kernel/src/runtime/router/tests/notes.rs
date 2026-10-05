@@ -205,6 +205,21 @@ async fn check() {
         )
         .await
         .is_ok());
+    // MP-11: retained note reads survive focus change; authored effects do not.
+    for (name, args) in [
+        (
+            "chariox.reply_to_note",
+            json!({"note_id":note.note_id,"comment":"retained must refuse"}),
+        ),
+        ("chariox.resolve_note", json!({"note_id":note.note_id})),
+    ] {
+        let error = router
+            .dispatch_authenticated_runtime_tool_call(a, name, args)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not_focused_agent"), "MP-11: {error}");
+    }
     router
         .dispatch_authenticated_runtime_tool_call(b, "chariox.load_kernel_browser", json!({}))
         .await

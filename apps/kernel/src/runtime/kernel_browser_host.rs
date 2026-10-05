@@ -268,6 +268,23 @@ impl KernelBrowserHost {
         admission: Option<&KernelBrowserAdmission>,
         call: impl FnOnce() -> Result<T, String>,
     ) -> Result<T, String> {
+        self.checked_note_operation(user, admission, false, call)
+    }
+    pub(crate) fn note_mutation<T>(
+        &self,
+        user: &str,
+        admission: Option<&KernelBrowserAdmission>,
+        call: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.checked_note_operation(user, admission, true, call)
+    }
+    fn checked_note_operation<T>(
+        &self,
+        user: &str,
+        admission: Option<&KernelBrowserAdmission>,
+        mutation: bool,
+        call: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
         self.check_admission(admission)?;
         if let Some(admission) = admission {
             if admission.user != user {
@@ -281,6 +298,9 @@ impl KernelBrowserHost {
                 require_loaded(&state, user, agent, admission.capability)?;
                 if !Arc::ptr_eq(&state.access.grant(user, agent)?.epoch, &admission.epoch) {
                     return Err("MD-N4: note grant changed".into());
+                }
+                if mutation {
+                    require_focus(&state, user, agent)?;
                 }
                 call()
             } else {
@@ -432,28 +452,8 @@ impl KernelBrowserHost {
             (None, Some(admission)) => Some(admission.cancellation.clone()),
             (None, None) => None,
         };
-        if method == "host.browser"
-            && params["op"] == "input"
-            && admission.is_some_and(|a| a.agent.is_some())
-        {
-            let sensitive = backend.host_request("host.input_sensitive", params.clone())?
-                ["sensitive"]
-                .as_bool()
-                .ok_or("MP-11: sensitive_requires_focus: sensitive-action classification unavailable; focus required")?;
-            self.check_admission(admission)?;
-            let agent = admission.unwrap().agent.clone().unwrap();
-            let focused = self.is_focused(user, &agent);
-            if sensitive && !focused {
-                return Err("MP-11: sensitive_requires_focus: sensitive user-domain action requires focus or human approval; focus this agent".into());
-            }
-            // Focused input may change sensitivity between paired events (Tab
-            // onto an approval button, for example). The live focus guard
-            // authorizes that transition; losing focus cancels this operation
-            // without revoking the grant. Retained input rechecks protection.
-            params["_retained_agent"] = (!focused).into();
-        }
-        // Re-read live focus after policy/classification RPCs; a previously
-        // focused observation must not start Chromium after focus has moved.
+        // MP-11: re-read live focus after policy RPCs. Retained authority allows
+        // observation and wheel only; focused dispatch carries a live focus guard.
         cancellation = self.browser_request_authority(admission, &mut params, cancellation);
         let request_params = params.clone();
         let mut result = backend.host_request_cancellable(method, params, cancellation.clone());

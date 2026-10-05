@@ -296,13 +296,11 @@ async fn check(native: bool) {
     tool(&router, token, "chariox.kernel_browser", poll.clone())
         .await
         .unwrap();
-    if native {
-        tool(&router, token, "chariox.kernel_browser", json!({"document_id":state["tabs"][0]["document_id"],"command":{"op":"input","tab_id":tab,"generation":generation,"input":{"kind":"click","x":500,"y":500}}})).await.unwrap();
+    tool(&router, token, "chariox.kernel_browser", json!({"document_id":state["tabs"][0]["document_id"],"command":{"op":"input","tab_id":tab,"generation":generation,"input":{"kind":"scroll","x":500,"y":500,"delta_x":0,"delta_y":100}}})).await.unwrap();
+    if !native {
+        std::fs::remove_file(root.join("input")).unwrap();
     }
     let sensitive_click = json!({"document_id":state["tabs"][0]["document_id"],"command":{"op":"input","tab_id":tab,"generation":generation,"input":{"kind":"click","x":30,"y":30}}});
-    if !native {
-        std::fs::write(root.join("sensitive"), "synthetic classification").unwrap();
-    }
     let denied = tool(
         &router,
         token,

@@ -27,7 +27,6 @@ while IFS= read -r request; do
   id=${request#*:}; id=${id%%,*}
   case "$request" in
     *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
-    *'"method":"host.input_sensitive"'*) printf '{"id":%s,"ok":true,"result":{"sensitive":false}}\n' "$id" ;;
     *'"method":"host.revoke_subscriptions"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
     *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id" ;;
@@ -197,7 +196,6 @@ while IFS= read -r request; do
  id=${request#*:}; id=${id%%,*}
  case "$request" in
   *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
-  *'"method":"host.input_sensitive"'*) printf '{"id":%s,"ok":true,"result":{"sensitive":false}}\n' "$id" ;;
   *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id" ;;
   *'"op":"input"'*) printf 'input\n' > "$root/input"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
@@ -453,4 +451,93 @@ done
     );
     assert!(immediate, "MP-11: startup I/O blocked grant revocation");
     assert!(outcome.unwrap_err().contains("not_granted"));
+}
+
+#[test]
+fn mdaccess_retained_browser_scope_allows_only_observation_and_scroll() {
+    let host = KernelBrowserHost::new(PathBuf::from("/tmp/mdaccess-scope"));
+    host.set_focus("owner", Some("first"));
+    host.load("owner", "first").unwrap();
+    let admission = host.admit("owner", "first").unwrap();
+    host.claim_resource(
+        Some(&admission),
+        UserDomainResource::BrowserTab {
+            tab_id: "tab".into(),
+        },
+        false,
+    )
+    .unwrap();
+    host.set_focus("owner", Some("second"));
+    for input in [
+        json!({"kind":"key","key":"Tab"}),
+        json!({"kind":"key","key":"Delete"}),
+        json!({"kind":"text","text":"fixture"}),
+        json!({"kind":"click","x":1,"y":2}),
+    ] {
+        let params = json!({"op":"input","tab_id":"tab","input":input});
+        assert!(host
+            .scope_browser_request(Some(&admission), "host.browser", &params)
+            .unwrap_err()
+            .contains("sensitive_requires_focus"));
+    }
+    for op in ["open", "start", "stop", "navigate", "close", "unknown"] {
+        assert!(host
+            .scope_browser_request(
+                Some(&admission),
+                "host.browser",
+                &json!({"op":op,"tab_id":"tab"})
+            )
+            .unwrap_err()
+            .contains("not_focused_agent"));
+    }
+    for params in [
+        json!({"op":"state"}),
+        json!({"op":"snapshot","tab_id":"tab"}),
+        json!({"op":"input","tab_id":"tab","input":{"kind":"scroll","x":1,"y":2,"delta_x":0,"delta_y":1}}),
+    ] {
+        host.scope_browser_request(Some(&admission), "host.browser", &params)
+            .unwrap();
+    }
+    host.set_focus("owner", Some("first"));
+    host.scope_browser_request(
+        Some(&admission),
+        "host.browser",
+        &json!({"op":"input","tab_id":"tab","input":{"kind":"key","key":"Tab"}}),
+    )
+    .unwrap();
+}
+
+#[test]
+fn mdaccess_retained_notes_read_but_authored_mutations_require_focus() {
+    let host = KernelBrowserHost::new(PathBuf::from("/tmp/mdaccess-note-scope"));
+    host.set_focus("owner", Some("first"));
+    host.load_for("owner", "first", KernelBrowserCapability::Notes)
+        .unwrap();
+    let admission = host
+        .admit_for("owner", "first", KernelBrowserCapability::Notes)
+        .unwrap();
+    host.set_focus("owner", Some("second"));
+    assert_eq!(
+        host.note_operation("owner", Some(&admission), || Ok(42))
+            .unwrap(),
+        42
+    );
+    assert!(host
+        .note_mutation::<()>("owner", Some(&admission), || panic!(
+            "MP-11: retained note commit"
+        ))
+        .unwrap_err()
+        .contains("not_focused_agent"));
+    host.set_focus("owner", Some("first"));
+    assert_eq!(
+        host.note_mutation("owner", Some(&admission), || Ok(42))
+            .unwrap(),
+        42
+    );
+    host.revoke_agent("first");
+    assert!(host
+        .note_mutation::<()>("owner", Some(&admission), || panic!(
+            "MP-11: revoked note commit"
+        ))
+        .is_err());
 }

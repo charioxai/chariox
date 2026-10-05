@@ -184,7 +184,7 @@ impl KernelRuntimeState {
                 let selection = observation
                     .selection
                     .map(|selection| {
-                        host.note_operation(user, admission.as_ref(), || {
+                        host.note_mutation(user, admission.as_ref(), || {
                             store.selection(
                                 user,
                                 NoteAnchor {
@@ -214,7 +214,7 @@ impl KernelRuntimeState {
                 self.check_note_window(user, &anchor.window)?;
                 NoteResult::SelectionChanged {
                     selection: Some(
-                        host.note_operation(user, admission.as_ref(), || {
+                        host.note_mutation(user, admission.as_ref(), || {
                             store.selection(user, anchor, box_css)
                         })
                         .map_err(host_error)?,
@@ -226,7 +226,7 @@ impl KernelRuntimeState {
                 comment,
             } => NoteResult::NoteChanged {
                 note: host
-                    .note_operation(user, admission.as_ref(), || {
+                    .note_mutation(user, admission.as_ref(), || {
                         store.create(user, &selection_id, &comment)
                     })
                     .map_err(host_error)?,
@@ -297,20 +297,20 @@ impl KernelRuntimeState {
             }
             Reply { note_id, comment } => NoteResult::NoteChanged {
                 note: host
-                    .note_operation(user, admission.as_ref(), || {
+                    .note_mutation(user, admission.as_ref(), || {
                         store.reply(user, &note_id, actor, &comment)
                     })
                     .map_err(host_error)?,
             },
             Resolve { note_id } => NoteResult::NoteChanged {
                 note: host
-                    .note_operation(user, admission.as_ref(), || {
+                    .note_mutation(user, admission.as_ref(), || {
                         store.resolve(user, &note_id, actor)
                     })
                     .map_err(host_error)?,
             },
             Ask { note_id } => host
-                .note_operation(user, admission.as_ref(), || {
+                .note_mutation(user, admission.as_ref(), || {
                     store.ask(user, &note_id, actor)
                 })
                 .map_err(host_error)?,

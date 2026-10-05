@@ -71,7 +71,6 @@ while IFS= read -r request; do
  id=${request#*:}; id=${id%%,*}
  case "$request" in
   *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
-  *'"method":"host.input_sensitive"'*) sensitive=false; if [ -f "$1/sensitive" ]; then sensitive=true; fi; printf '{"id":%s,"ok":true,"result":{"sensitive":%s}}\n' "$id" "$sensitive" ;;
   *'"method":"host.revoke_subscriptions"'*) printf 'revoked\n' > "$1/subscriptions-revoked"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document"}]}}\n' "$id" ;;

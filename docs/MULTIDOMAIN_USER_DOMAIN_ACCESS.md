@@ -7,7 +7,7 @@ The kernel owns it equally on ordinary and managed placements.
 Focus grants access. Changing focus keeps the previous agent's grant and gives
 the new agent its own grant. Browser and notes loading remain independent.
 Each grant retains only stable resources the agent used while focused. A
-retained agent can observe and operate its claimed resources; opening a tab,
+retained agent can observe its claimed resources and scroll; opening a tab,
 starting/stopping the user browser, loading another capability or claiming a
 new tab/note requires focus. Generation, document, owner and provider-run
 checks still apply. Listing metadata does not claim every resource listed.
@@ -37,31 +37,17 @@ Revocation cancels the admission epoch first, retires actor presence and
 refuses in-flight results/commits at the next authority check. The same epoch
 fences idle subscriptions; an internal controller cleanup closes their streams.
 It cannot undo physical input already delivered. Vault fills always require
-focus. Native input classifies protected/password/OTP/payment fields and opaque
-frames/shadow hosts before dispatch. Retained click, Enter and Space activation
-of actionable controls requires positive routine classification. This covers
-native buttons (including button/submit/image/reset inputs), links with `href`,
-ARIA button/link/menuitem/tab/switch/checkbox/option roles, label targets,
-summary controls and elements with click/pointer/key handlers. The bounded
-routine labels are Search, Find, Next, Previous, Back, Forward, Expand,
-Collapse, Show more and Show less; all supplied action labels must qualify.
-Unknown, mixed and icon-only labels require focus. Enter resolves the native
-form's first associated submit control, including external controls; buttonless
-activation requires focus. Ordinary page areas without actionable controls or
-activation handlers remain routine.
-
-MP-11 (PR #880 round 3): retained keyboard input uses a generic allow-list:
-Tab/Shift+Tab navigation, and text insertion, printable characters, Space,
-Backspace, Delete, arrows,
-Home/End inside an enabled editable text-like input, textarea or contenteditable
-field. Enter still resolves its implicit submit target through the activation
-classification above. Escape, function keys, arbitrary shortcuts and editing
-keys outside editable fields require live focus. A refused keydown dispatches
-neither keydown nor its paired keyup. Scroll uses the wheel path. The allow-list
-admits these native navigation/editing operations without attempting to infer
-arbitrary delegated script effects; other operations fail closed. Text-like
-input types are text, search, email, url, tel and number. Secret/protected fields
-still require the Vault/protection authority.
+focus. MP-11 (PR #880 round 4): retained access allows only observation
+(state, snapshots, text, notes reads) and scrolling through the scroll/wheel
+input path. Every key event, including Tab/Shift+Tab, printable characters,
+editable-field Backspace/Delete, shortcuts and paired releases, requires live
+focus. Text insertion and every click/activation also require live focus,
+including Search controls and ordinary page areas. No page labels or script
+handlers can grant retained input authority. Refused input dispatches neither
+keydown nor its paired keyup and produces no page handler effects. Tab
+navigation is available only while focused. Other mutations, including tab
+navigation and closure and note edits, require focus. Focused input retains
+its document, cancellation and secret-field/Vault safety checks.
 
 Retained observations never start/recover a controller or Chromium. A stopped
 or unavailable browser returns `not_focused_agent` with a request to focus the
@@ -74,25 +60,18 @@ focused asynchronous requests carry a live focus cancellation guard through
 Chromium startup. Focus changes preserve grants, so cancelled operations may
 retry through retained authority.
 
-MP-11: the controller checks listeners through `DOMDebugger.getEventListeners`
-on the target and ancestors through document/window, including associated
-label and submit paths. It resolves main-world listener objects by native CDP
-node identity while keeping DOM/label inspection in an isolated world. A
-failed metadata lookup refuses activation. The controller rechecks before each
-native input event and returns only sensitivity to the kernel, without page
-values. Chromium's built-in control shadow trees are not
-opaque page content; page-created and unknown shadow roots remain protected.
-Focused physical input carries live focus authority for the whole operation,
-allowing routine-to-sensitive transitions such as Tab onto an approval button.
-Focus loss cancels that operation without revoking its retained resource grant;
-the agent may retry routine input under retained authority. Retained routine
-input rechecks protection before physical events. Tab and Shift+Tab remain allow-listed on their paired release; every event
-checks document and cancellation authority.
+MP-11: the kernel rejects retained non-scroll input before controller dispatch;
+the controller enforces the same rule without DOM classification or listener
+inspection. Focused physical input carries live focus authority for the whole
+operation, including paired releases onto a sensitive target. Focus loss
+cancels that operation without revoking its resource grant; retained retries
+are limited to observation and scroll. Every physical event checks document
+and cancellation authority.
 Critical App effects continue through kernel-owned human validation/passkeys.
 
 MP-08 / MP-11: refusal reasons use the #882 vocabulary: `not_focused_agent`
 for operations that require focus/new resource claims, `sensitive_requires_focus`
-for sensitive activation or Vault fills, and `not_granted` for absent, expired
+for every key/text/click input or Vault fills, and `not_granted` for absent, expired
 or revoked authority. The host controller preserves `sensitive_requires_focus`
 in its existing error-code field. Kernel String/MCP errors carry those reason
 markers in their existing error text; their outer transport envelopes stay the
@@ -120,14 +99,12 @@ None alone closes an MP item.
 
 MP-08 / MP-10 / MP-11 PR #880 regressions: the opt-in
 `kernel-browser-input.browser-test.mjs` exercises real native form submission,
-paired navigation and one actionable-control matrix through the production
-controller. The matrix checks zero retained native dispatch and handler effects
-for Pay/Approve, unnamed and unclassified controls, individual handler types,
-delegated listeners and associated label targets; focused controls and a
-positively routine Search control remain usable. The ignored Rust
-`runtime::kernel_browser_host::native_input_tests` drills additionally prove
-kernel-focused navigation preserves tab/document generation and idle streams,
-retained Enter refuses payment, retained shortcuts refuse dispatch, ordinary
-editing/navigation remain usable, and retained reads after human/native stop
-cannot restart the controller/browser while focused reads can. These credential-free native checks do not
-establish official-provider, client, hosted, or fresh-machine acceptance.
+paired focused navigation and activation/keyboard matrices through the
+production controller. Retained clicks, text and every key kind dispatch zero
+native input and zero element/document/window/React-root handler effects,
+including editable-field Delete and Tab. Focused controls/typing still work;
+retained wheel scroll, state and snapshot remain available. The opt-in Rust
+`runtime::kernel_browser_host::native_input_tests` additionally exercises the
+kernel's live focus and grant boundary, retained no-restart fences and idle
+stream preservation. These credential-free native checks do not establish
+official-provider, client, hosted, or fresh-machine acceptance.

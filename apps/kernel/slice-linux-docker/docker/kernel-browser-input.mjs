@@ -1,16 +1,14 @@
 // MD-3: document-bound physical input, sharing Room cancellation and document checks.
 import { assertCurrentDocument, assertNotCancelled, BrowserActionError } from "./browser-controller-actions.mjs";
-import { sensitiveHostInput } from "./kernel-browser-input-protection.mjs";
-export { sensitiveHostInput };
 const viewport = { css_width: 1280, css_height: 800 };
-export async function inputHostTab(browser, tab, input, { signal, onDispatch, requireRoutine = false } = {}) {
+export async function inputHostTab(browser, tab, input, { signal, onDispatch, retained = false } = {}) {
     assertNotCancelled(signal);
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
     const check = async () => {
       assertNotCancelled(signal);
       await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-      if (requireRoutine && await sensitiveHostInput(browser, tab, input)) {
-        throw new BrowserActionError("sensitive_requires_focus", "MP-11: sensitive user-domain action requires focus or human approval");
+      if (retained && input?.kind !== "scroll") {
+        throw new BrowserActionError("sensitive_requires_focus", "MP-11: user-domain keyboard, text and click input requires focus");
       }
       assertNotCancelled(signal);
     };
@@ -45,8 +43,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
           windowsVirtualKeyCode: { Tab:9, Enter:13, Space:32, Escape:27, Backspace:8, Delete:46, ArrowLeft:37, ArrowUp:38, ArrowRight:39, ArrowDown:40, Home:36, End:35 }[name] };
         await sendInput("Input.dispatchKeyEvent", { type: "keyDown", ...key,
           ...(["Enter", "Space"].includes(input.key) || printable ? { text: printable ? input.key : input.key === "Enter" ? "\r" : " ", unmodifiedText: printable ? input.key : input.key === "Enter" ? "\r" : " " } : {}) });
-        // Both events use the same allow-list. Tab navigation remains routine
-        // on its release target; document and cancellation checks still apply.
+        // MP-08: focused paired releases keep document and live cancellation checks.
         await sendInput("Input.dispatchKeyEvent", { type: "keyUp", ...key });
       } else {
         if (!Number.isInteger(input.x) || input.x < 0 || input.x >= viewport.css_width || !Number.isInteger(input.y) || input.y < 0 || input.y >= viewport.css_height) throw new Error("MD-2: pointer outside viewport");

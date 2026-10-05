@@ -45,7 +45,7 @@ async function native(markup, operation, instrument = true) {
       expression: "document.querySelector('#result').textContent", returnByValue: true,
     }, sessionId)).result.value;
     const evaluate = async expression => {
-      const result = await connection.send("Runtime.evaluate", { expression, returnByValue: true }, sessionId);
+      const result = await connection.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, sessionId);
       assert(!result.exceptionDetails, 'MP-10: credential-free fixture setup/read failed');
       return result.result.value;
     };
@@ -135,86 +135,84 @@ test("MP-11: retained native activation matrix fails closed; focused controls re
   await evaluate("window.cleanup(); document.querySelector('#stage').innerHTML='<button id=search>Search</button><p id=plain>Ordinary page area</p>'; window.effects=0; document.querySelector('#search').onclick=()=>window.effects++");
   for (const id of ['search', 'plain']) {
     const point = await evaluate(`(() => { const r=document.querySelector('#${id}').getBoundingClientRect(); return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}; })()`);
-    await input({ kind:'click', ...point }, { _retained_agent:true });
+    events.length=0;
+    await assert.rejects(input({ kind:'click', ...point }, { _retained_agent:true }), {code:'sensitive_requires_focus'});
+    assert.deepEqual(events,[]);
+    await input({ kind:'click', ...point }, { _retained_agent:false });
   }
   assert.equal(await evaluate('window.effects'), 1, 'MP-08: positively routine Search remains usable');
   assert.deepEqual(failures, [], 'MP-11: retained matrix dispatched native input or handler effects');
-  console.log(`MP-08/MP-10/MP-11 native matrix: ${refusals} retained refusals, ${focused} focused activations; Search and ordinary page click pass`);
+  console.log(`MP-08/MP-10/MP-11 native matrix: ${refusals} retained refusals, ${focused} focused activations; Search and ordinary page clicks require focus`);
 }, false));
 
 test("MP-08 P2: paired Tab releases on an approval button without activating or stopping Chromium", () => native(`${field}<button id="pay">Approve payment</button>`, async ({ host, bound, input, status, events }) => {
   const stream = await host.request({ op: "subscribe", ...bound });
-  // Even a retained navigation may release on a sensitive target. The real
-  // kernel focused-input case is also covered by the Rust native drill.
-  await input({ kind: "key", key: "Tab" }, { _retained_agent: true });
+  // MP-08: focused navigation must still release on its sensitive target.
+  await input({ kind: "key", key: "Tab" }, { _retained_agent: false });
   assert.equal(await status(), "submitted=0 releases=1 focus=pay");
   assert.deepEqual(events.map(event => event.type), ["keyDown", "keyUp"]);
   assert.equal((await host.request({ op: "state" })).generation, bound.generation);
   await host.request({ op: "poll", ...stream });
 }));
 
-// MP-08/MP-10/MP-11: generic retained keyboard allow-list, including delegated shortcuts.
-test("MP-11: retained keyboard matrix refuses shortcuts before dispatch; editing/navigation remain usable", () => native(`${field}<div id="root"><button id="action">Search</button></div><textarea id="area"></textarea><div id="edit" contenteditable>text</div>`, async ({ host, bound, input, events, evaluate }) => {
+// MP-08/MP-10/MP-11: retained access permits observation and wheel only.
+test("MP-11: retained native keys/text dispatch nothing in any field or listener path; focused input and retained scroll work", () => native(`<div id="root">${field}<button id="action">Search</button><textarea id="area"></textarea><div id="edit" contenteditable>text</div></div><div style="height:3000px"></div>`, async ({ host, bound, input, events, evaluate }) => {
   let refusals = 0;
   const failures=[];
-  for (const location of ['element', 'document', 'window', 'react-root']) {
-    await evaluate(`(() => {
-      window.cleanup?.(); window.effects=0;
-      const action=document.querySelector('#action'); action.focus();
-      const target=${JSON.stringify(location)} === 'element' ? action :
-        ${JSON.stringify(location)} === 'document' ? document :
-        ${JSON.stringify(location)} === 'window' ? window : document.querySelector('#root');
-      const effect=()=>window.effects++;
-      target.addEventListener('keydown',effect); target.addEventListener('keyup',effect);
-      window.cleanup=()=>{target.removeEventListener('keydown',effect);target.removeEventListener('keyup',effect)};
-    })()`);
-    for (const key of ['Delete', 'Backspace', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'Escape', 'a', 'F1', 'Control+a', 'Shift+Delete']) {
-      events.length=0; await evaluate('window.effects=0');
-      const result=await input({kind:'key',key}, {_retained_agent:true}).then(()=>null,error=>error);
-      const effects=await evaluate('window.effects');
-      if(result?.code!=='sensitive_requires_focus' || events.length!==0 || effects!==0)
-        failures.push({location,key,code:result?.code,dispatched:events.length,effects});
-      refusals++;
+  const keys=['Tab','Shift+Tab','Enter','Space','Delete','Backspace','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','Escape','a','F1','Control+a','Shift+Delete'];
+  for (const id of ['field','area','edit','action']) {
+    for (const location of ['element','document','window','react-root']) {
+      await evaluate(`(() => {
+        window.cleanup?.(); window.effects=0;
+        const action=document.querySelector('#${id}'); action.focus();
+        const target=${JSON.stringify(location)} === 'element' ? action :
+          ${JSON.stringify(location)} === 'document' ? document :
+          ${JSON.stringify(location)} === 'window' ? window : document.querySelector('#root');
+        const effect=()=>window.effects++;
+        const types=['keydown','keyup','beforeinput','input'];
+        for(const type of types) target.addEventListener(type,effect);
+        window.cleanup=()=>{for(const type of types) target.removeEventListener(type,effect)};
+      })()`);
+      const before=await evaluate(`document.querySelector('#${id}').value ?? document.querySelector('#${id}').textContent`);
+      for (const event of [...keys.map(key=>({kind:'key',key})), {kind:'text',text:'must stay focused'}]) {
+        events.length=0; await evaluate('window.effects=0');
+        const result=await input(event, {_retained_agent:true}).then(()=>null,error=>error);
+        const effects=await evaluate('window.effects');
+        if(result?.code!=='sensitive_requires_focus' || events.length!==0 || effects!==0)
+          failures.push({id,location,event,code:result?.code,dispatched:events.length,effects});
+        refusals++;
+      }
+      assert.equal(await evaluate(`document.querySelector('#${id}').value ?? document.querySelector('#${id}').textContent`),before);
+      assert.equal(await evaluate('document.activeElement.id'),id);
+      // MP-08: live focus still allows paired keys on the exact handler path.
+      await evaluate('window.effects=0'); events.length=0;
+      await input({kind:'key',key:'Delete'}, {_retained_agent:false});
+      assert((await evaluate('window.effects'))>=2);
+      assert.deepEqual(events.map(e=>e.type),['keyDown','keyUp']);
+      assert.equal((await host.request({op:'state'})).generation,bound.generation);
     }
-    // Live focus allows the identical destructive shortcut.
-    await evaluate('window.effects=0');
-    await input({kind:'key',key:'Delete'}, {_retained_agent:false});
-    assert.equal(await evaluate('window.effects'),2);
-    assert.equal((await host.request({op:'state'})).generation,bound.generation);
   }
   await evaluate('window.cleanup()');
-  assert.deepEqual(failures,[], 'MP-11: retained keyboard shortcuts dispatched input or effects');
+  assert.deepEqual(failures,[], 'MP-11: retained keys/text dispatched input or effects');
   for (const id of ['field','area','edit']) {
-    await evaluate(`(() => { const e=document.querySelector('#${id}'); e.focus();
-      if(e.isContentEditable) { const r=document.createRange();r.selectNodeContents(e);r.collapse(false);const s=getSelection();s.removeAllRanges();s.addRange(r); }
-      else e.setSelectionRange(e.value.length,e.value.length); })()`);
-    events.length=0;
-    await input({kind:'text',text:'routin'}, {_retained_agent:true});
-    await input({kind:'key',key:'e'}, {_retained_agent:true});
-    await input({kind:'key',key:'Space'}, {_retained_agent:true});
-    await input({kind:'key',key:'Backspace'}, {_retained_agent:true});
-    assert.equal(await evaluate(`document.querySelector('#${id}').value ?? document.querySelector('#${id}').textContent`),id==='edit' ? 'textroutine' : 'routine');
-    for (const key of ['Delete','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End']) {
-      await input({kind:'key',key}, {_retained_agent:true});
-    }
-    assert.equal(events.filter(e=>e.method==='Input.insertText').length,1);
-    // Escape is outside the allow-list even in an editable field.
-    events.length=0;
-    await assert.rejects(input({kind:'key',key:'Escape'}, {_retained_agent:true}), {code:'sensitive_requires_focus'});
-    assert.deepEqual(events,[]);
+    await evaluate(`document.querySelector('#${id}').focus()`);
+    await input({kind:'text',text:'focused'}, {_retained_agent:false});
+    assert((await evaluate(`document.querySelector('#${id}').value ?? document.querySelector('#${id}').textContent`)).includes('focused'));
   }
-  await evaluate("document.querySelector('#field').focus()");
   events.length=0;
-  await input({kind:'key',key:'Tab'}, {_retained_agent:true});
-  await input({kind:'key',key:'Shift+Tab'}, {_retained_agent:true});
-  assert.equal(await evaluate('document.activeElement.id'),'field');
-  await input({kind:'scroll',x:10,y:10,delta_x:0,delta_y:100}, {_retained_agent:true});
-  assert.deepEqual(events.map(e=>e.type),['keyDown','keyUp','keyDown','keyUp','mouseWheel']);
-  // Text insertion into a non-editable control is also outside the allow-list.
-  await evaluate("document.querySelector('#action').focus()"); events.length=0;
-  await assert.rejects(input({kind:'text',text:'a'}, {_retained_agent:true}), {code:'sensitive_requires_focus'});
-  assert.deepEqual(events,[]);
-  console.log(`MP-08/MP-10/MP-11 keyboard matrix: ${refusals} zero-dispatch refusals; 4 focused shortcuts; editable text/navigation, Tab/Shift+Tab/wheel pass`);
+  await input({kind:'scroll',x:1000,y:500,delta_x:0,delta_y:600}, {_retained_agent:true});
+  await evaluate('new Promise(resolve=>setTimeout(resolve,500))');
+  assert((await evaluate('window.scrollY'))>0,'MP-08: retained wheel must scroll the page');
+  assert.deepEqual(events.map(e=>e.type),['mouseWheel']);
+  await host.request({op:'snapshot',...bound,_retained_agent:true});
+  assert.equal((await host.request({op:'state',_retained_agent:true})).generation,bound.generation);
+  for(const command of [{op:'navigate',url:'about:blank'},{op:'close'},{op:'stop'},{op:'open',url:'about:blank'},{op:'start'}]) {
+    events.length=0;
+    await assert.rejects(host.request({...bound,...command,_retained_agent:true}),{code:'not_focused_agent'});
+    assert.deepEqual(events,[]);
+    assert.equal((await host.request({op:'state'})).generation,bound.generation);
+  }
+  console.log(`MP-08/MP-10/MP-11 native keyboard matrix: ${refusals} zero-dispatch refusals; focused keys/text, retained state/snapshot/wheel pass`);
 }, false));
 
 test("MP-11: retained observation cannot restart native Chromium after human stop", () => native(field, async ({ host, bound }) => {
