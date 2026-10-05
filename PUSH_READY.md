@@ -1,67 +1,59 @@
-# MD-DISPLAY-02/04 — Phase 3 handoff, local only
+# MD-DISPLAY-02/04 — Phase 4 ready for coordinator review
 
-Branch `agent/display-impl`, latest execution source
-`836e64630bc53d42e488dc97142416fdb0c92271`. Rebased onto kbrowser
-`d6d03751ffea37198fb33530829f4cd76ae30fbf` as requested in REVIEW_INBOX 01:35 UTC.
-The final handoff commit changes documentation only. Shared local protocol 419
-is allocated and bumped in `5d6fb3c39`, with Rust/TypeScript guards and snapshots;
-`0949b015d` updates that allocation's request hash for the shared actor adapter.
-Relay wire shapes/version remain unchanged. Flag defaults off.
+Local branch agent/display-impl, execution + kernel build 05387e1e4; repeat
+69a4897ef differs only in lane status. Default-off flag and protocol 419 remain.
+No publishing action performed. Documentation/status-only final commits follow.
 
-MD-DISPLAY-04: kernel-owned headed Chromium → protected DPR2 screenshot → VP9 →
-exact PNG/dirty tiles → bounded existing local events and encrypted relay events.
-The typed `KernelBrowserDisplayRequest` owns capture/input/takeover/release/actor
-admission; the portable adapter adds negotiation/encoded-capture variants inside
-that same barrier. Public input carries the displayed source document and uses
-the shared actor ledger. No raw CDP source, Cloud media proxy, hosted service or
-parallel browser authority is introduced. `apps/browser-display/presenter.mjs`
-and harness are ready for coordinator Cloud wiring; integration and migration
-note: `docs/MULTIDOMAIN_KERNEL_BROWSER_DISPLAY.md`.
+MD-DISPLAY-02 result: real sandboxed headed kernel Chromium outside slices,
+DPR2 at 1280x800 CSS, 2 Mbps, existing encrypted production local-relay path.
+Before p50/p95 744.20/778.20 ms. Final two runs 73.80/92.40 and 72.80/83.90 ms,
+20/20 clicks each; exact settled/final RGB (MSE 0). Repeat includes 100.05 seconds /
+256 static polls then live input. Bootstrap VP9 remains 34.04 dB; large video/PNG
+refinement and arbitrary moving pages do not meet this small-change latency proof.
+Software rAF + checked canvas readback is a presentation proxy, not hardware photons.
+Observed CPU 162–172% of one core, received application 27.7/26.7 KB/s; rate excludes
+bootstrap/requests/TLS and includes resource-sampling time. 2 Mbps budget charges
+bootstrap/repair, with a bounded 16 KiB idle allowance. Stale input, shared actor
+takeover/fencing/owner input/release/resumption and cleanup pass in both runs.
 
-MD-DISPLAY-02/04 final proof: real sandboxed headed source outside slices, focused
-MCP dev-stub open, actual scoped-auth production local relay, standard browser
-WebCrypto, exact settled/patch RGB pairs, 20/20 click acknowledgements, stale
-input rejection, human takeover/MCP fencing/owner input/release and resumption.
-Final p50/p95/p99 771.71/822.16/829.50 ms. Bootstrap VP9 34.04 dB. Click interval
-received encrypted bytes/s 7,451; bootstrap/repair excluded from that rate, but
-included in frame pacing at the 2 Mbps budget. Observed CPU 70.5% of one core,
-including readback and excluding exited workers. Geometry differs from Phase 2.
-**Latency remains RED; this is not acceptance or a proven general Selkies replacement.**
+MD-DISPLAY-04 implementation: optimized Linux owned-process identity reads
+(fresh full signal verification preserved); protected fast native PNG + private
+thumbnail-guided DPR crops; full idle verification; crop-bounded PNG tiles;
+small encrypted events use bounded priority delivery; TCP_NODELAY; event decode
+starts before receipt but single credit waits for both. No new protocol shape,
+relay inspection/authority, hosted service, Cloud media route or provider path.
 
-MD-DISPLAY-04 validation: 33 Node checks; 14 Rust request/event/conformance/actor/
-takeover/origin checks; kernel-client TypeScript; rustfmt and local build pass.
-Build has 40 warnings. Failure receipts, pixel pairs/diffs and raw distributions
-are external. `phase3/provenance.json` binds final source, commands/exits, 118
-source hashes, 28 exact embedded assets and the final binary SHA-256. Final
-receipt: `/root/.codex/evidence/browser-resume-20260930/display/phase3/final-typed-relay-2mbps/results.json`.
-Preserved manifests: `pre-rebase-provenance.json`,
-`typed-api-before-retry-provenance.json`. Neither old results nor Phase-2 research
-are relabelled as final-file coverage. `handoff.json` verifies unchanged execution
-files across this final documentation commit.
+MD-DISPLAY-04 review mapping (REVIEW_INBOX 02:17):
 
-MD-DISPLAY-02 reviewer/coordinator mapping:
+- Static active polls expired registration: c8518a3e2 renews only successful
+  admitted display_next. Fail-first static-100s-fail-first-v2/results.json;
+  deterministic paused-time unit + final-damage-static-100s live receipt pass.
+  Foreign key cannot renew; genuine idle still expires.
+- Transient frame overwrote session resume cursor: 69e1782ef uses local event_id 0
+  and IPC ignores kernel_browser_frame for durable cursors. Fail-first real
+  fake-WebSocket reconnect cursor 1 vs 500; fixed regression preserves 500.
+- Uncached display_next auto replayed after stall/loss: 69e1782ef recognizes the
+  nested command, keeps outcome-unknown/no automatic replay and no pixel cache.
+  Fail-first delayed/lost-response cases in client-review-fail-first.log;
+  final-client-tests.log passes 11. Cloud integration note requires same behavior.
 
-- Phase-2 PR #844 findings 1–4 remain attributed to their fixes/receipts on
-  `agent/display`; no claim that those executions cover this implementation.
-- New worker errors reach awaited cleanup; unsafe PIDs are guarded. Fail-first
-  `encoder-retry-fail-first.log` exposes/fixes retry spawning after worker failure
-  in `836e64630`; no unawaited replacement is launched.
-- Fail-first `presenter-credit-fail-first.log` exposes/fixes an event-before-receipt
-  credit race in `b42b33787`; one credit stays held through presentation.
-- REVIEW_INBOX 01:35: rebase onto d6d03751f; `0949b015d` attaches through the typed
-  API and shared actors. Final live relay receipt proves takeover/release behavior.
-- Direct browser/native socket attempt remains a RED historical receipt. The
-  existing Origin refusal is preserved and passes its focused test; the harness
-  uses the admitted relay path. No guard weakened to make the drill pass.
+MD-DISPLAY-02 provenance: external phase4/provenance.json binds binary SHA256,
+134 unchanged execution hashes, 30 exact embedded assets, commands/exits/checks
+and historical/final receipts. Final clean receipts: final-damage-2mbps and
+final-damage-static-100s. Source 05387e1e4 and 69a4897ef respectively; no dirty flags.
+Earlier successes, failures and mixed-source/dirty receipts retain their identities.
+Intermediate final-clean-2mbps at 6cfcf6410 is RED (p50 88.50, p95 100.20); bounded
+tile scan addresses its remaining cost. Nothing is relabelled as final-file coverage.
 
-MD-DISPLAY-02 cleanup: exact owned process inventory empty and disposable runtime
-state removed after every final run; no containers created. Removed 6.16 GiB own
-incremental output and own temporary links/helper; binary/dependency objects
-retained only for coordinator replay. `phase3/cleanup.json` records inventory and
-protected-path exclusions. No shared caches, services, keys/accounts or other
-lane resources changed. No push, PR, CI, merge, Cloud staging or deployment.
+MD-DISPLAY-04 checks: 39 Node, 13 Rust ownership/registration/queue/protocol/event/
+actor/takeover/origin, 11 IPC; TypeScript, rustfmt and slot 2 build pass (40 existing
+warnings). All measurements/screenshots remain external under
+/root/.codex/evidence/browser-resume-20260930/display/phase4/.
+Cleanup.json records 6.41 GB removed own output, no scratch or owned processes;
+current binary/dependencies retained for coordinator replay. No shared resources
+or protected stores changed. Research branch agent/display remains untouched.
 
-MD-DISPLAY-04 next: independent review, Cloud flag wiring, profile the kernel
-capture/PNG/serialization/actor cost, then matched-geometry bitrate/media/WAN,
-slow-viewer/reconnect, live Vault and native OS gates. Owner budget/design and
-Room migration decisions remain open; no MP or MD acceptance item closes here.
+MD-DISPLAY-04 next gates: independent review and coordinator Cloud wiring;
+matched moving-media/bitrate/WAN, slow viewer/reconnect/live Vault, native OS,
+multi-viewer and Room acceptance. This is local component readiness, no MD/MP
+acceptance closure. Owner transport/design decisions remain open; feature stays off.
