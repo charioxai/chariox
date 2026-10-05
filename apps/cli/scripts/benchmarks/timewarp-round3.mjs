@@ -14,7 +14,8 @@ import { startOwnedRuntime } from './round2/runtime.mjs'
 import { Round2Room } from './round2/room.mjs'
 import { stopOwnedProcess } from './round2/owned-processes.mjs'
 import { openKernelClient, unwrap, loadTurnHistory, waitForSettlement } from './round2/kernel.mjs'
-import { writeEvidence } from './round2/export.mjs'
+import { writeEvidence, settlementRecord } from './round2/export.mjs'
+import { observeKernelRpcErrors } from './round2/rpc-errors.mjs'
 import { auditTimeWarpHistory } from './timewarp-history.mjs'
 import { permittedBrowserTool } from './round2/browser-track.mjs'
 import { sanitizeDrillMetadata } from '../lib/drill-secrets.mjs'
@@ -40,6 +41,9 @@ assert.match(runId,/^r2next-timewarp-[a-z0-9-]+$/)
 const signal=()=>{interrupted=true}
 process.on('SIGTERM',signal);process.on('SIGINT',signal)
 await mkdir(evidence,{recursive:true,mode:0o700})
+// A restarted process may not overwrite admissions or replay an ambiguous prompt.
+const prior=await readFile(`${evidence}/CAMPAIGN.json`,'utf8').catch(error=>{if(error.code==='ENOENT')return null;throw error})
+assert.equal(prior,null,'MP-10 fresh campaign output required; preserve prior attempts')
 const checkpoint=async()=>{
   await writeEvidence(evidence,'CAMPAIGN.json',report)
   await writeEvidence(evidence,'RESULTS.json',report.attempts)
@@ -154,6 +158,7 @@ try {
   stage='runtime_startup';runtime=await startOwnedRuntime(options.runtime)
   report.runtime=runtime.source;await checkpoint()
   api=await openKernelClient({clientRoot:options.runtime.clientRoot,kernelUrl:runtime.kernelUrl})
+  observeKernelRpcErrors(api.client,failure=>appendFile(`${evidence}/rpc-errors.jsonl`,JSON.stringify(failure)+'\n'))
   const helpers=await import(pathToFileURL(`${options.runtime.clientRoot}/dist/session-history-fragments.js`))
   api.helpers=helpers
   room=new Round2Room(api,{workspace:runtime.workspace,runId,checkpoint:owned=>writeEvidence(evidence,'ownership.json',owned)})
@@ -215,14 +220,15 @@ try {
         try{await guard();return null}catch{return {cause:'resource_floor_or_interruption'}}
       }})
       row.turnLifecycle=settled.turn?.lifecycle??null;row.timedOut=Boolean(settled.cancellation);row.settlementMs=settled.elapsedMs
-      if(row.timedOut||row.turnLifecycle!=='completed')throw Error('MP-10 provider settlement RED')
       stage='history_audit'
-      const entries=await loadTurnHistory(api,{...identity,turn:settled.turn})
+      const entries=settled.turn?await loadTurnHistory(api,{...identity,turn:settled.turn}):[]
+      row.settlement=settlementRecord({...settled,...identity,entries,helpers})
+      row.providerUnauthorized=entries.some(item=>item.entry.kind==='provider_error'&&/401|unauthorized|refresh_token_reused/i.test(item.entry.text))
+      if(row.timedOut||row.turnLifecycle!=='completed'){stage='provider_settlement';throw Error('MP-10 provider settlement RED')}
       const audit=auditTimeWarpHistory(settled.turn,entries,helpers)
       row.answer=audit.answer;row.providerError=audit.providerError
       row.tools=audit.tools.map(record=>({tool:record.tool,status:record.status,input:sanitizeDrillMetadata(record.input)}))
       row.toolAuditComplete=true
-      row.providerUnauthorized=entries.some(item=>item.entry.kind==='provider_error'&&/401|unauthorized|refresh_token_reused/i.test(item.entry.text))
       const history=unwrap(await api.client.send(api.requests.listRoomEnvironmentActionHistoryRequest(identity.sessionId,null,1000)),'RoomEnvironmentActionHistoryListed').page.actions
       row.actions=history.filter(a=>a.actor_id===`agent:${identity.agentId}`&&a.submitted_at_ms>=started)
       row.mutatingActions=row.actions.filter(a=>!new Set(['browser_status','browser_find','browser_text','browser_wait_for_text','browser_events','browser_downloads']).has(a.kind)).length
