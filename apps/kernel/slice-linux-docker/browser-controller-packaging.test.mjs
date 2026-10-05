@@ -1,13 +1,42 @@
 import assert from "node:assert/strict"
-import { readFile } from "node:fs/promises"
+import { copyFile, mkdtemp, readFile, rm } from "node:fs/promises"
+import { execFile } from "node:child_process"
+import { tmpdir } from "node:os"
+import { promisify } from "node:util"
 import path from "node:path"
 import test from "node:test"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 const dockerRoot = path.resolve(fileURLToPath(new URL("./docker/", import.meta.url)))
 const controllerEntry = path.join(dockerRoot, "browser-controller.mjs")
 const dockerfilePath = path.join(dockerRoot, "Dockerfile")
 const provisionerPath = fileURLToPath(new URL("./provision-linux-docker-slice.sh", import.meta.url))
+
+test("MP-08/MP-10 refreshed controller imports load from an empty legacy support directory", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+  const refresh = source.slice(source.indexOf("refresh_slice_support_files() {"), source.indexOf("\nwait_for_container_running()"))
+  async function loadOverlays(text) {
+    const root = await mkdtemp(path.join(tmpdir(), "chariox-browser-overlay-"))
+    try {
+      // Stage exactly the local controller files named by the real refresh.
+      for (const match of text.matchAll(/\$REPO_ROOT\/apps\/kernel\/slice-linux-docker\/docker\/([^"\s]+\.mjs)/g)) {
+        await copyFile(path.join(dockerRoot, match[1]), path.join(root, match[1]))
+      }
+      for (const name of ["actions", "cdp", "snapshot"]) {
+        await promisify(execFile)(process.execPath, ["--input-type=module", "--eval",
+          "await import(process.argv[1])", pathToFileURL(path.join(root, `browser-controller-${name}.mjs`)).href])
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+  for (const name of ["actionability", "interactions", "geometry"]) {
+    const missing = refresh.split("\n").filter(line => !line.includes(`docker/browser-controller-${name}.mjs`)).join("\n")
+    await assert.rejects(loadOverlays(missing), error => /ERR_MODULE_NOT_FOUND/.test(error.stderr),
+      `MP-10 missing ${name} must reproduce an unresolved import on upgrade`)
+  }
+  await loadOverlays(refresh)
+})
 
 test("slice packaging installs every browser controller runtime module", async () => {
   const [modules, dockerfile, provisioner] = await Promise.all([
