@@ -70,9 +70,10 @@ done
     let policy = json!({"values":[],"targets":[],"unknown":false});
     std::thread::scope(|scope| {
         let running = scope.spawn(|| {
-            host.protected_request(
+            let admission = host.admit("alice", "agent").unwrap();
+            host.protected_request_admitted(
                 "alice",
-                Some("agent"),
+                Some(&admission),
                 "host.browser",
                 mutation.clone(),
                 policy.clone(),
@@ -120,11 +121,19 @@ done
         if focus_change {
             result.unwrap();
         } else {
-            assert!(result.unwrap_err().contains(if revoke {
-                "revoked"
+            let error = result.unwrap_err();
+            if revoke {
+                assert!(matches!(
+                    error,
+                    crate::error::HostFailure::Refused(
+                        crate::error::UserDomainRefusalReason::NotGranted
+                    )
+                ));
             } else {
-                "browser_action_cancelled"
-            }));
+                assert!(
+                    matches!(error, crate::error::HostFailure::Other(message) if message.contains("browser_action_cancelled"))
+                );
+            }
         }
     });
     assert_eq!(root.join("cancelled").exists(), !focus_change);
@@ -137,7 +146,14 @@ done
     } else if !focus_change {
         let admission = host.admit("alice", "agent").unwrap();
         assert!(matches!(
-            host.protected_request_admitted("alice", Some(&admission), "host.browser", mutation, policy).unwrap_err(),
+            host.protected_request_admitted(
+                "alice",
+                Some(&admission),
+                "host.browser",
+                mutation,
+                policy
+            )
+            .unwrap_err(),
             crate::error::HostFailure::Refused(crate::error::UserDomainRefusalReason::NotGranted)
         ));
         let state = host.actor_snapshot("alice").unwrap();
@@ -453,7 +469,10 @@ done
         "MP-10: startup fixture never reached its native handshake"
     );
     assert!(immediate, "MP-11: startup I/O blocked grant revocation");
-    assert!(outcome.unwrap_err().contains("not_granted"));
+    assert!(matches!(
+        outcome.unwrap_err(),
+        crate::error::HostFailure::Refused(crate::error::UserDomainRefusalReason::NotGranted)
+    ));
 }
 
 #[test]
@@ -591,7 +610,10 @@ fn mdaccess_idle_lapse_refuses_retained_keys_text_clicks_and_note_commits() {
                 Value::Null,
             )
             .unwrap_err();
-        assert!(error.contains("not_granted"));
+        assert!(matches!(
+            error,
+            crate::error::HostFailure::Refused(crate::error::UserDomainRefusalReason::NotGranted)
+        ));
     }
     assert!(host
         .note_operation::<()>("owner", Some(&admission), || panic!(
@@ -698,7 +720,10 @@ done
         "MP-11: revoked result populated the fresh grant"
     );
     assert!(
-        result.unwrap_err().contains("not_granted"),
+        matches!(
+            result.unwrap_err(),
+            crate::error::HostFailure::Refused(crate::error::UserDomainRefusalReason::NotGranted)
+        ),
         "MP-11: old request crossed result authority boundary"
     );
 }
@@ -764,7 +789,7 @@ done
                     )
                     .map(|_| ())
                 } else {
-                    host.protected_request_admitted("alice", Some(&admission), "host.browser", json!({"op":op,"tab_id":"host-tab-a","generation":1,"document_id":"d","input":{"kind":"text","text":"fixture"}}), json!({"values":[],"targets":[],"unknown":false})).map(|_| ())
+                    host.protected_request_admitted("alice", Some(&admission), "host.browser", json!({"op":op,"tab_id":"host-tab-a","generation":1,"document_id":"d","input":{"kind":"text","text":"fixture"}}), json!({"values":[],"targets":[],"unknown":false})).map(|_| ()).map_err(|error| error.to_string())
                 }
             };
             let initial = call();

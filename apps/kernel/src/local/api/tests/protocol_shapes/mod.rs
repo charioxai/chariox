@@ -43,6 +43,7 @@ mod room_environment_placement;
 mod slice_disk_quota;
 mod slice_display;
 mod slice_logs;
+mod staging_union;
 mod user_app_views;
 mod user_domain_access;
 mod workflow_code;

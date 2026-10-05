@@ -1,7 +1,7 @@
 // MD-N3 / MP-08 / MP-11: shared trusted-host adapter. Cloud owns the overlay UI.
 import type { PromptAttachmentPart } from "./kernel-types-provider.js"
 
-export const notesMinimumProtocolVersion = 434
+export const notesMinimumProtocolVersion = 443
 export type NoteWindow =
   | { kind: "kernel_browser"; tab_id: string; generation: number }
   | { kind: "room_browser"; session_id: string; tab_id: string }
@@ -34,7 +34,7 @@ export type NotesResponse = { Notes: { result: NoteResult } }
 
 export function notesRequest(command: NoteCommand, protocolVersion: number) {
   if (!Number.isSafeInteger(protocolVersion) || protocolVersion < notesMinimumProtocolVersion) {
-    throw new Error("MD-N3: notes require kernel protocol 434; upgrade this kernel")
+    throw new Error("MD-N3: notes require kernel protocol 443; upgrade this kernel")
   }
   return { Notes: { command } }
 }

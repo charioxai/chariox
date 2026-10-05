@@ -206,14 +206,13 @@ impl KernelRuntimeOwnedState {
         );
         let pending = {
             let pending = self.pending_interactions.write();
-            pending
-                .get(interaction_id)
-                .cloned()
-                .ok_or_else(|| interaction_reference_error(
+            pending.get(interaction_id).cloned().ok_or_else(|| {
+                interaction_reference_error(
                     session_id,
                     "resolve runtime interaction",
                     format!("interaction {interaction_id} was not pending"),
-                ))?
+                )
+            })?
         };
         if sudo.is_some()
             && (pending.terminal_credential_owner.is_some()

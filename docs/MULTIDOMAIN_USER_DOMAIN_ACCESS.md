@@ -1,6 +1,6 @@
 # MP-08 / MP-10 / MP-11: user-domain access
 
-Owner decision, 2026-10-05. Local protocol **432**, relay peer **78**. This
+Owner decision, 2026-10-05. Staging round-2 union: local protocol **443**, relay peer **86**. This
 contract supersedes the focus-revocation text in earlier multidomain receipts.
 The kernel owns it equally on ordinary and managed placements.
 
@@ -72,7 +72,7 @@ loading/unrelated new-resource claims, `sensitive_requires_focus` for Vault or
 other focus-required protected operations, and `not_granted` for absent,
 expired or revoked grants. Browser unavailability is a lifecycle error, not a
 focus refusal. String/MCP errors keep the existing transport envelopes.
-Protocol remains 432/78; this correction changes no public serialized shape.
+PR #880 used 432/78; the composed staging union pins the reconciled shape at 443/86.
 
 There is no cross-kernel control. Browser windows expose `kernel_id`,
 `kernel_name`, `focused_agent_kernel_id` and `reachable_by_focused_agent`; App
@@ -80,8 +80,8 @@ views expose the same fields under `access`. A remote/leased runtime MCP call
 fails with the execution/window kernels and asks the agent to request focus on
 the window's kernel. Shared client `userDomainWindowBadge` supplies:
 "Your focused agent can't control this window — focus an agent on kernel <name>".
-Only clients consuming these new commands/projections need minimum 432; existing
-browser/App/notes/capture behavior keeps minimum 427.
+The composed staging union requires minimum 443 on access, browser/App/notes/capture
+paths; ordinary terminal protocol gates remain unchanged.
 
 App and capture IDs have explicit resource kinds in the shared grant contract.
 Browser-hosted App observations use the browser authority; browser mutations
@@ -113,10 +113,10 @@ The web Access view lives inside the existing Browser dialog; no new rail item
 is added. It lists holder, session, kernel, touched resource IDs, observed
 retained-use time and the kernel idle deadline, with per-holder and all-holder
 revocation. Both consumers share the cursor projection and notice formatting.
-Only these grant consumers and cross-kernel badges require 432; existing
-multidomain browser/App/notes/capture minima remain 427.
+The staging round-2 union requires protocol 443 for grant consumers, cross-kernel badges
+and multidomain browser/App/notes/capture paths; ordinary terminal minima remain unchanged.
 
-Protocol 432 does not expose a per-holder last-use timestamp. Clients label the
+This grant contract does not expose a per-holder last-use timestamp. Clients label the
 latest notice they observed as **last observed retained use**, show **Not
 observed** otherwise, and do not infer use from grant creation, idle transitions
 or focus. The live snapshot carries only the latest owner notice, so this is

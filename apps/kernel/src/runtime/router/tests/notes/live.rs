@@ -162,7 +162,11 @@ async fn check_live() {
     if std::env::var_os("CHARIOX_MD_HARDENING_DRILL").is_some() {
         let mut sessions = app.sessions_mut();
         let mut shared = sessions.get_session(session.id()).unwrap();
-        shared.add_member("collaborator-fixture", Some(first.owner_user_id().into()), crate::session::CollaborationLevel::Full);
+        shared.add_member(
+            "collaborator-fixture",
+            Some(first.owner_user_id().into()),
+            crate::session::CollaborationLevel::Full,
+        );
         sessions.restore_session(shared);
     }
     let second = spawn_test_agent(&mut app, session.id(), "second", "dev-stub");

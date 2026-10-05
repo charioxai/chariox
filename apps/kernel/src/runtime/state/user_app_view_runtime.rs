@@ -209,9 +209,12 @@ impl KernelRuntimeState {
                 // Do not enter the passkey gate or answered-prompt cache until
                 // the owner has a live detached decision reference. Foreign,
                 // fabricated and retired references are indistinguishable.
-                if !self.owned.user_domain_interactions(owner).iter().any(|interaction| {
-                    interaction.id() == request.interaction_id
-                }) {
+                if !self
+                    .owned
+                    .user_domain_interactions(owner)
+                    .iter()
+                    .any(|interaction| interaction.id() == request.interaction_id)
+                {
                     return Err(DaemonError::UserDomainRefused {
                         reason: crate::error::UserDomainRefusalReason::NotGranted,
                     });

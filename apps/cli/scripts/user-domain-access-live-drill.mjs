@@ -41,7 +41,7 @@ try {
   await until(async () => { const s = net.createConnection(port, '127.0.0.1'); return new Promise(resolve => { s.on('connect', () => { s.destroy(); resolve(true); }); s.on('error', () => resolve(false)); }); }, 'kernel listener');
   control = new LocalIpcClient(`ws://127.0.0.1:${port}/kernel`, { localAuthEnvironment: { ...process.env, CHARIOX_HOME: home } }); clients.push(control);
   const presence = await until(async () => JSON.parse(await readFile(home + "/kernels/active/mdgrants-drill.json", "utf8")), "kernel protocol presence");
-  assert.equal(presence.local_daemon_protocol_version, 432);
+  assert.equal(presence.local_daemon_protocol_version, 443);
   const created = (await send(request.createSessionRequest(oss, oss, 'mdgrants', { provider: 'dev-stub', model: 'slow-first-output-drill' }))).SessionCreated;
   assert.ok(created); sessionId = created.session.id; const first = created.agent.id;
   const attachment = (await send(request.attachToSessionRequest(sessionId, 'mdgrants-drill'))).SessionAttached.attachment.id;
@@ -65,7 +65,7 @@ try {
   const retainedRead = await tool(run, 'chariox.read_note', { note_id: note.note_id }); assert.ok(!retainedRead.error && !retainedRead.result?.isError, JSON.stringify(retainedRead));
   const notice = (await subscribed).KernelBrowser.result;
   assert.ok(notice.cursor > retained.cursor); assert.equal(notice.notice.agent_id, first); pass('non-focused use advances live cursor and publishes notice');
-  tui = createAccessCommandController({ client: { localDaemonProtocolVersion: 432, send: value => control.send(value) }, appendNotice: line => tuiLines.push(line) });
+  tui = createAccessCommandController({ client: { localDaemonProtocolVersion: 443, send: value => control.send(value) }, appendNotice: line => tuiLines.push(line) });
   await tui.handle([]);
   assert.ok(tuiLines.some(line => line.includes(first) && line.includes(note.note_id)));
   await tui.handle(['revoke', first]);
@@ -77,7 +77,7 @@ try {
   await tui.handle(['revoke', 'all']);
   assert.equal((await grants({ op: 'list_grants' })).grants.length, 0); pass('revoke all clears owner grants');
   await writeFile(evidence + '/live-tui-access.txt', tuiLines.join('\n') + '\n', { mode: 0o600 });
-  await writeFile(evidence + '/live-results.json', JSON.stringify({ protocol: 432, relay: 78, scope: 'Separate production kernel process, local owner WebSocket controls, real provider-bound MCP HTTP calls, dev-stub held turn and panel note. No official-provider or native-browser acceptance claim.', results, cleanup: 'Owned process group terminated; disposable state removed.' }, null, 2));
+  await writeFile(evidence + '/live-results.json', JSON.stringify({ protocol: 443, relay: 86, scope: 'Separate production kernel process, local owner WebSocket controls, real provider-bound MCP HTTP calls, dev-stub held turn and panel note. No official-provider or native-browser acceptance claim.', results, cleanup: 'Owned process group terminated; disposable state removed.' }, null, 2));
 } finally {
   tui?.stop();
   if (control && sessionId) await control.send(request.teardownProviderProcessesRequest('dev-stub', true)).catch(() => {});

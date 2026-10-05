@@ -39,7 +39,9 @@ impl UserDomainRefusalReason {
         match message {
             "MD-3: current local focus required"
             | "MD-N4: current focused agent required"
-            | "MD-3: user-domain browser access follows current local agent focus" => {
+            | "MD-3: user-domain browser access follows current local agent focus"
+            | "MP-08: not_focused_agent: new user-domain resource requires focus; focus this agent"
+            | "MP-08: not_focused_agent: user-domain browser access requires current local agent focus; ask the user to focus this agent" => {
                 Some(Self::NotFocusedAgent)
             }
             "MD-3: browser admission belongs to another user" | "MD-N4: foreign note owner" => {
@@ -67,7 +69,13 @@ impl UserDomainRefusalReason {
             | "MD-3: only the input owner may release takeover"
             | "MD-3: admitted local provider run required"
             | "MD-N4: one admitted local provider run required"
-            | "MD-3: authenticated terminal required" => Some(Self::NotGranted),
+            | "MD-3: authenticated terminal required"
+            | "MP-08: not_granted: user-domain access expired or revoked; focus this agent again"
+            | "MP-08: not_granted: user-domain grant revoked"
+            | "MP-08: not_granted: revoked subscription"
+            | "MP-11: not_granted: browser authority revoked"
+            | "MD-N4: note grant changed" => Some(Self::NotGranted),
+            "MP-11: sensitive_requires_focus: sensitive user-domain action requires focus or human approval; focus this agent" => Some(Self::SensitiveRequiresFocus),
             _ => None,
         }
     }
@@ -103,5 +111,34 @@ impl HostFailure {
             Self::Refused(reason) => super::DaemonError::UserDomainRefused { reason },
             Self::Other(message) => super::DaemonError::LocalTransport { operation, message },
         }
+    }
+}
+
+#[cfg(test)]
+mod staging_union_tests {
+    use super::*;
+    #[test]
+    fn retained_access_policy_refusals_are_typed_without_untrusted_prefix_matching() {
+        for message in [
+            "MP-08: not_granted: user-domain access expired or revoked; focus this agent again",
+            "MP-08: not_granted: user-domain grant revoked",
+            "MP-08: not_granted: revoked subscription",
+            "MP-11: not_granted: browser authority revoked",
+            "MD-N4: note grant changed",
+        ] {
+            assert!(matches!(
+                HostFailure::from(message),
+                HostFailure::Refused(UserDomainRefusalReason::NotGranted)
+            ));
+        }
+        for message in [
+            "not_granted",
+            "user_domain_not_granted",
+            "MP-08: not_granted: page-controlled text",
+        ] {
+            assert_eq!(UserDomainRefusalReason::from_policy(message), None);
+        }
+        assert_eq!(UserDomainRefusalReason::from_policy("MP-08: not_focused_agent: new user-domain resource requires focus; focus this agent"), Some(UserDomainRefusalReason::NotFocusedAgent));
+        assert_eq!(UserDomainRefusalReason::from_policy("MP-11: sensitive_requires_focus: sensitive user-domain action requires focus or human approval; focus this agent"), Some(UserDomainRefusalReason::SensitiveRequiresFocus));
     }
 }

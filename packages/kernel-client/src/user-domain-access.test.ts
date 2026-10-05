@@ -5,7 +5,7 @@ import type { UserDomainGrant, UserDomainGrantEvent } from "./kernel-types-kerne
 const grant: UserDomainGrant = { agent_id: "a", session_id: "s", kernel_id: "k", resources: [{ kind: "note", note_id: "n" }], since_ms: 100, focused: false, idle_since_ms: null, idle_timeout_seconds: 1800, expiry_rule: "kernel policy" }
 const event = (cursor: number, grants = [grant], notice: UserDomainGrantEvent["notice"] = null): UserDomainGrantEvent => ({ event: "user_domain_grants_changed", cursor, grants, notice })
 const tick = () => new Promise(resolve => setImmediate(resolve))
-function fixture(version = 432) {
+function fixture(version = 443) {
   const requests: any[] = [], pending: { resolve(value: unknown): void; options: any }[] = []
   let current = event(1), binding = "owner/kernel", connected = true
   const client: UserDomainAccessClient = { localDaemonProtocolVersion: version, async send<T>(request: any, options: any): Promise<T> {
@@ -16,9 +16,9 @@ function fixture(version = 432) {
   const controller = new UserDomainAccessController({ client: () => connected ? client : null, bindingKey: () => binding })
   return { controller, requests, pending, set: (value: UserDomainGrantEvent) => { current = value }, move: () => { binding = "other/owner" }, disconnect: () => { connected = false } }
 }
-test("grant consumers alone require 432 and send nothing to older kernels", () => {
+test("grant consumers alone require 443 and send nothing to older kernels", () => {
   for (const version of [0, 427, 431]) {
-    const h = fixture(version); h.controller.sync(); assert.match(h.controller.error!, /432/); assert.equal(h.requests.length, 0); h.controller.stop()
+    const h = fixture(version); h.controller.sync(); assert.match(h.controller.error!, /443/); assert.equal(h.requests.length, 0); h.controller.stop()
   }
 })
 test("cursor feed observes retained use and suppresses repeats, revoke cancels authority", async () => {
@@ -84,7 +84,7 @@ test("successful lower-cursor replay refreshes authority and fences concurrent o
   const notice = { agent_id: "a", resource: grant.resources[0]!, at_ms: 500 }
   let current = event(100, [grant], notice)
   const requests: any[] = [], pending: { options: any; resolve(value: unknown): void }[] = []
-  const client: UserDomainAccessClient = { localDaemonProtocolVersion: 432, async send<T>(request: any, options: any): Promise<T> {
+  const client: UserDomainAccessClient = { localDaemonProtocolVersion: 443, async send<T>(request: any, options: any): Promise<T> {
     options?.beforeSend?.()
     const command = request.KernelBrowser.command
     requests.push(command)
