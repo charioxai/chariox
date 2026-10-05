@@ -859,6 +859,28 @@ async fn handle_kernel_connection(
     .await
 }
 
+// MP-08/MP-10/MP-11: socket fixtures supply an already admitted terminal;
+// routing, reply serialization, queues and cleanup remain production paths.
+#[cfg(test)]
+pub(crate) async fn serve_admitted_test_socket<S>(
+    router: Arc<CommandRouter>,
+    socket: tokio_tungstenite::WebSocketStream<S>,
+) -> Result<(), DaemonError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let runtime = Arc::new(KernelTransportRuntime::new(router.transport_health_store()));
+    serve_kernel_socket(
+        runtime,
+        router,
+        InboundRequestAdmission::new(process_inbound_request_limit()),
+        socket,
+        KernelConnectionClass::Terminal,
+        None,
+    )
+    .await
+}
+
 async fn serve_kernel_socket<S>(
     runtime: Arc<KernelTransportRuntime>,
     router: Arc<CommandRouter>,

@@ -124,51 +124,27 @@ async fn check_artifacts() {
         assert_eq!(large_provider.payload["identity"]["redaction"], "none");
         assert_eq!(base64::engine::general_purpose::STANDARD.decode(large_provider.payload["image_base64"].as_str().unwrap()).unwrap(), large_bytes);
         assert!(serde_json::to_vec(&json!({"response":{"RoomBrowserArtifact":{"result":large_provider}},"error":null})).unwrap().len() > 1024*1024);
-        // Nested isolated test roots exceed SUN_LEN. Own a short, private
-        // socket path, then use the exact production handler and home router.
-        let socket_root_path = std::path::PathBuf::from(format!(
-            "/tmp/chariox-b207-ipc-{:016x}", rand::random::<u64>()));
-        std::fs::create_dir(&socket_root_path).unwrap();
-        let socket_root = IpcFixtureDirectory(socket_root_path);
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&socket_root.0, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let socket = socket_root.0.join("k.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let (shutdown, mut stopped) = tokio::sync::oneshot::channel();
+        // MP-08/MP-10/MP-11: Apps uses the same websocket dispatcher on Unix
+        // and relay transports. Use a private socket pair and admitted terminal.
+        let (client_stream, server_stream) = tokio::net::UnixStream::pair().unwrap();
         let home = Arc::clone(&fixture.home);
         let ipc = tokio::spawn(async move {
-            let sequence = Arc::new(std::sync::atomic::AtomicU64::new(1));
-            loop {
-                tokio::select! {
-                    _ = &mut stopped => break,
-                    accepted = listener.accept() => {
-                        let (stream, _) = accepted.unwrap();
-                        let _ = crate::local::handle_local_ipc_test_connection(
-                            Arc::clone(&home), Arc::clone(&sequence), stream).await;
-                    }
-                }
-            }
+            let socket = tokio_tungstenite::accept_async(server_stream).await.unwrap();
+            crate::runtime_transport::serve_admitted_test_socket(home, socket).await.unwrap();
         });
-        let client = crate::local::LocalIpcClient::new(socket);
-        let send = |wire: Value| {
-            let client = client.clone();
-            tokio::task::spawn_blocking(move || {
-                let request = serde_json::from_value::<crate::local::LocalDaemonRequest>(wire).unwrap();
-                client.send(&request).map(|response| serde_json::to_value(response).unwrap())
-            })
-        };
+        let (mut socket, _) = tokio_tungstenite::client_async("ws://localhost/kernel", client_stream).await.unwrap();
         let socket_check = std::panic::AssertUnwindSafe(async {
             std::fs::remove_file(fixture._worker_state.root.join("large-browser-image")).unwrap();
-            let small_client = send(json!({"RoomBrowserArtifact": {
+            let small_client = send_browser_request(&mut socket, json!({"RoomBrowserArtifact": {
                 "session_id":room,"attachment_id":attachment_id,"tab_id":tab,
                 "operation":{"action":"capture","kind":"image","browser_generation":1,"return_image_base64":true}
-            }})).await.unwrap().unwrap();
+            }})).await;
             assert_eq!(small_client["RoomBrowserArtifact"]["result"]["payload"]["image_base64"], payload["image_base64"]);
             std::fs::write(fixture._worker_state.root.join("large-browser-image"), "large").unwrap();
-            let large_client = send(json!({"RoomBrowserArtifact": {
+            let large_client = send_browser_request(&mut socket, json!({"RoomBrowserArtifact": {
                 "session_id":room,"attachment_id":attachment_id,"tab_id":tab,
                 "operation":{"action":"capture","kind":"image","browser_generation":1,"return_image_base64":true}
-            }})).await.unwrap().expect("oversized inline capture must deliver artifact metadata through the socket");
+            }})).await;
             let metadata = &large_client["RoomBrowserArtifact"]["result"]["payload"];
             assert!(metadata.get("image_base64").is_none());
             assert_eq!(metadata["sha256"], format!("{:x}", Sha256::digest(&large_bytes)));
@@ -176,10 +152,10 @@ async fn check_artifacts() {
             assert_eq!(metadata["identity"], large_provider.payload["identity"]);
             let mut received = Vec::new();
             loop {
-                let chunk = send(json!({"RoomBrowserArtifact": {
+                let chunk = send_browser_request(&mut socket, json!({"RoomBrowserArtifact": {
                     "session_id":room,"attachment_id":attachment_id,"tab_id":tab,
                     "operation":{"action":"read","artifact_id":metadata["artifact_id"],"offset":received.len(),"max_bytes":131072}
-                }})).await.unwrap().unwrap();
+                }})).await;
                 let payload = &chunk["RoomBrowserArtifact"]["result"]["payload"];
                 assert_eq!(payload["offset"], received.len());
                 let bytes = base64::engine::general_purpose::STANDARD.decode(payload["data_base64"].as_str().unwrap()).unwrap();
@@ -189,7 +165,7 @@ async fn check_artifacts() {
             }
             assert_eq!(received, large_bytes);
         }).catch_unwind().await;
-        shutdown.send(()).unwrap(); ipc.await.unwrap();
+        socket.close(None).await.unwrap(); ipc.await.unwrap();
         std::fs::remove_file(fixture._worker_state.root.join("large-browser-image")).unwrap();
         if let Err(panic) = socket_check { std::panic::resume_unwind(panic); }
     }).catch_unwind().await;
@@ -199,10 +175,37 @@ async fn check_artifacts() {
     }
 }
 
-// MP-08/MP-10/MP-11: remove only this test's newly created short socket root.
-struct IpcFixtureDirectory(std::path::PathBuf);
-impl Drop for IpcFixtureDirectory {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).expect("remove owned IPC fixture directory");
-    }
+// MP-08/MP-10/MP-11: production websocket request/response envelope.
+async fn send_browser_request(
+    socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>,
+    request: Value,
+) -> Value {
+    use futures_util::{SinkExt, StreamExt};
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            json!({"type":"request", "request_id":"artifact", "request":request})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let frame = timeout(Duration::from_secs(30), async {
+        loop {
+            match socket.next().await.unwrap().unwrap() {
+                tokio_tungstenite::tungstenite::Message::Text(text) => {
+                    break serde_json::from_str::<Value>(&text).unwrap();
+                }
+                tokio_tungstenite::tungstenite::Message::Ping(_) => socket.flush().await.unwrap(),
+                other => panic!("unexpected artifact response frame: {other:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        frame["error"].is_null(),
+        "artifact request failed: {}",
+        frame["error"]
+    );
+    frame["response"].clone()
 }

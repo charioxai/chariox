@@ -862,8 +862,24 @@ pub(crate) fn serialize_frame(frame: &KernelOutgoingFrame) -> Result<String, Dae
         message: error.to_string(),
     })?;
     crate::local::redact_client_response_value(&mut value);
-    serde_json::to_string(&value).map_err(|error| DaemonError::LocalTransport {
-        operation: "serialize kernel websocket frame",
-        message: error.to_string(),
-    })
+    let encode = |value: &Value| {
+        serde_json::to_string(value).map_err(|error| DaemonError::LocalTransport {
+            operation: "serialize kernel websocket frame",
+            message: error.to_string(),
+        })
+    };
+    let encoded = encode(&value)?;
+    // MP-08/MP-10/MP-11: all client transports share this budget. Large
+    // artifacts remain readable in chunks; provider-native delivery is separate.
+    if encoded.len() > 1024 * 1024 {
+        if let Some(payload) = value
+            .pointer_mut("/response/RoomBrowserArtifact/result/payload")
+            .and_then(Value::as_object_mut)
+        {
+            if payload.remove("image_base64").is_some() {
+                return encode(&value);
+            }
+        }
+    }
+    Ok(encoded)
 }
