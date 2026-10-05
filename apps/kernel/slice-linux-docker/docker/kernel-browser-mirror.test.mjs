@@ -146,7 +146,7 @@ test('MP-11: input epoch window is exactly latest eight issued sequences and two
  const input=sequence=>service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence,action:{kind:'key',key:'Tab'}},'a');
  for(const sequence of [0,1,10])await assert.rejects(input(sequence),/MP-11: stale mirror input epoch/);
  for(let sequence=2;sequence<=9;sequence++)assert((await input(sequence)).input);
- const stream=service.streams.get(s.subscription_id);for(const epoch of stream.epochs)epoch.issuedAt=Date.now()-2001;
+ const stream=service.streams.get(s.subscription_id);for(const epoch of stream.epochs)epoch.issuedAt=service.now()-2001;
  await assert.rejects(input(9),/MP-11: stale mirror input epoch/);assert.equal(stream.epochs.length,0);
 });
 test('MP-11: old epoch cannot retarget changed, removed, protected nodes or selection offsets',async()=>{
@@ -165,4 +165,27 @@ test('MP-11: document/policy failures never use the sequence-only retry marker',
  const input=()=>service.resolveInput({tab_id:'t',document_id:state.document},{subscription_id:s.subscription_id,sequence:first.sequence,action:{kind:'key',key:'Tab'}},'a');
  state.document='new';await assert.rejects(input(),error=>!error.message.includes('stale mirror input epoch'));state.document='d';
  host.protection={values:[],targets:[],unknown:false};service.invalidate();await assert.rejects(input(),error=>!error.message.includes('stale mirror input epoch'));
+});
+
+test('MP-11: sequence-only refusal never enters native focus capture or dispatch',async()=>{
+ const {inputHostTab}=await import('./kernel-browser-input.mjs');let captures=0,dispatches=0;
+ const connection={async send(method){assert.equal(method,'Page.getFrameTree');return {frameTree:{frame:{id:'frame',loaderId:'d'}}};}};
+ const browser={async resolvePageTarget(){return {connection,sessionId:'s'}},inputCapture:{async run(){captures++;assert.fail('focus emulation must not run')}}};
+ await assert.rejects(inputHostTab(browser,{target_id:'t',document_id:'d'},{kind:'mirror'},{onDispatch(){dispatches++},resolveMirror:async()=>{throw Error('MP-11: stale mirror input epoch')}}),/MP-11: stale mirror input epoch/);assert.equal(captures,0);assert.equal(dispatches,0);
+});
+test('MP-08/MP-11: private CSS palettes preserve exact public shapes and reject missing references',async()=>{
+ const {service,state}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');state.snapshot.nodes[0].style_index=0;state.snapshot.styles=[{all:'initial',color:'rgb(1, 2, 3)'}];
+ const packet=await service.next(next(s.subscription_id),'a');assert.deepEqual(packet.nodes[0].style,state.snapshot.styles[0]);assert(!JSON.stringify(packet).includes('style_index'));assert(!('styles'in packet));
+ state.snapshot.nodes[0].style_index=2;await assert.rejects(service.next(next(s.subscription_id,packet.sequence),'a'),/private CSS reference/);
+});
+
+test('MP-08/MP-10/MP-11: idle tile credit refines with full native readback after a motion crop',async()=>{
+ const {service,state,host}=fixture(),clips=[];state.snapshot.nodes[1]={id:'n2',parent:'n1',children:[],kind:'tile',tag:'img',box:{x:10,y:10,width:20,height:10},reason:'opaque_media'};host.inputEpochs=new Map();const screenshot=host.screenshot;host.screenshot=async(tab,clip)=>{clips.push(clip);return screenshot(tab,clip)};
+ const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:2},'a');const first=await service.next(next(s.subscription_id),'a');await service.next(next(s.subscription_id,first.sequence),'a');assert(clips[0]);assert.equal(clips[1],null);
+ host.inputEpochs.set('t',1);await service.next(next(s.subscription_id,2),'a');assert(clips[2]);
+});
+
+test('MP-08/MP-11: kernel refuses overlapping credits instead of racing private observer bases',async()=>{
+ const {service}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');let unblock;const held=new Promise(resolve=>{unblock=resolve}),world=service.world.bind(service);service.world=async(...args)=>{await held;return world(...args)};
+ const first=service.next(next(s.subscription_id),'a');await assert.rejects(service.next(next(s.subscription_id),'a'),/credit already outstanding/);unblock();assert.equal((await first).sequence,1);assert.equal(service.streams.get(s.subscription_id).busy,false);
 });

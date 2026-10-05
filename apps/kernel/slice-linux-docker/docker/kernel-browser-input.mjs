@@ -18,11 +18,16 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       assertNotCancelled(signal);
       return result;
     };
+    // MP-11: sequence-only refusals precede even focus emulation. No page
+    // focus/selection/physical input may run before mirror epoch admission.
+    let resolved;
+    if(input.kind==='mirror') {
+      if(!resolveMirror)throw new Error('MP-11: mirror input resolver unavailable');
+      await check();resolved=await resolveMirror(input);
+    }
     return browser.inputCapture.run(connection, sessionId, async () => {
       await check();
-      if(input.kind==='mirror') {
-        if(!resolveMirror) throw new Error('MP-11: mirror input resolver unavailable');
-        const resolved=await resolveMirror(input);
+      if(resolved) {
         if(resolved.perform) {await check();onDispatch?.();await resolved.perform(sendInput);await check();return;}
         mirrorGuard=resolved.guard;
         input=resolved.input;

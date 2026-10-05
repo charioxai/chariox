@@ -64,3 +64,17 @@ test('MP-08/MP-11: nested event listeners bind once per Document independent of 
  await renderer.inputChain;assert.equal(actions.length,4);assert.equal(renderer.removers.length,7);
  for(const remove of renderer.removers)remove();const event=new Event('click');Object.defineProperty(event,'composedPath',{value:()=>[node]});doc.dispatchEvent(event);await renderer.inputChain;assert.equal(actions.length,4);
 });
+
+test('MP-08/MP-10: scalar paint patches preserve layout and removed keys force a clean reset',()=>{
+ const properties=new Map<string,string>(),writes:string[]=[];
+ const element={removeAttribute(){properties.clear();writes.push('reset')},style:{setProperty(key:string,value:string){properties.set(key,value);writes.push(key)}}} as unknown as HTMLElement;
+ const renderer=Object.create(BrowserMirrorRenderer.prototype) as any;renderer.resources=new Map();
+ const previous={all:'initial',color:'rgb(1, 2, 3)',width:'100px'};renderer.style(element,previous);writes.length=0;
+ renderer.style(element,{...previous,color:'rgb(4, 5, 6)'},previous);assert.deepEqual(writes,['color']);assert.equal(properties.get('width'),'100px');writes.length=0;
+ renderer.style(element,{all:'initial',color:'black'},previous);assert.equal(writes[0],'reset');assert(!properties.has('width'));
+});
+
+test('MP-08/MP-11: editable state admits only normalized inert enum values',()=>{
+ for(const contenteditable of ['true','false','plaintext-only'])validateMirrorNode({id:'n1',parent:null,children:[],kind:'element',tag:'div',attributes:{contenteditable}});
+ for(const contenteditable of ['', 'inherit','javascript:alert(1)'])assert.throws(()=>validateMirrorNode({id:'n1',parent:null,children:[],kind:'element',tag:'div',attributes:{contenteditable}}));
+});

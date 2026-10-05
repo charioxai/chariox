@@ -1,10 +1,11 @@
 // MP-08/MP-10/MP-11: reference renderer for Cloud/native web clients. No origin I/O.
 import { mirrorSandboxCsp,validateMirrorPacket,mirrorTreeCanonicalJson } from './browser-mirror-security.js'
-import type { KernelBrowserMirrorAction, MirrorNode, MirrorPacket, MirrorResource } from './browser-mirror-types.js'
+import type { KernelBrowserMirrorAction, MirrorNode, MirrorPacket, MirrorResource, MirrorTile } from './browser-mirror-types.js'
 export * from './browser-mirror-types.js'
 export { mirrorSandboxCsp } from './browser-mirror-security.js'
 export const browserMirrorMinimumProtocolVersion = 433
 export interface MirrorTransport { protocolVersion: number; request(request: unknown): Promise<unknown> }
+type TileRaster = {tile:MirrorTile;url:string;image?:HTMLImageElement;placement?:string}
 type Binding = { tab_id: string; generation: number; device_scale_factor: 1 | 2 }
 async function digest(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes as Uint8Array<ArrayBuffer>)),b=>b.toString(16).padStart(2,'0')).join('')
@@ -20,6 +21,7 @@ export class BrowserMirrorRenderer {
   private ids=new WeakMap<Node,string>()
   private resources=new Map<string,string>()
   private tileUrls:string[]=[]
+  private tileCache=new Map<string,TileRaster>()
   private overlays:HTMLElement[]=[]
   private dpr=1
   private sequence=0
@@ -58,7 +60,7 @@ export class BrowserMirrorRenderer {
     this.boundDocuments.add(doc)
     let lastComposition:string|null=null
     const target=(event:Event):Node=>event.composedPath()[0] as Node
-    const point=(event:MouseEvent):{x:number;y:number}=>{let x=event.clientX,y=event.clientY;for(let view:Window|null=doc.defaultView;view&&view!==this.frame.contentWindow;view=view.parent){const frame=view.frameElement as HTMLElement|null;if(!frame)throw Error('MP-11: detached mirror frame');const box=frame.getBoundingClientRect();x+=box.x+frame.clientLeft;y+=box.y+frame.clientTop}return {x:Math.floor(x),y:Math.floor(y)}}
+    const point=(event:MouseEvent):{x:number;y:number}=>{let x=event.clientX,y=event.clientY;for(let view:Window|null=doc.defaultView;view&&view!==this.frame.contentWindow;view=view.parent){const frame=view.frameElement as HTMLElement|null;if(!frame)throw Error('MP-11: detached mirror frame');const box=frame.getBoundingClientRect();const style=view.parent.getComputedStyle(frame);x+=box.x+frame.clientLeft+(parseFloat(style.paddingLeft)||0);y+=box.y+frame.clientTop+(parseFloat(style.paddingTop)||0)}return {x:Math.floor(x),y:Math.floor(y)}}
     const id=(node:Node|null):string|undefined=>node ? this.ids.get(node) : undefined
     const on=(kind:string,fn:EventListener):void=>{doc.addEventListener(kind,fn,true);this.removers.push(()=>doc.removeEventListener(kind,fn,true))}
     on('click',event=>{event.preventDefault();const node=id(target(event));if(node){const record=this.records.get(node);if(record?.kind==='mask')return;if(record?.kind==='tile'){const mouse=event as MouseEvent;this.enqueue({kind:'coordinate',input:{kind:'click',...point(mouse)}})}else this.enqueue({kind:'click',node_id:node})}})
@@ -69,7 +71,12 @@ export class BrowserMirrorRenderer {
     on('compositionend',event=>{event.preventDefault();const e=event as CompositionEvent,node=id(target(event));if(node){lastComposition=e.data;setTimeout(()=>{lastComposition=null},0);this.enqueue({kind:'text',node_id:node,text:e.data})}})
     on('selectionchange',()=>{if(this.applying)return;const selection=doc.getSelection();if(!selection||selection.isCollapsed)return;const a=id(selection.anchorNode),b=id(selection.focusNode);if(a&&b)this.enqueue({kind:'selection',anchor_id:a,anchor_offset:selection.anchorOffset,focus_id:b,focus_offset:selection.focusOffset})})
   }
-  private style(element:HTMLElement,style:Record<string,string>):void {
+  private style(element:HTMLElement,style:Record<string,string>,previous?:Record<string,string>):void {
+    // MP-10: a scalar paint delta need not reset every layout property.
+    if(previous&&style.all===previous.all&&Object.keys(style).length===Object.keys(previous).length&&Object.keys(style).every(key=>Object.hasOwn(previous,key))) {
+      for(const [key,value]of Object.entries(style))if(value!==previous[key]&&!key.startsWith('animation')&&!key.startsWith('transition')){const ref=value.startsWith('resource:')?this.resources.get(value.slice(9)):null;element.style.setProperty(key,value.startsWith('resource:')?(ref?`url("${ref}")`:'none'):value)}
+      return
+    }
     element.removeAttribute('style')
     // MP-08/MP-11: Rust map ordering places vendor keys before `all`. Reset first.
     if(style.all)element.style.setProperty('all',style.all)
@@ -97,7 +104,7 @@ export class BrowserMirrorRenderer {
       for(const [key,value]of Object.entries(record.attributes??{}))element.setAttribute(key,value)
     }
     // MP-10: child/text changes do not invalidate unchanged sanitized styles.
-    if(!previous||JSON.stringify(previous.style??{})!==JSON.stringify(record.style??{}))this.style(element,record.style??{})
+    if(!previous||JSON.stringify(previous.style??{})!==JSON.stringify(record.style??{}))this.style(element,record.style??{},previous?.style)
     if(record.kind==='mask'){element.style.boxSizing='border-box';if(record.tag==='div'&&(!record.style?.display||record.style.display==='inline'))element.style.display='inline-block';element.style.appearance='none';element.style.borderStyle='solid';element.style.boxShadow='none';element.style.borderRadius='0';if(record.tag==='input'||record.tag==='textarea'){(element as HTMLInputElement).readOnly=true;(element as HTMLInputElement).disabled=true}element.style.background='black';element.style.color='transparent';element.style.borderColor='black';element.setAttribute('aria-label','Protected content')}
     if(record.kind==='tile'||record.kind==='mask') {
       element.style.width=`${record.box?.width??0}px`;element.style.height=`${record.box?.height??0}px`;element.style.position='relative';element.style.overflow='hidden';element.style.background='black'
@@ -122,7 +129,7 @@ export class BrowserMirrorRenderer {
     this.timed('validate_hash',at);at=performance.now()
     if(packet.reset)this.clearResources()
     for(const resource of packet.resources)await this.addResource(resource)
-    const newTiles=packet.tiles.map(tile=>({tile,url:blobUrl(tile.data_base64,'image/png')}))
+    const newTiles=packet.tiles.map<TileRaster>(tile=>{const cached=packet.reset?undefined:this.tileCache.get(tile.node_id);return cached&&JSON.stringify(cached.tile)===JSON.stringify(tile)?cached:{tile,url:blobUrl(tile.data_base64,'image/png')}})
     this.timed('resource_decode',at);at=performance.now()
     this.dpr=packet.device_scale_factor
     this.applying=true
@@ -131,6 +138,7 @@ export class BrowserMirrorRenderer {
       for(const id of packet.removed){const node=this.dom.get(id);if(node?.parentNode&&node.parentNode.nodeType!==9)node.parentNode.removeChild(node);this.dom.delete(id)}
       const changed=new Set(packet.nodes.map(n=>n.id))
       const frames:Array<{record:MirrorNode;frame:HTMLIFrameElement}>=[]
+      const scrolls:Array<{element:HTMLElement;x:number;y:number}>=[]
       const build=(id:string,doc:Document):Node=>{
         const record=next.get(id)!;let node=this.dom.get(id)
         const old=this.records.get(id)
@@ -148,7 +156,7 @@ export class BrowserMirrorRenderer {
         } else {
           const children=record.children.map(child=>build(child,doc))
           const normal=children.filter((_,i)=>next.get(record.children[i]!)?.kind!=='shadow')
-          if(node.nodeType===1||node.nodeType===11) {
+          if((node.nodeType===1||node.nodeType===11)&&!(record.reason==='native_control'&&record.tag==='button')) {
             const desired=new Set(normal);for(const child of Array.from(node.childNodes))if(!desired.has(child))node.removeChild(child)
             for(let i=0;i<normal.length;i++)if(node.childNodes[i]!==normal[i])node.insertBefore(normal[i]!,node.childNodes[i]??null)
             for(let i=0;i<children.length;i++)if(next.get(record.children[i]!)?.kind==='shadow') {
@@ -156,7 +164,9 @@ export class BrowserMirrorRenderer {
             }
           }
         }
-        if(record.scroll&&node.nodeType===1){(node as HTMLElement).scrollLeft=record.scroll.x;(node as HTMLElement).scrollTop=record.scroll.y}
+        // MP-10: restore scroll after the DOM batch, avoiding one layout flush
+        // per changed paragraph. Newly created zero-scroll nodes need no write.
+        if(record.scroll&&node.nodeType===1&&(record.scroll.x||record.scroll.y||old?.scroll?.x||old?.scroll?.y))scrolls.push({element:node as HTMLElement,...record.scroll})
         return node
       }
       const root=build(packet.root,this.doc) as HTMLElement
@@ -181,28 +191,34 @@ export class BrowserMirrorRenderer {
         const probe=this.doc.createElement('span');this.style(probe,content.style)
         pseudoStyle.sheet?.insertRule(`[data-mirror-node="${record.id}"]${pseudo}{${probe.style.cssText}content:${JSON.stringify(content.text)};}`)
       }
-      for(const overlay of this.overlays)overlay.remove();this.overlays=[]
-      for(const {tile,url}of newTiles){const host=this.dom.get(tile.node_id) as HTMLElement;const record=next.get(tile.node_id)!;
+      const globalBox=(record:MirrorNode):NonNullable<MirrorNode['box']>=>{const box={...record.box!};for(let parent=next.get(record.parent??'');parent;parent=next.get(parent.parent??''))if(parent.kind==='frame'){box.x+=parent.box!.x+(parseFloat(parent.style?.['border-left-width']??'0')||0)+(parseFloat(parent.style?.['padding-left']??'0')||0);box.y+=parent.box!.y+(parseFloat(parent.style?.['border-top-width']??'0')||0)+(parseFloat(parent.style?.['padding-top']??'0')||0)}return box}
+      const previousOverlays=this.overlays;this.overlays=[]
+      for(const entry of newTiles){const {tile,url}=entry,host=this.dom.get(tile.node_id) as HTMLElement;const record=next.get(tile.node_id)!;
         // Keep native controls as focus/IME targets and preserve their baseline.
         // Pixels are painted separately at integer source raster positions so a
         // fractional control box cannot resample or clip its compositor tile.
-        if(record.reason==='native_control') {
+        if(record.reason==='native_control'&&(!entry.image||!host.firstChild&&record.tag==='button'||changed.has(record.id))) {
           host.style.appearance='none';host.style.background='transparent';host.style.borderColor='transparent';host.style.color='transparent';host.style.setProperty('-webkit-text-fill-color','transparent');host.style.caretColor='transparent';host.removeAttribute('placeholder')
           if(host.tagName==='BUTTON'){const baseline=host.ownerDocument.createElement('span');baseline.style.visibility='hidden';baseline.textContent='M';host.replaceChildren(baseline)}
         }
-        const image=host.ownerDocument.createElement('img');image.src=url
-        image.style.cssText=`position:fixed;left:${record.box!.x+tile.x}px;top:${record.box!.y+tile.y}px;width:${tile.width}px;height:${tile.height}px;max-width:none;image-rendering:pixelated;pointer-events:none;z-index:2147483646;`
-        host.ownerDocument.documentElement.append(image);this.overlays.push(image)
+        const image=entry.image?.ownerDocument===this.doc?entry.image:this.doc.createElement('img');if(image.src!==url)image.src=url;entry.image=image
+        const captureBox=globalBox(record)
+        const imageStyle=`position:fixed;left:${captureBox.x+tile.x}px;top:${captureBox.y+tile.y}px;width:${tile.width}px;height:${tile.height}px;max-width:none;image-rendering:pixelated;pointer-events:none;z-index:2147483646;`
+        if(!image.hasAttribute('style')||entry.placement!==imageStyle){image.style.cssText=imageStyle;entry.placement=imageStyle}
+        this.doc.documentElement.append(image);this.overlays.push(image)
       }
       for(const record of next.values())if(record.box&&(record.kind==='mask'||['cross_origin_frame','opaque_shadow'].includes(record.reason??''))) {
-        const doc=this.dom.get(record.id)!.ownerDocument!,box=record.box,scale=this.dpr
+        const doc=this.doc,box=globalBox(record),scale=this.dpr
         const left=Math.floor(box.x*scale)-4,top=Math.floor(box.y*scale)-4,right=Math.ceil((box.x+box.width)*scale)+4,bottom=Math.ceil((box.y+box.height)*scale)+4
         const mask=doc.createElement('div');mask.setAttribute('aria-label','Protected content')
         mask.style.cssText=`position:fixed;left:${left/scale}px;top:${top/scale}px;width:${(right-left)/scale}px;height:${(bottom-top)/scale}px;background:black;pointer-events:none;z-index:2147483647;`
         doc.documentElement.append(mask);this.overlays.push(mask)
       }
+      for(const overlay of previousOverlays)if(!this.overlays.includes(overlay))overlay.remove()
+      this.tileCache=new Map(newTiles.map(entry=>[entry.tile.node_id,entry]))
+      for(const {element,x,y}of scrolls){if(element.scrollLeft!==x)element.scrollLeft=x;if(element.scrollTop!==y)element.scrollTop=y}
       this.frame.contentWindow!.scrollTo(packet.scroll.x,packet.scroll.y)
-      for(const url of this.tileUrls)URL.revokeObjectURL(url);this.tileUrls=newTiles.map(t=>t.url)
+      const retainedTileUrls=new Set(newTiles.map(t=>t.url));for(const url of this.tileUrls)if(!retainedTileUrls.has(url))URL.revokeObjectURL(url);this.tileUrls=[...retainedTileUrls]
       const usedResources=new Set(packet.fonts.map(f=>f.resource));for(const record of next.values()){if(record.resource)usedResources.add(record.resource);for(const value of Object.values(record.style??{}))if(value.startsWith('resource:'))usedResources.add(value.slice(9))}
       for(const [id,url]of this.resources)if(!usedResources.has(id)){URL.revokeObjectURL(url);this.resources.delete(id)}
       this.records=next;this.sequence=packet.sequence;this.documentId=packet.document_id
@@ -212,7 +228,7 @@ export class BrowserMirrorRenderer {
     this.timed('dom_apply',at);at=performance.now()
     await this.doc.fonts.ready
     const images=[...this.dom.values(),...this.overlays].filter((node):node is HTMLImageElement=>node.nodeType===1&&(node as Element).tagName==='IMG')
-    await Promise.all(images.map(image=>image.decode().catch(()=>undefined)))
+    await Promise.all(images.filter(image=>image.getAttribute('src')&&!(image.complete&&image.naturalWidth>0)).map(image=>image.decode()))
     this.timed('font_image_ready',at);this.timed('apply_total',started)
   }
   private async addResource(resource:MirrorResource):Promise<void> {
@@ -248,7 +264,7 @@ export class BrowserMirrorRenderer {
     }
     this.timed('drift_scan',started);return [...drift]
   }
-  private clearResources():void {for(const url of this.resources.values())URL.revokeObjectURL(url);this.resources.clear();for(const url of this.tileUrls)URL.revokeObjectURL(url);this.tileUrls=[]}
+  private clearResources():void {for(const url of this.resources.values())URL.revokeObjectURL(url);this.resources.clear();for(const url of this.tileUrls)URL.revokeObjectURL(url);this.tileUrls=[];this.tileCache.clear()}
   close():void {this.disposed=true;for(const remove of this.removers)remove();this.removers=[];this.clearResources();this.dom.clear();this.records.clear();this.overlays=[];this.frame.remove()}
 }
 export async function attachBrowserMirror(transport:MirrorTransport,container:HTMLElement,binding:Binding,onFailure:(error:unknown)=>void):Promise<{next():Promise<MirrorPacket>;input(action:KernelBrowserMirrorAction):Promise<unknown>;takeover():Promise<unknown>;release():Promise<unknown>;actors():Promise<unknown>;close():Promise<void>;renderer:BrowserMirrorRenderer}> {

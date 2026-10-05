@@ -45,12 +45,17 @@ resource remapping or fallback, and canonical node hashes are cached without
 changing the public hash contract. Mutation records never cross the boundary.
 Computed CSS omits trusted Chromium initial values and starts each element with
 `all:initial`. Those defaults come from a short-lived blank target, never origin
-content. Simple unchanged text blocks below the viewport reuse sanitized styles;
-geometry/effects and raw protected text are checked each read. When a block moves
-or becomes visible, its styles are read completely before delivery. Registered
-Vault values disable that cache. Initial offscreen flow blocks retain geometry
-and hydrate descendants on the following credit, so visible content paints first.
-The existing pull-credit protocol remains; push events need coordinator allocation.
+content. Within one read, plain leaf paragraphs may share an exact CSS map only
+when parent, tag, bounded raw attributes, box size and complete selector-match
+set agree. Uninspectable/grouped/nested/pseudo stylesheets, animations, shadow
+and nested documents disable sharing. Vault values disable it too. No style
+cache survives a read, including for offscreen blocks. Private CDP CSS palettes
+and per-read canonical sorting caches reduce repeated bytes/work; resource-bearing
+styles retain separate mutable remapping. Initial offscreen flow blocks retain
+geometry and hydrate descendants on the following credit, so visible content
+paints first. Public packets retain their original shapes/hash bytes. The kernel
+and shared client each admit only one outstanding credit per subscription. No
+public push events were added; the reserved439/83 pair is not consumed.
 
 ## MP-11 protection boundaries
 
@@ -86,6 +91,9 @@ closed shadows and cross-origin frames use opaque tiles. Structured mirror
 capture inspects open shadow descendants using trusted CDP metadata; Chromium
 user-agent shadow roots do not turn ordinary controls into secret fields.
 Same-origin frame tile bounds are translated into root compositor coordinates.
+All tiles and masks paint in the root mirror document. Tile crops round outward
+to CSS-pixel boundaries, keeping DPR2 image origins exact and avoiding child-frame
+compositor resampling. Layout boxes remain local and fractional.
 Trusted CDP frame origins and exposed documents permit nested protection scans;
 explicitly protected frames retain their masks. Password/payment attribute checks
 are ASCII case insensitive, including nested trusted CDP metadata. Closed page roots and foreign or
@@ -122,12 +130,18 @@ await mirror.close()
 Cloud owns production UI integration and scheduling credits. The reference
 renderer restores nested inert documents, open shadow slotting, styles, form state,
 focus and scroll. It preserves text nodes across unchanged updates, avoids resetting unchanged
-attributes/styles when only children change, and creates no empty font/pseudo
+attributes/styles when only children change, patches scalar paint properties
+without resetting layout, restores scrolling after the DOM batch, retains identical
+PNG overlays and decoded images, and creates no empty font/pseudo
 stylesheets. These prevent redundant layout invalidation during SPA batches. It checks
 geometry before each next call and requests sticky per-region video fallback for
 layout, text or color drift at a 0.5 CSS px geometry threshold. Full-root drift
-uses a stable inert full-video document. Tiles occupy integer source raster
-positions independently of fractional control boxes. Protected placeholders
+uses a stable inert full-video document. Tiles occupy integer CSS raster
+positions independently of fractional control boxes. Mirror fallback currently
+negotiates the mandatory PNG path. Motion uses protected crop PNGs; the next idle
+credit does a protected full native readback and exact PNG refinement, avoiding
+DPR2 crop-edge differences. It shares `losslessRegion` with display refinement;
+there is no second encoder. No VP9-motion throughput claim is made for this path. Protected placeholders
 preserve border-box dimensions and inline replaced-frame layout. The renderer applies `all:initial` before vendor properties regardless of
 serialized map ordering. Mask overlays use the same
 outward floor/ceil plus four native pixels as protected source captures. The
@@ -146,14 +160,16 @@ scroll fixtures at DPR 1/2. Arguments are absolute external tools, compiled clie
 and evidence paths. It requires public Chromium dependencies and fonts; its
 lane-owned exact-path AppArmor user-namespace profile and temporary profiles are
 removed on exit. No global sandbox setting or durable credential is changed.
-It records initial and settled-after-mutation native raster pairs, raw MSE/mismatch and source-only one-native-pixel
+It records initial and settled-after-mutation native raster pairs, per-visible
+non-DOM-region settled MSE (must be zero, including masked placeholders), raw MSE/mismatch and source-only one-native-pixel
 edge-band mismatch. Client-only holes cannot enlarge the exclusion band. Box and
 each text line fragment geometry, exact text and computed colors are measured.
 The gate is <=0.5 CSS px geometry, exact text/colors and <=0.10% raster mismatch
 outside that band. It also records bootstrap/hydration/patch bytes, per-stage CDP,
 serialization, decode and renderer spans, ten-sample input/presentation and
 mutation/paint distributions, owned-process CPU tick samples,
-resource floors and cleanup. Mutation latency includes the source CDP call and
+resource floors and cleanup. An extra idle refinement credit precedes settled MSE measurement and is excluded
+from motion latency; mutation latency includes the source CDP call and
 credit round trip; it is not a passive push/WAN measurement. Presentation ends at
 a viewer rAF callback after native compositor readback verifies the expected
 binary acknowledgement, using its source geometry (including scrollbars). This
@@ -175,8 +191,8 @@ tests cover sanitization, decoded-resource bounds, protection resets, generation
 stale input, drift, App exclusion and unknown-outcome replay. These complement
 rather than replace real Chromium, relay and independent semantic review.
 
-Round 2 fixes the known fractional tiles, mask edges, native controls and
-same-origin frame seams. Component fidelity can pass while latency remains RED;
+Round 2/3 fix the known fractional tiles, mask edges, native controls and
+same-origin frame seams. Component fidelity/settled MSE can pass while latency remains RED;
 retain each failing receipt and exact execution identity. Neither one fixture
 matrix nor source checks close an MP item. Keep the feature opt-in until runtime
 raster drift/fallback and production clients satisfy the complete gate. The

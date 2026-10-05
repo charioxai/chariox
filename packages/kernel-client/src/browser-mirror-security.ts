@@ -13,7 +13,7 @@ export function validateMirrorNode(node: MirrorNode): void {
   if(!/^n[1-9][0-9]*$/.test(node.id) || !Array.isArray(node.children) || node.children.length>12000 || !['element','text','shadow','document','frame','mask','tile'].includes(node.kind)) throw Error('MP-11: invalid mirror node')
   if(node.tag && !mirrorTags.has(node.tag)) throw Error('MP-11: active mirror element')
   if(node.attributes) for(const [key,value] of Object.entries(node.attributes)) if(!(attributes.has(key)||node.tag==='slot'&&key==='name') || typeof value!=='string' || value.length>2048) throw Error('MP-11: unsafe mirror attribute')
-  if(node.attributes?.contenteditable && !['true','false','plaintext-only'].includes(node.attributes.contenteditable))throw Error('MP-11: unsafe mirror editable state')
+  if(node.attributes?.contenteditable!==undefined && !['true','false','plaintext-only'].includes(node.attributes.contenteditable))throw Error('MP-11: unsafe mirror editable state')
   if(node.attributes?.type && !['text','search','email','url','number','tel','checkbox','radio','range','button','submit','reset','date','time','color','hidden'].includes(node.attributes.type)) throw Error('MP-11: protected/active form type')
   if(node.text!==undefined && (typeof node.text!=='string' || node.text.length>2097152)) throw Error('MP-11: invalid mirror text')
   if(node.style) validateMirrorStyle(node.style)
@@ -26,8 +26,8 @@ export function validateMirrorPacket(packet: MirrorPacket, previous: ReadonlyMap
   if(JSON.stringify(packet).length>4194304 || !Number.isSafeInteger(packet.sequence) || packet.sequence<=0 || !/^[a-f0-9]{64}$/.test(packet.hash) || packet.css_width!==1280 || packet.css_height!==800 || ![1,2].includes(packet.device_scale_factor) || packet.nodes.length>12000 || packet.resources.length>128 || packet.tiles.length>64) throw Error('MP-11: mirror packet bounds')
   const next = packet.reset ? new Map<string,MirrorNode>() : new Map(previous)
   for(const id of packet.removed) next.delete(id)
-  const changed = new Set<string>()
-  for(const node of packet.nodes) {validateMirrorNode(node);if(changed.has(node.id))throw Error('MP-11: duplicate mirror node');changed.add(node.id);next.set(node.id,structuredClone(node))}
+  const changed = new Set<string>(),styles=new Map<string,Record<string,string>>()
+  for(const node of packet.nodes) {validateMirrorNode(node);if(changed.has(node.id))throw Error('MP-11: duplicate mirror node');changed.add(node.id);const copy=structuredClone(node);if(copy.style){const key=JSON.stringify(copy.style);if(!styles.has(key))styles.set(key,Object.freeze(copy.style));copy.style=styles.get(key)!}next.set(node.id,copy)}
   if(next.size>12000) throw Error('MP-11: mirror tree bounds')
   const seen=new Set<string>()
   const visit=(id:string,parent:string|null,depth:number):void=>{
@@ -42,10 +42,11 @@ export function validateMirrorPacket(packet: MirrorPacket, previous: ReadonlyMap
   return next
 }
 
-export function mirrorCanonicalJson(value: unknown): string {return JSON.stringify(value,(_,v:unknown)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a<b?-1:a>b?1:0)):v)}
+export function mirrorCanonicalJson(value: unknown,objects=new WeakMap<object,unknown>()): string {return JSON.stringify(value,(_,v:unknown)=>{if(!v||typeof v!=='object'||Array.isArray(v))return v;let sorted=objects.get(v);if(!sorted){sorted=Object.fromEntries(Object.entries(v).sort(([a],[b])=>a<b?-1:a>b?1:0));objects.set(v,sorted)}return sorted})}
 
 // MP-08/MP-10: the immutable packet node object is the cache identity.
 export function mirrorTreeCanonicalJson(source:{root:string;nodes:MirrorNode[];fonts:unknown;scroll:unknown;focused:unknown;selection:unknown},cache:WeakMap<MirrorNode,string>):string {
-  const nodes=source.nodes.map(node=>{let serialized=cache.get(node);if(!serialized){serialized=mirrorCanonicalJson(node);cache.set(node,serialized)}return serialized})
+  const objects=new WeakMap<object,unknown>()
+  const nodes=source.nodes.map(node=>{let serialized=cache.get(node);if(!serialized){serialized=mirrorCanonicalJson(node,objects);cache.set(node,serialized)}return serialized})
   return `{"focused":${mirrorCanonicalJson(source.focused)},"fonts":${mirrorCanonicalJson(source.fonts)},"nodes":[${nodes.join(',')}],"root":${mirrorCanonicalJson(source.root)},"scroll":${mirrorCanonicalJson(source.scroll)},"selection":${mirrorCanonicalJson(source.selection)}}`
 }

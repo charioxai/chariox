@@ -293,6 +293,41 @@ async fn mdnotes_two_local_connections_child() {
                 .is_none(),
             "MP-11: no cached DOM packet"
         );
+        // MP-08/MP-11: an in-flight newer packet must not retire input on
+        // the previously issued view. Future/unissued epochs dispatch nothing
+        // and preserve the exact Cloud retry marker through host/Rust wrappers.
+        success(
+            request(
+                &mut a.0,
+                "MP-mirror-a-inflight",
+                Browser::MirrorNext {
+                    subscription_id: subscription.clone(),
+                    generation,
+                    after_sequence: 1,
+                    drift_nodes: vec![],
+                },
+            )
+            .await,
+        );
+        let future = request(
+            &mut a.0,
+            "MP-mirror-a-future",
+            Browser::MirrorInput {
+                tab_id: tab.clone(),
+                generation,
+                document_id: mirrored["document_id"].as_str().unwrap().into(),
+                subscription_id: subscription.clone(),
+                sequence: 3,
+                action: KernelBrowserMirrorAction::Key { key: "Tab".into() },
+            },
+        )
+        .await;
+        match future {
+            KernelOutgoingFrame::Response {
+                error: Some(error), ..
+            } => assert!(error.message.contains("MP-11: stale mirror input epoch")),
+            other => panic!("MP-11: future mirror epoch unexpectedly admitted: {other:?}"),
+        }
         let b_subscribed = success(
             request(
                 &mut b.0,

@@ -1,7 +1,7 @@
 // MP-08/MP-11: origin resources remain inside Chromium/kernel. No fetch, cookies,
 // external URL, executable CSS/SVG or profile path is sent to a mirror client.
 import { createHash } from 'node:crypto';
-export function mirrorCanonicalJson(value) {return JSON.stringify(value,(_,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a<b?-1:a>b?1:0)):v);}
+export function mirrorCanonicalJson(value,objects=new WeakMap()) {return JSON.stringify(value,(_,v)=>{if(!v||typeof v!=='object'||Array.isArray(v))return v;let sorted=objects.get(v);if(!sorted){sorted=Object.fromEntries(Object.entries(v).sort(([a],[b])=>a<b?-1:a>b?1:0));objects.set(v,sorted)}return sorted});}
 export const mirrorHash = value => createHash('sha256').update(mirrorCanonicalJson(value)).digest('hex');
 // Bounds decoded memory as well as wire bytes before a client decoder sees it.
 function resourceType(bytes) {
@@ -60,8 +60,8 @@ export async function materializeMirrorResources(connection,sessionId,descriptor
 export class MirrorTreeHasher {
   constructor(){this.nodes=new Map();}
   hash(source) {
-    const next=new Map();
-    const nodes=source.nodes.map(node=>{const raw=JSON.stringify(node),old=this.nodes.get(node.id),entry=old?.raw===raw?old:{raw,canonical:mirrorCanonicalJson(node)};next.set(node.id,entry);return entry.canonical;});
+    const next=new Map(),objects=new WeakMap();
+    const nodes=source.nodes.map(node=>{const raw=JSON.stringify(node),old=this.nodes.get(node.id),entry=old?.raw===raw?old:{raw,canonical:mirrorCanonicalJson(node,objects)};next.set(node.id,entry);return entry.canonical;});
     this.nodes=next;
     const json=`{"focused":${mirrorCanonicalJson(source.focused)},"fonts":${mirrorCanonicalJson(source.fonts)},"nodes":[${nodes.join(',')}],"root":${mirrorCanonicalJson(source.root)},"scroll":${mirrorCanonicalJson(source.scroll)},"selection":${mirrorCanonicalJson(source.selection??null)}}`;
     return createHash('sha256').update(json).digest('hex');
