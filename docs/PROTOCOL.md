@@ -1210,7 +1210,11 @@ IDs, SHA-256, safe names and runtime/browser/Tab/document/viewport/observation
 identity. Reads are limited to 128 KiB and verify the stored bytes and current
 identity. Inspection is limited to 256 KiB; PDF extraction requires installed
 `pdftotext` with child time/output/resource limits. The provider may request
-native MCP image bytes from the same CDP Page capture. Protected images are
+native MCP image bytes from the same CDP Page capture. Unix-socket clients requesting
+inline bytes receive them only when the complete encoded response fits the local
+IPC 1 MiB frame. Otherwise capture returns artifact metadata for existing bounded
+chunk reads; the native MCP image bound remains 8 MiB. No new serialized shape
+is needed for this delivery bound. Protected images are
 conservatively masked in full; protected download bytes are withheld. Passive
 network attachments retain actual allowlisted CDP metadata, omitting cookie,
 auth and bodies. `slice_browser_upload` also accepts Room-owned opaque

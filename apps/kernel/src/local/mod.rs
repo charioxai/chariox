@@ -269,3 +269,6 @@ pub use api::{
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
 pub use ipc::{run_local_ipc_server, send_local_ipc_request, LocalIpcClient};
+
+#[cfg(test)]
+pub(crate) use ipc::handle_connection as handle_local_ipc_test_connection;

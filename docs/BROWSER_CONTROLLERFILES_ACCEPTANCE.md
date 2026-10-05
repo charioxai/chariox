@@ -10,7 +10,12 @@ below; a passing fixture does not close MP-08, MP-10 or MP-11.
 
 The visible chooser uses the existing Browser action path: resolve the observed
 control, arm Chromium file-chooser interception at physical click dispatch, and
-require the same session, frame and document before selecting files. Navigation,
+require the same session and the observed control’s owning frame/document before
+selecting files. Same-origin child controls share a renderer session and ordinary
+backend references; the controller maps their Document backend ID through CDP’s
+multi-document snapshot. It fences that frame tree and any isolated renderer
+ancestors, and requires the chosen hidden input to belong to the same Document.
+Navigation,
 missing chooser, unrelated events and cancellation discard the staging reservation.
 No alternate permission, prompt, provider or relay authority is introduced.
 
@@ -64,7 +69,12 @@ again when the attachment is captured.
 
 `RoomBrowserArtifact` exposes the same capture/read/inspect service to attached
 Web/local/remote TUI clients, with membership and attachment-owner checks. The
-shared TypeScript builder declares minimum local protocol 420. Runtime provider
+shared TypeScript builder declares minimum local protocol 420. Unix-socket client capture
+with `return_image_base64=true` includes inline bytes only when the complete encoded
+local IPC response fits its 1 MiB frame. Larger captures still return the opaque
+artifact metadata; clients read ordered chunks of at most 128 KiB and verify the
+size and SHA-256. Native provider MCP image delivery retains the 8 MiB artifact
+bound. This delivery bound changes no serialized shape or version. Runtime provider
 calls use normal authenticated home admission and leased-worker routing. New
 peer variants require the coordinator-allocated relay peer protocol 71. A v70
 worker cannot decode Artifact commands/results or opaque upload objects. Existing
@@ -83,7 +93,7 @@ node --test apps/kernel/slice-linux-docker/docker/browser-controllerfiles.browse
 
 The HTTP fixture provides a visible chooser backed by a hidden file input,
 strict multipart receipts, Unicode/binary/PDF downloads, cancellation, a visual
-canvas and synthetic cookie/auth traffic. Receipts verify filenames, MIME,
+canvas, same-origin child-frame chooser and synthetic cookie/auth traffic. Receipts verify filenames, MIME,
 exact length and SHA-256. The Chromium test starts the production browser
 lifecycle/controller, checks local and opaque-upload bytes, missing/denied
 files, reset/no partial reuse, completed/canceled downloads, actual same-Tab
@@ -96,8 +106,11 @@ controller stdio, artifact store, authenticated provider-tool routing and
 attachment client authorization. A synthetic permitted transfer-store record
 travels through real encrypted upload routing/staging and preserves Unicode
 filename, length and hash; missing artifacts never reuse the prior selection.
-Its CDP pixels are synthetic, so it does not
-prove actual Chromium or official-provider perception. A separate MCP converter
+The socket regression uses a valid high-entropy canonical PNG whose inline
+response exceeds 1 MiB, verifies complete artifact metadata through actual Unix
+framing, reads every chunk and compares bytes/hash, and retains inline provider
+bytes. Its CDP pixels are synthetic, so it does not prove actual Chromium or
+official-provider perception. A separate MCP converter
 check verifies byte-exact native image content; protocol snapshot/hash tests pin
 420 and the attachment request. These checks complement the actual Chromium
 fixture; they are not a live conjunction run.

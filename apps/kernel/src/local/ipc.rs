@@ -170,7 +170,7 @@ pub fn send_local_ipc_request(
     }
 }
 
-async fn handle_connection(
+pub(crate) async fn handle_connection(
     router: Arc<CommandRouter>,
     command_sequence: Arc<AtomicU64>,
     mut stream: tokio::net::UnixStream,
@@ -357,10 +357,27 @@ fn encode_envelope(envelope: IpcResponseEnvelope) -> Result<Vec<u8>, DaemonError
             message: error.to_string(),
         })?;
     crate::local::redact_client_response_value(&mut value);
-    serde_json::to_vec(&value).map_err(|error| DaemonError::LocalTransport {
-        operation: "serialize local response",
-        message: error.to_string(),
-    })
+    let serialize = |value: &serde_json::Value| {
+        serde_json::to_vec(value).map_err(|error| DaemonError::LocalTransport {
+            operation: "serialize local response",
+            message: error.to_string(),
+        })
+    };
+    let mut bytes = serialize(&value)?;
+    // MP-08/MP-10/MP-11: inline Browser images are optional on this bounded
+    // transport. Retain the stored artifact metadata for existing chunk reads
+    // when the complete response cannot fit. Native MCP images are unaffected.
+    if bytes.len() > MAX_IPC_FRAME_BYTES {
+        if let Some(payload) = value
+            .pointer_mut("/response/RoomBrowserArtifact/result/payload")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            if payload.remove("image_base64").is_some() {
+                bytes = serialize(&value)?;
+            }
+        }
+    }
+    Ok(bytes)
 }
 
 fn decode_envelope(bytes: &[u8]) -> Result<IpcResponseEnvelope, DaemonError> {
