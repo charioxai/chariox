@@ -1,69 +1,73 @@
-# MD-DISPLAY-02/04 — Phase 5 ready for coordinator review
+# MD-DISPLAY-02/04 — Phase 6 milestone ready for review, performance RED
 
-Branch agent/display-impl; execution/kernel build 933d6222d. Protocol 419,
-relay wire unchanged, flag off. No publishing action. Source/binary fingerprints,
-commands/exits, embedded assets and receipts: external phase5/provenance.json.
-Doc:docs/MULTIDOMAIN_KERNEL_BROWSER_DISPLAY.md. No MD/MP acceptance closure.
+Branch agent/display-impl. Execution/kernel build86b3015bd55d43fd811f505081fe13ef8625066a;
+this handoff changes documentation/status only. Shared protocol419, relay
+unchanged, default-off. Future runtime changes await coordinator md/stack-on-main
+and retain its427/74 allocation. No publishing action; no acceptance item closes.
 
-MD-DISPLAY-02 final-v3: seven cases exit0; all 140 input counter acknowledgements,
-exact settled/final RGB, same-stream navigation, stale-document rejection,
-takeover/focused-MCP fencing/owner input/release and cleanup pass. Local
-p50/p95 68.5/81.6ms; WAN40/80/150 169.6/432.5,287.5/310.9,469.0/498.1ms.
-MTU1500, offloads off, 1%loss, jitter and 5/2/1Mbps caps affect only viewer/proxy
-TCP inside owned namespaces. Initial exact repairs 5.35/8.39/13.17/18.21s.
-Relocated-static-100s-v3:255 polls, 20/20 clicks, 69.6/84.3ms, navigation/exactness
-and cleanup pass while a process-local hook blocks shared-checkout TypeScript.
-Both source 933d6222d, clean trees, copied binary SHA bound individually.
+MD-DISPLAY-02 changes since phase5: four credited slots (selectable1–8), bounded
+receive/reorder, persistent CBR VP9/deltas, corrected image-to-video PTS, decode
+stale deltas without drawing them, input-woken idle backoff, protected complete
+CSS-resolution JPEG motion only with an empty Vault registry, native exact idle
+repair, small native tiles and per-user queued-capture input priority.
+The source/input/Vault/actor barriers and caller-scoped admission remain intact.
 
-MD-DISPLAY-02 media: canvas/video 1.18/1.19 drawn fps and0.81/0.76 frame-event
-Mbps; settled exact in 1.95/1.90s. Dense scroll 0.25fps,1.44Mbps,7.73s exact
-settle and198/232ms post-scroll clicks. Diagnostic capture RPCs add unpaced
-bytes; live PSNR includes temporal drift. No matched moving-codec/Selkies/WAN
-baseline claim. The doc's short Selkies comparison preserves old geometry/source.
-Moving/WAN quality remains weak; feature is reviewable, not ready for rollout.
+MD-DISPLAY-02 results: clean13-case final campaign exits0 and passes260/260
+counter checks, exact settled/final/navigation RGB, same-stream navigation,
+stale input, shared takeover/focused MCP fencing/release and owned cleanup.
+These are functional passes. Separate immutable-receipt aggregator exits1 with
+RED_PERFORMANCE: local docs161.7/259.3ms; WAN40/80/150 P95 288/326/463ms exceeds
+RTT+100ms. Canvas/video15–17fps at2–4Mbps; discrete wheel2–3fps fails24fps.
+Exact motion settling4–13s local,7–20s WANcanvas. Initial WANdocs repair13/27/89s
+at negotiated2/1/0.5Mbps; loss/jitter/caps preserved. No universal Selkies claim.
 
-MD-DISPLAY-04 changes: stable-only refinement; bounded lossless tile batches
-sized to negotiated budget; one credit bounds source/encode/transport queues;
-full protected capture for scrolled/zoomed/unknown origins. Native VideoToolbox/
-ScreenCaptureKit and Media Foundation/Graphics Capture integration plan plus
-unavailable unregistered stubs; no native execution claim.
+MD-DISPLAY-02 remaining seam: moving protected host IPC50–56ms/frame; full PNG
+verification can block input100–200ms. Encode and pacing share the host mutex.
+Four credits hide round trips, not serial source work. Continuous scrolling is
+not yet a valid24fps fixture. Next fixes/design are in the transport doc.
+
+MD-DISPLAY-04 source and evidence binding:
+
+- Kernel binary /root/work/cargo-target-display-impl/debug/deps/chariox_kernel-f815052ed359e608,
+  SHA25647320741feb53d8ea98a36e8b5f738a3c44340133130c86358d28eb8a6d67287.
+- External /root/.codex/evidence/browser-resume-20260930/display/phase6/:
+  handoff-window4/campaign.json and13 results.json receipts/screenshots/diffs;
+  handoff-binary.json verifies30 embedded assets; handoff-report/report.json
+  checks measured execution bytes against86b3015bd and hashes all measured PNGs.
+- Replay recipe is in docs/MULTIDOMAIN_KERNEL_BROWSER_DISPLAY.md. Case receipts
+  retain exact drill argv and source/dirty flag. Performance aggregation script
+  is lane-owned agents/display/phase6-report.py; its command/exit/hash are external.
+- Minimum sampled resources:29.1GiB MemAvailable and197.1GiB free. All final cases
+  remove only their own namespace and disposable state; exact-root inventory empty.
 
 MD-DISPLAY-04 review mapping:
 
-- Inbox 03:42 navigation closure:7197ac202 recreates capture on loader change.
-  navigation-fail-first-v2.log fails only after navigation (v1 wrong-target setup
-  retained);46-test fixed suite and every final live case pass. Same display
-  subscription receives independent video on new document; old input rejected.
-- Inbox 03:42 hard-coded TypeScript/startup leak:7197ac202 resolves supplied public
-  tools under finally. dependency-fail-first.log + exact empty-root cleanup;
-  dependency-fixed-start reaches deliberate missing binary and cleans; real
-  relocated100s final replay confirms no shared-checkout dependency.
-- Prior inbox 02:17 registration/cursor/uncached-credit replay remain fixed by
-  c8518a3e2/69e1782ef, with original phase4 fail-first receipts preserved. Final
-  static100s and focused 13 Rust checks include registration/protocol/queue/actors.
-- New oversized/moving repair:2cbfe5618, repair-fail-first-tests.log -> passing
-  bounded reconstruction/motion invalidation tests. Early live harness still
-  compared one partial batch; seven RED final/ receipts retained.29d3698e4 waits
-  for unchanged before checking exactness (new bounded drain test).
-- New scroll source1/viewer0:933d6222d full protected capture at unsafe origins;
-  scrolled-crop-fail-first.log -> 46 passing Node checks, final-v3 scroll20/20
-  probes with exact pixels. Previous final-v2 scroll remains RED, exit1.
+- Inbox04:53 PNG-only navigation:0c1ce3843 negotiates independent kind from codec;
+  focused navigation unit pass. Final campaign negotiates VP9, not PNG-only live.
+- Inbox03:42 navigation/dependency:7197ac202; prior fail-first/fixed and relocated
+  receipts retained. Every final419 navigation/exactness check passes. The06:28
+  union navigation finding belongs to mdval and is not duplicated by this lane.
+- Inbox02:17 registration/cursor/no-replay:c8518a3e2/69e1782ef; phase4 fail-first,
+  focused protocol/registration/queue/actor and static100s evidence retained.
+- New priority/cancellation:983110b9e RAII input-admission/capture cancellation
+  regressions pass. This bounds queued input starvation, not in-progress capture.
+- Small-change/motion/timebase:60627b58a/63eb8ef2f/6c029a5d9/7aefaf2d6;
+  tests retain encoder/draw fail-first receipts and bounded rate/delta regression.
+- Historical RED coarse-damage/source, oversized repair and scrollbar/compositor
+  refinements remain in their original evidence dirs. Final13 cases verify late
+  native paints before claiming pixel exactness;86b3015bd is the measured source.
 
-MD-DISPLAY-04 checks:46 Node tests,13 focused reserved-slot Rust tests, slot2
-build pass (40 existing warnings), diff whitespace clean. Source shape/hash guards
-remain 419. Interruption-v2 exits 130, settles owned runtime, removes namespace.
-Earlier invalid interruption copied an in-progress linker output and failed
-before signaling; retained RED.79ad69619 adds ELF validation and copied SHA.
+MD-DISPLAY-04 checks:58 Node,22 focused Rust (two ignored live drills), real
+encoder budget/delta regression, slot2 build and419 snapshot/hash guards pass.
+Logs final-node-tests.log,final-rust-kbrowser-tests.log,final-encoder-test.log,
+final-build-tests.log remain external. No new test execution claimed for union427.
+Signal helpers reject0/1/-1/NaN/missing PIDs and recheck owned group/start identity.
+No new runtime signaled on resume; shared/default interface/resources untouched.
+Removed5.94GiB compiler-only incremental output under slot2; current replay
+binary/public dependencies retained. Cleanup inventory:phase6/resume-cleanup.json.
 
-MD-DISPLAY-02 cleanup: every completed final namespace and exact-root process
-inventory empty; disposable state removed. Own replay worktree removed; 5.91GiB
-own compiler incremental output removed after exact compiler-file inventory.
-Current public kernel binary/public dependencies retained for coordinator replay.
-No shared caches/services/containers/images/credentials/keys/reviewer state touched.
-All screenshots/diffs/JSON/logs external under
-/root/.codex/evidence/browser-resume-20260930/display/phase5/.
-
-MD-DISPLAY-04 next gates: owner budgets/design, continuously credited WAN client,
-protected persistent source/encoder, coordinator Cloud wiring, native/live Vault,
-slow viewer/reconnect, cursor/IME/file chooser, multi-viewer and Room migration.
-Research agent/display branch untouched. No GitHub CI, push, PR, merge or deploy.
+MD-DISPLAY-04 publication boundary: inbox06:28 requires further implementation
+on md/stack-on-main. Its public ref is still absent. Coordinator must supply the
+exact canonical source; this milestone finishes419 evidence only. Native,
+Cloud/live Vault/multi-viewer/reconnect/Room gates and performance remain open.
+Research agent/display remains unchanged. No GitHub CI/push/PR/merge/deploy.

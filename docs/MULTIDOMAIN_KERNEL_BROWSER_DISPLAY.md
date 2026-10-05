@@ -461,8 +461,9 @@ A native encoder cannot be plugged into the present VP9-only presenter merely
 by changing an executable. Before native activation, the coordinator must
 allocate any required protocol evolution, add AVC decoder-config/framing and
 negotiation coverage, and run native protected-image/slow-viewer/reconnect/Vault
-drills. Persistent inter prediction likewise needs an explicit decoder/base
-recovery contract. The current independent-frame wire shape remains unchanged.
+drills. That Phase-5 design used independent frames. Phase 6 below implements
+bounded persistent VP9 prediction at the existing 419 contract; native AVC
+framing and platform integration remain unimplemented.
 
 MD-DISPLAY-04 review 03:42: a document change recreates the native capture closure
 before its next protected screenshot. This keeps the same display subscription
@@ -628,3 +629,170 @@ MD_CASES=local:docs,wan40:docs,wan80:docs,wan150:docs,local:canvas,local:video,l
 The campaign aggregates failing/null child exits and interruptions into a failing
 shell status. Evidence directories must be new per run; retain previous RED
 receipts. Only exact namespace names created by that campaign may be removed.
+
+## MD-DISPLAY-02/04: Phase-6 completed milestone, performance RED
+
+Execution and embedded kernel-test build: **86b3015bd55d43fd811f505081fe13ef8625066a**.
+The clean 13-case campaign ran 07:07–07:20 UTC on 2026-10-05 and finished
+during the lane interruption. Its original receipts remain in external
+`phase6/handoff-window4/`. `phase6/handoff-binary.json` binds the binary SHA-256
+`47320741feb53d8ea98a36e8b5f738a3c44340133130c86358d28eb8a6d67287`
+and 30 exact embedded controller assets. `phase6/handoff-report/report.json`
+binds every case receipt, screenshot/diff, measured execution file and binary.
+This documentation-only handoff does not relabel those measurements as union
+stack protocol 427 evidence.
+
+All 13 child processes exit 0 and pass 20/20 counter acknowledgements, full
+navigation on the same subscription, stale-document rejection, human takeover,
+focused MCP fencing/release, and exact settled/final RGB at 2560×1600. Every
+namespace and exact-root process inventory is empty after owned teardown.
+The campaign's exit 0 means these functional assertions passed. **It does not
+mean the Phase-6 performance targets passed.** A separate receipt aggregator
+exits 1 with `RED_PERFORMANCE`: none of the WAN cases meet RTT + 100 ms P95,
+and none of the moving cases reaches 24 fps. No MD or MP acceptance item closes.
+
+### MD-DISPLAY-02: credit window and continuous media
+
+Four client credits overlap using the existing serialized 419 operation.
+Each slot remains held through receipt and presentation, with a selectable
+one-to-eight window and 1 MiB receive reservation. Out-of-order frame events
+are reordered within a bounded window before decoding dependencies. Stale
+video is decoded to retain references, then skipped at presentation; deltas
+are never discarded before decoder reference reconstruction. Empty credits
+back off and admitted input wakes parked slots. The server accepts at most
+eight sequence positions of credit lag and captures/encodes serially.
+
+VP9 now retains inter prediction, uses realtime CBR with a corrected 30fps
+timestamp clock, and forces a key after document/base/repair transitions.
+Small native changes retain exact tiles. Large moving content uses complete
+protected CSS-resolution JPEG capture only when the Vault observation registry
+is empty; idle content returns to protected native-DPR PNG and lossless repair.
+Active secrets, unknown policy/geometry and unsuitable viewports retain the
+native protected capture path. These are implementation/source protections;
+the 13-case campaign uses no real Vault login.
+
+| Docs profile | Frame budget / link cap Mbps | Click p50 / p95 ms | P95 target ms | Initial exact repair s | Phase-5 P95 ms |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Local | 2 / uncapped | 161.7 / 259.3 | 150 (p50 ≤80) | 9.56 | 81.6 |
+| WAN40, ±2 ms jitter, 1% loss | 2 / 5 | 242.9 / 288.0 | 140 | 13.44 | 432.5 |
+| WAN80, ±5 ms jitter, 1% loss | 1 / 2 | 235.1 / 326.1 | 180 | 26.57 | 310.9 |
+| WAN150, ±10 ms jitter, 1% loss | 0.5 / 1 | 321.1 / 462.9 | 250 | 89.21 | 498.1 |
+
+WAN pacing budgets are deliberately below shared link caps; Phase 5 used
+2 Mbps for all rows. This is a realistic-profile comparison, not identical
+rate-control conditions. Initial repair includes protected capture and complete
+credited refinement; it is not click latency or pure link serialization.
+Random-loss tails have only 20 click samples. No host/default interface was
+shaped: each case owns a namespace, MTU1500 and disabled loopback offloads.
+
+| Workload / profile | Budget Mbps | Drawn fps | Frame-event Mbps | Freeze-to-exact s | Live pair PSNR dB | Frozen first PSNR dB |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| Canvas local | 2 | 16.78 | 1.01 | 4.77 | 19.85 / 16.20 | 32.10 |
+| Canvas local | 4 | 15.42 | 1.62 | 4.17 | 16.20 / 16.19 | 32.15 |
+| Video local | 2 | 15.65 | 0.94 | 4.86 | 22.82 / 20.14 | 32.21 |
+| Video local | 4 | 16.29 | 1.18 | 3.98 | 21.68 / 20.76 | 32.21 |
+| Dense scroll local | 2 | 2.25 | 0.47 | 13.38 | 17.36 / 17.77 | 22.36 |
+| Dense scroll local | 4 | 2.61 | 0.60 | 10.47 | 17.42 / 17.84 | 22.47 |
+| Canvas WAN40 | 2 | 12.21 | 0.78 | 7.47 | 16.18 / 16.26 | 31.99 |
+| Canvas WAN80 | 1 | 9.20 | 0.32 | 13.65 | 16.32 / 22.38 | 31.20 |
+| Canvas WAN150 | 0.5 | 2.72 | 0.06 | 19.84 | 16.18 / 16.12 | 26.92 |
+
+The fixture and source text are unchanged from Phase 5, but sampling/credits
+changed. Canvas/video rise from 1.18/1.19 fps to 16.78/15.65 fps at 2 Mbps;
+dense wheel replay rises from 0.25 to 2.25 fps. All freeze repairs end at RGB
+MSE 0. These improvements remain below the owner's 24fps target.
+Live pairs include temporal drift and diagnostic source capture; they are
+**not codec-only PSNR**. Video is an HTMLVideoElement playing a 30fps canvas
+captureStream, not DRM/network playback. Dense scroll is sequential discrete
+wheel input, not continuous gesture injection; its low event count also reflects
+unchanged source polls between wheel steps. The present harness cannot certify
+24fps dense scrolling without a continuously driven scrolling fixture.
+Frame Mbps counts encrypted frame events only. Unpaced diagnostic captures,
+requests, TLS and the initial repair are excluded; total diagnostic application
+rates can exceed the negotiated budget. Increasing bitrate to 4 Mbps did not
+remove the serial capture limit. No bandwidth-fair moving Selkies comparison
+has been established.
+
+| Observation | Historical Selkies default path | Phase-6 kernel milestone |
+| --- | --- | --- |
+| Frozen docs | 48.30 dB at 0.482 Mbps observed | Exact after native repair; static input P95 regresses to 259 ms |
+| Frozen media | 47.23 dB at 0.253 Mbps observed | Exact after stopping media; first frozen video about 32.2 dB |
+| Docs small click P95 | 90.56 ms | Local 259.3 ms; WAN docs 288–463 ms |
+| Continuous moving display | No matched motion-fps/PSNR receipt | Canvas/video 15–17 fps local; discrete scroll 2–3 fps |
+
+Selkies remains the old Chrome147/960×600 CSS research source; this is
+Chrome154/1280×800 CSS. Both use DPR2. This comparison establishes neither
+bandwidth-fair superiority nor a universal replacement. Keep the flag off.
+
+### MD-DISPLAY-02: remaining latency seams
+
+| Click-stage p50 / p95 ms, nested spans | Local docs | WAN80 docs |
+| --- | ---: | ---: |
+| Input request round-trip | 125.0 / 207.5 | 170.3 / 252.1 |
+| Host backend mutex wait | 0.0 / 169.4 | 0.0 / 117.0 |
+| Protected host IPC | 35.9 / 197.8 | 33.2 / 153.6 |
+| Preview capture | 6.7 / 12.5 | 7.4 / 10.5 |
+| Native crop | 3.1 / 15.7 | 3.9 / 14.0 |
+| Payload pacing | 1.1 / 1.2 | 1.2 / 1.3 |
+| Enqueued event to viewer | 1.7 / 2.1 | 52.7 / 64.8 |
+| Viewer decode | 3.6 / 5.7 | 4.2 / 6.3 |
+
+Source/input priority counts pending input before the blocking controller call,
+so queued capture credits wait outside its mutex. RAII cancellation tests pass.
+It cannot interrupt a capture already holding that mutex: full native detail
+verification still produces 100–200ms input stalls. This explains the static
+local regression and part of the WAN tails; small-packet relay pacing/decoding
+are no longer the largest local spans.
+
+During local 2 Mbps canvas/video motion, protected host IPC is about 50.3/52.4ms
+p50, source screenshot about 25.5/30.3ms, and selected encode about 7.8/7.4ms.
+The four-credit queue waits about 131/138ms p50. Encoder, capture and pacing run
+inside the same awaited host operation; a larger credit window cannot make that
+source execute faster. Source-origin mapping/document/Vault checks must survive
+any replacement. Timings overlap and are not additive; motion summaries exclude
+startup/settle and use the first-to-last presentation interval. Local CPU spans
+the entire drill at roughly 205–370% of one core, including readbacks/resource
+sampling. Campaign minima are 29.1 GiB MemAvailable and 197.1 GiB free disk.
+
+The next implementation should move encode/pacing outside the source-input
+mutex, hold only one latest protected frame, and discard obsolete pending
+source work before encoding. A continuously produced capture source needs a
+document/policy epoch and input-barrier proof; raw CDP screencast is not an
+authorized substitute for masked pixels. Measure full-detail verification and
+input prioritization together, then add continuous-scroll and slow-viewer/base
+recovery drills. Do not hide the static-latency regression with selected runs.
+
+### MD-DISPLAY-04: review and publication boundary
+
+58 focused Node checks, 22 focused Rust checks (two live drills ignored), and the
+real encoder budget/delta regression pass at this milestone. Slot2 kernel build
+and existing 419 shape/hash guards pass. Logs remain external. Inbox 04:53
+PNG-only navigation is fixed by `0c1ce3843`; earlier navigation/dependency,
+registration, transient cursor and no-replay findings retain their original
+fail-first/fixed receipts. Signal helpers explicitly reject unsafe PIDs and
+recheck group membership/start identity; no new runtime was signaled on resume.
+
+Coordinator inbox 06:28 names union PR #867 at `32d4611a9`, protocol 427/relay74,
+and requires further code changes to base on forthcoming `md/stack-on-main`.
+That public ref is absent at the resume check. The coordinator's mdval lane owns
+the union navigation finding; this lane does not duplicate that repair. This
+commit finishes the existing 419 milestone's evidence/doc handoff only. Runtime
+follow-ups await the exact published canonical source and will retain its 427/74
+allocation; these receipts must not be attributed to that unmeasured stack.
+
+MD-DISPLAY-02 replay: use the source/binary above, supplied public Node/PyAV tools,
+`MD_WINDOW=1 MD_CREDIT_WINDOW=4`, and explicit case budgets:
+
+```sh
+MD_WINDOW=1 MD_CREDIT_WINDOW=4 MD_MOTION_MS=10000 \
+MD_CASES=local:docs:2000000,wan40:docs:2000000,wan80:docs:1000000,wan150:docs:500000,local:canvas:2000000,local:video:2000000,local:scroll:2000000,local:canvas:4000000,local:video:4000000,local:scroll:4000000,wan40:canvas:2000000,wan80:canvas:1000000,wan150:canvas:500000 \
+node apps/browser-display/campaign.mjs \
+  /absolute/kernel-test-binary /absolute/new/external/evidence \
+  /absolute/node-tools /absolute/pyav-tools
+```
+
+MD-DISPLAY-02/04: the external `agents/display/phase6-report.py` aggregates the
+immutable completed receipts and exits nonzero on unmet latency/fps targets.
+Its report keeps functional passes separate from performance RED. Cloud wiring,
+hosted WAN, native OS, live Vault, multi-viewer, reconnect/slow viewer and Room
+migration remain separate acceptance gates; the feature remains off by default.
