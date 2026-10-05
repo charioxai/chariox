@@ -128,15 +128,25 @@ impl KernelRuntimeOwnedState {
                 "App host actions use the dedicated terminal acceptance path",
             ));
         }
-        let choice = interaction
-            .choice(choice)
-            .ok_or_else(|| interaction_error("Unknown decision choice"))?;
-        if choice.requires_passkey() && !passkey_verified {
-            return Err(super::super::critical_approval_passkey::passkey_error(
-                super::super::critical_approval_passkey::PASSKEY_REQUIRED,
-                "approving this critical action needs your Chariox passkey",
-            ));
-        }
+        // Host offers intentionally advertise only decline. The owner-bound
+        // dedicated take path is their sole acceptance authority, as in Rooms.
+        let (choice_id, reply) = if take_host {
+            (
+                "accept_host_action".to_owned(),
+                "accept_host_action".to_owned(),
+            )
+        } else {
+            let choice = interaction
+                .choice(choice)
+                .ok_or_else(|| interaction_error("Unknown decision choice"))?;
+            if choice.requires_passkey() && !passkey_verified {
+                return Err(super::super::critical_approval_passkey::passkey_error(
+                    super::super::critical_approval_passkey::PASSKEY_REQUIRED,
+                    "approving this critical action needs your Chariox passkey",
+                ));
+            }
+            (choice.id().to_owned(), choice.reply().to_owned())
+        };
         let pending = self
             .pending_interactions
             .write()
@@ -147,8 +157,8 @@ impl KernelRuntimeOwnedState {
             id,
             super::super::PendingInteractionResolution {
                 status: "answered",
-                choice_id: Some(choice.id().into()),
-                reply: Some(choice.reply().into()),
+                choice_id: Some(choice_id),
+                reply: Some(reply),
             },
         );
         Ok(())
