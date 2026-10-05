@@ -48,7 +48,7 @@ impl Fixture {
                         let mut data = [0; 4096];
                         let _ = socket.read(&mut data);
                         let body=format!("<!doctype html><title>MD-N5 selected text</title><span>🙂{}</span><p id='quote'>MD notes selected quote</p><p>{}🙂</p>","x".repeat(63),"x".repeat(63));
-                        let _=write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body);
+                        let _=write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(10))
@@ -195,7 +195,7 @@ async fn check_live() {
         use crate::runtime::browser_controller_app_view::{BrowserAppViewRequest, BrowserAppViewAsset};
         router.runtime_state.notes_drill_app_view(session.id(),BrowserAppViewRequest::Open {
             origin_label:"mdnotes-fixture".into(),installation_id:"mdnotes-fixture".into(),entry:"index.html".into(),page:None,
-            assets:vec![BrowserAppViewAsset {path:"index.html".into(),content_type:"text/html".into(),body_base64:base64::engine::general_purpose::STANDARD.encode(format!("<!doctype html><title>MD-N5 App</title><span>🙂{}</span><p id='quote'>MD notes selected quote</p><p>{}🙂</p>","x".repeat(63),"x".repeat(63)))}],
+            assets:vec![BrowserAppViewAsset {path:"index.html".into(),content_type:"text/html; charset=utf-8".into(),body_base64:base64::engine::general_purpose::STANDARD.encode(format!("<!doctype html><title>MD-N5 App</title><span>🙂{}</span><p id='quote'>MD notes selected quote</p><p>{}🙂</p>","x".repeat(63),"x".repeat(63)))}],
         }).await.unwrap();
         let app_url="https://app.mdnotes-fixture.invalid/".to_string();
         let app_state=Box::pin(router.runtime_state.reconcile_browser_controller_environment(session.id())).await.unwrap();
