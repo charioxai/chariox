@@ -61,7 +61,9 @@ impl KernelRuntimeState {
         }
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(user);
+        let at = std::time::Instant::now();
         let _barrier = protection.barrier(&scope)?.read_owned().await;
+        crate::transport::kernel_browser_display::timing("barrier", at);
         self.kernel_browser_bound_operation(user, admission.as_ref(), method, params, true)
             .await
     }
@@ -92,12 +94,14 @@ impl KernelRuntimeState {
         let display = method == "host.browser"
             && params["op"] == "screenshot"
             && params["display_subscription_id"].is_string();
+        let at = std::time::Instant::now();
         let mut result = tokio::task::spawn_blocking(move || {
             host.protected_request_admitted(&user, admission.as_ref(), &method, params, policy)
         })
         .await
         .map_err(|_| host_error("MD-5: browser task failed".into()))?
         .map_err(|message| protection.scrub_error(&scope, host_error(message)))?;
+        crate::transport::kernel_browser_display::timing("protected_host_ipc", at);
         if !protect {
             return Ok(result);
         }

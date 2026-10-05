@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { displayTiming, timestamp } from './kernel-browser-timing.mjs';
 import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
 import { HostChromium } from "./kernel-browser-process.mjs";
@@ -31,6 +32,7 @@ export function navigationUrl(raw) {
 export class KernelBrowserHost {
   constructor(root, { chromium = new HostChromium(root), browserFactory = endpoint => new BrowserCdpClient({ debuggerEndpoint: endpoint }) } = {}) {
     this.root = root;
+    this.timing = displayTiming(root);
     this.chromium = chromium;
     this.browserFactory = browserFactory;
     this.browser = null;
@@ -163,8 +165,10 @@ export class KernelBrowserHost {
     return { ...state, tab_id: tabId };
   }
   async target(command) {
+    const started = timestamp();
     if (command.generation !== this.generation) throw new Error("MD-2: stale browser generation; refresh state");
     await this.reconcile();
+    this.timing('target_reconcile', started);
     const tab = this.tabs.get(command.tab_id);
     if (!tab) throw new Error("MD-2: host tab does not exist");
     return tab;
@@ -186,15 +190,19 @@ export class KernelBrowserHost {
     return { ...stored, document_id };
   }
   async screenshot(tab) {
+    const started = timestamp();
     const scale = this.scales.get(tab.tab_id) ?? 1;
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
     const data = await captureProtectedPage(this.browser, tab, this.protection.values,
       this.protection.targets.filter(target => target.kind === "browser"), async () => {
+        const at = timestamp();
         const { data } = await connection.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false }, sessionId);
+        this.timing('cdp_capture', at);
         return data;
       }, scale);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
+    this.timing('protected_capture', started);
     if (typeof data !== "string" || data.length > 4 * 1024 * 1024) throw new Error("MD-2: frame exceeds limit");
     return { generation: this.generation, tab_id: tab.tab_id, document_id: tab.document_id, mime_type: "image/png", data_base64: data, width: 1280 * scale, height: 800 * scale };
   }
@@ -330,7 +338,7 @@ export class KernelBrowserHost {
       this.scales.set(tab.tab_id, command.device_scale_factor);
       const id = `host-display-${randomUUID()}`;
       const codec = command.codecs.includes("vp09.00.10.08") ? "vp09.00.10.08" : "png";
-      const stream = new DisplayStream({ subscription_id: id, tab_id: tab.tab_id, observed_by: scope, bitrate: command.bitrate, device_scale_factor: command.device_scale_factor, codec });
+      const stream = new DisplayStream({ subscription_id: id, tab_id: tab.tab_id, observed_by: scope, bitrate: command.bitrate, device_scale_factor: command.device_scale_factor, codec }, { timing: this.timing });
       this.displays.set(id, stream);
       this.armDisplayExpiry(stream);
       return { generation: this.generation, subscription_id: id, codec, bitrate: command.bitrate, device_scale_factor: command.device_scale_factor };
@@ -353,7 +361,8 @@ export class KernelBrowserHost {
     if (command.op === "input") {
       const observed = command.document_id ?? (command.focused_agent ? null : this.observedDocuments.get(scope)?.get(tab.tab_id));
       if (!observed || observed !== tab.document_id) throw new Error("MD-3: stale input document; observe the tab again");
-      try { await inputHostTab(this.browser, tab, command.input, { signal }); }
+      const at = timestamp();
+      try { await inputHostTab(this.browser, tab, command.input, { signal }); this.timing('cdp_input', at); }
       catch (error) {
         if (["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) {
           // Clear any dispatched key/button state before another actor can use
@@ -362,7 +371,10 @@ export class KernelBrowserHost {
         }
         throw error;
       }
-      return this.observe(await this.reconcile(), null, scope);
+      const post = timestamp();
+      const result = this.observe(await this.reconcile(), null, scope);
+      this.timing('input_post_reconcile', post);
+      return result;
     }
     if (command.op === "screenshot") {
       const frame = await this.screenshot(tab);
@@ -391,7 +403,9 @@ export class KernelBrowserHost {
         return { id: request.id, ok: true, result: { inserted: true } };
       }
       if (request.method === "host.browser") {
+        const at = timestamp();
         const result = await this.request(request.params, { signal });
+        this.timing(request.params.op === 'input' ? 'host_input' : 'host_capture_or_control', at);
         // Structured controller observations scrub before compaction; metadata
         // and other host replies receive the same protection at this boundary.
         if (!["screenshot", "poll"].includes(request.params?.op)) {

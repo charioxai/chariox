@@ -2,6 +2,18 @@
 use super::kernel_protocol::KernelEvent;
 use serde_json::Value;
 
+// MD-DISPLAY-02/04: local diagnostics contain only a fixed stage and times.
+pub(crate) fn timing(stage: &'static str, started: std::time::Instant) {
+    if std::env::var("CHARIOX_BROWSER_DISPLAY_TIMING").as_deref() == Ok("1") {
+        let duration = started.elapsed().as_secs_f64() * 1000.0;
+        let ended = crate::session::unix_epoch_ms() as f64;
+        eprintln!(
+            "MD-DISPLAY-TIMING {}",
+            serde_json::json!({"stage":stage,"started_ms":ended-duration,"ended_ms":ended,"duration_ms":duration})
+        );
+    }
+}
+
 pub(crate) fn take_display_event(response: &mut Value) -> Option<(String, u64, KernelEvent)> {
     let frame = response.pointer_mut("/KernelBrowser/result/display_frame")?;
     if frame.is_null() {

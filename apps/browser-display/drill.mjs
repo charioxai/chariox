@@ -64,7 +64,7 @@ try {
  });
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  const origin=`http://127.0.0.1:${server.address().port}`;
- kernel=await launchOwned(path.join(root,'kernel-tests'),['--ignored','--exact','runtime::router::tests::kernel_browser::display::kernel_browser_display_protocol_drill','--nocapture'],{uid:65534,gid:65534,detached:true,cwd:root,env:{PATH:'/usr/bin:/bin',HOME:home,TMPDIR:home,DISPLAY:`:${screen.trim()}`,CHARIOX_HOME:path.join(home,'chariox'),CHARIOX_LOG_DIR:path.join(home,'logs'),CHARIOX_DISPLAY_DRILL_ROOT:home,CHARIOX_DISPLAY_FIXTURE_URL:`${origin}/docs`,CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/usr/bin/google-chrome',CHARIOX_KERNEL_BROWSER_DISPLAY:'1',CHARIOX_BROWSER_DISPLAY_PYTHON:pythonWrapper},stdio:['ignore','pipe','pipe']});groups.push(kernel.pid);
+ kernel=await launchOwned(path.join(root,'kernel-tests'),['--ignored','--exact','runtime::router::tests::kernel_browser::display::kernel_browser_display_protocol_drill','--nocapture'],{uid:65534,gid:65534,detached:true,cwd:root,env:{PATH:'/usr/bin:/bin',HOME:home,TMPDIR:home,DISPLAY:`:${screen.trim()}`,CHARIOX_HOME:path.join(home,'chariox'),CHARIOX_LOG_DIR:path.join(home,'logs'),CHARIOX_DISPLAY_DRILL_ROOT:home,CHARIOX_DISPLAY_FIXTURE_URL:`${origin}/docs`,CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/usr/bin/google-chrome',CHARIOX_KERNEL_BROWSER_DISPLAY:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_BROWSER_DISPLAY_PYTHON:pythonWrapper},stdio:['ignore','pipe','pipe']});groups.push(kernel.pid);
  kernel.stdout.on('data',b=>log.push(b));kernel.stderr.on('data',b=>log.push(b));
  kernelExit=waitChild(kernel);
  ready=await until(async()=>{checkChild(kernel,'kernel');try{return JSON.parse(await readFile(path.join(home,'ready.json'),'utf8'))}catch{return null}},'focused MCP opens user-domain tab',45000);
@@ -88,27 +88,34 @@ try {
     }catch{socket?.close();await new Promise(resolve=>setTimeout(resolve,100));}
    }
   if(!daemonKey)throw Error('MD-DISPLAY relay did not admit kernel target');
-  let id=0;const pending=new Map(),listeners=new Set();window.mdWireBytes=0;window.mdFrames=[];
+  let id=0;const pending=new Map(),listeners=new Set();window.mdWireBytes=0;window.mdFrames=[];window.mdTimings=[];
+  const stamp=()=>performance.timeOrigin+performance.now();
+  const timing=(stage,started)=>{const ended=stamp();mdTimings.push({stage,started_ms:started,ended_ms:ended,duration_ms:ended-started});};
   socket.onmessage=async event=>{
    window.mdWireBytes+=new TextEncoder().encode(event.data).length;
-   const message=JSON.parse(event.data);
+   const arrived=stamp();const message=JSON.parse(event.data);
    if(message.kind==='client_response'){
      const p=pending.get(message.request_id);pending.delete(message.request_id);
      if(!p)return;
      if(message.error)p.reject(Error(message.error.message));else try{p.resolve(JSON.parse(await api.decryptRelayPayload(sender.privateKey,message.encrypted_response,daemonKey)))}catch(error){p.reject(error)}
     }else if(message.kind==='client_event'){
+     timing('event_received',arrived);
      const value=JSON.parse(await api.decryptRelayPayload(sender.privateKey,message.encrypted_event,daemonKey));
+     timing('client_event_decrypt',arrived);
      window.mdFrames.push({sequence:value.frame.sequence,kind:value.frame.kind,bytes:event.data.length});for(const listener of listeners)listener(value);
    }
   };
   const control=value=>new Promise((resolve,reject)=>{const key=String(++id),timer=setTimeout(()=>{pending.delete(key);reject(Error('MD-DISPLAY request timeout'))},20000);pending.set(key,{resolve:value=>{clearTimeout(timer);resolve(value)},reject:error=>{clearTimeout(timer);reject(error)}});socket.send(JSON.stringify({request_id:key,...value}))});
   window.mdTransport={request:async request=>{
+    const started=stamp();
     const encrypted=await api.encryptRelayPayload(daemonKey,JSON.stringify({command_id:'md-display-'+(id+1),request}),sender);
-    return control({kind:'client_request',target:{daemon_id:bootstrap.daemon_id},encrypted_request:encrypted.payload});
+    timing('client_request_encrypt',started);
+    const sent=stamp();const result=await control({kind:'client_request',target:{daemon_id:bootstrap.daemon_id},encrypted_request:encrypted.payload});
+    timing(request.KernelBrowser.command.op==='display_input'?'input_round_trip':'capture_or_control_round_trip',sent);return result;
    },onEvent:listener=>{listeners.add(listener);return()=>listeners.delete(listener)}};
   mdTransport.subscribeDisplay=binding=>control({kind:'client_subscribe',subscription_id:binding.subscription_id,target:{daemon_id:bootstrap.daemon_id},session_id:binding.subscription_id,attachment_id:String(binding.generation),client_public_key:sender.publicKeyBase64,subscription_scope:'kernel_browser_display',resume_from_event_id:null});
   mdTransport.unsubscribeDisplay=binding=>control({kind:'client_unsubscribe',subscription_id:binding.subscription_id,client_public_key:sender.publicKeyBase64});
-  window.mdStream=await MDDisplay.attachBrowserDisplay(MDDisplay.canvas,mdTransport,{tab_id:ready.tab_id,generation:ready.generation},{bitrate});
+  window.mdStream=await MDDisplay.attachBrowserDisplay(MDDisplay.canvas,mdTransport,{tab_id:ready.tab_id,generation:ready.generation},{bitrate,onTiming:timing});
  },{ready,bitrate:receipt.target_encrypted_bitrate});
  const first=await page.evaluate(()=>mdStream.next());receipt.bootstrap={kind:first.kind,sequence:first.sequence};
  const reference=async()=>Buffer.from((await page.evaluate(async()=>{const r=await mdTransport.request({KernelBrowser:{command:{op:'display_capture',tab_id:mdStream.binding.tab_id,generation:mdStream.binding.generation}}});return r.KernelBrowser.result.data_base64})),'base64');
@@ -132,17 +139,23 @@ try {
  receipt.probe_pixel_left=probeLeft;
  const probes=[];const startBytes=await page.evaluate(()=>mdWireBytes),start=performance.now();
  for(let i=1;i<=20;i++) {
-  await resource();const at=performance.now();
-  await page.evaluate(()=>mdStream.input({kind:'click',x:1190,y:28}));
-  const frame=await page.evaluate(()=>mdStream.next());
-  const step=await page.evaluate(left=>{const c=MDDisplay.canvas.getContext('2d');let n=0;for(let i=0;i<5;i++){const p=c.getImageData(left+8+i*16,56,1,1).data;if(p[0]>128)n|=1<<i}return n},probeLeft);
-  if(step!==i){await pair('failed-probe-'+i);throw Error(`MD-DISPLAY: input visual acknowledgement ${i} got ${step}`);}
-  probes.push(performance.now()-at);if(!frame)throw Error('MD-DISPLAY: missing changed frame');
+  await resource();
+  const probe=await page.evaluate(async left=>{
+   const stamp=()=>performance.timeOrigin+performance.now(), started=stamp();
+   await mdStream.input({kind:'click',x:1190,y:28});
+   const inputAck=stamp(),frame=await mdStream.next(), drawn=stamp();
+   await new Promise(resolve=>requestAnimationFrame(resolve));const presented=stamp();
+   const c=MDDisplay.canvas.getContext('2d');let step=0;
+   for(let i=0;i<5;i++){const p=c.getImageData(left+8+i*16,56,1,1).data;if(p[0]>128)step|=1<<i}
+   return {started_ms:started,input_ack_ms:inputAck,drawn_ms:drawn,presented_ms:presented,latency_ms:presented-started,step,kind:frame?.kind};
+  },probeLeft);
+  if(probe.step!==i){await pair('failed-probe-'+i);throw Error(`MD-DISPLAY: input visual acknowledgement ${i} got ${probe.step}`);}
+  probes.push(probe.latency_ms);(receipt.probes??=[]).push(probe);if(!probe.kind)throw Error('MD-DISPLAY: missing changed frame');
  }
  const endResource=await resource();
  const firstResource=receipt.samples.find(sample=>sample.processes.some(process=>process.pid===kernel.pid));
  if(firstResource){const byPid=new Map(firstResource.processes.map(process=>[process.pid,process.cpu_ticks]));const delta=endResource.processes.reduce((total,process)=>total+Math.max(0,process.cpu_ticks-(byPid.get(process.pid)??process.cpu_ticks)),0);receipt.observed_owned_cpu_percent=delta/100/((endResource.at_ms-firstResource.at_ms)/1000)*100;receipt.cpu_note='live process deltas at Linux CLK_TCK=100; excludes already-exited encoder processes';}
- receipt.latency=distribution(probes);receipt.measurement_duration_ms=performance.now()-start;receipt.measured_local_response_bytes=(await page.evaluate(()=>mdWireBytes))-startBytes;receipt.local_bytes_per_second=receipt.measured_local_response_bytes*1000/receipt.measurement_duration_ms;receipt.frames=await page.evaluate(()=>mdFrames);
+ receipt.latency=distribution(probes);receipt.measurement_duration_ms=performance.now()-start;receipt.measured_local_response_bytes=(await page.evaluate(()=>mdWireBytes))-startBytes;receipt.local_bytes_per_second=receipt.measured_local_response_bytes*1000/receipt.measurement_duration_ms;receipt.frames=await page.evaluate(()=>mdFrames);receipt.client_timings=await page.evaluate(()=>mdTimings);
  receipt.final_fidelity=await pair('after-input');
  if(!receipt.final_fidelity.lossless)throw Error('MD-DISPLAY: small-change pixels differ');
  // Explicit stale document must fail through the production input seam.
@@ -169,6 +182,11 @@ finally {
   for(const name of await readdir('/proc'))if(/^\d+$/.test(name)){try{const command=await readFile(`/proc/${name}/cmdline`,'utf8');if(command.includes(root))remaining.push(Number(name));}catch{}}
   if(remaining.length)throw Error('MD-DISPLAY: owned-root processes remain: '+remaining.join(','));
   receipt.cleanup.push('owned Chromium/controller/encoder/kernel/Xvfb settled; exact-root process inventory empty');}catch(error){receipt.cleanup.push(error.message);receipt.status='RED';process.exitCode=1;}
+ // Read only our non-secret, fixed-label diagnostic files before disposing state.
+ const traces=[];
+ async function collectTiming(directory){for(const entry of await readdir(directory,{withFileTypes:true}).catch(()=>[])){const p=path.join(directory,entry.name);if(entry.isDirectory()&&entry.name!=='profile')await collectTiming(p);else if(entry.name==='display-timing.jsonl'){const lines=(await readFile(p,'utf8')).trim().split('\n');for(const line of lines)if(line)traces.push(JSON.parse(line));}}}
+ await collectTiming(path.join(root,'home','chariox'));
+ receipt.host_timings=traces;receipt.kernel_timings=Buffer.concat(log).toString().split('\n').filter(line=>line.startsWith('MD-DISPLAY-TIMING ')).map(line=>JSON.parse(line.slice('MD-DISPLAY-TIMING '.length)));
  if(server)await new Promise(resolve=>server.close(resolve));
  // Delete only the exact freshly-created disposable root, after owned teardown.
  if(!process.exitCode || receipt.cleanup.some(value=>value.includes('inventory empty'))){await rm(root,{recursive:true,force:true});receipt.cleanup.push('exact disposable state removed');}else receipt.cleanup.push('uncertain teardown state retained at '+root);
