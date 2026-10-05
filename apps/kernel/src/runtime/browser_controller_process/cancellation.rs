@@ -130,6 +130,15 @@ impl ExecutionRecord {
 
 impl BrowserActionExecutions {
     #[cfg(test)]
+    pub(super) fn test_is_active(&self, session_id: &str, execution_id: &str) -> bool {
+        self.state
+            .lock()
+            .unwrap()
+            .active
+            .contains_key(&(session_id.into(), execution_id.into()))
+    }
+
+    #[cfg(test)]
     fn forget_completed(&self) {
         self.state
             .lock()
@@ -388,18 +397,20 @@ impl BrowserControllerProcessStore {
             let _barrier = self.lock_tab_mutation_barrier(&active.signal)?;
             let lane = self.tab_mutation_lane(target_id)?;
             let _lane = Self::lock_tab_mutation_lane(&lane, &active.signal)?;
-            let pending = ownership
+            let mut ownership = ownership
                 .lock()
-                .map_err(|_| "browser controller supervisor lock poisoned")?
-                .begin_action(
-                    session_id,
-                    target_id,
-                    document_id,
-                    node_ref,
-                    action,
-                    timeout_ms,
-                    &active.signal,
-                )?;
+                .map_err(|_| "browser controller supervisor lock poisoned")?;
+            self.authorize()?;
+            let pending = ownership.begin_action(
+                session_id,
+                target_id,
+                document_id,
+                node_ref,
+                action,
+                timeout_ms,
+                &active.signal,
+            )?;
+            drop(ownership);
             let result = pending
                 .wait(&active.signal)?
                 .into_result::<BrowserControllerActionResult>("browser.action")?;
@@ -562,10 +573,17 @@ impl BrowserControllerProcessStore {
             let _barrier = self.lock_tab_mutation_barrier(&active.signal)?;
             let lane = self.tab_mutation_lane(target_id)?;
             let _lane = Self::lock_tab_mutation_lane(&lane, &active.signal)?;
-            let pending = ownership
+            let mut ownership = ownership
                 .lock()
-                .map_err(|_| "browser controller supervisor lock poisoned")?
-                .begin_cancellable_tab_mutation(session_id, method, &params, &active.signal)?;
+                .map_err(|_| "browser controller supervisor lock poisoned")?;
+            self.authorize()?;
+            let pending = ownership.begin_cancellable_tab_mutation(
+                session_id,
+                method,
+                &params,
+                &active.signal,
+            )?;
+            drop(ownership);
             finish(pending.wait(&active.signal)?)
         })();
         let outcome = if active.signal.stopped.load(Ordering::Acquire) && active.signal.accepted() {
