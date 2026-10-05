@@ -13,12 +13,12 @@ use chariox_event_protocol::{
     AegsConnectionTestEventResponse, AegsProviderActionRequest, AegsProviderResourceQuery,
     PublishEventRequest,
 };
-use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
+use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::net::TcpListener;
 
 use crate::management_capability::{parse_public_key, verify_management_capability_scoped};
@@ -162,15 +162,20 @@ where
             "protocol_version": AEGS_PROTOCOL_VERSION,
         })
     );
+    let connections = Arc::new(tokio::sync::Semaphore::new(64));
     loop {
+        let permit = Arc::clone(&connections).acquire_owned().await?;
         let (stream, _) = listener.accept().await?;
         let server = server.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             let service = service_fn(move |request| {
                 let server = server.clone();
                 async move { Ok::<_, Infallible>(server.handle(request).await) }
             });
             let _ = http1::Builder::new()
+                .timer(TokioTimer::new())
+                .header_read_timeout(Duration::from_secs(15))
                 .serve_connection(TokioIo::new(stream), service)
                 .await;
         });
@@ -190,20 +195,20 @@ fn spawn_subscription_maintenance(provider: Arc<dyn AegsProvider>) {
             let provider = Arc::clone(&provider);
             match tokio::task::spawn_blocking(move || provider.maintain_subscriptions()).await {
                 Ok(Ok(())) => {}
-                Ok(Err(message)) => eprintln!(
+                Ok(Err(_message)) => eprintln!(
                     "{}",
                     serde_json::json!({
                         "component": "chariox-aegs",
                         "event": "subscription_maintenance_failed",
-                        "error": message,
+                        "error": "provider_maintenance_failed",
                     })
                 ),
-                Err(error) => eprintln!(
+                Err(_error) => eprintln!(
                     "{}",
                     serde_json::json!({
                         "component": "chariox-aegs",
                         "event": "subscription_maintenance_task_failed",
-                        "error": error.to_string(),
+                        "error": "provider_maintenance_task_failed",
                     })
                 ),
             }
@@ -943,11 +948,11 @@ impl AegsServer {
                 if let Err(message) = self.provider.revoke_connection(&revoke.connection_id) {
                     return error(StatusCode::BAD_GATEWAY, "provider_revoke_failed", message);
                 }
-                match self.store.revoke_connection(
-                    &revoke.connection_id,
-                    &revoke.owner_id,
-                    now_ms(),
-                ) {
+                match self
+                    .store
+                    .revoke_connection_wait(&revoke.connection_id, &revoke.owner_id, now_ms())
+                    .await
+                {
                     Ok(true) => json(
                         StatusCode::OK,
                         AegsConnectionRevokeResponse { revoked: true },
@@ -1237,11 +1242,15 @@ impl AegsServer {
                         )
                     }
                 };
-                let subscriptions = match self.store.matching(
-                    &self.producer_id,
-                    &normalized.event_type,
-                    &normalized.connection_scope,
-                ) {
+                let subscriptions = match self
+                    .store
+                    .matching_for_delivery(
+                        &self.producer_id,
+                        &normalized.event_type,
+                        &normalized.connection_scope,
+                    )
+                    .await
+                {
                     Ok(values) => values,
                     Err(message) => {
                         return error(StatusCode::INTERNAL_SERVER_ERROR, "store_failed", message)
@@ -1249,7 +1258,7 @@ impl AegsServer {
                 };
                 let mut interest_keys = HashSet::new();
                 let mut responses = Vec::new();
-                for subscription in subscriptions {
+                for (subscription, generation) in subscriptions {
                     if route
                         .connection_id
                         .as_deref()
@@ -1263,6 +1272,11 @@ impl AegsServer {
                     if !interest_keys.insert(subscription.event_interest_key.clone()) {
                         continue;
                     }
+                    let _delivery_guard =
+                        match self.store.delivery_guard(&subscription, generation).await {
+                            Ok(guard) => guard,
+                            Err(_) => continue,
+                        };
                     let connection_id = subscription.connection_id.clone();
                     let event = PublishEventRequest {
                         producer_id: self.producer_id.clone(),
@@ -1372,13 +1386,16 @@ impl AegsServer {
         normalized: crate::NormalizedEvent,
         connection_id: Option<&str>,
     ) -> Result<AegsConnectionTestEventResponse, String> {
-        let subscriptions = self.store.matching(
-            &self.producer_id,
-            &normalized.event_type,
-            &normalized.connection_scope,
-        )?;
+        let subscriptions = self
+            .store
+            .matching_for_delivery(
+                &self.producer_id,
+                &normalized.event_type,
+                &normalized.connection_scope,
+            )
+            .await?;
         let mut interest_keys = HashSet::new();
-        for subscription in subscriptions {
+        for (subscription, generation) in subscriptions {
             if connection_id.is_some_and(|value| subscription.connection_id != value) {
                 continue;
             }
@@ -1388,6 +1405,13 @@ impl AegsServer {
             if !interest_keys.insert(subscription.event_interest_key.clone()) {
                 continue;
             }
+            let _delivery_guard = match self.store.delivery_guard(&subscription, generation).await {
+                Ok(guard) => guard,
+                Err(_) => {
+                    interest_keys.remove(&subscription.event_interest_key);
+                    continue;
+                }
+            };
             let accepted_connection_id = subscription.connection_id.clone();
             self.publisher
                 .publish(PublishEventRequest {
@@ -1556,28 +1580,62 @@ pub fn read_secret(name: &str, file_name: &str) -> Result<Option<String>, String
 async fn read_body<B>(request: Request<B>) -> Result<Bytes, Response<Full<Bytes>>>
 where
     B: hyper::body::Body<Data = Bytes> + Unpin,
-    B::Error: std::error::Error + Send + Sync + 'static,
 {
-    let body = Limited::new(request.into_body(), MAX_WEBHOOK_BYTES)
-        .collect()
-        .await
-        .map_err(|error_value| {
-            if error_value.downcast_ref::<LengthLimitError>().is_some() {
-                error(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "payload_too_large",
-                    format!("webhook exceeds {MAX_WEBHOOK_BYTES} bytes"),
-                )
-            } else {
+    if request
+        .headers()
+        .get(hyper::header::CONTENT_LENGTH)
+        .is_some_and(|value| {
+            value
+                .to_str()
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .is_some_and(|length| length > MAX_WEBHOOK_BYTES as u64)
+        })
+    {
+        return Err(error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "payload_too_large",
+            "request exceeds byte limit",
+        ));
+    }
+    bounded_body(request.into_body(), Duration::from_secs(15)).await
+}
+
+async fn bounded_body<B>(mut body: B, timeout: Duration) -> Result<Bytes, Response<Full<Bytes>>>
+where
+    B: hyper::body::Body<Data = Bytes> + Unpin,
+{
+    tokio::time::timeout(timeout, async move {
+        let mut bytes = bytes::BytesMut::new();
+        while let Some(frame) = body.frame().await {
+            let frame = frame.map_err(|_| {
                 error(
                     StatusCode::BAD_REQUEST,
                     "invalid_body",
-                    error_value.to_string(),
+                    "request body read failed",
                 )
+            })?;
+            if let Ok(data) = frame.into_data() {
+                if data.len() > MAX_WEBHOOK_BYTES.saturating_sub(bytes.len()) {
+                    return Err(error(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "payload_too_large",
+                        "request exceeds byte limit",
+                    ));
+                }
+                bytes.extend_from_slice(&data);
             }
-        })?
-        .to_bytes();
-    Ok(body)
+        }
+        Ok(bytes.freeze())
+    })
+    .await
+    .map_err(|_| {
+        error(
+            StatusCode::REQUEST_TIMEOUT,
+            "body_timeout",
+            "request body timed out",
+        )
+    })?
 }
 
 fn normalized_headers(headers: &hyper::HeaderMap) -> HashMap<String, String> {
@@ -1699,9 +1757,25 @@ fn error(
     code: impl Into<String>,
     message: impl Into<String>,
 ) -> Response<Full<Bytes>> {
+    let code = code.into();
+    let message = if code.starts_with("provider_")
+        || code.starts_with("authorization_")
+        || code.starts_with("invalid_provider_")
+        || matches!(
+            code.as_str(),
+            "aeds_rejected"
+                | "test_event_failed"
+                | "webhook_rejected"
+                | "invalid_signature"
+                | "resource_query_failed"
+        ) {
+        "provider operation failed".to_string()
+    } else {
+        message.into()
+    };
     json(
         status,
-        serde_json::json!({"error": {"code": code.into(), "message": message.into()}}),
+        serde_json::json!({"error": {"code": code, "message": message}}),
     )
 }
 
@@ -1870,5 +1944,74 @@ mod tests {
         assert!(enforce_management_owner(&authorization, "owner-1").is_ok());
         let response = enforce_management_owner(&authorization, "owner-2").unwrap_err();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+}
+
+#[cfg(test)]
+mod mp11_ingress_tests {
+    use super::*;
+    struct Frames {
+        remaining: usize,
+        polled: Arc<std::sync::atomic::AtomicUsize>,
+        stall: bool,
+    }
+    impl hyper::body::Body for Frames {
+        type Data = Bytes;
+        type Error = Infallible;
+        fn poll_frame(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, Infallible>>> {
+            if self.stall {
+                return std::task::Poll::Pending;
+            }
+            if self.remaining == 0 {
+                return std::task::Poll::Ready(None);
+            }
+            self.remaining -= 1;
+            self.polled
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::task::Poll::Ready(Some(Ok(hyper::body::Frame::data(Bytes::from(
+                vec![b'x'; 1024 * 1024],
+            )))))
+        }
+    }
+    #[tokio::test]
+    async fn mp11_ingress_stops_polling_chunked_overflow() {
+        let polled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let result = bounded_body(
+            Frames {
+                remaining: 100,
+                polled: polled.clone(),
+                stall: false,
+            },
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(result.unwrap_err().status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(polled.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+    #[tokio::test]
+    async fn mp11_ingress_rejects_stalled_body() {
+        let result = bounded_body(
+            Frames {
+                remaining: 1,
+                polled: Default::default(),
+                stall: true,
+            },
+            Duration::from_millis(20),
+        )
+        .await;
+        assert_eq!(result.unwrap_err().status(), StatusCode::REQUEST_TIMEOUT);
+    }
+    #[tokio::test]
+    async fn mp11_provider_http_error_projection_is_private() {
+        let response = error(
+            StatusCode::BAD_GATEWAY,
+            "authorization_failed",
+            "synthetic-client-secret",
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(!String::from_utf8_lossy(&bytes).contains("synthetic-client-secret"));
     }
 }
