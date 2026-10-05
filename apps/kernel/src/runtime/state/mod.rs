@@ -449,6 +449,7 @@ mod slice_runtime_state;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
 mod notes_runtime;
 mod kernel_browser_runtime;
+mod kernel_browser_receipts;
 mod kernel_browser_secret_runtime;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;

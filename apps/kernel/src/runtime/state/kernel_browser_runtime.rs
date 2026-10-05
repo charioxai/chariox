@@ -176,9 +176,9 @@ impl KernelRuntimeState {
                 let mut params = serde_json::to_value(command)
                     .map_err(|_| host_error("MD-2: invalid command".into()))?;
                 params["observed_by"] = serde_json::json!(actor);
-                return self
-                    .kernel_browser_operation(&user, None, "host.browser", params)
-                    .await;
+                let admission = self.owned.kernel_browser_host.admit_terminal(
+                    &user, caller.terminal_lifetime.clone().unwrap_or_default());
+                return self.kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params).await;
             }
         };
         if std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() != Ok("1") {
@@ -213,6 +213,9 @@ impl KernelRuntimeState {
                 "MD-3: the home kernel owns the user-domain browser".into(),
             ));
         }
+        if caller.terminal_lifetime.as_ref().is_some_and(|lifetime| !lifetime.is_live()) {
+            return Err(host_error("MD-3: terminal connection closed".into()));
+        }
         if !caller.is_terminal_caller() {
             return Err(host_error("MD-3: authenticated terminal required".into()));
         }
@@ -239,6 +242,7 @@ impl KernelRuntimeState {
         use crate::session::{EnvironmentActor, EnvironmentActorKind};
         let (user, actor) = self.kernel_browser_terminal_context(caller)?;
         let host = &self.owned.kernel_browser_host;
+        let admission = host.admit_terminal(&user, caller.terminal_lifetime.clone().unwrap_or_default());
         let mut params = match request {
             KernelBrowserDisplayRequest::NegotiatedSubscribe {
                 tab_id,
@@ -276,11 +280,12 @@ impl KernelRuntimeState {
             }
             KernelBrowserDisplayRequest::Takeover { tab_id, generation } => {
                 let outcome = host
-                    .request_takeover(
+                    .request_takeover_admitted(
                         &user,
                         EnvironmentActor::new(actor, EnvironmentActorKind::Human, "Human"),
                         &tab_id,
                         generation,
+                        Some(&admission),
                     )
                     .map_err(host_error)?;
                 return serde_json::to_value(outcome)
@@ -296,8 +301,7 @@ impl KernelRuntimeState {
             }
         };
         params["observed_by"] = serde_json::json!(actor);
-        self.kernel_browser_operation(&user, None, "host.browser", params)
-            .await
+        self.kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params).await
     }
     /// MD-2/MD-5: appviews retains admission; observations use the same protection.
     pub(crate) async fn kernel_browser_app_view(
