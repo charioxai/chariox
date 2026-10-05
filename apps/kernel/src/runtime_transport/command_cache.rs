@@ -110,9 +110,15 @@ pub(crate) struct CommandFingerprint {
     // MD-N3 / MP-11: browser/note receipts belong to the authenticated terminal identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     browser_caller: Option<crate::runtime::command::KernelCaller>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    browser_protection_revision: Option<u64>,
 }
 
 impl CommandFingerprint {
+    pub(crate) fn with_browser_protection_revision(mut self, revision: Option<u64>) -> Self {
+        self.browser_protection_revision = revision;
+        self
+    }
     pub(crate) fn from_command_and_request(
         command: &KernelCommand,
         request: &LocalDaemonRequest,
@@ -130,6 +136,7 @@ impl CommandFingerprint {
                 LocalDaemonRequest::KernelBrowser(_) | LocalDaemonRequest::Notes(_)
             )
             .then(|| command.caller.clone()),
+            browser_protection_revision: None,
         }
     }
 }
@@ -683,6 +690,7 @@ impl CommandResultCache {
             attachment_id: None,
             request_hash: stable_hash64(bytes),
             browser_caller: None,
+            browser_protection_revision: None,
         }
     }
 
@@ -695,6 +703,7 @@ impl CommandResultCache {
             attachment_id: None,
             request_hash: stable_hash64(command_type.as_bytes()),
             browser_caller: None,
+            browser_protection_revision: None,
         }
     }
 

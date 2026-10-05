@@ -546,8 +546,13 @@ async fn dispatch_relay_client_request(
             false,
         ));
     }
+    let browser_revision = match router.runtime_state().kernel_browser_receipt_revision(&command, &request) {
+        Ok(revision) => revision,
+        Err(error) => return cached_relay_dispatch_outcome(Box::new(None), Some(map_kernel_error(&error))),
+    };
     let fingerprint = request_is_cacheable(&request)
-        .then(|| CommandFingerprint::from_command_and_request(&command, &request));
+        .then(|| CommandFingerprint::from_command_and_request(&command, &request)
+            .with_browser_protection_revision(browser_revision));
     if let Some(fingerprint) = fingerprint.as_ref() {
         match command_result_cache
             .reserve(&command.command_id, fingerprint)
@@ -556,6 +561,10 @@ async fn dispatch_relay_client_request(
             CommandReservation::Wait(wait_rx) => {
                 return match wait_rx.await {
                     Ok(cached) => {
+                        if let Err(error) = router.runtime_state().validate_kernel_browser_receipt(
+                            &command, &request, browser_revision).await {
+                            return cached_relay_dispatch_outcome(Box::new(None), Some(map_kernel_error(&error)));
+                        }
                         cached_relay_dispatch_outcome(cached.response_value(), cached.error)
                     }
                     Err(_) => RelayDispatchOutcome::RelayError(relay_error(

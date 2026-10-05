@@ -145,14 +145,19 @@ done
     let host = KernelBrowserHost::new(root.clone());
     host.inner.lock().unwrap().browsers.insert("alice".into(), backend.clone());
     let held = backend.lock().unwrap();
+    let lifetime = crate::runtime::command::TerminalLifetime::default();
+    let admission = host.admit_terminal("alice", lifetime.clone());
     std::thread::scope(|scope| {
         let (started_tx, started_rx) = std::sync::mpsc::channel();
-        let queued = scope.spawn(|| {
+        let host = &host;
+        let admission = &admission;
+        let queued = scope.spawn(move || {
             started_tx.send(()).unwrap();
-            host.protected_request("alice", None, "host.browser", json!({"op":"input","tab_id":"host-tab-a","generation":1,"observed_by":"terminal:departed","input":{"kind":"text","text":"fixture"}}), json!({"values":[],"targets":[],"unknown":false}))
+            host.protected_request_admitted("alice", Some(admission), "host.browser", json!({"op":"input","tab_id":"host-tab-a","generation":1,"observed_by":"terminal:departed","input":{"kind":"text","text":"fixture"}}), json!({"values":[],"targets":[],"unknown":false}))
         });
         started_rx.recv().unwrap();
         std::thread::sleep(Duration::from_millis(50));
+        lifetime.cancel();
         host.disconnect_terminal("alice", "terminal:departed");
         drop(held);
         let outcome = queued.join().unwrap();

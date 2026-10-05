@@ -393,6 +393,7 @@ impl KernelTransportRuntime {
 struct ConnectionState {
     // MD-3: generated after admission, stable only for this live connection.
     local_terminal_id: String,
+    terminal_lifetime: crate::runtime::command::TerminalLifetime,
     browser_terminal_contexts: std::collections::BTreeSet<(String, String)>,
     subscription: Option<KernelSubscription>,
     watch_task: Option<JoinHandle<()>>,
@@ -891,6 +892,7 @@ where
         Arc::new(Semaphore::new(CONNECTION_INBOUND_REQUEST_LIMIT));
     let connection_state = Arc::new(Mutex::new(ConnectionState {
         local_terminal_id: format!("{:032x}", rand::random::<u128>()),
+        terminal_lifetime: Default::default(),
         browser_terminal_contexts: Default::default(),
         subscription: None,
         watch_task: None,
@@ -1063,6 +1065,7 @@ where
         }
     }
 
+    connection_state.lock().await.terminal_lifetime.cancel();
     {
         let mut state = connection_state.lock().await;
         if let Some(task) = state.watch_task.take() {
@@ -1074,12 +1077,7 @@ where
             detach_connection_subscription(&router, subscription).await;
         }
     }
-    let contexts = std::mem::take(&mut connection_state.lock().await.browser_terminal_contexts);
-    for (user, actor) in contexts {
-        router
-            .runtime_state()
-            .kernel_browser_terminal_disconnected(&user, &actor);
-    }
+    disconnect_browser_terminal(&router, &connection_state).await;
     writer_task.abort();
 
     if let Some(error) = read_error {
@@ -1205,6 +1203,17 @@ fn incoming_frame_decode_error(payload: &[u8], error: &serde_json::Error) -> Ker
     }
 }
 
+async fn disconnect_browser_terminal(router: &CommandRouter, connection: &Mutex<ConnectionState>) {
+    let contexts = {
+        let mut state = connection.lock().await;
+        state.terminal_lifetime.cancel();
+        std::mem::take(&mut state.browser_terminal_contexts)
+    };
+    for (user, actor) in contexts {
+        router.runtime_state().kernel_browser_terminal_disconnected(&user, &actor);
+    }
+}
+
 struct IncomingConnection<'a> {
     runtime: &'a Arc<KernelTransportRuntime>,
     router: &'a Arc<CommandRouter>,
@@ -1288,7 +1297,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                         .await
                 }
             };
-            let command = KernelCommand::from_local_request_with_caller(
+            let mut command = KernelCommand::from_local_request_with_caller(
                 command_id.unwrap_or_else(|| request_id.clone()),
                 if peer.is_some() {
                     KernelCommandSource::LocalIpc
@@ -1300,6 +1309,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 causation_id.clone(),
                 &request,
             );
+            command.terminal_lifetime = Some(connection_state.lock().await.terminal_lifetime.clone());
             if let Ok(context) = router
                 .runtime_state()
                 .kernel_browser_terminal_context(&command)
@@ -1317,17 +1327,28 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 || command.command_id.clone(),
                 |peer| unix_access::command_cache_id(peer, &command),
             );
+            let browser_revision = match router.runtime_state().kernel_browser_receipt_revision(&command, &request) {
+                Ok(revision) => revision,
+                Err(error) => {
+                    let _ = try_send_outgoing_frame(outgoing_tx, close_tx, close_requested,
+                        &runtime.transport_health, KernelOutgoingFrame::Response {
+                            request_id, response: Box::new(None), error: Some(map_kernel_error(&error)),
+                        }, command.session_id.as_deref(), command.attachment_id.as_deref());
+                    return;
+                }
+            };
             let fingerprint = ((peer.is_some()
                 || connection_class != KernelConnectionClass::ExternalAgent)
                 && request_is_cacheable(&request))
             .then(|| {
-                if peer.is_some() {
+                let fingerprint = if peer.is_some() {
                     // Reuse the authenticated exact-request fingerprint used
                     // by App receipts; the cache ID additionally scopes OS identity.
                     CommandFingerprint::for_app_control(&command, &request)
                 } else {
                     CommandFingerprint::from_command_and_request(&command, &request)
-                }
+                };
+                fingerprint.with_browser_protection_revision(browser_revision)
             });
             if let Some(fingerprint) = fingerprint.as_ref() {
                 match runtime
@@ -1342,6 +1363,9 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                         let transport_health = runtime.transport_health.clone();
                         let session_id = command.session_id.clone();
                         let attachment_id = command.attachment_id.clone();
+                        let replay_state = router.runtime_state();
+                        let replay_command = command.clone();
+                        let replay_request = Box::new(request.clone());
                         tokio::spawn(async move {
                             let Ok(cached) = wait_rx.await else {
                                 let _ = try_send_outgoing_frame(
@@ -1365,16 +1389,17 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                                 );
                                 return;
                             };
+                            let (response, error) = match replay_state.validate_kernel_browser_receipt(
+                                &replay_command, &replay_request, browser_revision).await {
+                                Ok(()) => (cached.response_value(), cached.error),
+                                Err(error) => (Box::new(None), Some(map_kernel_error(&error))),
+                            };
                             let _ = try_send_outgoing_frame(
                                 &outgoing_tx,
                                 &close_tx,
                                 &close_requested,
                                 &transport_health,
-                                KernelOutgoingFrame::Response {
-                                    request_id,
-                                    response: cached.response_value(),
-                                    error: cached.error,
-                                },
+                                KernelOutgoingFrame::Response { request_id, response, error },
                                 session_id.as_deref(),
                                 attachment_id.as_deref(),
                             );

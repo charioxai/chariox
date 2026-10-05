@@ -42,7 +42,7 @@ struct FocusedAgent {
 #[derive(Clone)]
 pub(crate) struct KernelBrowserAdmission {
     user: String,
-    agent: String,
+    agent: Option<String>,
     epoch: Arc<BrowserCancellation>,
     cancellation: Arc<BrowserCancellation>,
     capability: KernelBrowserCapability,
@@ -95,6 +95,10 @@ impl KernelBrowserHost {
         if state.focus.get(user).map(|focus| focus.agent_id.as_str()) != agent {
             if let Some(previous) = state.focus.get(user) {
                 previous.epoch.request_cancel();
+                if let Some(model) = state.actors.get(user) {
+                    model.lock().unwrap_or_else(|error| error.into_inner())
+                        .disconnect(&format!("agent:{}", previous.agent_id));
+                }
             }
             state.loaded.retain(|(owner, _, _)| owner != user);
             if let Some(agent) = agent {
@@ -124,6 +128,11 @@ impl KernelBrowserHost {
                 previous.epoch.request_cancel();
             }
             state.loaded.retain(|(owner, _, _)| owner != &user);
+        }
+        state.loaded.retain(|(_, loaded, _)| loaded != agent);
+        for model in state.actors.values() {
+            model.lock().unwrap_or_else(|error| error.into_inner())
+                .disconnect(&format!("agent:{agent}"));
         }
         drop(state);
         crate::transport::mcp_server::catalog_changed();
@@ -210,6 +219,11 @@ impl KernelBrowserHost {
         }
         Ok(state.browsers.get(user).unwrap().clone())
     }
+    #[cfg(test)]
+    pub(crate) fn install_fixture_backend(&self, user: &str, script: &std::path::Path, root: &std::path::Path) {
+        let backend = BrowserControllerProcessStdioBackend::new("/bin/sh", vec![script.display().to_string(), root.display().to_string()], Duration::from_secs(2)).for_host();
+        self.inner.lock().unwrap().browsers.insert(user.into(), Arc::new(Mutex::new(backend)));
+    }
     fn ensure_ready(backend: &mut BrowserControllerProcessStdioBackend) -> Result<(), String> {
         if !matches!(backend.health(), Ok(health) if health.state == BrowserControllerProcessState::Ready)
         {
@@ -254,12 +268,24 @@ impl KernelBrowserHost {
         require_loaded(&state, user, agent, capability)?;
         Ok(KernelBrowserAdmission {
             user: user.into(),
-            agent: agent.into(),
+            agent: Some(agent.into()),
             capability,
             epoch: state.focus[user].epoch.clone(),
             cancellation: state.focus[user].epoch.clone(),
         })
     }
+    pub(crate) fn admit_terminal(
+        &self,
+        user: &str,
+        lifetime: crate::runtime::command::TerminalLifetime,
+    ) -> KernelBrowserAdmission {
+        let epoch = Arc::new(BrowserCancellation::default());
+        KernelBrowserAdmission {
+            user: user.into(), agent: None, epoch: epoch.clone(), capability: KernelBrowserCapability::Browser,
+            cancellation: Arc::new(BrowserCancellation::for_authority(epoch, move || lifetime.is_live())),
+        }
+    }
+
     pub(crate) fn check_admission(
         &self,
         admission: Option<&KernelBrowserAdmission>,
@@ -268,15 +294,12 @@ impl KernelBrowserHost {
             if admission.cancellation.requested() {
                 return Err("MD-3: browser authority revoked".into());
             }
-            let state = self.inner.lock().map_err(|_| "MD-3: focus lock poisoned")?;
-            require_loaded(
-                &state,
-                &admission.user,
-                &admission.agent,
-                admission.capability,
-            )?;
-            if !Arc::ptr_eq(&state.focus[&admission.user].epoch, &admission.epoch) {
-                return Err("MD-3: browser focus changed; request fresh tools".into());
+            if let Some(agent) = admission.agent.as_deref() {
+                let state = self.inner.lock().map_err(|_| "MD-3: focus lock poisoned")?;
+                require_loaded(&state, &admission.user, agent, admission.capability)?;
+                if !Arc::ptr_eq(&state.focus[&admission.user].epoch, &admission.epoch) {
+                    return Err("MD-3: browser focus changed; request fresh tools".into());
+                }
             }
         }
         Ok(())
@@ -326,10 +349,13 @@ impl KernelBrowserHost {
         self.check_admission(admission)?;
         if method == "host.browser" && params["op"] == "stop" {
             let model = self.actor_model(user)?;
-            let (id, cancellation) = model
-                .lock()
-                .map_err(|_| "MD-3: actor lock poisoned")?
-                .begin(browser_actor(admission, &params), &params)?;
+            let (id, cancellation) = {
+                let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+                if admission.is_some_and(|admission| admission.cancellation.requested()) {
+                    return Err("MD-3: browser authority revoked".into());
+                }
+                ledger.begin(browser_actor(admission, &params), &params)?
+            };
             let action = BrowserActorAction {
                 model,
                 id,
@@ -373,10 +399,15 @@ impl KernelBrowserHost {
                 .map_err(|_| "MD-3: actor lock poisoned")?
                 .reconcile(&state)?;
             let actor = browser_actor(admission, &params);
-            let (id, cancellation) = model
-                .lock()
-                .map_err(|_| "MD-3: actor lock poisoned")?
-                .begin(actor, &params)?;
+            let (id, cancellation) = {
+                // Disconnect/focus retirement takes the same model lock. Either
+                // it removes a registered actor or this check prevents late registration.
+                let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+                if admission.is_some_and(|admission| admission.cancellation.requested()) {
+                    return Err("MD-3: browser authority revoked".into());
+                }
+                ledger.begin(actor, &params)?
+            };
             Some(BrowserActorAction {
                 model: model.clone(),
                 id,
@@ -442,10 +473,18 @@ impl KernelBrowserHost {
         tab: &str,
         generation: u64,
     ) -> Result<TakeoverOutcome, String> {
-        self.actor_model(user)?
-            .lock()
-            .map_err(|_| "MD-3: actor lock poisoned")?
-            .takeover(actor, tab, generation)
+        self.request_takeover_admitted(user, actor, tab, generation, None)
+    }
+    pub(crate) fn request_takeover_admitted(
+        &self, user: &str, actor: EnvironmentActor, tab: &str, generation: u64,
+        admission: Option<&KernelBrowserAdmission>,
+    ) -> Result<TakeoverOutcome, String> {
+        let model = self.actor_model(user)?;
+        let mut model = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+        if admission.is_some_and(|admission| admission.cancellation.requested()) {
+            return Err("MD-3: browser authority revoked".into());
+        }
+        model.takeover(actor, tab, generation)
     }
     pub(crate) fn release_input(
         &self,
@@ -505,9 +544,9 @@ impl KernelBrowserHost {
     }
 }
 fn browser_actor(admission: Option<&KernelBrowserAdmission>, params: &Value) -> EnvironmentActor {
-    if let Some(admission) = admission {
+    if let Some(agent) = admission.and_then(|admission| admission.agent.as_deref()) {
         EnvironmentActor::new(
-            format!("agent:{}", admission.agent),
+            format!("agent:{agent}"),
             EnvironmentActorKind::Agent,
             "Focused agent",
         )

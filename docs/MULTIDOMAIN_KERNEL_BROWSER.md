@@ -54,6 +54,21 @@ remote/leased runs are excluded. A small loader tool makes the capability known;
 the browser operation tool is advertised only after on-demand loading.
 No additional approval/grant path is introduced.
 
+MD-3 local socket admission carries a nonserialized connection cancellation
+lifetime through router, Vault barrier and backend waits. Disconnect cancels it
+before releasing actor presence. Ledger registration checks it under the same
+lock as disconnect, so queued physical input cannot recreate a departed actor.
+Changing focus and retiring an agent also remove its actor and pointer slots;
+bounded terminal action history remains. A failed CDP input attempt fences the
+browser to clear uncertain held keys/buttons before another actor can dispatch.
+
+MD-5 browser receipts also bind the current observation-protection revision.
+Replay waits at the normal Vault capture barrier, requires a readable registry
+and rechecks revision and connection lifetime. A changed or fenced policy refuses
+old text/pixels while preserving the existing mutation receipt. Clients must
+reconcile uncertain mutations; safe reads use fresh command IDs after reconnect
+because the new socket has a different authenticated actor.
+
 MD-3 browser retry receipts include the authenticated terminal caller in their
 fingerprint. Terminal admission runs before replay lookup; another user cannot
 receive a cached observation. Browser receipts remain memory-only, preserving
