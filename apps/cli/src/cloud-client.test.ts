@@ -8,7 +8,7 @@ import WebSocket, { WebSocketServer } from "ws"
 import { createECDH, createHash } from "node:crypto"
 import { RelayClientIdentity } from "./ipc.js"
 import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
-import { CloudClient, cloudDirectoryProjection } from "./cloud-client.js"
+import { CloudClient, cloudDirectoryProjection, issueCloudPairingBootstrapToken } from "./cloud-client.js"
 import { CloudClientCredentialStore } from "./cloud-client-credential-store.js"
 import { CloudClientAuthError } from "./cloud-client-http.js"
 
@@ -222,4 +222,30 @@ test("detached bootstrap denies profile account conflicts and grants bound to an
     await assert.rejects(invalid.client.login(cloud.apiUrl, () => {}), authCode("invalid_client_enrollment"))
     assert.equal(await invalid.store.load(), null)
   } finally { a.client.stop(); conflicting.client.stop(); invalid.client.stop(); await cloud.close(); await rm(root, { recursive: true, force: true }) }
+})
+
+
+test("Cloud pairing bootstrap uses the receiving client profile and refuses a foreign relay before issuance", async () => {
+  const root = await mkdtemp(join(tmpdir(), "kauth-pairing-bootstrap-")), cloud = await fixture()
+  const previous = process.env.CHARIOX_HOME
+  process.env.CHARIOX_HOME = root
+  const identity = createCliRelayIdentityStore().getOrCreate()
+  const client = new CloudClient()
+  try {
+    await assert.rejects(issueCloudPairingBootstrapToken("ws://fixture", "remote-a", identity), /signed-in terminal/)
+    const publicProfile = await client.login(cloud.apiUrl, () => {})
+    await assert.rejects(issueCloudPairingBootstrapToken("wss://foreign.invalid", "remote-a", identity), authCode("profile_conflict"))
+    assert.equal(cloud.metrics.grants, 0)
+    const token = await issueCloudPairingBootstrapToken(publicProfile.relayUrl!, "remote-a", identity)
+    const encoded = token.split(".")[1]
+    assert.ok(encoded)
+    const payload = JSON.parse(Buffer.from(encoded, "base64url").toString())
+    assert.equal(payload.public_key_thumbprint, identity.publicKeyThumbprint)
+    assert.equal(cloud.metrics.grants, 1)
+    assert.equal(cloud.metrics.starts, 1)
+  } finally {
+    client.stop()
+    if (previous === undefined) delete process.env.CHARIOX_HOME; else process.env.CHARIOX_HOME = previous
+    await cloud.close(); await rm(root, { recursive: true, force: true })
+  }
 })

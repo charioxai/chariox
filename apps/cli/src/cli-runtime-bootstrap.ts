@@ -1,3 +1,4 @@
+import { issueCloudPairingBootstrapToken } from "./cloud-client.js"
 import type { LocalIpcClient } from "./ipc.js"
 import type { RelayClientIdentity } from "./ipc.js"
 import { LocalIpcClient as DefaultLocalIpcClient } from "./ipc.js"
@@ -105,6 +106,7 @@ export type CliRuntimeBootstrapDeps = {
   applyProviderPreferenceDefaults: (options: CliOptions, preferences: CharioxPreferences) => CliOptions
   defaultKernelEndpoint: () => string
   createClient: (endpoint: string, relayOptions?: RelayClientOptions) => LocalIpcClient
+  resolvePairingBootstrapToken?: (relayUrl: string, kernelId: string, identity: RelayClientIdentity) => Promise<string>
   getRelayIdentity: (createIfMissing: boolean) => RelayClientIdentity | null
   inferWorkspaceTargetsFromLaunchDirectory: (cwd: string) => Promise<{ workspace: string; worktree: string }>
   clearWaitingRoomWorktreeInventory: () => void
@@ -145,6 +147,7 @@ export type CliRuntimeBootstrapResult =
 
 export const defaultCliRuntimeBootstrapDeps: CliRuntimeBootstrapDeps = {
   parseArgs,
+  resolvePairingBootstrapToken: issueCloudPairingBootstrapToken,
   loadPreferences,
   applyProviderPreferenceDefaults,
   defaultKernelEndpoint,
@@ -181,6 +184,10 @@ export async function bootstrapCliRuntime(
   const relayIdentity = cliOptions.relayUrl
     ? deps.getRelayIdentity(Boolean(pairingLink))
     : null
+  if (pairingLink && cliOptions.relayToken === "cloud-client-token-required") {
+    if (!relayIdentity || !cliOptions.relayUrl || !cliOptions.targetDaemonId || !deps.resolvePairingBootstrapToken) throw new Error("Cloud pairing requires the receiving terminal's client credentials and key")
+    cliOptions.relayToken = await deps.resolvePairingBootstrapToken(cliOptions.relayUrl, cliOptions.targetDaemonId, relayIdentity)
+  }
   let client = deps.createClient(kernelEndpoint, relayClientOptions(cliOptions, relayIdentity))
   if (pairingLink && relayIdentity) {
     const bootstrapClient = client

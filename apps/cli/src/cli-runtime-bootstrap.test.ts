@@ -161,6 +161,79 @@ test("terminal pairing bootstrap replaces the legacy token with one bound to the
   assert.equal(join.JoinTerminalPairingLink.public_key_thumbprint, identity.publicKeyThumbprint)
 })
 
+test("enrolled Cloud pairing obtains receiver bootstrap authority before the key-bound join", async (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "chariox-cli-bootstrap-"))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const identity = createCliRelayIdentityStore(`${root}/relay/cli-identity-v1.json`).getOrCreate()
+  const tokenPayload = Buffer.from(JSON.stringify({
+    public_key_thumbprint: identity.publicKeyThumbprint,
+  })).toString("base64url")
+  const boundRelayToken = `eyJhbGciOiJub25lIn0.${tokenPayload}.signature`
+  const capturedRequests: unknown[] = []
+  const createOptions: Array<{ relayAuthToken?: string; relayIdentity?: unknown }> = []
+  let closedInitialClient = false
+  const initialClient = fakeClient()
+  initialClient.send = async <TResponse>(request: unknown) => {
+    capturedRequests.push(request)
+    return {
+      TerminalPairingLinkJoined: {
+        terminal: { terminal_id: "terminal-1", terminal_type: "cli", paired_at_ms: 1, revoked: false },
+        pairing: {
+          intent: "client",
+          subject_id: "terminal-1",
+          relay_url: "wss://relay.example",
+          target_daemon_id: "home-1",
+          public_key_thumbprint: identity.publicKeyThumbprint,
+          paired_at_ms: 1,
+        },
+        relay_token: boundRelayToken,
+      },
+    } as TResponse
+  }
+  initialClient.close = async () => { closedInitialClient = true }
+  const attachedClient = fakeClient()
+  const options = cliOptions({
+    clientId: "terminal-1",
+    relayUrl: "wss://relay.example",
+    relayToken: "cloud-client-token-required",
+    targetDaemonId: "home-1",
+  })
+  const deps = createDeps({
+    parseArgs: () => options,
+    getRelayIdentity: () => identity,
+    createClient: (_endpoint, relayOptions) => {
+      createOptions.push(relayOptions ?? {})
+      return createOptions.length === 1 ? initialClient : attachedClient
+    },
+    bootstrapAttachedSession: async (client, attachedOptions, workspace, worktree, preferences) => {
+      assert.equal(client, attachedClient)
+      return attachedBootstrap(client, attachedOptions, preferences)
+    },
+  })
+
+  let resolved = 0
+  Object.assign(deps, { resolvePairingBootstrapToken: async (relayUrl: string, kernelId: string, suppliedIdentity: unknown) => {
+    assert.equal(relayUrl, "wss://relay.example")
+    assert.equal(kernelId, "home-1")
+    assert.equal(suppliedIdentity, identity)
+    resolved++
+    return "bootstrap-token"
+  } })
+  const result = await bootstrapCliRuntime({
+    argv: ["chariox-terminal-pair-v1.fixture"],
+    cwd: "/repo",
+  }, deps)
+
+  assert.equal(result.kind, "ready")
+  assert.equal(resolved, 1)
+  assert.equal(closedInitialClient, true)
+  assert.deepEqual(createOptions.map((entry) => entry.relayAuthToken), ["bootstrap-token", boundRelayToken])
+  assert.equal(createOptions[0]?.relayIdentity, identity)
+  assert.equal(createOptions[1]?.relayIdentity, identity)
+  const join = capturedRequests[0] as { JoinTerminalPairingLink: { public_key_thumbprint: string } }
+  assert.equal(join.JoinTerminalPairingLink.public_key_thumbprint, identity.publicKeyThumbprint)
+})
+
 test("terminal pairing closes bootstrap transport and rejects a legacy unbound token", async (t) => {
   const root = mkdtempSync(path.join(os.tmpdir(), "chariox-cli-bootstrap-legacy-"))
   t.after(() => rmSync(root, { recursive: true, force: true }))

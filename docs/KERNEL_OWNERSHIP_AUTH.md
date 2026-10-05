@@ -25,3 +25,35 @@ Sign-in expiry must never interrupt active work. Kernel-delegated terminals rene
 Detached CLIENT enrollment now returns a rotating refresh credential as well as a short access session. A refresh family has no fixed expiry; access expiry, including a long process absence, can be renewed silently. Rotation serializes against client/family/session locks, rechecks revocation, retains used credential hashes, and revokes the family/session/runtime tokens on reuse as a different rotation. A retried identical persisted rotation ID recovers only its still-current successor, so a lost response or process restart need not invalidate a legitimate client. Re-login retires expired predecessors too; client revocation stops every associated family.
 
 The CLI client store is separate from public preferences and kernel state, under the CLI profile's relay directory. Atomic 0600 writes and directory synchronization protect the refresh credential and pending rotation ID. An OS lock (Linux flock, macOS lockf) serializes profile processes and releases on process death; independent profiles rotate independently. This foundation never transfers client refresh authority to a kernel. End-to-end detached login/bootstrap and background scheduling remain PR3 work, after the PR2 checkpoint. Signing in again is permitted only for revoked credentials or detected reuse, never a fixed refresh-family lifetime.
+
+
+## MP-08 / MP-11 review corrections (protocol 439)
+
+An enrolled kernel's terminal pairing link carries the noncredential marker
+`cloud-client-token-required`, never its KERNEL transport token. The receiving
+CLI bootstraps with its own signed-in CLIENT profile and persistent relay key,
+or an explicitly supplied CLIENT transport token via `--relay-token-env`.
+Creation does not request an unkeyed grant. Redemption supplies the receiving
+key and the kernel issues a short CLIENT grant bound to that key and exact
+kernel target using its enrollment credential. Generic client and machine
+invites reject scoped transport credentials in both Cloud and self-hosted
+configurations. Self-hosted scoped relays retain
+`operator-client-token-required` and their operator-provided CLIENT transport.
+
+A lost refresh reply may recover a current successor whose original access
+session has already expired. The CLI persists the successor and clears its old
+pending operation before starting another rotation; that next operation is
+persisted before its network request as well. A second lost reply therefore
+resumes from the successor rather than replaying the predecessor forever.
+
+Cloud token publication and kernel unlink hold common destination Machine and
+target locks. Cross-machine delegation acquires issuer and destination locks
+in sorted order, before credential locks, and rechecks identity/status after
+acquisition. An unlink that follows publication sweeps the exact token; an
+unlink that wins makes publication fail. Re-enrolling the same kernel ID does
+not revive old token IDs. The separate Settings React root uses the shared
+query provider for its Kernels and Security account controls.
+
+These focused source and local PostgreSQL/relay/browser regressions address
+review findings. They do not establish fresh-machine MP-10 acceptance or close
+MP-08 / MP-11 security-anchor review.

@@ -48,23 +48,27 @@ export class CloudClientCredentialStore {
       if (!value) throw new CloudClientAuthError("login_required")
       if (value.publicKeyThumbprint !== publicKeyThumbprint) throw new CloudClientAuthError("profile_conflict")
       if (!force && value.accessToken !== rejectedAccessToken && !value.pendingRotationId && value.expiresAtMs > Date.now()+60_000) return value
-      // Persist before the network call: a crash/lost reply retries this same
-      // operation, rather than appearing as another use of an old credential.
-      value.pendingRotationId ??= randomBytes(32).toString("hex")
-      await this.write(value)
-      let next: { refreshCredential: string; cloudSessionToken: string; cloudSessionExpiresAt: string }
-      try {
-        next = await cloudClientRequest(value.profile.apiUrl, "/auth/client/refresh", { body: { accountId: value.profile.accountId, clientId: value.clientId, publicKeyThumbprint, refreshCredential: value.refreshCredential, rotationId: value.pendingRotationId } })
-      } catch (error) {
-        if (error instanceof CloudClientAuthError && ["client_revoked", "refresh_reuse_detected"].includes(error.code)) await rm(this.filePath, { force: true })
-        throw error
+      // An idempotent retry may recover a valid refresh successor whose
+      // original access token has expired. Commit that successor before trying
+      // its own rotation, so a second lost reply/restart remains recoverable.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        value.pendingRotationId ??= randomBytes(32).toString("hex")
+        await this.write(value)
+        let next: { refreshCredential: string; cloudSessionToken: string; cloudSessionExpiresAt: string }
+        try {
+          next = await cloudClientRequest(value.profile.apiUrl, "/auth/client/refresh", { body: { accountId: value.profile.accountId, clientId: value.clientId, publicKeyThumbprint, refreshCredential: value.refreshCredential, rotationId: value.pendingRotationId } })
+        } catch (error) {
+          if (error instanceof CloudClientAuthError && ["client_revoked", "refresh_reuse_detected"].includes(error.code)) await rm(this.filePath, { force: true })
+          throw error
+        }
+        const expiresAtMs = Date.parse(next.cloudSessionExpiresAt)
+        if (typeof next.refreshCredential !== "string" || !next.refreshCredential || typeof next.cloudSessionToken !== "string" || !next.cloudSessionToken || !Number.isFinite(expiresAtMs)) throw new CloudClientAuthError("invalid_refresh_response")
+        value = { ...value, refreshCredential: next.refreshCredential, accessToken: next.cloudSessionToken, expiresAtMs }
+        delete value.pendingRotationId
+        await this.write(value)
+        if (expiresAtMs > Date.now()) return value
       }
-      const expiresAtMs = Date.parse(next.cloudSessionExpiresAt)
-      if (!next.refreshCredential || !next.cloudSessionToken || !Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) throw new CloudClientAuthError("invalid_refresh_response")
-      value = { ...value, refreshCredential: next.refreshCredential, accessToken: next.cloudSessionToken, expiresAtMs }
-      delete value.pendingRotationId
-      await this.write(value)
-      return value
+      throw new CloudClientAuthError("invalid_refresh_response")
     })
   }
   private async write(value: CloudClientCredential) {
