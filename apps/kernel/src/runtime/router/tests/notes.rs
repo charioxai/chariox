@@ -70,6 +70,15 @@ async fn check() {
     let a = first_run.runtime_mcp_auth_token().unwrap();
     let b = second_run.runtime_mcp_auth_token().unwrap();
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let app_future = router.runtime_state.notes_drill_app_view(
+        session.id(),
+        crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Calls,
+    );
+    assert!(
+        std::mem::size_of_val(&app_future) < 64 * 1024,
+        "MD-N5: App fixture dispatch must fit ordinary caller stacks"
+    );
+    drop(app_future);
     focus(&router, session.id(), first.id()).await;
     let names = |token: &str| {
         router
