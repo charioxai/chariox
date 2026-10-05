@@ -2017,15 +2017,19 @@ async function execute(request) {
         })
       }
       releasePersistentHandles(request.environment.CHARIOX_SLICE_NAME)
-      const quota = provisionerQuotaRequest(request.environment)
-      retireProtectedQuotaHomes(retainedHomes, quota.identity,
-        args => spawnControl("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 1024 * 1024}))
-      if (releaseDiskQuota) {
-        await requestSliceDiskQuota({
-          protocolVersion: 1,
-          operation: "release",
-          identity: quota.identity,
-        })
+      // MP-03/MP-08/MP-10/MP-11: an empty unbounded cleanup needs no quota
+      // identity or allocator. Recorded homes still retire before release.
+      if (retainedHomes.length > 0 || releaseDiskQuota) {
+        const quota = provisionerQuotaRequest(request.environment)
+        retireProtectedQuotaHomes(retainedHomes, quota.identity,
+          args => spawnControl("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 1024 * 1024}))
+        if (releaseDiskQuota) {
+          await requestSliceDiskQuota({
+            protocolVersion: 1,
+            operation: "release",
+            identity: quota.identity,
+          })
+        }
       }
     }
     if (request.kind === "provisioner" && new Set(["provision", "restore-state"]).has(request.action)) {
