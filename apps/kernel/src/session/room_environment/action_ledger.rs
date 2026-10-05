@@ -562,6 +562,12 @@ impl EnvironmentActionLedger {
         }
     }
 
+    /// MD-3: remove only this disconnected actor's control and pending takeover.
+    pub(crate) fn release_actor_input(&mut self, actor_id: &str) {
+        self.input_owners.retain(|_, owner| owner != actor_id);
+        self.pending_takeovers.retain(|_, owner| owner != actor_id);
+    }
+
     pub(crate) fn invalidate_after_kernel_restart(
         &mut self,
         actors: &BTreeMap<String, EnvironmentActor>,

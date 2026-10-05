@@ -58,7 +58,9 @@ receive a cached observation. Browser receipts remain memory-only, preserving
 in-process mutation deduplication without persisting screenshot/frame payloads.
 MD-3 local terminals have a kernel-generated identity per admitted connection.
 Observations and takeover belong to that connection; another terminal cannot
-refresh its input receipt or release its control. Retries on the live connection
+refresh its input receipt or release its control. Closing that connection releases
+its control, withdraws pending takeover, cancels active input and removes its live
+actor/pointer presence. Retries on the live connection
 retain the identity. Reconnecting with an old browser command ID fails closed
 on the caller fingerprint mismatch; clients must observe again and explicitly
 submit a new command, never automatically replay that mutation under a new ID.
@@ -228,8 +230,10 @@ tabs and invalidates old action/generation references. Focus/run revocation stil
 uses the existing uninterrupted focus admission; release does not restore old
 focus or grant access to another agent. Observations remain available during
 takeover. Appviews retains its own admission/attribution above the unchanged App
-seam. Actor projections are currently live kernel state; persisting them over a
-full kernel restart is outside this adapter milestone.
+seam. Actor projections are live kernel state. A full kernel restart releases control;
+a human or agent must request it again. This is the owner decision recorded by
+the coordinator on 2026-10-05 and may be revisited. Browser-process recovery
+continues to preserve deliberate human takeover.
 
 Internal API for the display lane:
 

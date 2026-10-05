@@ -265,6 +265,23 @@ impl KernelBrowserActors {
             .release(actor_id, &InputTarget::BrowserTab(tab))
             .map_err(|_| "MD-3: only the input owner may release takeover".into())
     }
+    pub(crate) fn disconnect(&mut self, actor_id: &str) {
+        self.ledger.release_actor_input(actor_id);
+        for action in self
+            .ledger
+            .actions()
+            .iter()
+            .filter(|action| action.actor_id == actor_id)
+        {
+            if let Some(cancellation) = self.active.get(&action.action_id) {
+                cancellation.request_cancel();
+            }
+        }
+        self.actors.remove(actor_id);
+        self.pointers.remove(actor_id);
+        self.pointer_tabs.remove(actor_id);
+    }
+
     pub(crate) fn snapshot(&self) -> Value {
         let translate = |target: &mut InputTarget| {
             if let InputTarget::BrowserTab(tab) = target {
@@ -311,6 +328,40 @@ mod tests {
     fn input(tab: &str) -> Value {
         json!({"op":"input","tab_id":tab,"generation":1,"input":{"kind":"text","text":"synthetic-private-value"}})
     }
+    #[test]
+    fn md3_terminal_disconnect_releases_input_and_reclaims_actor_capacity() {
+        let mut model = ready();
+        for connection in 0..128 {
+            let id = format!("terminal:{connection}");
+            let (action, cancellation) = model.begin(human(&id), &input("host-tab-a")).unwrap();
+            model.disconnect(&id);
+            assert!(cancellation.requested());
+            model.finish(&action, EnvironmentActionTerminal::Cancelled);
+            model.takeover(human(&id), "host-tab-a", 1).unwrap();
+            model.disconnect(&id);
+            assert!(model.snapshot()["input_ownership"]
+                .as_array()
+                .unwrap()
+                .is_empty());
+            assert!(model.snapshot()["actors"].as_array().unwrap().is_empty());
+        }
+        let (action, cancellation) = model.begin(agent(), &input("host-tab-a")).unwrap();
+        model
+            .takeover(human("departing-human"), "host-tab-a", 1)
+            .unwrap();
+        assert!(cancellation.requested());
+        model.disconnect("departing-human");
+        model.finish(&action, EnvironmentActionTerminal::Cancelled);
+        assert!(model.snapshot()["pending_input_takeovers"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(model.snapshot()["input_ownership"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
     #[test]
     fn takeover_cancels_running_input_and_holds_ownership_until_release() {
         let mut model = ready();
