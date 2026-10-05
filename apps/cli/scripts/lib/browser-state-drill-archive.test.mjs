@@ -51,3 +51,22 @@ test("MP-03/MP-10: operator refusal cannot fall back to unprivileged archive acc
     runCommand: async () => ({ code: 1, stdout: "", stderr: "private tool detail" }) })
   await assert.rejects(fixture.verify({}), error => !error.message.includes("private tool detail"))
 })
+
+test("MP-03/MP-10: corruption waits only for the root operator pin, then executes once", async () => {
+  const calls = [], waits = []
+  const fixture = createBrowserStateArchiveFixture({helper: "/owned/fixture", localDev: true,
+    wait: async ms => { waits.push(ms) },
+    runCommand: async (...args) => {
+      calls.push(args)
+      return calls.length === 1 ? {code: 2, stdout: ""} : {code: 0, stdout: '{"corrupted":true}'}
+    }})
+  await fixture.corrupt({id: "backup-1"})
+  assert.equal(calls.length, 2)
+  assert.deepEqual(waits, [1000])
+})
+
+test("MP-03/MP-10: missing corruption pin has a bounded wait and never falls back", async () => {
+  const fixture = createBrowserStateArchiveFixture({helper: "/owned/fixture", localDev: true,
+    authorizationWaitMs: 0, runCommand: async () => ({code: 2, stdout: ""})})
+  await assert.rejects(fixture.corrupt({}), /authorization/)
+})
