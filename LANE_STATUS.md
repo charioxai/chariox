@@ -1,3 +1,25 @@
+# MD-DISPLAY-02/04 — Phase 6 iteration update
+
+2026-10-05: execution fec585940;52 focused Node tests pass. Four-to-eight
+credited slots,1MiB receive/batch reservation, asynchronous per-user source
+gate, persistent VP9, decode-before-receipt and drop stale presentation retain
+419/default-off. Moving pixels use a complete protected CSS-resolution JPEG
+capture only with an empty Vault policy; stable native DPR2 PNG repairs follow.
+Original native protected capture remains for active secrets/unknown geometry.
+
+MD-DISPLAY-02 first window diagnosed local607/784ms and4.6fps canvas: input
+queued behind capture windows. Priority/lean capture prototype reached14.7fps;
+new JPEG campaign and final embedded build running. Clean JPEG source41728194f
+local96/108ms, exact settled/final, navigation/actors/cleanup pass. Final head
+latency/WAN/moving targets remain unvalidated. No MD/MP acceptance closure.
+
+MD-DISPLAY-04 retains RED diagnostics: coarse-damage misclassification caused
+slow keys/repair; small changes now remain native tiles. Settling validation now
+crosses250ms fine-detail verification deadline. Interrupted only exact owned
+priority-campaign PID851999 (identity checked,>1), parent exit130; namespace
+inventory cleared. No shared/default-interface signals or network changes.
+Inbox checked through03:42: all existing findings mapped. Evidence:phase6/.
+
 # MD-DISPLAY-02/04 — Phase 6 in progress
 
 2026-10-05: 26357c020 adds bounded four-credit window using the existing 419

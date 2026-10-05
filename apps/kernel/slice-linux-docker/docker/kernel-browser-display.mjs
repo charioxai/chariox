@@ -67,12 +67,15 @@ export function dirtyTiles(previous, current, region = null, all = false) {
   const tiles = [];
   if (!all && (!previous || previous.width !== current.width || previous.height !== current.height)) return tiles;
   const { width, height, pixels } = current;
-  const left = region ? Math.floor(region.x / 128) * 128 : 0;
-  const top = region ? Math.floor(region.y / 128) * 128 : 0;
+  // Small native damage gets small exact tiles, reducing collateral text and
+  // narrow-link serialization. Whole-screen repair retains bounded128px tiles.
+  const block = !all && region && region.width<=256 && region.height<=256 && region.width*region.height<=32768 ? 32 : 128;
+  const left = region ? Math.floor(region.x / block) * block : 0;
+  const top = region ? Math.floor(region.y / block) * block : 0;
   const right = region ? Math.min(width, region.x + region.width) : width;
   const bottom = region ? Math.min(height, region.y + region.height) : height;
-  for (let y = top; y < bottom; y += 128) for (let x = left; x < right; x += 128) {
-    const w = Math.min(128, width - x), h = Math.min(128, height - y);
+  for (let y = top; y < bottom; y += block) for (let x = left; x < right; x += block) {
+    const w = Math.min(block, width - x), h = Math.min(block, height - y);
     let changed = all;
     for (let row = y; row < y + h && !changed; row++) {
       const offset = (row * width + x) * 4;

@@ -38,8 +38,11 @@ test('MD-DISPLAY native crop tile bounds preserve all crossed tile edges', () =>
   const region={x:126,y:126,width:132,height:4};
   for(let y=region.y;y<region.y+region.height;y++)for(let x=region.x;x<region.x+region.width;x++)current.pixels[(y*512+x)*4]=0;
   const full=dirtyTiles(previous,current),cropped=dirtyTiles(previous,current,region);
-  assert.deepEqual(cropped,full);
-  assert.equal(cropped.length,6);
+  assert.equal(full.length,6);
+  const restored=Buffer.from(previous.pixels);
+  for(const tile of cropped){const decoded=decodePng(tile.data_base64);for(let row=0;row<tile.height;row++)decoded.pixels.copy(restored,((tile.y+row)*512+tile.x)*4,row*tile.width*4,(row+1)*tile.width*4)}
+  assert.deepEqual(restored,current.pixels);
+  assert.ok(cropped.every(tile=>tile.width<=32&&tile.height<=32));
   assert.deepEqual(dirtyTiles(current,current,region),[]);
 });
 test('MD-DISPLAY async encoder launch failure rejects into cleanup', async () => {
