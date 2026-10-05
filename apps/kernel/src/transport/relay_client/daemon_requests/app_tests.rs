@@ -1065,8 +1065,12 @@ async fn md3_browser_relay_replay_binds_user_and_rechecks_admission() {
         None,
         &request,
     );
-    let revision = router.runtime_state().kernel_browser_receipt_revision(&command, &request).unwrap();
-    let fingerprint = CommandFingerprint::from_command_and_request(&command, &request).with_browser_protection_revision(revision);
+    let revision = router
+        .runtime_state()
+        .kernel_browser_receipt_revision(&command, &request)
+        .unwrap();
+    let fingerprint = CommandFingerprint::from_command_and_request(&command, &request)
+        .with_browser_protection_revision(revision);
     assert!(matches!(
         cache.reserve("browser-retry", &fingerprint).await,
         CommandReservation::Dispatch
@@ -1128,20 +1132,69 @@ async fn md5_relay_cached_browser_observations_obey_current_vault_policy() {
     for pixels in [false, true] {
         let root = TestRoot::new();
         let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
-        let router = CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 2);
+        let router =
+            CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 2);
         let state = router.runtime_state();
         state.install_kernel_browser_fixture("alice", &root.0);
-        let cache = CommandResultCache::default(); let sequence = AtomicU64::new(1);
-        let request = LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest { command: if pixels {
-            crate::local::KernelBrowserCommand::Screenshot { tab_id: "host-tab-fixture".into(), generation: 1 }
-        } else { crate::local::KernelBrowserCommand::Snapshot { tab_id: "host-tab-fixture".into(), generation: 1 } } });
-        assert!(matches!(dispatch_relay_client_request(&router, &sequence, Some(caller("alice")), request.clone(), Some("MD5-receipt".into()), &cache).await, RelayDispatchOutcome::Response(_)));
+        let cache = CommandResultCache::default();
+        let sequence = AtomicU64::new(1);
+        let request = LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+            command: if pixels {
+                crate::local::KernelBrowserCommand::Screenshot {
+                    tab_id: "host-tab-fixture".into(),
+                    generation: 1,
+                }
+            } else {
+                crate::local::KernelBrowserCommand::Snapshot {
+                    tab_id: "host-tab-fixture".into(),
+                    generation: 1,
+                }
+            },
+        });
+        assert!(matches!(
+            dispatch_relay_client_request(
+                &router,
+                &sequence,
+                Some(caller("alice")),
+                request.clone(),
+                Some("MD5-receipt".into()),
+                &cache
+            )
+            .await,
+            RelayDispatchOutcome::Response(_)
+        ));
         state.register_kernel_browser_fixture_value("alice", "MD5-sensitive-fixture");
-        assert!(matches!(dispatch_relay_client_request(&router, &sequence, Some(caller("alice")), request.clone(), Some("MD5-receipt".into()), &cache).await, RelayDispatchOutcome::RelayError(_)),
-            "MD-5: changed Vault protection must reject the old text/pixel receipt");
+        assert!(
+            matches!(
+                dispatch_relay_client_request(
+                    &router,
+                    &sequence,
+                    Some(caller("alice")),
+                    request.clone(),
+                    Some("MD5-receipt".into()),
+                    &cache
+                )
+                .await,
+                RelayDispatchOutcome::RelayError(_)
+            ),
+            "MD-5: changed Vault protection must reject the old text/pixel receipt"
+        );
         state.fence_kernel_browser_fixture("alice");
-        assert!(matches!(dispatch_relay_client_request(&router, &sequence, Some(caller("alice")), request, Some("MD5-receipt".into()), &cache).await, RelayDispatchOutcome::RelayError(_)),
-            "MD-5: a fenced registry cannot replay an observation");
+        assert!(
+            matches!(
+                dispatch_relay_client_request(
+                    &router,
+                    &sequence,
+                    Some(caller("alice")),
+                    request,
+                    Some("MD5-receipt".into()),
+                    &cache
+                )
+                .await,
+                RelayDispatchOutcome::RelayError(_)
+            ),
+            "MD-5: a fenced registry cannot replay an observation"
+        );
         state.shutdown_cleanup().await.unwrap();
     }
 }

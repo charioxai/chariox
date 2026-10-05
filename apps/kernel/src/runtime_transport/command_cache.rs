@@ -151,9 +151,9 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
     if matches!(
         request,
         LocalDaemonRequest::CaptureVisibleRegion(_)
-        | LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
-            command: crate::local::KernelBrowserCommand::DisplayNext { .. }
-        })
+            | LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+                command: crate::local::KernelBrowserCommand::DisplayNext { .. }
+            })
     ) {
         return false;
     }

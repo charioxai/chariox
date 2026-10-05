@@ -435,9 +435,18 @@ impl KernelRuntimeState {
             self.app_control().views().keep_pumping(&id);
         }
         let browser_host = self.owned.kernel_browser_host.clone();
-        let browser_result = tokio::task::spawn_blocking(move || browser_host.shutdown()).await
-            .map_err(|_| DaemonError::LocalTransport { operation: "kernel_browser.shutdown", message: "MD-2: shutdown task failed".into() })
-            .and_then(|result| result.map_err(|message| DaemonError::LocalTransport { operation: "kernel_browser.shutdown", message }));
+        let browser_result = tokio::task::spawn_blocking(move || browser_host.shutdown())
+            .await
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "kernel_browser.shutdown",
+                message: "MD-2: shutdown task failed".into(),
+            })
+            .and_then(|result| {
+                result.map_err(|message| DaemonError::LocalTransport {
+                    operation: "kernel_browser.shutdown",
+                    message,
+                })
+            });
         let sessions = self.owned.session_store.read().list_sessions();
         for session in sessions {
             self.owned.withdraw_agent_interactions(session.id(), None)?;

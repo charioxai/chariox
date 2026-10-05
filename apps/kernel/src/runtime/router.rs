@@ -201,8 +201,6 @@ mod tests {
     mod agent_messaging;
     mod agent_prompt_schedules;
     mod app_bindings;
-    mod kernel_browser;
-    mod notes;
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     mod app_open;
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -210,9 +208,11 @@ mod tests {
     mod browser_import;
     mod credential_enrollment;
     mod interactive_command_admission;
+    mod kernel_browser;
     mod lease_worker_authority;
     mod m16_runtime_extension_registration;
     mod m23_metaagent_runtime_tools;
+    mod notes;
     mod provider_projection;
     #[cfg(unix)]
     mod provider_setup_token;

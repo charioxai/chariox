@@ -1,32 +1,51 @@
 //! MD-5: browser receipts retain mutation deduplication, never old Vault observations.
-use super::KernelRuntimeState;
-use crate::{error::DaemonError, local::{LocalDaemonRequest, KernelBrowserCommand}, runtime::{command::KernelCommand, kernel_browser_host::KernelBrowserHost}};
 use super::kernel_browser_runtime::host_error;
+use super::KernelRuntimeState;
+use crate::{
+    error::DaemonError,
+    local::{KernelBrowserCommand, LocalDaemonRequest},
+    runtime::{command::KernelCommand, kernel_browser_host::KernelBrowserHost},
+};
 impl KernelRuntimeState {
     // Do not wait for a barrier in the socket reader: it must keep detecting disconnect.
     pub(crate) fn kernel_browser_receipt_revision(
-        &self, caller: &KernelCommand, request: &LocalDaemonRequest,
+        &self,
+        caller: &KernelCommand,
+        request: &LocalDaemonRequest,
     ) -> Result<Option<u64>, DaemonError> {
-        let LocalDaemonRequest::KernelBrowser(request) = request else { return Ok(None); };
+        let LocalDaemonRequest::KernelBrowser(request) = request else {
+            return Ok(None);
+        };
         let (user, _) = self.kernel_browser_terminal_context(caller)?;
-        if matches!(request.command, KernelBrowserCommand::Stop) { return Ok(None); }
+        if matches!(request.command, KernelBrowserCommand::Stop) {
+            return Ok(None);
+        }
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(&user);
         protection.require(&scope, false)?;
         protection.revision(&scope).map(Some)
     }
     pub(crate) async fn validate_kernel_browser_receipt(
-        &self, caller: &KernelCommand, request: &LocalDaemonRequest, revision: Option<u64>,
+        &self,
+        caller: &KernelCommand,
+        request: &LocalDaemonRequest,
+        revision: Option<u64>,
     ) -> Result<(), DaemonError> {
-        let LocalDaemonRequest::KernelBrowser(request) = request else { return Ok(()); };
+        let LocalDaemonRequest::KernelBrowser(request) = request else {
+            return Ok(());
+        };
         let (user, _) = self.kernel_browser_terminal_context(caller)?;
-        if matches!(request.command, KernelBrowserCommand::Stop) { return Ok(()); }
+        if matches!(request.command, KernelBrowserCommand::Stop) {
+            return Ok(());
+        }
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(&user);
         let _barrier = protection.barrier(&scope)?.read_owned().await;
         protection.require(&scope, false)?;
         if revision != Some(protection.revision(&scope)?) {
-            return Err(host_error("MD-5: browser receipt protection changed; fetch a fresh observation".into()));
+            return Err(host_error(
+                "MD-5: browser receipt protection changed; fetch a fresh observation".into(),
+            ));
         }
         // The caller may have disconnected while waiting for secret input to finish.
         self.kernel_browser_terminal_context(caller)?;
@@ -49,22 +68,37 @@ while IFS= read -r request; do
  esac
 done
 "#).unwrap();
-        self.owned.kernel_browser_host.install_fixture_backend(user, &script, root);
+        self.owned
+            .kernel_browser_host
+            .install_fixture_backend(user, &script, root);
     }
     #[cfg(test)]
     pub(crate) fn kernel_browser_fixture_actors(&self, user: &str) -> serde_json::Value {
         self.owned.kernel_browser_host.actor_snapshot(user).unwrap()
     }
     #[cfg(test)]
-    pub(crate) fn kernel_browser_fixture_barrier(&self, user: &str) -> std::sync::Arc<tokio::sync::RwLock<()>> {
-        self.owned.kernel_browser_secret_observations.barrier(&KernelBrowserHost::profile_key(user)).unwrap()
+    pub(crate) fn kernel_browser_fixture_barrier(
+        &self,
+        user: &str,
+    ) -> std::sync::Arc<tokio::sync::RwLock<()>> {
+        self.owned
+            .kernel_browser_secret_observations
+            .barrier(&KernelBrowserHost::profile_key(user))
+            .unwrap()
     }
     #[cfg(test)]
     pub(crate) fn register_kernel_browser_fixture_value(&self, user: &str, value: &str) {
-        self.owned.kernel_browser_secret_observations.register(&KernelBrowserHost::profile_key(user), value).unwrap();
+        self.owned
+            .kernel_browser_secret_observations
+            .register(&KernelBrowserHost::profile_key(user), value)
+            .unwrap();
     }
     #[cfg(test)]
     pub(crate) fn fence_kernel_browser_fixture(&self, user: &str) {
-        assert!(self.owned.kernel_browser_secret_observations.register(&KernelBrowserHost::profile_key(user), "").is_err());
+        assert!(self
+            .owned
+            .kernel_browser_secret_observations
+            .register(&KernelBrowserHost::profile_key(user), "")
+            .is_err());
     }
 }

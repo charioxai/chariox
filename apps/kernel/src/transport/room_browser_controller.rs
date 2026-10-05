@@ -230,7 +230,11 @@ pub(crate) struct RoomBrowserImportBinding {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RoomBrowserControllerCommand {
-    NoteObservation { target_id: String, document_id: String, quote: Option<crate::local::NoteTextQuote> },
+    NoteObservation {
+        target_id: String,
+        document_id: String,
+        quote: Option<crate::local::NoteTextQuote>,
+    },
     Acquire,
     Reconcile {
         viewport: CanonicalViewport,

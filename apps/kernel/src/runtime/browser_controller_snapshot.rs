@@ -146,10 +146,18 @@ pub(crate) struct RoomBrowserDomNode {
 
 impl BrowserControllerStructuredSnapshot {
     pub(crate) fn document_url_for_node(&self, node_ref: &str) -> Result<&str, String> {
-        let index = self.dom_nodes.iter().find(|node| node.node_ref == node_ref)
+        let index = self
+            .dom_nodes
+            .iter()
+            .find(|node| node.node_ref == node_ref)
             .map(|node| node.document_index)
             .ok_or_else(|| "browser element has no DOM document association".to_string())?;
-        checked_document_url(self.dom_documents.get(index).map(|document| (document.document_index, document.url.as_str())), index)
+        checked_document_url(
+            self.dom_documents
+                .get(index)
+                .map(|document| (document.document_index, document.url.as_str())),
+            index,
+        )
     }
     pub(crate) fn validate(
         &self,
@@ -274,13 +282,20 @@ impl RoomBrowserStructuredSnapshot {
             .find(|node| node.element_ref == element_ref)
             .map(|node| node.document_index)
             .ok_or_else(|| "browser element has no DOM document association".to_string())?;
-        checked_document_url(self.dom_documents.get(document_index).map(|document| (document.document_index, document.url.as_str())), document_index)
+        checked_document_url(
+            self.dom_documents
+                .get(document_index)
+                .map(|document| (document.document_index, document.url.as_str())),
+            document_index,
+        )
     }
 }
 
 fn checked_document_url(document: Option<(usize, &str)>, index: usize) -> Result<&str, String> {
-    document.filter(|(actual, url)| *actual == index && !url.is_empty() && url::Url::parse(url).is_ok())
-        .map(|(_, url)| url).ok_or_else(|| "browser element document URL is unavailable or invalid".to_string())
+    document
+        .filter(|(actual, url)| *actual == index && !url.is_empty() && url::Url::parse(url).is_ok())
+        .map(|(_, url)| url)
+        .ok_or_else(|| "browser element document URL is unavailable or invalid".to_string())
 }
 
 fn required_reference<'a>(

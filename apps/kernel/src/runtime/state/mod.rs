@@ -83,9 +83,9 @@ mod critical_approval_passkey;
 mod kernel_access;
 mod sudo;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-mod user_app_view_runtime;
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_browser;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod user_app_view_runtime;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
 pub(crate) use sudo::{is_sudo_prompt, sudo_approval_receipt};
@@ -137,9 +137,9 @@ mod room_environment_health;
 mod room_environment_placement;
 mod room_environment_state;
 mod room_screenshot;
-mod visible_region_capture;
 mod room_secret_observation;
 mod runtime_tool_call_activity;
+mod visible_region_capture;
 pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 
 #[derive(Clone)]
@@ -448,10 +448,10 @@ mod slice_development_runtime_state;
 mod slice_project_source;
 mod slice_runtime_state;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
-mod notes_runtime;
-mod kernel_browser_runtime;
 mod kernel_browser_receipts;
+mod kernel_browser_runtime;
 mod kernel_browser_secret_runtime;
+mod notes_runtime;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
 mod tool_dispatch;

@@ -1210,7 +1210,9 @@ async fn disconnect_browser_terminal(router: &CommandRouter, connection: &Mutex<
         std::mem::take(&mut state.browser_terminal_contexts)
     };
     for (user, actor) in contexts {
-        router.runtime_state().kernel_browser_terminal_disconnected(&user, &actor);
+        router
+            .runtime_state()
+            .kernel_browser_terminal_disconnected(&user, &actor);
     }
 }
 
@@ -1309,7 +1311,8 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 causation_id.clone(),
                 &request,
             );
-            command.terminal_lifetime = Some(connection_state.lock().await.terminal_lifetime.clone());
+            command.terminal_lifetime =
+                Some(connection_state.lock().await.terminal_lifetime.clone());
             if let Ok(context) = router
                 .runtime_state()
                 .kernel_browser_terminal_context(&command)
@@ -1327,13 +1330,25 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 || command.command_id.clone(),
                 |peer| unix_access::command_cache_id(peer, &command),
             );
-            let browser_revision = match router.runtime_state().kernel_browser_receipt_revision(&command, &request) {
+            let browser_revision = match router
+                .runtime_state()
+                .kernel_browser_receipt_revision(&command, &request)
+            {
                 Ok(revision) => revision,
                 Err(error) => {
-                    let _ = try_send_outgoing_frame(outgoing_tx, close_tx, close_requested,
-                        &runtime.transport_health, KernelOutgoingFrame::Response {
-                            request_id, response: Box::new(None), error: Some(map_kernel_error(&error)),
-                        }, command.session_id.as_deref(), command.attachment_id.as_deref());
+                    let _ = try_send_outgoing_frame(
+                        outgoing_tx,
+                        close_tx,
+                        close_requested,
+                        &runtime.transport_health,
+                        KernelOutgoingFrame::Response {
+                            request_id,
+                            response: Box::new(None),
+                            error: Some(map_kernel_error(&error)),
+                        },
+                        command.session_id.as_deref(),
+                        command.attachment_id.as_deref(),
+                    );
                     return;
                 }
             };
@@ -1389,8 +1404,14 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                                 );
                                 return;
                             };
-                            let (response, error) = match replay_state.validate_kernel_browser_receipt(
-                                &replay_command, &replay_request, browser_revision).await {
+                            let (response, error) = match replay_state
+                                .validate_kernel_browser_receipt(
+                                    &replay_command,
+                                    &replay_request,
+                                    browser_revision,
+                                )
+                                .await
+                            {
                                 Ok(()) => (cached.response_value(), cached.error),
                                 Err(error) => (Box::new(None), Some(map_kernel_error(&error))),
                             };
@@ -1399,7 +1420,11 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                                 &close_tx,
                                 &close_requested,
                                 &transport_health,
-                                KernelOutgoingFrame::Response { request_id, response, error },
+                                KernelOutgoingFrame::Response {
+                                    request_id,
+                                    response,
+                                    error,
+                                },
                                 session_id.as_deref(),
                                 attachment_id.as_deref(),
                             );

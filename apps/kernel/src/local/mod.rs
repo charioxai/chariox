@@ -1,5 +1,7 @@
 mod api;
-pub use api::{CaptureVisibleRegionRequest, ScreenshotRegion, ScreenshotSurface, VisibleRegionCapture};
+pub use api::{
+    CaptureVisibleRegionRequest, ScreenshotRegion, ScreenshotSurface, VisibleRegionCapture,
+};
 mod client;
 mod harness;
 pub(crate) mod ipc;
@@ -8,8 +10,6 @@ pub(crate) mod provider_requests;
 pub(crate) mod test_support;
 
 pub(crate) use api::redact_client_response_value;
-pub use api::{NoteAnchor, NoteBox, NoteCommand, NoteRecord, NoteReply, NoteResult, NoteSelection, NoteSummary, NoteTextQuote, NoteWindow, NotesRequest};
-pub use api::{KernelBrowserCommand, KernelBrowserInput, KernelBrowserRequest};
 pub use api::{
     deployment_credential_enrollment_interaction_id,
     deployment_credential_enrollment_service_subject, AppPackageUploadPhase,
@@ -249,8 +249,8 @@ pub use api::{
     OpenUserAppViewRequest, PrepareDeploymentAppsRequest, PreviewDeploymentAppsRequest,
     RestoreAppDataSnapshotRequest, RevokeAppConnectionRequest, RevokeAppFileGrantsRequest,
     SaveAppFileExportRequest, SetAppViewPanelRequest, SubscribeUserAppViewsRequest,
-    TestAppInboxRouteRequest, UninstallAppRequest, UserAppView, UserAppViewBrowser, UserAppViewHost,
-    UserAppViewRequest, APP_SET_SCHEMA,
+    TestAppInboxRouteRequest, UninstallAppRequest, UserAppView, UserAppViewBrowser,
+    UserAppViewHost, UserAppViewRequest, APP_SET_SCHEMA,
 };
 pub use api::{
     AppInstallOperationPhase, AppInstallOperationRequest, AppInstallOperationSummary,
@@ -276,7 +276,12 @@ pub use api::{
     KernelAccessGrant, KernelSudoTurn, ListKernelAccessGrantsRequest, RequestKernelAccessRequest,
     RequestKernelSudoRequest, RevokeKernelAccessGrantRequest,
 };
+pub use api::{KernelBrowserCommand, KernelBrowserInput, KernelBrowserRequest};
 pub use api::{KernelConnectionClass, PasskeyPrompt, PasskeyPromptKind};
+pub use api::{
+    NoteAnchor, NoteBox, NoteCommand, NoteRecord, NoteReply, NoteResult, NoteSelection,
+    NoteSummary, NoteTextQuote, NoteWindow, NotesRequest,
+};
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
 

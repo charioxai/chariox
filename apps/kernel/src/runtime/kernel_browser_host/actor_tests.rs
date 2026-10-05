@@ -107,24 +107,51 @@ fn retired_agents_reclaim_actor_slots_beyond_the_presence_limit() {
     let host = KernelBrowserHost::new(std::env::temp_dir().join("MD-3-retired-actors"));
     for i in 0..80 {
         let agent = format!("retired-{i}");
-        host.set_focus("alice", Some(&agent)); host.load("alice", &agent).unwrap();
+        host.set_focus("alice", Some(&agent));
+        host.load("alice", &agent).unwrap();
         let model = host.actor_model("alice").unwrap();
-        let (action, _) = model.lock().unwrap().begin(
-            EnvironmentActor::new(format!("agent:{agent}"), EnvironmentActorKind::Agent, "Agent"),
-            &json!({"op":"open"})).unwrap();
-        model.lock().unwrap().finish(&action, EnvironmentActionTerminal::Completed);
+        let (action, _) = model
+            .lock()
+            .unwrap()
+            .begin(
+                EnvironmentActor::new(
+                    format!("agent:{agent}"),
+                    EnvironmentActorKind::Agent,
+                    "Agent",
+                ),
+                &json!({"op":"open"}),
+            )
+            .unwrap();
+        model
+            .lock()
+            .unwrap()
+            .finish(&action, EnvironmentActionTerminal::Completed);
         // Retire a non-focused agent too: the prior focus interval is already revoked.
         host.set_focus("alice", None);
         host.revoke_agent(&agent);
-        assert!(host.actor_snapshot("alice").unwrap()["actors"].as_array().unwrap().is_empty(),
-            "MD-3: retired presence consumes the next agent's slot");
+        assert!(
+            host.actor_snapshot("alice").unwrap()["actors"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "MD-3: retired presence consumes the next agent's slot"
+        );
     }
-    assert_eq!(host.actor_snapshot("alice").unwrap()["actions"].as_array().unwrap().len(), 80);
+    assert_eq!(
+        host.actor_snapshot("alice").unwrap()["actions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        80
+    );
 }
 
 #[test]
 fn disconnected_terminal_cannot_register_a_queued_mutation() {
-    let root = std::env::temp_dir().join(format!("chariox-md3-disconnect-{:032x}", rand::random::<u128>()));
+    let root = std::env::temp_dir().join(format!(
+        "chariox-md3-disconnect-{:032x}",
+        rand::random::<u128>()
+    ));
     std::fs::create_dir(&root).unwrap();
     let script = root.join("controller.sh");
     std::fs::write(&script, r#"set -eu
@@ -140,10 +167,20 @@ while IFS= read -r request; do
  esac
 done
 "#).unwrap();
-    let backend = Arc::new(Mutex::new(BrowserControllerProcessStdioBackend::new(
-        "/bin/sh", vec![script.display().to_string(), root.display().to_string()], Duration::from_secs(2)).for_host()));
+    let backend = Arc::new(Mutex::new(
+        BrowserControllerProcessStdioBackend::new(
+            "/bin/sh",
+            vec![script.display().to_string(), root.display().to_string()],
+            Duration::from_secs(2),
+        )
+        .for_host(),
+    ));
     let host = KernelBrowserHost::new(root.clone());
-    host.inner.lock().unwrap().browsers.insert("alice".into(), backend.clone());
+    host.inner
+        .lock()
+        .unwrap()
+        .browsers
+        .insert("alice".into(), backend.clone());
     let held = backend.lock().unwrap();
     let lifetime = crate::runtime::command::TerminalLifetime::default();
     let admission = host.admit_terminal("alice", lifetime.clone());
@@ -161,9 +198,19 @@ done
         host.disconnect_terminal("alice", "terminal:departed");
         drop(held);
         let outcome = queued.join().unwrap();
-        assert!(outcome.is_err(), "MD-3: departed terminal survived the backend wait");
+        assert!(
+            outcome.is_err(),
+            "MD-3: departed terminal survived the backend wait"
+        );
     });
-    assert!(!root.join("input").exists(), "MD-3: departed input reached the physical sink");
-    assert!(host.actor_snapshot("alice").unwrap()["actors"].as_array().unwrap().is_empty());
-    host.shutdown().unwrap(); std::fs::remove_dir_all(root).unwrap();
+    assert!(
+        !root.join("input").exists(),
+        "MD-3: departed input reached the physical sink"
+    );
+    assert!(host.actor_snapshot("alice").unwrap()["actors"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
 }

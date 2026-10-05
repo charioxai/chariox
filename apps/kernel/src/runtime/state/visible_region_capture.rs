@@ -133,10 +133,12 @@ impl KernelRuntimeState {
                 if tab_id.is_empty() || tab_id.len() > 128 || generation == 0 {
                     return Err(capture_error("Invalid host identity"));
                 }
-                let frame = self.kernel_browser_display_request(
-                    command,
-                    super::KernelBrowserDisplayRequest::CaptureRegion { tab_id, generation },
-                ).await?;
+                let frame = self
+                    .kernel_browser_display_request(
+                        command,
+                        super::KernelBrowserDisplayRequest::CaptureRegion { tab_id, generation },
+                    )
+                    .await?;
                 if frame.get("generation").and_then(|v| v.as_u64()) != Some(generation)
                     || frame.get("mime_type").and_then(|v| v.as_str()) != Some("image/png")
                 {

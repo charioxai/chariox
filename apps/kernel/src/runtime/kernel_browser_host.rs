@@ -96,7 +96,9 @@ impl KernelBrowserHost {
             if let Some(previous) = state.focus.get(user) {
                 previous.epoch.request_cancel();
                 if let Some(model) = state.actors.get(user) {
-                    model.lock().unwrap_or_else(|error| error.into_inner())
+                    model
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
                         .disconnect(&format!("agent:{}", previous.agent_id));
                 }
             }
@@ -131,7 +133,9 @@ impl KernelBrowserHost {
         }
         state.loaded.retain(|(_, loaded, _)| loaded != agent);
         for model in state.actors.values() {
-            model.lock().unwrap_or_else(|error| error.into_inner())
+            model
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
                 .disconnect(&format!("agent:{agent}"));
         }
         drop(state);
@@ -220,9 +224,23 @@ impl KernelBrowserHost {
         Ok(state.browsers.get(user).unwrap().clone())
     }
     #[cfg(test)]
-    pub(crate) fn install_fixture_backend(&self, user: &str, script: &std::path::Path, root: &std::path::Path) {
-        let backend = BrowserControllerProcessStdioBackend::new("/bin/sh", vec![script.display().to_string(), root.display().to_string()], Duration::from_secs(2)).for_host();
-        self.inner.lock().unwrap().browsers.insert(user.into(), Arc::new(Mutex::new(backend)));
+    pub(crate) fn install_fixture_backend(
+        &self,
+        user: &str,
+        script: &std::path::Path,
+        root: &std::path::Path,
+    ) {
+        let backend = BrowserControllerProcessStdioBackend::new(
+            "/bin/sh",
+            vec![script.display().to_string(), root.display().to_string()],
+            Duration::from_secs(2),
+        )
+        .for_host();
+        self.inner
+            .lock()
+            .unwrap()
+            .browsers
+            .insert(user.into(), Arc::new(Mutex::new(backend)));
     }
     fn ensure_ready(backend: &mut BrowserControllerProcessStdioBackend) -> Result<(), String> {
         if !matches!(backend.health(), Ok(health) if health.state == BrowserControllerProcessState::Ready)
@@ -281,8 +299,13 @@ impl KernelBrowserHost {
     ) -> KernelBrowserAdmission {
         let epoch = Arc::new(BrowserCancellation::default());
         KernelBrowserAdmission {
-            user: user.into(), agent: None, epoch: epoch.clone(), capability: KernelBrowserCapability::Browser,
-            cancellation: Arc::new(BrowserCancellation::for_authority(epoch, move || lifetime.is_live())),
+            user: user.into(),
+            agent: None,
+            epoch: epoch.clone(),
+            capability: KernelBrowserCapability::Browser,
+            cancellation: Arc::new(BrowserCancellation::for_authority(epoch, move || {
+                lifetime.is_live()
+            })),
         }
     }
 
@@ -317,7 +340,10 @@ impl KernelBrowserHost {
                 return Err("MD-N4: foreign note owner".into());
             }
             if let Some(agent) = admission.agent.as_deref() {
-                let state = self.inner.lock().map_err(|_| "MD-N4: focus lock unavailable")?;
+                let state = self
+                    .inner
+                    .lock()
+                    .map_err(|_| "MD-N4: focus lock unavailable")?;
                 require_loaded(&state, user, agent, admission.capability)?;
                 if !Arc::ptr_eq(&state.focus[user].epoch, &admission.epoch) {
                     return Err("MD-N4: note focus changed".into());
@@ -375,7 +401,8 @@ impl KernelBrowserHost {
             return Ok(serde_json::json!({ "state": "stopped", "tabs": [] }));
         }
         if params["_host_generation"].is_u64() {
-            if !matches!(backend.health(), Ok(health) if health.state == BrowserControllerProcessState::Ready) {
+            if !matches!(backend.health(), Ok(health) if health.state == BrowserControllerProcessState::Ready)
+            {
                 return Err("MD-APP: App host is no longer live".into());
             }
         } else {
@@ -481,7 +508,11 @@ impl KernelBrowserHost {
         self.request_takeover_admitted(user, actor, tab, generation, None)
     }
     pub(crate) fn request_takeover_admitted(
-        &self, user: &str, actor: EnvironmentActor, tab: &str, generation: u64,
+        &self,
+        user: &str,
+        actor: EnvironmentActor,
+        tab: &str,
+        generation: u64,
         admission: Option<&KernelBrowserAdmission>,
     ) -> Result<TakeoverOutcome, String> {
         let model = self.actor_model(user)?;
@@ -657,7 +688,13 @@ mod tests {
         let retained = host.clone();
         host.shutdown().unwrap();
         assert!(retained
-            .protected_request("alice", None, "host.browser", serde_json::json!({"op":"start"}), Value::Null)
+            .protected_request(
+                "alice",
+                None,
+                "host.browser",
+                serde_json::json!({"op":"start"}),
+                Value::Null
+            )
             .is_err());
     }
     #[test]
