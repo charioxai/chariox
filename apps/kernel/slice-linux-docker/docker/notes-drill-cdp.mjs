@@ -3,14 +3,18 @@
 import net from 'node:net';
 import { StringDecoder } from 'node:string_decoder';
 import path from 'node:path';
-import { chmod } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { connectCdpPipe } from './kernel-browser-cdp-pipe.mjs';
 export async function connectDrillCdp(root) {
- const socket=net.createConnection(path.join(root,'drill-cdp.sock'));
+ const socket=net.createConnection(await readFile(path.join(root,'drill-cdp-path'),'utf8'));
  await new Promise((ok,no)=>{socket.once('connect',ok);socket.once('error',no)});
  return connectCdpPipe(socket,socket);
 }
 export async function serveDrillCdp(root,connection) {
+ const directory=await mkdtemp(path.join(tmpdir(),'mdn-'));
+ await chmod(directory,0o700);
+ const endpoint=path.join(directory,'cdp.sock');
  const peers=new Set();
  const server=net.createServer(socket=>{
   if(peers.size>=4){socket.destroy();return}peers.add(socket);
@@ -33,7 +37,9 @@ export async function serveDrillCdp(root,connection) {
    }
   });
  });
- await new Promise((ok,no)=>{server.once('error',no);server.listen(path.join(root,'drill-cdp.sock'),ok)});
- await chmod(path.join(root,'drill-cdp.sock'),0o600);
- return async()=>{for(const peer of peers)peer.destroy();await new Promise(ok=>server.close(ok))};
+ await new Promise((ok,no)=>{server.once('error',no);server.listen(endpoint,ok)});
+ await chmod(endpoint,0o600);
+ await writeFile(path.join(root,'drill-cdp-path'),endpoint,{mode:0o600});
+ let closed=false;
+ return async()=>{if(closed)return;closed=true;for(const peer of peers)peer.destroy();await new Promise(ok=>server.close(ok));await rm(directory,{recursive:true,force:true})};
 }
