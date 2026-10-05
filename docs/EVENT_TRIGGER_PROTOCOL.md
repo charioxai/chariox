@@ -166,6 +166,8 @@ pending deadlines and queue links, and are removed. Legacy subscribers select su
 
 Persist-before-send and retry continue until ACK or expiry. ACKs are `accepted`,
 `duplicate`, `expired`, `filtered` or `loop_dropped`; ACK never means run completion.
+Terminal ACKs settle source retryable receipts on both local and peer routes,
+including when an edited binding filters out an already-captured occurrence.
 The target retains accepted work while busy, paused or full. Deduplication prevents
 repeated queue insertion; conflicting occurrence content is refused. An uncertain
 writer commit fences further transitions until restart. Ordinary dispatch checks
@@ -177,7 +179,9 @@ Every App automation and workflow-notification binding has `delivery_mode:queue|
 active run and that endpoint's entry turn is active. It persists the exact run/turn
 before using ordinary provider steering. The item stays durably accepted until
 provider acceptance. Structured-provider mailbox enqueue is not acceptance: both
-finished-submit reapers correlate the actual result with the durable injection. An
+finished-submit reapers correlate the actual result with the durable injection.
+Codex hidden-context and steering RPC errors propagate as submission failures;
+a buffered output error cannot acknowledge an injected notification. An
 in-flight submit is not enqueued twice in one process; restart retains the item and
 rechecks the original turn. Remote send intent pins the worker, machine, execution
 lease, turn and provider run before I/O. An uncertain remote outcome must reconcile

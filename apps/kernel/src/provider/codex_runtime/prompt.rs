@@ -46,6 +46,7 @@ pub fn submit_codex_prompt(
     let model = normalize_codex_model(run.model());
     let effort = normalize_variant(run.variant());
     let existing_thread = state.thread_ready() || state.pending_thread_id().is_some();
+    // Durable steering settles only on an RPC acknowledgement, never a buffered error.
     if let Err(error) = ensure_codex_thread_ready(
         &client,
         run,
@@ -54,6 +55,9 @@ pub fn submit_codex_prompt(
         model.as_deref(),
         hidden_context_for_provider(&envelope.hidden_system_context),
     ) {
+        if envelope.steering {
+            return Err(error);
+        }
         state.buffered_notifications.push(CodexNotification::Error {
             message: error.to_string(),
         });
@@ -72,6 +76,9 @@ pub fn submit_codex_prompt(
                 context,
                 &mut state.buffered_notifications,
             ) {
+                if envelope.steering {
+                    return Err(error);
+                }
                 state.buffered_notifications.push(CodexNotification::Error {
                     message: error.to_string(),
                 });
@@ -113,6 +120,9 @@ pub fn submit_codex_prompt(
     let response = match response_result {
         Ok(response) => response,
         Err(error) => {
+            if envelope.steering {
+                return Err(error);
+            }
             state.buffered_notifications.push(CodexNotification::Error {
                 message: error.to_string(),
             });

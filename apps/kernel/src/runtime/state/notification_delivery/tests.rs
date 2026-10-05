@@ -611,6 +611,165 @@ async fn notification_inject_structured_mailbox_acceptance_is_not_provider_ack()
     }
 }
 
+// MP-08 / MP-10: bound production Codex RPC rejection is not an acceptance.
+#[tokio::test]
+async fn notification_inject_bound_codex_requires_steer_acknowledgement() {
+    use crate::provider::{
+        AgentEndpointMode, CodexRuntimeState, LaunchProviderRequest, ProviderLaunchResult,
+        RuntimeProviderRun,
+    };
+    use serde_json::{json, Value};
+    use std::{net::TcpListener, thread};
+    use tokio_tungstenite::tungstenite::{accept, connect, Message};
+
+    for (app, reject) in [
+        (false, Some("turn/steer")),
+        (true, Some("turn/steer")),
+        (false, Some("thread/inject_items")),
+        (false, None),
+    ] {
+        let (_root, runtime, session, id) = fixture(app, 1).await;
+        let injection = runtime
+            .owned
+            .prepare_notification_injection(&session, &id)
+            .unwrap()
+            .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut socket = accept(stream).unwrap();
+            let mut methods = Vec::new();
+            loop {
+                let request: Value =
+                    serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+                let method = request["method"].as_str().unwrap();
+                methods.push(method.to_owned());
+                assert_eq!(request["params"]["threadId"], "notification-thread");
+                assert!(matches!(method, "thread/inject_items" | "turn/steer"));
+                if method == "turn/steer" {
+                    assert_eq!(request["params"]["expectedTurnId"], "notification-turn");
+                    assert!(request["params"]["input"]
+                        .to_string()
+                        .contains("NOTIFICATION_INJECT_PROOF"));
+                }
+                let response = if reject == Some(method) {
+                    json!({"id":request["id"], "error":{"code":-32000,"message":"fixture rejects notification"}})
+                } else {
+                    json!({"id":request["id"], "result":{}})
+                };
+                socket
+                    .send(Message::Text(response.to_string().into()))
+                    .unwrap();
+                if method == "turn/steer" || reject == Some(method) {
+                    break;
+                }
+            }
+            methods
+        });
+        let (socket, _) = connect(endpoint.as_str()).unwrap();
+        let request = LaunchProviderRequest::new(&session, "codex", "codex", "default", "default")
+            .with_agent_id(&injection.dispatch.agent_id);
+        let mut run = RuntimeProviderRun::new(
+            &injection.dispatch.provider_run_id,
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "bound-codex-notification-fixture".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: Some(endpoint.clone()),
+            },
+        );
+        run.mark_running();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run);
+        runtime
+            .owned
+            .provider_store
+            .apply_runtime_binding(
+                &injection.dispatch.provider_run_id,
+                CodexRuntimeState::active_turn_binding_fixture(endpoint, socket),
+            )
+            .unwrap();
+        runtime.deliver_pending_notification_injections().await;
+        let finished = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(job) = runtime
+                    .owned
+                    .provider_store
+                    .drain_finished_structured_prompt_submit_jobs()
+                    .into_iter()
+                    .next()
+                {
+                    break job;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let methods = server.join().unwrap();
+        assert_eq!(
+            methods.last().map(String::as_str),
+            reject.or(Some("turn/steer"))
+        );
+        let acknowledged = finished.result.is_ok();
+        runtime
+            .owned
+            .provider_store
+            .push_finished_structured_prompt_submit_for_test(
+                finished.session_id,
+                finished.provider_run_id,
+                finished.agent_id,
+                finished.prompt_id,
+                finished.result,
+            );
+        runtime.owned.reap_structured_prompt_jobs();
+        let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
+        let item = snapshot
+            .workflow_queued_prompts()
+            .iter()
+            .find(|q| q.id() == id)
+            .unwrap();
+        assert_eq!(
+            item.status(),
+            if reject.is_none() {
+                WorkflowQueuedPromptStatus::Completed
+            } else {
+                WorkflowQueuedPromptStatus::Queued
+            },
+            "rejected bound Codex submission must keep durable queue fallback"
+        );
+        assert_eq!(acknowledged, reject.is_none());
+        let hot = runtime
+            .owned
+            .durable_state_store
+            .load_workflow_hot_states(snapshot.host_daemon_id())
+            .unwrap();
+        let (_, recovered) = hot.into_iter().find(|(s, _)| s == &session).unwrap();
+        assert_eq!(
+            recovered
+                .workflow_queued_prompts
+                .iter()
+                .find(|q| q.id() == id)
+                .unwrap()
+                .status(),
+            item.status()
+        );
+    }
+}
+
 // MP-08 / MP-10: a lost ACK must hold the original identity after its turn ends.
 #[tokio::test]
 async fn notification_inject_remote_uncertainty_never_becomes_a_new_run() {

@@ -342,7 +342,18 @@ impl KernelRuntimeOwnedState {
                                     envelope: env.clone(),
                                 },
                             )? {
-                                NotificationOutcome::Ack(_ack) => Ok(false),
+                                NotificationOutcome::Ack(_) => {
+                                    // Local acceptance shares the source receipt: Accepted
+                                    // already promoted it. Terminal ACKs must retire any
+                                    // remaining retryable source work, just like peer ACKs.
+                                    self.durable_state_store.notify(
+                                        NotificationOperation::Acknowledge {
+                                            subscription_id: sub.subscription_id.clone(),
+                                            occurrence_id: env.occurrence_id.clone(),
+                                        },
+                                    )?;
+                                    Ok(false)
+                                }
                                 _ => Err(store::error("unexpected notification ACK")),
                             }
                         }
@@ -400,6 +411,126 @@ mod tests {
         }
         runtime
     }
+    // MP-08 / MP-10: binding edits terminally settle already-captured local work.
+    #[test]
+    fn same_kernel_router_settles_filtered_pending_occurrences_after_binding_edits() {
+        for edit_events in [false, true] {
+            let mut f = Fixture::new();
+            let (a, _, _) = f.workflow("source");
+            let (_, _, bp) = f.workflow("target");
+            let kernel = runtime(&mut f);
+            let LocalDaemonResponse::WorkflowNotificationSourceRegistered { source } = kernel
+                .execute_workflow_notification_request(
+                    LocalDaemonRequest::RegisterWorkflowNotificationSource(
+                        RegisterWorkflowNotificationSourceRequest {
+                            session_id: f.session.clone(),
+                            workflow_ref: a.clone(),
+                            enabled: true,
+                            output_fields: None,
+                        },
+                    ),
+                    "local",
+                )
+                .unwrap()
+            else {
+                panic!()
+            };
+            let mut attach = AttachWorkflowNotificationRequest {
+                delivery_mode: NotificationDeliveryMode::Queue,
+                session_id: f.session.clone(),
+                source_id: source.source_id,
+                publication_ref: bp,
+                queue_ref: None,
+                ttl_days: 7,
+                events: WorkflowNotificationEvents::Both,
+                filters: serde_json::Value::Null,
+            };
+            kernel
+                .execute_workflow_notification_request(
+                    LocalDaemonRequest::AttachWorkflowNotification(attach.clone()),
+                    "local",
+                )
+                .unwrap();
+            f.complete(
+                &a,
+                "pending-before-edit",
+                None,
+                crate::session::WorkflowRunStatus::Completed,
+                "opaque output",
+            );
+            kernel
+                .owned
+                .session_store
+                .write()
+                .restore_session(f.sessions.get_session(&f.session).unwrap());
+            assert_eq!(f.candidates(false).len(), 1);
+            if edit_events {
+                attach.events = WorkflowNotificationEvents::Failure;
+            } else {
+                attach.filters = serde_json::json!({"status":"failure"});
+            }
+            kernel
+                .execute_workflow_notification_request(
+                    LocalDaemonRequest::AttachWorkflowNotification(attach.clone()),
+                    "local",
+                )
+                .unwrap();
+            let (queued, more) = kernel.owned.route_workflow_notifications();
+            assert!(queued.is_empty());
+            assert!(!more, "terminal Filtered ACK must release source backlog");
+            assert!(kernel
+                .owned
+                .session_store
+                .get_session(&f.session)
+                .unwrap()
+                .workflow_queued_prompts()
+                .is_empty());
+            let db = rusqlite::Connection::open(f.root.join("runtime/state.db")).unwrap();
+            let state: String = db.query_row(
+                "SELECT state FROM app_outbox WHERE source_kind='workflow_completion' AND occurrence_id='pending-before-edit'", [], |r| r.get(0)).unwrap();
+            assert_eq!(state, "delivered");
+            drop(db);
+            drop(kernel);
+            // Release the fixture's last cloned owner before reopening runtime state.
+            f.store = crate::durable_state::DurableKernelStateStore::open_owned(
+                f.root.join("kernel.sqlite"),
+            )
+            .unwrap();
+            let kernel = runtime(&mut f);
+            assert!(!f.store.notification_has_pending().unwrap());
+            assert!(kernel.owned.route_workflow_notifications().0.is_empty());
+            // A subsequent matching completion still flows through the same router.
+            f.complete(
+                &a,
+                "matching-after-edit",
+                None,
+                crate::session::WorkflowRunStatus::Failed,
+                "private failure detail",
+            );
+            kernel
+                .owned
+                .session_store
+                .write()
+                .restore_session(f.sessions.get_session(&f.session).unwrap());
+            assert!(kernel
+                .owned
+                .route_workflow_notifications()
+                .0
+                .contains(&f.session));
+            let snapshot = kernel.owned.session_store.get_session(&f.session).unwrap();
+            assert_eq!(snapshot.workflow_queued_prompts().len(), 1);
+            let prompt = snapshot
+                .workflow_queued_prompts()
+                .front()
+                .unwrap()
+                .prompt()
+                .unwrap();
+            assert!(prompt.contains("failure") && !prompt.contains("private failure detail"));
+            drop(kernel);
+            cleanup(f);
+        }
+    }
+
     #[test]
     fn same_kernel_router_queues_ordinary_prompt_and_missing_source_is_visible() {
         let mut f = Fixture::new();
