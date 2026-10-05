@@ -144,7 +144,7 @@ fn read_kernel_local_auth_token_file(path: &str) -> Result<String, DaemonError> 
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     let mut file = options
         .open(path)
@@ -190,7 +190,9 @@ fn read_opened_kernel_local_auth_token_file(
         }
     }
     let mut value = String::new();
-    let read_result = file.read_to_string(&mut value);
+    let read_result = (&mut *file)
+        .take(MAX_KERNEL_LOCAL_AUTH_TOKEN_BYTES + 1)
+        .read_to_string(&mut value);
     consume_opened_kernel_local_auth_token_path(path, &metadata)?;
     #[cfg(unix)]
     {
@@ -213,6 +215,12 @@ fn read_opened_kernel_local_auth_token_file(
         operation: "read kernel websocket auth file",
         message: error.to_string(),
     })?;
+    if value.len() as u64 > MAX_KERNEL_LOCAL_AUTH_TOKEN_BYTES {
+        return Err(DaemonError::LocalTransport {
+            operation: "read kernel websocket auth file",
+            message: "auth file exceeds byte limit".to_string(),
+        });
+    }
     let token = value.trim();
     if token.is_empty() {
         return Err(DaemonError::LocalTransport {
@@ -1821,4 +1829,12 @@ mod boot_listener_tests {
         }
         second.join().expect("runtime client should join");
     }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_fifo_input_fails_without_waiting_for_a_writer() {
+    crate::test_support::assert_fifo_rejected(|path| {
+        read_kernel_local_auth_token_file(path.to_str().unwrap()).is_err()
+    });
 }
