@@ -104,6 +104,9 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   };
   return { binding, presenter, next,
     input: input => request(presenter.input(input)),
+    takeover: () => request({ op: 'display_takeover', ...tab }),
+    release: () => request({ op: 'display_release', ...tab }),
+    actors: () => request({ op: 'display_actors' }),
     async close() { stopped = true; pending?.reject(new Error('MD-DISPLAY: closed')); pending = null; off(); presenter.close(); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
   };
 }
