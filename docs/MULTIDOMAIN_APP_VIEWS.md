@@ -156,3 +156,18 @@ call/approval authority stay in the shared user-domain runtime; the former nativ
 host's duplicate registry wrapper is removed. App instances are never restored
 with ordinary browser tabs. Focused browser mutations cannot impersonate a human App
 channel; the proposed focused App tool table still awaits its registry adapter.
+
+## Mutating request recovery
+
+The shared OSS kernel client waits for a slow `OpenUserAppView` or
+`CallUserAppView` without replaying it. These owner-authorized requests bypass
+transport result caching and have no request-ID receipt: repeating an open
+allocates another instance and repeating a frontend call can mutate App state
+again. A lost answer after a write reports non-retryable `outcome_unknown`.
+List the owner's views to reconcile a lost open; do not retry a mutating call
+until the App's own state establishes its outcome. Pre-write transport failures
+retain their ordinary classification. The web client's automatic recovery
+allowlist already admits reads only; native/App bridge calls use no timeout
+retry option. Host offers retain a dedicated one-use terminal acceptance path
+for both Room and detached decisions; generic interaction answers may decline
+but cannot accept host payloads.
