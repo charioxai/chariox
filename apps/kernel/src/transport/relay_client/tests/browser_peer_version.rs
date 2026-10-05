@@ -161,10 +161,11 @@ async fn check() {
                 let result = app.spawn_worker_agent(
                     CreateAgentRequest::new(room.id(), "managed-dev-stub"),
                     "artifact-version-worker",
+                    &|| Ok(()),
                 );
                 if let Ok(agent) = &result {
                     let binding = agent.remote_execution().unwrap();
-                    app.destroy_remote_execution_binding(binding).unwrap();
+                    app.destroy_remote_execution_binding(binding, &|| Ok(())).unwrap();
                     if advertised == 73 {
                         assert_eq!(binding.relay_peer_protocol_version, Some(73));
                         app.ensure_remote_agent_binding_protocol(binding).unwrap();
