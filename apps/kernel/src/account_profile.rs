@@ -779,9 +779,13 @@ impl ProviderAccountLocator {
         }
     }
 
-    fn same_roots(&self, other: &Self) -> bool {
-        if std::mem::discriminant(self) != std::mem::discriminant(other) {
-            return false;
+    fn same_credential_scope(&self, other: &Self) -> bool {
+        // Claude's ambient scope differs from an explicit directory, and its
+        // Keychain service hashes the literal config path. Keep those scopes.
+        if matches!(self, Self::Claude { .. })
+            || std::mem::discriminant(self) != std::mem::discriminant(other)
+        {
+            return self == other;
         }
         self.roots()
             .into_iter()
@@ -1677,7 +1681,7 @@ impl ProviderAccountProfileRegistry {
         if let Some(existing) = document.profiles.iter().find(|stored| {
             stored.public.owner_user_id == owner_user_id
                 && stored.public.provider == provider
-                && stored.locator.same_roots(&locator)
+                && stored.locator.same_credential_scope(&locator)
         }) {
             return Err(already_connected_error(
                 "link account profile",
@@ -1741,7 +1745,7 @@ impl ProviderAccountProfileRegistry {
         if let Some(existing) = document.profiles.iter().find(|entry| {
             entry.public.owner_user_id == owner_user_id
                 && entry.public.provider == provider
-                && entry.locator.same_roots(&locator)
+                && entry.locator.same_credential_scope(&locator)
         }) {
             return Err(already_connected_error(
                 "import native account profile",
@@ -7233,7 +7237,7 @@ mod tests {
     }
 
     #[test]
-    fn directory_matching_refuses_the_same_claude_folder_across_ambient_scopes() {
+    fn claude_directory_matching_preserves_ambient_and_literal_path_scopes() {
         let explicit = ProviderAccountLocator::Claude {
             claude_config_dir: PathBuf::from("/fixture/claude"),
             ambient_default: Some(false),
@@ -7246,9 +7250,112 @@ mod tests {
             claude_config_dir: PathBuf::from("/fixture/claude/../claude"),
             ambient_default: Some(false),
         };
-        assert!(explicit.same_roots(&explicit));
-        assert!(explicit.same_roots(&ambient));
-        assert!(!explicit.same_roots(&alias));
+        assert!(explicit.same_credential_scope(&explicit));
+        assert!(!explicit.same_credential_scope(&ambient));
+        assert!(!explicit.same_credential_scope(&alias));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_native_symlink_and_linked_canonical_path_keep_distinct_logins() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let (root, registry) = fixture();
+        let native_root = root.join("claude-real");
+        let alias = root.join("claude-alias");
+        fs::create_dir_all(&native_root).unwrap();
+        set_private_dir_permissions(&native_root).unwrap();
+        std::os::unix::fs::symlink(&native_root, &alias).unwrap();
+        let canonical_root = native_root.canonicalize().unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", &alias);
+
+        let native = registry
+            .import_native_default("owner-a", "claude", &root)
+            .unwrap();
+        observe_identity(
+            &registry,
+            "claude",
+            &native.profile_id,
+            Some("native@example.test"),
+        );
+        let linked = registry
+            .link_existing("owner-a", "claude", "Canonical", &canonical_root)
+            .expect("literal config paths select different Claude Keychain scopes");
+        observe_identity(
+            &registry,
+            "claude",
+            &linked.profile_id,
+            Some("linked@example.test"),
+        );
+        for (profile, path) in [(&native, &alias), (&linked, &canonical_root)] {
+            assert_eq!(
+                registry
+                    .resolve_environment("owner-a", "claude", &profile.profile_id)
+                    .unwrap()
+                    .get("CLAUDE_CONFIG_DIR"),
+                Some(&path.display().to_string())
+            );
+            std::env::set_var("CLAUDE_CONFIG_DIR", path);
+            assert!(registry
+                .import_native_default("owner-a", "claude", &root)
+                .is_err());
+        }
+        assert_ne!(
+            claude_keychain_service_names(&alias, false),
+            claude_keychain_service_names(&canonical_root, false)
+        );
+        assert!(registry
+            .link_existing("owner-a", "claude", "Again", &alias)
+            .is_err());
+        assert_eq!(registry.list("owner-a", Some("claude")).unwrap().len(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn claude_distinct_scopes_reject_observed_duplicate_without_deleting_linked_data() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        let (root, registry) = fixture();
+        let home = root.join("home");
+        let native_root = home.join(".claude");
+        fs::create_dir_all(&native_root).unwrap();
+        set_private_dir_permissions(&native_root).unwrap();
+        fs::write(native_root.join("user-file"), b"preserve native data").unwrap();
+        let native = registry
+            .import_native_default("owner-a", "claude", &home)
+            .unwrap();
+        observe_identity(
+            &registry,
+            "claude",
+            &native.profile_id,
+            Some("owner@example.test"),
+        );
+        let linked = registry
+            .link_existing("owner-a", "claude", "Explicit", &native_root)
+            .expect("ambient and explicit credential scopes must be observed separately");
+        let error = registry
+            .update_observation(
+                "owner-a",
+                "claude",
+                &linked.profile_id,
+                ProviderAccountAuthState::Authenticated,
+                Some("owner@example.test".into()),
+                None,
+                None,
+                None,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("owner@example.test"));
+        assert!(registry
+            .get("owner-a", "claude", &linked.profile_id)
+            .is_err());
+        assert_eq!(registry.list("owner-a", Some("claude")).unwrap().len(), 1);
+        assert_eq!(
+            fs::read(native_root.join("user-file")).unwrap(),
+            b"preserve native data"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -8658,7 +8765,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn claude_link_refuses_native_directory_alias_before_registration() {
+    fn claude_link_refuses_same_explicit_scope_before_registration() {
         crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
         let (root, registry) = fixture();
@@ -8668,7 +8775,7 @@ mod tests {
         set_private_dir_permissions(&real).unwrap();
         std::os::unix::fs::symlink(&real, &alias).unwrap();
         let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
-        std::env::set_var("CLAUDE_CONFIG_DIR", &alias);
+        std::env::set_var("CLAUDE_CONFIG_DIR", real.canonicalize().unwrap());
         let native = registry.import_native_default("owner-a", "claude", &root);
         match previous {
             Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
@@ -8854,15 +8961,31 @@ mod tests {
             Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
             None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
         }
-        let error = imported.unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("already connected as account `Legacy`"));
-        assert_eq!(registry.list("owner-a", Some("claude")).unwrap().len(), 1);
-        assert_eq!(
-            registry.get("owner-a", "claude", "default").unwrap(),
-            existing
+        let imported = imported.expect("ambient login differs from explicit config scope");
+        observe_identity(
+            &registry,
+            "claude",
+            &existing.profile_id,
+            Some("explicit@example.test"),
         );
+        observe_identity(
+            &registry,
+            "claude",
+            &imported.profile_id,
+            Some("ambient@example.test"),
+        );
+        assert_eq!(registry.list("owner-a", Some("claude")).unwrap().len(), 2);
+        assert_eq!(
+            registry
+                .get("owner-a", "claude", "default")
+                .unwrap()
+                .profile_id,
+            existing.profile_id
+        );
+        assert!(!registry
+            .resolve_environment("owner-a", "claude", &imported.profile_id)
+            .unwrap()
+            .contains_key("CLAUDE_CONFIG_DIR"));
         assert_eq!(
             registry
                 .resolve_environment("owner-a", "claude", &existing.profile_id)
