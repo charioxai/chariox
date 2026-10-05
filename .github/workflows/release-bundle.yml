@@ -117,6 +117,12 @@ jobs:
           bun apps/cli/scripts/compile.mjs --target ${{ matrix.platform }} --outfile unsigned/bin/chariox --version "$VERSION"
           # --version, --help and native-Claude hooks with neither Node nor Bun on PATH.
           node apps/cli/scripts/release-smoke.mjs unsigned/bin/chariox "$VERSION"
+      - name: Compile generic Chariox Setup (MP-07 / MP-08 / MP-11)
+        env:
+          SETUP_PUBLIC_KEY: ${{ vars.CHARIOX_RELEASE_PUBLIC_KEY }}
+        run: |
+          node scripts/build-chariox-setup.mjs --version "$VERSION" --public-key "$SETUP_PUBLIC_KEY" --target ${{ matrix.platform }} --output "$RUNNER_TEMP/setup"
+          cp "$RUNNER_TEMP/setup/chariox-setup" unsigned/bin/
       # A tarball keeps the executable modes that an artifact upload drops.
       - run: tar -czf unsigned-${{ matrix.platform }}.tar.gz -C unsigned .
       - uses: actions/upload-artifact@v4

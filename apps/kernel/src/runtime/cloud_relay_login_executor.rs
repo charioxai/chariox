@@ -117,7 +117,7 @@ pub(crate) async fn execute_logout_cloud_relay_request(
     Ok(LocalDaemonResponse::CloudRelayLoggedOut)
 }
 
-fn kernel_device_enrollment_body(
+pub(crate) fn kernel_device_enrollment_body(
     config: &crate::config::DaemonConfig,
     request: &StartCloudRelayLoginRequest,
 ) -> serde_json::Value {
