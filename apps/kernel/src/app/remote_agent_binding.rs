@@ -2286,7 +2286,7 @@ mod tests {
         };
         assert!(!pre_artifact.relay_peer_protocol_compatible());
         let current = RemoteAgentBinding {
-            relay_peer_protocol_version: Some(71),
+            relay_peer_protocol_version: Some(73),
             ..legacy
         };
         assert!(current.relay_peer_protocol_compatible());

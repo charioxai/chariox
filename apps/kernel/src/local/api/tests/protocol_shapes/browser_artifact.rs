@@ -1,10 +1,10 @@
-//! MP-08/MP-10/MP-11: protocol 420 Browser artifact snapshot and hash.
+//! MP-08/MP-10/MP-11: protocol 426 Browser artifact snapshot and hash.
 use super::*;
 
 #[test]
-fn mp08_mp10_mp11_browser_artifact_protocol_420_snapshot_and_hash() {
+fn mp08_mp10_mp11_browser_artifact_protocol_426_snapshot_and_hash() {
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 420);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 426);
     let wire = serde_json::json!({"RoomBrowserArtifact": {
         "session_id":"room-a", "attachment_id":"client-a", "tab_id":"tab-a",
         "operation":{"action":"capture","kind":"image","browser_generation":1,"guid":null,"return_image_base64":true}
@@ -26,13 +26,16 @@ fn mp08_mp10_mp11_browser_artifact_protocol_420_snapshot_and_hash() {
 }
 
 #[test]
-fn mp08_mp10_mp11_browser_artifact_peer_71_shape_hashes() {
+fn mp08_mp10_mp11_browser_artifact_peer_73_shape_hashes() {
     use crate::transport::room_browser_controller::{
         RoomBrowserControllerCommand, RoomBrowserControllerResult,
     };
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 420);
-    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 71);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 426);
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        73
+    );
     let wire = serde_json::json!({"kind":"artifact","request":{"target_id":"tab-target","document_id":"doc-a","browser_generation":1,"viewport":{"css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800,"revision":1,"last_actor_id":null},"kind":"network"}});
     let typed: RoomBrowserControllerCommand = serde_json::from_value(wire.clone()).unwrap();
     let encoded = serde_json::to_value(typed).unwrap();
@@ -76,5 +79,33 @@ fn mp08_mp10_mp11_browser_artifact_peer_71_shape_hashes() {
             Sha256::digest(serde_json::to_vec(&encoded).unwrap())
         ),
         "ee34defc09ac9f87b9a36a96b451660c9cd26e98e0d958e795111e7bdb67820f"
+    );
+}
+
+// MP-08/MP-10/MP-11: the integration contract contains Apps access, Browser
+// artifact and Computer hold shapes together; unreleased per-lane numbers fold.
+#[test]
+fn mp08_mp10_mp11_apps_browser_computer_union_426_73_is_hashed() {
+    use sha2::{Digest, Sha256};
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 426);
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        73
+    );
+    let snapshot = serde_json::json!({"local_protocol":426,"peer_protocol":73,"requests":[{"RoomBrowserArtifact":{"session_id":"room","attachment_id":"client","tab_id":"tab","operation":{"action":"capture","kind":"image","browser_generation":1,"guid":null,"return_image_base64":true}}},{"SubmitRoomEnvironmentAction":{"session_id":"room","runtime_generation":2,"viewport_revision":3,"idempotency_key":"hold","action":{"kind":"keyboard_hold","key":"shift+Left","duration_ms":750}}}],"responses":[{"KernelSudoRequested":{"agent_id":"agent"}}]});
+    for request in snapshot["requests"].as_array().unwrap() {
+        let typed: LocalDaemonRequest = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), *request);
+    }
+    for response in snapshot["responses"].as_array().unwrap() {
+        let typed: LocalDaemonResponse = serde_json::from_value(response.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), *response);
+    }
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "b3d6292c743ad7a2e7ee0bdbce86cc00c9b05aa6f52f9a2f0da9439ab8e3ecbc"
     );
 }

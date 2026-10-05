@@ -368,7 +368,10 @@ mod tests {
     fn attachment_ids_do_not_alias_after_a_service_restart() {
         let previous = AttachmentService::new().next_attachment_id();
         let current = AttachmentService::new().next_attachment_id();
-        assert_ne!(previous, current, "a stale client attachment must not identify a new client");
+        assert_ne!(
+            previous, current,
+            "a stale client attachment must not identify a new client"
+        );
     }
 
     #[test]

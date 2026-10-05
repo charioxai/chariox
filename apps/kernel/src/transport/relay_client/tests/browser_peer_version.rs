@@ -6,7 +6,7 @@ use futures_util::FutureExt;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 #[test]
-fn mp08_mp10_mp11_browser_artifact_peer_71_encrypted_lease_admission() {
+fn mp08_mp10_mp11_browser_artifact_peer_73_encrypted_lease_admission() {
     crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("browser-artifact-peer-version", check);
 }
@@ -144,7 +144,7 @@ async fn check() {
     };
     wait_for_daemon_registration(registry, &worker_config.daemon_id).await;
     let assertions = std::panic::AssertUnwindSafe(async {
-        for advertised in [70, 71] {
+        for advertised in [70, 73] {
             version.store(advertised, Ordering::SeqCst);
             requests.lock().await.clear();
             let config = home_config.clone();
@@ -165,8 +165,8 @@ async fn check() {
                 if let Ok(agent) = &result {
                     let binding = agent.remote_execution().unwrap();
                     app.destroy_remote_execution_binding(binding).unwrap();
-                    if advertised == 71 {
-                        assert_eq!(binding.relay_peer_protocol_version, Some(71));
+                    if advertised == 73 {
+                        assert_eq!(binding.relay_peer_protocol_version, Some(73));
                         app.ensure_remote_agent_binding_protocol(binding).unwrap();
                     }
                 }
@@ -182,7 +182,7 @@ async fn check() {
                     "{error}; request kinds: {:?}",
                     *requests.lock().await
                 );
-                assert!(error.to_string().contains("requires 71"));
+                assert!(error.to_string().contains("requires 73"));
                 assert_eq!(
                     *requests.lock().await,
                     ["create_execution_lease", "destroy_execution_lease"]
@@ -190,7 +190,7 @@ async fn check() {
             } else {
                 assert!(
                     result.is_ok(),
-                    "v71 must bind: {}",
+                    "v73 must bind: {}",
                     result
                         .as_ref()
                         .err()

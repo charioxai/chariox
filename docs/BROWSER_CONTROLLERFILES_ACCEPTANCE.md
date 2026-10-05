@@ -3,7 +3,7 @@
 The first-party fixtures change no benchmark solver, evaluator or frozen score.
 Frozen G2 `9334141d420f8a32393f206102c5b8b4a1b0b609` fails the visible
 **Choose documents** control with `browser_upload_invalid`. That RED evidence
-remains attributed to G2. Protocol 420 adds the common artifact runtime described
+remains attributed to G2. Protocol 426 adds the common artifact runtime described
 below; a passing fixture does not close MP-08, MP-10 or MP-11.
 
 ## MP-08/MP-10/MP-11 runtime contract
@@ -69,7 +69,7 @@ again when the attachment is captured.
 
 `RoomBrowserArtifact` exposes the same capture/read/inspect service to attached
 Web/local/remote TUI clients, with membership and attachment-owner checks. The
-shared TypeScript builder declares minimum local protocol 420. Unix-socket client capture
+shared TypeScript builder declares minimum local protocol 426. Unix-socket client capture
 with `return_image_base64=true` includes inline bytes only when the complete encoded
 local IPC response fits its 1 MiB frame. Larger captures still return the opaque
 artifact metadata; clients read ordered chunks of at most 128 KiB and verify the
@@ -112,7 +112,7 @@ framing, reads every chunk and compares bytes/hash, and retains inline provider
 bytes. Its CDP pixels are synthetic, so it does not prove actual Chromium or
 official-provider perception. A separate MCP converter
 check verifies byte-exact native image content; protocol snapshot/hash tests pin
-420 and the attachment request. These checks complement the actual Chromium
+426 and the attachment request. These checks complement the actual Chromium
 fixture; they are not a live conjunction run.
 
 Independent review, official-provider model-visible delivery, Web/local/remote

@@ -251,4 +251,5 @@ pub use workspace::*;
 /// Version 413 adds terminal sudo turns and critical approval receipts.
 /// Version 415 adds external sudo requests and requester attribution.
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 416;
+/// Version 426 combines Apps 416 with Browser artifacts and bounded Computer holds (MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 426;

@@ -547,24 +547,48 @@ async fn exercise_post_connect_confirmation(
 fn mp08_mp10_mp11_browser_artifact_peer_71_hosted_confirmation_gate() {
     let home = crate::config::DaemonConfig::for_tests();
     let worker = crate::config::DaemonConfig::for_tests();
-    for version in [70, 71] {
-        for (slice_id, nonce) in [("slice-1", "nonce-1"), ("other", "nonce-1"), ("slice-1", "other")] {
-            let response = crate::transport::relay_peer::RelayPeerResponse::ManagedSliceRelayTokenActivated {
-                slice_id: slice_id.into(), activation_nonce: nonce.into(), relay_peer_protocol_version: version,
-            };
+    for version in [70, 73] {
+        for (slice_id, nonce) in [
+            ("slice-1", "nonce-1"),
+            ("other", "nonce-1"),
+            ("slice-1", "other"),
+        ] {
+            let response =
+                crate::transport::relay_peer::RelayPeerResponse::ManagedSliceRelayTokenActivated {
+                    slice_id: slice_id.into(),
+                    activation_nonce: nonce.into(),
+                    relay_peer_protocol_version: version,
+                };
             let encrypted = crate::transport::relay_crypto::encrypt_payload_for_peer(
-                &home.relay_private_key, &worker.relay_public_key, &serde_json::to_vec(&response).unwrap(),
-            ).unwrap();
+                &home.relay_private_key,
+                &worker.relay_public_key,
+                &serde_json::to_vec(&response).unwrap(),
+            )
+            .unwrap();
             let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
-                &worker.relay_private_key, &encrypted,
-            ).unwrap();
+                &worker.relay_private_key,
+                &encrypted,
+            )
+            .unwrap();
             assert_eq!(decrypted.sender_public_key, home.relay_public_key);
             let crate::transport::relay_peer::RelayPeerResponse::ManagedSliceRelayTokenActivated {
-                slice_id, activation_nonce, relay_peer_protocol_version,
-            } = serde_json::from_slice(&decrypted.plaintext).unwrap() else { panic!("activation receipt"); };
-            assert_eq!(managed_slice_token_confirmation_matches(
-                &slice_id, &activation_nonce, relay_peer_protocol_version, "slice-1", "nonce-1",
-            ), version == 71 && slice_id == "slice-1" && activation_nonce == "nonce-1");
+                slice_id,
+                activation_nonce,
+                relay_peer_protocol_version,
+            } = serde_json::from_slice(&decrypted.plaintext).unwrap()
+            else {
+                panic!("activation receipt");
+            };
+            assert_eq!(
+                managed_slice_token_confirmation_matches(
+                    &slice_id,
+                    &activation_nonce,
+                    relay_peer_protocol_version,
+                    "slice-1",
+                    "nonce-1",
+                ),
+                version == 73 && slice_id == "slice-1" && activation_nonce == "nonce-1"
+            );
         }
     }
 }

@@ -32,9 +32,9 @@ mod slice;
 pub(super) use slice::{
     capture_computer_secret_target, capture_room_environment_screenshot,
     execute_room_computer_observation, reset_room_computer_input,
-    run_room_clipboard_read_authorized, run_room_clipboard_write, run_room_computer_hold, run_room_keyboard_key,
-    run_room_keyboard_text, run_room_pointer_click, run_room_pointer_drag, run_room_pointer_move,
-    run_room_pointer_scroll, run_room_secret_text_input,
+    run_room_clipboard_read_authorized, run_room_clipboard_write, run_room_computer_hold,
+    run_room_keyboard_key, run_room_keyboard_text, run_room_pointer_click, run_room_pointer_drag,
+    run_room_pointer_move, run_room_pointer_scroll, run_room_secret_text_input,
 };
 mod worker_home_credential_client;
 mod worker_home_extension_client;
