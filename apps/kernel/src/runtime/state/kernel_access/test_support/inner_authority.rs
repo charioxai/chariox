@@ -338,6 +338,14 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line',line
         after, before,
         "revoked queued stop terminated the controller"
     );
+    assert_eq!(
+        room.runtime
+            .room_environment_snapshot(&room.session_id)
+            .unwrap()
+            .lifecycle,
+        crate::session::EnvironmentLifecycle::Failed,
+        "denied release must settle the started Stop as Failed"
+    );
     assert!(result
         .unwrap_err()
         .to_string()

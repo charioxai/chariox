@@ -1242,7 +1242,7 @@ impl KernelRuntimeState {
             .browser_controller_generations
             .lock()
             .map_err(|_| controller_generation_error("generation lock poisoned"))?;
-        self.authorize_current_external_command()?;
+        // Release already completed; retiring its generation is kernel cleanup.
         generations.remove(session_id);
         Ok(snapshot)
     }
@@ -1255,12 +1255,9 @@ impl KernelRuntimeState {
         self.begin_stop_room_environment(session_id)
             .map_err(|error| environment_runtime_error("environment.stop", error))?;
         match self.stop_browser_controller_process(session_id).await {
-            Ok(_) => {
-                self.authorize_current_external_command()?;
-            }
+            Ok(_) => {}
             // The controller lived in the slice, which is gone: nothing to release.
             Err(error) if is_room_slice_unreachable(&error) => {
-                self.authorize_current_external_command()?;
                 self.owned
                     .browser_controller_generations
                     .lock()
@@ -1268,7 +1265,6 @@ impl KernelRuntimeState {
                     .remove(session_id);
             }
             Err(error) => {
-                self.authorize_current_external_command()?;
                 let _ = self.update_room_environment_component_health(
                     session_id,
                     EnvironmentComponent::BrowserController,
@@ -1279,7 +1275,8 @@ impl KernelRuntimeState {
                 return Err(error);
             }
         }
-        self.authorize_current_external_command()?;
+        // Stop was admitted before release. Always settle its terminal state,
+        // including release failure, after in-flight grant revocation.
         self.update_room_environment_component_health(
             session_id,
             EnvironmentComponent::BrowserController,
@@ -1419,3 +1416,6 @@ fn environment_runtime_error(operation: &'static str, error: EnvironmentError) -
         },
     }
 }
+
+#[cfg(test)]
+mod stop_revocation_tests;
