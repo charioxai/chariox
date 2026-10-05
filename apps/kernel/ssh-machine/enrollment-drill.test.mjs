@@ -155,9 +155,11 @@ test("MP-07/MP-08/MP-11 source-kernel add/remove, stdin redemption, replay refus
   })
   const url = `ws://127.0.0.1:${sourceEnv.CHARIOX_KERNEL_PORT}`
   // MP-11 early source admission must match the target before issuing any ticket.
-  const issuesBefore = calls.filter(c => c === "issue").length
-  await assert.rejects(request(url, sourceEnv, { AddSshMachine:{host:"byom-local", install_id:"byom-one", port:43117, release:"fixture"} }))
-  assert.equal(calls.filter(c => c === "issue").length, issuesBefore)
+  if (sourceKernel === kernel) {
+    const issuesBefore = calls.filter(c => c === "issue").length
+    await assert.rejects(request(url, sourceEnv, { AddSshMachine:{host:"byom-local", install_id:"byom-one", port:43117, release:"fixture"} }))
+    assert.equal(calls.filter(c => c === "issue").length, issuesBefore)
+  } else t.diagnostic("MP-08/MP-11 old-source comparison skips new preflight to isolate registry recovery")
   // MP-08 review P2: a known pre-publication port failure must not poison corrected retry.
   const { createServer: netServer } = await import("node:net")
   const occupied = netServer(); await new Promise(r => occupied.listen(0,"127.0.0.1",r)); t.after(() => occupied.listening ? new Promise(r => occupied.close(r)) : undefined)
