@@ -84,6 +84,10 @@ impl CommandRouter {
                 let result = self.runtime_state.notes_terminal_request(&command, request.command).await?;
                 Ok(LocalDaemonResponse::Notes { result })
             }),
+            LocalDaemonRequest::CaptureVisibleRegion(request) => Box::pin(async move {
+                let capture = self.runtime_state.capture_visible_region(&command, request).await?;
+                Ok(LocalDaemonResponse::VisibleRegionCaptured { capture })
+            }),
             LocalDaemonRequest::KernelBrowser(request) => Box::pin(async move {
                 if !command.is_terminal_caller() {
                     return Err(DaemonError::LocalTransport { operation: "kernel_browser", message: "MD-2: authenticated terminal required".into() });

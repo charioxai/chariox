@@ -1,4 +1,5 @@
 mod api;
+pub use api::{CaptureVisibleRegionRequest, ScreenshotRegion, ScreenshotSurface, VisibleRegionCapture};
 mod client;
 mod harness;
 pub(crate) mod ipc;

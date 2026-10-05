@@ -82,3 +82,5 @@ fn history_page_entry(
         },
     }
 }
+
+mod screenshot;

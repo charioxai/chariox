@@ -9,6 +9,10 @@ pub(crate) enum KernelBrowserDisplayRequest {
         tab_id: String,
         generation: u64,
     },
+    CaptureRegion {
+        tab_id: String,
+        generation: u64,
+    },
     Subscribe {
         tab_id: String,
         generation: u64,
@@ -274,6 +278,9 @@ impl KernelRuntimeState {
             }
             KernelBrowserDisplayRequest::Capture { tab_id, generation } => {
                 serde_json::json!({"op":"screenshot","tab_id":tab_id,"generation":generation,"bound_frames":true})
+            }
+            KernelBrowserDisplayRequest::CaptureRegion { tab_id, generation } => {
+                serde_json::json!({"op":"screenshot","tab_id":tab_id,"generation":generation,"bound_frames":true,"_capture_protection":true})
             }
             KernelBrowserDisplayRequest::Subscribe { tab_id, generation } => {
                 serde_json::json!({"op":"subscribe","tab_id":tab_id,"generation":generation,"bound_frames":true})

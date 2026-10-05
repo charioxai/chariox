@@ -41,6 +41,7 @@ mod room_remote_agent_home_slice;
 mod room_secret;
 mod room_slice_cross_placement;
 mod screenshot;
+mod screenshot_region;
 mod session;
 
 pub(super) async fn controller_placement_lifecycle() {

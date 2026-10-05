@@ -74,6 +74,7 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
     match request {
         LocalDaemonRequest::Notes(_) => LocalRequestMetadata::new("notes", Normal),
         LocalDaemonRequest::KernelBrowser(_) => LocalRequestMetadata::new("kernel_browser", Normal),
+        LocalDaemonRequest::CaptureVisibleRegion(_) => LocalRequestMetadata::new("screenshot.capture", Normal),
         LocalDaemonRequest::BeginAppPublisherEnrollment(request) => {
             LocalRequestMetadata::new("app.publisher.begin", Interactive).optional_session(
                 (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
@@ -564,6 +565,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RevokeKernelAccessGrant(_) => "kernel_access.revoke",
         LocalDaemonRequest::KernelBrowser(_) => "kernel_browser",
         LocalDaemonRequest::Notes(_) => "notes",
+        LocalDaemonRequest::CaptureVisibleRegion(_) => "screenshot.capture",
         LocalDaemonRequest::BeginAppPublisherEnrollment(_) => "app.publisher.begin",
         LocalDaemonRequest::GetAppPublisherEnrollment(_) => "app.publisher.status",
         LocalDaemonRequest::CancelAppPublisherEnrollment(_) => "app.publisher.cancel",
