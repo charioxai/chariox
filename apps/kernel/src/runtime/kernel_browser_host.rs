@@ -531,6 +531,11 @@ impl KernelBrowserHost {
                 if let Some(resource) = resource {
                     state.access.acted(user, agent, resource);
                 }
+                if request_params["op"] == "poll" {
+                    if let Some(id) = request_params["subscription_id"].as_str() {
+                        state.access.subscription_polled(user, agent, id);
+                    }
+                }
                 if request_params["op"] == "unsubscribe" {
                     if let Some(id) = request_params["subscription_id"].as_str() {
                         state.access.unsubscribe(user, agent, id);

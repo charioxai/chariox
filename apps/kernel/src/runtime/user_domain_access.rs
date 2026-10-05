@@ -10,6 +10,7 @@ pub(crate) struct Grant {
     pub(crate) resources: BTreeSet<UserDomainResource>,
     pub(crate) subscriptions: BTreeMap<String, String>,
     pub(crate) subscription_owner: String,
+    subscription_deadlines: BTreeMap<String, Instant>,
     session: String,
     since_ms: u64,
     idle_since: Option<Instant>,
@@ -37,6 +38,7 @@ impl UserDomainAccess {
                     epoch: Arc::new(BrowserCancellation::default()),
                     resources: BTreeSet::new(),
                     subscriptions: BTreeMap::new(),
+                    subscription_deadlines: BTreeMap::new(),
                     subscription_owner: format!("grant-{:032x}", rand::random::<u128>()),
                     session: String::new(),
                     since_ms: crate::session::unix_epoch_ms(),
@@ -163,11 +165,32 @@ impl UserDomainAccess {
             return Err("MP-08: user-domain subscription limit reached".into());
         }
         grant.subscriptions.insert(id.into(), tab.into());
+        grant
+            .subscription_deadlines
+            .insert(id.into(), Instant::now() + Duration::from_secs(60));
         Ok(())
     }
     pub(crate) fn unsubscribe(&mut self, user: &str, agent: &str, id: &str) {
         if let Some(grant) = self.grants.get_mut(&(user.into(), agent.into())) {
             grant.subscriptions.remove(id);
+            grant.subscription_deadlines.remove(id);
+        }
+    }
+    pub(crate) fn prune_subscriptions(&mut self, user: &str, agent: &str, now: Instant) {
+        if let Some(grant) = self.grants.get_mut(&(user.into(), agent.into())) {
+            grant
+                .subscription_deadlines
+                .retain(|_, deadline| now < *deadline);
+            grant
+                .subscriptions
+                .retain(|id, _| grant.subscription_deadlines.contains_key(id));
+        }
+    }
+    pub(crate) fn subscription_polled(&mut self, user: &str, agent: &str, id: &str) {
+        if let Some(grant) = self.grants.get_mut(&(user.into(), agent.into())) {
+            if let Some(deadline) = grant.subscription_deadlines.get_mut(id) {
+                *deadline = Instant::now() + Duration::from_secs(60);
+            }
         }
     }
     pub(crate) fn acted(&mut self, user: &str, agent: &str, resource: UserDomainResource) {
@@ -225,6 +248,38 @@ mod tests {
         assert!(access.claim("owner", "first", tab("a"), true).is_err());
         assert!(access.claim("owner", "second", tab("b"), false).is_ok());
         assert!(access.claim("stranger", "first", tab("a"), false).is_err());
+    }
+    #[test]
+    fn mdaccess_subscription_expiry_reclaims_slots_and_poll_renews() {
+        let mut access = UserDomainAccess::default();
+        access.focus("owner", Some("agent"));
+        for i in 0..16 {
+            access
+                .subscribe("owner", "agent", &i.to_string(), "tab")
+                .unwrap();
+        }
+        assert!(access.subscribe("owner", "agent", "new", "tab").is_err());
+        let initial = access
+            .grant("owner", "agent")
+            .unwrap()
+            .subscription_deadlines["0"];
+        access.subscription_polled("owner", "agent", "0");
+        assert!(
+            access
+                .grant("owner", "agent")
+                .unwrap()
+                .subscription_deadlines["0"]
+                >= initial
+        );
+        access.unsubscribe("owner", "agent", "0");
+        access.subscribe("owner", "agent", "new", "tab").unwrap();
+        access.prune_subscriptions("owner", "agent", Instant::now() + Duration::from_secs(61));
+        assert!(access
+            .grant("owner", "agent")
+            .unwrap()
+            .subscriptions
+            .is_empty());
+        access.subscribe("owner", "agent", "fresh", "tab").unwrap();
     }
     #[test]
     fn mdaccess_yield_and_wake_retain_grant_idle_expires_and_revoke_cancels_subscribers() {

@@ -231,6 +231,9 @@ impl KernelBrowserHost {
             .inner
             .lock()
             .map_err(|_| "MP-11: grant lock unavailable")?;
+        state
+            .access
+            .prune_subscriptions(&admission.user, agent, Instant::now());
         if matches!(params["op"].as_str(), Some("open" | "start" | "stop")) {
             require_focus(&state, &admission.user, agent)?;
         }
