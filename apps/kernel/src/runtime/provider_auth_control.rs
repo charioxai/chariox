@@ -762,6 +762,32 @@ pub(crate) async fn execute_cancel_provider_login_request(
     Ok(LocalDaemonResponse::ProviderLoginCancelled { login })
 }
 
+pub(crate) async fn cancel_pending_profile_logins(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    provider: &str,
+    profile_id: &str,
+) -> Result<(), DaemonError> {
+    for record in runtime_state
+        .provider_login_process_store()
+        .running_for_owner_provider(owner_user_id, provider)
+    {
+        if record.account_profile == profile_id
+            && record.operation == crate::runtime::state::ProviderAuthProcessOperation::Login
+        {
+            execute_cancel_provider_login_request(
+                runtime_state,
+                owner_user_id,
+                CancelProviderLoginRequest {
+                    login_id: record.login_id,
+                },
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) async fn execute_start_provider_login_request(
     runtime_state: &KernelRuntimeState,
     owner_user_id: &str,

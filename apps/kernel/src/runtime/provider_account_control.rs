@@ -18,6 +18,7 @@ pub(crate) async fn execute_provider_account_request(
     );
     let registry = runtime_state.provider_account_profile_registry().clone();
     let runtime_for_checks = runtime_state.clone();
+    let creates_profile = matches!(request, LocalDaemonRequest::CreateProviderAccountProfile(_));
     let response = tokio::task::spawn_blocking(move || match request {
         LocalDaemonRequest::ListProviderAccountProfiles(request) => {
             Ok(LocalDaemonResponse::ProviderAccountProfilesListed {
@@ -162,6 +163,17 @@ pub(crate) async fn execute_provider_account_request(
         operation: "provider account request",
         message: error.to_string(),
     })??;
+    if creates_profile {
+        if let LocalDaemonResponse::ProviderAccountProfile { profile } = &response {
+            crate::runtime::provider_auth_control::cancel_pending_profile_logins(
+                runtime_state,
+                &profile.owner_user_id,
+                &profile.provider,
+                &profile.profile_id,
+            )
+            .await?;
+        }
+    }
     if invalidates_catalog {
         runtime_state
             .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
@@ -311,6 +323,9 @@ fn account_profile_reference_matches(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    mod enrollment_retry;
+
     use super::{account_profile_reference_matches, bound_agent_labels};
     use crate::agent::{AgentInstance, AgentSubstituteProfile, GridPosition};
     use crate::session::RuntimeSession;

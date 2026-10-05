@@ -888,9 +888,11 @@ struct StoredProviderAccountProfile {
     public: ProviderAccountProfile,
     locator: ProviderAccountLocator,
     /// Only profiles registered in this flow can be automatically rolled back.
-    /// Persisted profiles have no conclusive authentication history; retain them.
+    /// `None` after reopening: persisted profiles have no conclusive history.
+    /// `Some(false)` excludes native/replicated or previously authenticated
+    /// records, even after logout. Only `Some(true)` permits first-auth rollback.
     #[serde(skip)]
-    pending_first_authentication: bool,
+    pending_first_authentication: Option<bool>,
     /// `None` only on records written before label tracking; `open` infers it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     label_source: Option<ProviderAccountLabelSource>,
@@ -1131,7 +1133,7 @@ impl ProviderAccountProfileRegistry {
             document.profiles.push(StoredProviderAccountProfile {
                 public: profile,
                 locator,
-                pending_first_authentication: false,
+                pending_first_authentication: Some(false),
                 label_source: Some(ProviderAccountLabelSource::AutomaticAlias),
                 materialized_replica: false,
                 pending_native_validation: false,
@@ -1337,7 +1339,7 @@ impl ProviderAccountProfileRegistry {
                             .then_some(index)
                         });
                 if let Some(duplicate_index) = duplicate_index {
-                    if document.profiles[profile_index].pending_first_authentication {
+                    if document.profiles[profile_index].pending_first_authentication == Some(true) {
                         let error = already_connected_error(
                             "validate account profile",
                             &document.profiles[duplicate_index].public,
@@ -1373,7 +1375,7 @@ impl ProviderAccountProfileRegistry {
         let previous_identity = profile.public.identity_summary.take();
         profile.public.auth_state = auth_state;
         if auth_state == ProviderAccountAuthState::Authenticated {
-            profile.pending_first_authentication = false;
+            profile.pending_first_authentication = Some(false);
         }
         profile.public.identity_summary = identity_summary;
         profile.public.plan = plan;
@@ -1622,6 +1624,22 @@ impl ProviderAccountProfileRegistry {
         let mut document = self.write_document()?;
         let (label, label_source) =
             resolved_new_profile_label(&document, owner_user_id, provider, label)?;
+        if let Some(existing) = document.profiles.iter().find(|profile| {
+            profile.public.owner_user_id == owner_user_id
+                && profile.public.provider == provider
+                && profile.public.label.eq_ignore_ascii_case(&label)
+                && profile.public.origin == ProviderAccountProfileOrigin::CharioxCreated
+                && matches!(
+                    profile.public.auth_state,
+                    ProviderAccountAuthState::NotConfigured | ProviderAccountAuthState::Unknown
+                )
+                && normalized_account_identity(profile.public.identity_summary.as_deref()).is_none()
+                && profile.pending_first_authentication != Some(false)
+                && !profile.materialized_replica
+                && profile.managed_context_replica.is_none()
+        }) {
+            return Ok(project_usage_freshness(existing.public.clone()));
+        }
         ensure_unique_label(&document, owner_user_id, provider, &label)?;
         let profile_id = unique_profile_id(&document, owner_user_id, provider, &label);
         let managed_root = self
@@ -1648,7 +1666,7 @@ impl ProviderAccountProfileRegistry {
         document.profiles.push(StoredProviderAccountProfile {
             public: profile.clone(),
             locator,
-            pending_first_authentication: true,
+            pending_first_authentication: Some(true),
             label_source: Some(label_source),
             materialized_replica: false,
             pending_native_validation: false,
@@ -1706,7 +1724,7 @@ impl ProviderAccountProfileRegistry {
         document.profiles.push(StoredProviderAccountProfile {
             public: profile.clone(),
             locator,
-            pending_first_authentication: true,
+            pending_first_authentication: Some(true),
             label_source: Some(label_source),
             materialized_replica: false,
             pending_native_validation: false,
@@ -1768,7 +1786,7 @@ impl ProviderAccountProfileRegistry {
         document.profiles.push(StoredProviderAccountProfile {
             public: profile.clone(),
             locator,
-            pending_first_authentication: true,
+            pending_first_authentication: Some(true),
             label_source: Some(ProviderAccountLabelSource::AutomaticAlias),
             materialized_replica: false,
             pending_native_validation: false,
@@ -3253,7 +3271,7 @@ impl ProviderAccountProfileRegistry {
             document.profiles.push(StoredProviderAccountProfile {
                 public: public.clone(),
                 locator,
-                pending_first_authentication: false,
+                pending_first_authentication: Some(false),
                 label_source: Some(ProviderAccountLabelSource::Explicit),
                 materialized_replica: true,
                 pending_native_validation,
@@ -3375,7 +3393,7 @@ impl ProviderAccountProfileRegistry {
             document.profiles[index] = StoredProviderAccountProfile {
                 public: replaced.public,
                 locator: replaced.locator,
-                pending_first_authentication: false,
+                pending_first_authentication: Some(false),
                 label_source: replaced.label_source,
                 materialized_replica: false,
                 legacy_unpinned_replica: false,
@@ -3985,15 +4003,18 @@ fn ensure_unique_label_except(
     label: &str,
     excluded_profile_id: &str,
 ) -> Result<(), DaemonError> {
-    if document.profiles.iter().any(|profile| {
+    if let Some(existing) = document.profiles.iter().find(|profile| {
         profile.public.owner_user_id == owner_user_id
             && profile.public.provider == provider
             && profile.public.profile_id != excluded_profile_id
             && profile.public.label.eq_ignore_ascii_case(label)
     }) {
+        let identity = normalized_account_identity(existing.public.identity_summary.as_deref())
+            .map(|identity| format!(" ({identity})"))
+            .unwrap_or_default();
         return Err(registry_error(
             "validate account profile",
-            format!("an account profile labeled `{label}` already exists for {provider}"),
+            format!("an account profile labeled `{label}` already exists for {provider}: account `{}`{identity}; use that account or choose a different label", existing.public.label),
         ));
     }
     Ok(())
@@ -6597,6 +6618,119 @@ mod tests {
         .expect("legacy profile should deserialize");
         assert_eq!(legacy.credential_kind, None);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn abandoned_enrollment_reuses_the_profile_and_managed_directory() {
+        let (root, registry) = fixture();
+        for provider in ["codex", "claude", "opencode"] {
+            let first = registry
+                .create_managed("owner-a", provider, "chariox")
+                .unwrap();
+            let environment = registry
+                .resolve_environment("owner-a", provider, &first.profile_id)
+                .unwrap();
+            let resumed = registry
+                .create_managed("owner-a", provider, " CHARIOX ")
+                .unwrap();
+            assert_eq!(resumed.profile_id, first.profile_id);
+            assert_eq!(resumed.label, "chariox");
+            assert_eq!(
+                registry
+                    .resolve_environment("owner-a", provider, &resumed.profile_id)
+                    .unwrap(),
+                environment
+            );
+            registry
+                .update_observation(
+                    "owner-a",
+                    provider,
+                    &first.profile_id,
+                    ProviderAccountAuthState::Unknown,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(
+                registry
+                    .create_managed("owner-a", provider, "chariox")
+                    .unwrap()
+                    .profile_id,
+                first.profile_id
+            );
+            assert_eq!(registry.list("owner-a", Some(provider)).unwrap().len(), 1);
+            assert_ne!(
+                registry
+                    .create_managed("owner-b", provider, "chariox")
+                    .unwrap()
+                    .profile_id,
+                first.profile_id
+            );
+        }
+        // Closing the browser or restarting the kernel must leave enrollment resumable.
+        drop(registry);
+        let registry = ProviderAccountProfileRegistry::open(root.join("accounts.json")).unwrap();
+        let first = registry.list("owner-a", Some("codex")).unwrap().remove(0);
+        assert_eq!(
+            registry
+                .create_managed("owner-a", "codex", "chariox")
+                .unwrap()
+                .profile_id,
+            first.profile_id
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn enrollment_label_clashes_keep_authenticated_and_linked_accounts() {
+        let (root, registry) = fixture();
+        let known = registry.create_managed("owner-a", "codex", "Work").unwrap();
+        observe_identity(
+            &registry,
+            "codex",
+            &known.profile_id,
+            Some("work@example.test"),
+        );
+        let error = registry
+            .create_managed("owner-a", "codex", "work")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("account `Work` (work@example.test)"),
+            "{error}"
+        );
+        assert!(error.contains("use that account"), "{error}");
+        registry
+            .mark_logged_out("owner-a", "codex", &known.profile_id)
+            .unwrap();
+        let error = registry
+            .create_managed("owner-a", "codex", "Work")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("account `Work`"), "{error}");
+        let linked_root = root.join("linked");
+        fs::create_dir_all(&linked_root).unwrap();
+        set_private_dir_permissions(&linked_root).unwrap();
+        let linked = registry
+            .link_existing("owner-a", "codex", "Linked", &linked_root)
+            .unwrap();
+        let error = registry
+            .create_managed("owner-a", "codex", "Linked")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("account `Linked`"), "{error}");
+        assert_eq!(
+            registry
+                .get("owner-a", "codex", &linked.profile_id)
+                .unwrap()
+                .origin,
+            ProviderAccountProfileOrigin::Linked
+        );
+        assert!(linked_root.exists());
+        assert_eq!(registry.list("owner-a", Some("codex")).unwrap().len(), 2);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

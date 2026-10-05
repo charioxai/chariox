@@ -744,3 +744,50 @@ test("provider accounts list shows email, plan and machine login in each profile
   assert.match(notices[0]!, /from this machine's Codex login/)
   assert.doesNotMatch(notices[0]!, /opaque-id/)
 })
+
+
+test("provider accounts shows how to continue an unfinished managed login", async () => {
+  const notices: string[] = []
+  const profiles = ["not_configured", "unknown", "authenticated", "expired", "error"].map((auth_state) => ({
+    owner_user_id: "owner-a", provider: "codex", profile_id: `internal-${auth_state}`,
+    label: "chariox", origin: "chariox_created" as const, is_default: false,
+    auth_state: auth_state as "not_configured" | "unknown" | "authenticated" | "expired" | "error",
+    materializations: [],
+    usage: { provider: "codex", profile_id: "fixture", availability: "unavailable" as const, meters: [], source: "provider_not_observed" },
+  }))
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "codex", flashFooter: () => {}, appendNotice: (line) => notices.push(line),
+    listProviderAccountProfiles: async () => [...profiles,
+      { ...profiles[0]!, origin: "linked", label: "Linked" },
+      { ...profiles[0]!, identity_summary: "known@example.test", label: "Known" },
+      { ...profiles[0]!, origin: "default", label: "Native" },
+    ],
+  }
+  await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider accounts", value: "accounts" })
+  const lines = notices.join("\n").split("\n")
+  assert.equal(lines.length, 8)
+  for (const line of lines.slice(0, 2)) {
+    assert.match(line, /login not finished · \/provider login codex chariox to continue/)
+  }
+  for (const line of lines.slice(2)) assert.doesNotMatch(line, /login not finished/)
+  assert.doesNotMatch(notices.join("\n"), /internal-/)
+})
+
+
+test("the unfinished login continuation command accepts the full account label", async () => {
+  const calls: string[] = []
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "claude", flashFooter: () => {}, appendNotice: () => {},
+    listProviderAccountProfiles: async () => [{
+      owner_user_id: "owner-a", provider: "claude", profile_id: "unfinished-id",
+      label: "Work Account", origin: "chariox_created", is_default: false, auth_state: "not_configured",
+      materializations: [], usage: { provider: "claude", profile_id: "unfinished-id", availability: "unavailable", meters: [], source: "provider_not_observed" },
+    }],
+    startProviderLogin: async (provider, profile, method) => {
+      calls.push(`${provider}:${profile}:${method}`)
+      return { provider, account_profile: profile!, login_kind: "terminal", login_id: "synthetic-login", auth_url: null, verification_url: null, user_code: null }
+    },
+  }
+  await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider login claude Work Account --method terminal", value: "login claude Work Account --method terminal" })
+  assert.deepEqual(calls, ["claude:unfinished-id:terminal"])
+})

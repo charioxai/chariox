@@ -11,6 +11,7 @@ import { isBackendProviderId } from "./provider-catalog.js"
 import {
   providerAccountDisplayLabel,
   providerAccountIdentityLabel,
+  providerAccountLoginHint,
   providerAccountsForProvider,
   selectedProviderAccount,
 } from "./waiting-room-provider-accounts.js"
@@ -76,7 +77,7 @@ export async function handleProviderSlashCommand(
     return
   }
   if (action === "login") {
-    await startProviderLogin(deps, maybeProvider ?? deps.currentProviderId(), maybeProfile, method.value)
+    await startProviderLogin(deps, maybeProvider ?? deps.currentProviderId(), rest.slice(2).join(" ") || undefined, method.value)
     return
   }
   if (action === "setup-token" && !parts.includes("--run")) {
@@ -344,7 +345,8 @@ async function handleProviderAccountsCommand(
     const lines = profiles.map((entry) => {
       const services = formatProviderAccountServices(entry)
       const identity = providerAccountIdentityLabel(entry)
-      return `${entry.provider} ${entry.label}${entry.is_default ? " [default]" : ""} · ${credentialKindLabel(entry)} · ${entry.auth_state}${identity ? ` · ${identity}` : ""}${services ? ` · ${services}` : ""} · ${formatProviderAccountUsage(entry)}`
+      const loginHint = providerAccountLoginHint(entry)
+      return `${entry.provider} ${entry.label}${entry.is_default ? " [default]" : ""} · ${credentialKindLabel(entry)} · ${entry.auth_state}${identity ? ` · ${identity}` : ""}${loginHint ? ` · ${loginHint}` : ""}${services ? ` · ${services}` : ""} · ${formatProviderAccountUsage(entry)}`
     })
     deps.appendNotice(lines.length > 0 ? lines.join("\n") : "No provider accounts registered")
     deps.flashFooter(`${profiles.length} provider account profile${profiles.length === 1 ? "" : "s"}`, "info")
