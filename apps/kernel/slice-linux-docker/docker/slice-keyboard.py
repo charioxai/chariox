@@ -36,9 +36,10 @@ class ComputerTextKeyboard(_XTestKeyboard):
         # Recycle these slots under the existing mapping-settle guard rather
         # than lending text input media/navigation keycodes. Modifier-mapped
         # or occupied slots remain excluded by the upstream discovery.
-        spares = [code for code in super()._find_spare_keycodes() if code in (8, 92)]
-        self._spare_set = frozenset(spares)
-        return spares
+        # Keep upstream's full _spare_set: both core and XKB lookup must
+        # distrust inherited overlays on excluded media/navigation keycodes.
+        # Only the allocation pool is restricted to safe hardware codes.
+        return [code for code in super()._find_spare_keycodes() if code in (8, 92)]
 
     @staticmethod
     def _text_accelerator(keycode):

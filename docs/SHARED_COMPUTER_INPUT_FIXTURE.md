@@ -43,6 +43,17 @@ both have unknown defaults in the
 [Chromium native keycode table](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/ui/events/keycodes/keyboard_code_conversion_x.cc).
 Occupied/modifier slots remain excluded. Recycling retains the pinned keyboard
 implementation's mapping-settle delay and releases the press-time keycode.
+Lookup retains upstream's full inherited-overlay distrust set, including unsafe
+keycodes excluded from allocation. The physical fixture seeds a Unicode overlay
+on BrowserRefresh (181), then requires trusted text without document reload or
+focus loss. `test_slice_keyboard_overlays.py`, run with the pinned Selkies Python
+inside the dependency image, also checks core/XKB lookup, actual upstream
+press/release, prebinding and exhausted-safe-pool rejection using a fake display.
+Single/double/right-click acknowledgements are asserted before dragging. The
+drag's press/release and optional release click are counted separately, because
+Chromium versions can differ in whether this movement dispatches a click.
+The pointer target disables text selection to prevent a native selected-text
+drag from swallowing its release; the textarea separately proves selection/copy.
 The behavior must be physically replayed when the pinned keyboard implementation,
 Chromium, or supported X server changes. An exhausted safe pool fails closed.
 

@@ -13,11 +13,12 @@ def load_keyboard():
     xlib = types.ModuleType("selkies.Xlib")
     xlib.X = types.SimpleNamespace(KeyRelease=3, KeyPress=2, AnyPropertyType=0)
     modules = {name: types.ModuleType(name) for name in (
-        "selkies", "selkies.Xlib.display", "selkies.Xlib.ext", "selkies.Xlib.ext.xtest",
+        "selkies", "selkies.Xlib.XK", "selkies.Xlib.display", "selkies.Xlib.ext", "selkies.Xlib.ext.xtest",
         "selkies.input_handler")}
     modules["selkies.Xlib"] = xlib
     modules["selkies"].Xlib = xlib
     xlib.display = modules["selkies.Xlib.display"]
+    xlib.XK = modules["selkies.Xlib.XK"]
     modules["selkies.Xlib.ext"].xtest = modules["selkies.Xlib.ext.xtest"]
     modules["selkies.input_handler"]._XTestKeyboard = type("TestKeyboard", (), {})
     modules["selkies.input_handler"].character_to_layout_keysym = ord
@@ -103,13 +104,18 @@ class SecretTargetTests(unittest.TestCase):
     def test_computer_text_rejects_native_hardware_action_keycodes(self):
         module = load_keyboard()
         keyboard = module.ComputerTextKeyboard()
+        def discovered(spares):
+            # Upstream records every reclaimable overlay for lookup distrust,
+            # even when Computer cannot safely allocate its hardware keycode.
+            keyboard._spare_set = frozenset(spares)
+            return spares
         with patch.object(module._XTestKeyboard, "_find_spare_keycodes", create=True,
-                          return_value=[8, 92, 93, 120, 181, 255]):
+                          side_effect=lambda: discovered([8, 92, 93, 120, 181, 255])):
             self.assertEqual(keyboard._find_spare_keycodes(), [8, 92])
-            self.assertEqual(keyboard._spare_set, frozenset([8, 92]))
+            self.assertEqual(keyboard._spare_set, frozenset([8, 92, 93, 120, 181, 255]))
         # Occupied/modifier slots excluded upstream must never be reintroduced.
         with patch.object(module._XTestKeyboard, "_find_spare_keycodes", create=True,
-                          return_value=[93, 181]):
+                          side_effect=lambda: discovered([93, 181])):
             self.assertEqual(keyboard._find_spare_keycodes(), [])
 
 
