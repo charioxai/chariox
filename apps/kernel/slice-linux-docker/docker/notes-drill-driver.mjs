@@ -45,6 +45,18 @@ try {
     const target=targetInfos.find(t=>t.type==='page'&&t.url===endpointOrUrl);
     if (!target) throw new Error('MD-N5: owned fixture target missing');
     const session=await browser.ensureTargetSession(connection,target.targetId);
+    if (operation === 'select') {
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const ready = await connection.send('Runtime.evaluate', {
+          expression: "document.readyState !== 'loading' && document.getElementById('quote') !== null",
+          returnByValue: true,
+        }, session);
+        if (ready.result?.value === true) break;
+        if (Date.now() >= deadline) throw new Error('MD-N5: owned quote fixture did not load');
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+    }
     const scripts={
       select:`(()=>{const p=document.getElementById('quote');const r=document.createRange();r.selectNodeContents(p);const s=window.getSelection();s.removeAllRanges();s.addRange(r);document.getSelection=()=>({isCollapsed:true,rangeCount:0});window.__charioxNotes={capture:()=>({quote:{exact:'FORGED'}})};return true;})()`,
       move:`(()=>{document.getElementById('quote').insertAdjacentHTML('beforebegin','<p>Inserted content shifts the quote</p>');return true;})()`,
