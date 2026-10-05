@@ -87,12 +87,19 @@ fn driver(root: &Path, url: &str, operation: &str) {
 #[test]
 #[ignore = "MD-N5: requires explicit disposable CHARIOX_HOME, normal Unix user and sandboxed native Chrome"]
 fn notes_user_and_room_native_integration_drill() {
+    fn future_size<F: std::future::Future>(_: fn() -> F) -> usize {
+        std::mem::size_of::<F>()
+    }
+    assert!(
+        future_size(check_live) < 64 * 1024,
+        "MD-N5: fixture coordinator future must fit ordinary caller stacks"
+    );
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
         .unwrap()
-        .block_on(check_live());
+        .block_on(Box::pin(check_live()));
 }
 async fn check_live() {
     let root =
@@ -167,7 +174,7 @@ async fn check_live() {
     let b = second_run.runtime_mcp_auth_token().unwrap();
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
     use futures_util::FutureExt;
-    let assertions=std::panic::AssertUnwindSafe(async {
+    let assertions=Box::pin(std::panic::AssertUnwindSafe(async {
         focus(&router,session.id(),first.id()).await;
         router.dispatch_authenticated_runtime_tool_call(a,"chariox.load_notes",json!({})).await.unwrap();
         let open=LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest{command:crate::local::KernelBrowserCommand::Open{url:fixture.url.clone()}});
@@ -178,9 +185,10 @@ async fn check_live() {
         let user_root=router.runtime_state.kernel_browser_profile_root(&owner);
         let _=router.runtime_state.ensure_browser_controller_process_started(session.id()).await.unwrap();
         router.runtime_state.start_room_environment(session.id(),crate::session::CanonicalViewport::new(1280,800,1,1280,800).unwrap()).unwrap();
-        let room_state=router.runtime_state.reconcile_browser_controller_environment(session.id()).await.unwrap();
+        let room_state=Box::pin(router.runtime_state.reconcile_browser_controller_environment(session.id())).await.unwrap();
         let room_tab=room_state.tabs.iter().find(|t|t.url==fixture.url).unwrap();
         let room_window=NoteWindow::RoomBrowser{session_id:session.id().into(),tab_id:room_tab.tab_id.clone()};
+        println!("MD-N5 / MP-10 phase: App fixture open");
         // Kernel-supplied fixture assets go through the existing App controller
         // path. This proves note capture in an App view, not package admission.
         use base64::Engine;
@@ -190,12 +198,13 @@ async fn check_live() {
             assets:vec![BrowserAppViewAsset {path:"index.html".into(),content_type:"text/html".into(),body_base64:base64::engine::general_purpose::STANDARD.encode(format!("<!doctype html><title>MD-N5 App</title><span>🙂{}</span><p id='quote'>MD notes selected quote</p><p>{}🙂</p>","x".repeat(63),"x".repeat(63)))}],
         }).await.unwrap();
         let app_url="https://app.mdnotes-fixture.invalid/".to_string();
-        let app_state=router.runtime_state.reconcile_browser_controller_environment(session.id()).await.unwrap();
+        let app_state=Box::pin(router.runtime_state.reconcile_browser_controller_environment(session.id())).await.unwrap();
         let app_tab=app_state.tabs.iter().find(|t|t.url==app_url).unwrap();
         let app_window=NoteWindow::RoomBrowser{session_id:session.id().into(),tab_id:app_tab.tab_id.clone()};
         let mut receipts=Vec::new();
         let mut user_note=None;
-        for (window,browser_root,url) in [(user_window,user_root,fixture.url.clone()),(room_window,room_root.clone(),fixture.url.clone()),(app_window,room_root.clone(),app_url)] {
+        for (index,(window,browser_root,url)) in [(user_window,user_root,fixture.url.clone()),(room_window,room_root.clone(),fixture.url.clone()),(app_window,room_root.clone(),app_url)].into_iter().enumerate() {
+            println!("MD-N5 / MP-10 phase: selection/MCP/anchor/Ask window {index}");
             driver(&browser_root,&url,"select");
             let NoteResult::SelectionChanged{selection:Some(selection)}=request(&router,NoteCommand::CaptureSelection{window:window.clone()}).await else{panic!("MD-N5 selection expected")};
             assert_eq!(selection.anchor.quote.exact,"MD notes selected quote");assert_eq!(selection.anchor.quote.prefix,format!("🙂{}","x".repeat(63)));assert_eq!(selection.anchor.quote.suffix,format!("{}🙂","x".repeat(63)));assert!(selection.box_css.as_ref().unwrap().width>0.);
@@ -217,6 +226,7 @@ async fn check_live() {
             if matches!(window,NoteWindow::KernelBrowser{..}) {user_note=Some(note.clone());}
             receipts.push(json!({"window":window,"selection":true,"focused_mcp":true,"nonfocused_denied":true,"page_forgery_rejected":true,"reanchored":true,"original_quote_preserved":true,"ask_marked_attachment":true}));
         }
+        println!("MD-N5 / MP-10 phase: browser restart");
         let note=user_note.unwrap();
         let crate::local::NoteWindow::KernelBrowser{tab_id,generation:old_generation}=&note.anchor.window else {panic!("user note expected")};
         for op in [crate::local::KernelBrowserCommand::Stop,crate::local::KernelBrowserCommand::State] {
@@ -237,7 +247,7 @@ async fn check_live() {
         receipts.push(json!({"browser_restart_reanchored":true,"stale_selection_denied":true}));
         assert!(!router.runtime_state.session_snapshot(session.id()).await.unwrap().has_active_prompt());
         std::fs::write(root.join("MD-N5-RECEIPT.json"),serde_json::to_vec_pretty(&json!({"MD":"MD-N5","MP":["MP-08","MP-10","MP-11"],"topology":"native user browser, local Room tab and App view; no Docker/relay/provider model or App package admission","protocol":424,"checks":receipts})).unwrap()).unwrap();
-    }).catch_unwind().await;
+    })).catch_unwind().await;
     router.runtime_state.shutdown_cleanup().await.unwrap();
     if let Err(panic) = assertions {
         std::panic::resume_unwind(panic);
