@@ -3,18 +3,31 @@ use super::subscriptions::{RelaySubscriptionTask, RelaySubscriptionTasks};
 use super::*;
 use chariox_relay::protocol::RelayCallerIdentity;
 // MD-DISPLAY-04: delivery registration only; policy stays in the host service.
+pub(super) struct DisplaySubscription {
+    pub(super) request_id: String,
+    pub(super) relay_id: String,
+    pub(super) display_id: String,
+    pub(super) generation: String,
+    pub(super) identity: Option<RelayCallerIdentity>,
+    pub(super) public_key: String,
+    pub(super) resume: Option<u64>,
+}
+
 pub(super) async fn handle_subscribe(
     router: &Arc<CommandRouter>,
     outgoing_tx: &RelayOutgoingSender,
     tasks: &RelaySubscriptionTasks,
-    request_id: String,
-    relay_id: String,
-    display_id: String,
-    generation: String,
-    identity: Option<RelayCallerIdentity>,
-    public_key: String,
-    resume: Option<u64>,
+    subscription: DisplaySubscription,
 ) -> Result<(), DaemonError> {
+    let DisplaySubscription {
+        request_id,
+        relay_id,
+        display_id,
+        generation,
+        identity,
+        public_key,
+        resume,
+    } = subscription;
     use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
     let request =
         crate::local::LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {

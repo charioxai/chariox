@@ -13,6 +13,8 @@ pub(crate) enum KernelBrowserDisplayRequest {
         tab_id: String,
         generation: u64,
     },
+    // Keep the protected legacy native stream seam for display adapters.
+    #[allow(dead_code)]
     Subscribe {
         tab_id: String,
         generation: u64,
@@ -103,27 +105,6 @@ impl KernelRuntimeState {
         self.owned.kernel_browser_host.profile_root(user)
     }
 
-    pub(crate) async fn kernel_browser_request(
-        &self,
-        user: String,
-        command: KernelBrowserCommand,
-    ) -> Result<serde_json::Value, DaemonError> {
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-        if matches!(command, KernelBrowserCommand::Stop) {
-            for view in self.app_control().user_views().browser_views(&user) {
-                self.forget_user_app_view(&user, &view.view_id);
-            }
-        }
-        let user = self.provider_account_authority_owner_user_id(&user);
-        self.kernel_browser_operation(
-            &user,
-            None,
-            "host.browser",
-            serde_json::to_value(command)
-                .map_err(|_| host_error("MD-2: invalid command".into()))?,
-        )
-        .await
-    }
     pub(crate) async fn kernel_browser_terminal_request(
         &self,
         caller: &crate::runtime::command::KernelCommand,

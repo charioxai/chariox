@@ -498,6 +498,7 @@ impl KernelBrowserHost {
             .or_insert_with(|| Arc::new(Mutex::new(KernelBrowserActors::default())))
             .clone())
     }
+    #[cfg(test)]
     pub(crate) fn request_takeover(
         &self,
         user: &str,

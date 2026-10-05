@@ -116,12 +116,12 @@ impl Drop for ActiveAction {
 enum ExecutionAdmission {
     Start(ActiveAction),
     Wait(Arc<ExecutionRecord>),
-    Replay(ExecutionOutcome),
+    Replay(Box<ExecutionOutcome>),
 }
 
 enum RecoveryAdmission {
     Wait(Arc<ExecutionRecord>),
-    Replay(ExecutionOutcome),
+    Replay(Box<ExecutionOutcome>),
 }
 
 impl ActiveAction {
@@ -183,7 +183,9 @@ impl BrowserActionExecutions {
             .map_err(|_| "browser execution registry poisoned")?;
         if let Some(completed) = state.completed.iter().find(|entry| entry.key == key) {
             return if completed.fingerprint == fingerprint {
-                Ok(ExecutionAdmission::Replay(completed.outcome.clone()))
+                Ok(ExecutionAdmission::Replay(Box::new(
+                    completed.outcome.clone(),
+                )))
             } else {
                 Err("browser execution identity was reused for a different request".into())
             };
@@ -235,7 +237,9 @@ impl BrowserActionExecutions {
             .map_err(|_| "browser execution registry poisoned")?;
         if let Some(completed) = state.completed.iter().find(|entry| entry.key == key) {
             return if completed.fingerprint == fingerprint {
-                Ok(RecoveryAdmission::Replay(completed.outcome.clone()))
+                Ok(RecoveryAdmission::Replay(Box::new(
+                    completed.outcome.clone(),
+                )))
             } else {
                 Err("browser execution identity was reused for a different recovery request".into())
             };
@@ -403,7 +407,7 @@ impl BrowserControllerProcessStore {
             .executions
             .register(session_id, execution_id, fingerprint, false)?
         {
-            ExecutionAdmission::Replay(outcome) => return outcome,
+            ExecutionAdmission::Replay(outcome) => return *outcome,
             ExecutionAdmission::Wait(record) => return record.wait(),
             ExecutionAdmission::Start(active) => active,
         };
@@ -577,7 +581,7 @@ impl BrowserControllerProcessStore {
             .executions
             .register(session_id, execution_id, fingerprint, false)?
         {
-            ExecutionAdmission::Replay(outcome) => return outcome,
+            ExecutionAdmission::Replay(outcome) => return *outcome,
             ExecutionAdmission::Wait(record) => return record.wait(),
             ExecutionAdmission::Start(active) => active,
         };
@@ -619,7 +623,7 @@ impl BrowserControllerProcessStore {
             fingerprint,
             consume_pending_import_cancellation,
         )? {
-            ExecutionAdmission::Replay(outcome) => return outcome,
+            ExecutionAdmission::Replay(outcome) => return *outcome,
             ExecutionAdmission::Wait(record) => return record.wait(),
             ExecutionAdmission::Start(active) => active,
         };
@@ -677,7 +681,7 @@ impl BrowserControllerProcessStore {
             .executions
             .recover(session_id, execution_id, fingerprint)?
         {
-            RecoveryAdmission::Replay(outcome) => outcome,
+            RecoveryAdmission::Replay(outcome) => *outcome,
             RecoveryAdmission::Wait(record) => record.wait(),
         }
     }
@@ -736,7 +740,7 @@ mod tests {
             executions
                 .register("room", "00000000000000000000000000000001", fingerprint, false)
                 .unwrap(),
-            ExecutionAdmission::Replay(outcome) if outcome == completed()
+            ExecutionAdmission::Replay(outcome) if *outcome == completed()
         ));
         let error =
             match executions.register("room", "00000000000000000000000000000001", [8; 32], false) {
@@ -748,7 +752,7 @@ mod tests {
             executions
                 .recover("room", "00000000000000000000000000000001", fingerprint)
                 .unwrap(),
-            RecoveryAdmission::Replay(outcome) if outcome == completed()
+            RecoveryAdmission::Replay(outcome) if *outcome == completed()
         ));
     }
 

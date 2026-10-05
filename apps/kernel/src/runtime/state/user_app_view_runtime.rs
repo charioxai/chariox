@@ -15,13 +15,7 @@ impl KernelRuntimeState {
         &'a self,
         command: &'a KernelCommand,
         request: &'a LocalDaemonRequest,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Option<Result<LocalDaemonResponse, DaemonError>>>
-                + Send
-                + 'a,
-        >,
-    > {
+    ) -> futures::future::BoxFuture<'a, Option<Result<LocalDaemonResponse, DaemonError>>> {
         if !matches!(
             request,
             LocalDaemonRequest::OpenUserAppView(_)

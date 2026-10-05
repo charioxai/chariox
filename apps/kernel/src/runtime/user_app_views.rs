@@ -154,11 +154,7 @@ impl UserAppViews {
 
     pub(crate) fn close(&self, owner: &str, id: &str) -> bool {
         let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
-        if !registry
-            .views
-            .get(id)
-            .is_some_and(|(b, _)| b.owner == owner)
-        {
+        if registry.views.get(id).is_none_or(|(b, _)| b.owner != owner) {
             return false;
         }
         registry.views.remove(id);

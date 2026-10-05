@@ -45,12 +45,11 @@ fn notes_owner_persistence_reply_resolve_and_audit() {
         .reply("alice", &note.note_id, "agent:focused", "answer")
         .unwrap();
     assert_eq!(reply.replies[0].author, "agent:focused");
-    assert_eq!(
+    assert!(
         restarted
             .resolve("alice", &note.note_id, "agent:focused")
             .unwrap()
-            .resolved,
-        true
+            .resolved
     );
     assert!(restarted
         .reply("alice", &note.note_id, "agent:focused", "late")

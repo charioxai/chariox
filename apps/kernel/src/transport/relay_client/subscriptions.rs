@@ -76,13 +76,15 @@ pub(super) async fn handle_relay_subscribe(
             router,
             outgoing_tx,
             subscription_tasks,
-            relay_request_id,
-            relay_subscription_id,
-            session_id,
-            attachment_id,
-            caller_identity,
-            client_public_key,
-            resume_from_event_id,
+            super::browser_display::DisplaySubscription {
+                request_id: relay_request_id,
+                relay_id: relay_subscription_id,
+                display_id: session_id,
+                generation: attachment_id,
+                identity: caller_identity,
+                public_key: client_public_key,
+                resume: resume_from_event_id,
+            },
         )
         .await;
     }
