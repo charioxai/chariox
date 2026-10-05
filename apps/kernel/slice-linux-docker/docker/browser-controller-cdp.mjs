@@ -36,7 +36,7 @@ import {
   BrowserHistoryError,
   navigateBrowserHistory,
 } from "./browser-controller-history.mjs";
-import { BrowserDialogDefaults } from "./browser-controller-dialogs.mjs";
+import { BrowserDialogDefaults, BrowserDialogObservationError } from "./browser-controller-dialogs.mjs";
 import { applyBrowserBar } from "./browser-controller-bar.mjs";
 import { acquireBrowserCookieWriterFence } from "./browser-controller-cookie-fence.mjs";
 
@@ -462,6 +462,12 @@ export class BrowserCdpClient {
       // Metrics differ per target (App pages lay out beside their panel).
       // Reapply only when this target's metrics changed.
       const metricsKey = JSON.stringify(metrics);
+      const modal = this.dialogDefaults.pageObservation(target,
+        this.documentIdsByTarget.get(target.targetId),
+        this.viewportByTarget.get(target.targetId) === metricsKey,
+        this.inputCapture.visibilityBySession.get(sessionId)?.visible
+          ?? this.focusWorldsByTarget.get(target.targetId)?.visible);
+      if (modal) return modal;
       if (this.viewportByTarget.get(target.targetId) !== metricsKey) {
         await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
         this.viewportByTarget.set(target.targetId, metricsKey);
@@ -524,7 +530,9 @@ export class BrowserCdpClient {
       throw error;
     }
     // This read may have begun just before input enabled emulation.
-    return this.inputCapture.visibilityBySession.get(sessionId)?.visible ?? focus?.result?.value === true;
+    const visible = this.inputCapture.visibilityBySession.get(sessionId)?.visible ?? focus?.result?.value === true;
+    world.visible = visible;
+    return visible;
   }
 
   async manageTab(rawRequest, { signal } = {}) {
@@ -646,6 +654,7 @@ export class BrowserCdpClient {
       revision: snapshotRevision,
     });
     try {
+      this.dialogDefaults.assertSnapshotAllowed(targetId, documentId);
       return await captureBrowserFrames({
         connection,
         sessionId,
@@ -1546,7 +1555,8 @@ function normalizeControllerError(error) {
   if (error instanceof BrowserControllerError) {
     return error;
   }
-  if (error instanceof BrowserTextError) return new BrowserControllerError(error.code, error.message);
+  if (error instanceof BrowserTextError || error instanceof BrowserDialogObservationError)
+    return new BrowserControllerError(error.code, error.message);
   if (error instanceof BrowserSnapshotError) {
     return new BrowserControllerError(error.code, error.message);
   }
