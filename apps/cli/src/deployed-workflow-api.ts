@@ -1,3 +1,4 @@
+import { cloudControlHeaders } from "./cloud-control-auth.js"
 import type { RelayCloudProfile } from "./preferences.js"
 import { preparePublicationReleasePackage } from "./deployed-workflow-package.js"
 import type {
@@ -830,11 +831,7 @@ async function readJson<TResponse>(response: Response): Promise<TResponse> {
 }
 
 function cloudHeaders(profile: RelayCloudProfile): HeadersInit {
-  return {
-    accept: "application/json",
-    "content-type": "application/json",
-    ...(profile.cloudSessionToken ? { authorization: `Bearer ${profile.cloudSessionToken}` } : {}),
-  }
+  return cloudControlHeaders(profile)
 }
 
 function normalizeApiUrl(apiUrl: string): string {

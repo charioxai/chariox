@@ -4964,6 +4964,9 @@ mod tests {
     fn cloud_owner_aliases_local_accounts_without_aliasing_collaborators() {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             user_id: "cloud-owner".to_string(),
             ..Default::default()
         });

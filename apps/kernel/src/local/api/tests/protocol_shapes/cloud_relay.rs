@@ -6,7 +6,7 @@ use crate::local::{
 
 #[test]
 fn relay_status_control_capabilities_are_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 435);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 438);
     let legacy = serde_json::json!({
         "configured": false, "connected": false, "relay_url": null,
         "relay_token_configured": false, "daemon_id": "kernel-1",
@@ -40,7 +40,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
 
 #[test]
 fn key_bound_cli_relay_requests_and_join_response_have_exact_protocol_shapes() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 435);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 438);
 
     let token_request =
         LocalDaemonRequest::IssueCloudRelayClientToken(IssueCloudRelayClientTokenRequest {
@@ -162,7 +162,7 @@ fn legacy_terminal_join_requests_and_responses_remain_unbound() {
 
 #[test]
 fn relay_status_native_process_identity_is_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 435);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 438);
     let legacy = serde_json::json!({
         "configured": false, "connected": false, "relay_url": null,
         "relay_token_configured": false, "daemon_id": "kernel-1",
@@ -186,5 +186,38 @@ fn relay_status_native_process_identity_is_versioned_and_hashed() {
             Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
         ),
         "c3dfd43214945bfdc036638d58c9724d9d572cb00267c90aef7bb975241e8cef"
+    );
+}
+
+#[test]
+fn kernel_cloud_ownership_status_and_connect_never_serialize_credentials() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 438);
+    let private = crate::config::PersistedCloudRelayProfile {
+        kernel_id: Some("kernel-a".into()),
+        kernel_credential: Some("synthetic-kernel-secret".into()),
+        machine_credential: Some("synthetic-machine-secret".into()),
+        cloud_session_token: Some("synthetic-human-secret".into()),
+        ..Default::default()
+    };
+    let profile = crate::runtime::cloud_api_client::cloud_profile_from_persisted(&private);
+    let value = serde_json::to_value(LocalDaemonResponse::CloudRelayStatus {
+        profile: Some(profile),
+    })
+    .unwrap();
+    let fields = value["CloudRelayStatus"]["profile"].as_object().unwrap();
+    assert!(fields["kernel_enrolled"].as_bool().unwrap());
+    for key in [
+        "machine_credential",
+        "cloud_session_token",
+        "kernel_credential",
+        "cloud_session_expires_at_ms",
+    ] {
+        assert!(!fields.contains_key(key));
+    }
+    let encoded = serde_json::to_string(&value).unwrap();
+    assert!(!encoded.contains("secret"));
+    assert_eq!(
+        format!("{:x}", Sha256::digest(encoded.as_bytes())),
+        "7780e190db04ee7a94c6194558d4eb5899a933e1c9f5b60b0a843b6cf2215c42"
     );
 }

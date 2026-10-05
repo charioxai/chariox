@@ -87,6 +87,9 @@ mod tests {
         let mut config = DaemonConfig::for_tests();
         assert!(authorize_source_user(&config, crate::session::DEFAULT_LOCAL_USER_ID).is_err());
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             user_id: "cloud-user-1".to_string(),
             ..PersistedCloudRelayProfile::default()
         });

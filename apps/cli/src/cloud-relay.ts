@@ -1,5 +1,9 @@
-import type { RelayCloudProfile } from "./preferences.js"
+import type { RelayCloudProfile as PublicCloudProfile } from "./preferences.js"
 import { parseAbsoluteInstantMs } from "@chariox/kernel-client/time"
+
+export type CloudCredentialProfile = PublicCloudProfile & { machineCredential?: string; cloudSessionToken?: string; cloudSessionExpiresAtMs?: number }
+
+type RelayCloudProfile = CloudCredentialProfile
 
 export type BootstrapCloudRelayInput = {
   apiUrl: string

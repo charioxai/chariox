@@ -315,6 +315,9 @@ fn validate_cli_relay_sender_key(
         LocalDaemonRequest::IssueCloudRelayClientToken(request) => {
             request.public_key_thumbprint.as_deref()
         }
+        LocalDaemonRequest::ResolveKernelClientConnection(request) => {
+            request.public_key_thumbprint.as_deref()
+        }
         _ => return Ok(()),
     };
     let Some(claimed_thumbprint) = claimed_thumbprint else {
@@ -711,9 +714,8 @@ mod tests {
                 client_alias: None,
                 machine_id: None,
                 machine_alias: None,
-                machine_credential: None,
-                cloud_session_token: None,
-                cloud_session_expires_at_ms: None,
+                kernel_id: None,
+                kernel_enrolled: false,
                 token_expires_at_ms: None,
             },
             token: crate::local::CloudRelayRuntimeToken {

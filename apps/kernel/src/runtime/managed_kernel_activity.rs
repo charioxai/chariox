@@ -1648,6 +1648,9 @@ mod tests {
         config.host_machine_id = "machine-1".to_string();
         config.daemon_id = "kernel-1".to_string();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             api_url: "https://cloud.example.test".to_string(),
             account_id: "acct-1".to_string(),
             machine_id: Some("machine-1".to_string()),

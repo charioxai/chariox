@@ -119,6 +119,9 @@ mod tests {
     fn launch_target_requires_exact_cloud_owner() {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             user_id: "cloud-user-1".to_string(),
             ..PersistedCloudRelayProfile::default()
         });
@@ -156,6 +159,9 @@ mod tests {
         config.user_config.state.path = Some(state_root.join("state.db").display().to_string());
         config.publication_control_state_root = None;
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             user_id: "cloud-user-1".to_string(),
             ..PersistedCloudRelayProfile::default()
         });

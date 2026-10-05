@@ -26,6 +26,43 @@ pub(crate) async fn issue_cloud_terminal_client_token(
     target_daemon_id: &str,
     options: CloudTerminalClientOptions,
 ) -> Result<(String, CloudRuntimeTokenResponse), DaemonError> {
+    if profile.kernel_credential.is_some() {
+        let kernel_id = profile
+            .kernel_id
+            .as_deref()
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| client_scope_error("kernel enrollment identity missing"))?;
+        let key = options
+            .public_key_thumbprint
+            .filter(|v| v.len() == 64 && v.bytes().all(|b| b.is_ascii_hexdigit()))
+            .ok_or_else(|| client_scope_error("terminal pivot requires a public key binding"))?;
+        if requested_client_id.trim().is_empty() || target_daemon_id.trim().is_empty() {
+            return Err(client_scope_error(
+                "terminal and exact target identities are required",
+            ));
+        }
+        let client_id = format!(
+            "kernel-client:{:x}:{:x}",
+            Sha256::digest(kernel_id.as_bytes()),
+            Sha256::digest(requested_client_id.as_bytes())
+        );
+        let issued = issue_cloud_runtime_token(
+            profile,
+            &client_id,
+            "client",
+            CloudRuntimeTokenRequestOptions {
+                client_id: Some(client_id.clone()),
+                machine_id: profile.machine_id.clone(),
+                ttl_ms: Some(options.ttl_ms.unwrap_or(300_000).min(300_000)),
+                allow_unpaired_client_subject: true,
+                allowed_targets: Some(vec![target_daemon_id.to_string()]),
+                public_key_thumbprint: Some(key),
+                ..Default::default()
+            },
+        )
+        .await?;
+        return Ok((client_id, issued));
+    }
     let account_authority = profile
         .cloud_session_token
         .as_deref()

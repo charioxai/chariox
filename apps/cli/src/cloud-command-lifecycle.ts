@@ -12,6 +12,7 @@ export type RelayStatus = {
 }
 
 export type CloudCommandLifecycleDeps = {
+  connectCloudRelay?: () => Promise<{profile: RelayCloudProfile; status: RelayStatus}>
   clientId?: string | null
   appendNotice: (message: string) => void
   appendCloudNotice?: (message: string) => void
@@ -20,7 +21,7 @@ export type CloudCommandLifecycleDeps = {
   cloudRelayApiUrl?: string | undefined
   cloudRelayConnectTimeoutMs?: number
   cloudRelayConnectPollMs?: number
-  getCloudRelayProfile?: () => RelayCloudProfile | null
+  getCloudRelayProfile?: () => RelayCloudProfile | null | Promise<RelayCloudProfile | null>
   saveCloudRelayProfile?: (profile: RelayCloudProfile | null) => Promise<void>
   getRelayStatus?: () => Promise<RelayStatus>
   configureRelay?: (relayUrl: string | null, relayToken: string | null) => Promise<RelayStatus>
@@ -103,7 +104,7 @@ export function formatCloudRelayPendingNotice(
   relayUrl: string | null | undefined,
 ): string {
   return [
-    "cloud machine linked, but the kernel is not online in Cloud yet.",
+    "cloud kernel linked, but the kernel is not online in Cloud yet.",
     `relay=${status?.connected ? "connected" : "not connected"}`,
     `relay_url=${status?.relay_url ?? relayUrl ?? "-"}`,
     `machine=${status?.machine_id ?? "-"}`,
@@ -130,7 +131,7 @@ export async function waitForHostedCloudRelayConnection(
 }
 
 export async function openHostedCloud(deps: CloudCommandLifecycleDeps): Promise<void> {
-  const currentProfile = deps.getCloudRelayProfile?.() ?? null
+  const currentProfile = await deps.getCloudRelayProfile?.() ?? null
   if (!currentProfile) {
     await startHostedCloudLink(deps)
     return
@@ -178,7 +179,6 @@ export async function startHostedCloudLink(deps: CloudCommandLifecycleDeps): Pro
   }
   const relayStatus = await deps.getRelayStatus()
   const started = await deps.startCloudDeviceLogin(deps.cloudRelayApiUrl ?? DEFAULT_HOSTED_CLOUD_API_URL, {
-    clientId: deps.clientId ?? "chariox-cli",
     machineId: relayStatus.machine_id,
     ...(relayStatus.machine_alias ? { machineAlias: relayStatus.machine_alias } : {}),
   })
@@ -186,7 +186,7 @@ export async function startHostedCloudLink(deps: CloudCommandLifecycleDeps): Pro
   appendCloudNotice(
     deps,
     [
-      "Link this machine to Chariox Cloud.",
+      "Link this kernel to Chariox Cloud.",
       `url=${started.verificationUrl}`,
       `code=${started.userCode}`,
       opened ? "browser=opened" : "browser=manual",
@@ -198,7 +198,13 @@ export async function startHostedCloudLink(deps: CloudCommandLifecycleDeps): Pro
     if (polled.status === "approved") {
       let profile = polled.profile
       await deps.saveCloudRelayProfile(profile)
-      if ((deps.issueCloudMachineRelayToken || deps.issueCloudKernelRelayToken) && deps.getRelayStatus && deps.configureRelay) {
+      if (deps.connectCloudRelay) {
+        const connected = await deps.connectCloudRelay()
+        profile = connected.profile
+        await deps.saveCloudRelayProfile(profile)
+        const status = await waitForHostedCloudRelayConnection(deps, connected.status)
+        appendCloudNotice(deps, status?.connected ? `cloud kernel connected: ${profile.relayUrl}` : formatCloudRelayPendingNotice(status, profile.relayUrl))
+      } else if ((deps.issueCloudMachineRelayToken || deps.issueCloudKernelRelayToken) && deps.getRelayStatus && deps.configureRelay) {
         const refreshedRelayStatus = await deps.getRelayStatus()
         const issued = profile.machineId && deps.issueCloudMachineRelayToken
           ? await deps.issueCloudMachineRelayToken(profile, refreshedRelayStatus.daemon_id, profile.machineId)
@@ -235,6 +241,11 @@ async function ensureHostedCloudRelay(
   deps: CloudCommandLifecycleDeps,
   profile: RelayCloudProfile,
 ): Promise<HostedCloudRelayEnsureResult> {
+  if (deps.connectCloudRelay) {
+    const connected = await deps.connectCloudRelay()
+    await deps.saveCloudRelayProfile?.(connected.profile)
+    return {profile: connected.profile, status: await waitForHostedCloudRelayConnection(deps, connected.status)}
+  }
   if (!deps.getRelayStatus || !deps.configureRelay || (!deps.issueCloudMachineRelayToken && !deps.issueCloudKernelRelayToken)) {
     return { profile, status: null }
   }

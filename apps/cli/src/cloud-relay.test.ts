@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { pairCloudRelayClient, pairCloudRelayMachine } from "./cloud-relay.js"
-import type { RelayCloudProfile } from "./preferences.js"
+import type { CloudCredentialProfile as RelayCloudProfile } from "./cloud-relay.js"
 
 function profile(): RelayCloudProfile {
   return {
