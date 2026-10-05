@@ -346,7 +346,7 @@ pub(super) async fn handle_client_packet_route_envelope(
                 relay_request_counter.fetch_add(1, Ordering::Relaxed) + 1
             );
             let (subscription_conflict, daemon_sender) = {
-                let guard = registry.read().await;
+                let guard = registry.write().await;
                 if subscription_owned_by_other_client(&guard, routes, &subscription_id, peer_addr) {
                     (true, None)
                 } else if !daemon_route_is_admitted(&guard, auth_verifier, &daemon_key) {
