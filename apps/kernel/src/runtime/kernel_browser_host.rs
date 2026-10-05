@@ -25,8 +25,14 @@ struct HostState {
     browsers: BTreeMap<String, Arc<Mutex<BrowserControllerProcessStdioBackend>>>,
     focus: BTreeMap<String, FocusedAgent>,
     actors: BTreeMap<String, Arc<Mutex<KernelBrowserActors>>>,
-    loaded: BTreeSet<(String, String)>,
+    loaded: BTreeSet<(String, String, KernelBrowserCapability)>,
 }
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum KernelBrowserCapability {
+    Browser,
+    Notes,
+}
+
 struct FocusedAgent {
     agent_id: String,
     epoch: Arc<BrowserCancellation>,
@@ -38,6 +44,7 @@ pub(crate) struct KernelBrowserAdmission {
     agent: String,
     epoch: Arc<BrowserCancellation>,
     cancellation: Arc<BrowserCancellation>,
+    capability: KernelBrowserCapability,
 }
 
 impl KernelBrowserAdmission {
@@ -88,7 +95,7 @@ impl KernelBrowserHost {
             if let Some(previous) = state.focus.get(user) {
                 previous.epoch.request_cancel();
             }
-            state.loaded.retain(|(owner, _)| owner != user);
+            state.loaded.retain(|(owner, _, _)| owner != user);
             if let Some(agent) = agent {
                 state.focus.insert(
                     user.into(),
@@ -115,7 +122,7 @@ impl KernelBrowserHost {
             if let Some(previous) = state.focus.remove(&user) {
                 previous.epoch.request_cancel();
             }
-            state.loaded.retain(|(owner, _)| owner != &user);
+            state.loaded.retain(|(owner, _, _)| owner != &user);
         }
         drop(state);
         crate::transport::mcp_server::catalog_changed();
@@ -129,20 +136,38 @@ impl KernelBrowserHost {
             .is_some_and(|focused| focused.agent_id == agent)
     }
     pub(crate) fn is_loaded(&self, user: &str, agent: &str) -> bool {
+        self.is_loaded_for(user, agent, KernelBrowserCapability::Browser)
+    }
+    pub(crate) fn is_loaded_for(
+        &self,
+        user: &str,
+        agent: &str,
+        capability: KernelBrowserCapability,
+    ) -> bool {
         let state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         state
             .focus
             .get(user)
             .is_some_and(|focused| focused.agent_id == agent)
-            && state.loaded.contains(&(user.into(), agent.into()))
+            && state
+                .loaded
+                .contains(&(user.into(), agent.into(), capability))
     }
     pub(crate) fn load(&self, user: &str, agent: &str) -> Result<(), String> {
+        self.load_for(user, agent, KernelBrowserCapability::Browser)
+    }
+    pub(crate) fn load_for(
+        &self,
+        user: &str,
+        agent: &str,
+        capability: KernelBrowserCapability,
+    ) -> Result<(), String> {
         let mut state = self
             .inner
             .lock()
             .map_err(|_| "MD-3: browser host lock poisoned")?;
         require_focus(&state, user, agent)?;
-        state.loaded.insert((user.into(), agent.into()));
+        state.loaded.insert((user.into(), agent.into(), capability));
         drop(state);
         crate::transport::mcp_server::catalog_changed();
         Ok(())
@@ -201,11 +226,20 @@ impl KernelBrowserHost {
         self.protected_request_admitted(user, admission.as_ref(), method, params, policy)
     }
     pub(crate) fn admit(&self, user: &str, agent: &str) -> Result<KernelBrowserAdmission, String> {
+        self.admit_for(user, agent, KernelBrowserCapability::Browser)
+    }
+    pub(crate) fn admit_for(
+        &self,
+        user: &str,
+        agent: &str,
+        capability: KernelBrowserCapability,
+    ) -> Result<KernelBrowserAdmission, String> {
         let state = self.inner.lock().map_err(|_| "MD-3: focus lock poisoned")?;
-        require_loaded(&state, user, agent)?;
+        require_loaded(&state, user, agent, capability)?;
         Ok(KernelBrowserAdmission {
             user: user.into(),
             agent: agent.into(),
+            capability,
             epoch: state.focus[user].epoch.clone(),
             cancellation: state.focus[user].epoch.clone(),
         })
@@ -219,7 +253,12 @@ impl KernelBrowserHost {
                 return Err("MD-3: browser authority revoked".into());
             }
             let state = self.inner.lock().map_err(|_| "MD-3: focus lock poisoned")?;
-            require_loaded(&state, &admission.user, &admission.agent)?;
+            require_loaded(
+                &state,
+                &admission.user,
+                &admission.agent,
+                admission.capability,
+            )?;
             if !Arc::ptr_eq(&state.focus[&admission.user].epoch, &admission.epoch) {
                 return Err("MD-3: browser focus changed; request fresh tools".into());
             }
@@ -227,15 +266,29 @@ impl KernelBrowserHost {
         Ok(())
     }
     /// MD-N4 / MP-11: a note read/write commits within one uninterrupted focus epoch.
-    pub(crate) fn note_operation<T>(&self, user: &str, admission: Option<&KernelBrowserAdmission>, call: impl FnOnce() -> Result<T,String>) -> Result<T,String> {
+    pub(crate) fn note_operation<T>(
+        &self,
+        user: &str,
+        admission: Option<&KernelBrowserAdmission>,
+        call: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
         self.check_admission(admission)?;
-        if let Some(admission)=admission {
-            if admission.user!=user { return Err("MD-N4: foreign note owner".into()); }
-            let state=self.inner.lock().map_err(|_| "MD-N4: focus lock unavailable")?;
-            require_loaded(&state,user,&admission.agent)?;
-            if !Arc::ptr_eq(&state.focus[user].epoch,&admission.epoch) { return Err("MD-N4: note focus changed".into()); }
+        if let Some(admission) = admission {
+            if admission.user != user {
+                return Err("MD-N4: foreign note owner".into());
+            }
+            let state = self
+                .inner
+                .lock()
+                .map_err(|_| "MD-N4: focus lock unavailable")?;
+            require_loaded(&state, user, &admission.agent, admission.capability)?;
+            if !Arc::ptr_eq(&state.focus[user].epoch, &admission.epoch) {
+                return Err("MD-N4: note focus changed".into());
+            }
             call()
-        } else { call() }
+        } else {
+            call()
+        }
     }
     pub(crate) fn protected_request_admitted(
         &self,
@@ -480,18 +533,56 @@ fn require_focus(state: &HostState, user: &str, agent: &str) -> Result<(), Strin
     }
 }
 
-fn require_loaded(state: &HostState, user: &str, agent: &str) -> Result<(), String> {
+fn require_loaded(
+    state: &HostState,
+    user: &str,
+    agent: &str,
+    capability: KernelBrowserCapability,
+) -> Result<(), String> {
     require_focus(state, user, agent)?;
-    if state.loaded.contains(&(user.into(), agent.into())) {
+    if state
+        .loaded
+        .contains(&(user.into(), agent.into(), capability))
+    {
         Ok(())
     } else {
-        Err("MD-3: load the browser tools first".into())
+        Err("MD-N4: load the requested user-domain tools first".into())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn notes_loader_is_independent_and_revoked_admissions_cannot_commit() {
+        let host = KernelBrowserHost::new(PathBuf::from("/unused/mdnotes-focus"));
+        host.set_focus("a", Some("first"));
+        host.load_for("a", "first", KernelBrowserCapability::Notes)
+            .unwrap();
+        assert!(!host.is_loaded("a", "first"));
+        let notes = host
+            .admit_for("a", "first", KernelBrowserCapability::Notes)
+            .unwrap();
+        assert!(host
+            .note_operation::<()>("other", Some(&notes), || panic!("foreign commit"))
+            .is_err());
+        host.load("a", "first").unwrap();
+        host.set_focus("a", Some("second"));
+        host.set_focus("a", Some("first"));
+        host.load_for("a", "first", KernelBrowserCapability::Notes)
+            .unwrap();
+        assert!(host
+            .note_operation::<()>("a", Some(&notes), || panic!("revoked commit"))
+            .is_err());
+        assert!(!host.is_loaded("a", "first"));
+        let fresh = host
+            .admit_for("a", "first", KernelBrowserCapability::Notes)
+            .unwrap();
+        assert_eq!(
+            host.note_operation("a", Some(&fresh), || Ok(42)).unwrap(),
+            42
+        );
+    }
     #[test]
     fn profile_selection_is_private_stable_and_user_separated() {
         let host = KernelBrowserHost::new(PathBuf::from("/tmp/md2-state"));

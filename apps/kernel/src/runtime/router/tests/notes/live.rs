@@ -1,4 +1,5 @@
 //! MD-N5 / MP-08 / MP-10 / MP-11: opt-in native user + local Room-controller drill.
+//! The fixture controller scopes real /proc inventory to its own Chromium child.
 use super::*;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -180,9 +181,22 @@ async fn check_live() {
         let room_state=router.runtime_state.reconcile_browser_controller_environment(session.id()).await.unwrap();
         let room_tab=room_state.tabs.iter().find(|t|t.url==fixture.url).unwrap();
         let room_window=NoteWindow::RoomBrowser{session_id:session.id().into(),tab_id:room_tab.tab_id.clone()};
+        // Kernel-supplied fixture assets go through the existing App controller
+        // path. This proves note capture in an App view, not package admission.
+        use base64::Engine;
+        use crate::runtime::browser_controller_app_view::{BrowserAppViewRequest, BrowserAppViewAsset};
+        router.runtime_state.room_browser_controller_command(session.id(),crate::transport::room_browser_controller::RoomBrowserControllerCommand::AppView { request:BrowserAppViewRequest::Open {
+            origin_label:"mdnotes-fixture".into(),installation_id:"mdnotes-fixture".into(),entry:"index.html".into(),page:None,
+            assets:vec![BrowserAppViewAsset {path:"index.html".into(),content_type:"text/html".into(),body_base64:base64::engine::general_purpose::STANDARD.encode("<!doctype html><title>MD-N5 App</title><p id='quote'>MD notes selected quote</p><p>after the quote</p>")}],
+        }}).await.unwrap();
+        let app_url="https://app.mdnotes-fixture.invalid/".to_string();
+        let app_state=router.runtime_state.reconcile_browser_controller_environment(session.id()).await.unwrap();
+        let app_tab=app_state.tabs.iter().find(|t|t.url==app_url).unwrap();
+        let app_window=NoteWindow::RoomBrowser{session_id:session.id().into(),tab_id:app_tab.tab_id.clone()};
         let mut receipts=Vec::new();
-        for (window,browser_root) in [(user_window,user_root),(room_window,room_root.clone())] {
-            driver(&browser_root,&fixture.url,"select");
+        let mut user_note=None;
+        for (window,browser_root,url) in [(user_window,user_root,fixture.url.clone()),(room_window,room_root.clone(),fixture.url.clone()),(app_window,room_root.clone(),app_url)] {
+            driver(&browser_root,&url,"select");
             let NoteResult::SelectionChanged{selection:Some(selection)}=request(&router,NoteCommand::CaptureSelection{window:window.clone()}).await else{panic!("MD-N5 selection expected")};
             assert_eq!(selection.anchor.quote.exact,"MD notes selected quote");assert!(selection.box_css.as_ref().unwrap().width>0.);
             let NoteResult::NoteChanged{note}=request(&router,NoteCommand::Create{selection_id:selection.selection_id,comment:"Explain the selected quote".into()}).await else{panic!("note expected")};
@@ -191,19 +205,38 @@ async fn check_live() {
             let read=router.dispatch_authenticated_runtime_tool_call(a,"chariox.read_note",json!({"note_id":note.note_id})).await.unwrap();
             assert_eq!(read.payload["note"]["anchor_state"],"attached");
             assert!(router.dispatch_authenticated_runtime_tool_call(b,"chariox.read_note",json!({"note_id":note.note_id})).await.is_err());
-            driver(&browser_root,&fixture.url,"move");
+            driver(&browser_root,&url,"move");
             let NoteResult::NoteChanged{note:moved}=request(&router,NoteCommand::Reanchor{note_id:note.note_id.clone()}).await else{panic!("moved note expected")};
             assert_eq!(moved.anchor_state,"attached");assert!(moved.box_css.as_ref().unwrap().y>note.box_css.as_ref().unwrap().y);assert_eq!(moved.anchor.quote,note.anchor.quote);
-            driver(&browser_root,&fixture.url,"page_cannot_see");
+            driver(&browser_root,&url,"page_cannot_see");
             let NoteResult::PromptDraft{text,attachment,..}=request(&router,NoteCommand::Ask{note_id:note.note_id.clone()}).await else{panic!("marked draft expected")};
             assert!(text.contains("[Chariox note ") && text.contains("MD notes selected quote") && text.contains("Explain the selected quote"));assert_eq!(attachment.mime(),"text/plain");
-            driver(&browser_root,&fixture.url,"missing");
+            driver(&browser_root,&url,"missing");
             let NoteResult::NoteChanged{note:missing}=request(&router,NoteCommand::Read{note_id:note.note_id.clone()}).await else{panic!("missing note expected")};
             assert_eq!(missing.anchor_state,"missing");assert_eq!(missing.anchor.quote,note.anchor.quote);
+            if matches!(window,NoteWindow::KernelBrowser{..}) {user_note=Some(note.clone());}
             receipts.push(json!({"window":window,"selection":true,"focused_mcp":true,"nonfocused_denied":true,"page_forgery_rejected":true,"reanchored":true,"original_quote_preserved":true,"ask_marked_attachment":true}));
         }
+        let note=user_note.unwrap();
+        let crate::local::NoteWindow::KernelBrowser{tab_id,generation:old_generation}=&note.anchor.window else {panic!("user note expected")};
+        for op in [crate::local::KernelBrowserCommand::Stop,crate::local::KernelBrowserCommand::State] {
+            let request=LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest{command:op});
+            router.dispatch(KernelCommand::from_local_request("MD-N5-restart",None,None,&request),request).await.unwrap();
+        }
+        let state_request=LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest{command:crate::local::KernelBrowserCommand::State});
+        let LocalDaemonResponse::KernelBrowser{result:state}=router.dispatch(KernelCommand::from_local_request("MD-N5-restored",None,None,&state_request),state_request).await.unwrap() else {panic!("restored state expected")};
+        let generation=state["generation"].as_u64().unwrap();assert!(generation>*old_generation);
+        let restored_window=NoteWindow::KernelBrowser{tab_id:tab_id.clone(),generation};
+        let list=router.dispatch_authenticated_runtime_tool_call(a,"chariox.list_notes",json!({"window":restored_window})).await.unwrap();
+        assert_eq!(list.payload["notes"][0]["note_id"],note.note_id);
+        let restored=router.dispatch_authenticated_runtime_tool_call(a,"chariox.read_note",json!({"note_id":note.note_id})).await.unwrap();
+        assert_eq!(restored.payload["note"]["anchor_state"],"attached");
+        assert_eq!(restored.payload["note"]["anchor"]["quote"]["exact"],note.anchor.quote.exact);
+        let stale_request=LocalDaemonRequest::Notes(NotesRequest{command:NoteCommand::CaptureSelection{window:note.anchor.window.clone()}});
+        assert!(router.dispatch(KernelCommand::from_local_request("MD-N5-stale-selection",None,None,&stale_request),stale_request).await.is_err());
+        receipts.push(json!({"browser_restart_reanchored":true,"stale_selection_denied":true}));
         assert!(!router.runtime_state.session_snapshot(session.id()).await.unwrap().has_active_prompt());
-        std::fs::write(root.join("MD-N5-RECEIPT.json"),serde_json::to_vec_pretty(&json!({"MD":"MD-N5","MP":["MP-08","MP-10","MP-11"],"topology":"native user browser and local Room controller; no Docker/relay/provider model","protocol":424,"checks":receipts})).unwrap()).unwrap();
+        std::fs::write(root.join("MD-N5-RECEIPT.json"),serde_json::to_vec_pretty(&json!({"MD":"MD-N5","MP":["MP-08","MP-10","MP-11"],"topology":"native user browser, local Room tab and App view; no Docker/relay/provider model or App package admission","protocol":424,"checks":receipts})).unwrap()).unwrap();
     }).catch_unwind().await;
     router.runtime_state.shutdown_cleanup().await.unwrap();
     if let Err(panic) = assertions {

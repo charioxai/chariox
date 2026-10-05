@@ -107,7 +107,7 @@ pub(crate) struct CommandFingerprint {
     session_id: Option<String>,
     attachment_id: Option<String>,
     request_hash: u64,
-    // MD-3: browser receipts are private to the authenticated terminal identity.
+    // MD-N3 / MP-11: browser/note receipts belong to the authenticated terminal identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     browser_caller: Option<crate::runtime::command::KernelCaller>,
 }
@@ -125,8 +125,11 @@ impl CommandFingerprint {
             session_id: command.session_id.clone(),
             attachment_id: command.attachment_id.clone(),
             request_hash: stable_hash64(&request_bytes),
-            browser_caller: matches!(request, LocalDaemonRequest::KernelBrowser(_) | LocalDaemonRequest::Notes(_))
-                .then(|| command.caller.clone()),
+            browser_caller: matches!(
+                request,
+                LocalDaemonRequest::KernelBrowser(_) | LocalDaemonRequest::Notes(_)
+            )
+            .then(|| command.caller.clone()),
         }
     }
 }
@@ -1006,3 +1009,6 @@ fn rewrite_persistent_results(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod notes_tests;

@@ -165,7 +165,10 @@ async function projectFrameBox(connection,item,box) {
   if (!item.parent) return box;
   const owner=await connection.send('DOM.getFrameOwner',{frameId:item.frame.id},item.parent.sessionId);
   const {model}=await connection.send('DOM.getBoxModel',{backendNodeId:owner.backendNodeId},item.parent.sessionId);
-  const viewport=await connection.send('Runtime.evaluate',{expression:'({width:innerWidth,height:innerHeight})',contextId:(await connection.send('Page.createIsolatedWorld',{frameId:item.frame.id,worldName:'chariox-controller-focus',grantUniveralAccess:false},item.sessionId)).executionContextId,returnByValue:true},item.sessionId);
+  const {executionContextId}=await connection.send('Page.createIsolatedWorld',{frameId:item.frame.id,worldName:'chariox-controller-focus',grantUniveralAccess:false},item.sessionId);
+  if (!Number.isSafeInteger(executionContextId)||executionContextId<=0) throw new Error('MD-N2: isolated frame geometry unavailable');
+  const viewport=await connection.send('Runtime.evaluate',{expression:'({width:innerWidth,height:innerHeight})',contextId:executionContextId,returnByValue:true},item.sessionId);
+  if (viewport.exceptionDetails) throw new Error('MD-N2: isolated frame geometry unavailable');
   const size=viewport.result?.value,quad=model?.content;
   if (!quad || quad.length!==8 || !size || !(size.width>0 && size.height>0)) throw new Error('MD-N2: frame geometry unavailable');
   const points=[];

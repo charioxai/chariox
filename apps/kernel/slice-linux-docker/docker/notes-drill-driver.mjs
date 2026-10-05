@@ -1,11 +1,14 @@
 // MD-N5 / MP-10: credential-free native stimulus; never used for product admission.
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, symlink } from 'node:fs/promises';
 import path from 'node:path';
 import { BrowserCdpClient } from './browser-controller-cdp.mjs';
 import { HostChromium } from './kernel-browser-process.mjs';
+import { BrowserControllerStdioServer } from './browser-controller.mjs';
+import { observeBrowserResources } from './browser-controller-resources.mjs';
 
-const [mode,root,endpointOrUrl,operation]=process.argv.slice(2);
-if (!['room','stimulus'].includes(mode) || !path.isAbsolute(root)) throw new Error('MD-N5: invalid owned drill arguments');
+const [mode,rootArgument,endpointOrUrl,operation]=process.argv.slice(2);
+const root=mode==='stdio'?path.join(process.env.CHARIOX_MDNOTES_DRILL_ROOT,'room-browser'):rootArgument;
+if (!['room','stimulus','stdio'].includes(mode) || !path.isAbsolute(root)) throw new Error('MD-N5: invalid owned drill arguments');
 let chromium;
 let browser;
 try {
@@ -13,6 +16,8 @@ try {
   if (mode==='room') {
     chromium=new HostChromium(root);
     endpoint=await chromium.start();
+  } else if (mode==='stdio') {
+    endpoint=await readFile(path.join(root,'endpoint.txt'),'utf8');
   } else {
     const [port]= (await readFile(path.join(root,'profile','DevToolsActivePort'),'utf8')).split('\n');
     if (!/^\d+$/.test(port) || +port<1 || +port>65535) throw new Error('MD-N5: invalid own debugger port');
@@ -24,8 +29,17 @@ try {
     const {targetId}=await connection.send('Target.createTarget',{url:endpointOrUrl});
     const session=await browser.ensureTargetSession(connection,targetId);
     await connection.send('Runtime.evaluate',{expression:'document.readyState',returnByValue:true},session);
+    // A local fixture lacks the worker PID namespace. Observe only the actual
+    // child we launched; the product inventory still derives real PID/profile
+    // identities from /proc and stat. Never substitute a fabricated inventory.
+    const pid=chromium.child?.pid;
+    if (!Number.isSafeInteger(pid)||pid<=1) throw new Error('MD-N5: invalid owned browser PID');
+    await mkdir(path.join(root,'proc'),{mode:0o700});
+    await symlink(`/proc/${pid}`,path.join(root,'proc',String(pid)));
     await writeFile(path.join(root,'endpoint.txt'),endpoint,{mode:0o600});
     await new Promise(resolve=>{process.stdin.resume();process.stdin.once('data',resolve);process.stdin.once('end',resolve);});
+  } else if (mode==='stdio') {
+    await new BrowserControllerStdioServer({browser,resourceInventory:()=>observeBrowserResources({procRoot:path.join(root,'proc')})}).run();
   } else {
     const {targetInfos}=await connection.send('Target.getTargets');
     const target=targetInfos.find(t=>t.type==='page'&&t.url===endpointOrUrl);

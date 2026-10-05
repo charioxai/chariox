@@ -2,7 +2,7 @@
 use super::kernel_browser_runtime::host_error;
 use super::*;
 use crate::local::{NoteAnchor, NoteCommand, NoteResult, NoteWindow};
-use crate::runtime::kernel_browser_host::KernelBrowserAdmission;
+use crate::runtime::kernel_browser_host::{KernelBrowserAdmission, KernelBrowserCapability};
 use crate::runtime::notes::observation::BrowserNoteObservation;
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
 
@@ -31,9 +31,10 @@ impl KernelRuntimeState {
     ) -> Vec<RuntimeToolSpec> {
         let _ = run;
         let mut specs=vec![RuntimeToolSpec { name:LOADER.into(),description:"MD-N4: load notes on demand. Notes belong to the user and only the current focused local agent can read, reply or resolve.".into(),input_schema:serde_json::json!({"type":"object","properties":{},"additionalProperties":false}) }];
-        if !self.owned.kernel_browser_host.is_loaded(
+        if !self.owned.kernel_browser_host.is_loaded_for(
             &self.provider_account_authority_owner_user_id(agent.owner_user_id()),
             agent.id(),
+            KernelBrowserCapability::Notes,
         ) {
             return specs;
         }
@@ -82,7 +83,8 @@ impl KernelRuntimeState {
             if arguments.as_object().is_none_or(|o| !o.is_empty()) {
                 return Err(host_error("MD-N4: loader accepts no arguments".into()));
             }
-            host.load(&user, agent.id()).map_err(host_error)?;
+            host.load_for(&user, agent.id(), KernelBrowserCapability::Notes)
+                .map_err(host_error)?;
             return Ok(RuntimeToolResult {
                 ok: true,
                 payload: serde_json::json!({"loaded":&TOOLS[1..]}),
@@ -107,7 +109,7 @@ impl KernelRuntimeState {
         let auth_token = token.to_string();
         let run_id = run.id().to_string();
         let admission = host
-            .admit(&user, agent.id())
+            .admit_for(&user, agent.id(), KernelBrowserCapability::Notes)
             .map_err(host_error)?
             .with_authority(move || {
                 let runs = authority
@@ -311,6 +313,23 @@ impl KernelRuntimeState {
         self.check_note_window(user, window)?;
         let observation = match window {
             NoteWindow::KernelBrowser { tab_id, generation } => {
+                // New capture must keep its caller's generation fence. A durable
+                // note reads the current binding for its stable restored tab.
+                let generation = if quote.is_some() {
+                    let current = self
+                        .kernel_browser_operation_admitted(
+                            user,
+                            admission.clone(),
+                            "host.browser",
+                            serde_json::json!({"op":"state"}),
+                        )
+                        .await?;
+                    current["generation"].as_u64().ok_or_else(|| {
+                        host_error("MD-N2: current browser generation unavailable".into())
+                    })?
+                } else {
+                    *generation
+                };
                 let value=self.kernel_browser_operation_admitted(user,admission,"host.browser",serde_json::json!({"op":if quote.is_some(){"note_reanchor"}else{"note_selection"},"tab_id":tab_id,"generation":generation,"quote":quote})).await?;
                 serde_json::from_value::<BrowserNoteObservation>(value["observation"].clone())
                     .map_err(|_| host_error("MD-N2: invalid host selection result".into()))?

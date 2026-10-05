@@ -85,6 +85,10 @@ async fn check() {
         .dispatch_authenticated_runtime_tool_call(a, "chariox.load_notes", json!({}))
         .await
         .unwrap();
+    assert!(
+        !names(a).contains(&"chariox.kernel_browser".into()),
+        "MD-N4: loading notes must not load browser tools"
+    );
     let window = NoteWindow::Panel {
         window_id: "transcript-message-42".into(),
     };
@@ -190,6 +194,22 @@ async fn check() {
     assert!(router
         .dispatch_authenticated_runtime_tool_call(
             a,
+            "chariox.read_note",
+            json!({"note_id":note.note_id})
+        )
+        .await
+        .is_err());
+    router
+        .dispatch_authenticated_runtime_tool_call(b, "chariox.load_kernel_browser", json!({}))
+        .await
+        .unwrap();
+    assert!(
+        !names(b).contains(&"chariox.read_note".into()),
+        "MD-N4: loading browser must not load notes"
+    );
+    assert!(router
+        .dispatch_authenticated_runtime_tool_call(
+            b,
             "chariox.read_note",
             json!({"note_id":note.note_id})
         )
