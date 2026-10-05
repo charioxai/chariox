@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { publicRuntimeDiagnostic, publicProviderRun } from "../../kernel/slice-linux-docker/docker/public-runtime-diagnostics.mjs"
 import { execFile, spawn } from 'node:child_process'
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
@@ -138,7 +139,7 @@ async function waitForRemoteProviderRun(client, sessionId, agentId, {
     }
     await sleep(250)
   }
-  throw new Error(`timed out waiting for remote provider run for ${agentId}: agent=${JSON.stringify(lastAgent)} run=${JSON.stringify(lastRun)}`)
+  throw new Error(`timed out waiting for remote provider run for ${agentId}: agent=${publicRuntimeDiagnostic(lastAgent)} run=${publicRuntimeDiagnostic(lastRun)}`)
 }
 
 async function waitForRelayTargetUnavailable(
@@ -587,7 +588,7 @@ async function main() {
       [],
     ))
     let launch = await waitForRemoteProviderRun(remoteAgentClient, session.id, agent.id)
-    if (!launch.runtime_mcp_server_url || !launch.runtime_mcp_auth_token) throw new Error(`launched run lacks runtime MCP binding: ${JSON.stringify(launch)}`)
+    if (!launch.runtime_mcp_server_url || !launch.runtime_mcp_auth_token) throw new Error(`launched run lacks runtime MCP binding: ${publicRuntimeDiagnostic(launch)}`)
     let evidence = await exerciseHomeProxyExtensions({
       launch,
       collab: options.collab,

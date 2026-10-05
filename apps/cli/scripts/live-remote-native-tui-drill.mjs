@@ -1,3 +1,4 @@
+import {requireScopedProviderPath,withPrivateDrillRuntime} from "./lib/private-drill-runtime.mjs"
 import { execFile, spawn } from "node:child_process"
 import net from "node:net"
 import path from "node:path"
@@ -256,26 +257,9 @@ function printHelp() {
 }
 
 
-function localCodexAuthPath() {
-  const codexHome = process.env.CODEX_HOME?.trim() || path.join(realHomeDir, ".codex")
-  return path.join(codexHome, "auth.json")
-}
-
 async function syncHetznerCodexAuth(options) {
-  const authPath = localCodexAuthPath()
-  await access(authPath)
-  await execFileAsync("ssh", sshArgs(options, "mkdir -p /root/.codex && chmod 700 /root/.codex"))
-  await execFileAsync("scp", [
-    "-i",
-    options.hetznerKey,
-    "-o",
-    "BatchMode=yes",
-    "-o",
-    "StrictHostKeyChecking=accept-new",
-    authPath,
-    `${options.hetznerHost}:/root/.codex/auth.json.tmp`,
-  ])
-  await execFileAsync("ssh", sshArgs(options, "mv /root/.codex/auth.json.tmp /root/.codex/auth.json && chmod 600 /root/.codex/auth.json"))
+  const workerProfile=requireScopedProviderPath(process.env,"CHARIOX_DRILL_WORKER_CODEX_HOME")
+  await execFileAsync("ssh",sshArgs(options,`test -f ${shellQuote(path.posix.join(workerProfile,"auth.json"))}`))
 }
 
 async function syncHetznerClaudeAuth() {
@@ -309,6 +293,7 @@ async function createHomeManagedLocalDockerSlice({ homeKernelUrl, workspace, pro
     kernelPingIntervalMs: 60_000,
     kernelMaxMissedPongs: 10,
   })
+  let ownedSliceId = null
   try {
     const name = `native-tui-${process.pid}`
     const created = unwrap(await client.send(createSliceRequest({
@@ -317,6 +302,7 @@ async function createHomeManagedLocalDockerSlice({ homeKernelUrl, workspace, pro
       os: "linux",
       workspaceMount: workspace,
     })), "SliceCreated").slice
+    ownedSliceId = created.id
     const started = unwrap(await client.send(startSliceRequest(created.id)), "SliceStarted").slice
     for (const provider of providers) {
       await client.send(importSliceProviderAuthRequest(started.id, provider))
@@ -327,7 +313,14 @@ async function createHomeManagedLocalDockerSlice({ homeKernelUrl, workspace, pro
     if (!started.worker_kernel_ref) {
       throw new Error(`started managed slice ${started.id} did not expose its worker kernel reference`)
     }
+    ownedSliceId = null
     return started
+  } catch {
+    if (ownedSliceId) {
+      try { await client.send(deleteSliceRequest(ownedSliceId)) }
+      catch { throw new Error(`managed slice setup failed; cleanup failed for ${ownedSliceId}`) }
+    }
+    throw new Error("managed slice setup failed; owned slice cleaned")
   } finally {
     await client.close().catch(() => {})
   }
@@ -373,14 +366,15 @@ async function dismissCodexUpdatePromptIfPresent(screenName, logFile) {
   return false
 }
 
-async function main() {
+async function runDrill(privateRoot) {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
     printHelp()
     return
   }
   const runId = `${process.pid}-${Date.now()}`
-  const root = path.join("/tmp", `arb-remote-native-tui-${runId}`)
+  const root = privateRoot
+  const evidenceRoot=path.join(os.homedir(),".codex","evidence","native-tui",runId)
   const ports = await makeAvailablePorts({
     candidateFactory: options.hetznerWorker ? makeNonEphemeralDrillPorts : undefined,
     additionalAvailability: options.hetznerWorker
@@ -433,7 +427,7 @@ async function main() {
   let succeeded = false
   let failure = null
   try {
-    await prepareDrillArtifacts(root)
+    await mkdir(root, { recursive: true, mode: 0o700 })
     await assertBinary(kernelBinary, path.join(repoRoot, "apps/kernel/Cargo.toml"), "chariox-kernel")
     await assertBinary(relayBinary, path.join(repoRoot, "apps/relay/Cargo.toml"), "chariox-relay")
     await mkdir(homeDir, { recursive: true })
@@ -503,15 +497,6 @@ async function main() {
         await syncHetznerCodexAuth(options)
       }
     }
-    await access(path.join(realHomeDir, ".claude"))
-      .then(() => symlink(path.join(realHomeDir, ".claude"), path.join(homeDir, ".claude"), "dir"))
-      .catch(() => {})
-    await access(path.join(realHomeDir, ".claude.json"))
-      .then(() => symlink(path.join(realHomeDir, ".claude.json"), path.join(homeDir, ".claude.json")))
-      .catch(() => {})
-    await access(path.join(realHomeDir, ".codex"))
-      .then(() => symlink(path.join(realHomeDir, ".codex"), path.join(homeDir, ".codex"), "dir"))
-      .catch(() => {})
     if (options.hetznerWorker) {
       relay = spawnRemoteEnv(options, {
         CHARIOX_REMOTE_REPO: options.hetznerRepo,
@@ -560,7 +545,7 @@ async function main() {
         XDG_STATE_HOME: xdgStateHome,
         XDG_DATA_HOME: xdgDataHome,
         XDG_CACHE_HOME: xdgCacheHome,
-        CODEX_HOME: process.env.CODEX_HOME ?? path.join(realHomeDir, ".codex"),
+        ...(options.providers.includes("codex")?{CODEX_HOME: requireScopedProviderPath(process.env,"CODEX_HOME")} : {}),
         OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR ?? path.join(realHomeDir, ".config", "opencode"),
         CHARIOX_LOG_DIR: path.join(root, "logs"),
         CHARIOX_KERNEL_PORT: String(ports.kernelPort),
@@ -595,7 +580,7 @@ async function main() {
           XDG_STATE_HOME: path.posix.join(remoteRuntimeRoot, "xdg-state"),
           XDG_DATA_HOME: path.posix.join(remoteRuntimeRoot, "xdg-data"),
           XDG_CACHE_HOME: path.posix.join(remoteRuntimeRoot, "xdg-cache"),
-          CODEX_HOME: "/root/.codex",
+          ...(options.providers.includes("codex")?{CODEX_HOME: requireScopedProviderPath(process.env,"CHARIOX_DRILL_WORKER_CODEX_HOME")} : {}),
           OPENCODE_CONFIG_DIR: "/root/.config/opencode",
           CHARIOX_LOG_DIR: path.posix.join(remoteRuntimeRoot, "worker-logs"),
           CHARIOX_KERNEL_PORT: String(ports.workerKernelPort),
@@ -624,7 +609,7 @@ async function main() {
             XDG_STATE_HOME: path.join(root, "worker-xdg-state"),
             XDG_DATA_HOME: path.join(root, "worker-xdg-data"),
             XDG_CACHE_HOME: path.join(root, "worker-xdg-cache"),
-            CODEX_HOME: process.env.CODEX_HOME ?? path.join(realHomeDir, ".codex"),
+            ...(options.providers.includes("codex")?{CODEX_HOME: requireScopedProviderPath(process.env,"CODEX_HOME")} : {}),
             OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR ?? path.join(realHomeDir, ".config", "opencode"),
             CHARIOX_LOG_DIR: path.join(root, "worker-logs"),
             CHARIOX_KERNEL_PORT: String(ports.workerKernelPort),
@@ -678,7 +663,7 @@ async function main() {
         nativeEnv: options.hetznerWorker
           ? {
             HOME: realHomeDir,
-            CODEX_HOME: process.env.CODEX_HOME ?? path.join(realHomeDir, ".codex"),
+            ...(options.providers.includes("codex")?{CODEX_HOME: requireScopedProviderPath(process.env,"CODEX_HOME")} : {}),
             CHARIOX_NATIVE_PROVIDER_ENDPOINT_SSH_HOST: options.hetznerHost,
             CHARIOX_NATIVE_PROVIDER_ENDPOINT_SSH_KEY: options.hetznerKey,
           }
@@ -778,7 +763,7 @@ async function main() {
       )
       : failure
     await finalizeDrillArtifacts({
-      rootDir: root,
+      rootDir: evidenceRoot,
       passed: succeeded && !hetznerClaudeTrustRestoreFailure,
       preserveOnFailure: options.keepArtifactsOnFailure,
       failure: finalFailure,
@@ -807,6 +792,8 @@ async function main() {
     }
   }
 }
+
+function main() {return withPrivateDrillRuntime("native-tui-runtime",runDrill)}
 
 main().catch((error) => {
   console.error(error)

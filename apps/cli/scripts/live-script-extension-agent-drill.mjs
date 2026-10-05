@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { publicRuntimeDiagnostic, publicProviderRun } from "../../kernel/slice-linux-docker/docker/public-runtime-diagnostics.mjs"
 import { spawn } from 'node:child_process'
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
@@ -157,7 +158,7 @@ async function waitForDaemon(kernelUrl, workspace, localAuthEnvironment) {
 }
 
 function unwrap(response, key) {
-  if (!response?.[key]) throw new Error(`expected ${key}, got ${JSON.stringify(response)}`)
+  if (!response?.[key]) throw new Error(`expected ${key}, got ${publicRuntimeDiagnostic(response)}`)
   return response[key]
 }
 
@@ -165,7 +166,7 @@ function unwrapOne(response, ...keys) {
   for (const key of keys) {
     if (response?.[key]) return response[key]
   }
-  throw new Error(`expected one of ${keys.join(', ')}, got ${JSON.stringify(response)}`)
+  throw new Error(`expected one of ${keys.join(', ')}, got ${publicRuntimeDiagnostic(response)}`)
 }
 
 function modelForProvider(provider, options) {
@@ -267,10 +268,10 @@ async function waitForProviderRunReady(client, providerRunId, timeoutMs) {
   while (Date.now() < deadline) {
     lastRun = unwrap(await client.send(requests.getProviderRunRequest(providerRunId)), 'ProviderRun').provider_run
     if (lastRun?.state === 'Running') return lastRun
-    if (lastRun?.state === 'Ended') throw new Error(`provider run ended before ready: ${JSON.stringify(lastRun)}`)
+    if (lastRun?.state === 'Ended') throw new Error(`provider run ended before ready: ${publicRuntimeDiagnostic(lastRun)}`)
     await sleep(500)
   }
-  throw new Error(`timed out waiting for provider run ready\n${JSON.stringify(lastRun)}`)
+  throw new Error(`timed out waiting for provider run ready\n${publicRuntimeDiagnostic(lastRun)}`)
 }
 
 async function waitForPromptDone(client, sessionId, attachmentId, timeoutMs, pollMs) {

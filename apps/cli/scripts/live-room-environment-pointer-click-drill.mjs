@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { publicRuntimeDiagnostic, publicProviderRun } from "../../kernel/slice-linux-docker/docker/public-runtime-diagnostics.mjs"
 
 import assert from "node:assert/strict"
 import { createRoomWebFaultControl } from "./lib/room-web-fault-control.mjs"
@@ -2098,7 +2099,7 @@ async function launchComputerSecretAgent() {
         "ProviderRun",
       ).provider_run
       if (["ended", "failed", "error"].includes(String(current.state ?? "").toLowerCase())) {
-        throw new Error(`slice provider run ended before MCP became ready: ${JSON.stringify(current)}`)
+        throw new Error(`slice provider run ended before MCP became ready: ${publicRuntimeDiagnostic(current)}`)
       }
       if (!current.runtime_mcp_server_url || !current.runtime_mcp_auth_token) {
         await candidate.close().catch(() => undefined)
@@ -3619,7 +3620,7 @@ function actionState(environment, actionId) {
 }
 
 function unwrap(response, variant) {
-  assert.ok(response && typeof response === "object" && variant in response, `expected ${variant}, got ${JSON.stringify(response)}`)
+  assert.ok(response && typeof response === "object" && variant in response, `expected ${variant}, got ${publicRuntimeDiagnostic(response)}`)
   return response[variant]
 }
 
@@ -3627,7 +3628,7 @@ function unwrapOneOf(response, ...variants) {
   for (const variant of variants) {
     if (response && typeof response === "object" && variant in response) return response[variant]
   }
-  assert.fail(`expected ${variants.join(" or ")}, got ${JSON.stringify(response)}`)
+  assert.fail(`expected ${variants.join(" or ")}, got ${publicRuntimeDiagnostic(response)}`)
 }
 
 function sleep(ms) {

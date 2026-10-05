@@ -1,3 +1,4 @@
+import {requireScopedProviderPath,withPrivateDrillRuntime} from "./lib/private-drill-runtime.mjs"
 import { execFile, spawn } from 'node:child_process'
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import net from 'node:net'
@@ -232,26 +233,9 @@ async function assertHetznerBinaries(options) {
   await assertHetznerCharioxBinaries(options)
 }
 
-function localCodexAuthPath() {
-  const codexHome = process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex')
-  return path.join(codexHome, 'auth.json')
-}
-
 async function syncHetznerCodexAuth(options) {
-  const authPath = localCodexAuthPath()
-  await access(authPath)
-  await execFileAsync('ssh', sshArgs(options, 'mkdir -p /root/.codex && chmod 700 /root/.codex'))
-  await execFileAsync('scp', [
-    '-i',
-    options.hetznerKey,
-    '-o',
-    'BatchMode=yes',
-    '-o',
-    'StrictHostKeyChecking=accept-new',
-    authPath,
-    `${options.hetznerHost}:/root/.codex/auth.json.tmp`,
-  ])
-  await execFileAsync('ssh', sshArgs(options, 'mv /root/.codex/auth.json.tmp /root/.codex/auth.json && chmod 600 /root/.codex/auth.json'))
+  const workerProfile=requireScopedProviderPath(process.env,"CHARIOX_DRILL_WORKER_CODEX_HOME")
+  await execFileAsync("ssh",sshArgs(options,`test -f ${shellQuote(path.posix.join(workerProfile,"auth.json"))}`))
 }
 
 async function assertHetznerRelayPortAvailable(options, port) {
@@ -411,7 +395,7 @@ async function waitForRemoteMachineKernel(client, machineRef, providers) {
   throw new Error(`remote machine ${machineRef} did not advertise providers ${providers.join(',')}; last=${JSON.stringify(last)} error=${lastError ?? 'unknown error'}`)
 }
 
-async function main() {
+async function runDrill(privateRoot) {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
     console.log('Usage: node apps/cli/scripts/live-remote-workspace-live-sync-permission-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--mode managed|tracked] [--hetzner-worker]')
@@ -428,9 +412,10 @@ async function main() {
 
   const ports = await makePorts()
   const runId = `${process.pid}-${Date.now()}`
-  const rootDir = path.join(os.tmpdir(), `chariox-remote-workspace-live-sync-permission-${runId}`)
+  const rootDir = privateRoot
+  const evidenceRoot=path.join(os.homedir(),".codex","evidence","remote-permission",runId)
   const cliRuntimeDir = path.join(cliRoot, `.tmp-live-remote-workspace-live-sync-permission-drill-${runId}`)
-  await prepareDrillArtifacts(rootDir)
+  await mkdir(rootDir, { recursive: true, mode: 0o700 })
   await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(cliRuntimeDir, { recursive: true })
 
@@ -689,7 +674,7 @@ async function main() {
       await runHetznerCommand(options, `rm -rf ${shellQuote(childRootDir)}`).catch(() => {})
     }
     await finalizeDrillArtifacts({
-      rootDir,
+      rootDir: evidenceRoot,
       passed: succeeded,
       preserveOnFailure: options.keepArtifactsOnFailure,
       failure,
@@ -711,5 +696,7 @@ async function main() {
     }
   }
 }
+
+function main() { return withPrivateDrillRuntime("remote-permission-runtime", runDrill) }
 
 await main()

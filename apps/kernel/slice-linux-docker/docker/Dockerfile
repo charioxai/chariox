@@ -231,6 +231,7 @@ COPY --chown=slice:slice apps/browser-session-import/cookie-import-journal.mjs /
 COPY --chown=slice:slice apps/browser-session-import/cookie-import-transaction.mjs /opt/chariox-slice/browser-session-import/cookie-import-transaction.mjs
 COPY --chown=slice:slice apps/browser-session-import/production-destination.mjs /opt/chariox-slice/browser-session-import/production-destination.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe.mjs /opt/chariox-slice/managed-provider-isolation-probe.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/public-runtime-diagnostics.mjs /opt/chariox-slice/public-runtime-diagnostics.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe-wrapper.sh /opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/provider-port-bridge.mjs /opt/chariox-slice/provider-port-bridge.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-screen.sh /opt/chariox-slice/slice-screen.sh

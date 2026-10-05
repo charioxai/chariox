@@ -1,3 +1,4 @@
+import { publicRuntimeDiagnostic, publicProviderRun } from "../../../kernel/slice-linux-docker/docker/public-runtime-diagnostics.mjs"
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises"
 import http from "node:http"
 import path from "node:path"
@@ -93,7 +94,7 @@ export async function startHostedRemoteProviderRun({
     }
     await sleep(pollMs)
   }
-  throw new Error(`timed out waiting for hosted remote provider run for ${agentId}: agent=${JSON.stringify(lastAgent)} run=${JSON.stringify(lastRun)}`)
+  throw new Error(`timed out waiting for hosted remote provider run for ${agentId}: agent=${publicRuntimeDiagnostic(lastAgent)} run=${publicRuntimeDiagnostic(lastRun)}`)
 }
 
 async function prepareHostedWorkspaceLiveSyncFixture({
@@ -143,7 +144,7 @@ async function assertHostedWorkspaceLiveSyncProxy({
   unwrap,
 }) {
   if (!launch.runtime_mcp_server_url || !launch.runtime_mcp_auth_token) {
-    throw new Error(`launched run lacks runtime MCP binding for workspace live sync: ${JSON.stringify(launch)}`)
+    throw new Error(`launched run lacks runtime MCP binding for workspace live sync: ${publicRuntimeDiagnostic(launch)}`)
   }
   log("second-kernel-workspace-live-sync-tool-wait", { tool: "chariox.write_artifact" })
   await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "chariox.write_artifact", true)
@@ -419,7 +420,7 @@ async function assertHostedHomeExtensionProxy({
   label = "hosted",
 }) {
   if (!launch.runtime_mcp_server_url || !launch.runtime_mcp_auth_token) {
-    throw new Error(`launched run lacks runtime MCP binding: ${JSON.stringify(launch)}`)
+    throw new Error(`launched run lacks runtime MCP binding: ${publicRuntimeDiagnostic(launch)}`)
   }
   await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "hosted_home_only_lookup", true)
   const scriptQuery = `${label}-remote-agent`
