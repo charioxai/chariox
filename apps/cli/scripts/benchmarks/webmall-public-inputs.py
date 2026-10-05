@@ -8,7 +8,7 @@ from browsergym.webmall.task import WebMallTask
 urls = json.loads(Path(sys.argv[1]).read_text())
 os.environ.update(urls)
 source = Path(sys.argv[2])
-sets = json.loads((source / "Browsergym/browsergym/webmall/src/browsergym/webmall/task_sets.json").read_text())
+sets = json.loads((source / "browsergym/webmall/src/browsergym/webmall/task_sets.json").read_text())
 
 class SetupPage:
     # Official setup only navigates to the frontend. No browser is launched.

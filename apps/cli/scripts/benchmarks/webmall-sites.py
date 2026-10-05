@@ -7,6 +7,9 @@ import argparse
 import hashlib
 import json
 import os
+import signal
+import sys
+import re
 from pathlib import Path
 import re
 import shutil
@@ -18,10 +21,15 @@ import uuid
 import urllib.request
 import yaml
 
-MP = ["MP-08", "MP-10"]
-PREFIX = "benchwm-20261003"
+sys.path.insert(0, str(Path(__file__).resolve().parent / "round2"))
+from owned_processes import OwnedProcessTree
+from webmall_readiness import probe_search
+
+MP = ["MP-08", "MP-10", "MP-11"]
+PREFIX = "r2next-webmall-r3"
+PUBLIC_PREFIX = "benchwm-20261003"
 parser = argparse.ArgumentParser()
-parser.add_argument("operation", choices=["start", "cleanup"])
+parser.add_argument("operation", choices=["start", "cleanup", "probe"])
 parser.add_argument("--upstream", required=True)
 parser.add_argument("--lane", required=True)
 parser.add_argument("--evidence", required=True)
@@ -53,7 +61,8 @@ def guard():
 def command(argv, timeout=300, check=True, protected=False):
     start = time.time()
     with tempfile.TemporaryFile(dir=root) as stdout, tempfile.TemporaryFile(dir=root) as stderr:
-        p = subprocess.Popen(argv, stdout=stdout, stderr=stderr)
+        p = subprocess.Popen(argv, stdout=stdout, stderr=stderr, start_new_session=True)
+        tree = OwnedProcessTree(p.pid)
         next_guard = 0
         while p.poll() is None:
             if not cleaning and time.time() >= next_guard:
@@ -61,12 +70,12 @@ def command(argv, timeout=300, check=True, protected=False):
                     guard()
                     next_guard = time.time() + 5
                 except Exception:
-                    p.terminate()
+                    tree.signal(signal.SIGTERM)
                     try: p.wait(timeout=5)
-                    except subprocess.TimeoutExpired: p.kill(); p.wait()
+                    except subprocess.TimeoutExpired: tree.signal(signal.SIGKILL); p.wait()
                     raise
             if time.time() - start > timeout:
-                p.kill(); p.wait()
+                tree.signal(signal.SIGKILL); p.wait()
                 break
             time.sleep(0.1)
         stdout.seek(0); out = stdout.read()
@@ -114,6 +123,27 @@ def cleanup():
         "sharedImageCachePreserved": True}
     (evidence / "sites-cleanup.json").write_text(json.dumps(result, indent=2) + "\n")
 
+def collect_search_readiness():
+    initial = json.loads((evidence / "catalog-restored.json").read_text())
+    shops = []
+    for i in range(1, 5):
+        name = PREFIX + f"-wordpress_shop{i}"
+        count, _ = docker("exec", name, "wp", "post", "list", "--post_type=product", "--post_status=publish", "--format=count", "--skip-plugins", "--skip-themes", "--path=/opt/bitnami/wordpress")
+        index, _ = docker("exec", name, "wp", "eval", r'echo \ElasticPress\Indexables::factory()->get("post")->get_index_name();')
+        host, _ = docker("exec", name, "wp", "option", "get", "ep_host")
+        assert host.strip() == "http://elasticsearch:9200", "MP-10 WordPress search wiring mismatch"
+        shops.append({"shop": i, "index": index.strip(), "publishedProducts": int(count.strip()),
+                      "expectedProducts": initial[i-1]["publishedProducts"]})
+    ports = json.loads((root / "ports.json").read_text())
+    return probe_search("http://127.0.0.1:" + str(ports["elasticsearch"]), shops)
+
+if args.operation == "probe":
+    result = collect_search_readiness()
+    target = evidence / "search-admission.json"
+    target.write_text(json.dumps(result, indent=2) + "\n")
+    print("MP-08/MP-10 search admission ready")
+    raise SystemExit(0)
+
 if args.operation == "cleanup":
     cleanup()
     raise SystemExit(0)
@@ -132,17 +162,24 @@ try:
     for name in ["frontend", "elasticsearch", *[f"shop{i}" for i in range(1, 5)]]:
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0)); ports[name] = s.getsockname()[1]
+    (root / "ports.json").write_text(json.dumps(ports) + "\n")
     variables.update({f"SHOP{i}_PORT": str(ports[f"shop{i}"]) for i in range(1, 5)})
     variables["FRONTEND_PORT"] = str(ports["frontend"])
     for key, value in variables.items():
         compose = yaml.safe_load(yaml.safe_dump(compose).replace("${" + key + "}", value))
     pins = {}
     stage = "official_image_pull"
-    for image in sorted({s["image"] for s in compose["services"].values()} | {"busybox:latest"}):
-        docker("pull", image, timeout=600)
-        obj = inspect("image", image)
-        pins[image] = obj["Id"]
-        owned["images"].append({"tag": image, "id": obj["Id"], "repoDigests": obj["RepoDigests"]}); save()
+    frozen_images = json.loads((lane / "site-image-pins.json").read_text())
+    required = {s["image"] for s in compose["services"].values()} | {"busybox:latest"}
+    assert required == {p["tag"] for p in frozen_images}, "MP-10 incomplete frozen image pins"
+    for pin in frozen_images:
+        ref = pin["repoDigests"][0]
+        assert "@sha256:" in ref
+        docker("pull", ref, timeout=600)
+        obj = inspect("image", ref)
+        assert obj["Id"] == pin["id"], "MP-10 frozen image mismatch"
+        pins[pin["tag"]] = obj["Id"]
+        owned["images"].append(pin); save()
     (evidence / "site-image-pins.json").write_text(json.dumps(owned["images"], indent=2) + "\n")
     stage = "official_backup_download"
     backups = root / "backup"; backups.mkdir(exist_ok=True)
@@ -166,9 +203,11 @@ try:
                 with urllib.request.urlopen(url, timeout=60) as response, target.open("wb") as f:
                     while chunk := response.read(1024**2):
                         guard(); digest.update(chunk); f.write(chunk)
+            pin = next(p for p in json.loads((lane / "backup-pins.json").read_text()) if p["file"] == name)
+            assert target.stat().st_size == pin["bytes"] and digest.hexdigest() == pin["sha256"], "MP-10 frozen backup mismatch"
             hashes.append({"file": name, "bytes": target.stat().st_size, "sha256": digest.hexdigest(), "url": url})
             (evidence / "backup-pins.json").write_text(json.dumps(hashes, indent=2) + "\n")
-    (lane / "backup-pins.json").write_text(json.dumps(hashes, indent=2) + "\n")
+    # Frozen inventory is never replaced by freshly downloaded identities.
     stage = "isolated_volume_restore"
     for name in compose["volumes"]:
         exact = PREFIX + "-" + name
@@ -182,8 +221,8 @@ try:
                    "--memory", "256m", "--cpus", "1", "-v", exact + ":/volume",
                    "-v", str(backups) + ":/backup:ro", pins["busybox:latest"],
                    "tar", "xzf", "/backup/" + backup, "-C", "/volume", timeout=300)
-    urls = {f"SHOP{i}_URL": f"http://{PREFIX}-shop{i}.local:8080" for i in range(1, 5)}
-    urls["FRONTEND_URL"] = f"http://{PREFIX}-frontend.local"
+    urls = {f"SHOP{i}_URL": f"http://{PUBLIC_PREFIX}-shop{i}.local:8080" for i in range(1, 5)}
+    urls["FRONTEND_URL"] = f"http://{PUBLIC_PREFIX}-frontend.local"
     for i in range(1, 5):
         text = (source / f"docker_all/deployed_wp_config_local/shop_{i}.php").read_text()
         text = text.replace(f"http://localhost:SHOP{i}_PORT_PLACEHOLDER", urls[f"SHOP{i}_URL"])
@@ -201,7 +240,7 @@ try:
         service["image"] = pins[service["image"]]
         service["labels"] = {"io.chariox.benchmark.lane": PREFIX}
         service["cpus"] = 0.5
-        service["mem_limit"] = "1024m" if name == "elasticsearch" else "512m" if name.startswith("wordpress") else "384m" if name.startswith("mariadb") else "128m"
+        service["mem_limit"] = "2048m" if name == "elasticsearch" else "512m" if name.startswith("wordpress") else "384m" if name.startswith("mariadb") else "128m"
         service["pids_limit"] = 256
         if name == "elasticsearch":
             # Upstream's ARM-only JVM flag is invalid on the reserved x86 builder.
@@ -210,7 +249,12 @@ try:
                 service["environment"] = [v.replace(" -XX:UseSVE=0", "") for v in env]
             else:
                 env["ES_JAVA_OPTS"] = env["ES_JAVA_OPTS"].replace(" -XX:UseSVE=0", "")
-        alias = f"{PREFIX}-shop{name[-1]}.local" if name.startswith("wordpress") else f"{PREFIX}-frontend.local" if name == "webmall_frontend" else name
+            # Pinned image's CLI launcher also inherits the ARM-only flag.
+            if isinstance(service["environment"], list):
+                service["environment"].append("CLI_JAVA_OPTS=")
+            else:
+                service["environment"]["CLI_JAVA_OPTS"] = ""
+        alias = f"{PUBLIC_PREFIX}-shop{name[-1]}.local" if name.startswith("wordpress") else f"{PUBLIC_PREFIX}-frontend.local" if name == "webmall_frontend" else name
         service["networks"] = {"webmall": {"aliases": [alias]}}
         if "ports" in service:
             internal = 8080 if name.startswith("wordpress") else 80 if name == "webmall_frontend" else 9200
@@ -221,7 +265,7 @@ try:
     compose["networks"] = {"webmall": {"name": owned["network"], "labels": {"io.chariox.benchmark.lane": PREFIX}}}
     (root / "compose.yaml").write_text(yaml.safe_dump(compose)); (root / "compose.yaml").chmod(0o600)
     stage = "official_services_start"
-    command([str(lane / "tools/docker-compose"), "-p", PREFIX, "-f", str(root / "compose.yaml"), "up", "-d"], timeout=300)
+    command(["docker", "compose", "-p", PREFIX, "-f", str(root / "compose.yaml"), "up", "-d"], timeout=300)
     stage = "wordpress_readiness"
     catalog = []
     for i in range(1, 5):
@@ -238,10 +282,16 @@ try:
         catalog.append({"shop": i, "publishedProducts": int(parsed[1])})
     assert all(s["publishedProducts"] > 1000 for s in catalog), "MP-10 fixture catalog not populated"
     (lane / "site-urls.json").write_text(json.dumps(urls, indent=2) + "\n")
+    (evidence / "catalog-restored.json").write_text(json.dumps(catalog) + "\n")
     public = {"mp_items": MP, "status": "ready", "urls": urls, "catalog": catalog,
               "documentedCatalog": [1150, 1095, 1156, 1020],
               "catalogMatchesWebsite": [s["publishedProducts"] for s in catalog] == [1150, 1095, 1156, 1020],
               "loopbackPorts": ports, "network": owned["network"], "source": "2697d35cdfcfedcf1ade89b7ad86722db8daa8a7"}
+    stage = "search_index_sync"
+    for i in range(1, 5):
+        docker("exec", PREFIX + f"-wordpress_shop{i}", "wp", "elasticpress", "sync", "--setup", "--yes", "--stop-on-error", timeout=300)
+    stage = "search_admission"
+    public["search"] = collect_search_readiness()
     (evidence / "sites-readiness.json").write_text(json.dumps(public, indent=2) + "\n")
     print("MP-08 / MP-10 isolated WebMall shops ready")
 except Exception as error:
