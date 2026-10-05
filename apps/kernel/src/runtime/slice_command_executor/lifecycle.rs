@@ -1441,6 +1441,7 @@ async fn wait_for_hosted_slice_relay_activation(
                 Ok(Ok(crate::transport::relay_peer::RelayPeerResponse::Pong {
                     value,
                     daemon_id,
+                    ..
                 })) if value == ping_value && daemon_id == worker.kernel_id => return Ok(()),
                 Ok(Ok(_)) => {
                     last_probe_error = Some(DaemonError::LocalTransport {

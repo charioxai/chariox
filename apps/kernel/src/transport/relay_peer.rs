@@ -1012,6 +1012,8 @@ pub enum RelayPeerResponse {
     Pong {
         value: String,
         daemon_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_peer_protocol_version: Option<u32>,
     },
     ManagedSliceRelayTokenInstalled {
         slice_id: String,
@@ -2054,6 +2056,39 @@ mod multidomain_union_tests {
         let decoded: super::RelayPeerResponse = serde_json::from_value(response.clone()).unwrap();
         assert_eq!(serde_json::to_value(decoded).unwrap(), response);
         let snapshot = serde_json::json!({"request":request,"response":response});
-        assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&snapshot).unwrap())), "f56562dd26d9adb6d99f4173955085b8ac953b9f8064cfbbc3f93f9f01a8a7a0");
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+            ),
+            "f56562dd26d9adb6d99f4173955085b8ac953b9f8064cfbbc3f93f9f01a8a7a0"
+        );
+    }
+}
+
+#[cfg(test)]
+mod notes_protocol_probe_tests {
+    #[test]
+    fn md_notes_protocol_probe_preserves_legacy_pong_and_pins_union_advertisement() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(super::RELAY_PEER_PROTOCOL_VERSION, 74);
+        let current = serde_json::json!({"kind":"pong","value":"md-notes-protocol","daemon_id":"worker-1","relay_peer_protocol_version":74});
+        let legacy =
+            serde_json::json!({"kind":"pong","value":"md-notes-protocol","daemon_id":"worker-1"});
+        for (value, expected) in [(&current, Some(74)), (&legacy, None)] {
+            let decoded: super::RelayPeerResponse = serde_json::from_value(value.clone()).unwrap();
+            assert!(
+                matches!(&decoded, super::RelayPeerResponse::Pong { relay_peer_protocol_version, .. } if *relay_peer_protocol_version == expected)
+            );
+            assert_eq!(serde_json::to_value(decoded).unwrap(), *value);
+        }
+        let snapshot = serde_json::json!({"current":current,"legacy":legacy});
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+            ),
+            "5c9e2f881c4ebce7f3ee9f4af71ec364547a4f51f451f46d457e5809885c29ac"
+        );
     }
 }
