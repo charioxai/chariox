@@ -5,8 +5,8 @@ use crate::local::{
     LogoutCloudRelayRequest, PollCloudRelayLoginRequest, StartCloudRelayLoginRequest,
 };
 use crate::runtime::cloud_api_client::{
-    cloud_profile_from_persisted, normalize_cloud_api_url, post_cloud_acknowledged,
-    post_cloud_json, CloudDevicePollResponse, CloudDeviceStartResponse,
+    CloudDevicePollResponse, CloudDeviceStartResponse, cloud_profile_from_persisted,
+    normalize_cloud_api_url, post_cloud_acknowledged, post_cloud_json,
 };
 use crate::runtime::cloud_relay_logout::request_cloud_logout;
 use crate::runtime::cloud_relay_profile_store::{clear_cloud_profile, persist_cloud_profile};
@@ -110,10 +110,12 @@ pub(crate) async fn execute_poll_cloud_relay_login_request(
                     message: "approval does not match this kernel identity and key".into(),
                 });
             }
-            if config.cloud_relay.as_ref().is_some_and(|old| {
-                old.account_id != profile.account_id || old.user_id != profile.user_id
-            }) {
-                return Err(DaemonError::LocalTransport { operation: "complete kernel Cloud enrollment", message: "Cloud owner conflicts with this root; unlink first or use a separate root/profile".into() });
+            if config
+                .cloud_relay
+                .as_ref()
+                .is_some_and(|old| old.account_id != profile.account_id)
+            {
+                return Err(DaemonError::LocalTransport { operation: "complete kernel Cloud enrollment", message: "Cloud account conflicts with this root; unlink first or use a separate root/profile".into() });
             }
             let persisted = PersistedCloudRelayProfile {
                 api_url,
