@@ -79,7 +79,8 @@ try {
   await docker(["run", "-d", "--name", container, "--label", "io.chariox.drill=controller-concurrency",
     "--label", "io.chariox.lane=ctlconc", "--cpus=1", "--memory=2g", "--memory-swap=2g", "--pids-limit=512",
     "--security-opt", `seccomp=${path.join(root, "apps/kernel/slice-linux-docker/chromium-seccomp.json")}`,
-    "-p", "127.0.0.1::60222", options.image, "sleep", "infinity"]);
+    "--mount", `type=bind,source=${path.join(root, "apps/kernel/slice-linux-docker/docker")},target=/opt/chariox-slice,readonly`,
+    "-p", "127.0.0.1::60222", "--entrypoint", "/usr/bin/sleep", options.image, "infinity"]);
   started = true;
   await docker(["exec", "-u", "slice", "-e", "CHARIOX_SLICE_DISPLAY_MODE=headed", container,
     "/opt/chariox-slice/slice-screen.sh", "start"]);
@@ -125,7 +126,10 @@ try {
       const inspect = JSON.parse((await docker(["inspect", container])).stdout)[0];
       assert.equal(inspect.Name, "/" + container);
       assert.equal(inspect.Config.Labels["io.chariox.drill"], "controller-concurrency");
-      assert.equal(inspect.Mounts.length, 0, "MP-08/MP-10 disposable fixture must have no durable mounts");
+      assert.equal(inspect.Mounts.length, 1, "MP-08/MP-10 fixture must have only its read-only source mount");
+      assert.equal(inspect.Mounts[0].Source, path.join(root, "apps/kernel/slice-linux-docker/docker"));
+      assert.equal(inspect.Mounts[0].Destination, "/opt/chariox-slice");
+      assert.equal(inspect.Mounts[0].RW, false);
       await docker(["rm", "-f", container]);
     }
     const names = (await docker(["ps", "-a", "--filter", `name=^/${container}$`, "--format", "{{.Names}}"])).stdout.trim();

@@ -17,6 +17,15 @@ fn config(root: &std::path::Path, name: &str) -> DaemonConfig {
     let mut config = DaemonConfig::for_tests();
     config.user_config_path = root.join("config.toml");
     config.local_socket_path = root.join("kernel.sock");
+    // MP-08/MP-10/MP-11: isolated test temp roots can exceed Unix sockaddr bounds.
+    #[cfg(unix)]
+    {
+        config.local_socket_path = std::path::PathBuf::from("/tmp").join(format!(
+            "cx-browser-peer-{}-{}-{name}.sock",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+    }
     config.user_config.state.path = Some(root.join("state.db").display().to_string());
     config.user_config.history.operational.path =
         Some(root.join("history.db").display().to_string());
