@@ -71,15 +71,17 @@ again when the attachment is captured.
 Web/local/remote TUI clients, with membership and attachment-owner checks. The
 shared TypeScript builder declares minimum local protocol 426. Client capture
 with `return_image_base64=true` includes inline bytes only when the complete encoded
-local IPC response fits its 1 MiB frame. Larger captures still return the opaque
+kernel WebSocket response fits its 1 MiB inline-image budget. Encrypted relay
+replies retain their existing envelope limit. Larger captures still return the opaque
 artifact metadata; clients read ordered chunks of at most 128 KiB and verify the
 size and SHA-256. Native provider MCP image delivery retains the 8 MiB artifact
 bound. This delivery bound changes no serialized shape or version. Runtime provider
 calls use normal authenticated home admission and leased-worker routing. New
-peer variants require the coordinator-allocated relay peer protocol 71. A v70
-worker cannot decode Artifact commands/results or opaque upload objects. Existing
-lease admission/rebind and hosted token installation/confirmation gates reject
-v70; image preflight requires peer71 with matching runtime source lineage.
+peer variants require the coordinator-allocated union relay peer protocol 73.
+Existing lease admission/rebind and hosted token installation/confirmation gates
+reject older peers; image preflight requires peer73 with matching runtime source
+lineage. Released v70 workers cannot decode Artifact commands/results or opaque
+upload objects.
 
 ## MP-08/MP-10/MP-11 focused validation
 

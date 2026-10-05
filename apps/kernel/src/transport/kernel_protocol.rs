@@ -869,7 +869,7 @@ pub(crate) fn serialize_frame(frame: &KernelOutgoingFrame) -> Result<String, Dae
         })
     };
     let encoded = encode(&value)?;
-    // MP-08/MP-10/MP-11: all client transports share this budget. Large
+    // MP-08/MP-10/MP-11: kernel WebSocket transports share this budget. Large
     // artifacts remain readable in chunks; provider-native delivery is separate.
     if encoded.len() > 1024 * 1024 {
         if let Some(payload) = value
