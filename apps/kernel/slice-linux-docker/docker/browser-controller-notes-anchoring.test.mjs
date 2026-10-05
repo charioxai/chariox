@@ -12,6 +12,7 @@ const unrelated = 'other selected surroundings';
 // TreeWalker never crosses shadow roots. Distinct root boxes let assertions
 // verify which occurrence won, in addition to the returned anchor state.
 function observer(texts) {
+  class ShadowRoot {}
   const roots = texts.map((text, i) => ({
     nodes: [{ data: text, length: text.length }],
     box: { x: 10 + i * 100, y: 20, width: 30, height: 10 },
@@ -19,6 +20,7 @@ function observer(texts) {
   for (const root of roots) for (const node of root.nodes) node.root = root;
   const body = roots[0];
   const context = createContext({
+    ShadowRoot,
     document: {
       body, documentElement: body,
       getSelection: () => null,

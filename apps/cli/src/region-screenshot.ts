@@ -29,13 +29,23 @@ export async function withRegionScreenshot(input: {
     const response=await input.send<{KernelBrowser?:{result:{generation:number;viewport:{css_width:number;css_height:number};tabs:{tab_id:string}[]}}}>({KernelBrowser:{command:{op:"state"}}})
     const state=response.KernelBrowser?.result
     if(!state)throw new Error("Kernel browser is unavailable")
-    frameWidth=state.viewport.css_width;frameHeight=state.viewport.css_height
+    let tabId = id, generation = state.generation
     if(kind === "app") {
       const response=await input.send<{UserAppViewsListed?:{views:{view_id:string;browser?:{tab_id:string;generation:number}}[]}}>({ListUserAppViews:{}})
       const browser=response.UserAppViewsListed?.views.find(view=>view.view_id===id)?.browser
       if(!browser)throw new Error("App capture requires a kernel-hosted view; native TUI projection has no pixel surface")
       surface={kind:"user_app_view",view_id:id,generation:browser.generation}
+      tabId=browser.tab_id;generation=browser.generation
     } else surface={kind:"kernel_browser",tab_id:id,generation:state.generation}
+    // Display negotiation keeps a per-tab DPR even after the viewer closes.
+    // The existing protected screenshot seam reports that tab's native pixels;
+    // state.viewport describes CSS layout and cannot size a region attachment.
+    const observed=await input.send<{KernelBrowser?:{result:{tab_id:string;generation:number;width:number;height:number}}}>({KernelBrowser:{command:{op:"screenshot",tab_id:tabId,generation}}})
+    const frame=observed.KernelBrowser?.result
+    if(!frame || frame.tab_id!==tabId || frame.generation!==generation
+      || !Number.isSafeInteger(frame.width) || !Number.isSafeInteger(frame.height)
+      || frame.width<=0 || frame.height<=0 || frame.width*frame.height>16*1024*1024)throw new Error("Native capture geometry is unavailable")
+    frameWidth=frame.width;frameHeight=frame.height
   }
   const captureId=randomUUID()
   const response=await sendWithProtocolMinimum<{VisibleRegionCaptured?:{capture:VisibleRegionCapture}}>(input.send,captureVisibleRegionRequest(captureId,surface,{x:x!,y:y!,width:width!,height:height!,viewport_width:frameWidth,viewport_height:frameHeight,frame_width:frameWidth,frame_height:frameHeight}),{capability:"Visible region capture",requestVariant:"CaptureVisibleRegion",minimumProtocolVersion:427})

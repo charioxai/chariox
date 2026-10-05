@@ -9,11 +9,16 @@ import { handleBrowserControllerRequest } from './browser-controller.mjs';
 
 const secret = 'synthetic-vault-secret';
 
-function fixture(text, start, end, { splitAt, shadow = false, child = false } = {}) {
+function fixture(text, start, end, { splitAt, shadow = false, child = false, protectedAttribute } = {}) {
   class ShadowRoot {}
   const root = shadow ? new ShadowRoot() : {};
+  const protectedElement = protectedAttribute ? {
+    closest: selector => selector.includes(`[${protectedAttribute}]`) ? {} : null,
+    getRootNode: () => ({})
+  } : null;
+  if (shadow) root.host = protectedElement;
   root.nodes = (splitAt == null ? [text] : [text.slice(0, splitAt), text.slice(splitAt)]).map(data => ({
-    data, length: data.length, getRootNode: () => root,
+    data, length: data.length, getRootNode: () => root, parentElement: shadow ? null : protectedElement,
   }));
   const body = shadow ? { nodes: [] } : root;
   const locate = offset => {
@@ -146,3 +151,11 @@ test('MD-N2 / MP-10: benign quotes preserve raw DOM offsets and Unicode context'
   const range = JSON.parse(JSON.parse(result.result.selection.hint).range);
   assert.deepEqual(range, { start: at, end: at + 8 });
 });
+
+for (const protectedAttribute of ['data-chariox-secret','data-chariox-observation-protected']) {
+  for (const shadow of [false,true]) test(`Notes withholds ${protectedAttribute} selection in ${shadow?'shadow':'light'} DOM`, async () => {
+    const result=await fixture('synthetic-private-text',0,22,{shadow,protectedAttribute}).capture();
+    assert.equal(result.ok,true);
+    assert.equal(result.result.selection,null);
+  });
+}

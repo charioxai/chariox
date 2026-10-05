@@ -107,6 +107,12 @@ async fn check_live() {
     let home = PathBuf::from(std::env::var_os("CHARIOX_HOME").expect("MD-N5 explicit state"));
     assert!(root.is_absolute() && home.starts_with(&root));
     assert_ne!(unsafe { libc::geteuid() }, 0);
+    // The fixture uses a private Unix socket to stimulate the same native
+    // host pipe. The product host never exposes a debugger endpoint.
+    std::env::set_var(
+        "CHARIOX_KERNEL_BROWSER_SCRIPT",
+        std::env::var_os("CHARIOX_MDNOTES_DRIVER").unwrap(),
+    );
     let fixture = Fixture::new();
     let room_root = root.join("room-browser");
     std::fs::create_dir_all(&room_root).unwrap();

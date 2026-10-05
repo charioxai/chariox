@@ -702,3 +702,92 @@ done
         "MP-11: old request crossed result authority boundary"
     );
 }
+
+#[test]
+fn authority_callback_does_not_hold_actor_lock_during_concurrent_retirement() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    for retire in [false, true] {
+        for op in ["input", "stop", "takeover"] {
+            let root = crate::test_support::TestWorktree::new("md-authority-lock-order");
+            let script = root.path().join("controller.sh");
+            std::fs::write(&script, r#"set -eu
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+  *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+  *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id" ;;
+  *'"op":"input"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; exit 0 ;;
+ esac
+done
+"#).unwrap();
+            let host = KernelBrowserHost::new(root.path().to_path_buf());
+            host.install_fixture_backend("alice", &script, root.path());
+            host.set_focus("alice", Some("agent"));
+            host.load("alice", "agent").unwrap();
+            let model = host.actor_model("alice").unwrap();
+            model
+                .lock()
+                .unwrap()
+                .reconcile(
+                    &json!({"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}),
+                )
+                .unwrap();
+            let callback_under_lock = Arc::new(AtomicBool::new(false));
+            let inspect = Arc::new(AtomicBool::new(true));
+            let detected = callback_under_lock.clone();
+            let inspecting = inspect.clone();
+            let authority_host = host.clone();
+            let authority_model = model.clone();
+            let admission = host
+                .admit("alice", "agent")
+                .unwrap()
+                .with_authority(move || {
+                    // Detect the old inversion without leaving blocked test threads.
+                    // Before racing retirement no other thread can own this mutex.
+                    if inspecting.load(Ordering::Acquire) && authority_model.try_lock().is_err() {
+                        detected.store(true, Ordering::Release);
+                        return false;
+                    }
+                    // Production authority reaches this host.inner acquisition.
+                    authority_host.is_focused("alice", "agent")
+                });
+            let call = || {
+                if op == "takeover" {
+                    host.request_takeover_admitted(
+                        "alice",
+                        EnvironmentActor::new("terminal:a", EnvironmentActorKind::Human, "Alice"),
+                        "host-tab-a",
+                        1,
+                        Some(&admission),
+                    )
+                    .map(|_| ())
+                } else {
+                    host.protected_request_admitted("alice", Some(&admission), "host.browser", json!({"op":op,"tab_id":"host-tab-a","generation":1,"document_id":"d","input":{"kind":"text","text":"fixture"}}), json!({"values":[],"targets":[],"unknown":false})).map(|_| ())
+                }
+            };
+            let initial = call();
+            assert!(
+                !callback_under_lock.load(Ordering::Acquire),
+                "{op}: authority callback ran under the actor-model mutex"
+            );
+            initial.unwrap();
+            inspect.store(false, Ordering::Release);
+            std::thread::scope(|scope| {
+                let running = scope.spawn(call);
+                let retirement = scope.spawn(|| {
+                    if retire {
+                        host.revoke_agent("agent");
+                    } else {
+                        host.set_focus("alice", None);
+                    }
+                });
+                let _ = running.join().unwrap();
+                retirement.join().unwrap();
+            });
+            assert!(host.check_admission(Some(&admission)).is_err());
+            host.shutdown().unwrap();
+        }
+    }
+}
