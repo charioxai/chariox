@@ -29,3 +29,16 @@ test('MD-DISPLAY credit stays occupied through event-before-receipt and presenta
     await first; await stream.close();
   }
 });
+
+test('MD-DISPLAY bounded window sends four credits before any receipt and drains before stop', async () => {
+ let listener; const credits=[];
+ const transport={onEvent:fn=>{listener=fn;return()=>{}},request:async({KernelBrowser:{command}})=>({KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s'}:command.op==='display_next'?await new Promise(resolve=>credits.push({command,resolve})):{}}})};
+ const stream=await attachBrowserDisplay({width:1,height:1},transport,{tab_id:'t',generation:1});
+ stream.presenter.present=async frame=>{stream.presenter.sequence=frame.sequence;return true};
+ stream.start(); await new Promise(resolve=>setTimeout(resolve,10));
+ assert.equal(credits.length,4);
+ const stopped=stream.stop();
+ for(let i=0;i<4;i++){listener({event:'kernel_browser_frame',subscription_id:'s',frame:{sequence:i+1}});credits[i].resolve({frame_sent:true})}
+ await stopped;assert.equal(credits.length,4);assert.equal(stream.presenter.sequence,4);
+ await stream.close();
+});

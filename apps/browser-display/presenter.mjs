@@ -41,17 +41,23 @@ export class BrowserDisplayPresenter {
         const bitmap = await createImageBitmap(new Blob([bytes(frame.data_base64)], { type: 'image/png' })); bitmaps.push(bitmap);
         if (bitmap.width !== frame.width || bitmap.height !== frame.height) throw new Error('MD-DISPLAY: image dimensions');
         context.drawImage(bitmap, 0, 0);
-      } else if (frame.kind === 'video' && frame.codec === VP9 && frame.key === true) {
-        let output, decodeError;
-        const decoder = new VideoDecoder({ output: value => { output?.close(); output = value; }, error: error => { decodeError = error; } });
+      } else if (frame.kind === 'video' && frame.codec === VP9 && typeof frame.key === 'boolean') {
+        if (!this.decoder || frame.key) {
+          this.decoder?.close();
+          this.decoder = new VideoDecoder({ output: value => this.decoded?.resolve(value), error: error => this.decoded?.reject(error) });
+          this.decoder.configure({ codec:VP9, codedWidth:frame.width, codedHeight:frame.height, optimizeForLatency:true });
+          this.videoSequence = null;
+        } else if (this.videoSequence !== frame.sequence-1 || this.documentId !== frame.document_id) throw Error('MD-DISPLAY: video base lost; subscribe afresh');
+        let output, timer;
         try {
-          decoder.configure({ codec: VP9, codedWidth: frame.width, codedHeight: frame.height });
-          decoder.decode(new EncodedVideoChunk({ type: 'key', timestamp: frame.sequence * 200000, data: bytes(frame.data_base64) }));
-          await decoder.flush();
-          if (decodeError) throw decodeError;
-          if (!output || output.displayWidth !== frame.width || output.displayHeight !== frame.height) throw new Error('MD-DISPLAY: decoded geometry');
-          context.drawImage(output, 0, 0);
-        } finally { output?.close(); if (decoder.state !== 'closed') decoder.close(); }
+          output = await new Promise((resolve,reject) => {
+            timer=setTimeout(()=>reject(Error('MD-DISPLAY: decode timeout')),5000);
+            this.decoded={resolve,reject};
+            this.decoder.decode(new EncodedVideoChunk({type:frame.key?'key':'delta',timestamp:frame.sequence*33333,data:bytes(frame.data_base64)}));
+          });
+          if (output.displayWidth !== frame.width || output.displayHeight !== frame.height) throw Error('MD-DISPLAY: decoded geometry');
+          context.drawImage(output,0,0); this.videoSequence=frame.sequence;
+        } finally { clearTimeout(timer); this.decoded=null; output?.close(); }
       } else throw new Error('MD-DISPLAY: unsupported frame');
       if (this.closed) return false;
       this.onTiming('client_decode', at);
@@ -73,7 +79,7 @@ export class BrowserDisplayPresenter {
     if (this.closed || !this.documentId) throw new Error('MD-DISPLAY: no displayed document');
     return { op: 'display_input', tab_id: this.binding.tab_id, generation: this.binding.generation, document_id: this.documentId, input };
   }
-  close() { this.closed = true; this.documentId = null; this.canvas.width = 1; this.canvas.height = 1; }
+  close() { this.decoder?.close(); this.decoder=null; this.closed = true; this.documentId = null; this.canvas.width = 1; this.canvas.height = 1; }
 }
 // One outstanding credit; events and responses can arrive in either order.
 export async function attachBrowserDisplay(canvas, transport, tab, options = {}) {
@@ -85,9 +91,21 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   const onTiming = options.onTiming ?? (() => {});
   const presenter = new BrowserDisplayPresenter(canvas, binding, onTiming);
   let pending = null, stopped = false, creditOutstanding = false;
+  let running = false, failure = null, presentation = Promise.resolve(), active = new Set();
+  const frames = [], arrivals = [];
+  let queuedBytes = 0;
+  const accept = frame => {
+    const size = JSON.stringify(frame).length;
+    if (frames.length >= 8 || queuedBytes + size > 1024 * 1024) throw Error('MD-DISPLAY: credited receive window exceeded');
+    if (arrivals.length) arrivals.shift()(frame);
+    else { frames.push(frame); queuedBytes += size; }
+  };
+  const receive = () => frames.length ? Promise.resolve((queuedBytes -= JSON.stringify(frames[0]).length, frames.shift())) : new Promise(resolve => arrivals.push(resolve));
   const off = transport.onEvent(event => {
     if (event.event !== 'kernel_browser_frame' || event.subscription_id !== binding.subscription_id) return;
-    pending?.resolve(event.frame); pending = null;
+    if (running || active.size) {
+      try { accept(event.frame); } catch (error) { failure = error; running = false; }
+    } else { pending?.resolve(event.frame); pending = null; }
   });
   try { await transport.subscribeDisplay?.(binding); }
   catch (error) {
@@ -96,7 +114,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     throw error;
   }
   const next = async () => {
-    if (stopped || creditOutstanding) throw new Error('MD-DISPLAY: stream stopped or credit outstanding');
+    if (stopped || creditOutstanding || running || active.size) throw new Error('MD-DISPLAY: stream stopped or credit outstanding');
     creditOutstanding = true;
     let timer;
     const event = new Promise((resolve, reject) => {
@@ -125,11 +143,48 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
       return frame;
     } finally { clearTimeout(timer); pending = null; creditOutstanding = false; }
   };
-  return { binding, presenter, next,
+  // MD-DISPLAY-04: four admitted requests pipeline the existing 419 credit
+  // operation. Each slot is retained through its receipt AND presentation;
+  // source/encoder stay serial, so no unbounded capture queue is introduced.
+  let receiptOrder = Promise.resolve();
+  const issue = () => {
+    const at = performance.timeOrigin + performance.now();
+    const response = request({ op:'display_next', subscription_id:binding.subscription_id,
+      generation:binding.generation, after_sequence:presenter.sequence });
+    response.catch(() => {});
+    const ordered = receiptOrder.then(async () => {
+      const receipt = await response;
+      onTiming('frame_credit_round_trip', at);
+      if (!receipt.frame_sent) { await new Promise(resolve => setTimeout(resolve,33)); return; }
+      let timer;
+      const frame = await Promise.race([receive(), new Promise((_,reject) => {
+        timer=setTimeout(() => reject(Error('MD-DISPLAY: window event timeout')),30000);
+      })]).finally(() => clearTimeout(timer));
+      presentation = presentation.then(async () => {
+        if (!await presenter.present(frame)) throw Error('MD-DISPLAY: rejected window frame');
+        options.onPresented?.(frame);
+      });
+      await presentation;
+    });
+    receiptOrder = ordered.catch(() => {});
+    active.add(ordered);
+    ordered.catch(error => { failure=error; running=false; }).finally(() => {
+      active.delete(ordered);
+      if (running && !failure) issue();
+    });
+  };
+  const start = () => {
+    if (stopped || creditOutstanding || active.size || failure) throw failure ?? Error('MD-DISPLAY: stream busy');
+    running=true;
+    for(let i=0;i<4;i++) issue();
+  };
+  const stop = async () => { running=false; await Promise.allSettled([...active]); if(failure) throw failure; };
+  return { binding, presenter, next, start, stop,
+    get running() { return running; },
     input: input => request(presenter.input(input)),
     takeover: () => request({ op: 'display_takeover', ...tab }),
     release: () => request({ op: 'display_release', ...tab }),
     actors: () => request({ op: 'display_actors' }),
-    async close() { stopped = true; pending?.reject(new Error('MD-DISPLAY: closed')); pending = null; off(); presenter.close(); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
+    async close() { await stop().catch(() => {}); stopped = true; pending?.reject(new Error('MD-DISPLAY: closed')); pending = null; off(); presenter.close(); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
   };
 }

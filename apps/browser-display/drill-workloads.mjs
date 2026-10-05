@@ -2,20 +2,24 @@
 import {drainRepairs} from './drill-settle.mjs';
 import { distribution } from './drill-metrics.mjs';
 export async function measureWorkload({page,workload,pair,pause,resource,durationMs}) {
- const before=await page.evaluate(()=>({bytes:mdWireBytes,frames:mdFrames.length}));
+ const before=await page.evaluate(()=>({bytes:mdWireBytes,frames:mdFrames.length,presentations:mdPresentations?.length??0}));
  const started=performance.now(),cadence=[],samples=[];
  if(workload!=='scroll')await page.evaluate(()=>mdStream.input({kind:'click',x:60,y:88}));
- let last=performance.now();
+ let last=performance.now();const continuous=process.env.MD_WINDOW==='1';
+ if(continuous)await page.evaluate(()=>mdStream.start());
  while(performance.now()-started<durationMs){
   if(workload==='scroll')await page.evaluate(()=>mdStream.input({kind:'scroll',x:700,y:600,delta_x:0,delta_y:240}));
-  const frame=await page.evaluate(()=>mdStream.next());
+  const frame=continuous?null:await page.evaluate(()=>mdStream.next());
+  if(continuous)await pause(33);
   if(frame){const now=performance.now();cadence.push(now-last);last=now;samples.push({kind:frame.kind,sequence:frame.sequence,presented_ms:now-started})}
   // Live readback pairs include temporal/compositor drift. Never call them
   // codec PSNR or pixel exactness of the captured encoded source.
   if(samples.length===1||samples.length===4)samples.at(-1).live_pair=await pair(`moving-${samples.length}`);
   await resource();
  }
- const motionEnd=performance.now(),after=await page.evaluate(()=>({bytes:mdWireBytes,frames:mdFrames.slice()}));
+ if(continuous)await page.evaluate(()=>mdStream.stop());
+ const motionEnd=performance.now(),after=await page.evaluate(()=>({bytes:mdWireBytes,frames:mdFrames.slice(),presentations:mdPresentations?.slice()??[]}));
+ if(continuous){for(const p of after.presentations.slice(before.presentations)){samples.push({sequence:p.sequence,presented_ms:p.drawn_ms});}for(let i=1;i<samples.length;i++)cadence.push(samples[i].presented_ms-samples[i-1].presented_ms);}
  if(workload!=='scroll')await page.evaluate(()=>mdStream.input({kind:'click',x:60,y:88}));
  await pause(300);const settleStart=performance.now();
  // Record the frozen first-frame quality separately from its exact repair.

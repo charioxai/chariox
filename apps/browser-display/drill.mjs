@@ -109,7 +109,7 @@ try {
     }catch{socket?.close();await new Promise(resolve=>setTimeout(resolve,100));}
    }
   if(!daemonKey)throw Error('MD-DISPLAY relay did not admit kernel target');
-  let id=0;const pending=new Map(),listeners=new Set();window.mdWireBytes=0;window.mdFrames=[];window.mdTimings=[];
+  let id=0;const pending=new Map(),listeners=new Set();window.mdWireBytes=0;window.mdFrames=[];window.mdPresentations=[];window.mdTimings=[];
   const stamp=()=>performance.timeOrigin+performance.now();
   const timing=(stage,started)=>{const ended=stamp();mdTimings.push({stage,started_ms:started,ended_ms:ended,duration_ms:ended-started});};
   socket.onmessage=async event=>{
@@ -126,18 +126,18 @@ try {
      window.mdFrames.push({sequence:value.frame.sequence,kind:value.frame.kind,bytes:event.data.length});for(const listener of listeners)listener(value);
    }
   };
-  const control=value=>new Promise((resolve,reject)=>{const key=String(++id),timer=setTimeout(()=>{pending.delete(key);reject(Error('MD-DISPLAY request timeout'))},20000);pending.set(key,{resolve:value=>{clearTimeout(timer);resolve(value)},reject:error=>{clearTimeout(timer);reject(error)}});socket.send(JSON.stringify({request_id:key,...value}))});
+  const control=(value,reserved)=>new Promise((resolve,reject)=>{const key=reserved??String(++id),timer=setTimeout(()=>{pending.delete(key);reject(Error('MD-DISPLAY request timeout'))},20000);pending.set(key,{resolve:value=>{clearTimeout(timer);resolve(value)},reject:error=>{clearTimeout(timer);reject(error)}});socket.send(JSON.stringify({request_id:key,...value}))});
   window.mdTransport={request:async request=>{
-    const started=stamp();
-    const encrypted=await api.encryptRelayPayload(daemonKey,JSON.stringify({command_id:'md-display-'+(id+1),request}),sender);
+    const started=stamp(),reserved=String(++id);
+    const encrypted=await api.encryptRelayPayload(daemonKey,JSON.stringify({command_id:'md-display-'+reserved,request}),sender);
     timing('client_request_encrypt',started);
-    const sent=stamp();const result=await control({kind:'client_request',target:{daemon_id:bootstrap.daemon_id},encrypted_request:encrypted.payload});
+    const sent=stamp();const result=await control({kind:'client_request',target:{daemon_id:bootstrap.daemon_id},encrypted_request:encrypted.payload},reserved);
     timing(request.KernelBrowser.command.op==='display_input'?'input_round_trip':'capture_or_control_round_trip',sent);return result;
    },onEvent:listener=>{listeners.add(listener);return()=>listeners.delete(listener)}};
   mdTransport.subscribeDisplay=binding=>control({kind:'client_subscribe',subscription_id:binding.subscription_id,target:{daemon_id:bootstrap.daemon_id},session_id:binding.subscription_id,attachment_id:String(binding.generation),client_public_key:sender.publicKeyBase64,subscription_scope:'kernel_browser_display',resume_from_event_id:null});
   mdTransport.unsubscribeDisplay=binding=>control({kind:'client_unsubscribe',subscription_id:binding.subscription_id,client_public_key:sender.publicKeyBase64});
   window.mdStream=await MDDisplay.attachBrowserDisplay(MDDisplay.canvas,mdTransport,{tab_id:ready.tab_id,generation:ready.generation},{bitrate,onTiming:timing,onPresented:frame=>{
-    const sample={sequence:frame.sequence,drawn_ms:stamp()};window.mdPresentation=sample;
+    const sample={sequence:frame.sequence,drawn_ms:stamp()};window.mdPresentation=sample;mdPresentations.push(sample);
     requestAnimationFrame(()=>{
       if(window.mdProbeLeft!==undefined){const c=MDDisplay.canvas.getContext('2d');let n=0;for(let i=0;i<5;i++){const p=c.getImageData(mdProbeLeft+8+i*16,56,1,1).data;if(p[0]>128)n|=1<<i}sample.step=n;}
       sample.presented_ms=stamp();
@@ -180,20 +180,33 @@ try {
  if(probeLeft===null)throw Error('MD-DISPLAY: cannot bind fixture probe to captured viewport');
  receipt.probe_pixel_left=probeLeft;
  await page.evaluate(left=>{window.mdProbeLeft=left},probeLeft);
- const probes=[];const startBytes=await page.evaluate(()=>mdWireBytes),start=performance.now();
+ const probes=[];
+ if(process.env.MD_WINDOW==='1')await page.evaluate(()=>mdStream.start());
+ const startBytes=await page.evaluate(()=>mdWireBytes),start=performance.now();
  for(let i=1;i<=20;i++) {
   await resource();
-  const probe=await page.evaluate(async left=>{
+  const probe=await page.evaluate(async({left,expected,continuous})=>{
    const stamp=()=>performance.timeOrigin+performance.now(), started=stamp();
    await mdStream.input({kind:'click',x:1190,y:28});
-   const inputAck=stamp(),frame=await mdStream.next(),creditReleased=stamp();
+   const inputAck=stamp();
+   let frame;
+   if(continuous) {
+     const deadline=stamp()+10000;
+     while(mdPresentation?.step!==expected||!mdPresentation?.presented_ms) {
+       if(stamp()>deadline)throw Error('MD-DISPLAY visual acknowledgement timeout');
+       await new Promise(resolve=>requestAnimationFrame(resolve));
+     }
+     frame={sequence:mdPresentation.sequence,kind:'continuous'};
+   } else frame=await mdStream.next();
+   const creditReleased=stamp();
    while(mdPresentation?.sequence!==frame?.sequence||!mdPresentation?.presented_ms)await new Promise(resolve=>requestAnimationFrame(resolve));
    const {drawn_ms,presented_ms,step}=mdPresentation;
    return {started_ms:started,input_ack_ms:inputAck,drawn_ms,presented_ms,credit_released_ms:creditReleased,latency_ms:presented_ms-started,step,kind:frame?.kind};
-  },probeLeft);
+  },{left:probeLeft,expected:i,continuous:process.env.MD_WINDOW==='1'});
   if(probe.step!==i){await pair('failed-probe-'+i);throw Error(`MD-DISPLAY: input visual acknowledgement ${i} got ${probe.step}`);}
   probes.push(probe.latency_ms);(receipt.probes??=[]).push(probe);if(!probe.kind)throw Error('MD-DISPLAY: missing changed frame');
  }
+ if(process.env.MD_WINDOW==='1')await page.evaluate(()=>mdStream.stop());
  const endResource=await resource();
  const firstResource=receipt.samples.find(sample=>sample.processes.some(process=>process.pid===kernel.pid));
  if(firstResource){const byPid=new Map(firstResource.processes.map(process=>[process.pid,process.cpu_ticks]));const delta=endResource.processes.reduce((total,process)=>total+Math.max(0,process.cpu_ticks-(byPid.get(process.pid)??process.cpu_ticks)),0);receipt.observed_owned_cpu_percent=delta/100/((endResource.at_ms-firstResource.at_ms)/1000)*100;receipt.cpu_note='live process deltas at Linux CLK_TCK=100; excludes already-exited encoder processes';}
@@ -228,7 +241,7 @@ try {
  await writeFile(path.join(output,'kernel.log'),Buffer.concat(log));
  if(errors.length)throw errors[0];
  receipt.status='PASS_LOCAL_COMPONENT';
- receipt.latency_goal={p50_ms:80,p95_ms:150,passed:receipt.latency.p50_ms<=80&&receipt.latency.p95_ms<=150};
+ receipt.latency_goal={p50_ms:80+receipt.network.rtt,p95_ms:100+receipt.network.rtt,passed:receipt.latency.p50_ms<=80+receipt.network.rtt&&receipt.latency.p95_ms<=100+receipt.network.rtt};
  if(process.env.MD_REQUIRE_LATENCY==='1'&&!receipt.latency_goal.passed)throw Error('MD-DISPLAY: input-to-presentation latency goal remains RED');
 } catch(error) {receipt.status='RED';receipt.error=String(error.message);process.exitCode=receipt.interrupted?130:1;}
 finally {

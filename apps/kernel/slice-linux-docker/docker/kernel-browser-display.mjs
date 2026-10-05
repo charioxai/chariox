@@ -12,7 +12,7 @@ export function safeChildPid(child) {
 }
 export class PortableEncoder {
   constructor() { this.child = null; this.pending = null; this.failure = null; }
-  async encode(png, bitrate) {
+  async encode(png, bitrate, reset = false) {
     if (this.failure) throw this.failure;
     if (!this.child) {
       const child = spawn(process.env.CHARIOX_BROWSER_DISPLAY_PYTHON || 'python3',
@@ -31,7 +31,7 @@ export class PortableEncoder {
         try {
           const reply = JSON.parse(line);
           if (reply.error || typeof reply.data_base64 !== 'string' || reply.data_base64.length > 4 * 1024 * 1024) return fail();
-          this.pending?.resolve(reply.data_base64); this.pending = null;
+          this.pending?.resolve({ data_base64:reply.data_base64, key:reply.key }); this.pending = null;
         } catch { fail(); }
       });
     }
@@ -40,7 +40,7 @@ export class PortableEncoder {
       return await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('MD-DISPLAY: encode timeout')), 10_000);
         this.pending = { resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); } };
-        this.child.stdin.write(JSON.stringify({ png, bitrate }) + '\n');
+        this.child.stdin.write(JSON.stringify({ png, bitrate, reset }) + '\n');
       });
     } catch (error) { await this.close(); throw error; }
   }
@@ -94,12 +94,15 @@ export class DisplayStream {
     this.expires = Date.now() + 60_000;
     this.timing = timing;
   }
+  acceptsCredit(after) { return Number.isSafeInteger(after) && after >= Math.max(0,this.sequence-8) && after <= this.sequence; }
   invalidate() { this.previous = null; this.exact = false; this.repair = null; this.capture?.invalidate(); }
   async frame(source, documentId, afterSequence) {
     let at = timestamp();
     const current = source.pixels ?? decodePng(source.data_base64, this.device_scale_factor);
     this.timing('png_decode', at); at = timestamp();
-    const bound = documentId === this.document_id && afterSequence === this.sequence;
+    // Already-admitted 419 credits may lag the delivered sequence. Eight
+    // frames is the hard recovery window; clients still validate every base.
+    const bound = documentId === this.document_id && this.acceptsCredit(afterSequence);
     if (!bound) this.invalidate();
     const same = this.previous?.pixels.equals(current.pixels);
     if (same && this.exact) return null;
@@ -133,7 +136,10 @@ export class DisplayStream {
       }
     } else if (tiles.length && JSON.stringify(patch).length < Math.min(patchLimit, source.full_size_hint ?? JSON.stringify(full()).length)) payload = patch;
     else if (this.codec === 'png') payload = full();
-    else payload = { kind: 'video', codec: 'vp09.00.10.08', key: true, data_base64: await this.encoder.encode(png(), this.bitrate) };
+    else {
+      const encoded = await this.encoder.encode(png(), this.bitrate, !bound || this.exact || Boolean(this.repair));
+      payload = { kind:'video', codec:'vp09.00.10.08', ...(typeof encoded === 'string' ? {key:true,data_base64:encoded} : encoded) };
+    }
     this.timing('select_encode', at); at = timestamp();
     const packet = { ...payload, subscription_id: this.subscription_id, tab_id: this.tab_id,
       generation: source.generation, document_id: documentId, sequence: this.sequence + 1,

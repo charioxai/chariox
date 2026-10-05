@@ -20,7 +20,7 @@ test('MD-DISPLAY video, exact settle, dirty patches and lost base recovery', asy
   assert.equal(await stream.frame(fixture(), 'd', 2), null);
   const patch = await stream.frame(fixture(0), 'd', 2); assert.equal(patch.kind, 'tiles'); assert.equal(patch.base_sequence, 2);
   assert.equal(patch.tiles.length, 1); assert.equal(decodePng(patch.tiles[0].data_base64).pixels[0], 0);
-  const recover = await stream.frame(fixture(0), 'd', 0); assert.equal(recover.kind, 'video');
+  const recover = await stream.frame(fixture(0), 'd', 100); assert.equal(recover.kind, 'video');
   const newDocument = await stream.frame(fixture(0), 'new-document', 4); assert.equal(newDocument.kind, 'video');
   stream.invalidate(); assert.equal((await stream.frame(fixture(), 'new-document', 5)).kind, 'video');
   assert.ok(waits.every(ms => ms > 0));
@@ -119,4 +119,17 @@ test('MD-DISPLAY large exact repair is bounded, completes and invalidates on mot
  assert.equal((await stream.frame({generation:1,data_base64:encodePng(512,512,nextPixels)},'d',stream.sequence)).kind,'video');
  assert.equal(stream.repair,null);
  assert.equal((await stream.frame(source,'d',0)).kind,'video');assert.equal(stream.repair,null);
+});
+
+test('MD-DISPLAY pipeline credit lag is bounded; encoder retains delta state and resets after repairs',async()=>{
+ const resets=[];
+ const stream=new DisplayStream(binding,{encoder:{encode:async(p,b,reset)=>{resets.push(reset);return {data_base64:'YWJj',key:reset}},close:async()=>{}},now:()=>0,wait:async()=>{}});
+ const first=await stream.frame(fixture(1),'d',0);
+ const second=await stream.frame(fixture(2),'d',0);
+ assert.equal(first.key,true);assert.equal(second.key,false);assert.equal(second.kind,'video');
+ await stream.frame(fixture(2),'d',0);
+ assert.equal((await stream.frame({generation:1,data_base64:encodePng(256,256,randomBytes(256*256*4))},'d',0)).key,true);
+ assert.deepEqual(resets,[true,false,true]);
+ assert.equal(stream.acceptsCredit(stream.sequence+1),false);
+ stream.sequence=20;assert.equal(stream.acceptsCredit(11),false);assert.equal(stream.acceptsCredit(12),true);
 });
