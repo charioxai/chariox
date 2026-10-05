@@ -11,7 +11,7 @@ use crate::runtime::projection::{
     SessionStateProjectionStore,
 };
 use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
-use crate::runtime::provider_run_control::refresh_provider_run_projection_from_response;
+use crate::runtime::provider_run_control::invalidate_provider_process_projection_from_response;
 use crate::runtime::runtime_lane_cleanup::cleanup_runtime_lanes_after_response;
 use crate::runtime::session_actor::FocusedAgentProjection;
 use crate::runtime::session_projection_refresh::{
@@ -59,8 +59,7 @@ pub(crate) async fn refresh_command_response_state(
         result,
     )
     .await;
-    refresh_provider_run_projection_from_response(
-        context.provider_run_projection,
+    invalidate_provider_process_projection_from_response(
         context.provider_process_projection,
         result,
     );

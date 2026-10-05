@@ -1,3 +1,4 @@
+use crate::provider::RuntimeProviderRun;
 use super::*;
 use crate::agent::RemoteAgentBinding;
 use crate::agent::{AgentInstance, GridPosition};
@@ -753,7 +754,7 @@ fn project_summary(id: &str, name: &str) -> crate::local::WaitingRoomPublicProje
 
 #[test]
 fn mp08_mp10_terminal_workflow_updates_have_one_authoritative_stream() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 435);
     let previous = session_snapshot_with_workflow_status(WorkflowRunStatus::Running);
     for status in [
         WorkflowRunStatus::Completed,

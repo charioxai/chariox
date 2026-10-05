@@ -57,9 +57,9 @@ pub enum LocalDaemonResponse {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         effects: Vec<UserConfigMutationEffect>,
     },
-    ProviderRunLaunched { provider_run: RuntimeProviderRun, },
+    ProviderRunLaunched { provider_run: PublicProviderRun, },
     NativeProviderInteractionResolved { resolution: NativeProviderInteractionResolution, },
-    ProviderRunLaunchAccepted { provider_run: RuntimeProviderRun, },
+    ProviderRunLaunchAccepted { provider_run: PublicProviderRun, },
     ProviderRunsLaunchAccepted { provider_runs: Vec<ProviderRunBatchLaunchResult>, failures: Vec<BatchOperationFailure>, },
     ProjectsListed { projects: Vec<RuntimeProject>, },
     ProjectRenamed { project: RuntimeProject, },
@@ -118,8 +118,8 @@ pub enum LocalDaemonResponse {
         record_count: usize,
         limit: usize,
     },
-    ProviderRun { provider_run: RuntimeProviderRun, },
-    ProviderRunSelectionUpdated { provider_run: RuntimeProviderRun, },
+    ProviderRun { provider_run: PublicProviderRun, },
+    ProviderRunSelectionUpdated { provider_run: PublicProviderRun, },
     ProviderCatalog { catalog: OpenCodeProviderCatalog, },
     ProviderCommandCatalogs { catalogs: BTreeMap<String, ProviderCommandCatalog>, },
     McpServerInstalled { mcp: CharioxMcpServerConfig, path: PathBuf, },
@@ -245,13 +245,13 @@ pub enum LocalDaemonResponse {
         session: RuntimeSession,
         agent: AgentInstance,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        provider_run: Option<RuntimeProviderRun>,
+        provider_run: Option<PublicProviderRun>,
     },
     ExternalProviderAgentImported {
         session: RuntimeSession,
         agent: AgentInstance,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        provider_run: Option<RuntimeProviderRun>,
+        provider_run: Option<PublicProviderRun>,
     },
     WorkspaceDirectoriesSearched { directories: Vec<String>, },
     WorkspaceDirectoryCreated { directory: String, },
@@ -397,7 +397,7 @@ pub enum LocalDaemonResponse {
     AgentForked {
         source_agent_id: String,
         agent: AgentInstance,
-        provider_run: RuntimeProviderRun,
+        provider_run: PublicProviderRun,
         session: RuntimeSession,
     },
     AgentMovedToRemote { agent: AgentInstance, },

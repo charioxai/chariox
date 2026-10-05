@@ -1,5 +1,24 @@
 # Chariox v1 Protocol
 
+### MP-11 F7 public provider-run boundary (local protocol 435)
+
+All client-facing provider-run responses (single/batch launch, read, selection,
+external import and fork) and terminal snapshot/change events use
+`PublicProviderRun`. This allowlist carries identity, selection, usage, state,
+control capabilities, public import metadata and native session binding. It
+omits provider launch environment/arguments, MCP authorization/configuration,
+private resume payloads, launch manifests and free-form diagnostics. Native TUI
+structured endpoints are projected only when the URL has no userinfo, query or
+fragment. Internal persistence and authenticated worker launch/projection
+contracts retain `RuntimeProviderRun`; no relay-peer shape changes in this
+revision (peer protocol remains 70 on this branch).
+
+The focused synthetic protocol drill is
+`apps/cli/scripts/public-provider-run-protocol-drill.mjs`. It runs the Rust DTO,
+response/event and private persistence regressions with a prebuilt kernel test
+binary; it neither invokes provider accounts nor establishes live parity.
+
+
 ## Status
 
 Draft protocol aligned with `docs/spec-v1.md`.

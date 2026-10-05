@@ -55,7 +55,9 @@ impl DaemonApp {
             }),
         );
         self.update_provider_run_projection(provider_run.clone());
-        Ok(LocalDaemonResponse::ProviderRunLaunched { provider_run })
+        Ok(LocalDaemonResponse::ProviderRunLaunched {
+            provider_run: provider_run.into(),
+        })
     }
 
     pub(crate) fn provider_catalog_response(&mut self) -> Result<LocalDaemonResponse, DaemonError> {
@@ -302,7 +304,7 @@ fn remote_native_provider_run_response(
                 Some(provider_run.id().to_string()),
             )?;
             Ok(Some(LocalDaemonResponse::ProviderRunLaunched {
-                provider_run,
+                provider_run: provider_run.into(),
             }))
         }
         other => Err(DaemonError::LocalTransport {
