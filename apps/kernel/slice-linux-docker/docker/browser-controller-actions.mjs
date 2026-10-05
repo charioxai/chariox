@@ -48,7 +48,7 @@ export async function performBrowserAction({
         ? `browser_element_${lastReason}` : "browser_action_timeout";
       throw new BrowserActionError(
         code,
-        `browser ${normalizedAction.kind} did not become actionable within ${boundedTimeoutMs}ms (${lastReason}); no input was delivered; capture a fresh snapshot before retrying`,
+        `browser ${normalizedAction.kind} did not become actionable within ${boundedTimeoutMs}ms (${lastReason}); no input was delivered; capture a fresh snapshot before retrying${lastReason === "unstable_geometry" ? "; keys on a focusable target do not require stationary geometry" : ""}`,
         { reason: lastReason, attempts, timeoutMs: boundedTimeoutMs },
       );
     }
@@ -66,7 +66,9 @@ export async function performBrowserAction({
       }
       const geometry = readyGeometry(actionability, normalizedAction);
       lastReason = geometry ? "unstable_geometry" : actionability.state;
-      if (geometry && sameGeometry(previousGeometry, geometry)) {
+      // MP-08/MP-10/MP-11: native keys verify focus before delivery; they do
+      // not use pointer coordinates. Pointer actions keep their stability fence.
+      if (geometry && (normalizedAction.kind === "press" || sameGeometry(previousGeometry, geometry))) {
         assertNotCancelled(signal);
         const actionResult = await withInput(() => executeAction(
           connection,
