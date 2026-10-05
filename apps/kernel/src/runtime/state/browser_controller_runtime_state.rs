@@ -1313,7 +1313,7 @@ impl KernelRuntimeState {
         Ok(snapshot)
     }
 
-    fn observe_browser_controller_generation(
+    pub(super) fn observe_browser_controller_generation(
         &self,
         session_id: &str,
         generation: u64,

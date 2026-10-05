@@ -409,6 +409,15 @@ impl KernelRuntimeState {
         } else {
             EnvironmentActionTerminal::Failed
         };
+        // Observing a restart is kernel bookkeeping, not a new controller effect.
+        // Fence the ledger before terminal settlement can promote queued work.
+        // Still attempt settlement if that bookkeeping itself fails.
+        let recovery_fence = match controller_restart_generation {
+            Some(generation) => self
+                .observe_browser_controller_generation(session_id, generation)
+                .map(|_| ()),
+            None => Ok(()),
+        };
         match self.finish_room_environment_action(session_id, &action_id, terminal) {
             Ok(_) => {}
             // Recovery owns process-loss finalization. Preserve the execution
@@ -430,6 +439,7 @@ impl KernelRuntimeState {
                     }) => {}
             Err(error) => return Err(action_environment_error(error)),
         }
+        recovery_fence?;
         if let Some(runtime_generation) = controller_restart_generation {
             self.authorize_current_external_command()?;
             self.recover_browser_controller_after_restart(session_id, runtime_generation)
@@ -1575,3 +1585,6 @@ mod tests {
 
 #[cfg(test)]
 mod grant_revocation_tests;
+
+#[cfg(test)]
+mod recovery_queue_tests;
