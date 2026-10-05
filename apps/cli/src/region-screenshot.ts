@@ -38,7 +38,7 @@ export async function withRegionScreenshot(input: {
     } else surface={kind:"kernel_browser",tab_id:id,generation:state.generation}
   }
   const captureId=randomUUID()
-  const response=await sendWithProtocolMinimum<{VisibleRegionCaptured?:{capture:VisibleRegionCapture}}>(input.send,captureVisibleRegionRequest(captureId,surface,{x:x!,y:y!,width:width!,height:height!,viewport_width:frameWidth,viewport_height:frameHeight,frame_width:frameWidth,frame_height:frameHeight}),{capability:"Visible region capture",requestVariant:"CaptureVisibleRegion",minimumProtocolVersion:425})
+  const response=await sendWithProtocolMinimum<{VisibleRegionCaptured?:{capture:VisibleRegionCapture}}>(input.send,captureVisibleRegionRequest(captureId,surface,{x:x!,y:y!,width:width!,height:height!,viewport_width:frameWidth,viewport_height:frameHeight,frame_width:frameWidth,frame_height:frameHeight}),{capability:"Visible region capture",requestVariant:"CaptureVisibleRegion",minimumProtocolVersion:427})
   const capture=response.VisibleRegionCaptured?.capture
   if(!capture || capture.capture_id!==captureId || capture.media_type!=="image/png" || capture.data_base64.length>6*1024*1024
     || !Object.entries(surface).every(([key,value])=>(capture.surface as unknown as Record<string,unknown>)[key]===value))throw new Error("Capture identity mismatch")

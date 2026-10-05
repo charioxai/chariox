@@ -183,3 +183,7 @@ this adapter. Browser input from an agent cannot impersonate the human App
 channel. The local protocol remains 418; these internal host APIs do not allocate
 another serialized request version. Screenshot capture remains on its separately
 allocated 425 branch and must reuse this protected host path.
+
+MD-stack integration: the unreleased feature allocation is folded into local
+protocol 427 (relay peer 74). This union and its shape/hash guards supersede the
+per-feature versions described during development above.

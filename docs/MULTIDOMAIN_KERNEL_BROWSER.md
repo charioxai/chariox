@@ -298,3 +298,7 @@ start a stopped browser; App instances/tabs are ephemeral and excluded from
 ordinary-tab restoration. Focused browser input/navigation/close is refused on live App tabs to
 preserve the human/agent App actor boundary. No separate Chromium or Room is
 created. App trust, tool queue and detached approvals remain in the App runtime.
+
+MD-stack integration: the unreleased feature allocation is folded into local
+protocol 427 (relay peer 74). This union and its shape/hash guards supersede the
+per-feature versions described during development above.

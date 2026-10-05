@@ -150,7 +150,8 @@ pub(crate) enum CommandReservation {
 pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
     if matches!(
         request,
-        LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+        LocalDaemonRequest::CaptureVisibleRegion(_)
+        | LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
             command: crate::local::KernelBrowserCommand::DisplayNext { .. }
         })
     ) {
