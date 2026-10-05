@@ -149,7 +149,7 @@ export class BrowserPassiveCapture {
     entry.response.content.mimeType = String(response?.mimeType ?? "").slice(0, 128);
   }
   capture(targetId, documentId) {
-    return artifactBytes(Buffer.from(JSON.stringify({ log: { version: "1.2", creator: { name: "Chariox actual CDP", version: "420" },
+    return artifactBytes(Buffer.from(JSON.stringify({ log: { version: "1.2", creator: { name: "Chariox actual CDP", version: "426" },
       entries: this.entries.filter(entry => entry.target_id === targetId && entry.document_id === documentId) }, dropped: this.dropped,
       redaction: "cookie/auth headers, query/fragment, bodies omitted" })), "browser-network.har", "application/json");
   }
