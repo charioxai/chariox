@@ -2106,6 +2106,7 @@ async fn dispatch_transport_test_request(
         &runtime,
         &router,
         &Arc::new(Mutex::new(ConnectionState {
+            local_terminal_id: "MD-3-test-connection".into(),
             subscription: None,
             watch_task: None,
         })),

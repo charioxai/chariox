@@ -237,6 +237,109 @@ fn terminal_command(id: &str, request: &LocalDaemonRequest) -> KernelCommand {
     command
 }
 
+// MD-3/R5: distinct admitted local connection contexts through the Rust adapter.
+async fn two_local_terminal_check(router: &CommandRouter, tab: &str, generation: u64, url: &str) {
+    use crate::runtime::command::KernelCommandSource;
+    use crate::runtime::state::KernelBrowserDisplayRequest as Display;
+    let request = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
+        command: KernelBrowserCommand::State,
+    });
+    let a = KernelCommand::from_local_request_with_caller(
+        "MD-3-terminal-a",
+        KernelCommandSource::LocalCli,
+        router
+            .local_terminal_caller(KernelCommandSource::LocalCli, "MD-3-connection-a")
+            .await,
+        None,
+        None,
+        &request,
+    );
+    let b = KernelCommand::from_local_request_with_caller(
+        "MD-3-terminal-b",
+        KernelCommandSource::LocalCli,
+        router
+            .local_terminal_caller(KernelCommandSource::LocalCli, "MD-3-connection-b")
+            .await,
+        None,
+        None,
+        &request,
+    );
+    let runtime = router.runtime_state();
+    let before = runtime
+        .kernel_browser_terminal_request(&a, KernelBrowserCommand::State)
+        .await
+        .unwrap();
+    runtime
+        .kernel_browser_terminal_request(
+            &b,
+            KernelBrowserCommand::Navigate {
+                tab_id: tab.into(),
+                generation,
+                url: format!("{url}?MD-3-second-document"),
+            },
+        )
+        .await
+        .unwrap();
+    let after = runtime
+        .kernel_browser_terminal_request(&b, KernelBrowserCommand::State)
+        .await
+        .unwrap();
+    assert_ne!(
+        before["tabs"][0]["document_id"],
+        after["tabs"][0]["document_id"]
+    );
+    assert!(
+        runtime
+            .kernel_browser_terminal_request(
+                &a,
+                KernelBrowserCommand::Input {
+                    tab_id: tab.into(),
+                    generation,
+                    input: KernelBrowserInput::Text {
+                        text: "MD-3-stale-terminal-must-not-type".into()
+                    }
+                }
+            )
+            .await
+            .is_err(),
+        "MD-3: B observation must not authorize A stale input"
+    );
+    let take = runtime
+        .kernel_browser_display_request(
+            &a,
+            Display::Takeover {
+                tab_id: tab.into(),
+                generation,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(take["state"], "granted");
+    assert!(
+        runtime
+            .kernel_browser_display_request(
+                &b,
+                Display::Release {
+                    tab_id: tab.into(),
+                    generation
+                }
+            )
+            .await
+            .is_err(),
+        "MD-3: B must not release A takeover"
+    );
+    runtime
+        .kernel_browser_display_request(
+            &a,
+            Display::Release {
+                tab_id: tab.into(),
+                generation,
+            },
+        )
+        .await
+        .unwrap();
+}
+
 async fn live_check() {
     use base64::Engine;
     use std::io::{Read, Write};
@@ -363,6 +466,13 @@ async fn live_check() {
                 generation,
                 url: format!("http://{address}/fixture"),
             },
+        )
+        .await;
+        two_local_terminal_check(
+            &router,
+            &id,
+            generation,
+            &format!("http://{address}/fixture"),
         )
         .await;
         focus(&router, session.id(), agent.id()).await;

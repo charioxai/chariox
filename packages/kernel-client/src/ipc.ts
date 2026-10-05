@@ -1362,8 +1362,13 @@ export class LocalIpcClient {
 }
 
 function runsAgainOnReplay(request: unknown): boolean {
-  return request !== null && typeof request === "object"
-    && Object.keys(request).some((kind) => KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY.has(kind))
+  if (request === null || typeof request !== "object") return false
+  if (Object.keys(request).some(kind => KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY.has(kind))) return true
+  // MD-3: reconnect creates another browser actor. Never repeat an uncertain
+  // mutation on that connection; observations can be fetched again safely.
+  const browser = (request as { KernelBrowser?: { command?: { op?: string } } }).KernelBrowser
+  return browser !== undefined
+    && !["state", "snapshot", "screenshot", "frames"].includes(browser.command?.op ?? "")
 }
 
 function kernelEventFromValue(value: unknown): KernelEvent {

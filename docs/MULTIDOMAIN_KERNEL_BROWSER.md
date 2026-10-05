@@ -58,6 +58,12 @@ MD-3 browser retry receipts include the authenticated terminal caller in their
 fingerprint. Terminal admission runs before replay lookup; another user cannot
 receive a cached observation. Browser receipts remain memory-only, preserving
 in-process mutation deduplication without persisting screenshot/frame payloads.
+MD-3 local terminals have a kernel-generated identity per admitted connection.
+Observations and takeover belong to that connection; another terminal cannot
+refresh its input receipt or release its control. Retries on the live connection
+retain the identity. Reconnecting with an old browser command ID fails closed
+on the caller fingerprint mismatch; clients must observe again and explicitly
+submit a new command, never automatically replay that mutation under a new ID.
 Native URLs outside HTTP(S)/about:blank restore as about:blank; reconciliation
 keeps at most 128 durable tabs, prioritizes existing identities, closes excess
 native targets and truncates oversized legacy registries.
