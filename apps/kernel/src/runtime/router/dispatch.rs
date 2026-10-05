@@ -138,10 +138,8 @@ impl CommandRouter {
                 "submit /sudo individually so each entry has its own popup",
             ));
         }
-        match self
-            .dispatch_pre_lane(&command, &request, &caller_user_id)
-            .await
-        {
+        // MD-4: keep transport callers independent of unrelated pre-lane futures.
+        match Box::pin(self.dispatch_pre_lane(&command, &request, &caller_user_id)).await {
             Ok(Some(response)) => {
                 if let Some((session_id, attachment_id)) =
                     projected_terminal_output_attachment(&request)
