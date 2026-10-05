@@ -9,3 +9,8 @@ MP-11 fix: one named access predicate verifies publication/endpoint/workflow and
 MP-11 final server CI entry `pnpm --filter @chariox/server test`: 99/99, zero failures/skips; includes actual Fastify HTTP routes, both SSE paths, ownership changing on later fetches, subject/account/publication separation, anonymous visibility, status admission with/without ingress. Existing server fixtures all pass. Focused initial GREEN 10/10. Evidence: `/root/.codex/evidence/browser-resume-20260930/mp11fix-publication/REPORT.md`.
 
 MP-11 inbox checked after milestone: new 14:30 #879 protocol-435 drill-consumer review found at 14:36. Switch next to `mp11/credential-access-fixes` to handle it, then final handoff. Original three #868 P2s are fixed separately at 0b122df01, 63059cc67, 6cfb8fdde. Earlier broader Rust/shell coverage follow-up is not claimed complete in this explicit round.
+
+## MP-11 #886 round 1 — canonical publication scope
+- Review P2 -> kernel ResolveWorkflow plus endpoint resolution with kernel precedence before comparing differing recorded IDs. Caller/publication checks retained, including canonical and configured envelope endpoint forms.
+- Fail-first alias/prefix invocation -> status/result/run-SSE/invocation-SSE: 2 failures (13/15 pass). Full server entry after fix: 101/101, exit 0. No serialized protocol change.
+- MP-11 evidence: /root/.codex/evidence/browser-resume-20260930/mp11fix-round3/publication-{red,green}.log. Local regression proof only; no live acceptance claim.

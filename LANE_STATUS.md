@@ -9,3 +9,5 @@ MP-11 none; protocol-435 already allocated and DTO boundary retained.
 ## Owner questions
 
 MP-11 none.
+
+MP-11 #886 round 1: alias/prefix reference regression reproduced (2 RED); canonical scope fix full server 101/101 GREEN. Next #868 round 2 generation handles, PTY subgroup cleanup, accounting-only runner capture.

@@ -13,7 +13,7 @@ import type {
 } from "@chariox/kernel-client/kernel-types"
 
 import type { VerifiedPublicationCallerClaims } from "./publication-caller-claims.js"
-import { publicationRunAccessibleToCaller } from "./publication-run-access.js"
+import { publicationRunAccessibleToCaller, resolvePublicationRunScope } from "./publication-run-access.js"
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
 import { publicationTakesRequests } from "./publication-config.js"
 import { normalizeFinalOutput } from "./publication-final-output.js"
@@ -180,8 +180,9 @@ async function latestEndpointRunStatus(
     listWorkflowRunsRequest(publication.session_id, publication.workflow_ref, { limit: 200 }),
   )
   const runs = (response.WorkflowRunsListed as { workflow_runs?: WorkflowRun[] } | undefined)?.workflow_runs ?? []
-  const matchingRuns = runs.filter((run) => isPublicationEndpointRun(run, publication, latestWatchdogRunIds)
-    && publicationRunAccessibleToCaller(publication, run, caller))
+  const scope = await resolvePublicationRunScope(client, publication, runs)
+  const matchingRuns = runs.filter((run) => isPublicationEndpointRun(run, scope, latestWatchdogRunIds)
+    && publicationRunAccessibleToCaller(scope, run, caller))
   const sortedRuns = matchingRuns.sort((left, right) => runSortKey(right) - runSortKey(left))
   const latestRun = sortedRuns[0] ? await detailedWorkflowRun(client, publication, sortedRuns[0], caller) : null
   const recentRuns = latestRun ? [latestRun, ...sortedRuns.slice(1, 5)] : sortedRuns.slice(0, 5)
@@ -206,12 +207,12 @@ async function detailedWorkflowRun(
     getWorkflowRunRequest(publication.session_id, run.id),
   )
   const detailed = (detail.WorkflowRun as { workflow_run?: WorkflowRun } | undefined)?.workflow_run ?? run
-  return publicationRunAccessibleToCaller(publication, detailed, caller) ? detailed : null
+  return publicationRunAccessibleToCaller(await resolvePublicationRunScope(client, publication, [detailed]), detailed, caller) ? detailed : null
 }
 
 function isPublicationEndpointRun(
   run: WorkflowRun,
-  publication: WorkflowPublicationConfig,
+  publication: Pick<WorkflowPublicationConfig, "publication_id" | "workflow_ref" | "endpoint_ref">,
   latestWatchdogRunIds: ReadonlySet<string>,
 ) {
   if (run.workflow_id && run.workflow_id !== publication.workflow_ref) return false

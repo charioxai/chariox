@@ -15,7 +15,7 @@ import {
 } from "./publication-agent-app-effects.js"
 import { releaseAgentAppReplicaInvocation } from "./publication-agent-app-replicas.js"
 import { findWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
-import { publicationRunAccessibleToCaller } from "./publication-run-access.js"
+import { publicationRunAccessibleToCaller, resolvePublicationRunScope } from "./publication-run-access.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
 import {
   collectPublicationTraceEvents,
@@ -263,7 +263,8 @@ async function streamWorkflowRunEventsWithClient(
       getWorkflowRunRequest(publication.session_id, workflowRunId),
     )
     const workflowRun = (response.WorkflowRun as { workflow_run?: WorkflowRun } | undefined)?.workflow_run ?? null
-    if (workflowRun && !publicationRunAccessibleToCaller(publication, workflowRun, caller)) {
+    if (workflowRun && !publicationRunAccessibleToCaller(
+      await resolvePublicationRunScope(client, publication, [workflowRun]), workflowRun, caller)) {
       writeSse(reply, "error", { error: "workflow run not found" })
       return
     }

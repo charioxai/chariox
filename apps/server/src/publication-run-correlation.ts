@@ -6,7 +6,7 @@ import type {
   WorkflowRun,
 } from "./publication-types.js"
 import type { VerifiedPublicationCallerClaims } from "./publication-caller-claims.js"
-import { publicationRunAccessibleToCaller } from "./publication-run-access.js"
+import { publicationRunAccessibleToCaller, resolvePublicationRunScope } from "./publication-run-access.js"
 import { publicationWaitTimeoutMs } from "./publication-timeouts.js"
 
 export async function findWorkflowRunByInvocationRequestId(
@@ -19,7 +19,8 @@ export async function findWorkflowRunByInvocationRequestId(
     listWorkflowRunsRequest(publication.session_id, publication.workflow_ref, { limit: 200 }),
   )
   const workflowRuns = (response.WorkflowRunsListed as { workflow_runs?: WorkflowRun[] } | undefined)?.workflow_runs ?? []
-  return workflowRuns.find((workflowRun) => publicationRunAccessibleToCaller(publication, workflowRun, caller)
+  const scope = await resolvePublicationRunScope(client, publication, workflowRuns)
+  return workflowRuns.find((workflowRun) => publicationRunAccessibleToCaller(scope, workflowRun, caller)
     && workflowRunMatchesInvocationRequestId(workflowRun, requestId)) ?? null
 }
 
