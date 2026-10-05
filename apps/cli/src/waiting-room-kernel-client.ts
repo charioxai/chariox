@@ -1,3 +1,4 @@
+import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { LocalIpcClient } from "./ipc.js"
 import { loadLocalKernelPresences, localKernelEndpoint } from "./local-kernel-presence.js"
 import { resolveKernelClientConnection } from "./relay-api.js"
@@ -12,16 +13,30 @@ type KernelClientTarget = {
 }
 
 async function openWaitingRoomKernelClient(controlClient: LocalIpcClient, target: KernelClientTarget) {
+  const issuingClient = "currentClient" in controlClient && typeof controlClient.currentClient === "function"
+    ? controlClient.currentClient() as LocalIpcClient : controlClient
   const localPresence = loadLocalKernelPresences().find(presence => presence.kernelId === target.kernelRef)
-  const connection = localPresence ? null : await resolveKernelClientConnection(controlClient, target)
+  const connection = localPresence ? null : await resolveKernelClientConnection(issuingClient, target)
   if (!target.isActive()) return null
   const client = localPresence
     ? new LocalIpcClient(localKernelEndpoint(localPresence))
     : new LocalIpcClient(connection!.relayUrl, {
         relayAuthToken: connection!.relayToken,
+        relayIdentity: createCliRelayIdentityStore().getOrCreate(),
         targetDaemonId: connection!.targetDaemonId ?? undefined,
         targetDaemonAlias: connection!.targetDaemonAlias ?? undefined,
       })
+  if (connection?.tokenExpiresAtMs) {
+    const release = issuingClient.retainForRelayRenewal()
+    client.startRelayAuthRenewal(connection.tokenExpiresAtMs, async () => {
+      const fresh = await resolveKernelClientConnection(issuingClient, {
+        kernelRef: connection.kernelId ?? connection.targetDaemonId ?? target.kernelRef,
+        machineRef: connection.machineId ?? target.machineRef,
+        clientId: target.clientId,
+      })
+      return { token: fresh.relayToken, expiresAtMs: fresh.tokenExpiresAtMs! }
+    }, release)
+  }
   return { client, label: localPresence?.kernelAlias ?? connection?.targetDaemonAlias ?? connection?.kernelId ?? target.kernelRef,
     machineId: localPresence?.machineId ?? connection?.machineId, kernelId: localPresence?.kernelId ?? connection?.kernelId }
 }

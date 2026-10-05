@@ -165,7 +165,7 @@ export function mergeRelayCloudProfile(
     ...current,
     relay: {
       ...(current.relay ?? {}),
-      cloud: publicCloudProfile(profile),
+      cloud: publicRelayCloudProfile(profile),
     },
   }
 }
@@ -236,13 +236,13 @@ function normalizePromptDraftEntry(entry: unknown) {
     .replace(/\r/g, "\n")
 }
 
-function publicCloudProfile(profile: RelayCloudProfile | null | undefined): RelayCloudProfile | null {
+export function publicRelayCloudProfile(profile: RelayCloudProfile | null | undefined): RelayCloudProfile | null {
   if (!profile) return null
   const keys = ["apiUrl", "email", "accountId", "userId", "accountSlug", "realmId", "relayUrl", "issuerId", "clientId", "clientAlias", "machineId", "machineAlias", "kernelId", "kernelEnrolled", "tokenExpiresAtMs"] as const
   return Object.fromEntries(keys.filter(key => profile[key] !== undefined).map(key => [key, profile[key]])) as RelayCloudProfile
 }
 function sanitizePreferences(current: CharioxPreferences): CharioxPreferences {
-  return current.relay ? { ...current, relay: { ...current.relay, cloud: publicCloudProfile(current.relay.cloud) } } : current
+  return current.relay ? { ...current, relay: { ...current.relay, cloud: publicRelayCloudProfile(current.relay.cloud) } } : current
 }
 async function writePreferences(filePath: string, preferences: CharioxPreferences) {
   await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 })
