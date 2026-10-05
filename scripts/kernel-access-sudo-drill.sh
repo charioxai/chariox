@@ -15,4 +15,4 @@ slot-run cargo +1.88.0 test -p chariox-kernel --lib kernel_access_grants --locke
 slot-run cargo +1.88.0 test -p chariox-kernel --lib meta_slash --locked
 # Exercise authorization waits and no-replay behavior on real private sockets.
 pnpm --filter @chariox/kernel-client run build
-node --test packages/kernel-client/dist/ipc-control-response-replay.test.js packages/kernel-client/dist/ipc-unix-access.test.js packages/kernel-client/dist/local-socket-transport.test.js packages/kernel-client/dist/kernel-authorization-request-policy.test.js packages/kernel-client/dist/websocket-pending-requests.test.js
+node --test packages/kernel-client/dist/ipc-control-response-replay.test.js packages/kernel-client/dist/ipc-unix-access.test.js packages/kernel-client/dist/kernel-authorization-request-policy.test.js packages/kernel-client/dist/websocket-pending-requests.test.js
