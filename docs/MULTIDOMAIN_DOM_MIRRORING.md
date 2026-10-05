@@ -17,7 +17,8 @@ Native App targets are refused and keep their native capability frontend.
 Subscribe selects the existing canonical 1280×800 CSS viewport at DPR 1 or 2.
 There are at most eight subscriptions; idle subscriptions expire after 60 seconds.
 Every next call grants one packet of credit. A lost base or changed document or
-protection policy sends a reset. Packets carry document/generation/sequence,
+protection policy sends a reset. In-flight policy changes fence replies and clear
+private bases; delayed focus/text/selection dispatch rechecks the current policy. Packets carry document/generation/sequence,
 stable document-lifetime node IDs, ordered child links, removed nodes, computed
 styles, form and scroll state, resources and opaque tiles. The client checks a
 SHA-256 hash of the canonical sanitized tree against the real source snapshot.
@@ -76,7 +77,8 @@ capture inspects open shadow descendants using trusted CDP metadata; Chromium
 user-agent shadow roots do not turn ordinary controls into secret fields.
 Same-origin frame tile bounds are translated into root compositor coordinates.
 Trusted CDP frame origins and exposed documents permit nested protection scans;
-explicitly protected frames retain their masks. Closed page roots and foreign or
+explicitly protected frames retain their masks. Password/payment attribute checks
+are ASCII case insensitive, including nested trusted CDP metadata. Closed page roots and foreign or
 unavailable frame regions remain masked under the conservative protection contract.
 Fully opaque regions use placeholders without source readback. Nested and shadow
 images are decoded before apply completes. Thus cross-origin frame content is currently an opaque

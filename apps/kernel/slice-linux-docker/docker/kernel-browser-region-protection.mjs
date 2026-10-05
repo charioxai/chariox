@@ -3,7 +3,7 @@ async function regions(connection, sessionId, mirrorStructured = false) {
   const { root } = await connection.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
   const { nodeIds } = await connection.send("DOM.querySelectorAll", {
     nodeId: root.nodeId,
-    selector: 'input[type="password"], [data-chariox-secret], [data-chariox-observation-protected], [data-observation-protected], input[autocomplete*="password"], input[autocomplete*="one-time-code"], input[autocomplete*="cc-"], iframe, frame',
+    selector: 'input[type="password"], [data-chariox-secret], [data-chariox-observation-protected], [data-observation-protected], input[autocomplete*="password" i], input[autocomplete*="one-time-code" i], input[autocomplete*="cc-" i], iframe, frame',
   }, sessionId);
   if (!Array.isArray(nodeIds)) throw new Error("Capture protection unavailable");
   // MP-11: structured mirrors may inspect only same-origin nested documents
@@ -28,7 +28,7 @@ async function regions(connection, sessionId, mirrorStructured = false) {
       // Inspect open shadow descendants through trusted CDP metadata, never page
       // scripts. UA shadow roots of ordinary inputs/media are native controls.
       const attrs=new Map();for(let i=0;i<(node.attributes?.length??0);i+=2)attrs.set(node.attributes[i],node.attributes[i+1]);
-      if(['data-chariox-secret','data-chariox-observation-protected','data-observation-protected'].some(key=>attrs.has(key)) || node.localName==='input' && (attrs.get('type')==='password'||/password|one-time-code|cc-/.test(attrs.get('autocomplete')??''))){nodes.push(node.nodeId);explicitlyProtected.add(node.nodeId);}
+      if(['data-chariox-secret','data-chariox-observation-protected','data-observation-protected'].some(key=>attrs.has(key)) || node.localName==='input' && (attrs.get('type')?.toLowerCase()==='password'||/password|one-time-code|cc-/i.test(attrs.get('autocomplete')??''))){nodes.push(node.nodeId);explicitlyProtected.add(node.nodeId);}
     }
     if(mirrorStructured&&node.contentDocument&&admittedFrames.has(node.frameId)) {
       exposedFrames.add(node.nodeId);pending.push(node.contentDocument);

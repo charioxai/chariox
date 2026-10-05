@@ -40,7 +40,7 @@ function installMirrorObserver(initialStyles = {}) {
     for (const value of variants) for(let at=text.indexOf(value);at>=0;at=text.indexOf(value,at+1)) {
       for (const item of textNodes) if(item.start<at+value.length && item.start+item.node.length>at) marked.add(item.node);
     }
-    const secret = node => node.nodeType===1 && (node.matches('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],input[type=password]') || /password|one-time-code|cc-/.test(node.autocomplete??'') || tainted(node.value) || [...node.attributes].some(a=>tainted(a.value)));
+    const secret = node => node.nodeType===1 && (node.matches('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],input[type=password]') || /password|one-time-code|cc-/i.test(node.autocomplete??'') || tainted(node.value) || [...node.attributes].some(a=>tainted(a.value)));
     const safeStyle = (element,pseudo=null,resourcesAllowed=true,bounds=null) => {
       const computed=getComputedStyle(element,pseudo), out={all:'initial'};
       // MP-08/MP-10: unchanged, simple offscreen text blocks need no full CSS
@@ -160,7 +160,7 @@ function installMirrorObserver(initialStyles = {}) {
   };
   const locate = request => {
     const node=live.get(request.node_id);
-    if(!node || !node.isConnected || node.nodeType!==1 || node.matches('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],input[type=password]') || /password|one-time-code|cc-/.test(node.autocomplete??'')) throw new Error('mirror stale/protected node');
+    if(!node || !node.isConnected || node.nodeType!==1 || node.matches('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],input[type=password]') || /password|one-time-code|cc-/i.test(node.autocomplete??'')) throw new Error('mirror stale/protected node');
     for(let e=node;e;e=e.parentElement??e.getRootNode()?.host)if(e.matches?.('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')||protectedVariants.some(v=>[e.value??'',...Array.from(e.attributes??[],a=>a.value)].some(s=>s.includes(v))))throw new Error('mirror protected ancestor');
     const r=box(node);let x=r.x+r.width/2,y=r.y+r.height/2;
     if(!(r.width>0&&r.height>0&&x>=0&&y>=0&&x<innerWidth&&y<innerHeight)) throw new Error('mirror offscreen node');

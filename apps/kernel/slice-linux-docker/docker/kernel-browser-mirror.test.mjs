@@ -119,3 +119,17 @@ test('MP-10/MP-11: fully opaque foreign/closed regions do not require compositor
   const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:2},'a');const packet=await service.next(next(s.subscription_id),'a');assert.equal(packet.nodes[1].reason,reason);assert.deepEqual(packet.tiles,[]);
  }
 });
+
+test('MP-11: policy changes during snapshot or capture fence the reply and private base',async()=>{
+ for(const stage of ['snapshot','capture']){
+  const {service,state,host}=fixture(),sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+  const change=()=>{host.protection={values:['fixture'],targets:[],unknown:false};service.invalidate();};
+  if(stage==='snapshot'){const evaluate=service.evaluate.bind(service);service.evaluate=async(world,expression)=>{const result=await evaluate(world,expression);if(expression.includes('.read('))change();return result;};}
+  else{state.snapshot.nodes[0].children.push('n3');state.snapshot.nodes.push({id:'n3',parent:'n1',children:[],kind:'tile',tag:'canvas',box:{x:0,y:0,width:10,height:10},reason:'opaque_media'});const capture=host.screenshot;host.screenshot=async(...args)=>{const result=await capture(...args);change();return result;};}
+  await assert.rejects(service.next(next(sub.subscription_id),'a'),/policy|stale/);const stream=service.streams.get(sub.subscription_id);assert.equal(stream.sequence,0);assert.equal(stream.previous,null);assert.equal(stream.observed,null);
+ }
+});
+test('MP-11: delayed mirror focus cannot dispatch after protection invalidation',async()=>{
+ const {service,host}=fixture(),sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),packet=await service.next(next(sub.subscription_id),'a');
+ const resolved=await service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:sub.subscription_id,sequence:packet.sequence,action:{kind:'focus',node_id:'n1'}},'a');host.protection={values:['fixture'],targets:[],unknown:false};service.invalidate();await assert.rejects(resolved.perform(),/policy|stale/);
+});

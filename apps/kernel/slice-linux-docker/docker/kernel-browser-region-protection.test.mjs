@@ -77,3 +77,11 @@ test('MP-11: same-origin iframe with explicit protection stays opaque',async()=>
   const masks=await captureRegionMasks(connection,'session',{mirrorStructured:true});assert.equal((await masks.afterCapture()).length,1);assert.deepEqual(boxed,[2,2]);
  }
 });
+
+test('MP-11: nested protected input attributes are ASCII case insensitive',async()=>{
+ const boxed=[];const connection={async send(method,params){
+  if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'main',securityOrigin:'http://fixture'},childFrames:[{frame:{id:'child',securityOrigin:'http://fixture'}}]}};
+  if(method==='DOM.getDocument')return {root:{nodeId:1,children:[{nodeId:2,localName:'iframe',frameId:'child',contentDocument:{nodeId:3,children:[{nodeId:4,localName:'input',attributes:['type','PASSWORD']},{nodeId:5,localName:'input',attributes:['autocomplete','CC-NUMBER']}]}}]}};
+  if(method==='DOM.querySelectorAll')return {nodeIds:[2]};assert.equal(method,'DOM.getBoxModel');boxed.push(params.nodeId);return {model:{border:[0,0,10,0,10,10,0,10]}};
+ }};const masks=await captureRegionMasks(connection,'session',{mirrorStructured:true});assert.equal((await masks.afterCapture()).length,2);assert.deepEqual(new Set(boxed),new Set([4,5]));
+});

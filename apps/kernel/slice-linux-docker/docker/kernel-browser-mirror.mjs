@@ -155,6 +155,12 @@ export class MirrorService {
     mark('tile_decode_mask_encode');
     await assertCurrentDocument(world.connection,world.sessionId,tab.target_id,tab.document_id);assertNotCancelled(signal);
     mark('document_fence');
+    // MP-11: protection updates may interleave with awaited CDP/resource work.
+    // No packet or private base captured under an old policy may escape afterward.
+    if(this.host.protection!==policy||this.host.generation!==command.generation||this.streams.get(command.subscription_id)!==stream) {
+      stream.previous=null;stream.observed=null;stream.policy=null;stream.resources.clear();stream.cache.clear();
+      throw new Error('MP-11: stale mirror protection policy or subscription');
+    }
     const hash=stream.hasher.hash(source),reset=!stream.previous||command.after_sequence!==stream.sequence||stream.document_id!==tab.document_id;
     const previous=new Map((stream.previous?.nodes??[]).map(n=>[n.id,n]));
     const changed=reset?source.nodes:source.nodes.filter(n=>JSON.stringify(n)!==JSON.stringify(previous.get(n.id)));
@@ -169,6 +175,8 @@ export class MirrorService {
   async resolveInput(tab,input,scope,signal) {
     this.assertWebTab(tab);const stream=this.require(input.subscription_id,scope,this.host.generation);
     if(stream.tab_id!==tab.tab_id||stream.document_id!==tab.document_id||stream.sequence!==input.sequence||stream.policy!==this.host.protection)throw new Error('MP-11: stale mirror input epoch');
+    const generation=this.host.generation;
+    const assertEpoch=()=>{if(this.require(input.subscription_id,scope,generation)!==stream||stream.policy!==this.host.protection)throw new Error('MP-11: stale mirror protection policy');};
     const action=input.action;
     if(stream.fullFallback && !['coordinate','key'].includes(action?.kind))throw new Error('MP-11: full video fallback requires coordinate input');
     if(!action||typeof action.kind!=='string'||['text','composition'].includes(action.kind)&&(typeof action.text!=='string'||action.text.length>16384)||action.kind==='composition'&&(!Number.isInteger(action.selection_start)||!Number.isInteger(action.selection_end)||action.selection_start<0||action.selection_start>action.text.length||action.selection_end<action.selection_start||action.selection_end>action.text.length))throw new Error('MP-11: invalid mirror input');
@@ -176,8 +184,8 @@ export class MirrorService {
     for(const id of action.kind==='selection'?[action.anchor_id,action.focus_id]:action.kind==='key'||action.kind==='coordinate'?[]:[action.node_id]) {
       const record=records.get(id);if(!record||record.kind==='mask'||action.kind==='selection'&&record.kind!=='text')throw new Error('MP-11: protected or unknown mirror input');
     }
-    const world=await this.world(tab);assertNotCancelled(signal);
-    const call=async method=>{assertNotCancelled(signal);await assertCurrentDocument(world.connection,world.sessionId,tab.target_id,tab.document_id);return this.evaluate(world,`globalThis.__charioxMirror.${method}(${JSON.stringify(action)})`);};
+    const world=await this.world(tab);assertNotCancelled(signal);assertEpoch();
+    const call=async method=>{assertNotCancelled(signal);assertEpoch();await assertCurrentDocument(world.connection,world.sessionId,tab.target_id,tab.document_id);assertEpoch();const result=await this.evaluate(world,`globalThis.__charioxMirror.${method}(${JSON.stringify(action)})`);assertEpoch();return result;};
     if(action.kind==='selection')return {perform:()=>call('select')};
     if(action.kind==='focus')return {perform:()=>call('focus')};
     if(action.kind==='coordinate')return {input:action.input};
@@ -186,7 +194,7 @@ export class MirrorService {
     if(action.kind==='click')return {input:{kind:'click',...point}};
     if(action.kind==='scroll')return {input:{kind:'scroll',...point,delta_x:action.delta_x,delta_y:action.delta_y}};
     if(action.kind==='text'||action.kind==='composition')return {perform:async send=>{
-      await call('focus');
+      await call('focus');assertNotCancelled(signal);assertEpoch();
       if(action.kind==='text')return send('Input.insertText',{text:action.text});
       return send('Input.imeSetComposition',{text:action.text,selectionStart:action.selection_start,selectionEnd:action.selection_end});
     }};
