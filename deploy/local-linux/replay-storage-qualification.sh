@@ -21,6 +21,10 @@ for raw in sys.argv[2:4]:
     if p == source or source in p.parents or p in source.parents:
         raise SystemExit('MP-10: state/evidence must not overlap source')
 if Path(sys.argv[2]).exists(): raise SystemExit('MP-10: use a fresh runtime root per replay')
+runtime = Path(sys.argv[2]).resolve()
+evidence = Path(sys.argv[3]).resolve()
+if evidence == runtime or runtime in evidence.parents:
+    raise SystemExit('MP-10: evidence must be outside the disposable runtime root')
 PY
 export M20_USE_PREBUILT=1 M20_LOCAL_DEV_ENROLLMENT=1
 fixture_environment=()
