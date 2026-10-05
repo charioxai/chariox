@@ -1,5 +1,4 @@
 // Screenshot-region masks from trusted CDP metadata, never page JavaScript.
-const fullFrame = [{ x: 0, y: 0, width: 1280, height: 800 }];
 async function regions(connection, sessionId) {
   const { root } = await connection.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
   const { nodeIds } = await connection.send("DOM.querySelectorAll", {
@@ -32,10 +31,15 @@ async function regions(connection, sessionId) {
 export async function captureRegionMasks(connection, sessionId) {
   // Layout changes or failed metadata checks cannot reveal an unmapped field.
   const before = await regions(connection, sessionId);
-  return { async afterCapture() {
+  return { async afterCapture({ width = 1280, height = 800 } = {}) {
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) throw new Error("Capture geometry unavailable");
+    const fullFrame = [{ x: 0, y: 0, width, height }];
     try {
       const after = await regions(connection, sessionId);
-      return JSON.stringify(before) === JSON.stringify(after) ? after : fullFrame;
+      if (JSON.stringify(before) !== JSON.stringify(after)) return fullFrame;
+      // CDP bounds are CSS coordinates; the raster crop masks native PNG pixels.
+      return after.map(region => ({ x: region.x * width / 1280, y: region.y * height / 800,
+        width: region.width * width / 1280, height: region.height * height / 800 }));
     } catch { return fullFrame; }
   } };
 }

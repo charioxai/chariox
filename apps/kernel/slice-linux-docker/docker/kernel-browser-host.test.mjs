@@ -7,6 +7,7 @@ import { PassThrough } from "node:stream";
 import readline from "node:readline";
 import { BrowserControllerStdioServer } from "./browser-controller.mjs";
 import path from "node:path";
+import { encodePng, decodePng, maskPng } from "./kernel-browser-pixels.mjs";
 import { KernelBrowserHost, navigationUrl } from "./kernel-browser-host.mjs";
 import { candidates as macCandidates, launchEnvironment as macEnvironment } from "./kernel-browser-macos.mjs";
 import { launchEnvironment as linuxEnvironment } from "./kernel-browser-linux.mjs";
@@ -460,5 +461,46 @@ for (const kind of ["key", "click"]) {
         await host.request({ op: "input", tab_id: opened.tab_id, generation: recovered.generation,
           observed_by: "terminal:next", input: { kind: "key", key: "Tab" } });
       });
+  }));
+}
+
+for (const change of ["stable", "layout", "metadata"]) {
+  test(`region capture scales ${change} protection to native DPR2 pixels`, () => using(async ({ host, connection }) => {
+    const original = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
+    process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = "1";
+    const send = connection.send;
+    let captured = false;
+    connection.send = async (method, params, session) => {
+      if (method === "DOM.getDocument") {
+        if (captured && change === "metadata") throw Error("metadata unavailable");
+        return { root: { nodeId: 1 } };
+      }
+      if (method === "DOM.querySelectorAll") return { nodeIds: [2] };
+      if (method === "DOM.getBoxModel") {
+        const x = captured && change === "layout" ? 150 : 100;
+        return { model: { border: [x,100,x+20,100,x+20,120,x,120] } };
+      }
+      if (method === "Page.captureScreenshot") {
+        captured = true;
+        return { data: encodePng(2560,1600,Buffer.alloc(2560*1600*4,255)) };
+      }
+      return send(method, params, session);
+    };
+    try {
+      const opened = await host.request({ op: "open", url: "about:blank" });
+      const binding = { tab_id: opened.tab_id, generation: opened.generation };
+      await host.request({ op: "display_subscribe", ...binding, codecs: ["png"], bitrate: 8_000_000, device_scale_factor: 2 });
+      const frame = await host.request({ op: "screenshot", ...binding, _capture_protection: true });
+      assert.equal(frame.width,2560); assert.equal(frame.height,1600);
+      assert.deepEqual(frame.protected_regions, change === "stable"
+        ? [{x:200,y:200,width:40,height:40}]
+        : [{x:0,y:0,width:2560,height:1600}]);
+      const masked = decodePng(maskPng(frame.data_base64, frame.protected_regions.map(r=>[r.x,r.y,r.width,r.height]),2),2);
+      assert.equal(masked.pixels[(210*2560+210)*4],0,"native protected pixels must be opaque");
+      assert.equal(masked.pixels[(1599*2560+2559)*4],change === "stable" ? 255 : 0,"fallback covers the complete native image");
+    } finally {
+      if (original === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
+      else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = original;
+    }
   }));
 }

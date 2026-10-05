@@ -207,10 +207,12 @@ export class KernelBrowserHost {
         return data;
       }, scale, clip);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-    const protected_regions = protectedCapture ? await regionMasks.afterCapture() : undefined;
+    const width = Math.round((clip?.width ?? 1280) * scale * (clip?.scale ?? 1));
+    const height = Math.round((clip?.height ?? 800) * scale * (clip?.scale ?? 1));
+    const protected_regions = protectedCapture ? await regionMasks.afterCapture({ width, height }) : undefined;
     this.timing('protected_capture', started);
     if (typeof data !== "string" || data.length > 4 * 1024 * 1024) throw new Error("MD-2: frame exceeds limit");
-    return { generation: this.generation, tab_id: tab.tab_id, document_id: tab.document_id, mime_type: "image/png", data_base64: data, width: Math.round((clip?.width ?? 1280) * scale * (clip?.scale ?? 1)), height: Math.round((clip?.height ?? 800) * scale * (clip?.scale ?? 1)), ...(protectedCapture ? { protected_regions } : {}) };
+    return { generation: this.generation, tab_id: tab.tab_id, document_id: tab.document_id, mime_type: "image/png", data_base64: data, width, height, ...(protectedCapture ? { protected_regions } : {}) };
   }
   async subscribe(tab, boundFrames = false) {
     if (this.streams.size >= 16) throw new Error("MD-2: frame subscription limit reached");
