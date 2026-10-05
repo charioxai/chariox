@@ -993,6 +993,7 @@ async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_res
         Arc::clone(&restarted_runtime),
         true,
         crate::transport::relay_client::subscriptions::RelaySubscriber {
+            caller: crate::runtime::command::KernelCaller::for_relay_request(None),
             user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
             connection_class: crate::local::KernelConnectionClass::Terminal,
         },

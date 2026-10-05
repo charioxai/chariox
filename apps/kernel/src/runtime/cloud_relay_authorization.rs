@@ -4,7 +4,7 @@
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::local::LocalDaemonRequest;
-use crate::runtime::command::{KernelCallerKind, KernelCommand, KernelCommandSource};
+use crate::runtime::command::{KernelCaller, KernelCallerKind, KernelCommand, KernelCommandSource};
 
 pub(crate) fn authorize_kernel_cloud_request(
     config: &DaemonConfig,
@@ -52,10 +52,14 @@ pub(crate) fn kernel_cloud_owner(config: &DaemonConfig, command: &KernelCommand)
     {
         return true;
     }
+    cloud_relay_caller_owner(config, &command.caller)
+}
+
+pub(crate) fn cloud_relay_caller_owner(config: &DaemonConfig, caller: &KernelCaller) -> bool {
     if let Some(profile) = &config.cloud_relay {
-        if command.caller.caller_kind == KernelCallerKind::RemoteClient
-            && command.caller.user_id.as_deref() == Some(profile.user_id.as_str())
-            && command.caller.realm_id.as_deref() == Some(profile.realm_id.as_str())
+        if caller.caller_kind == KernelCallerKind::RemoteClient
+            && caller.user_id.as_deref() == Some(profile.user_id.as_str())
+            && caller.realm_id.as_deref() == Some(profile.realm_id.as_str())
         {
             return true;
         }
