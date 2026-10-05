@@ -29,7 +29,7 @@ pub struct ProviderRunBatchLaunchResult {
     pub index: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
-    pub provider_run: RuntimeProviderRun,
+    pub provider_run: PublicProviderRun,
     #[serde(default)]
     pub reused: bool,
 }

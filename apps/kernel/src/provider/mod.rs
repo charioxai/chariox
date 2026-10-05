@@ -33,6 +33,8 @@ pub(crate) mod renewal_failure;
 mod reported_transcript_file;
 mod run_actor;
 mod runtime_run;
+mod public_run;
+pub use public_run::PublicProviderRun;
 mod service;
 pub(crate) mod startup_diagnostic;
 mod termination;

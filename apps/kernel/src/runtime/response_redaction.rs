@@ -2,7 +2,6 @@ use crate::error::DaemonError;
 use crate::local::LocalDaemonResponse;
 use crate::runtime::projection::ProviderRunProjectionStore;
 use crate::runtime::provider_process_control::provider_processes_visible_to_user_from_projection;
-use crate::runtime::provider_run_control::ensure_provider_run_visible_to_user;
 use crate::runtime::session_projection_refresh::redact_agent_activity_for_session;
 use crate::session::RuntimeSession;
 
@@ -192,7 +191,14 @@ pub(crate) fn redact_response_for_user(
                 .collect(),
         },
         LocalDaemonResponse::ProviderRun { provider_run } => {
-            ensure_provider_run_visible_to_user(&provider_run, caller_user_id)?;
+            if !provider_run.owned_by(caller_user_id) {
+                return Err(DaemonError::OwnershipAccessDenied {
+                    user_id: caller_user_id.to_string(),
+                    owner_user_id: provider_run.owner_user_id().to_string(),
+                    resource: format!("provider run `{}`", provider_run.id()),
+                    operation: "read provider run",
+                });
+            }
             LocalDaemonResponse::ProviderRun { provider_run }
         }
         LocalDaemonResponse::ProviderProcessesListed { processes } => {

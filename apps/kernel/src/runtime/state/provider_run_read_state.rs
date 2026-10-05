@@ -34,7 +34,9 @@ impl KernelRuntimeState {
         self.owned
             .provider_run_projection
             .update(provider_run.clone());
-        Ok(LocalDaemonResponse::ProviderRun { provider_run })
+        Ok(LocalDaemonResponse::ProviderRun {
+            provider_run: provider_run.into(),
+        })
     }
 
     pub(crate) fn update_provider_run_selection_response(
@@ -60,7 +62,9 @@ impl KernelRuntimeState {
         self.owned
             .provider_run_projection
             .update(provider_run.clone());
-        Ok(LocalDaemonResponse::ProviderRunSelectionUpdated { provider_run })
+        Ok(LocalDaemonResponse::ProviderRunSelectionUpdated {
+            provider_run: provider_run.into(),
+        })
     }
 }
 

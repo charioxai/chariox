@@ -303,7 +303,7 @@ pub(super) async fn run_subscription_loop(
                         &close_requested,
                         KernelEvent::SessionSnapshot {
                             session: Box::new(snapshot.session),
-                            provider_run: Box::new(snapshot.provider_run),
+                            provider_run: Box::new(snapshot.provider_run.map(crate::provider::PublicProviderRun::from)),
                             agent_activity: Box::new(snapshot.agent_activity),
                             agent_activity_revision: snapshot.metadata.last_event_id,
                         },
@@ -823,7 +823,7 @@ pub(super) async fn emit_replay_gap_snapshot(
                 close_requested,
                 KernelEvent::SessionSnapshot {
                     session: Box::new(projection.session),
-                    provider_run: Box::new(projection.provider_run),
+                    provider_run: Box::new(projection.provider_run.map(crate::provider::PublicProviderRun::from)),
                     agent_activity: Box::new(projection.agent_activity),
                     agent_activity_revision: projection.metadata.last_event_id,
                 },

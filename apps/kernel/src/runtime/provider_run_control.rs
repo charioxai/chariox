@@ -68,19 +68,21 @@ pub(crate) fn projected_provider_run_response(
     {
         return Ok(None);
     }
-    Ok(Some(LocalDaemonResponse::ProviderRun { provider_run }))
+    Ok(Some(LocalDaemonResponse::ProviderRun {
+        provider_run: provider_run.into(),
+    }))
 }
 
-pub(crate) fn refresh_provider_run_projection_from_response(
-    provider_run_projection: &ProviderRunProjectionStore,
+pub(crate) fn invalidate_provider_process_projection_from_response(
     provider_process_projection: &ProviderProcessProjectionStore,
     result: &Result<LocalDaemonResponse, DaemonError>,
 ) {
     match result {
-        Ok(LocalDaemonResponse::ProviderRun { provider_run })
-        | Ok(LocalDaemonResponse::ProviderRunLaunched { provider_run })
-        | Ok(LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run }) => {
-            provider_run_projection.update(provider_run.clone());
+        Ok(LocalDaemonResponse::ProviderRun { .. })
+        | Ok(LocalDaemonResponse::ProviderRunLaunched { .. })
+        | Ok(LocalDaemonResponse::ProviderRunLaunchAccepted { .. }) => {
+            // Launch/read services publish the authoritative private run before returning.
+            // Public responses cannot restore provider credentials/capabilities.
             provider_process_projection.invalidate();
         }
         _ => {}
@@ -117,5 +119,29 @@ pub(crate) fn ensure_provider_run_visible_to_user(
             resource: format!("provider run `{}`", provider_run.id()),
             operation: "read provider run",
         })
+    }
+}
+
+#[cfg(test)]
+mod mp11_f7_tests {
+    use super::*;
+    use crate::provider::RuntimeProviderRun;
+
+    #[test]
+    fn mp11_f7_read_projection_keeps_private_authority_and_enforces_owner() {
+        let projection = ProviderRunProjectionStore::default();
+        let mut run = RuntimeProviderRun::from_control_capability_inference(
+            "leased:lease:worker-run", "session".into(), Some("agent".into()), "codex".into(),
+        );
+        run.set_runtime_mcp_auth_token(Some("mp11-private-sentinel".into()));
+        run.mark_ended();
+        projection.update(run.clone());
+        let request = GetProviderRunRequest { provider_run_id: run.id().into() };
+        let response = projected_provider_run_response(&projection, &request, "local").unwrap().unwrap();
+        let bytes = serde_json::to_string(&response).unwrap();
+        assert!(!bytes.contains("mp11-private-sentinel"));
+        assert!(!bytes.contains("runtime_mcp_auth_token"));
+        assert!(matches!(projected_provider_run_response(&projection, &request, "foreign-user"), Err(DaemonError::OwnershipAccessDenied { .. })));
+        assert_eq!(projection.get(run.id()).unwrap(), run);
     }
 }

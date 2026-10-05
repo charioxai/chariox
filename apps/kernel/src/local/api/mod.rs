@@ -17,7 +17,7 @@ use crate::history::{HistoryEvent, SessionHistoryEntryKind};
 use crate::mcp::{CharioxMcpServerConfig, McpImportOutcome};
 use crate::provider::{
     OpenCodeProviderCatalog, ProviderAuthStatus, ProviderCommandCatalog, ProviderLoginStart,
-    ProviderProcessInfo, RuntimeProviderRun,
+    ProviderProcessInfo, PublicProviderRun,
 };
 use crate::runtime::projection::DaemonHealthProjection;
 use crate::script::{CharioxEnvironmentConfig, CharioxScriptMetadata};

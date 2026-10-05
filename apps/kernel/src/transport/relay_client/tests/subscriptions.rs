@@ -890,7 +890,7 @@ async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_res
             stream_id.clone(),
             KernelEvent::SessionSnapshot {
                 session: Box::new(historical_projection.session),
-                provider_run: Box::new(historical_projection.provider_run),
+                provider_run: Box::new(historical_projection.provider_run.map(crate::provider::PublicProviderRun::from)),
                 agent_activity: Box::new(historical_projection.agent_activity),
                 agent_activity_revision: HISTORICAL_ACTIVITY_REVISION,
             },

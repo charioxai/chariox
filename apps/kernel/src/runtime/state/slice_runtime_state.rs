@@ -1250,11 +1250,8 @@ fn validate_slice_agent_relaunch_response(
     let Some(expected_provider_session_id) = manifest.provider_session_id.as_deref() else {
         return Ok(());
     };
-    let actual_provider_session_id = provider_run.provider_session_id().or_else(|| {
-        provider_run
-            .resume_state()
-            .provider_session_id(&manifest.adapter_key)
-    });
+    // Public projection already resolves the provider-native session ID.
+    let actual_provider_session_id = provider_run.provider_session_id();
     if actual_provider_session_id != Some(expected_provider_session_id) {
         return Err(DaemonError::LocalTransport {
             operation: "slice.agent.relaunch",
@@ -1537,7 +1534,9 @@ mod tests {
                     structured_endpoint: Some("http://worker.invalid".to_string()),
                 },
             );
-            crate::local::LocalDaemonResponse::ProviderRunLaunched { provider_run }
+            crate::local::LocalDaemonResponse::ProviderRunLaunched {
+                provider_run: provider_run.into(),
+            }
         };
 
         assert!(validate_slice_agent_relaunch_response(
