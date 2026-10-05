@@ -109,7 +109,7 @@ export function createCliKernelApprovalComposition(deps: {
     assignBanner(value: BoxRenderable) { surface.assignBanner(value); controller.sync() },
     /** The popup takes keys first: it sits over the panel. */
     handleKey: (event: KernelApprovalKey) => popup.handleKey(event) || controller.handleKey(event),
-    ownsInput: (event?: { name: string }) => popup.ownsInput(event) || controller.ownsInput(),
+    ownsInput: (event?: Pick<KernelApprovalKey, "name">) => popup.ownsInput(event) || controller.ownsInput(),
     assignBox(value: BoxRenderable) { surface.assign(value); controller.sync() },
     assignPopupBox(value: BoxRenderable) { popupSurface.assign(value); popupSurface.render(popup.view(), deps.dimensions()) },
   }

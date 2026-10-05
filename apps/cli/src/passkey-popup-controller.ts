@@ -236,9 +236,9 @@ export function createPasskeyPopupController(deps: {
   return {
     view, approve, refuse, cycleRemember, hide,
     isOpen: () => open,
-    // A bare Escape reaches raw stdin before OpenTUI finishes parsing it.
-    // Reserve that key for a visible preview without taking composer input.
-    ownsInput: (event?: { name: string }) => open || claimedInputTurn || (attention && event?.name === "escape"),
+    // A bare ESC reaches raw stdin before OpenTUI's escape-delay expires.
+    // Reserve only that key while previewing; other composer input stays free.
+    ownsInput: (event?: Pick<PasskeyPopupKey, "name">) => open || claimedInputTurn || (attention && event?.name === "escape"),
     prompts: () => prompts,
     cue() { cue(); render() },
     /** Arrival previews need explicit F8/click focus before any passkey entry. */
@@ -287,10 +287,10 @@ export function createPasskeyPopupController(deps: {
       if (event.defaultPrevented) return true
       if (!open) {
         if (attention && event.name === "escape") {
-          claimedInputTurn = true
-          queueMicrotask(() => { claimedInputTurn = false })
           event.preventDefault()
           event.stopPropagation()
+          claimedInputTurn = true
+          queueMicrotask(() => { claimedInputTurn = false })
           hide()
           return true
         }

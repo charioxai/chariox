@@ -13,7 +13,7 @@ export type CliStdinKeypressParser = (
 
 export type CliStdinKeyControllerDeps = {
   parseKeypress: CliStdinKeypressParser
-  kernelApprovalOwnsInput?: (event?: { name: string }) => boolean
+  kernelApprovalOwnsInput?: (event?: CliStdinKeyEvent) => boolean
   dialogOverlayOpen: () => boolean
   closeActiveDialogOverlay: () => void
   handleManagedMachineDialogKey?: (event: CliStdinKeyEvent) => boolean

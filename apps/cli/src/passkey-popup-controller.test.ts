@@ -74,15 +74,20 @@ test("a new prompt needs explicit focus and does not take composer keys", () => 
   assert.deepEqual(h.focus, ["open", "close"])
 })
 
-test("MP-11 kafix arrival preview hides with Esc, stays hidden on replay, and cues new extensions", () => {
+test("MP-11 kafix arrival preview hides with Esc, stays hidden on replay, and cues new extensions", async () => {
   const h = harness()
   const extension = { ...prompt("extension"), kind: "access_extension" as const }
   h.popup.apply([extension])
   assert.equal(h.popup.view().attention, true)
+  assert.equal(h.popup.ownsInput({ name: "escape" }), true, "reserve delayed Escape for the preview")
+  assert.equal(h.popup.ownsInput({ name: "x" }), false, "other composer input stays free")
   assert.equal(h.popup.handleKey(key("r", { ctrl: true })), false, "composer shortcuts require deliberate popup focus")
   assert.deepEqual(h.requests, [])
   assert.equal(h.popup.handleKey(key("escape")), true)
   assert.equal(h.popup.view().attention, false)
+  assert.equal(h.popup.ownsInput(), true, "consume the duplicate raw-stdin delivery after hiding")
+  await new Promise<void>(resolve => queueMicrotask(resolve))
+  assert.equal(h.popup.ownsInput(), false, "release ownership for the next input turn")
   h.popup.apply([extension])
   assert.equal(h.popup.view().attention, false)
   h.popup.apply([extension, prompt("new")])
