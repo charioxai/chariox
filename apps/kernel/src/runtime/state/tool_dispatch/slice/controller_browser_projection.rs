@@ -5,7 +5,6 @@ use crate::runtime::browser_controller_snapshot::{
     RoomBrowserAccessibilityNode, RoomBrowserDomNode, RoomBrowserStructuredSnapshot,
 };
 
-const MAX_CONTROLLER_BROWSER_TEXT_BYTES: usize = 256 * 1024;
 const MAX_CONTROLLER_BROWSER_TEXT_QUERY_BYTES: usize = 64 * 1024;
 pub(super) fn controller_browser_status_surfaces(
     snapshot: Option<&RoomBrowserStructuredSnapshot>,
@@ -457,88 +456,6 @@ pub(super) fn controller_browser_permission_tool_result(
     }
 }
 
-// DOM text is ordered by rendered node identity. AX names represent the same
-// content and are deliberately not appended as a second document transcript.
-pub(super) fn controller_browser_document_text(snapshot: &RoomBrowserStructuredSnapshot) -> String {
-    let dom = snapshot
-        .dom_nodes
-        .iter()
-        .map(|node| (node.element_ref.as_str(), node))
-        .collect::<BTreeMap<_, _>>();
-    let mut text = String::new();
-    let mut previous = None;
-    for node in snapshot.dom_nodes.iter().filter(|node| {
-        node.rendered && (node.node_type == 3 || node.node_name.eq_ignore_ascii_case("br"))
-    }) {
-        let (block, cell, excluded) = browser_text_ancestry(node, &dom);
-        if excluded {
-            continue;
-        }
-        if node.node_name.eq_ignore_ascii_case("br") {
-            if text.len() < MAX_CONTROLLER_BROWSER_TEXT_BYTES {
-                text.push('\n');
-            }
-            continue;
-        }
-        if node.text.is_empty() {
-            continue;
-        }
-        if let Some((last_block, last_cell)) = previous {
-            if last_block != block {
-                append_text_separator(&mut text, '\n');
-            } else if last_cell != cell && cell.is_some() {
-                append_text_separator(&mut text, '\t');
-            }
-        }
-        let remaining = MAX_CONTROLLER_BROWSER_TEXT_BYTES.saturating_sub(text.len());
-        let mut end = node.text.len().min(remaining);
-        while !node.text.is_char_boundary(end) {
-            end -= 1;
-        }
-        text.push_str(&node.text[..end]);
-        previous = Some((block, cell));
-        if text.len() >= MAX_CONTROLLER_BROWSER_TEXT_BYTES {
-            break;
-        }
-    }
-    text
-}
-
-fn append_text_separator(text: &mut String, separator: char) {
-    if text.len() < MAX_CONTROLLER_BROWSER_TEXT_BYTES && !text.ends_with(separator) {
-        text.push(separator);
-    }
-}
-
-fn browser_text_ancestry<'a>(
-    node: &'a RoomBrowserDomNode,
-    dom: &BTreeMap<&'a str, &'a RoomBrowserDomNode>,
-) -> (Option<&'a str>, Option<&'a str>, bool) {
-    let mut parent = node.parent_ref.as_deref();
-    let mut block = None;
-    let mut cell = None;
-    for _ in 0..dom.len() {
-        let Some(ancestor) = parent.and_then(|reference| dom.get(reference)).copied() else {
-            break;
-        };
-        match ancestor.node_name.to_ascii_uppercase().as_str() {
-            "SCRIPT" | "STYLE" | "NOSCRIPT" | "TEMPLATE" | "INPUT" | "TEXTAREA" | "SELECT" => {
-                return (block, cell, true)
-            }
-            "TD" | "TH" if cell.is_none() => cell = Some(ancestor.element_ref.as_str()),
-            "P" | "DIV" | "LI" | "TR" | "PRE" | "H1" | "H2" | "H3" | "H4" | "H5" | "H6"
-            | "SECTION" | "ARTICLE" | "HEADER" | "FOOTER" | "BLOCKQUOTE"
-                if block.is_none() =>
-            {
-                block = Some(ancestor.element_ref.as_str())
-            }
-            _ => {}
-        }
-        parent = ancestor.parent_ref.as_deref();
-    }
-    (block, cell, false)
-}
-
 fn browser_descendant_text(snapshot: &RoomBrowserStructuredSnapshot, reference: &str) -> String {
     let dom = snapshot
         .dom_nodes
@@ -768,69 +685,6 @@ mod tests {
     }
 
     #[test]
-    fn mp08_p3_rendered_text_preserves_rows_and_people_without_ax_duplication() {
-        let mut hidden = node(20, None, "#text", "hidden");
-        hidden["rendered"] = false.into();
-        let mut snapshot = room_snapshot(serde_json::json!([
-            node(1, None, "LI", ""),
-            node(2, Some(1), "#text", "Same person"),
-            node(3, None, "LI", ""),
-            node(4, Some(3), "#text", "Same person"),
-            node(5, None, "TR", ""),
-            node(6, Some(5), "TD", ""),
-            node(7, Some(6), "#text", "Monday"),
-            node(8, Some(5), "TD", ""),
-            node(9, Some(8), "#text", "7"),
-            node(10, None, "TR", ""),
-            node(11, Some(10), "TD", ""),
-            node(12, Some(11), "#text", "Tuesday"),
-            node(13, Some(10), "TD", ""),
-            node(14, Some(13), "#text", "7"),
-            node(15, None, "SCRIPT", ""),
-            node(16, Some(15), "#text", "pollution"),
-            node(17, None, "PRE", ""),
-            node(18, Some(17), "#text", "Visible code\n  indented"),
-            hidden
-        ]));
-        snapshot
-            .accessibility_nodes
-            .push(RoomBrowserAccessibilityNode {
-                element_ref: "element-avatar".into(),
-                parent_ref: None,
-                child_refs: vec![],
-                role: "img".into(),
-                name: "Same person".into(),
-                description: "".into(),
-                value: "".into(),
-                ignored: false,
-                disabled: false,
-                focused: false,
-                states: vec![],
-            });
-        assert_eq!(
-            controller_browser_document_text(&snapshot),
-            "Same person\nSame person\nMonday\t7\nTuesday\t7\nVisible code\n  indented"
-        );
-    }
-
-    #[test]
-    fn mp08_p3_exact_text_preserves_edge_newlines_and_breaks() {
-        let snapshot = room_snapshot(serde_json::json!([
-            node(1, None, "PRE", ""),
-            node(2, Some(1), "#text", "\n  indented\n\n"),
-            node(3, None, "P", ""),
-            node(4, Some(3), "#text", "before"),
-            node(5, Some(3), "BR", ""),
-            node(6, Some(3), "BR", ""),
-            node(7, Some(3), "#text", "after\n"),
-        ]));
-        assert_eq!(
-            controller_browser_document_text(&snapshot),
-            "\n  indented\n\nbefore\n\nafter\n"
-        );
-    }
-
-    #[test]
     fn mp08_p2_selected_value_and_option_states_are_observable() {
         let mut snapshot = room_snapshot(serde_json::json!([
             node(1, None, "SELECT", ""),
@@ -945,19 +799,6 @@ mod tests {
             serde_json::from_str(decoded["output"].as_str().unwrap()).unwrap();
         assert_eq!(payload["text"].as_str().unwrap(), page.text);
         assert_eq!(payload["next_offset"], 1024);
-    }
-
-    #[test]
-    fn mp08_p3_text_bound_never_splits_utf8() {
-        let snapshot = room_snapshot(serde_json::json!([node(
-            1,
-            None,
-            "#text",
-            &"😀".repeat(MAX_CONTROLLER_BROWSER_TEXT_BYTES)
-        )]));
-        let text = controller_browser_document_text(&snapshot);
-        assert_eq!(text.len(), MAX_CONTROLLER_BROWSER_TEXT_BYTES);
-        assert!(std::str::from_utf8(text.as_bytes()).is_ok());
     }
 }
 

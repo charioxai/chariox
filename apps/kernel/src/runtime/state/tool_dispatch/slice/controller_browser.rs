@@ -8,6 +8,7 @@ use crate::session::{
 };
 
 use super::controller_browser_projection::*;
+use super::controller_browser_rendered_text::{capture_rendered_text_page, rendered_text_matches};
 use super::slice_browser::{
     browser_status_url, ensure_browser_fill_target, ensure_browser_secret_target_is_masked,
     ensure_browser_target_matches_expectations,
@@ -1292,27 +1293,8 @@ pub(super) async fn run_controller_browser_text_tool(
                 operation,
                 message: "the Room browser has no focused tab".into(),
             })?;
-    let snapshot = state
-        .capture_browser_environment_snapshot_with_text(session_id, tab_id, Some(args.clone()))
-        .await?;
-    let page = snapshot
-        .text_page
-        .as_ref()
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation,
-            message:
-                "Browser Controller does not support rendered text paging; upgrade the Environment"
-                    .into(),
-        })?;
-    if page.query != args.query
-        || page.offset != args.offset.min(page.total_bytes)
-        || page.text.len() as u64 > args.max_bytes
-    {
-        return Err(DaemonError::LocalTransport {
-            operation,
-            message: "Browser Controller returned a mismatched text page".into(),
-        });
-    }
+    let snapshot = capture_rendered_text_page(state, session_id, tab_id, args, operation).await?;
+    let page = snapshot.text_page.as_ref().expect("validated text page");
     Ok(controller_browser_text_page_tool_result(
         slice_id, agent_id, &snapshot, page,
     ))
@@ -1350,9 +1332,10 @@ pub(super) async fn run_controller_browser_wait_for_text_tool(
         })?
         .to_string();
     loop {
-        let text = capture_controller_browser_text_from_tab(state, session_id, &tab_id).await?;
+        let matched =
+            rendered_text_matches(state, session_id, &tab_id, query, started + timeout).await?;
         let waited_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        if text.contains(query) {
+        if matched {
             return Ok(controller_browser_wait_for_text_result(
                 slice_id,
                 agent_id,
@@ -1380,17 +1363,6 @@ pub(super) async fn run_controller_browser_wait_for_text_tool(
         )
         .await;
     }
-}
-
-async fn capture_controller_browser_text_from_tab(
-    state: &KernelRuntimeState,
-    session_id: &str,
-    tab_id: &str,
-) -> Result<String, DaemonError> {
-    let snapshot = state
-        .capture_browser_environment_snapshot(session_id, tab_id)
-        .await?;
-    Ok(controller_browser_document_text(&snapshot))
 }
 
 fn slice_environment_viewport(
@@ -1426,3 +1398,7 @@ mod concurrency_drill;
 #[cfg(test)]
 #[path = "controller_browser_recovery_tests.rs"]
 mod recovery_tests;
+
+#[cfg(test)]
+#[path = "controller_browser_text_tests.rs"]
+mod text_tests;
