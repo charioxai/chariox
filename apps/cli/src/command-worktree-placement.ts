@@ -228,7 +228,7 @@ export function parseAgentSpawnOptions(args: string[]): PlacementParseResult {
     error = "usage: /agent spawn [alias] [model] [--account <profile-id>] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>] [--unattached-agent <external-session-id>]"
   }
   if (!error && metaagent) {
-    error = "creating separate metaagents is deprecated; send /meta <task> to a regular agent to enter meta mode"
+    error = "creating separate metaagents is deprecated; send /sudo <prompt> to a regular agent and authorize it in the passkey popup"
   }
   return {
     ...parsed,

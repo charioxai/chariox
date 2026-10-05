@@ -161,7 +161,6 @@ impl KernelRuntimeState {
             });
         }
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
-            specs.extend(crate::transport::runtime_tools::meta_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
             specs.extend(
                 crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs()
@@ -230,6 +229,11 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        if crate::transport::runtime_tools::canonical_meta_tool_name(tool_name).is_some() {
+            return Err(crate::runtime::kernel_access::error(
+                "Meta tools have been retired; use /sudo <prompt> and chariox_kernel_request during its authorized turn",
+            ));
+        }
         let rooms = self
             .owned
             .provider_store

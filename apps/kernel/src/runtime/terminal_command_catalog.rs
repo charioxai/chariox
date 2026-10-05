@@ -124,9 +124,6 @@ fn infer_kind(
     value: &str,
     children: &[TerminalCommandCatalogNode],
 ) -> TerminalCommandCatalogNodeKind {
-    if id == "meta" {
-        return TerminalCommandCatalogNodeKind::PromptPrefix;
-    }
     if matches!(
         id,
         "provider" | "account" | "model" | "variant" | "mode" | "permissions" | "view"
@@ -192,22 +189,18 @@ mod tests {
     }
 
     #[test]
-    fn terminal_command_catalog_includes_meta_prompt_prefix() {
+    fn retired_meta_catalog_is_protocol_430_and_hash_pinned() {
+        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 430);
+        assert_eq!(terminal_command_catalog().unwrap().revision, "sha256:ecddc26bbc6eacea95a6572da162c1b5bbccd178d9a31cc4b15c012877ddeaa7");
+    }
+
+    #[test]
+    fn terminal_command_catalog_retires_meta_and_keeps_sudo() {
         let catalog = terminal_command_catalog().expect("catalog should load");
         let mut nodes = Vec::new();
         collect(&catalog.nodes, &mut nodes);
-
-        let meta = nodes
-            .into_iter()
-            .find(|node| node.id == "meta")
-            .expect("meta command should be present");
-        assert_eq!(meta.value, "/meta ");
-        assert_eq!(meta.kind, TerminalCommandCatalogNodeKind::PromptPrefix);
-        assert_eq!(
-            meta.execution_target,
-            TerminalCommandCatalogExecutionTarget::PromptPrefix
-        );
-        assert!(catalog.revision.starts_with("sha256:"));
+        assert!(!nodes.iter().any(|node| node.id == "meta" || node.id == "agent-task"));
+        assert!(nodes.iter().any(|node| node.id == "sudo" && node.value == "/sudo "));
     }
 
     #[test]

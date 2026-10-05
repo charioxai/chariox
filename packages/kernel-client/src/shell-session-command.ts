@@ -94,7 +94,7 @@ export async function executeSessionCommand(
     case "create": {
       const { metaagent, rest } = parseSessionCreateMetaagent(args)
       if (metaagent) {
-        return { ok: false, message: "creating separate metaagents is deprecated; create a regular session and send /meta <task> to enter meta mode" }
+        return { ok: false, message: "creating separate metaagents is deprecated; create a regular session and send /sudo <prompt> and authorize it in the passkey popup" }
       }
       const placement = parsePlacementOptions(rest, true)
       if (placement.error) {

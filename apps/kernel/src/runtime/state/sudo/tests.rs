@@ -1395,3 +1395,48 @@ async fn sudo_revocation_removes_authority_and_reports_failed_durable_end_receip
         .unwrap();
     assert_eq!(events.last().unwrap().payload["outcome"], "restart_dropped");
 }
+
+
+#[tokio::test]
+async fn retired_meta_prompts_are_refused_without_starting_or_elevating_a_turn() {
+    for prompt in ["/meta", "/meta Do work", "/meta\tDo work"] {
+        let f = fixture();
+        let mut submission = f.request.clone();
+        submission.prompt = prompt.into();
+        let request = LocalDaemonRequest::SubmitPrompt(submission);
+        let mut command = crate::runtime::command::KernelCommand::from_local_request(
+            "retired-meta", None, None, &request,
+        );
+        command.caller.connection_class = Some(KernelConnectionClass::Terminal);
+        let denied = f.router.dispatch(command, request).await.unwrap_err();
+        assert!(denied.to_string().contains("/meta has been retired"), "{denied}");
+        assert!(denied.to_string().contains("/sudo"));
+        assert!(f.state.list_sudo_turns("local").is_empty());
+        assert!(f.state.passkey_prompts_for("local").is_empty());
+        let session = f.state.owned.session_store.get_session(&f.request.session_id).unwrap();
+        assert!(f.state.owned.prompt_state_owner.active_prompt_for_agent(
+            &session, f.request.target_agent_id.as_deref().unwrap(),
+        ).is_none());
+    }
+}
+
+
+#[tokio::test]
+async fn retired_meta_serialized_catalog_drill_uses_protocol_430() {
+    let f = fixture();
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 430);
+    let request: LocalDaemonRequest = serde_json::from_value(
+        serde_json::json!({"GetTerminalCommandCatalog": null}),
+    ).unwrap();
+    let mut command = crate::runtime::command::KernelCommand::from_local_request(
+        "retired-meta-catalog", None, None, &request,
+    );
+    command.caller.connection_class = Some(KernelConnectionClass::Terminal);
+    let response = f.router.dispatch(command, request).await.unwrap();
+    let wire = serde_json::to_value(response).unwrap();
+    let nodes = wire["TerminalCommandCatalog"]["catalog"]["nodes"].as_array().unwrap();
+    assert!(nodes.iter().all(|node| node["id"] != "meta"));
+    assert!(nodes.iter().any(|node| node["value"] == "/sudo "));
+    assert_eq!(wire["TerminalCommandCatalog"]["catalog"]["revision"],
+        "sha256:ecddc26bbc6eacea95a6572da162c1b5bbccd178d9a31cc4b15c012877ddeaa7");
+}

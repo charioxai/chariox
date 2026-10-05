@@ -366,7 +366,7 @@ mod managed_activity_persistence;
 pub(crate) use managed_activity_persistence::ManagedActivityObservation;
 mod metaagent_event_owned_state;
 mod metaagent_task_runtime_state;
-pub(crate) use metaagent_task_runtime_state::parse_meta_slash_command;
+pub(crate) use metaagent_task_runtime_state::is_retired_meta_command;
 mod external_command_authority;
 mod project_runtime_state;
 mod prompt;
