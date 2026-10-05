@@ -435,3 +435,30 @@ test("human Enter carries Chromium's native text event; key-up never retypes it"
     { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
   ]);
 }));
+
+for (const kind of ["key", "click"]) {
+  test(`MD-3: ${kind} down followed by a CDP error fences uncertain physical input`, () => using(async ({ host, connection, sent, chromium }) => {
+    const opened = await host.request({ op: "open", url: "about:blank" });
+    let failed = false;
+    connection.beforeSend = async (method, params) => {
+      if (!failed && ((kind === "key" && method === "Input.dispatchKeyEvent" && params.type === "keyUp") ||
+          (kind === "click" && method === "Input.dispatchMouseEvent" && params.type === "mouseReleased"))) {
+        failed = true; throw new Error("fixture CDP socket error");
+      }
+    };
+    await assert.rejects(host.request({ op: "input", ...opened,
+      input: kind === "key" ? { kind, key: "Tab" } : { kind, x: 2, y: 2 } }), /CDP socket error/);
+    assert(sent.some(entry => entry.params?.type === (kind === "key" ? "keyDown" : "mousePressed")));
+    assert.equal(chromium.child, null, "MD-3: uncertain held input must end before another actor dispatches");
+    connection.beforeSend = null;
+    const recovered = await host.request({ op: "state" });
+    assert.equal(recovered.generation, opened.generation + 1);
+    await host.request({ op: "input", tab_id: opened.tab_id, generation: recovered.generation,
+      observed_by: "terminal:next", input: { kind: "key", key: "Tab" } }).catch(async error => {
+        // A new actor must observe its document before input.
+        await host.request({ op: "state", observed_by: "terminal:next" });
+        await host.request({ op: "input", tab_id: opened.tab_id, generation: recovered.generation,
+          observed_by: "terminal:next", input: { kind: "key", key: "Tab" } });
+      });
+  }));
+}
