@@ -2893,6 +2893,11 @@ and computed appearance; page-authored attributes cannot supply that appearance.
 Browser execution remains kernel-owned on the common home/worker path. Provider
 MCP tools consume these observations; existing Web/native projections do not
 depend on the added fields, so their minimum supported versions stay unchanged.
+Navigation transport errors retain their original cause/retry policy and append
+`browser_navigation_phase` diagnostics for preflight reconciliation, navigation
+dispatch, or post-navigation reconciliation. This identifies a failed read
+without replaying a possibly delivered navigation. The relay fixture proves
+zero/one navigation delivery for failures before/after acknowledgement.
 Focused drills: the real-Chrome Browser Controller native-control fixtures and
 the room-controller protocol shape/hash tests, including the integration bump
 guard. Unsigned private benchmark runs do not establish MP acceptance.

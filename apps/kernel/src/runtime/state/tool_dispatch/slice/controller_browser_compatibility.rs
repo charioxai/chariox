@@ -2,6 +2,7 @@ use crate::error::DaemonError;
 use crate::runtime::browser_controller_compatibility::{
     BrowserCompatibilityWait, DEFAULT_BROWSER_COMPATIBILITY_WAIT_TIMEOUT_MS,
 };
+use crate::runtime::browser_controller_error::with_browser_navigation_phase;
 use crate::runtime::state::KernelRuntimeState;
 
 use super::controller_browser::ensure_controller_browser_environment;
@@ -15,7 +16,8 @@ impl KernelRuntimeState {
         url: &str,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         ensure_controller_browser_environment(self, session_id, "runtime_tool_slice_open_url")
-            .await?;
+            .await
+            .map_err(|error| with_browser_navigation_phase(error, "preflight_reconcile"))?;
         let result = self
             .navigate_browser_environment_compatibility_as_agent(session_id, agent_id, url)
             .await?;

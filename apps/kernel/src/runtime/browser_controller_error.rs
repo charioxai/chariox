@@ -2,6 +2,21 @@
 //! Browser routes. A precise failure never authorizes replaying a mutation.
 use crate::error::DaemonError;
 
+// MP-08/MP-10/MP-11: preserve cause/retryability while identifying navigation reads.
+pub(crate) fn with_browser_navigation_phase(
+    mut error: DaemonError,
+    phase: &'static str,
+) -> DaemonError {
+    match &mut error {
+        DaemonError::LocalTransport { message, .. }
+        | DaemonError::RelayTransport { message, .. } => {
+            message.push_str(&format!(" [browser_navigation_phase={phase}]"));
+        }
+        _ => {}
+    }
+    error
+}
+
 pub(crate) fn browser_controller_error_code(error: &DaemonError) -> Option<&str> {
     match error {
         DaemonError::LocalTransport { operation, message }

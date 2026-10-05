@@ -117,8 +117,20 @@ fn room_environment_controller_boot_rejects_invalid_binding() {
 }
 
 pub(super) async fn controller_scenario(private_relay: bool) {
+    controller_scenario_with_phase(private_relay, false).await;
+}
+
+#[test]
+fn mp08_mp10_mp11_navigation_read_phase_preserves_error_and_single_delivery() {
+    run_test(navigation_phase_scenario);
+}
+async fn navigation_phase_scenario() {
+    controller_scenario_with_phase(false, true).await;
+}
+
+async fn controller_scenario_with_phase(private_relay: bool, phase_only: bool) {
     let mut fixture = LiveWorker::start_configured(private_relay, true).await;
-    let result = std::panic::AssertUnwindSafe(check_slice_controller(&mut fixture))
+    let result = std::panic::AssertUnwindSafe(check_slice_controller(&mut fixture, phase_only))
         .catch_unwind()
         .await;
     let pids = std::fs::read_to_string(fixture._worker_state.root.join("controller.pids"))
@@ -152,7 +164,7 @@ pub(super) async fn controller_scenario(private_relay: bool) {
     }
 }
 
-async fn check_slice_controller(fixture: &mut LiveWorker) {
+async fn check_slice_controller(fixture: &mut LiveWorker, phase_only: bool) {
     let worker_mcp_placement = fixture.placement();
     fixture.create_slice().await;
     fixture
@@ -232,6 +244,10 @@ async fn check_slice_controller(fixture: &mut LiveWorker) {
         .runtime_tool_specs_for_auth_token(&token)
         .iter()
         .any(|spec| spec.name == "slice_browser_status"));
+    if phase_only {
+        super::controller_compatibility::check_navigation_read_failures(fixture, &token).await;
+        return;
+    }
     super::controller_observations::check(fixture, &token, &status.payload).await;
     super::controller_mutations::check(fixture, &token, &status.payload).await;
     super::controller_cancellation::check(fixture, &token, &status.payload).await;

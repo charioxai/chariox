@@ -3,6 +3,7 @@ use crate::runtime::browser_controller_compatibility::{
     BrowserCompatibilityWait, BrowserControllerCompatibilityWaitResult,
     BrowserControllerNavigationResult, BrowserNavigationUrl,
 };
+use crate::runtime::browser_controller_error::with_browser_navigation_phase;
 use crate::transport::room_browser_controller::{
     RoomBrowserControllerCommand, RoomBrowserControllerResult,
 };
@@ -91,7 +92,8 @@ impl KernelRuntimeState {
                     url,
                 },
             )
-            .await?
+            .await
+            .map_err(|error| with_browser_navigation_phase(error, "navigation_dispatch"))?
         else {
             return Err(DaemonError::LocalTransport {
                 operation: "browser_controller.compatibility.navigate",
@@ -110,7 +112,8 @@ impl KernelRuntimeState {
                 message,
             })?;
         self.reconcile_browser_controller_environment(session_id)
-            .await?;
+            .await
+            .map_err(|error| with_browser_navigation_phase(error, "post_navigation_reconcile"))?;
         Ok(result)
     }
 
