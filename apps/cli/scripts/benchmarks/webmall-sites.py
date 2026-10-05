@@ -11,7 +11,6 @@ import signal
 import sys
 import re
 from pathlib import Path
-import re
 import shutil
 import socket
 import subprocess
@@ -57,7 +56,7 @@ def guard():
     sample = {"mp_items": MP, "at": time.time(), "memAvailable": mem, "diskAvailable": disk}
     with (evidence / "resources.jsonl").open("a") as f:
         f.write(json.dumps(sample) + "\n")
-    if mem < 12 * 1024**3 or disk < 10 * 1024**3:
+    if mem < 16 * 1024**3 or disk < 10 * 1024**3:
         raise RuntimeError("MP-10 resource floor reached")
 
 def command(argv, timeout=300, check=True, protected=False):
@@ -136,16 +135,25 @@ def cleanup():
         "sharedImageCachePreserved": True}
     (evidence / "sites-cleanup.json").write_text(json.dumps(result, indent=2) + "\n")
 
+def parse_search_metadata(output):
+    lines = [line.removeprefix("MP10_PUBLIC_SEARCH=") for line in output.splitlines() if line.startswith("MP10_PUBLIC_SEARCH=")]
+    assert len(lines) == 1, "MP-10 search metadata unavailable"
+    result = json.loads(lines[0])
+    assert set(result) == {"host", "index", "publishedProducts"}, "MP-10 unexpected search metadata"
+    assert isinstance(result["host"], str) and result["host"].rstrip("/") == "http://elasticsearch:9200", "MP-10 WordPress search wiring mismatch"
+    return result
+
 def collect_search_readiness():
     initial = json.loads((evidence / "catalog-restored.json").read_text())
     shops = []
     for i in range(1, 5):
         name = PREFIX + f"-wordpress_shop{i}"
-        count, _ = docker("exec", name, "wp", "post", "list", "--post_type=product", "--post_status=publish", "--format=count", "--skip-plugins", "--skip-themes", "--path=/opt/bitnami/wordpress")
-        index, _ = docker("exec", name, "wp", "eval", r'echo \ElasticPress\Indexables::factory()->get("post")->get_index_name();')
-        host, _ = docker("exec", name, "wp", "option", "get", "ep_host")
-        assert host.strip().rstrip("/") == "http://elasticsearch:9200", "MP-10 WordPress search wiring mismatch"
-        shops.append({"shop": i, "index": index.strip(), "publishedProducts": int(count.strip()),
+        # The plugin's constant/filter can override the stored option. Probe the
+        # exact effective endpoint used by sync/search, with explicit framing
+        # so incidental PHP notices cannot contaminate the public values.
+        output, _ = docker("exec", name, "wp", "eval", r'echo "\nMP10_PUBLIC_SEARCH=" . json_encode(["host" => \ElasticPress\Utils\get_host(), "index" => \ElasticPress\Indexables::factory()->get("post")->get_index_name(), "publishedProducts" => (int) wp_count_posts("product")->publish]) . "\n";')
+        metadata = parse_search_metadata(output)
+        shops.append({"shop": i, "index": metadata["index"], "publishedProducts": metadata["publishedProducts"],
                       "expectedProducts": initial[i-1]["publishedProducts"]})
     ports = json.loads((root / "ports.json").read_text())
     return probe_search("http://127.0.0.1:" + str(ports["elasticsearch"]), shops)
