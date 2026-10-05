@@ -1124,62 +1124,66 @@ fn mp08_browser_round2_snapshot_protocol_423_peer_72_is_hashed() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 423);
     assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 72);
     let wire = serde_json::json!({
-    "browser_generation": 1,
-    "target_id": "target",
-    "document_id": "doc",
-    "snapshot_revision": 2,
-    "accessibility_nodes": [
-        {
-            "node_ref": "backend:1",
-            "parent_ref": null,
-            "child_refs": [],
-            "role": "slider",
-            "name": "Amount",
-            "description": "",
-            "value": "50",
-            "ignored": false,
-            "disabled": false,
-            "focused": false,
-            "states": []
-        }
-    ],
-    "dom_documents": [],
-    "shadow_roots": [],
-    "dom_nodes": [
-        {
-            "node_ref": "backend:1",
-            "parent_ref": null,
-            "document_index": 0,
-            "node_type": 1,
-            "node_name": "INPUT",
-            "text": "",
-            "clickable": true,
-            "rendered": true,
-            "attributes": {
-                "type": "range",
-                "min": "0",
-                "max": "100",
-                "step": "1"
-            },
-            "bounds": {
-                "x": 10.0,
-                "y": 20.0,
-                "width": 200.0,
-                "height": 20.0
+        "browser_generation": 1,
+        "target_id": "target",
+        "document_id": "doc",
+        "snapshot_revision": 2,
+        "accessibility_nodes": [
+            {
+                "node_ref": "backend:1",
+                "parent_ref": null,
+                "child_refs": [],
+                "role": "slider",
+                "name": "Amount",
+                "description": "",
+                "value": "50",
+                "ignored": false,
+                "disabled": false,
+                "focused": false,
+                "states": []
             }
+        ],
+        "dom_documents": [],
+        "shadow_roots": [],
+        "dom_nodes": [
+            {
+                "node_ref": "backend:1",
+                "parent_ref": null,
+                "document_index": 0,
+                "node_type": 1,
+                "node_name": "INPUT",
+                "text": "",
+                "clickable": true,
+                "rendered": true,
+                "attributes": {
+                    "type": "range",
+                    "min": "0",
+                    "max": "100",
+                    "step": "1"
+                },
+                "bounds": {
+                    "x": 10.0,
+                    "y": 20.0,
+                    "width": 200.0,
+                    "height": 20.0
+                }
+            }
+        ],
+        "text_page": {
+            "text": "Amount",
+            "offset": 0,
+            "next_offset": null,
+            "total_bytes": 6,
+            "query": null
         }
-    ],
-    "text_page": {
-        "text": "Amount",
-        "offset": 0,
-        "next_offset": null,
-        "total_bytes": 6,
-        "query": null
-    }
-});
-    let snapshot: BrowserControllerStructuredSnapshot = serde_json::from_value(wire.clone()).unwrap();
+    });
+    let snapshot: BrowserControllerStructuredSnapshot =
+        serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(serde_json::to_value(snapshot).unwrap(), wire);
-    assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())), "44ea6942d71e7906ce3e4674d22f1332d98253e0c55497651f7bf470f758d807");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+        "44ea6942d71e7906ce3e4674d22f1332d98253e0c55497651f7bf470f758d807"
+    );
 }
 
 // MP-08/MP-10/MP-11: one key/drag mutation crosses the normal 423/72 locator contract.

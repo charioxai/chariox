@@ -1507,9 +1507,10 @@ impl BrowserControllerProcessStore {
             ownership.require_lease(session_id)?;
             let supervisor = &mut ownership.supervisor;
             supervisor.prepare_unlocked_request()?;
-            let pending = supervisor
-                .backend
-                .begin_snapshot_read(target_id, document_id, text_request)?;
+            let pending =
+                supervisor
+                    .backend
+                    .begin_snapshot_read(target_id, document_id, text_request)?;
             (pending, supervisor.backend.timeout)
         };
         // Keep the Room lease check and stdin dispatch atomic, but never hold
