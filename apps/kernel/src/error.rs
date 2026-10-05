@@ -26,6 +26,15 @@ pub enum DaemonError {
         message: String,
         retryable: bool,
     },
+    /// Internal provenance for a definitive cleanup absence reply. The relay
+    /// authenticates/routes the response from its pending request's target;
+    /// this is not a new wire error or an end-to-end signed error payload.
+    #[error("worker `{worker_kernel_id}` reported `{resource_id}` absent ({code})")]
+    RelayPeerCleanupAbsent {
+        worker_kernel_id: String,
+        resource_id: String,
+        code: &'static str,
+    },
     #[error("kernel runtime role `{role}` does not allow `{operation}`")]
     KernelRuntimeRoleDenied {
         role: &'static str,
