@@ -18,6 +18,27 @@ const viewport = {
   desktop_pixel_width: 1280, desktop_pixel_height: 800,
 };
 
+test('MP-08/MP-10/MP-11 a partially covered main-frame control uses a verified visible point', async () => {
+  await withController(async ({page,request}) => {
+    await page.setContent(`<button id="target" style="position:absolute;left:80px;top:80px;width:240px;height:80px"
+      onclick="this.dataset.clicks=Number(this.dataset.clicks||0)+1">Continue</button>
+      <div id="cover" style="position:absolute;left:180px;top:80px;width:40px;height:80px;background:red"
+      onclick="this.dataset.clicks=Number(this.dataset.clicks||0)+1"></div>`);
+    const target=(await request('browser.reconcile',{viewport})).result.tabs[0];
+    const snapshot=(await request('browser.snapshot',target)).result;
+    const node=snapshot.dom_nodes.find(n=>n.attributes.id==='target');
+    const clicked=await request('browser.action',{...target,node_ref:node.node_ref,action:{kind:'click'},timeout_ms:250});
+    assert.equal(clicked.ok,true,JSON.stringify(clicked.error));
+    assert.equal(await page.locator('#target').getAttribute('data-clicks'),'1');
+    assert.equal(await page.locator('#cover').getAttribute('data-clicks'),null,'never deliver input to the covering element');
+    await page.locator('#cover').evaluate(n=>{n.style.left='80px';n.style.width='240px'});
+    const blocked=await request('browser.action',{...target,node_ref:node.node_ref,action:{kind:'click'},timeout_ms:100});
+    assert.equal(blocked.error?.code,'browser_element_obscured');
+    assert.equal(await page.locator('#target').getAttribute('data-clicks'),'1','fully covered controls still reject before activation');
+    assert.equal(await page.locator('#cover').getAttribute('data-clicks'),null);
+  });
+});
+
 test('MP-08/MP-10/MP-11 observed keys and drags verify sliders and rendered geometry', async () => {
   await withController(async ({page,request}) => {
     await page.setContent(`<label>Level<input id="native-level" type="range" min="3" max="19" step="2" value="11"></label>

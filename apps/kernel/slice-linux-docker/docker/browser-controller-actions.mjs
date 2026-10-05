@@ -1,3 +1,5 @@
+import { actionabilityFunction } from "./browser-controller-actionability.mjs";
+export { actionabilityFunction } from "./browser-controller-actionability.mjs";
 import { fillNativeSelect, fillNativeValue } from "./browser-controller-selection.mjs";
 import { executeBrowserInteraction, normalizeBrowserInteraction } from "./browser-controller-interactions.mjs";
 const DEFAULT_ACTION_TIMEOUT_MS = 5_000;
@@ -55,7 +57,7 @@ export async function performBrowserAction({
     await assertCurrentDocument(connection, sessionId, targetId, documentId);
     const objectId = await resolveBackendNode(connection, sessionId, backendNodeId);
     try {
-      const actionability = await inspectActionability(connection, sessionId, objectId);
+      const actionability = await inspectActionability(connection, sessionId, objectId, normalizedAction.kind === "click");
       if (actionability.state === "detached") {
         throw new BrowserActionError(
           "stale_element_reference",
@@ -204,12 +206,13 @@ async function resolveBackendNode(connection, sessionId, backendNodeId) {
   return objectId;
 }
 
-async function inspectActionability(connection, sessionId, objectId) {
+async function inspectActionability(connection, sessionId, objectId, allowVisiblePoint) {
   const response = await connection.send(
     "Runtime.callFunctionOn",
     {
       objectId,
       functionDeclaration: actionabilityFunction.toString(),
+      arguments: [{ value: allowVisiblePoint }],
       returnByValue: true,
       awaitPromise: false,
     },
@@ -238,97 +241,6 @@ async function inspectActionability(connection, sessionId, objectId) {
     result.y = (quad[1] + quad[3] + quad[5] + quad[7]) / 4;
   }
   return result;
-}
-
-export function actionabilityFunction() {
-  if (!this.isConnected) return { state: "detached" };
-  this.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
-  const ownerDocument = this.ownerDocument;
-  const ownerWindow = ownerDocument.defaultView;
-  const style = ownerWindow.getComputedStyle(this);
-  const rect = this.getBoundingClientRect();
-  if (
-    style.display === "none" ||
-    style.visibility === "hidden" ||
-    Number(style.opacity) === 0 ||
-    rect.width <= 0 ||
-    rect.height <= 0
-  ) {
-    return { state: "not_visible" };
-  }
-  if (
-    this.disabled ||
-    this.matches?.(":disabled") ||
-    (this.tagName === "LABEL" && this.control?.matches?.(":disabled")) ||
-    this.closest?.("[inert]") ||
-    this.getAttribute?.("aria-disabled") === "true"
-  ) {
-    return { state: "disabled" };
-  }
-  const localX = rect.left + rect.width / 2;
-  const localY = rect.top + rect.height / 2;
-  let hitTarget = ownerDocument.elementFromPoint(localX, localY);
-  while (hitTarget?.shadowRoot?.elementFromPoint) {
-    const nestedTarget = hitTarget.shadowRoot.elementFromPoint(localX, localY);
-    if (!nestedTarget || nestedTarget === hitTarget) break;
-    hitTarget = nestedTarget;
-  }
-  let hitInsideTarget = hitTarget === this || this.contains?.(hitTarget);
-  let hitRoot = hitTarget?.getRootNode?.();
-  while (!hitInsideTarget && hitRoot?.host) {
-    hitInsideTarget = hitRoot.host === this || this.contains?.(hitRoot.host);
-    hitRoot = hitRoot.host.getRootNode?.();
-  }
-  if (!hitTarget || !hitInsideTarget) {
-    return { state: "obscured" };
-  }
-  let x = localX;
-  let y = localY;
-  let currentWindow = ownerWindow;
-  let crossOriginFrame = false;
-  while (currentWindow && currentWindow !== currentWindow.top) {
-    const frameElement = currentWindow.frameElement;
-    if (!frameElement) {
-      crossOriginFrame = true;
-      break;
-    }
-    const frameRect = frameElement.getBoundingClientRect();
-    const frameStyle = frameElement.ownerDocument.defaultView.getComputedStyle(frameElement);
-    const paddingLeft = Number.parseFloat(frameStyle.paddingLeft) || 0;
-    const paddingTop = Number.parseFloat(frameStyle.paddingTop) || 0;
-    x += frameRect.left + frameElement.clientLeft + paddingLeft;
-    y += frameRect.top + frameElement.clientTop + paddingTop;
-    currentWindow = frameElement.ownerDocument.defaultView;
-  }
-  const inputType = this.matches?.("input")
-    ? String(this.type || "text").toLowerCase()
-    : null;
-  const editableInput = inputType !== null && ![
-    "button",
-    "checkbox",
-    "color",
-    "file",
-    "hidden",
-    "image",
-    "radio",
-    "range",
-    "reset",
-    "submit",
-  ].includes(inputType);
-  const editable =
-    this.isContentEditable ||
-    ((editableInput || (this.matches?.("textarea") ?? false)) && !this.readOnly);
-  return {
-    state: "ready",
-    x,
-    y,
-    width: rect.width,
-    height: rect.height,
-    editable,
-    nativeSelect: this.tagName === "SELECT",
-    nativeValue: !this.readOnly && ["date", "time", "datetime-local", "month", "week", "range"].includes(inputType),
-    ...(crossOriginFrame ? { crossOriginFrame: true } : {}),
-  };
 }
 
 function readyGeometry(actionability, action) {
