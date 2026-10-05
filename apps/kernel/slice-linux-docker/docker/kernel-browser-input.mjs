@@ -2,6 +2,9 @@
 import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { assertCurrentDocument, assertNotCancelled } from "./browser-controller-actions.mjs";
 const viewport = { css_width: 1280, css_height: 800 };
+// MP-08: Chromium uses virtual key codes for native caret/editing commands.
+const keyCodes = { Tab: 9, Enter: 13, Space: 32, Escape: 27, Backspace: 8, Delete: 46,
+  ArrowLeft: 37, ArrowRight: 39, ArrowUp: 38, ArrowDown: 40, Home: 36, End: 35 };
 export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror } = {}) {
     assertNotCancelled(signal);
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
@@ -56,11 +59,11 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
         await sendInput("Input.insertText", { text: input.text });
       } else if (input.kind === "key") {
         const printable = typeof input.key === "string" && /^[^\p{C}]$/u.test(input.key);
-        if (!printable && !["Tab", "Shift+Tab", "Enter", "Space", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
         const name = input.key === "Shift+Tab" ? "Tab" : input.key;
+        if (!printable && !Object.hasOwn(keyCodes, name)) throw new Error("MD-2: unsupported key");
         const key = { key: name === "Space" ? " " : name, code: name,
           ...(input.key === "Shift+Tab" ? { modifiers: 8 } : {}),
-          windowsVirtualKeyCode: { Tab:9, Enter:13, Space:32, Escape:27, Backspace:8, Delete:46, ArrowLeft:37, ArrowUp:38, ArrowRight:39, ArrowDown:40, Home:36, End:35 }[name] };
+          windowsVirtualKeyCode: keyCodes[name] };
         await sendInput("Input.dispatchKeyEvent", { type: "keyDown", ...key,
           ...(["Enter", "Space"].includes(input.key) || printable ? { text: printable ? input.key : input.key === "Enter" ? "\r" : " ", unmodifiedText: printable ? input.key : input.key === "Enter" ? "\r" : " " } : {}) });
         // MP-08: paired releases keep document and live cancellation checks.

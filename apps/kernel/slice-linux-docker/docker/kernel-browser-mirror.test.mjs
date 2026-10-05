@@ -207,3 +207,27 @@ test('MP-11: ambiguous overlapping coordinate leaves refuse without entering liv
  const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),packet=await service.next(next(s.subscription_id),'a');service.world=async()=>assert.fail('must refuse before live work');
  await assert.rejects(service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:packet.sequence,action:{kind:'coordinate',input:{kind:'click',x:10,y:10}}},'a'),/ambiguous/);
 });
+
+// MP-11: native-focus keys use an admitted recent epoch, never a painted-focus
+// equality shortcut. Live target validation must precede the first key event.
+test('MP-08/MP-11: native keyboard validates observed focus and pairs key release after Tab',async()=>{
+ const {service,state,host}=fixture();state.snapshot.nodes[0].children=['n2','n3'];
+ state.snapshot.nodes[1]={id:'n2',parent:'n1',children:[],kind:'element',tag:'input',box:{x:5,y:5,width:20,height:20}};
+ state.snapshot.nodes.push({id:'n3',parent:'n1',children:[],kind:'element',tag:'button',box:{x:30,y:5,width:20,height:20}});state.snapshot.focused='n2';
+ const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),first=await service.next(next(s.subscription_id),'a');
+ state.snapshot.focused='n3';await service.next(next(s.subscription_id,first.sequence),'a');
+ await assert.rejects(service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:first.sequence,action:{kind:'key',key:'Tab'}},'a'),/changed mirror focus/);
+ const calls=[];service.evaluate=async(_world,expression)=>{if(expression.includes('.activeTarget(')){calls.push(JSON.parse('['+expression.slice(expression.indexOf('(')+1,-1)+']'));return 'n3';}return true;};
+ const resolve=()=>service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:first.sequence,action:{kind:'coordinate',input:{kind:'key',key:'Tab'}}},'a');
+ const result=await resolve();assert.equal(calls.length,0,'native focus read waits until physical dispatch');await result.guard();
+ assert.equal(calls.length,2,'native key validates current observed focus');assert.equal(calls[0][1],false,'keys admit noneditable native focus');assert.deepEqual(calls[1][0].map(n=>n.id),['n3','n1']);
+ service.evaluate=async()=>assert.fail('paired key release must not recheck focus changed by keyDown');await result.guard();
+ host.protection={values:[],targets:[],unknown:false};service.invalidate();await assert.rejects(result.guard(),/stale|policy/);
+});
+
+test('MP-11: native keyboard unknown/protected focus refuses with no retry marker',async()=>{
+ const {service}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),first=await service.next(next(s.subscription_id),'a');
+ service.evaluate=async()=> 'unknown';
+ const result=await service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:first.sequence,action:{kind:'coordinate',input:{kind:'key',key:'Backspace'}}},'a');
+ await assert.rejects(result.guard(),error=>!error.message.includes('stale mirror input epoch'));
+});
