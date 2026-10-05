@@ -2611,7 +2611,7 @@ done
 
         let error = verify_project_environment_inputs(&workspace, &definition)
             .expect_err("an input resolved outside the canonical worktree must be rejected");
-        assert!(error.contains("escapes the materialized worktree"));
+        assert!(error.contains("could not be opened safely"));
 
         let _ = std::fs::remove_dir_all(root);
     }
