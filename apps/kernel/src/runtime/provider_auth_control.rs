@@ -1088,7 +1088,7 @@ mod tests {
         assert!(result
             .expect_err("duplicate login should be rejected")
             .to_string()
-            .contains("already authenticated as `same`"));
+            .contains("already connected as account `same`"));
         assert_eq!(
             registry
                 .get("owner-a", "claude", &default.profile_id)

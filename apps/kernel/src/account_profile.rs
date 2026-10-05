@@ -1350,7 +1350,7 @@ impl ProviderAccountProfileRegistry {
                         return Err(registry_error(
                             "validate account profile",
                             format!(
-                                "this {provider} account is already authenticated as `{existing_label}`"
+                                "this {provider} login is already connected as account `{existing_label}`; use that account instead of adding it again"
                             ),
                         ));
                     }
@@ -8495,7 +8495,7 @@ mod tests {
             )
             .unwrap_err();
 
-        assert!(error.to_string().contains("already authenticated as `dev`"));
+        assert!(error.to_string().contains("already connected as account `dev`"));
         assert_eq!(
             registry
                 .get("owner-a", "codex", &secondary.profile_id)
