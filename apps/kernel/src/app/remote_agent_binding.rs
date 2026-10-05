@@ -2279,8 +2279,14 @@ mod tests {
             ..legacy.clone()
         };
         assert!(!origin_without_required_tool_field.relay_peer_protocol_compatible());
+        // MP-08/MP-10/MP-11: v70 cannot decode Artifact or opaque upload commands.
+        let pre_artifact = RemoteAgentBinding {
+            relay_peer_protocol_version: Some(70),
+            ..legacy.clone()
+        };
+        assert!(!pre_artifact.relay_peer_protocol_compatible());
         let current = RemoteAgentBinding {
-            relay_peer_protocol_version: Some(RELAY_PEER_PROTOCOL_VERSION),
+            relay_peer_protocol_version: Some(71),
             ..legacy
         };
         assert!(current.relay_peer_protocol_compatible());

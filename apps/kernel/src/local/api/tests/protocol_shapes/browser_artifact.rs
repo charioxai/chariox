@@ -26,12 +26,13 @@ fn mp08_mp10_mp11_browser_artifact_protocol_420_snapshot_and_hash() {
 }
 
 #[test]
-fn mp08_mp10_mp11_browser_artifact_peer_shape_hashes() {
+fn mp08_mp10_mp11_browser_artifact_peer_71_shape_hashes() {
     use crate::transport::room_browser_controller::{
         RoomBrowserControllerCommand, RoomBrowserControllerResult,
     };
     use sha2::{Digest, Sha256};
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 420);
+    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 71);
     let wire = serde_json::json!({"kind":"artifact","request":{"target_id":"tab-target","document_id":"doc-a","browser_generation":1,"viewport":{"css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800,"revision":1,"last_actor_id":null},"kind":"network"}});
     let typed: RoomBrowserControllerCommand = serde_json::from_value(wire.clone()).unwrap();
     let encoded = serde_json::to_value(typed).unwrap();

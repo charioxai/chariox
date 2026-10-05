@@ -1,3 +1,4 @@
+mod browser_peer_version;
 mod client_requests;
 mod ordinary_lease_caller;
 mod peer_events;
