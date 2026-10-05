@@ -354,10 +354,12 @@ async function run() {
     "SliceBackupCreated",
   )
   corruptBackup = corruptBackupResult.backup
+  await writeFile(path.join(artifactDir, "corrupt-candidate-response.json"), JSON.stringify(corruptBackupResult, null, 2))
   assert.equal(corruptBackupResult.slice.status, "running")
   await client.send(requests.stopSliceRequest(slice.id))
   slice = await waitForSliceStatus(slice.id, "stopped")
   const containerBeforeRejectedRestore = await inspectContainerId()
+  if (process.env.M20_STORAGE_FIXTURE_HELPER) log("MP-03/MP-10: awaiting isolated root operator corruption authorization (at most ten minutes)")
   await archiveFixture.corrupt(corruptBackup)
   await assert.rejects(
     client.send(requests.restoreSliceBackupRequest(slice.id, corruptBackup.id)),
