@@ -19,6 +19,7 @@ async function peer(t: test.TestContext, cursor: number, agentId: string) {
   const address = server.address()
   assert.ok(address && typeof address === "object")
   const client = new LocalIpcClient(`ws://127.0.0.1:${address.port}`)
+  const requests: { request_id: string; command_id: string; request: { KernelBrowser: { command: { op: string; after?: number } } } }[] = []
   const polls: { after: number; wait_ms: number }[] = []
   const pending: (() => void)[] = []
   const timers = new Set<ReturnType<typeof setTimeout>>()
@@ -33,6 +34,7 @@ async function peer(t: test.TestContext, cursor: number, agentId: string) {
     connections++
     socket.on("message", payload => {
       const frame = JSON.parse(String(payload))
+      requests.push(frame)
       const command = frame.request.KernelBrowser.command
       const reply = () => {
         if (socket.readyState === 1) socket.send(JSON.stringify({ type: "response", request_id: frame.request_id,
@@ -58,8 +60,12 @@ async function peer(t: test.TestContext, cursor: number, agentId: string) {
     for (const socket of server.clients) socket.terminate()
     await new Promise<void>(resolve => server.close(() => resolve()))
   })
-  return { client, polls, pending, get connections() { return connections }, get revokes() { return revokes },
+  return { client, requests, polls, pending, get connections() { return connections }, get revokes() { return revokes },
     get lists() { return lists }, hold: () => { holdPolls = true },
+    restart: () => {
+      cursor = 1; notice = null; pending.length = 0
+      for (const socket of server.clients) socket.terminate()
+    },
     use: () => { cursor++; notice = { agent_id: agentId, resource: { kind: "note", note_id: "note" }, at_ms: 500 } } }
 }
 
@@ -110,4 +116,33 @@ test("transactional real-IPC pivots reset a higher cursor and fence the retained
   source.use(); source.pending.shift()!()
   await delay(30)
   assert.equal(lines.length, 2, "cleanup must fence late replies")
+})
+
+test("same-client real-IPC replay after kernel restart resets the cursor and retained-use projection", async t => {
+  const kernel = await peer(t, 100, "holder")
+  kernel.hold()
+  const facade = createMutableLocalIpcClient(kernel.client), lines: string[] = []
+  const controller = createAccessCommandController({ client: facade, appendNotice: line => lines.push(line) })
+  t.after(() => controller.stop())
+  controller.start()
+  await until(() => kernel.pending.length === 1)
+  kernel.use(); kernel.pending.shift()!()
+  await until(() => lines.length === 1 && kernel.pending.length === 1)
+  const interrupted = kernel.requests.at(-1)!
+  assert.equal(interrupted.request.KernelBrowser.command.after, 101)
+  kernel.restart()
+  await until(() => kernel.connections === 2 && kernel.lists === 2 && kernel.pending.length === 1)
+  assert.equal(facade.currentClient(), kernel.client, "the selected client was never swapped")
+  const replay = kernel.requests[3]!
+  assert.deepEqual(replay.request, interrupted.request, "IPC successfully retries the interrupted observation")
+  // Browser observations use new receipts for the replacement terminal caller.
+  assert.notEqual(replay.request_id, interrupted.request_id)
+  assert.notEqual(replay.command_id, interrupted.command_id)
+  assert.deepEqual(kernel.polls.map(poll => poll.after), [100, 101, 101, 1])
+  await delay(30)
+  assert.equal(kernel.polls.length, 4, "the restarted kernel's lower cursor must not cause a request loop")
+  kernel.use(); kernel.pending.shift()!()
+  await until(() => lines.length === 2 && kernel.pending.length === 1)
+  assert.equal(kernel.polls.at(-1)!.after, 2)
+  assert.equal(lines[1], lines[0], "restart clears notice deduplication even for identical retained-use notices")
 })

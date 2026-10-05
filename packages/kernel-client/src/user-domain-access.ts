@@ -99,7 +99,13 @@ export class UserDomainAccessController {
     try {
       this.apply(await this.request({ op: "list_grants" }, revision, signal))
       while (!signal.aborted && revision === this.revision) {
-        this.apply(await this.request({ op: "subscribe_grants", after: this.snapshot!.cursor, wait_ms: userDomainGrantPollWaitMs }, revision, signal))
+        const after = this.snapshot!.cursor
+        const event = await this.request({ op: "subscribe_grants", after, wait_ms: userDomainGrantPollWaitMs }, revision, signal)
+        // IPC may hide a kernel restart by successfully replaying this observation.
+        // Compare with its requested cursor, not a snapshot advanced by a revoke.
+        // A fresh revision also fences concurrent replies from the old projection.
+        if (event.cursor < after) { this.refresh(); return }
+        this.apply(event)
       }
     } catch (error) {
       if (!signal.aborted && revision === this.revision) {

@@ -32,6 +32,7 @@ test("cursor feed observes retained use and suppresses repeats, revoke cancels a
   assert.deepEqual(h.requests.at(-1), { KernelBrowser: { command: { op: "revoke_grants", agent_id: "a" } } })
   h.pending[1]!.resolve({ KernelBrowser: { result: event(2, [grant], notice) } }); await tick()
   assert.equal(h.controller.snapshot!.cursor, 3); assert.deepEqual(h.controller.snapshot!.grants, [])
+  assert.equal(h.requests.filter(r => r.KernelBrowser.command.op === "list_grants").length, 1, "a revoke advancing the snapshot must not be mistaken for a restart")
   h.controller.stop()
 })
 test("revoke all is explicit null and stale notices cannot survive refocus", async () => {
@@ -77,4 +78,42 @@ test("failed feed automatically rebinds and accepts a restarted kernel's lower c
   context.mock.timers.tick(2000); await tick()
   assert.equal(h.controller.snapshot!.cursor, 1); assert.equal(h.controller.error, null)
   h.controller.stop()
+})
+
+test("successful lower-cursor replay refreshes authority and fences concurrent old mutation replies", async t => {
+  const notice = { agent_id: "a", resource: grant.resources[0]!, at_ms: 500 }
+  let current = event(100, [grant], notice)
+  const requests: any[] = [], pending: { options: any; resolve(value: unknown): void }[] = []
+  const client: UserDomainAccessClient = { localDaemonProtocolVersion: 432, async send<T>(request: any, options: any): Promise<T> {
+    options?.beforeSend?.()
+    const command = request.KernelBrowser.command
+    requests.push(command)
+    if (command.op === "list_grants") return { KernelBrowser: { result: current } } as T
+    return new Promise(resolve => pending.push({ options, resolve: value => resolve(value as T) }))
+  } }
+  const controller = new UserDomainAccessController({ client: () => client, bindingKey: () => "same/kernel/owner" })
+  t.after(() => controller.stop())
+  controller.sync(); await tick()
+  assert.equal(controller.lastObservedRetainedUse(grant), 500)
+  const revocation = controller.revoke("a")
+  const rejected = assert.rejects(revocation, /Kernel or owner changed/)
+  current = event(1)
+  pending[0]!.resolve({ KernelBrowser: { result: current } }); await tick()
+  assert.equal(pending[0]!.options.signal.aborted, true)
+  assert.equal(pending[1]!.options.signal.aborted, true)
+  assert.equal(controller.snapshot!.cursor, 1)
+  assert.equal(controller.snapshot!.notice, null)
+  assert.equal(controller.lastObservedRetainedUse(grant), null, "old observed use cannot survive a cursor reset")
+  assert.equal(controller.busy, false)
+  assert.deepEqual(requests.map(r => [r.op, r.after]), [
+    ["list_grants", undefined], ["subscribe_grants", 100], ["revoke_grants", undefined],
+    ["list_grants", undefined], ["subscribe_grants", 1],
+  ])
+  // The old grant/revocation response cannot restore the previous high cursor.
+  pending[1]!.resolve({ KernelBrowser: { result: event(200, [grant], notice) } }); await rejected
+  assert.equal(controller.snapshot!.cursor, 1)
+  assert.equal(controller.error, null)
+  pending[2]!.resolve({ KernelBrowser: { result: event(2, [grant], { ...notice, at_ms: 600 }) } }); await tick()
+  assert.equal(controller.lastObservedRetainedUse(grant), 600)
+  assert.equal(requests.at(-1).after, 2)
 })
