@@ -76,7 +76,8 @@ export class KernelBrowserHost {
     this.lastSaved = serialized;
   }
   async start() {
-    if (this.browser && this.chromium.child?.exitCode === null && this.chromium.child?.signalCode === null) return;
+    if (this.browser && this.chromium.child?.exitCode === null && this.chromium.child?.signalCode === null
+      && this.chromium.connection?.isOpen() !== false) return;
     for (const stream of this.displays.values()) await stream.close();
     this.displays.clear(); this.scales.clear(); this.inputEpochs.clear();
     await this.browser?.close();

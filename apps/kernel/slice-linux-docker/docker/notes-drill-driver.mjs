@@ -17,12 +17,16 @@ let browser;
 let closeProxy;
 if(hostMode){
  const host=new KernelBrowserHost(root);
+ let proxyConnection;
  const stop=async()=>{await closeProxy?.();await host.stop()};
  process.on('SIGTERM',()=>void stop().finally(()=>process.exit(0)));
  process.on('SIGINT',()=>void stop().finally(()=>process.exit(0)));
  await new BrowserControllerStdioServer({handleRequest:async(request,options)=>{
   const response=await host.handle(request,options);
-  if(host.browser&&!closeProxy)closeProxy=await serveDrillCdp(root,host.chromium.connection);
+  if(proxyConnection!==host.chromium.connection){
+   await closeProxy?.();closeProxy=null;proxyConnection=host.chromium.connection;
+   if(host.browser)closeProxy=await serveDrillCdp(root,proxyConnection);
+  }
   return response;
  }}).run().finally(stop);
 } else try {

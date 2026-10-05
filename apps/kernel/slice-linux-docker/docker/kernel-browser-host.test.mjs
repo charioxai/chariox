@@ -534,3 +534,17 @@ test("display subscription captures the current document after navigation", () =
     else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;
   }
 }));
+
+test('private CDP pipe loss retires the browser generation even while child is live', () => using(async ({host,chromium,connection}) => {
+  let open=true;
+  chromium.connection=connection;
+  connection.isOpen=()=>open;
+  const start=chromium.start;
+  chromium.start=async()=>{open=true;return start()};
+  const before=await host.request({op:'open',url:'https://example.com/'});
+  open=false;
+  const after=await host.request({op:'state'});
+  assert.equal(after.generation,before.generation+1);
+  assert.equal(after.tabs[0].tab_id,before.tab_id);
+  await assert.rejects(host.request({op:'screenshot',tab_id:before.tab_id,generation:before.generation}),/stale/);
+}));
