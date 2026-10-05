@@ -67,9 +67,10 @@ aggregate cap. A request grants one frame credit, and its next credit follows
 presentation. No unbounded source/encode/viewer queue exists. Host limits eight
 display subscriptions per user browser; streams expire after 60 seconds.
 
-The display uses lightweight CDP loader checks for capture and input, while
-sharing the same typed physical input helper and cancellation checks. It avoids
-constructing an accessibility snapshot for every frame/input acknowledgement.
+The display uses lightweight CDP loader checks for frame capture. Input routes
+through kbrowser's `KernelBrowserDisplayRequest::Input` with its source document
+binding, shared actor ledger, cancellation and state reconciliation. It preserves
+that reconciliation rather than using the prototype's cheaper input receipt.
 Document/URL changes still update the kernel-owned tab registry.
 
 PNG encode/decode and software keyframes add CPU and latency; dense scroll and
@@ -120,7 +121,19 @@ unchanged because it still carries opaque encrypted terminal packets.
    cadence, awaiting each call. Presentation failure requires a fresh attach;
    do not acknowledge a lost patch base. Closing clears the display and
    unsubscribes. Reconnect requires a fresh display ID.
-5. `display_input` sends the currently displayed `document_id`, tab/generation
+5. The public adapter routes through
+   `KernelRuntimeState::kernel_browser_display_request(&KernelCommand, ...)` from
+   kbrowser Phase 4 (`d6d03751f`). `display_capture` selects its bound `Capture`;
+   negotiated subscriptions and encoded captures extend that typed seam. Encoding
+   runs over the same protected screenshot inside the capture/input barrier,
+   including policy invalidation and egress pacing. No raw CDP feed is consumed.
+   `display_takeover`, `display_release`, and `display_actors` map to its existing
+   shared actor operations. The presenter exposes `takeover`, `release`, and
+   `actors`; Cloud supplies the trusted controls and renders that projection.
+   Deliberate takeover belongs to the authenticated terminal actor, cancels/fences
+   focused agent input, and release requires that owner. Display commands remain
+   terminal-only and are excluded from the provider MCP adapter.
+6. `display_input` sends the currently displayed `document_id`, tab/generation
    and the existing `KernelBrowserInput`. The host refuses stale documents
    before dispatch. Preserve trusted host UI outside the canvas and map pointer
    coordinates to the canonical CSS geometry. Cloud owns no browser state,
@@ -138,7 +151,8 @@ terminal replay cursors. Desktop clients can implement the same contract later.
 Build with the allocated Rust slot/target, then run:
 
 ```sh
-node --test apps/kernel/slice-linux-docker/docker/kernel-browser-{display,pixels,host}.test.mjs
+node --test apps/browser-display/{contract,presenter}.test.mjs \
+  apps/kernel/slice-linux-docker/docker/kernel-browser-{display,pixels,host}.test.mjs
 node apps/browser-display/drill.mjs /absolute/kernel-test-binary \
   /absolute/external/evidence /absolute/node-tools /absolute/pyav-tools
 ```
@@ -148,8 +162,8 @@ only public `av` and `av.libs`. The drill copies public dependencies and the tes
 binary into a freshly allocated external scratch directory, then runs the real
 kernel as a non-root user. It launches its own Xvfb, opens a host tab through the
 focused runtime MCP tool (dev-stub admitted run; no provider model), and drives
-the actual kernel WebSocket with a headless Chromium presenter. By default
-it also boots the production relay on a dynamic loopback port, starts the normal
+the real kernel request/event router through the production relay with a
+headless Chromium presenter. It boots that relay on a dynamic loopback port, starts the normal
 kernel relay connector, issues disposable scoped tokens through the product
 auth API, and uses the existing browser WebCrypto implementation for requests
 and event decryption. Bootstrap tokens stay in private disposable runtime state
@@ -158,8 +172,10 @@ WebSocket: the existing kernel `Origin` guard rejects it. The drill uses the
 scoped relay; native local clients keep their existing socket path. It measures
 bootstrap video and settled PNG pixel pairs/diffs, twenty source click visual
 acknowledgements, latency histograms, observed local bytes and resources. A stale
-input document must fail. Exact owned process/state cleanup and failures are
-recorded in a RED or PASS_LOCAL_COMPONENT receipt.
+input document must fail. Relay-driven human takeover must fence focused MCP
+input while keeping observations available; owner input and release/resumption
+must work through the shared actor API. Exact owned process/state cleanup and
+failures are recorded in a RED or PASS_LOCAL_COMPONENT receipt.
 
 The metrics and fixture modules are copied without modification from Phase 2.
 Phase-2 CSS viewport was 960×600; this kernel seam is 1280×800. Source docs text
@@ -168,6 +184,64 @@ claim unchanged Phase-2 execution files. Compare exactness and latency only as
 scoped component observations. Production Cloud, hosted WAN, multi-viewer load,
 Vault end-to-end display, Mac/Windows/GPU and Room desktop replacement remain
 open. Native secrets/masking source tests are narrower than those live gates.
+
+## MD-DISPLAY-02/04: measured Phase-3 result
+
+Clean implementation source `836e64630bc53d42e488dc97142416fdb0c92271`, rebased
+onto kbrowser `d6d03751ffea37198fb33530829f4cd76ae30fbf`. Final receipt:
+`/root/.codex/evidence/browser-resume-20260930/display/phase3/final-typed-relay-2mbps/results.json`.
+`phase3/provenance.json` binds this source, the test binary SHA-256, 118 source
+file hashes, 28 exact embedded controller assets, commands, exits and receipt.
+This document/handoff may follow in a documentation-only commit; execution file
+hashes must still match that manifest. Earlier receipts and research results
+retain their original sources, including the pre-rebase implementation.
+
+The real headed, sandboxed kernel Chromium runs outside slices. The focused
+runtime MCP dev-stub opens the tab; a separate headless Chromium decrypts and
+presents actual production kernel/relay events. No provider model or Cloud proxy
+runs. Linux Chrome 154, 1280×800 CSS, DPR2 (2560×1600 pixels), VP9 + PNG repair,
+2 Mbps paced frame budget, local scoped-auth production relay:
+
+| Observation | Final Phase-3 component result |
+| --- | --- |
+| Bootstrap VP9 RGB PSNR | 34.04 dB; not lossless |
+| Settled full PNG and final patched RGB | Exact, MSE 0 at matching dimensions |
+| Input visual acknowledgements | 20/20 |
+| Click p50 / p95 / p99 | 771.71 / 822.16 / 829.50 ms |
+| Received encrypted application bytes/s | 7,451 during the click interval |
+| Bootstrap video / exact repair envelope | 594,520 / 810,620 bytes |
+| Small patch envelope | About 6.3 KB |
+| Observed owned CPU | 70.5% of one core |
+| Minimum sampled MemAvailable / free disk | 47.88 / 211.27 GiB |
+| Stale input / takeover / release | Rejected stale input; agent fenced during takeover; resumed after release |
+| Kernel exit and owned teardown | Exit 0; process inventory empty; exact disposable state removed |
+
+Byte rate includes inbound relay control responses and events after bootstrap,
+with resource sampling in the measured interval; it excludes requests, TLS and
+bootstrap/repair. Frame pacing includes those bootstrap/repair envelopes. CPU is
+live-process tick deltas (Linux CLK_TCK=100), including fixture/headless readback
+cost and excluding already-exited workers. These are scoped observations, not
+sustained video throughput, total egress caps or full input-to-photon hardware
+measurements. Screenshots/diffs and raw latency histograms remain external.
+
+**Latency remains RED against the owner's comparable-latency goal.** Historical
+Phase-2 docs at DPR2/960×600 measured Selkies CBR 2 Mbps p95 74.72 ms (46.17 dB)
+and paced exact PNG p95 115.81 ms. The new kernel authority/actor/capture path is
+substantially slower; changed geometry, docs content and request/observation
+cost mean these are not bandwidth-fair curves. Phase-2 source identities and
+limits remain in `docs/MULTIDOMAIN_DISPLAY_TRANSPORT.md` on `agent/display`.
+The bootstrap VP9 quality also does not beat that Selkies fixture. Exact settled
+text is proven here; a universally higher-quality replacement at comparable
+latency is not. Keep the feature off while profiling and replacing redundant
+PNG/serialization work behind the protected seam.
+
+Focused checks: 33 Node tests, 14 Rust shape/event/conformance/actor/takeover/origin
+checks, kernel-client TypeScript, changed-Rust formatting and local build pass.
+Fail-first presenter credit and failed-encoder retry tests are in external
+receipts. The kernel origin guard remains intact: a browser connecting directly
+to the native local WebSocket is correctly refused. No hosted WAN, production
+Cloud, native Mac/Windows, live Vault login, multi-viewer or Room migration gate
+closes from these results.
 
 ## MD-DISPLAY-04: owner decisions and migration
 
