@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, rename, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import test from 'node:test';
-import { observeDirectoryCheck, observeWorkspaceCheck } from './managed-ordinary-parity-probe.mjs';
+import { observeDirectoryCheck, observeWorkspaceCheck, withOwnedProbeDirectory } from './managed-ordinary-parity-probe.mjs';
 import { normalizeGenericResult, normalizeProviderAncestry } from './managed-ordinary-parity-collector.mjs';
 const exec = promisify(execFile);
 
@@ -73,3 +73,27 @@ for (const check of ['directory_creation', 'empty_workspace', 'basename_collisio
     } finally { await rm(root,{recursive:true,force:true}); }
   });
 }
+
+
+test('MP-02/MP-05/MP-11 owned directory observation stays pinned across replacement', async () => {
+  const root = await mkdtemp('/tmp/chariox-parity-mp11-pinned-');
+  const requested = join(root, 'requested');
+  const retained = join(root, 'retained');
+  let original;
+  let observed;
+  try {
+    await assert.rejects(withOwnedProbeDirectory(requested, async (pinned) => {
+      original = await stat(requested);
+      await rename(requested, retained);
+      await mkdir(requested);
+      await writeFile(join(requested, 'foreign-content'), 'preserve replacement');
+      observed = await stat(pinned ?? requested);
+    }), /directory identity changed/);
+    assert.equal(observed.ino, original.ino);
+    assert.equal(observed.dev, original.dev);
+    assert.equal(await readFile(join(requested, 'foreign-content'), 'utf8'), 'preserve replacement');
+    assert.equal((await stat(retained)).ino, original.ino);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -7,6 +7,8 @@ import {
   access,
   constants,
   mkdir,
+  lstat,
+  open,
   mkdtemp,
   readFile,
   readdir,
@@ -358,27 +360,33 @@ async function observeDirectoryCheck(identity, values, checkId) {
   }
   if (checkId === "directory_creation") {
     const target = safeProbePath(values.new_directory, "new directory")
-    return withOwnedProbeDirectory(target, async () => {
-      const metadata = await stat(target)
-      return identityResult(identity, { created_and_accessible: metadata.isDirectory() && await accessible(target), created_path_fingerprint: fingerprint(resolve(target)) })
+    return withOwnedProbeDirectory(target, async (pinned) => {
+      const metadata = await stat(pinned)
+      return identityResult(identity, { created_and_accessible: metadata.isDirectory() && await accessible(pinned), created_path_fingerprint: fingerprint(resolve(target)) })
     })
   }
   throw new ProbeError(`unsupported MP-02 check: ${checkId}`)
 }
 
-// MP-02/MP-05: never adopt an existing path or recursively
-// remove data introduced by another process while the probe is running.
+// MP-02/MP-05/MP-11: observe the exact requested directory through its
+// retained descriptor. Never adopt an existing path or recursively remove
+// content another process introduced while the probe was running.
 async function withOwnedProbeDirectory(target, operation) {
-  await mkdir(target)
-  const owned = await stat(target)
+  await mkdir(target, { mode: 0o700 })
+  const directory = await open(target, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
   try {
-    return await operation()
-  } finally {
-    const current = await stat(target)
-    if (current.dev !== owned.dev || current.ino !== owned.ino) {
-      throw new ProbeError("probe scratch directory identity changed")
+    const owned = await directory.stat()
+    try {
+      return await operation(`/proc/self/fd/${directory.fd}`)
+    } finally {
+      const current = await lstat(target)
+      if (!current.isDirectory() || current.dev !== owned.dev || current.ino !== owned.ino) {
+        throw new ProbeError("probe scratch directory identity changed")
+      }
+      await rmdir(target)
     }
-    await rmdir(target)
+  } finally {
+    await directory.close()
   }
 }
 
@@ -386,8 +394,8 @@ async function observeWorkspaceCheck(identity, values, checkId) {
   const sourceRoot = resolve(values.source_root)
   if (checkId === "empty_workspace") {
     const target = safeProbePath(values.nested_path, "nested workspace")
-    return withOwnedProbeDirectory(target, async () => identityResult(identity, {
-      workspace_created: (await stat(target)).isDirectory(), control_state_separate: resolve(target) !== sourceRoot,
+    return withOwnedProbeDirectory(target, async (pinned) => identityResult(identity, {
+      workspace_created: (await stat(pinned)).isDirectory(), control_state_separate: resolve(target) !== sourceRoot,
       workspace_path_fingerprint: fingerprint(resolve(target)),
     }))
   }
@@ -400,10 +408,10 @@ async function observeWorkspaceCheck(identity, values, checkId) {
   }
   if (checkId === "basename_collision") {
     const target = safeProbePath(values.new_directory, "collision directory")
-    return withOwnedProbeDirectory(target, async () => {
+    return withOwnedProbeDirectory(target, async (pinned) => {
       let collisionRejected = false
       try {
-        await mkdir(target)
+        await mkdir(pinned)
       } catch (error) {
         if (error?.code !== "EEXIST") throw error
         collisionRejected = true
@@ -948,4 +956,4 @@ if (process.argv[1]
   process.exitCode = await main()
 }
 
-export { main, observe, parseArgs, verifyProbeIdentity, observePrivilegeState, observeProviderAncestry, observeDirectoryCheck, observeWorkspaceCheck }
+export { main, observe, parseArgs, verifyProbeIdentity, observePrivilegeState, observeProviderAncestry, observeDirectoryCheck, observeWorkspaceCheck, withOwnedProbeDirectory }
