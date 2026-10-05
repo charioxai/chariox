@@ -105,7 +105,7 @@ export class DisplayStream {
     const full = () => ({ kind: 'png', data_base64: png() });
     const patch = { kind: 'tiles', base_sequence: this.sequence, tiles };
     let payload;
-    if (same) payload = full();
+    if (same || (bound && this.previous && !this.exact)) payload = full();
     else if (tiles.length && JSON.stringify(patch).length < Math.min(48_000, source.full_size_hint ?? JSON.stringify(full()).length)) payload = patch;
     else if (this.codec === 'png') payload = full();
     else payload = { kind: 'video', codec: 'vp09.00.10.08', key: true, data_base64: await this.encoder.encode(png(), this.bitrate) };

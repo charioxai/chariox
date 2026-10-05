@@ -971,7 +971,7 @@ export class LocalIpcClient {
         this.rejectPending(error instanceof Error ? error.message : String(error), lane)
         return
       }
-      this.lastReceivedEventId = frame.event_id
+      if (event.event !== "kernel_browser_frame") this.lastReceivedEventId = frame.event_id
       this.markKernelEventReceived()
       for (const handler of this.eventHandlers) {
         handler(event)

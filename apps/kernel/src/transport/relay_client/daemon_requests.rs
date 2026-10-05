@@ -40,6 +40,7 @@ impl Drop for BrowserImportDeliveryGuard {
 
 #[derive(Debug, Clone)]
 pub(super) struct RelayRequestOutcome {
+    pub(super) display_activity: Option<String>,
     pub(super) display_event: Option<(String, u64, EncryptedRelayPayload)>,
     pub(super) encrypted_response: Option<EncryptedRelayPayload>,
     pub(super) error: Option<RelayError>,
@@ -59,6 +60,7 @@ pub(super) async fn handle_daemon_request(
     .is_err()
     {
         return RelayRequestOutcome {
+            display_activity: None,
             display_event: None,
             encrypted_response: None,
             error: Some(relay_error(
@@ -71,6 +73,7 @@ pub(super) async fn handle_daemon_request(
     if let Err(error) = validate_bound_service_sender(caller_identity.as_ref(), &encrypted_request)
     {
         return RelayRequestOutcome {
+            display_activity: None,
             display_event: None,
             encrypted_response: None,
             error: Some(error),
@@ -85,6 +88,7 @@ pub(super) async fn handle_daemon_request(
             Ok(payload) => payload,
             Err(error) => {
                 return RelayRequestOutcome {
+                    display_activity: None,
                     display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
@@ -99,6 +103,7 @@ pub(super) async fn handle_daemon_request(
             Ok(request) => request,
             Err(error) => {
                 return RelayRequestOutcome {
+                    display_activity: None,
                     display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
@@ -114,11 +119,13 @@ pub(super) async fn handle_daemon_request(
         };
         (request, decrypted.sender_public_key, daemon_private_key)
     };
+    let mut display_activity = None;
     let (request_kind, command_id, bind_import_response, result) = match message {
         ParsedRelayClientMessage::Request(request) => {
             if let Err(error) = validate_cli_relay_sender_key(&request.request, &client_public_key)
             {
                 return RelayRequestOutcome {
+                    display_activity: None,
                     display_event: None,
                     encrypted_response: None,
                     error: Some(error),
@@ -130,11 +137,21 @@ pub(super) async fn handle_daemon_request(
                 &encrypted_request,
             ) {
                 return RelayRequestOutcome {
+                    display_activity: None,
                     display_event: None,
                     encrypted_response: None,
                     error: Some(error),
                 };
             }
+            let poll = match &request.request {
+                LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+                    command:
+                        crate::local::KernelBrowserCommand::DisplayNext {
+                            subscription_id, ..
+                        },
+                }) => Some(subscription_id.clone()),
+                _ => None,
+            };
             let request_kind = relay_request_kind(&request.request);
             let bind_import_response = is_browser_import_request(&request.request);
             let result = dispatch_relay_client_request(
@@ -146,6 +163,9 @@ pub(super) async fn handle_daemon_request(
                 command_result_cache,
             )
             .await;
+            if matches!(&result, RelayDispatchOutcome::Response(_)) {
+                display_activity = poll;
+            }
             (
                 request_kind,
                 request.command_id,
@@ -161,6 +181,7 @@ pub(super) async fn handle_daemon_request(
                 .is_err()
             {
                 return RelayRequestOutcome {
+                    display_activity: None,
                     display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
@@ -176,6 +197,7 @@ pub(super) async fn handle_daemon_request(
                     Ok(identity) => identity.clone(),
                     Err(error) => {
                         return RelayRequestOutcome {
+                            display_activity: None,
                             display_event: None,
                             encrypted_response: None,
                             error: Some(error),
@@ -250,6 +272,7 @@ pub(super) async fn handle_daemon_request(
                     Some(payload) => Some((id, sequence, payload)),
                     None => {
                         return RelayRequestOutcome {
+                            display_activity: None,
                             display_event: None,
                             encrypted_response: None,
                             error: Some(relay_error(
@@ -290,6 +313,7 @@ pub(super) async fn handle_daemon_request(
                 Ok(bytes) => bytes,
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_activity: None,
                         display_event: None,
                         encrypted_response: None,
                         error: Some(relay_error(
@@ -327,12 +351,14 @@ pub(super) async fn handle_daemon_request(
                         );
                     }
                     RelayRequestOutcome {
+                        display_activity,
                         display_event,
                         encrypted_response: Some(encrypted_response),
                         error: None,
                     }
                 }
                 Err(error) => RelayRequestOutcome {
+                    display_activity: None,
                     display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
@@ -344,6 +370,7 @@ pub(super) async fn handle_daemon_request(
             }
         }
         RelayDispatchOutcome::RelayError(error) => RelayRequestOutcome {
+            display_activity: None,
             display_event: None,
             encrypted_response: None,
             error: Some(error),

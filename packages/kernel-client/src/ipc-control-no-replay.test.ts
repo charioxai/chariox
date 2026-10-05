@@ -36,6 +36,7 @@ async function kernel(t: TestContext, onRequest: (socket: WebSocket, frame: { re
 for (const request of [
   { ControlAppWorker: { installation_id: "todo", action: "restart" } },
   { UninstallApp: { installation_id: "todo", expected_generation: "3" } },
+  { KernelBrowser: { command: { op: "display_next", subscription_id: "s", generation: 1, after_sequence: 2 } } },
 ]) {
   const kind = Object.keys(request)[0]
 

@@ -75,7 +75,8 @@ try {
  const port=await until(async()=>{checkChild(viewer,'viewer');try{return Number((await readFile(path.join(viewerHome,'DevToolsActivePort'),'utf8')).split('\n')[0])}catch{return null}},'viewer');
  browser=await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
  const page=await browser.contexts()[0].newPage();page.on('pageerror',()=>errors.push(Error('MD-DISPLAY browser callback failure')));await page.goto(`${origin}/harness.html`);await page.waitForFunction(()=>window.MDDisplay);
- await page.evaluate(async({ready,bitrate})=>{
+ await page.evaluate(async({ready,bitrate,pngOnly})=>{
+  if(pngOnly)globalThis.VideoDecoder=undefined;
   const api=await import('/browser-relay-crypto.mjs');
   const sender=await api.createRelayKeypair();
   const bootstrap=await (await fetch('/relay-bootstrap')).json();
@@ -116,8 +117,14 @@ try {
    },onEvent:listener=>{listeners.add(listener);return()=>listeners.delete(listener)}};
   mdTransport.subscribeDisplay=binding=>control({kind:'client_subscribe',subscription_id:binding.subscription_id,target:{daemon_id:bootstrap.daemon_id},session_id:binding.subscription_id,attachment_id:String(binding.generation),client_public_key:sender.publicKeyBase64,subscription_scope:'kernel_browser_display',resume_from_event_id:null});
   mdTransport.unsubscribeDisplay=binding=>control({kind:'client_unsubscribe',subscription_id:binding.subscription_id,client_public_key:sender.publicKeyBase64});
-  window.mdStream=await MDDisplay.attachBrowserDisplay(MDDisplay.canvas,mdTransport,{tab_id:ready.tab_id,generation:ready.generation},{bitrate,onTiming:timing});
- },{ready,bitrate:receipt.target_encrypted_bitrate});
+  window.mdStream=await MDDisplay.attachBrowserDisplay(MDDisplay.canvas,mdTransport,{tab_id:ready.tab_id,generation:ready.generation},{bitrate,onTiming:timing,onPresented:frame=>{
+    const sample={sequence:frame.sequence,drawn_ms:stamp()};window.mdPresentation=sample;
+    requestAnimationFrame(()=>{
+      sample.presented_ms=stamp();
+      if(window.mdProbeLeft!==undefined){const c=MDDisplay.canvas.getContext('2d');let n=0;for(let i=0;i<5;i++){const p=c.getImageData(mdProbeLeft+8+i*16,56,1,1).data;if(p[0]>128)n|=1<<i}sample.step=n;}
+    });
+  }});
+ },{ready,bitrate:receipt.target_encrypted_bitrate,pngOnly:process.env.MD_PNG_ONLY==='1'});
  const first=await page.evaluate(()=>mdStream.next());receipt.bootstrap={kind:first.kind,sequence:first.sequence};
  const reference=async()=>Buffer.from((await page.evaluate(async()=>{const r=await mdTransport.request({KernelBrowser:{command:{op:'display_capture',tab_id:mdStream.binding.tab_id,generation:mdStream.binding.generation}}});return r.KernelBrowser.result.data_base64})),'base64');
  const actual=async()=>Buffer.from((await page.evaluate(()=>MDDisplay.canvas.toDataURL('image/png'))).split(',')[1],'base64');
@@ -126,9 +133,15 @@ try {
   await writeFile(path.join(output,name+'-source.png'),source);await writeFile(path.join(output,name+'-viewer.png'),view);if(diff)await writeFile(path.join(output,name+'-diff.png'),diff);return metric;
  }
  receipt.bootstrap.fidelity=await pair('bootstrap-video');
- const settled=await page.evaluate(()=>mdStream.next());receipt.settled={kind:settled.kind,sequence:settled.sequence,fidelity:await pair('settled')};
+ const settled=await page.evaluate(()=>mdStream.next());receipt.settled={kind:settled?.kind??'unchanged-exact',sequence:settled?.sequence??first.sequence,fidelity:await pair('settled')};
  if(!receipt.settled.fidelity.lossless)throw Error('MD-DISPLAY: settled pixels differ');
  if(await page.evaluate(()=>mdStream.next())!==null)throw Error('MD-DISPLAY: idle pixels resent');
+ const idleMs=Number(process.env.MD_IDLE_MS||0);
+ if(idleMs){
+  const idleStarted=performance.now();let polls=0;
+  while(performance.now()-idleStarted<idleMs){await page.evaluate(()=>mdStream.next());polls++;await pause(250);}
+  receipt.static_polling={duration_ms:performance.now()-idleStarted,polls};
+ }
  const sourceProbe=PNG.sync.read(await reference());
  let probeLeft=null,runStart=null;
  for(let x=sourceProbe.width-360;x<sourceProbe.width;x++){
@@ -138,17 +151,17 @@ try {
  }
  if(probeLeft===null)throw Error('MD-DISPLAY: cannot bind fixture probe to captured viewport');
  receipt.probe_pixel_left=probeLeft;
+ await page.evaluate(left=>{window.mdProbeLeft=left},probeLeft);
  const probes=[];const startBytes=await page.evaluate(()=>mdWireBytes),start=performance.now();
  for(let i=1;i<=20;i++) {
   await resource();
   const probe=await page.evaluate(async left=>{
    const stamp=()=>performance.timeOrigin+performance.now(), started=stamp();
    await mdStream.input({kind:'click',x:1190,y:28});
-   const inputAck=stamp(),frame=await mdStream.next(), drawn=stamp();
-   await new Promise(resolve=>requestAnimationFrame(resolve));const presented=stamp();
-   const c=MDDisplay.canvas.getContext('2d');let step=0;
-   for(let i=0;i<5;i++){const p=c.getImageData(left+8+i*16,56,1,1).data;if(p[0]>128)step|=1<<i}
-   return {started_ms:started,input_ack_ms:inputAck,drawn_ms:drawn,presented_ms:presented,latency_ms:presented-started,step,kind:frame?.kind};
+   const inputAck=stamp(),frame=await mdStream.next(),creditReleased=stamp();
+   while(mdPresentation?.sequence!==frame?.sequence||!mdPresentation?.presented_ms)await new Promise(resolve=>requestAnimationFrame(resolve));
+   const {drawn_ms,presented_ms,step}=mdPresentation;
+   return {started_ms:started,input_ack_ms:inputAck,drawn_ms,presented_ms,credit_released_ms:creditReleased,latency_ms:presented_ms-started,step,kind:frame?.kind};
   },probeLeft);
   if(probe.step!==i){await pair('failed-probe-'+i);throw Error(`MD-DISPLAY: input visual acknowledgement ${i} got ${probe.step}`);}
   probes.push(probe.latency_ms);(receipt.probes??=[]).push(probe);if(!probe.kind)throw Error('MD-DISPLAY: missing changed frame');
@@ -176,6 +189,8 @@ try {
  const exit=await kernelExit;receipt.kernel_exit=exit;if(exit.code!==0)throw Error('MD-DISPLAY kernel drill failed');
  await writeFile(path.join(output,'kernel.log'),Buffer.concat(log));
  receipt.status='PASS_LOCAL_COMPONENT';
+ receipt.latency_goal={p50_ms:80,p95_ms:150,passed:receipt.latency.p50_ms<=80&&receipt.latency.p95_ms<=150};
+ if(process.env.MD_REQUIRE_LATENCY==='1'&&!receipt.latency_goal.passed)throw Error('MD-DISPLAY: input-to-presentation latency goal remains RED');
 } catch(error) {receipt.error=String(error.message);process.exitCode=1;}
 finally {
  if(kernel&&kernel.exitCode===null&&kernel.signalCode===null) {await writeFile(path.join(root,'home','STOP'),'MD-DISPLAY cleanup stop').catch(()=>{});await Promise.race([kernelExit,pause(5000)]);}
