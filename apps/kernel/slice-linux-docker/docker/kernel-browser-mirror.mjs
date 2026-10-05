@@ -231,28 +231,70 @@ export class MirrorService {
     if(targets.some(id=>!unchanged(id)))throw new Error('MP-11: changed or unknown mirror input target');
     if(action.kind==='selection')for(const [id,offset]of [[action.anchor_id,action.anchor_offset],[action.focus_id,action.focus_offset]])if(!Number.isInteger(offset)||offset<0||offset>(records.get(id)?.text?.length??0))throw new Error('MP-11: invalid mirror selection endpoint');
     if(action.kind==='key'&&(epoch.focused!==stream.previous.focused||epoch.focused&&!unchanged(epoch.focused)))throw new Error('MP-11: changed mirror focus');
+    let coordinateExpected=[];
     if(action.kind==='coordinate') {
       if(epoch.fullFallback!==stream.fullFallback)throw new Error('MP-11: changed mirror coordinate surface');
       const point=action.input;
-      if(point?.kind==='click'||point?.kind==='scroll')for(const record of records.values())if(record.box) {
+      const candidates=new Set();
+      if(point?.kind==='click'||point?.kind==='scroll')for(const record of records.values())if(record.box&&['element','frame','tile','mask'].includes(record.kind)) {
         const box={...record.box};for(let parent=records.get(record.parent);parent;parent=records.get(parent.parent))if(parent.kind==='frame'){box.x+=parent.box.x+(parseFloat(parent.style?.['border-left-width'])||0)+(parseFloat(parent.style?.['padding-left'])||0);box.y+=parent.box.y+(parseFloat(parent.style?.['border-top-width'])||0)+(parseFloat(parent.style?.['padding-top'])||0);}
-        if(point.x>=box.x&&point.x<box.x+box.width&&point.y>=box.y&&point.y<box.y+box.height&&!unchanged(record.id))throw new Error('MP-11: changed mirror coordinate target');
+        if(point.x>=box.x&&point.x<box.x+box.width&&point.y>=box.y&&point.y<box.y+box.height){if(!unchanged(record.id))throw new Error('MP-11: changed mirror coordinate target');candidates.add(record.id);}
+      }
+      if(!stream.fullFallback&&['click','scroll'].includes(point?.kind)) {
+        // MP-11: bind coordinates to one observed leaf, never whichever live
+        // sibling now occupies the point. Ambiguous overlapping leaves refuse.
+        const ancestors=new Set();for(const id of candidates)for(let node=records.get(records.get(id).parent);node;node=records.get(node.parent))ancestors.add(node.id);
+        const leaves=[...candidates].filter(id=>!ancestors.has(id));
+        if(leaves.length!==1)throw new Error('MP-11: ambiguous or unknown mirror coordinate target');
+        for(let node=records.get(leaves[0]);node;node=records.get(node.parent))if(['element','frame','tile','mask'].includes(node.kind)) {
+          if(!unchanged(node.id))throw new Error('MP-11: changed mirror coordinate ancestor');
+          const old=JSON.parse(epoch.nodes.get(node.id));coordinateExpected.push({id:old.id,kind:old.kind,box:old.box,attributes:old.attributes});
+        }
       }
     }
     const world=await this.world(tab);assertNotCancelled(signal);assertEpoch();
     const call=async method=>{assertNotCancelled(signal);assertEpoch();await assertCurrentDocument(world.connection,world.sessionId,tab.target_id,tab.document_id);assertEpoch();const result=await this.evaluate(world,`(()=>{globalThis.__charioxMirror.validate(${JSON.stringify(targets.map(id=>records.get(id)))});return globalThis.__charioxMirror.${method}(${JSON.stringify(action)})})()`);assertEpoch();return result;};
-    if(action.kind==='selection')return {perform:()=>call('select')};
-    if(action.kind==='focus')return {perform:()=>call('focus')};
+    if(action.kind==='selection')return {perform:(_send,mark)=>{mark?.();return call('select');}};
+    if(action.kind==='focus')return {perform:(_send,mark)=>{mark?.();return call('focus');}};
     if(action.kind==='coordinate') {
-      if(!stream.fullFallback&&['click','scroll'].includes(action.input?.kind)){const id=await this.evaluate(world,`globalThis.__charioxMirror.coordinateTarget(${JSON.stringify(action.input)},${JSON.stringify([...records.values()].filter(n=>n.kind==='tile').map(n=>n.id))})`);assertEpoch();if(!unchanged(id))throw new Error('MP-11: changed live mirror coordinate target');}
-      return {input:action.input,guard:assertEpoch};
+      if(!stream.fullFallback&&action.input?.kind==='text') {
+        // MP-08/MP-11: following native Tab, resolve native focus at dispatch.
+        // Never refocus the old viewer field. Unknown/protected/new focus fails.
+        const guard=async()=>{
+          assertEpoch();assertNotCancelled(signal);
+          const id=await this.evaluate(world,'globalThis.__charioxMirror.activeTarget()');assertEpoch();
+          if(!unchanged(id))throw new Error('MP-11: changed native mirror text focus');
+          const expected=[];for(let node=records.get(id);node;node=records.get(node.parent))if(['element','frame','tile','mask'].includes(node.kind)) {
+            if(!unchanged(node.id))throw new Error('MP-11: changed native mirror text ancestor');
+            const old=JSON.parse(epoch.nodes.get(node.id));expected.push({id:old.id,kind:old.kind,box:old.box,attributes:old.attributes});
+          }
+          const focused=await this.evaluate(world,`globalThis.__charioxMirror.activeTarget(${JSON.stringify(expected)})`);assertEpoch();assertNotCancelled(signal);
+          if(focused!==id)throw new Error('MP-11: changed native mirror text focus');
+        };
+        if(typeof action.input.text!=='string'||action.input.text.length>16384)throw new Error('MP-11: invalid native mirror text');
+        return {guard,perform:send=>send('Input.insertText',{text:action.input.text})};
+      }
+      let checked=false;
+      const guard=async()=>{
+        assertEpoch();
+        // MP-11: validate after focus emulation and the final document wait,
+        // immediately before the first physical pointer event. Release stays
+        // paired with press even when the page reacts by moving its controls.
+        if(!checked&&coordinateExpected.length) {
+          const id=await this.evaluate(world,`globalThis.__charioxMirror.coordinateTarget(${JSON.stringify(action.input)},${JSON.stringify([...records.values()].filter(n=>n.kind==='tile').map(n=>n.id))},${JSON.stringify(coordinateExpected)})`);
+          assertNotCancelled(signal);assertEpoch();
+          if(id!==coordinateExpected[0].id||!unchanged(id))throw new Error('MP-11: changed live mirror coordinate target');
+          checked=true;
+        }
+      };
+      return {input:action.input,guard};
     }
     if(action.kind==='key')return {input:{kind:'key',key:action.key},guard:assertEpoch};
     const point=await call('locate');
     if(action.kind==='click')return {input:{kind:'click',...point},guard:assertEpoch};
     if(action.kind==='scroll')return {input:{kind:'scroll',...point,delta_x:action.delta_x,delta_y:action.delta_y},guard:assertEpoch};
-    if(action.kind==='text'||action.kind==='composition')return {perform:async send=>{
-      await call('focus');assertNotCancelled(signal);assertEpoch();
+    if(action.kind==='text'||action.kind==='composition')return {perform:async (send,mark)=>{
+      mark?.();await call('focus');assertNotCancelled(signal);assertEpoch();
       if(action.kind==='text')return send('Input.insertText',{text:action.text});
       return send('Input.imeSetComposition',{text:action.text,selectionStart:action.selection_start,selectionEnd:action.selection_end});
     }};

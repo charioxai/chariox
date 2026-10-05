@@ -12,7 +12,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
     let mirrorGuard;
     const sendInput = async (method, params) => {
       await check();
-      mirrorGuard?.();
+      await mirrorGuard?.();
       onDispatch?.();
       const result = await connection.send(method, params, sessionId);
       assertNotCancelled(signal);
@@ -28,8 +28,8 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
     return browser.inputCapture.run(connection, sessionId, async () => {
       await check();
       if(resolved) {
-        if(resolved.perform) {await check();onDispatch?.();await resolved.perform(sendInput);await check();return;}
         mirrorGuard=resolved.guard;
+        if(resolved.perform) {await check();await resolved.perform(sendInput,onDispatch);await check();return;}
         input=resolved.input;
       }
       if (input.kind === "text") {

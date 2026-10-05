@@ -33,6 +33,7 @@ export class BrowserMirrorRenderer {
   private applying=false
   private documentBindings=new Map<Document,Array<()=>void>>()
   private localFocus:{node_id:string;document_id:string;through_sequence:number}|null=null
+  private nativeFocus:{document_id:string;through_sequence:number}|null=null
   private pendingInputs=0
   private inputChain:Promise<void>=Promise.resolve()
   constructor(private container:HTMLElement,private input:(action:KernelBrowserMirrorAction,epoch?:{sequence:number;document_id:string})=>Promise<unknown>,private failure:(error:unknown)=>void) {
@@ -59,7 +60,7 @@ export class BrowserMirrorRenderer {
     if(this.applying||this.disposed)return
     let focused=this.doc?.activeElement??null
     while(focused){const nested=focused.tagName==='IFRAME'?(focused as HTMLIFrameElement).contentDocument?.activeElement:focused.shadowRoot?.activeElement;if(!nested)break;focused=nested}
-    this.rememberFocus(focused)
+    if(!this.nativeFocus)this.rememberFocus(focused)
     const epoch={sequence:this.sequence,document_id:this.documentId}
     this.pendingInputs++
     this.inputChain=this.inputChain.then(async()=>{try{if(!this.disposed)await this.input(action,epoch)}finally{
@@ -67,6 +68,7 @@ export class BrowserMirrorRenderer {
       // MP-08/MP-11: one credit can already be captured before this input
       // settles. Its successor is the first observation that may restore focus.
       if(this.localFocus?.document_id===epoch.document_id)this.localFocus.through_sequence=Math.max(this.localFocus.through_sequence,this.sequence+1)
+      if(this.nativeFocus?.document_id===epoch.document_id)this.nativeFocus.through_sequence=Math.max(this.nativeFocus.through_sequence,this.sequence+1)
     }}).catch(this.failure)
   }
   private bindEvents(doc:Document):void {
@@ -77,14 +79,18 @@ export class BrowserMirrorRenderer {
     const target=(event:Event):Node=>event.composedPath()[0] as Node
     const point=(event:MouseEvent):{x:number;y:number}=>{let x=event.clientX,y=event.clientY;for(let view:Window|null=doc.defaultView;view&&view!==this.frame.contentWindow;view=view.parent){const frame=view.frameElement as HTMLElement|null;if(!frame)throw Error('MP-11: detached mirror frame');const box=frame.getBoundingClientRect();const style=view.parent.getComputedStyle(frame);x+=box.x+frame.clientLeft+(parseFloat(style.paddingLeft)||0);y+=box.y+frame.clientTop+(parseFloat(style.paddingTop)||0)}return {x:Math.floor(x),y:Math.floor(y)}}
     const id=(node:Node|null):string|undefined=>node ? this.ids.get(node) : undefined
+    const fullTile=(node:string):boolean=>{const record=this.records.get(node);return record?.kind==='tile'&&record.reason==='observer_bounds_or_unavailable'}
+    // MP-08/MP-11: opaque full-frame input uses the existing protected display
+    // text path. IME composes locally in the inert tile and commits once.
+    const text=(node:string,value:string):void=>this.enqueue(fullTile(node)||this.nativeFocus?{kind:'coordinate',input:{kind:'text',text:value}}:{kind:'text',node_id:node,text:value})
     const on=(kind:string,fn:EventListener):void=>{doc.addEventListener(kind,fn,true);removers.push(()=>doc.removeEventListener(kind,fn,true))}
-    on('focusin',event=>{if(!this.applying&&!this.disposed)this.rememberFocus(target(event))})
-    on('click',event=>{event.preventDefault();const node=id(target(event));if(node){const record=this.records.get(node);if(record?.kind==='mask')return;if(record?.kind==='tile'){const mouse=event as MouseEvent;this.enqueue({kind:'coordinate',input:{kind:'click',...point(mouse)}})}else this.enqueue({kind:'click',node_id:node})}})
+    on('focusin',event=>{if(!this.applying&&!this.disposed&&!this.nativeFocus)this.rememberFocus(target(event))})
+    on('click',event=>{event.preventDefault();const element=target(event) as HTMLElement,node=id(element);if(node){const record=this.records.get(node);if(record?.kind==='mask')return;this.nativeFocus=null;if(record?.kind==='tile'||record?.form||element.isContentEditable){const mouse=event as MouseEvent;this.enqueue({kind:'coordinate',input:{kind:'click',...point(mouse)}})}else this.enqueue({kind:'click',node_id:node})}})
     on('wheel',event=>{event.preventDefault();const wheel=event as WheelEvent,node=id(target(event));if(!node)return;const record=this.records.get(node);if(record?.kind==='mask')return;const delta_x=Math.trunc(wheel.deltaX),delta_y=Math.trunc(wheel.deltaY);if(record?.kind==='tile')this.enqueue({kind:'coordinate',input:{kind:'scroll',...point(wheel),delta_x,delta_y}});else this.enqueue({kind:'scroll',node_id:node,delta_x,delta_y})})
-    on('keydown',event=>{const key=(event as KeyboardEvent).key;if(['Tab','Enter','Escape','Backspace','Delete','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(key)){event.preventDefault();this.enqueue({kind:'key',key})}})
-    on('beforeinput',event=>{const input=event as InputEvent;event.preventDefault();if(input.isComposing||input.inputType.includes('Composition')||input.data===lastComposition)return;const node=id(target(event));if(node&&input.data)this.enqueue({kind:'text',node_id:node,text:input.data})})
-    on('compositionupdate',event=>{event.preventDefault();const e=event as CompositionEvent,node=id(target(event));if(node)this.enqueue({kind:'composition',node_id:node,text:e.data,selection_start:e.data.length,selection_end:e.data.length})})
-    on('compositionend',event=>{event.preventDefault();const e=event as CompositionEvent,node=id(target(event));if(node){lastComposition=e.data;setTimeout(()=>{lastComposition=null},0);this.enqueue({kind:'text',node_id:node,text:e.data})}})
+    on('keydown',event=>{const key=(event as KeyboardEvent).key;if(['Tab','Enter','Escape','Backspace','Delete','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(key)){event.preventDefault();if(['Tab','Enter','Escape'].includes(key))this.localFocus=null;this.nativeFocus={document_id:this.documentId,through_sequence:this.sequence+1};this.enqueue({kind:'key',key})}})
+    on('beforeinput',event=>{const input=event as InputEvent;event.preventDefault();if(input.isComposing||input.inputType.includes('Composition')||input.data===lastComposition)return;const node=id(target(event));if(node&&input.data)text(node,input.data)})
+    on('compositionupdate',event=>{event.preventDefault();const e=event as CompositionEvent,node=id(target(event));if(node&&!fullTile(node)&&!this.nativeFocus)this.enqueue({kind:'composition',node_id:node,text:e.data,selection_start:e.data.length,selection_end:e.data.length})})
+    on('compositionend',event=>{event.preventDefault();const e=event as CompositionEvent,node=id(target(event));if(node){lastComposition=e.data;setTimeout(()=>{lastComposition=null},0);text(node,e.data)}})
     on('selectionchange',()=>{if(this.applying)return;const selection=doc.getSelection();if(!selection||selection.isCollapsed)return;const a=id(selection.anchorNode),b=id(selection.focusNode);if(a&&b)this.enqueue({kind:'selection',anchor_id:a,anchor_offset:selection.anchorOffset,focus_id:b,focus_offset:selection.focusOffset})})
   }
   private releaseDocuments(live:Set<Document>):void {
@@ -126,7 +132,10 @@ export class BrowserMirrorRenderer {
     if(!previous||JSON.stringify(previous.style??{})!==JSON.stringify(record.style??{}))this.style(element,record.style??{},previous?.style)
     if(record.kind==='mask'){element.style.boxSizing='border-box';if(record.tag==='div'&&(!record.style?.display||record.style.display==='inline'))element.style.display='inline-block';element.style.appearance='none';element.style.borderStyle='solid';element.style.boxShadow='none';element.style.borderRadius='0';if(record.tag==='input'||record.tag==='textarea'){(element as HTMLInputElement).readOnly=true;(element as HTMLInputElement).disabled=true}element.style.background='black';element.style.color='transparent';element.style.borderColor='black';element.setAttribute('aria-label','Protected content')}
     if(record.kind==='tile'||record.kind==='mask') {
-      element.style.width=`${record.box?.width??0}px`;element.style.height=`${record.box?.height??0}px`;element.style.position='relative';element.style.overflow='hidden';element.style.background='black'
+      element.style.boxSizing='border-box';element.style.width=`${record.box?.width??0}px`;element.style.height=`${record.box?.height??0}px`;element.style.position='relative';element.style.overflow='hidden';element.style.background='black'
+    }
+    if(record.kind==='tile'&&record.reason==='observer_bounds_or_unavailable') {
+      element.contentEditable='plaintext-only';element.style.color='transparent';element.style.caretColor='transparent'
     }
     if(record.tag==='img'&&record.resource){const url=this.resources.get(record.resource);if(url)(element as HTMLImageElement).src=url}
     if(record.form) {
@@ -152,6 +161,7 @@ export class BrowserMirrorRenderer {
     const newTiles=packet.tiles.map<TileRaster>(tile=>{const cached=packet.reset?undefined:this.tileCache.get(tile.node_id);return cached&&JSON.stringify(cached.tile)===JSON.stringify(tile)?cached:{tile,url:blobUrl(tile.data_base64,'image/png')}})
     this.timed('resource_decode',at);at=performance.now()
     this.dpr=packet.device_scale_factor
+    if(this.nativeFocus&&(packet.reset||this.nativeFocus.document_id!==packet.document_id||!this.pendingInputs&&packet.sequence>this.nativeFocus.through_sequence))this.nativeFocus=null
     // MP-11: local progress never crosses reset/protection or document fences,
     // nor targets a removed/replaced/protected node. With one in-flight credit,
     // sequence+1 can precede the last input acknowledgement even on a fast LAN.
@@ -297,7 +307,7 @@ export class BrowserMirrorRenderer {
     this.timed('drift_scan',started);return [...drift]
   }
   private clearResources():void {for(const url of this.resources.values())URL.revokeObjectURL(url);this.resources.clear();for(const url of this.tileUrls)URL.revokeObjectURL(url);this.tileUrls=[];this.tileCache.clear()}
-  close():void {this.disposed=true;this.releaseDocuments(new Set());this.localFocus=null;this.doc=null;this.clearResources();this.dom.clear();this.records.clear();this.overlays=[];this.frame.remove()}
+  close():void {this.disposed=true;this.releaseDocuments(new Set());this.localFocus=null;this.nativeFocus=null;this.doc=null;this.clearResources();this.dom.clear();this.records.clear();this.overlays=[];this.frame.remove()}
 }
 export async function attachBrowserMirror(transport:MirrorTransport,container:HTMLElement,binding:Binding,onFailure:(error:unknown)=>void):Promise<{next():Promise<MirrorPacket>;input(action:KernelBrowserMirrorAction):Promise<unknown>;takeover():Promise<unknown>;release():Promise<unknown>;actors():Promise<unknown>;close():Promise<void>;renderer:BrowserMirrorRenderer}> {
   if(!Number.isInteger(transport.protocolVersion)||transport.protocolVersion<browserMirrorMinimumProtocolVersion)throw Error('MP-08: DOM mirroring requires protocol 433')

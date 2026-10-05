@@ -195,10 +195,16 @@ function installMirrorObserver(initialStyles = {}) {
     }
     return true;
   };
+  const unprotected = node => {
+    for(let ancestor=node,depth=0;ancestor&&depth<128;depth++) {
+      if(maskedNodes.has(ancestor)||ancestor.matches?.('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')||/password|one-time-code|cc-/i.test(ancestor.autocomplete??'')||protectedVariants.some(v=>[ancestor.value??'',...Array.from(ancestor.attributes??[],a=>a.value)].some(s=>s.includes(v))))throw new Error('mirror protected input ancestor');
+      ancestor=ancestor.parentElement??ancestor.getRootNode()?.host??ancestor.ownerDocument?.defaultView?.frameElement;
+    }
+  };
   const locate = request => {
     const node=live.get(request.node_id);
     if(!node || !node.isConnected || node.nodeType!==1 || node.matches('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],input[type=password]') || /password|one-time-code|cc-/i.test(node.autocomplete??'')) throw new Error('mirror stale/protected node');
-    for(let e=node;e;e=e.parentElement??e.getRootNode()?.host)if(e.matches?.('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')||protectedVariants.some(v=>[e.value??'',...Array.from(e.attributes??[],a=>a.value)].some(s=>s.includes(v))))throw new Error('mirror protected ancestor');
+    unprotected(node);
     const r=box(node);let x=r.x+r.width/2,y=r.y+r.height/2;
     if(!(r.width>0&&r.height>0&&x>=0&&y>=0&&x<innerWidth&&y<innerHeight)) throw new Error('mirror offscreen node');
     let hit=node.ownerDocument.elementFromPoint(x,y);
@@ -208,7 +214,7 @@ function installMirrorObserver(initialStyles = {}) {
     if(x<0||y<0||x>=innerWidth||y>=innerHeight)throw new Error('mirror offscreen frame');
     return {x:Math.floor(x),y:Math.floor(y)};
   };
-  const coordinateTarget = (point,opaque=[]) => {
+  const coordinateTarget = (point,opaque=[],expected=[]) => {
     let owner=document,x=point.x,y=point.y,hit;
     for(let depth=0;depth<128;depth++) {
       hit=owner.elementFromPoint(x,y);
@@ -223,6 +229,25 @@ function installMirrorObserver(initialStyles = {}) {
     for(let ancestor=hit,depth=0;ancestor&&depth<128;depth++){if(opaqueIds.has(ids.get(ancestor))){node=ancestor;break;}ancestor=ancestor.parentElement??ancestor.getRootNode()?.host??ancestor.ownerDocument?.defaultView?.frameElement;}
     while(node&&!ids.has(node)){if(node.parentElement?.matches('button,input,textarea,select')){node=node.parentElement;break;}node=null;}
     const key=ids.get(node);if(!key||!live.has(key)||maskedNodes.has(node)||node.matches('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],input[type=password]')||/password|one-time-code|cc-/i.test(node.autocomplete??''))throw new Error('mirror stale/protected coordinate target');
+    // MP-11: a live hit must still be the target observed at this point, and
+    // its full element/frame ancestry must retain the sampled geometry.
+    if(expected.length) {
+      if(key!==expected[0].id)throw new Error('mirror changed live coordinate target');
+      validate(expected);
+    }
+    unprotected(node);
+    return key;
+  };
+  const activeTarget = (expected=[]) => {
+    let node=document.activeElement;
+    for(let depth=0;depth<128;depth++) {
+      const nested=node?.shadowRoot?.activeElement??(node?.localName==='iframe'?node.contentDocument?.activeElement:null);
+      if(!nested)break;node=nested;
+    }
+    const key=ids.get(node);
+    if(!key||!live.has(key)||!node.isConnected||!node.isContentEditable&&!['input','textarea'].includes(node.localName))throw new Error('mirror unavailable native text focus');
+    unprotected(node);locate({node_id:key});
+    if(expected.length){if(key!==expected[0].id)throw new Error('mirror changed native text focus');validate(expected);}
     return key;
   };
   const focus = request => {locate(request);const node=live.get(request.node_id);node.focus({preventScroll:true});locate(request);let active=node.ownerDocument.activeElement;while(active?.shadowRoot?.activeElement)active=active.shadowRoot.activeElement;if(active!==node)throw new Error('mirror focus redirected');return true;};
@@ -239,5 +264,5 @@ function installMirrorObserver(initialStyles = {}) {
     if(!Array.isArray(keys)||keys.length>12000)throw new Error('mirror geometry bounds');
     return keys.map(key=>{const node=live.get(key);if(!node?.isConnected||node.nodeType!==3||maskedNodes.has(node))throw new Error('mirror unavailable text geometry');const range=node.ownerDocument.createRange();range.selectNodeContents(node);return {id:key,rects:[...range.getClientRects()].map(r=>({x:r.x,y:r.y,width:r.width,height:r.height}))};});
   };
-  globalThis.__charioxMirror=Object.freeze({read,locate,focus,select,validate,coordinateTarget,textRuns});return true;
+  globalThis.__charioxMirror=Object.freeze({read,locate,focus,select,validate,coordinateTarget,activeTarget,textRuns});return true;
 }

@@ -26,6 +26,7 @@ if(process.argv[2]!=='child') {
     await cp(path.join(here,'browser-mirror-drill.mjs'),path.join(root,'run.mjs'));
     await cp(path.join(here,'browser-mirror-metrics.mjs'),path.join(root,'browser-mirror-metrics.mjs'));
     await cp(path.join(here,'browser-mirror-renderer-review.mjs'),path.join(root,'browser-mirror-renderer-review.mjs'));
+    await cp(path.join(here,'browser-mirror-input-review.mjs'),path.join(root,'browser-mirror-input-review.mjs'));
     await mkdir(path.join(root,'controller'));for(const name of await readdir(path.join(here,'../../apps/kernel/slice-linux-docker/docker')))if(name.endsWith('.mjs')&&!name.includes('.test.'))await cp(path.join(here,'../../apps/kernel/slice-linux-docker/docker',name),path.join(root,'controller',name));
     await cp(compiled,path.join(root,'client'),{recursive:true});
     for(const name of ['playwright-core','ws','pngjs'])await cp(path.join(tools,'node_modules',name),path.join(root,'node_modules',name),{recursive:true});
@@ -47,7 +48,7 @@ if(process.argv[2]!=='child') {
     await cp(path.join(root,'evidence'),output,{recursive:true});
     await writeFile(path.join(output,'run.log'),logs);
     const codeHashes={};for(const dir of ['controller','client'])for(const name of await readdir(path.join(root,dir)))if(name.endsWith('.mjs')||name.endsWith('.js'))codeHashes[`${dir}/${name}`]=createHash('sha256').update(await readFile(path.join(root,dir,name))).digest('hex');
-    for(const name of ['run.mjs','browser-mirror-metrics.mjs','browser-mirror-renderer-review.mjs'])codeHashes[name]=createHash('sha256').update(await readFile(path.join(root,name))).digest('hex');
+    for(const name of ['run.mjs','browser-mirror-metrics.mjs','browser-mirror-renderer-review.mjs','browser-mirror-input-review.mjs'])codeHashes[name]=createHash('sha256').update(await readFile(path.join(root,name))).digest('hex');
     await writeFile(path.join(output,'execution-hashes.json'),JSON.stringify(codeHashes,null,2));
     await writeFile(path.join(output,'provenance.json'),JSON.stringify({items:['MP-08','MP-10','MP-11'],source,dirty:Boolean(dirty),tracked_dirty:Boolean(trackedDirty),command:process.argv.slice(1),exit_code:code,topology:'isolated Node host controller + real Chromium + shared renderer, no Rust or relay',cleanup:'host-owned Chromium stopped; exact disposable state removed'},null,2));
   }finally{if(sandboxProfile)execFileSync('/usr/sbin/apparmor_parser',['-R',sandboxProfile]);await rm(root,{recursive:true,force:true});}
@@ -86,7 +87,7 @@ if(process.argv[2]!=='child') {
     let observedPacket;const nextPacket=async()=>observedPacket=JSON.parse(await viewer.evaluate(async()=>JSON.stringify(await window.mirror.next())));
     receipt.environment={node:process.version,chromium:browser.version(),bridge:'bounded same-origin loopback HTTP with recursively sorted JSON maps; no Playwright RPC bridge, Rust or relay'};
     const rendererReviewMode=process.env.CHARIOX_MIRROR_DRILL_RENDERER_REVIEW;
-    if(rendererReviewMode){const {rendererReview}=await import('./browser-mirror-renderer-review.mjs');await rendererReview({source,viewer,originUrl,viewerUrl,receipt,mode:rendererReviewMode,resource});}
+    if(rendererReviewMode){const inputReview=['input','caret','fallback','coordinate','tab','controls'].includes(rendererReviewMode);const {rendererReview}=inputReview?{rendererReview:(await import('./browser-mirror-input-review.mjs')).rendererInputReview}:await import('./browser-mirror-renderer-review.mjs');await rendererReview({source,viewer,originUrl,viewerUrl,receipt,mode:rendererReviewMode,resource});}
     for(const dpr of process.env.CHARIOX_MIRROR_DRILL_REVIEW_ONLY||rendererReviewMode?[]:[1,2])for(const kind of ['docs','forms','spa','shadow','frames','media','long']){
       const opened=await source.request({op:'open',url:`${originUrl}/${kind}`,observed_by:'drill'}),generation=opened.generation,tab_id=opened.tab_id;
       const prepared=await source.request({op:'mirror_subscribe',tab_id,generation,device_scale_factor:dpr,observed_by:'drill'});
@@ -226,7 +227,7 @@ if(process.argv[2]!=='child') {
       await viewer.evaluate(()=>{window.actions=[];const renderer=window.mirror.renderer,send=renderer.input;renderer.input=(action,epoch)=>{window.actions.push(action);return send(action,epoch)}});
       await button.click();await viewer.evaluate(()=>window.mirror.renderer.inputChain);await writeFile(path.join(root,'evidence','nested-event-debug.json'),JSON.stringify(await viewer.evaluate(()=>{const r=window.mirror.renderer,doc=r.frame.contentDocument.querySelector('iframe').contentDocument;return {actions:window.actions,bound:r.boundDocuments?.has(doc),elements:[...doc.querySelectorAll('*')].map(n=>({tag:n.tagName,text:n.textContent,id:r.ids.get(n),mapped:r.dom.get(r.ids.get(n))===n}))}})));assert.equal(await viewer.evaluate(()=>window.actions.filter(a=>a.kind==='click'||a.kind==='coordinate'&&a.input.kind==='click').length),1,'MP-08: nested click binds once after eight packets');
       assert.equal((await connection.send('Runtime.evaluate',{expression:'document.querySelector("iframe").contentDocument.querySelector("button").textContent',returnByValue:true},sessionId)).result.value,'Clicked');
-      await nextPacket();await viewer.evaluate(()=>window.actions=[]);const childEditor=nested.locator('[contenteditable]');await childEditor.click();await childEditor.press('End');await childEditor.pressSequentially('Q');await viewer.evaluate(()=>window.mirror.renderer.inputChain);assert.equal(await viewer.evaluate(()=>window.actions.filter(a=>a.kind==='text').length),1,'MP-08: nested printable text binds once');
+      await nextPacket();await viewer.evaluate(()=>window.actions=[]);const childEditor=nested.locator('[contenteditable]');await childEditor.click();await childEditor.press('End');await childEditor.pressSequentially('Q');await viewer.evaluate(()=>window.mirror.renderer.inputChain);assert.equal(await viewer.evaluate(()=>window.actions.filter(a=>a.kind==='text'||a.kind==='coordinate'&&a.input.kind==='text').length),1,'MP-08: nested printable text binds once');
       assert.equal((await connection.send('Runtime.evaluate',{expression:'document.querySelector("iframe").contentDocument.querySelector("[contenteditable]").textContent',returnByValue:true},sessionId)).result.value,'Nested:Q');
       receipt.security.push({check:'offset nested native tile + eight reconciliations: exactly one real click/text/key event each',passed:true});
       // MP-10/MP-11: same-read CSS sharing never assumes equal siblings from

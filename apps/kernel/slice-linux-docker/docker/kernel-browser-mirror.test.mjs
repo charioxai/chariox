@@ -189,3 +189,21 @@ test('MP-08/MP-11: kernel refuses overlapping credits instead of racing private 
  const {service}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');let unblock;const held=new Promise(resolve=>{unblock=resolve}),world=service.world.bind(service);service.world=async(...args)=>{await held;return world(...args)};
  const first=service.next(next(s.subscription_id),'a');await assert.rejects(service.next(next(s.subscription_id),'a'),/credit already outstanding/);unblock();assert.equal((await first).sequence,1);assert.equal(service.streams.get(s.subscription_id).busy,false);
 });
+
+test('MP-11: coordinate admission binds the observed leaf and carries live ancestor validation',async()=>{
+ const {service,state}=fixture();state.snapshot.nodes[1]={id:'n2',parent:'n1',children:[],kind:'element',tag:'input',box:{x:5,y:5,width:20,height:20},attributes:{type:'text'}};
+ const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),packet=await service.next(next(s.subscription_id),'a');
+ const evaluate=service.evaluate.bind(service);let expected;
+ service.evaluate=async(world,expression)=>{if(expression.includes('.coordinateTarget(')){const args=JSON.parse('['+expression.slice(expression.indexOf('(')+1,-1)+']');expected=args[2];return 'n2';}return evaluate(world,expression)};
+ const result=await service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:packet.sequence,action:{kind:'coordinate',input:{kind:'click',x:10,y:10}}},'a');
+ assert.equal(result.input.kind,'click');assert.equal(expected,undefined,'MP-11 live guard runs at dispatch, after input focus emulation');await result.guard();assert.deepEqual(expected.map(n=>n.id),['n2','n1']);assert.deepEqual(expected[0].box,state.snapshot.nodes[1].box);
+ service.evaluate=async()=> 'n1';
+ const changed=await service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:packet.sequence,action:{kind:'coordinate',input:{kind:'click',x:10,y:10}}},'a');await assert.rejects(changed.guard(),error=>!error.message.includes('stale mirror input epoch'));
+});
+
+test('MP-11: ambiguous overlapping coordinate leaves refuse without entering live dispatch',async()=>{
+ const {service,state}=fixture();state.snapshot.nodes[0].children=['n2','n3'];
+ for(const id of ['n2','n3']){const node={id,parent:'n1',children:[],kind:'element',tag:'div',box:{x:5,y:5,width:20,height:20}};if(id==='n2')state.snapshot.nodes[1]=node;else state.snapshot.nodes.push(node);}
+ const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),packet=await service.next(next(s.subscription_id),'a');service.world=async()=>assert.fail('must refuse before live work');
+ await assert.rejects(service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:packet.sequence,action:{kind:'coordinate',input:{kind:'click',x:10,y:10}}},'a'),/ambiguous/);
+});

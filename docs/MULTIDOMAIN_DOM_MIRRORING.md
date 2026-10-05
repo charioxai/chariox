@@ -237,3 +237,58 @@ fences and twelve iframe replacement/removal cycles including resets before clos
 a component/loopback fixture, not production Cloud/relay or MP acceptance. Cloud
 must copy the complete shared renderer and repin its new SHA-256; public renderer
 API, packet shapes and all other shared renderer source files are unchanged.
+
+## MP-08/MP-10/MP-11 round5 input review fixes
+
+Clicks on DOM form fields and editable descendants forward the actual root
+coordinates, including nested frame borders and padding. Native source input
+therefore places the caret at the clicked character boundary before queued text;
+an element-center click no longer overwrites that boundary. Ordinary element
+clicks and selections retain their existing actions.
+
+Coordinate input binds to one unambiguous observed leaf at the point. The live
+isolated-world hit must match that identity, and its element/frame ancestors must
+retain their observed geometry and attributes. Current protected ancestors are
+checked across shadows and nested frames. Overlapping ambiguous leaves, moved
+targets/ancestors, newly protected nodes and changed hits refuse before physical
+dispatch without the sequence-only retry marker. The input path awaits this
+live guard after focus capture and the final document wait. Mouse release stays
+paired with press when a page reacts to the press by changing layout.
+
+Full-frame observer/unsupported-composition fallback has an inert plaintext
+editable tile beneath its protected raster. Printable `beforeinput` and IME
+commit use the existing coordinate-wrapped display text input, including its
+secret-field refusal and document/epoch/actor fences. Intermediate IME text stays
+local; no source state or page script is copied into the input bridge. The tile's
+local text/caret is transparent and never replaces source pixels. This fixes
+typing while retaining successful protected full-frame fallback packets.
+
+Run the external-tools drill with `CHARIOX_MIRROR_DRILL_RENDERER_REVIEW=input`
+for clicked-caret, full-fallback typing/IME/protection and stale-coordinate live
+checks; `caret`, `fallback` and `coordinate` isolate a seam for fail-first runs.
+The existing `all` mode retains delayed-focus and Document-lifetime regressions.
+No serialized action, packet, protocol minimum or shared authority changes;
+local433/relay79 remain current, and the reserved439/83 push allocation is unused.
+Component typing and synthetic IME commits do not establish OS-level IME,
+Cloud/relay, Room, macOS or managed acceptance. Cloud must repin the complete
+current renderer after review.
+
+MP-08/MP-11: the later Cloud review's Tab-then-type P1 is included. After a
+forwarded native key, printable text/IME commits resolve the actual native
+focused editor at dispatch rather than refocusing the old viewer node. That
+focus must be a connected, observed, unchanged and unprotected field/editor;
+its ancestors and live geometry are rechecked without moving its caret. Native
+focus can cross an observed same-origin frame or open shadow. Unknown/new or
+protected focus refuses before dispatch. The renderer retains this native-focus
+mode through pending input and the credit that can predate its acknowledgement;
+a later observation restores ordinary element-bound text. Explicit clicks,
+reset/protection/document changes and close discard it. Tab/Enter/Escape also
+discard old local focus intent so it cannot suppress authoritative focus changes.
+`tab` isolates normal-polling and400ms delayed-response regressions, including an
+Enter handler that moves source focus. No new request or reply fields are used.
+Native control tiles size their sampled outer boxes with `border-box`, including
+controls whose source uses `content-box` with padding/borders. This prevents
+false geometric drift from retiring ordinary nested native fields. The `controls`
+mode isolates that fail-first geometry check; the complete input mode also
+tests post-key focus inside a frame and protected post-key refusal without
+rotating a healthy browser generation.
