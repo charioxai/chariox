@@ -27,9 +27,19 @@ Unknown input outcomes are never retried.
 The observer runs in the existing #607 isolated world. A MutationObserver watches
 light DOM, open shadows and accessible nested documents. On credit it samples
 current computed style, values, selection/focus and scroll, then sends a diff.
-This first implementation recomputes the bounded snapshot on every credit;
-mutation records themselves are private and are never serialized. This makes
-property-only form changes observable as well as ordinary DOM mutations.
+The bounded observation still samples current state on every credit, including
+property-only form changes. Private isolated-world deltas avoid transferring
+unchanged nodes over CDP. The kernel retains a separate sanitized base before
+resource remapping or fallback, and canonical node hashes are cached without
+changing the public hash contract. Mutation records never cross the boundary.
+Computed CSS omits trusted Chromium initial values and starts each element with
+`all:initial`. Those defaults come from a short-lived blank target, never origin
+content. Simple unchanged text blocks below the viewport reuse sanitized styles;
+geometry/effects and raw protected text are checked each read. When a block moves
+or becomes visible, its styles are read completely before delivery. Registered
+Vault values disable that cache. Initial offscreen flow blocks retain geometry
+and hydrate descendants on the following credit, so visible content paints first.
+The existing pull-credit protocol remains; push events need coordinator allocation.
 
 ## MP-11 protection boundaries
 
@@ -64,8 +74,12 @@ regions and cropped by the kernel. Native controls, canvas/video/WebGL/plugin co
 closed shadows and cross-origin frames use opaque tiles. Structured mirror
 capture inspects open shadow descendants using trusted CDP metadata; Chromium
 user-agent shadow roots do not turn ordinary controls into secret fields.
-Closed page roots and frame regions remain masked under the existing conservative
-pixel protection contract. Thus cross-origin frame content is currently an opaque
+Same-origin frame tile bounds are translated into root compositor coordinates.
+Trusted CDP frame origins and exposed documents permit nested protection scans;
+explicitly protected frames retain their masks. Closed page roots and foreign or
+unavailable frame regions remain masked under the conservative protection contract.
+Fully opaque regions use placeholders without source readback. Nested and shadow
+images are decoded before apply completes. Thus cross-origin frame content is currently an opaque
 protected fallback, not an independently authorized subframe observation channel.
 
 ## MP-08 input and client integration
@@ -94,8 +108,13 @@ Cloud owns production UI integration and scheduling credits. The reference
 renderer restores nested inert documents, open shadow slotting, styles, form state,
 focus and scroll. It preserves text nodes across unchanged updates. It checks
 geometry before each next call and requests sticky per-region video fallback for
-layout drift. Full-root drift uses a full protected video region. The source hash
-is checked every packet; raster exactness still needs the client-specific gate.
+layout, text or color drift at a 0.5 CSS px geometry threshold. Full-root drift
+uses a stable inert full-video document. Tiles occupy integer source raster
+positions independently of fractional control boxes. Mask overlays use the same
+outward floor/ceil plus four native pixels as protected source captures. The
+source hash is checked every packet. Runtime compositor pixel comparison still
+needs a reviewed client readback seam; geometry/text/color checks cannot detect
+all raster-only paint differences.
 A subscription failure closes the frame and notifies the caller; the caller
 negotiates the existing display fallback, using its unchanged authority path.
 
@@ -108,10 +127,21 @@ scroll fixtures at DPR 1/2. Arguments are absolute external tools, compiled clie
 and evidence paths. It requires public Chromium dependencies and fonts; its
 lane-owned exact-path AppArmor user-namespace profile and temporary profiles are
 removed on exit. No global sandbox setting or durable credential is changed.
-It records native raster pairs, MSE/mismatch, bootstrap/patch bytes, ten-sample
-input/effect and mutation/paint distributions, owned-process CPU tick samples,
+It records native raster pairs, raw MSE/mismatch and source-only one-native-pixel
+edge-band mismatch. Client-only holes cannot enlarge the exclusion band. Box and
+each text line fragment geometry, exact text and computed colors are measured.
+The gate is <=0.5 CSS px geometry, exact text/colors and <=0.10% raster mismatch
+outside that band. It also records bootstrap/hydration/patch bytes, per-stage CDP,
+serialization, decode and renderer spans, ten-sample input/presentation and
+mutation/paint distributions, owned-process CPU tick samples,
 resource floors and cleanup. Mutation latency includes the source CDP call and
-credit round trip; it is not a passive push/WAN measurement. Fixture navigation
+credit round trip; it is not a passive push/WAN measurement. Presentation ends at
+a viewer rAF callback after native compositor readback verifies the expected
+binary acknowledgement, using its source geometry (including scrollbars). This
+matches the display lane's software endpoint, not physical monitor timing. The
+latency gates are input p50 <=80 ms / p95 <=120 ms, mutation p50 <=80 ms and long
+page first meaningful paint <=500 ms. The first-paint metric includes native
+viewer readback and rAF, before source screenshot analysis. Fixture navigation
 occurs after selecting DPR so fonts are laid out at the requested scale.
 
 Rust tests cross two authenticated local transport connections through production
@@ -121,12 +151,13 @@ tests cover sanitization, decoded-resource bounds, protection resets, generation
 stale input, drift, App exclusion and unknown-outcome replay. These complement
 rather than replace real Chromium, relay and independent semantic review.
 
-Exact pixel acceptance remains RED at mask edges and fractional tile placement. Text geometry and unavailable fonts
-also trigger fallback; unsupported transformed/filtered tiles use a full video
-region to avoid applying compositor transforms twice.
-The matrix and raw receipts must be assessed against an owner-approved fidelity
-gate before leaving video by default. The existing display plan reports a different
-source/topology and must not be relabeled as this lane's benchmark. Production
-Cloud/relay/WAN parity, OS-level IME, animated media performance, Room rollout,
-macOS replay and current security-anchor semantic review remain acceptance work.
-MP-11 does not require exact-blob review of unrelated non-security source.
+Round 2 fixes the known fractional tiles, mask edges, native controls and
+same-origin frame seams. Component fidelity can pass while latency remains RED;
+retain each failing receipt and exact execution identity. Neither one fixture
+matrix nor source checks close an MP item. Keep the feature opt-in until runtime
+raster drift/fallback and production clients satisfy the complete gate. The
+existing display plan reports another source and relay topology; do not relabel
+its benchmark as this component run. Production Cloud/relay/WAN parity, OS-level
+IME, animated media performance, Room rollout, macOS replay and current security
+anchor semantic review remain acceptance work. MP-11 does not require exact-blob
+review of unrelated non-security source.

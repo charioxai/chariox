@@ -100,8 +100,7 @@ export function decodePng(data, scale = 1) {
   }
   return { width, height, pixels };
 }
-export function maskPng(data, regions, scale = 1) {
-  const { width, height, pixels } = decodePng(data, scale);
+export function maskPixels({width,height,pixels}, regions) {
   if (regions.length > 50_000) throw new Error("MD-5: region limit");
   for (const region of regions) {
     if (!Array.isArray(region) || region.length !== 4 || !region.every(Number.isFinite)) throw new Error("MD-5: invalid region");
@@ -113,7 +112,11 @@ export function maskPng(data, regions, scale = 1) {
       }
     }
   }
-  return encodePng(width, height, pixels);
+  return {width,height,pixels};
+}
+export function maskPng(data, regions, scale = 1) {
+  const frame=maskPixels(decodePng(data,scale),regions);
+  return encodePng(frame.width,frame.height,frame.pixels);
 }
 export async function captureProtectedPage(browser, tab, values, targets, capture, scale = 1, clip = null) {
   const pixelScale = scale * (clip?.scale ?? 1);

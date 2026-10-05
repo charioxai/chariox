@@ -28,11 +28,12 @@ function resourceType(bytes) {
 export async function materializeMirrorResources(connection,sessionId,descriptors,protectedValues,cache=new Map()) {
   if(protectedValues.length && descriptors.length) throw new Error('MP-11: protected resources refused');
   if(descriptors.length>128) throw new Error('MP-11: mirror resource count');
+  cache.clear();
+  if(!descriptors.length)return {mapped:new Map(),resources:new Map()};
   const {frameTree}=await connection.send('Page.getResourceTree',{},sessionId),allowed=new Map();
   const collect=tree=>{for(const r of tree.resources??[]) allowed.set(r.url,tree.frame.id);for(const child of tree.childFrames??[])collect(child);};
   collect(frameTree);
   // CDP resource bodies may change at a stable URL. Cache only within this read.
-  cache.clear();
   const mapped=new Map(),resources=new Map();let total=0;
   for(const item of descriptors) {
     const frameId=allowed.get(item.url);
@@ -52,4 +53,17 @@ export async function materializeMirrorResources(connection,sessionId,descriptor
     mapped.set(item.key,resource_id);
   }
   return {mapped,resources};
+}
+
+// MP-08/MP-10: canonical node strings are reusable across unchanged patches.
+// Hash bytes remain identical to mirrorHash; cache entries hold sanitized data only.
+export class MirrorTreeHasher {
+  constructor(){this.nodes=new Map();}
+  hash(source) {
+    const next=new Map();
+    const nodes=source.nodes.map(node=>{const raw=JSON.stringify(node),old=this.nodes.get(node.id),entry=old?.raw===raw?old:{raw,canonical:mirrorCanonicalJson(node)};next.set(node.id,entry);return entry.canonical;});
+    this.nodes=next;
+    const json=`{"focused":${mirrorCanonicalJson(source.focused)},"fonts":${mirrorCanonicalJson(source.fonts)},"nodes":[${nodes.join(',')}],"root":${mirrorCanonicalJson(source.root)},"scroll":${mirrorCanonicalJson(source.scroll)},"selection":${mirrorCanonicalJson(source.selection??null)}}`;
+    return createHash('sha256').update(json).digest('hex');
+  }
 }

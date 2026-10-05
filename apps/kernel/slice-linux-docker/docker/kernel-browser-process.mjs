@@ -64,7 +64,7 @@ export class HostChromium {
       if (error.code !== "ENOENT") throw error;
     });
     const child = spawn(await executable(environment), launchArguments(profile,
-      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1"), {
+      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1"), {
       stdio: "ignore", env: environment,
     });
     this.child = child;
@@ -96,9 +96,15 @@ export class HostChromium {
     if (connection?.isOpen()) await connection.send("Browser.close").catch(() => {});
     const exited = () => child.exitCode !== null || child.signalCode !== null;
     for (let count = 0; count < 40 && !exited(); count++) await delay(50);
-    if (!exited()) child.kill("SIGTERM");
+    if (!exited()) {
+      if (!Number.isSafeInteger(child.pid) || child.pid <= 1) throw new Error("MP-11: invalid owned browser PID");
+      child.kill("SIGTERM");
+    }
     for (let count = 0; count < 40 && !exited(); count++) await delay(50);
-    if (!exited()) child.kill("SIGKILL");
+    if (!exited()) {
+      if (!Number.isSafeInteger(child.pid) || child.pid <= 1) throw new Error("MP-11: invalid owned browser PID");
+      child.kill("SIGKILL");
+    }
     if (!exited()) await new Promise(resolve => child.once("exit", resolve));
   }
 }

@@ -7,12 +7,14 @@ import { encodePng } from './kernel-browser-pixels.mjs';
 function fixture() {
   const tab={tab_id:'t',target_id:'target',document_id:'d'},state={document:'d',snapshot:{root:'n1',nodes:[{id:'n1',parent:null,children:['n2'],kind:'element',tag:'div',box:{x:0,y:0,width:80,height:40}},{id:'n2',parent:'n1',children:[],kind:'text',text:'fixture'}],fonts:[],resources:[],scroll:{x:0,y:0},focused:null,selection:null}};
   const connection={async send(method,params){
+    if(method==='Target.createTarget')return {targetId:'css-initial'};
+    if(method==='Target.closeTarget')return {success:true};
     if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'frame',loaderId:state.document}}};
     if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'frame'},resources:[]}};
     if(method==='DOM.getDocument')return {root:{nodeId:1,children:[]}};
     if(method==='DOM.querySelectorAll')return {nodeIds:[]};
     if(method==='Emulation.setDeviceMetricsOverride')return {};
-    if(method==='Runtime.evaluate')return {result:{value:params.expression.includes('.read(')?structuredClone(state.snapshot):true}};
+    if(method==='Runtime.evaluate')return {result:{value:params.expression.includes('.read(')?structuredClone(state.snapshot):params.expression.includes('Object.fromEntries([...style]')?{}:true}};
     throw Error(`unexpected CDP method ${method}`);
   }};
   const host={generation:1,scales:new Map(),protection:{values:[],targets:[],unknown:false},async target(){return {...tab,document_id:state.document};},async displayTarget(){return {...tab,document_id:state.document};},browser:{async resolvePageTarget(){return {connection,sessionId:'session'};},async ensureFocusWorld(){return {contextId:1};}},async screenshot(){return {data_base64:encodePng(1280,800,Buffer.alloc(1280*800*4,100)),protected_regions:[]};}};
@@ -75,4 +77,45 @@ test('MP-08/MP-11: region fallback removes selection metadata referring to its h
  const {service,state}=fixture();state.snapshot.nodes[0].children=['n3'];state.snapshot.nodes[1].parent='n3';state.snapshot.nodes.push({id:'n3',parent:'n1',children:['n2'],kind:'element',tag:'p',box:{x:0,y:0,width:80,height:40}});state.snapshot.selection={anchor_id:'n2',anchor_offset:0,focus_id:'n2',focus_offset:3};
  const subscribed=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');const first=await service.next(next(subscribed.subscription_id),'a');assert(first.selection);
  const fallback=await service.next(next(subscribed.subscription_id,first.sequence,['n3']),'a');assert.equal(fallback.selection,null);assert(fallback.removed.includes('n2'));assert.equal(fallback.nodes.find(n=>n.id==='n3').kind,'tile');
+});
+
+test('MP-08/MP-11: isolated-world deltas keep a private full base before public protection transforms',async()=>{
+ const {service,state}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+ const first=await service.next(next(s.subscription_id),'a');
+ state.snapshot={...state.snapshot,nodes:[{...state.snapshot.nodes[1],text:'incremental'}],incremental:true,removed:[]};
+ const patch=await service.next(next(s.subscription_id,first.sequence),'a');
+ assert.equal(service.streams.get(s.subscription_id).previous.nodes.length,2);
+ assert.deepEqual(patch.nodes.map(n=>n.id),['n2']);
+ const raw=service.streams.get(s.subscription_id).observed;
+ assert.equal(raw.nodes[0].kind,'element');
+ await service.next(next(s.subscription_id,patch.sequence,['n1']),'a');
+ assert.equal(raw.nodes[0].kind,'element','public drift cannot corrupt isolated delta base');
+});
+
+test('MP-08/MP-10: cached canonical hashes retain original bytes across styles, order and removals',async()=>{
+ const {MirrorTreeHasher}=await import('./kernel-browser-mirror-resources.mjs');
+ const hasher=new MirrorTreeHasher(),{state}=fixture();let source={...state.snapshot};delete source.resources;source.selection=null;
+ assert.equal(hasher.hash(source),mirrorHash(source));
+ source.nodes[0].style={color:'rgb(1, 2, 3)',display:'block'};assert.equal(hasher.hash(source),mirrorHash(source));
+ source.nodes[0].style={display:'block',color:'rgb(1, 2, 3)'};assert.equal(hasher.hash(source),mirrorHash(source));
+ source.nodes=source.nodes.slice(0,1);source.nodes[0].children=[];assert.equal(hasher.hash(source),mirrorHash(source));
+});
+
+// MP-11: default CSS is obtained from a disposable blank target, never the page.
+test('MP-11: CSS initial probe always closes its trusted blank target',async()=>{
+ const {mirrorInitialStyles}=await import('./kernel-browser-mirror-styles.mjs');
+ for(const fails of [false,true]){
+  const calls=[];const connection={async send(method,params){calls.push({method,params});return method==='Target.createTarget'?{targetId:'blank-css'}:{success:true};}};
+  const browser={async resolvePageTarget(id){assert.equal(id,'blank-css');return {sessionId:'blank-session',connection:{async send(method,params,session){assert.equal(method,'Runtime.evaluate');assert.equal(session,'blank-session');assert(params.expression.includes("node.style.all='initial'"));if(fails)throw Error('probe failed');return {result:{value:{margin:'0px'}}};}}};}};
+  if(fails)await assert.rejects(mirrorInitialStyles(browser,connection),/probe failed/);else assert.deepEqual(await mirrorInitialStyles(browser,connection),{margin:'0px'});
+  assert.deepEqual(calls,[{method:'Target.createTarget',params:{url:'about:blank',background:true}},{method:'Target.closeTarget',params:{targetId:'blank-css'}}]);
+ }
+});
+
+test('MP-10/MP-11: fully opaque foreign/closed regions do not require compositor readback',async()=>{
+ for(const reason of ['cross_origin_frame','opaque_shadow']){
+  const {service,state,host}=fixture();state.snapshot.nodes[1]={id:'n2',parent:'n1',children:[],kind:'tile',tag:'img',box:{x:5,y:5,width:30,height:20},reason};
+  host.screenshot=async()=>{throw Error('opaque region must not capture')};
+  const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:2},'a');const packet=await service.next(next(s.subscription_id),'a');assert.equal(packet.nodes[1].reason,reason);assert.deepEqual(packet.tiles,[]);
+ }
 });

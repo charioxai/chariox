@@ -6,7 +6,16 @@ async function regions(connection, sessionId, mirrorStructured = false) {
     selector: 'input[type="password"], [data-chariox-secret], [data-chariox-observation-protected], [data-observation-protected], input[autocomplete*="password"], input[autocomplete*="one-time-code"], input[autocomplete*="cc-"], iframe, frame',
   }, sessionId);
   if (!Array.isArray(nodeIds)) throw new Error("Capture protection unavailable");
-  const nodes = [...nodeIds], pending = [root];
+  // MP-11: structured mirrors may inspect only same-origin nested documents
+  // that CDP actually exposes. Other frames keep opaque protection.
+  const admittedFrames=new Set();
+  if(mirrorStructured) {
+    const {frameTree}=await connection.send('Page.getFrameTree',{},sessionId);
+    const origin=frameTree?.frame?.securityOrigin;
+    const admit=tree=>{if(!origin||origin==='://'||tree.frame.securityOrigin!==origin)return;admittedFrames.add(tree.frame.id);for(const child of tree.childFrames??[])admit(child);};
+    if(frameTree)admit(frameTree);
+  }
+  const nodes = [...nodeIds], pending = [root], exposedFrames=new Set(), explicitlyProtected=new Set();
   let visited = 0;
   while (pending.length) {
     if (++visited > 100_000) throw new Error("Capture protection tree limit exceeded");
@@ -19,13 +28,16 @@ async function regions(connection, sessionId, mirrorStructured = false) {
       // Inspect open shadow descendants through trusted CDP metadata, never page
       // scripts. UA shadow roots of ordinary inputs/media are native controls.
       const attrs=new Map();for(let i=0;i<(node.attributes?.length??0);i+=2)attrs.set(node.attributes[i],node.attributes[i+1]);
-      if(['data-chariox-secret','data-chariox-observation-protected','data-observation-protected'].some(key=>attrs.has(key)) || node.localName==='input' && (attrs.get('type')==='password'||/password|one-time-code|cc-/.test(attrs.get('autocomplete')??'')))nodes.push(node.nodeId);
+      if(['data-chariox-secret','data-chariox-observation-protected','data-observation-protected'].some(key=>attrs.has(key)) || node.localName==='input' && (attrs.get('type')==='password'||/password|one-time-code|cc-/.test(attrs.get('autocomplete')??''))){nodes.push(node.nodeId);explicitlyProtected.add(node.nodeId);}
+    }
+    if(mirrorStructured&&node.contentDocument&&admittedFrames.has(node.frameId)) {
+      exposedFrames.add(node.nodeId);pending.push(node.contentDocument);
     }
     pending.push(...(node.children ?? []));
   }
   if (nodes.length > 1024) throw new Error("Capture protection limit exceeded");
   const result = [];
-  for (const nodeId of new Set(nodes)) {
+  for (const nodeId of new Set(nodes.filter(id=>!exposedFrames.has(id)||explicitlyProtected.has(id)))) {
     const { model } = await connection.send("DOM.getBoxModel", { nodeId }, sessionId);
     const quad = model?.border;
     if (!Array.isArray(quad) || quad.length !== 8 || quad.some(n => !Number.isFinite(n))) {

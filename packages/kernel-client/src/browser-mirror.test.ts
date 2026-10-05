@@ -2,7 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { validateMirrorNode,validateMirrorPacket,mirrorCanonicalJson,mirrorSandboxCsp } from './browser-mirror-security.js'
+import { validateMirrorNode,validateMirrorPacket,mirrorCanonicalJson,mirrorTreeCanonicalJson,mirrorSandboxCsp } from './browser-mirror-security.js'
 import { browserMirrorMinimumProtocolVersion,attachBrowserMirror } from './browser-mirror.js'
 import type { MirrorPacket } from './browser-mirror-types.js'
 const packet=():MirrorPacket=>({subscription_id:'s',tab_id:'t',generation:1,document_id:'d',sequence:1,base_sequence:null,reset:true,hash:'a'.repeat(64),root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'div',children:[]}],removed:[],resources:[],tiles:[],fonts:[],scroll:{x:0,y:0},focused:null,selection:null,css_width:1280,css_height:800,device_scale_factor:1})
@@ -34,3 +34,17 @@ test('MP-08: protocol 432/unknown rejects before allocating a subscription or fr
  assert.equal(browserMirrorMinimumProtocolVersion,433)
  for(const protocolVersion of [432,427,0,NaN])await assert.rejects(attachBrowserMirror({protocolVersion,request:async()=>assert.fail('must not request')},{} as HTMLElement,{tab_id:'t',generation:1,device_scale_factor:1},()=>{}),/protocol 433/)
 })
+
+test('MP-11: admitted nodes do not retain mutable transport-owned references',()=>{
+ const p=packet();p.nodes[0]!.style={color:'rgb(1, 2, 3)'};const accepted=validateMirrorPacket(p,new Map());
+ p.nodes[0]!.style!.color='url(https://leak.test)';p.nodes[0]!.children.push('n2');
+ assert.equal(accepted.get('n1')!.style!.color,'rgb(1, 2, 3)');assert.deepEqual(accepted.get('n1')!.children,[]);
+})
+
+test('MP-08/MP-11: cached tree hash preserves canonical bytes across retained and replaced nodes',()=>{
+ const cache=new WeakMap();const p=packet(),base=validateMirrorPacket(p,new Map());
+ const tree={root:p.root,nodes:[...base.values()],fonts:[],scroll:{x:0,y:0},focused:null,selection:null};
+ assert.equal(mirrorTreeCanonicalJson(tree,cache),mirrorCanonicalJson(tree));assert.equal(mirrorTreeCanonicalJson(tree,cache),mirrorCanonicalJson(tree));
+ const changed=validateMirrorPacket({...p,reset:false,nodes:[{...p.nodes[0]!,style:{color:'rgb(1, 2, 3)'}}]},base);tree.nodes=[...changed.values()];
+ assert.equal(mirrorTreeCanonicalJson(tree,cache),mirrorCanonicalJson(tree));
+});

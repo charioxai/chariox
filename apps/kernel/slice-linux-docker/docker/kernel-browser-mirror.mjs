@@ -1,18 +1,20 @@
 // MP-08/MP-10/MP-11: bounded, caller/document/policy-bound mirroring service.
+import { timestamp } from './kernel-browser-timing.mjs';
 import { randomUUID } from 'node:crypto';
-import { MIRROR_OBSERVER_EXPRESSION } from './kernel-browser-mirror-observer.mjs';
-import { materializeMirrorResources,mirrorHash } from './kernel-browser-mirror-resources.mjs';
+import { mirrorInitialStyles } from './kernel-browser-mirror-styles.mjs';
+import { mirrorObserverExpression } from './kernel-browser-mirror-observer.mjs';
+import { materializeMirrorResources,MirrorTreeHasher } from './kernel-browser-mirror-resources.mjs';
 import { observationProtectedVariants } from './browser-controller-snapshot.mjs';
 import { locateBrowserRegions } from './browser-observation-regions.mjs';
 import { assertCurrentDocument,assertNotCancelled } from './browser-controller-actions.mjs';
 import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
-import { decodePng,encodePng,maskPng } from './kernel-browser-pixels.mjs';
+import { decodePng,encodePng,maskPixels } from './kernel-browser-pixels.mjs';
 
 const lifetime=60000,maxWire=4*1024*1024;
-const videoSnapshot=()=>({root:'n9007199254740991',nodes:[{id:'n9007199254740991',parent:null,children:['n9007199254740990'],kind:'element',tag:'html',style:{margin:'0px'}},{id:'n9007199254740990',parent:'n9007199254740991',children:['n9007199254740989'],kind:'element',tag:'body',style:{margin:'0px'}},{id:'n9007199254740989',parent:'n9007199254740990',children:[],kind:'tile',tag:'div',box:{x:0,y:0,width:1280,height:800},reason:'observer_bounds_or_unavailable'}],resources:[],fonts:[],scroll:{x:0,y:0},focused:null,selection:null});
+const videoSnapshot=()=>({root:'n9007199254740991',nodes:[{id:'n9007199254740991',parent:null,children:['n9007199254740988','n9007199254740990'],kind:'element',tag:'html',style:{margin:'0px'}},{id:'n9007199254740988',parent:'n9007199254740991',children:[],kind:'element',tag:'head'},{id:'n9007199254740990',parent:'n9007199254740991',children:['n9007199254740989'],kind:'element',tag:'body',style:{margin:'0px'}},{id:'n9007199254740989',parent:'n9007199254740990',children:[],kind:'tile',tag:'div',box:{x:0,y:0,width:1280,height:800},reason:'observer_bounds_or_unavailable'}],resources:[],fonts:[],scroll:{x:0,y:0},focused:null,selection:null});
 export class MirrorService {
   constructor(host) {this.host=host;this.streams=new Map();this.expiry=setInterval(()=>this.expire(),5000);this.expiry.unref?.();}
-  invalidate() {for(const stream of this.streams.values()){stream.previous=null;stream.resources.clear();stream.cache.clear();stream.policy=null;}}
+  invalidate() {for(const stream of this.streams.values()){stream.previous=null;stream.observed=null;stream.resources.clear();stream.cache.clear();stream.policy=null;}}
   clear() {this.streams.clear();}
   removeTab(tabId) {for(const [id,s] of this.streams)if(s.tab_id===tabId)this.streams.delete(id);}
   expire() {for(const [id,s] of this.streams)if(Date.now()>s.expires)this.streams.delete(id);}
@@ -26,12 +28,14 @@ export class MirrorService {
   }
   async world(tab) {
     const {connection,sessionId}=await this.host.browser.resolvePageTarget(tab.target_id);
-    await assertCurrentDocument(connection,sessionId,tab.target_id,tab.document_id);
     const {frameTree}=await connection.send('Page.getFrameTree',{},sessionId);
+    if(frameTree?.frame?.loaderId!==tab.document_id)throw new Error('MP-11: stale mirror document');
     const world=await this.host.browser.ensureFocusWorld(connection,sessionId,tab.target_id,frameTree.frame);
     if(!Number.isSafeInteger(world.contextId)||world.contextId<=0) throw new Error('MP-11: mirror isolated world unavailable');
     if(!world.mirrorInstalled) {
-      const installed=await connection.send('Runtime.evaluate',{expression:MIRROR_OBSERVER_EXPRESSION,contextId:world.contextId,returnByValue:true},sessionId);
+      this.initialStyles??=mirrorInitialStyles(this.host.browser,connection);
+      const initial=await this.initialStyles;
+      const installed=await connection.send('Runtime.evaluate',{expression:mirrorObserverExpression(initial),contextId:world.contextId,returnByValue:true},sessionId);
       if(installed.exceptionDetails||installed.result?.value!==true) throw new Error('MP-11: mirror observer unavailable');
       world.mirrorInstalled=true;
     }
@@ -50,30 +54,50 @@ export class MirrorService {
     await connection.send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:command.device_scale_factor,mobile:false},sessionId);
     this.host.scales.set(tab.tab_id,command.device_scale_factor);
     const subscription_id=`host-mirror-${randomUUID()}`;
-    this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,previous:null,resources:new Map(),cache:new Map(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});
+    this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});
     return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:command.device_scale_factor};
   }
   async next(command,scope,{signal}={}) {
+    const started=timestamp();let stage=started;
+    const mark=name=>{this.host.timing?.(`mirror_${name}`,stage);stage=timestamp();};
     const stream=this.require(command.subscription_id,scope,command.generation),tab=await this.host.displayTarget({tab_id:stream.tab_id,generation:command.generation});
+    mark('target');
     this.assertWebTab(tab);assertNotCancelled(signal);const world=await this.world(tab),policy=this.host.protection;
-    if(stream.document_id!==tab.document_id) {stream.previous=null;stream.resources.clear();stream.cache.clear();stream.fallback.clear();}
-    if(stream.policy!==policy) {stream.previous=null;stream.resources.clear();stream.cache.clear();}
+    mark('world');
+    if(stream.document_id!==tab.document_id) {stream.previous=null;stream.observed=null;stream.resources.clear();stream.cache.clear();stream.fallback.clear();}
+    if(stream.policy!==policy) {stream.previous=null;stream.observed=null;stream.resources.clear();stream.cache.clear();}
     if(!Array.isArray(command.drift_nodes)||command.drift_nodes.length>64||command.drift_nodes.some(id=>!stream.previous?.nodes.some(n=>n.id===id&&n.kind==='element'))) throw new Error('MP-11: invalid drift report');
     for(const id of command.drift_nodes)stream.fallback.add(id);
     // Registered Vault target geometry and plaintext/media echoes use the SAME
     // trusted CDP locator as screenshots. A failed locator fences DOM output.
     const targets=policy.targets.filter(t=>t.kind==='browser'&&t.target_id===tab.target_id);
     const regions=targets.length?await locateBrowserRegions(targets,this.host.browser,policy.values,{contentTarget:tab.target_id,contentScale:this.host.scales.get(tab.tab_id)??1}):[];
+    mark('regions');
     let source;stream.fullFallback=false;
-    try {source=await this.evaluate(world,`globalThis.__charioxMirror.read(${JSON.stringify(observationProtectedVariants(policy.values))},${JSON.stringify(regions)})`);}catch {
+    try {source=await this.evaluate(world,`globalThis.__charioxMirror.read(${JSON.stringify(observationProtectedVariants(policy.values))},${JSON.stringify(regions)},${JSON.stringify(command.subscription_id)},${!stream.observed})`);}catch {
       await assertCurrentDocument(world.connection,world.sessionId,tab.target_id,tab.document_id);
       // Bounded/unsupported DOM becomes the existing protected full video region.
       // Synthetic tile IDs never authorize element input into the original page.
       stream.fullFallback=true;
       source=videoSnapshot();
     }
+    if(source.incremental) {
+      if(!stream.observed)throw new Error('MP-11: mirror observer lost base');
+      const records=new Map(stream.observed.nodes.map(n=>[n.id,n]));
+      for(const id of source.removed)records.delete(id);
+      for(const n of source.nodes)records.set(n.id,n);
+      const ordered=[],visit=id=>{const n=records.get(id);if(!n||ordered.length>=12000)throw new Error('MP-11: invalid observer delta');ordered.push(n);for(const child of n.children)visit(child);};visit(source.root);
+      source.nodes=ordered;
+    }
+    delete source.incremental;delete source.removed;
+    // Keep the isolated observer's sanitized resource descriptors unmodified.
+    // Public resource remapping, drift tiles and hidden-subtree removal occur below.
+    stream.observed=stream.fullFallback?null:source;
+    source={...source,nodes:source.nodes.map(n=>({...n,children:[...n.children],...(n.style?{style:{...n.style}}:{})}))};
+    mark('snapshot');
     // Observer supplies only sanitized content; original resource URLs remain private.
     const material=await materializeMirrorResources(world.connection,world.sessionId,source.resources,policy.values,stream.cache);
+    mark('resources');
     for(const node of source.nodes) {
       if(node.resource) {node.resource=material.mapped.get(node.resource)??undefined;if(!node.resource){node.kind='tile';node.tag='img';node.reason='resource_unavailable';}}
       for(const [key,value] of Object.entries(node.style??{})) if(value.startsWith('resource:')) {
@@ -96,31 +120,42 @@ export class MirrorService {
     source.nodes=source.nodes.filter(n=>!hidden.has(n.id));
     if(source.selection&&!source.nodes.some(n=>n.id===source.selection.anchor_id&&n.kind==='text')||source.selection&&!source.nodes.some(n=>n.id===source.selection.focus_id&&n.kind==='text'))source.selection=null;
     if(source.focused&&!source.nodes.some(n=>n.id===source.focused&&n.kind!=='mask'))source.focused=null;
-    const tiles=source.nodes.filter(n=>n.kind==='tile'&&n.box?.width>0&&n.box?.height>0&&n.box.x<1280&&n.box.y<800&&n.box.x+n.box.width>0&&n.box.y+n.box.height>0);
+    // MP-10/MP-11: permanently opaque foreign/closed regions render protected
+    // placeholders; they need no source pixels or compositor crop bandwidth.
+    const globalBox=node=>{const box={...node.box};for(let ancestor=byId.get(node.parent);ancestor;ancestor=byId.get(ancestor.parent))if(ancestor.kind==='frame') {box.x+=ancestor.box.x+(parseFloat(ancestor.style?.['border-left-width'])||0);box.y+=ancestor.box.y+(parseFloat(ancestor.style?.['border-top-width'])||0);}return box;};
+    const tiles=source.nodes.filter(n=>{if(n.kind!=='tile'||['cross_origin_frame','opaque_shadow'].includes(n.reason)||!(n.box?.width>0&&n.box?.height>0))return false;const b=globalBox(n);return b.x<1280&&b.y<800&&b.x+b.width>0&&b.y+b.height>0;});
+    const tileBoxes=new Map(tiles.map(n=>[n.id,globalBox(n)]));
     if(tiles.length>64)throw new Error('MP-11: visible tile limit; use display fallback');
+    mark('sanitize');
     let tileFrame=null;
     if(tiles.length) {
       // Bound the compositor crop to visible tiles; keep protection geometry in
       // full canonical pixels so masks cannot shift with the crop origin.
       const scale=this.host.scales.get(tab.tab_id)??1;
-      const x0=Math.max(0,Math.floor(Math.min(...tiles.map(n=>n.box.x)))),y0=Math.max(0,Math.floor(Math.min(...tiles.map(n=>n.box.y))));
-      const x1=Math.min(1280,Math.ceil(Math.max(...tiles.map(n=>n.box.x+n.box.width)))),y1=Math.min(800,Math.ceil(Math.max(...tiles.map(n=>n.box.y+n.box.height))));
+      const x0=Math.max(0,Math.floor(Math.min(...tiles.map(n=>tileBoxes.get(n.id).x)))),y0=Math.max(0,Math.floor(Math.min(...tiles.map(n=>tileBoxes.get(n.id).y))));
+      const x1=Math.min(1280,Math.ceil(Math.max(...tiles.map(n=>tileBoxes.get(n.id).x+n.box.width)))),y1=Math.min(800,Math.ceil(Math.max(...tiles.map(n=>tileBoxes.get(n.id).y+n.box.height))));
       const clip={x:x0,y:y0,width:x1-x0,height:y1-y0,scale:1};
       const masks=await captureRegionMasks(world.connection,world.sessionId,{mirrorStructured:true});
+      mark('tile_masks_before');
       const captured=await this.host.screenshot(tab,clip);
+      mark('tile_capture');
       const protectedRegions=await masks.afterCapture({width:1280*scale,height:800*scale});
-      const frame=decodePng(maskPng(captured.data_base64,protectedRegions.map(r=>[r.x-clip.x*scale,r.y-clip.y*scale,r.width,r.height]),scale),scale);tileFrame=[];
+      mark('tile_masks_after');
+      const frame=maskPixels(decodePng(captured.data_base64,scale),protectedRegions.map(r=>[r.x-clip.x*scale,r.y-clip.y*scale,r.width,r.height]));tileFrame=[];
       for(const node of tiles) {
-        const x=Math.max(0,Math.floor((node.box.x-clip.x)*scale)),y=Math.max(0,Math.floor((node.box.y-clip.y)*scale));
-        const w=Math.max(0,Math.min(frame.width,Math.ceil((node.box.x+node.box.width-clip.x)*scale))-x),h=Math.max(0,Math.min(frame.height,Math.ceil((node.box.y+node.box.height-clip.y)*scale))-y);
+        const box=tileBoxes.get(node.id);
+        const x=Math.max(0,Math.floor((box.x-clip.x)*scale)),y=Math.max(0,Math.floor((box.y-clip.y)*scale));
+        const w=Math.max(0,Math.min(frame.width,Math.ceil((box.x+box.width-clip.x)*scale))-x),h=Math.max(0,Math.min(frame.height,Math.ceil((box.y+box.height-clip.y)*scale))-y);
         if(!w||!h)continue;
         const pixels=Buffer.alloc(w*h*4);
         for(let row=0;row<h;row++)frame.pixels.copy(pixels,row*w*4,((y+row)*frame.width+x)*4,((y+row)*frame.width+x+w)*4);
-        tileFrame.push({node_id:node.id,x:x/scale+clip.x-node.box.x,y:y/scale+clip.y-node.box.y,width:w/scale,height:h/scale,data_base64:encodePng(w,h,pixels)});
+        tileFrame.push({node_id:node.id,x:x/scale+clip.x-box.x,y:y/scale+clip.y-box.y,width:w/scale,height:h/scale,data_base64:encodePng(w,h,pixels)});
       }
     }
+    mark('tile_decode_mask_encode');
     await assertCurrentDocument(world.connection,world.sessionId,tab.target_id,tab.document_id);assertNotCancelled(signal);
-    const hash=mirrorHash(source),reset=!stream.previous||command.after_sequence!==stream.sequence||stream.document_id!==tab.document_id;
+    mark('document_fence');
+    const hash=stream.hasher.hash(source),reset=!stream.previous||command.after_sequence!==stream.sequence||stream.document_id!==tab.document_id;
     const previous=new Map((stream.previous?.nodes??[]).map(n=>[n.id,n]));
     const changed=reset?source.nodes:source.nodes.filter(n=>JSON.stringify(n)!==JSON.stringify(previous.get(n.id)));
     const removed=reset?[]:[...previous.keys()].filter(id=>!byId.has(id)||hidden.has(id));
@@ -128,6 +163,7 @@ export class MirrorService {
     const packet={subscription_id:command.subscription_id,tab_id:tab.tab_id,generation:command.generation,document_id:tab.document_id,sequence:stream.sequence+1,base_sequence:reset?null:stream.sequence,reset,hash,root:source.root,nodes:changed,removed,fonts:source.fonts,scroll:source.scroll,focused:source.focused,selection:source.selection??null,resources,tiles:tileFrame??[],css_width:1280,css_height:800,device_scale_factor:this.host.scales.get(tab.tab_id)??1};
     if(JSON.stringify(packet).length>maxWire)throw new Error('MP-11: mirror packet exceeds bound; use display fallback');
     stream.sequence++;stream.previous=source;stream.document_id=tab.document_id;stream.policy=policy;stream.resources=material.resources;
+    mark('hash_diff_serialize');this.host.timing?.('mirror_total',started);
     return packet;
   }
   async resolveInput(tab,input,scope,signal) {

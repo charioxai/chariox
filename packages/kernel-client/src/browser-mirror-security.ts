@@ -26,7 +26,7 @@ export function validateMirrorPacket(packet: MirrorPacket, previous: ReadonlyMap
   const next = packet.reset ? new Map<string,MirrorNode>() : new Map(previous)
   for(const id of packet.removed) next.delete(id)
   const changed = new Set<string>()
-  for(const node of packet.nodes) {validateMirrorNode(node);if(changed.has(node.id))throw Error('MP-11: duplicate mirror node');changed.add(node.id);next.set(node.id,node)}
+  for(const node of packet.nodes) {validateMirrorNode(node);if(changed.has(node.id))throw Error('MP-11: duplicate mirror node');changed.add(node.id);next.set(node.id,structuredClone(node))}
   if(next.size>12000) throw Error('MP-11: mirror tree bounds')
   const seen=new Set<string>()
   const visit=(id:string,parent:string|null,depth:number):void=>{
@@ -42,3 +42,9 @@ export function validateMirrorPacket(packet: MirrorPacket, previous: ReadonlyMap
 }
 
 export function mirrorCanonicalJson(value: unknown): string {return JSON.stringify(value,(_,v:unknown)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a<b?-1:a>b?1:0)):v)}
+
+// MP-08/MP-10: the immutable packet node object is the cache identity.
+export function mirrorTreeCanonicalJson(source:{root:string;nodes:MirrorNode[];fonts:unknown;scroll:unknown;focused:unknown;selection:unknown},cache:WeakMap<MirrorNode,string>):string {
+  const nodes=source.nodes.map(node=>{let serialized=cache.get(node);if(!serialized){serialized=mirrorCanonicalJson(node);cache.set(node,serialized)}return serialized})
+  return `{"focused":${mirrorCanonicalJson(source.focused)},"fonts":${mirrorCanonicalJson(source.fonts)},"nodes":[${nodes.join(',')}],"root":${mirrorCanonicalJson(source.root)},"scroll":${mirrorCanonicalJson(source.scroll)},"selection":${mirrorCanonicalJson(source.selection)}}`
+}
