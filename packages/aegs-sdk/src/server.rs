@@ -2232,7 +2232,7 @@ mod mp11_delivery_http_tests {
             0
         );
         store
-            .reconcile("owner", &claim.generator_id, &[claim])
+            .reconcile("owner", &claim.generator_id, std::slice::from_ref(&claim))
             .unwrap();
         assert_eq!(signed_webhook(server).await["matched_interest_count"], 1);
         assert_eq!(publisher.calls.load(Ordering::SeqCst), 2);
