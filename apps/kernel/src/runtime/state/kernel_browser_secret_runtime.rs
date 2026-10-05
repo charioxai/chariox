@@ -7,6 +7,14 @@ use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+mod approval;
+
+#[derive(Clone, PartialEq, Eq)]
+struct SecretTarget {
+    url: String,
+    target_id: String,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PasteArgs {
@@ -182,16 +190,34 @@ impl KernelRuntimeState {
             .map_err(host_error)?;
         // Validate the observed document before prompting for unlock. Recheck
         // metadata, focus and target afterward, under the actual input barrier.
-        let url = self
+        let target = self
             .kernel_browser_secret_target_url(user, &admission, &args)
             .await?;
         self.home_runtime_secret_service()?
-            .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?;
+            .validate_browser_secret_input_for_target_url(&args.credential_id, &target.url)?;
+        let protection = &self.owned.kernel_browser_secret_observations;
+        let scope = KernelBrowserHost::profile_key(user);
+        if protection.has_browser_fill_target(
+            &scope,
+            &target.target_id,
+            &args.document_id,
+            &args.node_ref,
+        )? {
+            return Err(host_error(
+                "MD-Vault: target already consumed; observe a new document".into(),
+            ));
+        }
+        self.approve_kernel_browser_fill(
+            session,
+            agent.id(),
+            &args.credential_id,
+            &target,
+            &admission,
+        )
+        .await?;
         let _unlock = self
             .ensure_vault_unlocked_for_agent(session, agent.id(), "kernel_browser_paste_secret")
             .await?;
-        let protection = &self.owned.kernel_browser_secret_observations;
-        let scope = KernelBrowserHost::profile_key(user);
         let (service, _vault_guard) = self
             .scoped_secret_input_service(protection, &scope, &args.credential_id)
             .await?;
@@ -208,11 +234,14 @@ impl KernelRuntimeState {
         require_vault_owner(
             &self.provider_account_authority_owner_user_id(current.owner_user_id()),
         )?;
-        let url = self
+        let current_target = self
             .kernel_browser_secret_target_url_bound(user, &admission, &args)
             .await?;
+        if current_target != target {
+            return Err(host_error("MD-Vault: target changed after approval".into()));
+        }
         let secret = zeroize::Zeroizing::new(
-            service.browser_secret_input_for_target_url(&args.credential_id, &url)?,
+            service.browser_secret_input_for_target_url(&args.credential_id, &target.url)?,
         );
         // Reuse Room registration before any input handler, including failures.
         let snapshot = self
@@ -224,25 +253,25 @@ impl KernelRuntimeState {
                 true,
             )
             .await?;
-        let target = snapshot["snapshot"]["target_id"]
+        let target_id = snapshot["snapshot"]["target_id"]
             .as_str()
             .ok_or_else(|| host_error("MD-5: missing target identity".into()))?;
         let action = BrowserLocatorAction::Fill {
             text: secret.to_string(),
             append: false,
             submit: args.submit,
-            expected_document_url: Some(url),
+            expected_document_url: Some(target.url),
         };
         let command =
             crate::transport::room_browser_controller::RoomBrowserControllerCommand::Action {
                 execution_id: "kernel-browser-secret".into(),
-                target_id: target.into(),
+                target_id: target_id.into(),
                 document_id: args.document_id.clone(),
                 node_ref: args.node_ref.clone(),
                 action: action.clone(),
                 timeout_ms: 10_000,
             };
-        protection.register_command(&scope, &command)?;
+        protection.register_browser_fill_once(&scope, &command)?;
         self.kernel_browser_bound_operation(user, Some(&admission), "host.secret", json!({"tab_id":args.tab_id,"generation":args.generation,"document_id":args.document_id,"node_ref":args.node_ref,"action":action}), true).await?;
         Ok(RuntimeToolResult {
             ok: true,
@@ -255,7 +284,7 @@ impl KernelRuntimeState {
         user: &str,
         admission: &KernelBrowserAdmission,
         args: &PasteArgs,
-    ) -> Result<String, DaemonError> {
+    ) -> Result<SecretTarget, DaemonError> {
         let scope = KernelBrowserHost::profile_key(user);
         let _barrier = self
             .owned
@@ -271,7 +300,7 @@ impl KernelRuntimeState {
         user: &str,
         admission: &KernelBrowserAdmission,
         args: &PasteArgs,
-    ) -> Result<String, DaemonError> {
+    ) -> Result<SecretTarget, DaemonError> {
         let result = self
             .kernel_browser_bound_operation(
                 user,
@@ -302,10 +331,13 @@ impl KernelRuntimeState {
                 "MD-5: Vault input requires an editable password field".into(),
             ));
         }
-        snapshot
-            .document_url_for_node(&args.node_ref)
-            .map(str::to_string)
-            .map_err(host_error)
+        Ok(SecretTarget {
+            url: snapshot
+                .document_url_for_node(&args.node_ref)
+                .map_err(host_error)?
+                .to_string(),
+            target_id: snapshot.target_id,
+        })
     }
 }
 
@@ -331,6 +363,49 @@ mod tests {
         let schema = paste_spec().input_schema;
         assert!(schema["properties"].get("text").is_none());
     }
+    #[test]
+    fn document_fill_receipt_is_durable_and_cannot_repeat_after_restart() {
+        use super::super::room_secret_observation::RoomSecretObservations;
+        let root = crate::test_support::TestWorktree::new("vault-browser-receipt");
+        let config = crate::config::DaemonConfig::for_tests();
+        let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new())
+            .with_identity(&config.relay_private_key);
+        let command = |document: &str| {
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::Action {
+                execution_id: "fixture-fill".into(),
+                target_id: "fixture-target".into(),
+                document_id: document.into(),
+                node_ref: "backend:2".into(),
+                action: BrowserLocatorAction::Fill {
+                    text: "synthetic-fixture-only".into(),
+                    append: false,
+                    submit: false,
+                    expected_document_url: Some("https://example.test/".into()),
+                },
+                timeout_ms: 1000,
+            }
+        };
+        store
+            .register_browser_fill_once("profile", &command("doc-1"))
+            .unwrap();
+        assert!(store
+            .register_browser_fill_once("profile", &command("doc-1"))
+            .is_err());
+        let recovered =
+            RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new())
+                .with_identity(&config.relay_private_key);
+        assert!(recovered
+            .register_browser_fill_once("profile", &command("doc-1"))
+            .is_err());
+        recovered
+            .register_browser_fill_once("profile", &command("doc-2"))
+            .unwrap();
+        assert_eq!(
+            recovered.scrub_text_or_withhold("profile", "echo synthetic-fixture-only"),
+            "echo [redacted]"
+        );
+    }
+
     #[tokio::test]
     async fn vault_retirement_finds_dormant_user_profiles_and_preserves_sealed_echoes() {
         use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;

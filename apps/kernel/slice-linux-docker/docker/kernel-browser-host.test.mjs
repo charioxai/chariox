@@ -534,3 +534,35 @@ test("display subscription captures the current document after navigation", () =
     else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;
   }
 }));
+test('MD-Vault: agent credential fill retains the human App frontend input boundary', () => using(async ({host}) => {
+  const opened=await host.request({op:'open',url:'https://example.com/login'}),tab=host.tabs.get(opened.tab_id);
+  let fills=0;host.browser.performAction=async()=>{fills++};
+  host.browser.appTabs={apps:new Map([['view',{targetId:tab.target_id}]])};
+  const params={tab_id:opened.tab_id,generation:opened.generation,document_id:tab.document_id,node_ref:'backend:42',_agent_input:true,action:{kind:'fill',text:'synthetic-fixture-only',expected_document_url:'https://example.com/login'}};
+  await host.protect({values:['synthetic-fixture-only'],targets:[{kind:'browser',target_id:tab.target_id,document_id:tab.document_id,node_ref:params.node_ref}],unknown:false});
+  const result=await host.handle({id:'app-fill',method:'host.secret',params});
+  assert.equal(result.ok,false);assert.equal(result.error.message,"MD-2: host browser operation failed; refresh state or check host browser readiness");assert.equal(fills,0);
+}));
+test('MD-Vault: a fill requires exact durable protection before physical delivery', () => using(async ({host}) => {
+  const opened = await host.request({op:'open',url:'https://example.com/login'}), tab=host.tabs.get(opened.tab_id);
+  let fills=0; host.browser.performAction=async()=>{fills++};
+  const params={tab_id:opened.tab_id,generation:opened.generation,document_id:tab.document_id,node_ref:'backend:42',action:{kind:'fill',text:'synthetic-fixture-only',append:false,submit:false,expected_document_url:'https://example.com/login'}};
+  for(const policy of [
+    {values:[],targets:[],unknown:false},
+    {values:['synthetic-fixture-only'],targets:[],unknown:false},
+    {values:['synthetic-fixture-only'],targets:[{kind:'browser',target_id:tab.target_id,document_id:'old-doc',node_ref:params.node_ref}],unknown:false},
+  ]) {
+    await host.protect(policy);
+    const result=await host.handle({id:'fill',method:'host.secret',params});
+    assert.equal(result.ok,false);assert.equal(fills,0,'an unbound value must never reach the controller');
+  }
+}));
+for (const failed of [false, true]) test(`MD-Vault: protected document/node delivery is single-use after ${failed ? 'failed' : 'successful'} dispatch`, () => using(async ({host}) => {
+  const opened=await host.request({op:'open',url:'https://example.com/login'}),tab=host.tabs.get(opened.tab_id);
+  let fills=0;host.browser.performAction=async()=>{fills++;if(failed)throw Error('uncertain physical delivery')};
+  const params={tab_id:opened.tab_id,generation:opened.generation,document_id:tab.document_id,node_ref:'backend:42',action:{kind:'fill',text:'synthetic-fixture-only',append:false,submit:false,expected_document_url:'https://example.com/login'}};
+  await host.protect({values:['synthetic-fixture-only'],targets:[{kind:'browser',target_id:tab.target_id,document_id:tab.document_id,node_ref:params.node_ref}],unknown:false});
+  assert.equal((await host.handle({id:'first',method:'host.secret',params})).ok,!failed);
+  assert.equal((await host.handle({id:'replayed',method:'host.secret',params})).ok,false);
+  assert.equal(fills,1);
+}));

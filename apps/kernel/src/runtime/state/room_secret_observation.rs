@@ -308,6 +308,48 @@ impl RoomSecretObservations {
         Ok(())
     }
 
+    // The user-domain fill seam consumes a durable document/node receipt before
+    // dispatch. Room's existing recoverable execution receipts remain unchanged.
+    pub(super) fn has_browser_fill_target(
+        &self,
+        room: &str,
+        target: &str,
+        document: &str,
+        node: &str,
+    ) -> Result<bool, DaemonError> {
+        self.require(room, false)?;
+        let rooms = self.rooms.lock().map_err(|_| protection_error())?;
+        Ok(rooms[self.room_key(room)].targets.iter().any(|t| {
+            t["kind"] == "browser"
+                && t["target_id"] == target
+                && t["document_id"] == document
+                && t["node_ref"] == node
+        }))
+    }
+    // Caller holds the profile's exclusive barrier through insertion.
+    pub(super) fn register_browser_fill_once(
+        &self,
+        room: &str,
+        command: &Command,
+    ) -> Result<(), DaemonError> {
+        let Command::Action {
+            target_id,
+            document_id,
+            node_ref,
+            ..
+        } = command
+        else {
+            return Err(protection_error());
+        };
+        if self.has_browser_fill_target(room, target_id, document_id, node_ref)? {
+            return Err(DaemonError::LocalTransport {
+                operation: "kernel_browser",
+                message: "MD-Vault: target already consumed; observe a new document".into(),
+            });
+        }
+        self.register_command(room, command)
+    }
+
     pub(super) fn capture_policy(&self, room: &str) -> Result<Zeroizing<String>, DaemonError> {
         let room = self.room_key(room);
         self.blocked(room, false)?;

@@ -47,6 +47,7 @@ export class KernelBrowserHost {
     this.restoring = false;
     this.keepaliveTarget = null;
     this.observedDocuments = new Map();
+    this.secretDeliveries = new Set();
     this.protection = { values: [], targets: [], unknown: false };
   }
   async protect(policy) {
@@ -334,10 +335,7 @@ export class KernelBrowserHost {
     }
     const tab = await this.target(command);
     assertNotCancelled(signal);
-    if (["input", "navigate", "close"].includes(command.op) && (command.focused_agent || command._agent_input)
-      && [...(this.browser.appTabs?.apps?.values() ?? [])].some(app => app.targetId === tab.target_id)) {
-      throw new Error("Use the focused App tool channel; browser input cannot act as the human App frontend");
-    }
+    if (["input", "navigate", "close"].includes(command.op)) this.requireAgentTabInput(tab, command);
     const binding = { target_id: tab.target_id, document_id: tab.document_id };
     if (command.op === "display_subscribe") {
       if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
@@ -403,6 +401,12 @@ export class KernelBrowserHost {
     if (command.op === "subscribe") return this.subscribe(tab, command.bound_frames === true);
     throw new Error("MD-2: unsupported browser operation");
   }
+  requireAgentTabInput(tab, command) {
+    if ((command.focused_agent || command._agent_input)
+      && [...(this.browser.appTabs?.apps?.values() ?? [])].some(app => app.targetId === tab.target_id)) {
+      throw new Error("Use the focused App tool channel; browser input cannot act as the human App frontend");
+    }
+  }
   async handle(request, { signal } = {}) {
     try { assertNotCancelled(signal); } catch { return { id: request.id, ok: false, error: { code: "browser_action_cancelled", message: "MD-3: browser action cancelled" } }; }
     try {
@@ -413,7 +417,18 @@ export class KernelBrowserHost {
         await this.start();
         if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
         const tab = await this.target(request.params);
+        this.requireAgentTabInput(tab, request.params);
         if (tab.document_id !== request.params.document_id) throw new Error("MD-5: stale secret document");
+        const action = request.params.action;
+        const bound = this.protection.targets.some(target => target.kind === "browser"
+          && target.target_id === tab.target_id && target.document_id === tab.document_id
+          && target.node_ref === request.params.node_ref);
+        if (!bound || action?.kind !== "fill" || !action.expected_document_url
+          || !this.protection.values.includes(action.text)) throw new Error("MD-Vault: durable target/value protection required");
+        const delivery = JSON.stringify([tab.target_id, tab.document_id, request.params.node_ref]);
+        if (this.secretDeliveries.has(delivery)) throw new Error("MD-Vault: secret target already consumed");
+        // Reservation precedes dispatch. A lost/failed answer must never repeat insertion.
+        this.secretDeliveries.add(delivery);
         await this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
           node_ref: request.params.node_ref, action: request.params.action, timeout_ms: 10_000 }, { signal });
         await this.save();
