@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { startBrowserComputerFixture } from "../../../cli/scripts/lib/browser-computer-fixture.mjs";
 import { browserControllerLaunchOptions } from "./browser-controller-test-launch-options.mjs";
+import { observeBrowserResources } from "./browser-controller-resources.mjs";
 import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
 import { handleBrowserControllerRequest } from "./browser-controller.mjs";
 
@@ -585,8 +586,56 @@ test("password step form controls cannot shadow native submit methods", async ()
   });
 });
 
+for (const layout of ["page", "nested-frame", "isolated-frame"]) {
+  for (const type of ["text", "password"]) {
+    test(`MP-11 isolated secret fill resists ${layout} ${type} prototype spoofing`, async () => {
+      await withPasswordStep(async (url) => {
+        await withController(async ({ page, request }) => {
+          await page.goto(url);
+          const fieldUrl = layout === "isolated-frame" ? url.replace("127.0.0.1", "localhost") : url;
+          if (layout !== "page") await page.setContent(`<iframe src="${fieldUrl}"></iframe>`);
+          const field = layout !== "page"
+            ? page.frameLocator('iframe').getByLabel('Enter your password')
+            : page.getByLabel('Enter your password');
+          await field.waitFor();
+          await field.evaluate((input, type) => {
+            input.type = type;
+            const nativeValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+            const nativeGetAttribute = Element.prototype.getAttribute;
+            input.addEventListener('input', () => { input.dataset.nativeEvent = 'yes'; });
+            Element.prototype.getAttribute = function(name) { return name === 'type' ? 'password' : nativeGetAttribute.call(this, name); };
+            Element.prototype.hasAttribute = () => false;
+            HTMLElement.prototype.focus = () => { throw new Error('MP11_PAGE_FOCUS_CANARY'); };
+            Object.defineProperty(HTMLInputElement.prototype, 'type', { get: () => 'password', set: () => {}, configurable: true });
+            Object.defineProperty(HTMLInputElement.prototype, 'value', { get: () => 'MP11_PAGE_VALUE_CANARY', set: () => { throw new Error('MP11_PAGE_VALUE_CANARY'); }, configurable: true });
+            window.mp11NativeValue = () => nativeValue.get.call(input);
+          }, type);
+          const reconcile = await request("browser.reconcile", { viewport });
+          assert.equal(reconcile.ok, true, JSON.stringify(reconcile.error));
+          const target = reconcile.result.tabs[0];
+          const snapshot = await request("browser.snapshot", target);
+          const node = snapshot.result.accessibility_nodes.find(n => n.role === 'textbox' && n.name.trim() === 'Enter your password');
+          assert.ok(node?.node_ref);
+          const result = await request("browser.action", {
+            ...target, node_ref: node.node_ref,
+            action: { kind: "fill", text: "MP11_ISOLATED_FILL_CANARY", expected_document_url: fieldUrl },
+          });
+          const valueMatches = await field.evaluate(input => window.mp11NativeValue() === 'MP11_ISOLATED_FILL_CANARY');
+          assert.equal(result.ok, type === 'password', JSON.stringify(result.error));
+          assert.equal(valueMatches, type === 'password', 'native value follows the true input type');
+          if (type === 'password') assert.equal(await field.evaluate(input => input.dataset.nativeEvent), 'yes');
+          else assert.equal(result.error.code, 'browser_secret_target_not_masked');
+          for (const canary of ['MP11_ISOLATED_FILL_CANARY', 'MP11_PAGE_FOCUS_CANARY', 'MP11_PAGE_VALUE_CANARY']) {
+            assert.equal(JSON.stringify(result).includes(canary), false, 'safe controller diagnostic');
+          }
+        });
+      });
+    });
+  }
+}
+
 for (const failure of ["script-exception", "missing-value-setter"]) {
-  test(`password step ${failure} reports its safe failure category`, async () => {
+  test(`password step ignores page ${failure} overrides in the isolated world`, async () => {
     await withPasswordStep(async (url) => {
       await withController(async ({ page, request }) => {
         await page.goto(url);
@@ -606,15 +655,11 @@ for (const failure of ["script-exception", "missing-value-setter"]) {
           ...target, node_ref: node.node_ref,
           action: { kind: "fill", text: "local-password-canary", expected_document_url: url, submit: false },
         });
-        assert.equal(result.ok, false);
-        if (failure === 'script-exception') {
-          assert.equal(result.error.code, 'browser_secret_input_exception');
-        } else {
-          assert.equal(result.error.code, 'browser_action_failed');
-          assert.match(result.error.message, /native value setter/);
-        }
+        assert.equal(result.ok, true, JSON.stringify(result.error));
         assert.equal(JSON.stringify(result).includes('local-password-canary'), false);
-        assert.equal(await page.getByLabel('Enter your password').inputValue(), '');
+        const received = await page.getByLabel('Enter your password').inputValue();
+        assert.equal(received === 'local-password-canary', true);
+
       });
     });
   });
@@ -1238,7 +1283,16 @@ async function withController(run, clientOptions = {}) {
     const page = context.pages()[0] ?? await context.newPage();
     page.setDefaultTimeout(10_000);
     let nextId = 0;
-    const request = (method, params) => handleBrowserControllerRequest({ id: ++nextId, method, params }, { browser });
+    // MP-11: this host has other lanes' Chromium processes. Observe the
+    // real browser/profile belonging to this CDP connection, as a slice PID
+    // namespace would, without selecting or changing any foreign process.
+    const resourceInventory = async () => {
+      const connection = await browser.ensureConnection();
+      const { processInfo } = await connection.send("SystemInfo.getProcessInfo");
+      const own = processInfo.filter(entry => entry.type === "browser").map(entry => String(entry.id));
+      return observeBrowserResources({ fileSystem: { readdir: async () => own } });
+    };
+    const request = (method, params) => handleBrowserControllerRequest({ id: ++nextId, method, params }, { browser, resourceInventory });
     await run({ page, request, context, browser });
   } finally {
     try {
