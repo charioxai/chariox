@@ -3,7 +3,7 @@
 // deliberately separate acceptance gates; this test cannot establish them.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,6 +20,17 @@ const lifecycle = fileURLToPath(new URL("./browser-lifecycle.py", import.meta.ur
 
 test("MP-08/MP-10/MP-11 actual CDP upload/download and passive capture fixture", { timeout: 45000 }, async t => {
   assert.ok(process.env.CHARIOX_TEST_CHROMIUM, "explicit installed Chromium path required; no browser downloads");
+  let evidence;
+  if (process.env.CHARIOX_CONTROLLERFILES_EVIDENCE) {
+    assert.ok(path.isAbsolute(process.env.CHARIOX_CONTROLLERFILES_EVIDENCE), "absolute external evidence directory required");
+    evidence = await realpath(process.env.CHARIOX_CONTROLLERFILES_EVIDENCE);
+    const repository = await realpath(fileURLToPath(new URL("../../../../", import.meta.url)));
+    const relative = path.relative(repository, evidence);
+    assert.ok(relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative), "evidence must remain outside the repository");
+    assert.ok((await stat(evidence)).isDirectory());
+    assert.equal((await stat(evidence)).uid, process.getuid(), "evidence must belong to the executing user");
+    assert.deepEqual(await readdir(evidence), [], "use a fresh evidence directory for each exact source run");
+  }
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "chariox-b207-controllerfiles-")));
   const profile = path.join(root, "profile");
   const oldLifecycleRoot = process.env.CHARIOX_BROWSER_LIFECYCLE_ROOT;
@@ -155,10 +166,10 @@ test("MP-08/MP-10/MP-11 actual CDP upload/download and passive capture fixture",
       targetId: current.target_id, documentId: before, viewport }, passiveEventsRedacted: true,
     chooser: { ok: chosen.ok, diagnostic: chosen.error?.code ?? null },
     openGates: ["opaque download artifact", "Browser capture artifact", "kernel browser passive attachment", "provider/Web/TUI conjunction"] };
-  if (process.env.CHARIOX_CONTROLLERFILES_EVIDENCE) {
-    await writeFile(path.join(process.env.CHARIOX_CONTROLLERFILES_EVIDENCE, "controller-result.json"), JSON.stringify(result, null, 2), { mode: 0o600 });
-    await writeFile(path.join(process.env.CHARIOX_CONTROLLERFILES_EVIDENCE, "same-tab.png"), image, { mode: 0o600 });
-    await writeFile(path.join(process.env.CHARIOX_CONTROLLERFILES_EVIDENCE, "passive-events.json"), JSON.stringify(events, null, 2), { mode: 0o600 });
+  if (evidence) {
+    await writeFile(path.join(evidence, "controller-result.json"), JSON.stringify(result, null, 2), { mode: 0o600, flag: "wx" });
+    await writeFile(path.join(evidence, "same-tab.png"), image, { mode: 0o600, flag: "wx" });
+    await writeFile(path.join(evidence, "passive-events.json"), JSON.stringify(events, null, 2), { mode: 0o600, flag: "wx" });
   }
   assert.equal(chosen.ok, true, `visible chooser seam: ${chosen.error?.code}`);
 });
