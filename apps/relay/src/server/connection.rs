@@ -973,6 +973,15 @@ pub(crate) async fn handle_connection(
     }
     .await;
 
+    // Admission failures happen before a request can carry an error response.
+    // Send the existing close envelope so clients do not mistake a refusal for
+    // a transient socket loss and retry the same credential until readiness expires.
+    if let Err(error) = &connection_result {
+        if error.kind() == std::io::ErrorKind::PermissionDenied {
+            send_close(&outgoing_tx, error.to_string());
+        }
+    }
+
     let (
         disconnect_errors,
         disconnect_peer_errors,
