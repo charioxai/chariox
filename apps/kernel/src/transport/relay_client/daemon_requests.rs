@@ -235,12 +235,33 @@ pub(super) async fn handle_daemon_request(
     }
     match result {
         RelayDispatchOutcome::Response(mut response) => {
-            let display_event = if let Some((id, sequence, event)) = crate::transport::kernel_browser_display::take_display_event(&mut response) {
-                match serde_json::to_vec(&event).ok().and_then(|bytes| relay_crypto::encrypt_payload_for_peer(&daemon_private_key, &client_public_key, &bytes).ok()) {
+            let display_event = if let Some((id, sequence, event)) =
+                crate::transport::kernel_browser_display::take_display_event(&mut response)
+            {
+                match serde_json::to_vec(&event).ok().and_then(|bytes| {
+                    relay_crypto::encrypt_payload_for_peer(
+                        &daemon_private_key,
+                        &client_public_key,
+                        &bytes,
+                    )
+                    .ok()
+                }) {
                     Some(payload) => Some((id, sequence, payload)),
-                    None => return RelayRequestOutcome { display_event: None, encrypted_response: None, error: Some(relay_error("display_encode_failed", "MD-DISPLAY: frame encryption failed", false)) },
+                    None => {
+                        return RelayRequestOutcome {
+                            display_event: None,
+                            encrypted_response: None,
+                            error: Some(relay_error(
+                                "display_encode_failed",
+                                "MD-DISPLAY: frame encryption failed",
+                                false,
+                            )),
+                        }
+                    }
                 }
-            } else { None };
+            } else {
+                None
+            };
             if !quiet_success_request {
                 crate::logging::info_with_fields(
                     "daemon.relay_client",

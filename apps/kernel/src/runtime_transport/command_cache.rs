@@ -131,7 +131,14 @@ pub(crate) enum CommandReservation {
 }
 
 pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
-    if matches!(request, LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest { command: crate::local::KernelBrowserCommand::DisplayNext { .. } })) { return false; }
+    if matches!(
+        request,
+        LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+            command: crate::local::KernelBrowserCommand::DisplayNext { .. }
+        })
+    ) {
+        return false;
+    }
     // App requests and browser-import consent must reach owner authorization and
     // current durable state. Their own owner-scoped ledgers deduplicate retries;
     // this older transport fingerprint does not carry the caller, and cached

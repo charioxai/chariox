@@ -64,8 +64,19 @@ pub(super) async fn handle_relay_subscribe(
     resume_from_event_id: Option<u64>,
 ) -> Result<(), DaemonError> {
     if subscription_scope.as_deref() == Some("kernel_browser_display") {
-        return super::browser_display::handle_subscribe(router, outgoing_tx, subscription_tasks, relay_request_id,
-            relay_subscription_id, session_id, attachment_id, caller_identity, client_public_key, resume_from_event_id).await;
+        return super::browser_display::handle_subscribe(
+            router,
+            outgoing_tx,
+            subscription_tasks,
+            relay_request_id,
+            relay_subscription_id,
+            session_id,
+            attachment_id,
+            caller_identity,
+            client_public_key,
+            resume_from_event_id,
+        )
+        .await;
     }
     let caller_user_id = relay_subscription_caller_user_id(caller_identity.as_ref());
     let is_inventory_subscription =

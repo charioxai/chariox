@@ -79,7 +79,10 @@ pub(crate) enum KernelOutgoingFrame {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub(crate) enum KernelEvent {
-    KernelBrowserFrame { subscription_id: String, frame: Value },
+    KernelBrowserFrame {
+        subscription_id: String,
+        frame: Value,
+    },
     TerminalOutput {
         records: Vec<TerminalOutputRecord>,
     },
