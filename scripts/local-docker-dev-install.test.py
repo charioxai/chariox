@@ -14,7 +14,7 @@ sys.path.insert(0, str(SOURCE.parent))
 sys.dont_write_bytecode = True
 tree = ast.parse(SOURCE.read_text())
 helpers = ast.Module(body=[node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))
-                         or isinstance(node, ast.FunctionDef) and node.name in ('refuse', 'directory', 'publish')], type_ignores=[])
+                         or isinstance(node, ast.FunctionDef) and node.name in ('refuse', 'directory', 'publish', 'verify_worker_loader')], type_ignores=[])
 namespace = {}
 exec(compile(helpers, str(SOURCE), 'exec'), namespace)
 
@@ -84,6 +84,26 @@ class InstallerFilesystemTests(unittest.TestCase):
             namespace['publish'](asset, b'changed fixture', 0o444)
         self.assertEqual(asset.stat().st_ino, inode)
         self.assertEqual(asset.read_bytes(), b'prior fixture')
+
+class WorkerLoaderTests(unittest.TestCase):
+    def test_hash_pin_does_not_replace_actual_worker_loader_admission(self):
+        from subprocess import CalledProcessError
+        calls = []
+        def command(args):
+            calls.append(args)
+            return '411\n'
+        namespace['command'] = command
+        namespace['verify_worker_loader']('sha256:' + 'a' * 64)
+        self.assertIn('/opt/chariox-slice/bin/chariox-kernel', calls[0])
+        self.assertIn('--print-local-daemon-protocol-version', calls[0])
+        for response in ('0', 'garbage', '4294967296', '411\nextra'):
+            namespace['command'] = lambda args, value=response: value
+            with self.assertRaises(SystemExit):
+                namespace['verify_worker_loader']('sha256:' + 'a' * 64)
+        def broken(args): raise CalledProcessError(1, ['docker'])
+        namespace['command'] = broken
+        with self.assertRaises(SystemExit):
+            namespace['verify_worker_loader']('sha256:' + 'a' * 64)
 
 if __name__ == '__main__':
     unittest.main()
