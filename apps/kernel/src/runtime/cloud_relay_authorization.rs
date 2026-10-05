@@ -1,5 +1,6 @@
-//! Cloud grants belong to the kernel owner; shared-session viewers cannot
-//! spend that authority to list or pivot into the owner's other kernels.
+//! Cloud grants belong to this account; session collaborators cannot spend
+//! that authority to list or pivot into the account's other kernels.
+//! The existing relay user_id pin identifies the account's login principal.
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::local::LocalDaemonRequest;
@@ -81,12 +82,14 @@ mod tests {
         command.caller.user_id = Some("viewer".into());
         command.caller.realm_id = Some("realm-a".into());
         assert!(authorize_kernel_cloud_request(&config, &command, &request).is_err());
-        assert!(authorize_kernel_cloud_request(
-            &config,
-            &command,
-            &LocalDaemonRequest::CloudRelayStatus(crate::local::CloudRelayStatusRequest)
-        )
-        .is_err());
+        assert!(
+            authorize_kernel_cloud_request(
+                &config,
+                &command,
+                &LocalDaemonRequest::CloudRelayStatus(crate::local::CloudRelayStatusRequest)
+            )
+            .is_err()
+        );
         command.caller.user_id = Some("owner".into());
         assert!(authorize_kernel_cloud_request(&config, &command, &request).is_ok());
         command.caller.caller_kind = KernelCallerKind::RemoteKernel;
