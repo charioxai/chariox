@@ -63,11 +63,15 @@ export class PortableEncoder {
   }
 }
 
-export function dirtyTiles(previous, current) {
+export function dirtyTiles(previous, current, region = null) {
   const tiles = [];
   if (!previous || previous.width !== current.width || previous.height !== current.height) return tiles;
   const { width, height, pixels } = current;
-  for (let y = 0; y < height; y += 128) for (let x = 0; x < width; x += 128) {
+  const left = region ? Math.floor(region.x / 128) * 128 : 0;
+  const top = region ? Math.floor(region.y / 128) * 128 : 0;
+  const right = region ? Math.min(width, region.x + region.width) : width;
+  const bottom = region ? Math.min(height, region.y + region.height) : height;
+  for (let y = top; y < bottom; y += 128) for (let x = left; x < right; x += 128) {
     const w = Math.min(128, width - x), h = Math.min(128, height - y);
     let changed = false;
     for (let row = y; row < y + h && !changed; row++) {
@@ -99,7 +103,12 @@ export class DisplayStream {
     if (!bound) this.invalidate();
     const same = this.previous?.pixels.equals(current.pixels);
     if (same && this.exact) return null;
-    const tiles = this.exact ? dirtyTiles(this.previous, current) : [];
+    // Private crop metadata comes only from the protected native capture. The
+    // cached frame is cloned unchanged outside it; full verification has no hint.
+    const clip = source.dirty_clip;
+    const region = clip && { x:clip.x*this.device_scale_factor, y:clip.y*this.device_scale_factor,
+      width:clip.width*this.device_scale_factor, height:clip.height*this.device_scale_factor };
+    const tiles = this.exact ? dirtyTiles(this.previous, current, region) : [];
     this.timing('compare_tiles', at); at = timestamp();
     const png = () => typeof source.data_base64 === 'function' ? source.data_base64() : source.data_base64;
     const full = () => ({ kind: 'png', data_base64: png() });
