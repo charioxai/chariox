@@ -970,6 +970,25 @@ test("unsupported platform fails before any command can claim parity", async () 
   })
 })
 
+for (const topology of ["ordinary", "path1"]) {
+  test(`MP-01/MP-10 ${topology} forwards the selected provider without an environment fallback`, async () => {
+    const h = makeHarness(topology, {
+      environment: { CHARIOX_DAEMON_SOCKET: LIVE_KERNEL_SOCKET },
+    })
+    await h.collector.collect(h.options)
+    for (const [rowId, checkId] of [["MP-01", "provider_ancestry"], ["MP-10", "capture_boundary"]]) {
+      const call = h.calls.find(([, args]) => args[0] === "/repo/apps/cli/scripts/managed-ordinary-parity-probe.mjs"
+        && args[args.indexOf("--parity-row") + 1] === rowId
+        && args[args.indexOf("--parity-check") + 1] === checkId)
+      assert.ok(call, `${rowId}/${checkId} probe must run`)
+      const [, args, options] = call
+      assert.equal(options.env.CHARIOX_PARITY_PROVIDER, undefined)
+      assert.ok(args.includes("--provider"), `${rowId}/${checkId} must receive --provider`)
+      assert.equal(args[args.indexOf("--provider") + 1], h.options.provider)
+    }
+  })
+}
+
 // MP-10: real LocalIpcClient unlinks/removes auth before child probes run.
 for (const topology of ["ordinary", "path1"]) {
   test(`MP-10 ${topology} probes retain admitted one-shot loopback auth`, async () => {
