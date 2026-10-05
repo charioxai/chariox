@@ -82,13 +82,16 @@ export class BrowserMirrorRenderer {
     else node=doc.createElement(record.tag??'div')
     this.dom.set(record.id,node);this.ids.set(node,record.id);return node
   }
-  private update(record:MirrorNode,node:Node):void {
+  private update(record:MirrorNode,node:Node,previous?:MirrorNode):void {
     if(record.kind==='text'){if(node.textContent!==(record.text??''))node.textContent=record.text??'';return}
     if(node.nodeType!==1)return
     const element=node as HTMLElement
-    for(const attr of Array.from(element.attributes))if(attr.name!=='style')element.removeAttribute(attr.name)
-    for(const [key,value]of Object.entries(record.attributes??{}))element.setAttribute(key,value)
-    this.style(element,record.style??{})
+    if(!previous||JSON.stringify(previous.attributes??{})!==JSON.stringify(record.attributes??{})) {
+      for(const attr of Array.from(element.attributes))if(attr.name!=='style')element.removeAttribute(attr.name)
+      for(const [key,value]of Object.entries(record.attributes??{}))element.setAttribute(key,value)
+    }
+    // MP-10: child/text changes do not invalidate unchanged sanitized styles.
+    if(!previous||JSON.stringify(previous.style??{})!==JSON.stringify(record.style??{}))this.style(element,record.style??{})
     if(record.kind==='mask'){element.style.appearance='none';element.style.borderStyle='solid';element.style.boxShadow='none';element.style.borderRadius='0';if(record.tag==='input'||record.tag==='textarea'){(element as HTMLInputElement).readOnly=true;(element as HTMLInputElement).disabled=true}element.style.background='black';element.style.color='transparent';element.style.borderColor='black';element.setAttribute('aria-label','Protected content')}
     if(record.kind==='tile'||record.kind==='mask') {
       element.style.width=`${record.box?.width??0}px`;element.style.height=`${record.box?.height??0}px`;element.style.position='relative';element.style.overflow='hidden';element.style.background='black'
@@ -127,7 +130,7 @@ export class BrowserMirrorRenderer {
         const old=this.records.get(id)
         const create=!node||node.ownerDocument!==doc||old?.kind!==record.kind||old?.tag!==record.tag
         if(create){const created=this.create(record,doc);node?.parentNode?.replaceChild(created,node);node=created}
-        if(create||changed.has(id))this.update(record,node!)
+        if(create||changed.has(id))this.update(record,node!,create?undefined:old)
         node=node!
         if(record.kind==='frame') {
           const frame=node as HTMLIFrameElement;frame.setAttribute('sandbox','allow-same-origin');frame.setAttribute('referrerpolicy','no-referrer');
@@ -163,8 +166,9 @@ export class BrowserMirrorRenderer {
       this.doc.head.querySelectorAll('style[data-mirror-fonts],style[data-mirror-pseudo]').forEach(n=>n.remove())
       const fontStyle=this.doc.createElement('style');fontStyle.dataset.mirrorFonts='true'
       for(const font of packet.fonts){const url=this.resources.get(font.resource);if(url)fontStyle.textContent+=`@font-face{font-family:${JSON.stringify(font.family.replaceAll('"',''))};src:url("${url}");font-weight:${/^[0-9 ]+$/.test(font.weight)?font.weight:'400'};font-style:${['normal','italic','oblique'].includes(font.style)?font.style:'normal'};}`}
-      this.doc.head.append(fontStyle)
-      const pseudoStyle=this.doc.createElement('style');pseudoStyle.dataset.mirrorPseudo='true';this.doc.head.append(pseudoStyle)
+      if(fontStyle.textContent)this.doc.head.append(fontStyle)
+      const pseudoStyle=this.doc.createElement('style');pseudoStyle.dataset.mirrorPseudo='true'
+      if([...next.values()].some(record=>Object.keys(record.pseudo??{}).length))this.doc.head.append(pseudoStyle)
       for(const record of next.values())for(const [pseudo,content]of Object.entries(record.pseudo??{})) {
         const node=this.dom.get(record.id) as HTMLElement;node.dataset.mirrorNode=record.id
         const probe=this.doc.createElement('span');this.style(probe,content.style)
@@ -223,7 +227,7 @@ export class BrowserMirrorRenderer {
     return {boxes,text_nodes,max_error_css_px,text_mismatches,color_mismatches}
   }
   driftNodes():string[] {
-    const drift=new Set<string>()
+    const started=performance.now(),drift=new Set<string>()
     for(const [id,record]of this.records){if(!['element','text','frame','tile'].includes(record.kind)||!record.box)continue;const node=this.dom.get(id);if(!node)continue;let box:DOMRect;if(record.kind==='text'){const range=node.ownerDocument!.createRange();range.selectNodeContents(node);box=range.getBoundingClientRect()}else box=(node as HTMLElement).getBoundingClientRect()
       const textDrift=record.kind==='text'&&node.textContent!==record.text
       const style=['element','frame'].includes(record.kind)?node.ownerDocument!.defaultView!.getComputedStyle(node as Element):null
@@ -235,7 +239,7 @@ export class BrowserMirrorRenderer {
       }
       if(drift.size===64)break
     }
-    return [...drift]
+    this.timed('drift_scan',started);return [...drift]
   }
   private clearResources():void {for(const url of this.resources.values())URL.revokeObjectURL(url);this.resources.clear();for(const url of this.tileUrls)URL.revokeObjectURL(url);this.tileUrls=[]}
   close():void {this.disposed=true;for(const remove of this.removers)remove();this.removers=[];this.clearResources();this.dom.clear();this.records.clear();this.overlays=[];this.frame.remove()}

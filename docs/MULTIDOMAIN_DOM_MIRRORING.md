@@ -106,7 +106,9 @@ await mirror.close()
 
 Cloud owns production UI integration and scheduling credits. The reference
 renderer restores nested inert documents, open shadow slotting, styles, form state,
-focus and scroll. It preserves text nodes across unchanged updates. It checks
+focus and scroll. It preserves text nodes across unchanged updates, avoids resetting unchanged
+attributes/styles when only children change, and creates no empty font/pseudo
+stylesheets. These prevent redundant layout invalidation during SPA batches. It checks
 geometry before each next call and requests sticky per-region video fallback for
 layout, text or color drift at a 0.5 CSS px geometry threshold. Full-root drift
 uses a stable inert full-video document. Tiles occupy integer source raster
@@ -122,12 +124,12 @@ negotiates the existing display fallback, using its unchanged authority path.
 
 `packages/kernel-client/browser-mirror-drill.mjs` runs the real host controller,
 sandboxed non-root Chromium and this renderer against synthetic docs, forms,
-heavy-mutation SPA, open shadows, same/cross-origin frames, canvas/video and long
+60-node text/color mutation SPA, open shadows, same/cross-origin frames, canvas/video and long
 scroll fixtures at DPR 1/2. Arguments are absolute external tools, compiled client
 and evidence paths. It requires public Chromium dependencies and fonts; its
 lane-owned exact-path AppArmor user-namespace profile and temporary profiles are
 removed on exit. No global sandbox setting or durable credential is changed.
-It records native raster pairs, raw MSE/mismatch and source-only one-native-pixel
+It records initial and settled-after-mutation native raster pairs, raw MSE/mismatch and source-only one-native-pixel
 edge-band mismatch. Client-only holes cannot enlarge the exclusion band. Box and
 each text line fragment geometry, exact text and computed colors are measured.
 The gate is <=0.5 CSS px geometry, exact text/colors and <=0.10% raster mismatch
@@ -139,6 +141,10 @@ credit round trip; it is not a passive push/WAN measurement. Presentation ends a
 a viewer rAF callback after native compositor readback verifies the expected
 binary acknowledgement, using its source geometry (including scrollbars). This
 matches the display lane's software endpoint, not physical monitor timing. The
+synthetic kernel adapter uses bounded same-origin loopback HTTP JSON; it is a
+fixture transport, not a production Cloud proxy or encrypted relay validation.
+Automation receives packet JSON strings rather than recursively serialized JS
+objects, so large diagnostic returns do not dominate the transport measurement. The
 latency gates are input p50 <=80 ms / p95 <=120 ms, mutation p50 <=80 ms and long
 page first meaningful paint <=500 ms. The first-paint metric includes native
 viewer readback and rAF, before source screenshot analysis. Fixture navigation
