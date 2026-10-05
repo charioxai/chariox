@@ -168,6 +168,113 @@ reimageTest("MP-02/MP-08/MP-11 stopped enrolled launch retains the selected seco
   } finally { harness.cleanup() }
 })
 
+reimageTest("selecting a ready managed machine browses its workspace without replacing home control authority", async router => {
+  let finishWorktrees!: (response: unknown) => void
+  const worktrees = new Promise(resolve => { finishWorktrees = resolve })
+  const harness = createHarness(router, { interactivePlacement: true, managedWorktrees: worktrees })
+  try {
+    await harness.initialize()
+    harness.composition.reconcileWaitingRoom({ ...harness.state(),
+      selectedMachineRef: managedEnvironmentMachineRef("environment-1"), selectedKernelRef: "kernel-old",
+    })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(harness.client.currentClient(), harness.local.client)
+    assert.equal(harness.local.closeCount, 0)
+    assert.equal(harness.old.closeCount, 0)
+    assert.equal(harness.composition.waitingRoomTargets().workspacePath, "/home/managed")
+    assert.equal(harness.state().worktreeSelectionId, "")
+    assert.equal(requestCount(harness.old, "ListWorkspaceWorktrees"), 1)
+    assert.equal(requestCount(harness.local, "ListWorkspaceWorktrees"), 1)
+    // Control remains available while a separate workspace read is in flight.
+    const prepared = await harness.composition.reimageManagedEnvironment("environment-1", "prepare")
+    assert.match(prepared.message, /Destructive confirmation required/)
+    finishWorktrees({ WorkspaceWorktreesListed: { worktrees: [{ path: "/home/managed", branch: "main", current: true }] } })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(harness.old.closeCount, 2)
+    assert.equal(harness.state().worktreeSelectionId, "existing:/home/managed")
+    await harness.composition.refreshWaitingRoomDataNow()
+    assert.equal(harness.composition.waitingRoomTargets().workspacePath, "/home/managed")
+    assert.equal(harness.composition.waitingRoomTargets().workspaceId, "/home/managed")
+    assert.equal(harness.projects()[0]?.workspace_id, "/home/managed")
+    harness.composition.applyWaitingRoomRowsChanged({
+      inventoryVersion: "home-new", structuralVersion: "home-new", activityRevision: "home-new", sessions: [], removedSessionIds: [],
+      projects: [{ id: "home-project", owner_user_id: "user-1", workspace_id: "/home/local", name: "Home", kind: "named", status: "active", created_at_ms: 1, updated_at_ms: 2,
+        session_count: 0, joined_collaborator_count: 0, pending_collaboration_invite_count: 0 }],
+    })
+    assert.equal(harness.projects()[0]?.workspace_id, "/home/managed")
+    assert.equal(requestCount(harness.local, "GetManagedEnvironmentReimagePreflight"), 1)
+    assert.equal(requestCount(harness.old, "GetManagedEnvironmentReimagePreflight"), 0)
+    assert.equal(harness.observedThroughEndpoint, OLD_ENDPOINT)
+    assert.equal(harness.client.currentClient(), harness.local.client)
+    await harness.composition.reimageManagedEnvironment("environment-1", "confirm")
+    assert.equal(requestCount(harness.local, "RequestManagedEnvironmentReimage"), 1)
+    assert.equal(requestCount(harness.old, "RequestManagedEnvironmentReimage"), 0)
+    assert.equal(requestCount(harness.replacement, "RequestManagedEnvironmentReimage"), 0)
+    assert.equal(requestCount(harness.replacement, "CreateSession"), 1)
+  } finally { finishWorktrees({ WorkspaceWorktreesListed: { worktrees: [] } }); harness.cleanup() }
+})
+
+reimageTest("remote to local return restores local inventory scope and managed reimage admission", async router => {
+  const harness = createHarness(router, { interactivePlacement: true })
+  try {
+    await harness.initialize()
+    harness.composition.reconcileWaitingRoom({ ...harness.state(), selectedMachineRef: "machine-old", selectedKernelRef: "kernel-old" })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(harness.client.currentClient().socketPath, OLD_ENDPOINT)
+    harness.composition.reconcileWaitingRoom({ ...harness.state(), selectedMachineRef: "local", selectedKernelRef: "local" })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(harness.client.currentClient().socketPath, LOCAL_ENDPOINT)
+    assert.equal(harness.composition.waitingRoomTargets().workspacePath, "/home/local")
+    assert.deepEqual(harness.sessions().map(session => session.id).sort(), ["kernel-local-session", "kernel-old-session"])
+    // Inspect admission before another placement callback can alter authority.
+    harness.selectManagedWithoutReconcile()
+    const prepared = await harness.composition.reimageManagedEnvironment("environment-1", "prepare")
+    assert.match(prepared.message, /Destructive confirmation required/)
+    assert.equal(requestCount(harness.local, "GetManagedEnvironmentReimagePreflight"), 1)
+    assert.equal(requestCount(harness.old, "GetManagedEnvironmentReimagePreflight"), 0)
+    assert.equal(harness.client.currentClient().socketPath, LOCAL_ENDPOINT)
+  } finally { harness.cleanup() }
+})
+
+reimageTest("returning local while a managed workspace read is pending discards the late worktrees and closes the read client", async router => {
+  let finishWorktrees!: (response: unknown) => void
+  const harness = createHarness(router, { interactivePlacement: true,
+    managedWorktrees: new Promise(resolve => { finishWorktrees = resolve }),
+  })
+  try {
+    await harness.initialize()
+    harness.composition.reconcileWaitingRoom({ ...harness.state(),
+      selectedMachineRef: managedEnvironmentMachineRef("environment-1"), selectedKernelRef: "kernel-old",
+    })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(harness.composition.waitingRoomTargets().workspacePath, "/home/managed")
+    harness.composition.reconcileWaitingRoom({ ...harness.state(), selectedMachineRef: "local", selectedKernelRef: "local" })
+    await new Promise(resolve => setImmediate(resolve))
+    finishWorktrees({ WorkspaceWorktreesListed: { worktrees: [{ path: "/home/managed", branch: "main", current: true }] } })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(harness.composition.waitingRoomTargets().workspacePath, "/home/local")
+    assert.equal(harness.state().worktreeSelectionId, "existing:/home/local")
+    assert.equal(harness.client.currentClient(), harness.local.client)
+    assert.equal(harness.local.closeCount, 0)
+    assert.equal(harness.old.closeCount, 1)
+  } finally { finishWorktrees({ WorkspaceWorktreesListed: { worktrees: [] } }); harness.cleanup() }
+})
+
+reimageTest("returning to the original home does not grant local authority to a directly targeted CLI", async router => {
+  const harness = createHarness(router, { interactivePlacement: true, initialTargetKernelId: "kernel-local" })
+  try {
+    await harness.initialize()
+    harness.composition.reconcileWaitingRoom({ ...harness.state(), selectedMachineRef: "machine-old", selectedKernelRef: "kernel-old" })
+    await new Promise(resolve => setImmediate(resolve))
+    harness.composition.reconcileWaitingRoom({ ...harness.state(), selectedMachineRef: "local", selectedKernelRef: "local" })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(harness.client.currentClient().socketPath, LOCAL_ENDPOINT)
+    harness.selectManagedWithoutReconcile()
+    await assert.rejects(harness.composition.reimageManagedEnvironment("environment-1", "prepare"), /Return to the local kernel/)
+    assert.equal(requestCount(harness.local, "GetManagedEnvironmentReimagePreflight"), 0)
+  } finally { harness.cleanup() }
+})
+
 type TestEndpoint = {
   readonly client: LocalIpcClient
   readonly requests: unknown[]
@@ -267,6 +374,9 @@ function createHarness(router: TestRouter, options: {
   setupFailure?: Error
   attachFailure?: Error
   stoppedEnrolled?: boolean
+  interactivePlacement?: boolean
+  managedWorktrees?: Promise<unknown>
+  initialTargetKernelId?: string
 } = {}) {
   const contextPlan = options.contextPlan ?? emptyPlan()
   const oldEnvironment = environment({
@@ -291,7 +401,12 @@ function createHarness(router: TestRouter, options: {
   const local = router.endpoint(LOCAL_ENDPOINT, async (request) => {
     switch (requestKind(request)) {
       case "GetWaitingRoomPublicSnapshot":
-        return snapshotResponse("kernel-local", "machine-local", contextPlan)
+        return options.interactivePlacement ? placementSnapshot("kernel-local", "machine-local", "/home/local")
+          : snapshotResponse("kernel-local", "machine-local", contextPlan)
+      case "ListWorkspaceWorktrees":
+        return { WorkspaceWorktreesListed: { worktrees: [{ path: "/home/local", branch: "main", current: true }] } }
+      case "GetProviderCatalog":
+        return { ProviderCatalog: { catalog: fallbackProviderCatalog() } }
       case "ListSlices":
         return { SlicesListed: { slices: [] } }
       case "ListManagedEnvironmentCatalog":
@@ -329,7 +444,18 @@ function createHarness(router: TestRouter, options: {
   const old = router.endpoint(OLD_ENDPOINT, async (request) => {
     switch (requestKind(request)) {
       case "GetWaitingRoomPublicSnapshot":
-        return snapshotResponse("kernel-old", "machine-old", contextPlan)
+        return options.interactivePlacement ? placementSnapshot("kernel-old", "machine-old", "/home/managed")
+          : snapshotResponse("kernel-old", "machine-old", contextPlan)
+      case "ListWorkspaceWorktrees":
+        return options.managedWorktrees ?? { WorkspaceWorktreesListed: { worktrees: [{ path: "/home/managed", branch: "main", current: true }] } }
+      case "GetProviderCatalog":
+        return { ProviderCatalog: { catalog: fallbackProviderCatalog() } }
+      case "ResolveKernelClientConnection":
+        assert.equal(requestPayload(request, "ResolveKernelClientConnection").kernel_ref, "kernel-local")
+        return { KernelClientConnectionResolved: { connection: {
+          relay_url: LOCAL_ENDPOINT, relay_token: "local-test-token", target_daemon_id: "kernel-local",
+          kernel_id: "kernel-local", machine_id: "machine-local",
+        } } }
       case "ListSlices":
         return { SlicesListed: { slices: [] } }
       case "ListManagedEnvironmentCatalog":
@@ -400,8 +526,8 @@ function createHarness(router: TestRouter, options: {
   let waitingRoomState: WaitingRoomState = {
     ...createWaitingRoomState([], fallbackProviderCatalog(), "opencode", "opencode/gpt-5.4", "high"),
     worktreeSelectionId: "existing:/staged/worktree",
-    selectedMachineRef: managedEnvironmentMachineRef("environment-1"),
-    selectedKernelRef: "kernel-old",
+    selectedMachineRef: options.interactivePlacement ? "local" : managedEnvironmentMachineRef("environment-1"),
+    selectedKernelRef: options.interactivePlacement ? "local" : "kernel-old",
     projectSelectionId: contextPlan.developmentSetup.kind === "source_project"
       ? `existing:${contextPlan.developmentSetup.projectId}` : "default",
   }
@@ -429,7 +555,7 @@ function createHarness(router: TestRouter, options: {
   const noop = () => {}
   const deps: CliWaitingRoomCompositionDeps = {
     client: mutableClient,
-    options: { clientId: "client-1", provider: "opencode", model: "opencode/gpt-5.4", effort: "high" },
+    options: { clientId: "client-1", provider: "opencode", model: "opencode/gpt-5.4", effort: "high", targetDaemonId: options.initialTargetKernelId },
     appLogger: { warn: noop, info: noop, debug: noop },
     formatError: (error: unknown) => error instanceof Error ? error.message : String(error),
     isAttached: () => false,
@@ -519,6 +645,12 @@ function createHarness(router: TestRouter, options: {
     attachments,
     rollbacks,
     state: () => waitingRoomState,
+    sessions: () => availableSessions as Array<{ id: string }>,
+    projects: () => projects as Array<{ workspace_id: string }>,
+    selectManagedWithoutReconcile: () => {
+      waitingRoomState = { ...waitingRoomState, selectedMachineRef: managedEnvironmentMachineRef("environment-1"), selectedKernelRef: "kernel-old" }
+      ownershipRevision += 1
+    },
     selectKernel: (kernel: string) => { waitingRoomState = { ...waitingRoomState, selectedKernelRef: kernel }; ownershipRevision += 1 },
     get observedThroughEndpoint() { return observedThroughEndpoint },
     cleanup() {
@@ -583,6 +715,19 @@ function snapshotResponse(kernelId: string, machineId: string, plan: ManagedEnvi
       },
     },
   }
+}
+
+function placementSnapshot(kernelId: string, machineId: string, workspace: string) {
+  const response = snapshotResponse(kernelId, machineId, emptyPlan())
+  return { WaitingRoomPublicSnapshot: { snapshot: {
+    ...response.WaitingRoomPublicSnapshot.snapshot,
+    launch_target: { workspace_id: workspace, worktree_id: workspace },
+    sessions: [{ id: `${kernelId}-session`, workspace_id: workspace, worktree_id: workspace, created_at_ms: 1 }],
+    projects: [{ id: `${kernelId}-project`, owner_user_id: "user-1", workspace_id: workspace, name: "Workspace Project", kind: "named", status: "active", created_at_ms: 1, updated_at_ms: 1,
+      session_count: 1, joined_collaborator_count: 0, pending_collaboration_invite_count: 0 }],
+    remote_machines: [{ machine_id: "machine-old", machine_alias: "Managed old" }],
+    remote_kernels: [{ kernel_id: "kernel-old", machine_id: "machine-old", kernel_alias: "Managed old" }],
+  } } }
 }
 
 function relayStatusFor(kernelId: string, machineId: string) {
