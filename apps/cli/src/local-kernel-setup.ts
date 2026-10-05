@@ -1,6 +1,8 @@
 // MP-07 / MP-08 / MP-11: CLI projects a setup offer; the generic installer owns installation.
 import { spawn } from "node:child_process"
+import { readdirSync } from "node:fs"
 import { access, realpath } from "node:fs/promises"
+import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { createInterface } from "node:readline/promises"
 import { loadLocalKernelPresences } from "./local-kernel-presence.js"
@@ -9,6 +11,16 @@ import type { RelayCloudProfile } from "./preferences.js"
 
 export async function hasLocalKernel(): Promise<boolean> {
   if (loadLocalKernelPresences().length) return true
+  // Setup uses isolated kernel homes; inspect the same ordinary public heartbeat records.
+  const registries: string[] = []
+  if (process.env.CHARIOX_HOME) registries.push(join(process.env.CHARIOX_HOME, "kernels/active"))
+  const installs = join(homedir(), ".chariox/dev/ssh-machines")
+  try {
+    for (const entry of readdirSync(installs, { withFileTypes: true }).filter(e => e.isDirectory() && /^[a-z][a-z0-9-]{0,47}$/.test(e.name)).slice(0, 128)) {
+      registries.push(join(installs, entry.name, "kernels/active"))
+    }
+  } catch { /* no isolated installs */ }
+  if (registries.some(directory => loadLocalKernelPresences(directory).length)) return true
   const port = Number(process.env.CHARIOX_KERNEL_PORT ?? "43118")
   return Number.isInteger(port) && port > 0 && port <= 65535
     ? isKernelEndpointReachable(`ws://127.0.0.1:${port}/kernel`) : false
