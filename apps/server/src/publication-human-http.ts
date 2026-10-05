@@ -4,6 +4,8 @@ import { getWorkflowRunRequest } from "@chariox/kernel-client/ipc-requests"
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
 import {
   authorizePublicationCallerRequest,
+  publicationCallerForRequest,
+  type VerifiedPublicationCallerClaims,
   PublicationCallerClaimsError,
   publicationCallerAuthorizationFailure,
 } from "./publication-caller-claims.js"
@@ -13,6 +15,7 @@ import {
 } from "./publication-agent-app-effects.js"
 import { releaseAgentAppReplicaInvocation } from "./publication-agent-app-replicas.js"
 import { findWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
+import { publicationRunAccessibleToCaller } from "./publication-run-access.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
 import {
   collectPublicationTraceEvents,
@@ -98,7 +101,7 @@ export function installHumanHttpRoutes(app: HumanHttpApp, publication: WorkflowP
       reply.code(400)
       return { error: "workflow run id is required" }
     }
-    await streamWorkflowRunEvents(reply, publication, workflowRunId)
+    await streamWorkflowRunEvents(reply, publication, workflowRunId, publicationCallerForRequest(request))
   })
 
   app.get("/.well-known/chariox/publication/invocations/:requestId/events", async (request, reply) => {
@@ -108,7 +111,7 @@ export function installHumanHttpRoutes(app: HumanHttpApp, publication: WorkflowP
       reply.code(400)
       return { error: "invocation request id is required" }
     }
-    await streamInvocationEvents(reply, publication, requestId)
+    await streamInvocationEvents(reply, publication, requestId, publicationCallerForRequest(request))
   })
 
   app.get(`${PUBLICATION_VIEWER_INVOCATION_PATH}/:requestId`, async (request, reply) => {
@@ -121,7 +124,7 @@ export function installHumanHttpRoutes(app: HumanHttpApp, publication: WorkflowP
     const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
     try {
       const runtimePublication = publicationForAgentAppInvocation(publication, requestId)
-      const workflowRun = await findWorkflowRunByInvocationRequestId(client, runtimePublication, requestId)
+      const workflowRun = await findWorkflowRunByInvocationRequestId(client, runtimePublication, requestId, publicationCallerForRequest(request))
       const result = visibleWorkflowInvocationResult(publication, {
         accepted: true,
         queued: !workflowRun,
@@ -176,6 +179,7 @@ async function streamInvocationEvents(
   reply: HumanHttpReply,
   publication: WorkflowPublicationConfig,
   requestId: string,
+  caller: VerifiedPublicationCallerClaims | null,
 ) {
   reply.hijack()
   reply.raw.writeHead(200, {
@@ -188,6 +192,7 @@ async function streamInvocationEvents(
     writeSse(reply, "queued", { invocation_id: requestId })
     const workflowRun = await waitForAgentAppWorkflowRunByInvocationRequestId(client, publication, requestId, {
       shouldContinue: () => !reply.raw.destroyed,
+      caller,
     })
     if (!workflowRun) {
       writeSse(reply, "timeout", { invocation_id: requestId })
@@ -204,7 +209,7 @@ async function streamInvocationEvents(
       writeSse(reply, "final", { workflow_run: visibleWorkflowRun(publication, workflowRun) })
       return
     }
-    await streamWorkflowRunEventsWithClient(reply, runtimePublication, workflowRun.id, client, state, requestId)
+    await streamWorkflowRunEventsWithClient(reply, runtimePublication, workflowRun.id, client, state, caller, requestId)
   } catch (error) {
     writeSse(reply, "error", { error: error instanceof Error ? error.message : String(error) })
   } finally {
@@ -217,6 +222,7 @@ async function streamWorkflowRunEvents(
   reply: HumanHttpReply,
   publication: WorkflowPublicationConfig,
   workflowRunId: string,
+  caller: VerifiedPublicationCallerClaims | null,
 ) {
   reply.hijack()
   reply.raw.writeHead(200, {
@@ -229,7 +235,7 @@ async function streamWorkflowRunEvents(
     await streamWorkflowRunEventsWithClient(reply, publication, workflowRunId, client, {
       partialIds: new Set(),
       traces: createPublicationTraceStreamState(),
-    })
+    }, caller)
   } catch (error) {
     writeSse(reply, "error", { error: error instanceof Error ? error.message : String(error) })
   } finally {
@@ -244,6 +250,7 @@ async function streamWorkflowRunEventsWithClient(
   workflowRunId: string,
   client: LocalIpcClient,
   state: HumanHttpStreamState,
+  caller: VerifiedPublicationCallerClaims | null,
   invocationRequestId?: string | null,
 ) {
   const timeoutMs = publicationWaitTimeoutMs(publication)
@@ -256,6 +263,10 @@ async function streamWorkflowRunEventsWithClient(
       getWorkflowRunRequest(publication.session_id, workflowRunId),
     )
     const workflowRun = (response.WorkflowRun as { workflow_run?: WorkflowRun } | undefined)?.workflow_run ?? null
+    if (workflowRun && !publicationRunAccessibleToCaller(publication, workflowRun, caller)) {
+      writeSse(reply, "error", { error: "workflow run not found" })
+      return
+    }
     if (workflowRun && workflowRun.status !== lastStatus) {
       lastStatus = workflowRun.status
       writeSse(reply, "status", { workflow_run: visibleWorkflowRun(publication, workflowRun) })
@@ -317,7 +328,7 @@ async function waitForAgentAppWorkflowRunByInvocationRequestId(
   client: LocalIpcClient,
   publication: WorkflowPublicationConfig,
   requestId: string,
-  options: { timeoutMs?: number; pollMs?: number; shouldContinue?: () => boolean } = {},
+  options: { timeoutMs?: number; pollMs?: number; shouldContinue?: () => boolean; caller?: VerifiedPublicationCallerClaims | null } = {},
 ): Promise<WorkflowRun | null> {
   const timeoutMs = options.timeoutMs ?? publicationWaitTimeoutMs(publication)
   const pollMs = options.pollMs ?? publication.poll_ms ?? 500
@@ -327,6 +338,7 @@ async function waitForAgentAppWorkflowRunByInvocationRequestId(
       client,
       publicationForAgentAppInvocation(publication, requestId),
       requestId,
+      options.caller ?? null,
     )
     if (workflowRun) return workflowRun
     await sleep(pollMs)
