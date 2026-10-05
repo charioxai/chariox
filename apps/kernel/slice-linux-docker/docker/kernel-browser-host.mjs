@@ -378,7 +378,7 @@ export class KernelBrowserHost {
       if (!observed || observed !== tab.document_id) throw new Error("MD-3: stale input document; observe the tab again");
       const at = timestamp();
       let dispatched = false;
-      try { await inputHostTab(this.browser, tab, command.input, { signal, requireRoutine: command._retained_agent === true || command._routine_agent_input === true, onDispatch: () => { dispatched = true; } }); this.timing('cdp_input', at); }
+      try { await inputHostTab(this.browser, tab, command.input, { signal, requireRoutine: command._retained_agent === true, onDispatch: () => { dispatched = true; } }); this.timing('cdp_input', at); }
       catch (error) {
         if (dispatched || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) {
           // Clear any dispatched key/button state before another actor can use

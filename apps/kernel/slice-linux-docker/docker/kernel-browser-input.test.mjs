@@ -9,7 +9,7 @@ function fixture(value) {
     sent.push({ method, params });
     if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "f", loaderId: "doc" } } };
     if (method === "Page.createIsolatedWorld") return { executionContextId: 7 };
-    if (method === "Runtime.evaluate") return { result: { value } };
+    if (method === "Runtime.evaluate") return { result: { value: typeof value === "function" ? value() : value } };
     if (method === "DOM.getDocument") return { root: { nodeId: 1 } };
     if (method === "DOM.querySelectorAll") return { nodeIds: [] };
     return {};
@@ -33,4 +33,30 @@ test("MP-08: routine retained click and scroll proceed; classification returns n
   assert.equal(scan.returnByValue, true);
   assert.match(scan.expression, /autocomplete/);
   assert.equal(await sensitiveHostInput(browser, tab, { kind: "scroll" }), false);
+});
+test("MP-08/MP-11: retained Tab releases after focus moves onto a sensitive button", async () => {
+  let sensitive = false;
+  const { browser, sent } = fixture(() => sensitive);
+  const target = await browser.resolvePageTarget();
+  const send = target.connection.send;
+  target.connection.send = async (method, params) => {
+    const result = await send(method, params);
+    if (method === "Input.dispatchKeyEvent" && params.type === "keyDown") sensitive = true;
+    return result;
+  };
+  await inputHostTab(browser, tab, { kind: "key", key: "Tab" }, { requireRoutine: true });
+  assert.deepEqual(sent.filter(call => call.method === "Input.dispatchKeyEvent").map(call => call.params.type), ["keyDown", "keyUp"]);
+});
+test("MP-11: Tab release still refuses revoked authority", async () => {
+  const { browser, sent } = fixture(false);
+  const cancellation = new AbortController();
+  const target = await browser.resolvePageTarget();
+  const send = target.connection.send;
+  target.connection.send = async (method, params) => {
+    const result = await send(method, params);
+    if (method === "Input.dispatchKeyEvent" && params.type === "keyDown") cancellation.abort();
+    return result;
+  };
+  await assert.rejects(inputHostTab(browser, tab, { kind: "key", key: "Tab" }, { requireRoutine: true, signal: cancellation.signal }), { code: "browser_action_cancelled" });
+  assert.equal(sent.filter(call => call.method === "Input.dispatchKeyEvent").length, 1);
 });

@@ -11,7 +11,10 @@ export async function protectedHostRegions(connection, sessionId) {
   while (pending.length) {
     if (++visited > 100_000) throw new Error("Capture protection tree limit exceeded");
     const node = pending.pop();
-    if (node.shadowRoots?.length) nodes.push(node.nodeId);
+    // MP-11: Chromium's native control internals are not opaque page content.
+    // Password/OTP/payment fields still match the explicit protection selector.
+    // Unknown and page-created open/closed roots remain protected.
+    if (node.shadowRoots?.some(root => root.shadowRootType !== "user-agent")) nodes.push(node.nodeId);
     pending.push(...(node.children ?? []));
   }
   if (nodes.length > 1024) throw new Error("Capture protection limit exceeded");

@@ -39,8 +39,17 @@ fences idle subscriptions; an internal controller cleanup closes their streams.
 It cannot undo physical input already delivered. Vault fills always require
 focus. Native input classifies protected/password/OTP/payment fields, opaque
 frames/shadow hosts and payment/critical approval controls before dispatch.
-Unknown classification fails closed. Sensitive input requires focus throughout
-the operation; retained routine input rechecks protection before physical events.
+Unknown classification fails closed. Enter resolves the native form's first
+associated submit control, including external controls; buttonless or unnamed
+activation requires focus. Chromium's built-in control shadow trees are not
+opaque page content; page-created and unknown shadow roots remain protected.
+Focused physical input carries live focus authority for the whole operation,
+allowing routine-to-sensitive transitions such as Tab onto an approval button.
+Focus loss cancels that operation without revoking its retained resource grant;
+the agent may retry routine input under retained authority. Retained routine
+input rechecks protection before physical events. Tab's non-activating paired
+release checks document and cancellation authority without reclassifying the
+newly focused button as an activation.
 Critical App effects continue through kernel-owned human validation/passkeys.
 
 There is no cross-kernel control. Browser windows expose `kernel_id`,
@@ -62,3 +71,11 @@ change creates no agent capture API, approval-answer path or cross-kernel bridge
 MP-10 evidence must distinguish unit/fixture checks, native Linux browser
 execution, official-provider subagent waits, clients, and fresh-machine parity.
 None alone closes an MP item.
+
+MP-08 / MP-10 / MP-11 PR #880 regressions: the opt-in
+`kernel-browser-input.browser-test.mjs` exercises real native form submission
+and paired navigation through the production controller. The ignored Rust
+`runtime::kernel_browser_host::native_input_tests` drills additionally prove
+kernel-focused navigation preserves tab/document generation and idle streams,
+and retained Enter refuses payment. These credential-free native checks do not
+establish official-provider, client, hosted, or fresh-machine acceptance.

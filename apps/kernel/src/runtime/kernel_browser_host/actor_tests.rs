@@ -3,13 +3,17 @@ use super::*;
 use serde_json::json;
 #[test]
 fn human_takeover_cancels_the_running_controller_and_fences_the_focused_agent() {
-    check_running_cancellation(false);
+    check_running_cancellation(false, false);
 }
 #[test]
 fn mdaccess_revoke_cancels_inflight_controller_input_immediately() {
-    check_running_cancellation(true);
+    check_running_cancellation(true, false);
 }
-fn check_running_cancellation(revoke: bool) {
+#[test]
+fn mdaccess_focus_change_cancels_focused_input_without_revoking_grant() {
+    check_running_cancellation(false, true);
+}
+fn check_running_cancellation(revoke: bool, focus_change: bool) {
     let root = std::env::temp_dir().join(format!(
         "chariox-md3-takeover-{:032x}",
         rand::random::<u128>()
@@ -68,6 +72,8 @@ done
         assert!(root.join("started").exists());
         if revoke {
             host.revoke_agent("agent");
+        } else if focus_change {
+            host.set_focus("alice", Some("second"));
         } else {
             let takeover = host
                 .request_takeover(
@@ -104,6 +110,14 @@ done
             .as_array()
             .unwrap()
             .is_empty());
+    } else if focus_change {
+        assert!(
+            host.has_grant("alice", "agent"),
+            "MP-11: focus loss cancels only this focused input, not the retained grant"
+        );
+        assert!(host
+            .check_admission(Some(&host.admit("alice", "agent").unwrap()))
+            .is_ok());
     } else {
         assert!(host
             .protected_request("alice", Some("agent"), "host.browser", mutation, policy)

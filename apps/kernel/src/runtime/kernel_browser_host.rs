@@ -423,12 +423,12 @@ impl KernelBrowserHost {
                 .as_bool()
                 .ok_or("MP-11: sensitive-action classification unavailable; focus required")?;
             self.check_admission(admission)?;
-            if sensitive {
-                let admitted = admission.unwrap();
-                let agent = admitted.agent.clone().unwrap();
-                if !self.is_focused(user, &agent) {
-                    return Err("MP-11: sensitive user-domain action requires focus or human approval; focus this agent".into());
-                }
+            let agent = admission.unwrap().agent.clone().unwrap();
+            let focused = self.is_focused(user, &agent);
+            if sensitive && !focused {
+                return Err("MP-11: sensitive user-domain action requires focus or human approval; focus this agent".into());
+            }
+            if focused {
                 let host = self.clone();
                 let owner = user.to_string();
                 cancellation = Some(Arc::new(BrowserCancellation::for_authority(
@@ -436,12 +436,11 @@ impl KernelBrowserHost {
                     move || host.is_focused(&owner, &agent),
                 )));
             }
-            // A routine classification is rechecked before every physical event,
-            // even if focus changes after admission. Sensitive classifications
-            // instead carry a focus-bound cancellation authority throughout.
-            params["_routine_agent_input"] = (!sensitive).into();
-            params["_retained_agent"] =
-                (!self.is_focused(user, admission.unwrap().agent.as_deref().unwrap())).into();
+            // Focused input may change sensitivity between paired events (Tab
+            // onto an approval button, for example). The live focus guard
+            // authorizes that transition; losing focus cancels this operation
+            // without revoking the grant. Retained input rechecks protection.
+            params["_retained_agent"] = (!focused).into();
         }
         let request_params = params.clone();
         let mut result = backend.host_request_cancellable(method, params, cancellation.clone());
@@ -864,5 +863,8 @@ mod tests {
 
 #[cfg(test)]
 mod actor_tests;
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod native_input_tests;
 
 mod access;

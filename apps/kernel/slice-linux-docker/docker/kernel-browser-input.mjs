@@ -20,9 +20,23 @@ export async function sensitiveHostInput(browser, tab, input) {
       while (e.shadowRoot?.activeElement) e = e.shadowRoot.activeElement;
       const protectedSelector = '[data-chariox-sensitive],[data-chariox-observation-protected],input[type="password"],[autocomplete="one-time-code"],[autocomplete^="cc-"],iframe,frame';
       if (e.matches(protectedSelector) || e.closest(protectedSelector) || e.shadowRoot) return true;
-      if (e.closest('form')?.querySelector(protectedSelector)) return true;
-      const action = e.closest('button,a,[role="button"],input[type="submit"]');
-      return !!action && /\\b(pay|purchase|buy|checkout|authorize|approve|confirm payment)\\b/i.test(action.textContent || action.getAttribute('aria-label') || action.value || '');
+      const form = e.form || e.closest('form');
+      if (form?.querySelector(protectedSelector)) return true;
+      let action = e.closest('button,a,[role="button"],input[type="submit"],input[type="image"]');
+      if (${JSON.stringify(input.kind === "key" && input.key === "Enter")}) {
+        // Native implicit submission activates the first associated submit
+        // control in tree order, including controls outside the form element.
+        if (e.tagName === 'INPUT' && !['submit','image','button','reset'].includes(e.type)) {
+          if (!form) return true;
+          action = [...e.getRootNode().querySelectorAll('button,input')].find(control =>
+            control.form === form && (control.type === 'submit' || control.type === 'image'));
+          if (!action) return true; // Buttonless or unknown activation needs focus.
+        } else if (!action && e.tagName !== 'TEXTAREA' && !e.isContentEditable) return true;
+        if (action && ![action.textContent, action.getAttribute('aria-label'), action.value, action.getAttribute('alt')].some(label => label?.trim())) return true;
+      }
+      if (action?.matches(protectedSelector) || action?.closest(protectedSelector)) return true;
+      const label = action ? [action.textContent, action.getAttribute('aria-label'), action.value, action.getAttribute('alt')].filter(Boolean).join(' ') : '';
+      return /\\b(pay|purchase|buy|checkout|authorize|approve|confirm payment)\\b/i.test(label);
     })()`, returnByValue: true,
   }, sessionId);
   if (result?.value !== false) return true;
@@ -38,16 +52,16 @@ export async function sensitiveHostInput(browser, tab, input) {
 export async function inputHostTab(browser, tab, input, { signal, onDispatch, requireRoutine = false } = {}) {
     assertNotCancelled(signal);
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
-    const check = async () => {
+    const check = async (navigationRelease = false) => {
       assertNotCancelled(signal);
       await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-      if (requireRoutine && await sensitiveHostInput(browser, tab, input)) {
+      if (requireRoutine && !navigationRelease && await sensitiveHostInput(browser, tab, input)) {
         throw new Error("MP-11: sensitive user-domain action requires focus or human approval");
       }
       assertNotCancelled(signal);
     };
-    const sendInput = async (method, params) => {
-      await check();
+    const sendInput = async (method, params, navigationRelease = false) => {
+      await check(navigationRelease);
       onDispatch?.();
       const result = await connection.send(method, params, sessionId);
       assertNotCancelled(signal);
@@ -74,7 +88,9 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
           ...(input.key === "Enter" ? { windowsVirtualKeyCode: 13 } : {}) };
         await sendInput("Input.dispatchKeyEvent", { type: "keyDown", ...key,
           ...(input.key === "Enter" ? { text: "\r", unmodifiedText: "\r" } : {}) });
-        await sendInput("Input.dispatchKeyEvent", { type: "keyUp", ...key });
+        // Tab's paired release cannot natively activate the newly focused
+        // button. Still check document, cancellation and grant authority.
+        await sendInput("Input.dispatchKeyEvent", { type: "keyUp", ...key }, input.key === "Tab");
       } else {
         if (!Number.isInteger(input.x) || input.x < 0 || input.x >= viewport.css_width || !Number.isInteger(input.y) || input.y < 0 || input.y >= viewport.css_height) throw new Error("MD-2: pointer outside viewport");
         if (input.kind === "click") {
