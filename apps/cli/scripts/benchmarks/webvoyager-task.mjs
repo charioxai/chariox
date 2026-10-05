@@ -40,12 +40,13 @@ export async function runWebVoyagerTask({ task, runtime, options }) {
   const docker = args => exec('docker', args, { timeout: 60000, maxBuffer: 1024 * 1024 })
   const room = new Round2Room(api, { workspace: runtime.workspace, runId: id,
     checkpoint: async owned => { row.owned = structuredClone(owned); await checkpoint() } })
-  async function capture() {
-    const name = `screenshot${row.screenshots.length + 1}.png`
+  async function capture({ admission = false } = {}) {
+    const name = admission ? 'admission.png' : `screenshot${row.screenshots.length + 1}.png`
     try {
       const metadata = JSON.parse((await docker(['exec', container, 'node', '/tmp/benchwv-screenshot.mjs', `/tmp/benchwv-${name}`])).stdout)
       await docker(['cp', `${container}:/tmp/benchwv-${name}`, `${directory}/${name}`])
-      row.screenshots.push(name); row.screenshotMetadata.push(metadata)
+      if (admission) row.admissionScreenshot = { name, metadata }
+      else { row.screenshots.push(name); row.screenshotMetadata.push(metadata) }
     } catch (error) {
       // The capture helper exports only allowlisted method/code diagnostics.
       const diagnostics = (error.stderr ?? '').split('\n').map(line => { try { return JSON.parse(line) } catch { return null } })
@@ -70,7 +71,7 @@ export async function runWebVoyagerTask({ task, runtime, options }) {
         row.browserVersion = (await docker(['exec', container, 'chromium', '--version'])).stdout.trim()
         await docker(['cp', path.join(import.meta.dirname, 'webvoyager-screenshot.mjs'), `${container}:/tmp/benchwv-screenshot.mjs`])
       } })
-    seam = 'capture_preflight'; await capture()
+    seam = 'capture_preflight'; await capture({ admission: true })
     seam = 'agent_spawn'
     agentId = await room.spawn({ provider: 'codex', model: 'gpt-6.1-sol', effort: 'high', accountProfile: runtime.profileId })
     row.sessionId = room.owned.sessionId; row.agentId = agentId
