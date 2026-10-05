@@ -1,9 +1,11 @@
-# MP-03/MP-08/MP-10/MP-11: fresh-VM Start restoration replay
+# MP-03/MP-08/MP-10/MP-11: fresh-VM Start restoration and Delete replay
 
 This replays b201's M20-11 failure: Save succeeds, the original container and
 home volume are removed, and normal Start must restore the saved home through
 a fresh protected generation. Use a coordinator-supplied disposable VM only.
-The previous VM was deleted; the source regression is not live acceptance.
+It also qualifies Delete after repeated restore: every broker-recorded home
+generation must disappear, including prior homes on unbounded DEV enrollment.
+The previous VM was deleted; the source regressions are not live acceptance.
 DEV enrollment is unsigned and does not close any MP item.
 
 ## MP-03/MP-10: public inputs and host preparation
@@ -99,6 +101,38 @@ provider configuration, scopes empty provider homes, sets an absolute
 `CHARIOX_HOME` through M20, and lets the ordinary kernel start its broker.
 No provider login is required. The original deleted VM address is not reusable.
 
+Before launching, open a second root terminal on this **exclusive disposable**
+VM. Record the public volume inventory continuously so prior generations are
+observed before M20's automatic Delete. Create one exact foreign-labelled
+sentinel as a negative control. This fixture owns the sentinel; it never mounts
+or writes it. Use a fresh external operator evidence directory:
+
+```sh
+set -euo pipefail
+export OPERATOR_EVIDENCE=/root/.codex/evidence/b201-delete-replay-1
+mkdir -m 0700 -p /root/.codex/evidence
+mkdir -m 0700 "$OPERATOR_EVIDENCE"
+export SENTINEL=chariox-b201-delete-foreign-home
+test -z "$(docker volume ls --format '{{.Name}}' --filter name="^${SENTINEL}$")"
+docker volume create --label io.chariox.slice.id=b201-delete-foreign \
+  --label io.chariox.slice.owner-kernel-id=b201-delete-foreign \
+  --label io.chariox.slice.owner-machine-id=b201-delete-foreign "$SENTINEL"
+while test ! -e "$OPERATOR_EVIDENCE/stop-inventory"; do
+  date -u +%FT%TZ
+  docker volume ls --format '{{.Name}}' | while IFS= read -r volume; do
+    docker volume inspect --format '{{.Name}} {{.Driver}} {{index .Labels "io.chariox.slice.id"}} {{index .Labels "io.chariox.slice.owner-kernel-id"}} {{index .Labels "io.chariox.slice.owner-machine-id"}}' "$volume" || echo "MP-10: inspection unavailable for $volume; reconcile against final inventory"
+  done
+  sleep 2
+done >> "$OPERATOR_EVIDENCE/volume-history.log" 2>&1
+```
+
+Retain inspection errors and reconcile exact disappearance during Delete
+against the final inventory. Missing generation/ownership history is
+NOT_REACHED. The observer reads only names, local-driver and the three public
+ownership labels; never dump complete Docker inspect or protected config. It
+exits by its stop file, without sending a signal. Keep this terminal open while
+the replay runs in the ordinary-user terminal below.
+
 ```sh
 sudo -u b201replay env \
   PATH="$PUBLIC/node/bin:/usr/bin:/bin" \
@@ -159,6 +193,33 @@ unprotected local storage retains its separate quarantine expectation. This
 fixture follows the existing topology policy; it does not change that policy.
 
 ## MP-03/MP-10/MP-11: cleanup and limits
+
+After the wrapper returns, record its exit **before** operator cleanup. In the
+root terminal, stop the observer with the marker, then record final inventory:
+
+```sh
+touch /root/.codex/evidence/b201-delete-replay-1/stop-inventory
+docker volume ls --format '{{.Name}}' > /root/.codex/evidence/b201-delete-replay-1/volumes-after-delete.txt
+docker volume inspect --format '{{.Name}} {{.Driver}} {{index .Labels "io.chariox.slice.id"}} {{index .Labels "io.chariox.slice.owner-kernel-id"}} {{index .Labels "io.chariox.slice.owner-machine-id"}}' chariox-b201-delete-foreign-home
+```
+
+Use the initial/restored slice's public `id`, `owner_kernel_id`,
+`owner_machine_id` and container name in the retained M20 responses to select
+its exact tuple in `volume-history.log`. Require at least three distinct
+generated `container-home-g<32 hex>` names observed across the normal Start and
+two successful named/ID restores. Compare **every** observed run home name,
+including the default home, against `volumes-after-delete.txt`: none may remain.
+The foreign sentinel must remain with the exact tuple above. Do not count the
+drill's default-only `cleanup.volumeGone` field as this acceptance check. Missing
+history or an unfinished restore is NOT_REACHED, not a cleanup pass.
+
+Delete must use the normal kernel/broker/provisioner path. No operator `volume
+rm` may precede the post-Delete assertion. Any retained run home is a product
+RED; retain the name/tuple and first error before exact owned operator cleanup.
+After recording the negative-control PASS, remove only the sentinel above with
+`docker volume rm chariox-b201-delete-foreign-home`. A failed Delete or mounted
+prior home must not release a managed quota reservation; focused source tests
+cover these refusals and label mismatches, while this DEV replay has no quotas.
 
 Inspect the manifest cleanup and independently check **all** exact owned home
 generations, workspace volumes, containers, state/backup images and listeners.
