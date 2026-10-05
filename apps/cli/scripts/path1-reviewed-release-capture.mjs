@@ -42,6 +42,13 @@ const ARTIFACTS = [
   ["chariox-build-attestation-signature", "/usr/lib/chariox/build-attestation.sig", "file", 0o644],
   ["chariox-builder-public-key", "/usr/lib/chariox/builder-public-key", "file", 0o644],
 ]
+// Schema 2 is the explicit pre-Apps legacy closure. Schema 3 binds both App
+// helpers and their service in the same order as package-managed-kernel-release.
+const APP_ARTIFACTS = [
+  ["chariox-app-package", "/usr/local/bin/chariox-app-package", "file", 0o755],
+  ["chariox-app-storage", "/usr/libexec/chariox-app-storage", "file", 0o755],
+  ["chariox-app-storage.service", "/etc/systemd/system/chariox-app-storage.service", "file", 0o644],
+]
 const DATA_VOLUME_ARTIFACTS = [
   ["chariox-data-volume-admission.service", "/etc/systemd/system/chariox-data-volume-admission.service", "file", 0o644],
   ["chariox-rootless-docker.path1-data-volume.conf", "/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf", "file", 0o644],
@@ -570,9 +577,18 @@ async function verifyAtRoot(options, root) {
       if (exists) fail("release contains an undeclared data-volume artifact: " + name)
     }
   }
-  const releaseArtifacts = hasDataVolumeAdmission
-    ? [...ARTIFACTS.slice(0, 6), ...DATA_VOLUME_ARTIFACTS, ...ARTIFACTS.slice(6)]
-    : ARTIFACTS
+  const appArtifacts = manifest.schemaVersion === 3 ? APP_ARTIFACTS : []
+  if (manifest.schemaVersion === 2) {
+    for (const [name, path] of APP_ARTIFACTS) {
+      const exists = await lstat(join(root, path.slice(1))).then(() => true, error => {
+        if (error.code !== "ENOENT") throw error
+        return false
+      })
+      if (exists) fail("legacy release contains an undeclared App artifact: " + name)
+    }
+  }
+  const releaseArtifacts = [...ARTIFACTS.slice(0, 2), ...appArtifacts,
+    ...ARTIFACTS.slice(2, 6), ...(hasDataVolumeAdmission ? DATA_VOLUME_ARTIFACTS : []), ...ARTIFACTS.slice(6)]
   if (manifest.artifacts.length !== releaseArtifacts.length) {
     fail("release manifest does not contain the exact installed artifacts")
   }
@@ -673,6 +689,8 @@ async function verifyAtRoot(options, root) {
     fail("builder attestation signature is invalid")
   }
 
+  const attestedArtifacts = [...ATTESTED_ARTIFACTS, ...appArtifacts
+    .filter(([name]) => !name.endsWith(".service")).map(([name]) => [name, name])]
   const attestation = parseStrictJson(attestationFile.bytes, "builder attestation")
   assertObjectKeys(
     attestation,
@@ -687,7 +705,7 @@ async function verifyAtRoot(options, root) {
     attestation.sourceTree !== manifest.sourceTree ||
     attestation.target !== TARGET ||
     !Array.isArray(attestation.artifacts) ||
-    attestation.artifacts.length !== ATTESTED_ARTIFACTS.length
+    attestation.artifacts.length !== attestedArtifacts.length
   ) {
     fail("builder attestation source identity or target does not match")
   }
@@ -698,9 +716,10 @@ async function verifyAtRoot(options, root) {
     ["chariox-kernel", actualDigests.get("chariox-kernel")],
     ["chariox-managed-bootstrap", actualDigests.get("chariox-managed-bootstrap")],
     ["chariox-relay", relayDigest],
+    ...appArtifacts.filter(([name]) => !name.endsWith(".service")).map(([name]) => [name, actualDigests.get(name)]),
   ])
-  for (let index = 0; index < ATTESTED_ARTIFACTS.length; index++) {
-    const [expectedName] = ATTESTED_ARTIFACTS[index]
+  for (let index = 0; index < attestedArtifacts.length; index++) {
+    const [expectedName] = attestedArtifacts[index]
     const artifact = attestation.artifacts[index]
     assertObjectKeys(artifact, ["name", "sha256"], "builder attestation artifact")
     assertDigest(artifact.sha256, "builder attestation artifact digest")
