@@ -16,6 +16,23 @@ const TOOLS: &[&str] = &[
 ];
 
 impl KernelRuntimeState {
+    /// MD-N5 / MP-10: fixture assets use the normal Room controller route.
+    #[cfg(test)]
+    pub(crate) async fn notes_drill_app_view(
+        &self,
+        session_id: &str,
+        request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<(), DaemonError> {
+        self.room_browser_controller_command(
+            session_id,
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::AppView {
+                request,
+            },
+        )
+        .await
+        .map(|_| ())
+    }
+
     pub(crate) async fn notes_terminal_request(
         &self,
         caller: &crate::runtime::command::KernelCommand,
