@@ -1,12 +1,11 @@
 // MD-2: sessionless host adapter over the shared controller/CDP implementation.
 import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
-import { BrowserActionError } from "./browser-controller-actions.mjs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { displayTiming, timestamp } from './kernel-browser-timing.mjs';
-import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
+import { BrowserCdpClient, isTrustedStaleReferenceError } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
 import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
@@ -454,7 +453,7 @@ export class KernelBrowserHost {
       throw new Error("MD-2: unsupported host method");
     } catch (error) {
       if (error instanceof UserDomainRefusal) return {id:request.id,ok:false,error:{code:error.code,message:error.message}};
-      if (error instanceof BrowserActionError && ["stale_document_reference","stale_element_reference"].includes(error.code)) return {id:request.id,ok:false,error:{code:"user_domain_stale_reference",message:"User-domain request refused"}};
+      if (isTrustedStaleReferenceError(error)) return {id:request.id,ok:false,error:{code:"user_domain_stale_reference",message:"User-domain request refused"}};
       if (error?.code === "browser_action_cancelled") await this.stop();
       return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }
   }

@@ -54,6 +54,22 @@ export class BrowserControllerError extends Error {
   }
 }
 
+// Private provenance survives adapter normalization without trusting a caller's
+// code, message, name or public BrowserControllerError constructor.
+const normalizedStaleReferences = new WeakSet();
+export function isTrustedStaleReferenceError(error) {
+  return normalizedStaleReferences.has(error) || (
+    (error instanceof BrowserActionError || error instanceof BrowserCompatibilityError
+      || error instanceof BrowserSnapshotError)
+    && ["stale_document_reference", "stale_element_reference"].includes(error.code)
+  );
+}
+function normalizeNativeError(error) {
+  const normalized = new BrowserControllerError(error.code, error.message);
+  if (isTrustedStaleReferenceError(error)) normalizedStaleReferences.add(normalized);
+  return normalized;
+}
+
 /** A CDP failure because the target or its session no longer exists. */
 function targetGone(error) {
   return /Session with given id not found|No target with given id|Target closed/.test(String(error?.message ?? error));
@@ -1512,25 +1528,25 @@ function normalizeControllerError(error) {
     return error;
   }
   if (error instanceof BrowserSnapshotError) {
-    return new BrowserControllerError(error.code, error.message);
+    return normalizeNativeError(error);
   }
   if (error instanceof BrowserActionError) {
-    return new BrowserControllerError(error.code, error.message);
+    return normalizeNativeError(error);
   }
   if (error instanceof BrowserFileTransferError) {
-    return new BrowserControllerError(error.code, error.message);
+    return normalizeNativeError(error);
   }
   if (error instanceof BrowserPermissionError) {
-    return new BrowserControllerError(error.code, error.message);
+    return normalizeNativeError(error);
   }
   if (error instanceof BrowserEventError) {
-    return new BrowserControllerError(error.code, error.message);
+    return normalizeNativeError(error);
   }
   if (error instanceof BrowserCompatibilityError) {
-    return new BrowserControllerError(error.code, error.message);
+    return normalizeNativeError(error);
   }
   if (error instanceof BrowserHistoryError) {
-    return new BrowserControllerError(error.code, error.message);
+    return normalizeNativeError(error);
   }
   return new BrowserControllerError(
     "browser_controller_internal",
