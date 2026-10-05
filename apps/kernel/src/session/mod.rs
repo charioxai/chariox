@@ -59,8 +59,8 @@ pub use room_environment::{
     RoomEnvironment, RoomEnvironmentSnapshot, TakeoverOutcome,
 };
 pub(crate) use room_environment::{
-    EnvironmentElementTarget, EnvironmentTabObservation, EnvironmentTabRuntimeBinding,
-    RoomEnvironmentRegistry,
+    EnvironmentActionLedger, EnvironmentElementTarget, EnvironmentTabObservation,
+    EnvironmentTabRuntimeBinding, RoomEnvironmentRegistry, TabRegistry,
 };
 pub use runtime_project::{
     RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus, SessionProjectSelection,
