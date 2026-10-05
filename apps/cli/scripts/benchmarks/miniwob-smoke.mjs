@@ -17,6 +17,7 @@ const r = await import(`${clientModuleRoot}/ipc-requests.js`)
 import { sanitizeDrillMetadata } from '../lib/drill-secrets.mjs'
 import { roomProviderToolName, roomProviderToolOutput } from '../lib/room-provider-tool-record.mjs'
 import { observeKernelRpcErrors, rpcErrorRecord } from './round2/rpc-errors.mjs'
+import { permittedBrowserTool } from './round2/browser-track.mjs'
 import { signalOwnedProcess, stopOwnedProcess } from './round2/owned-processes.mjs'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..')
@@ -289,7 +290,7 @@ try {
         if (item.entry.kind !== 'provider_tool') continue
         try {
           const record = JSON.parse(item.entry.text), tool = roomProviderToolName(record.tool)
-          const permitted = /^slice_browser_(?:status|find|text|wait_for_text|wait_for_idle|click|fill|submit|dialog|events|downloads|tab|history|upload)$/.test(tool)
+          const permitted = permittedBrowserTool(tool)
           row.toolTrace.push({ tool, status: record.status, permitted,
             ...(permitted ? { input: sanitizeDrillMetadata(record.input),
               output: sanitizeDrillMetadata(roomProviderToolOutput(record.output)),
