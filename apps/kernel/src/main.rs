@@ -42,6 +42,26 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
         }
         kernel_arguments::Command::Run => {}
     }
+    let bootstrap_mode = std::env::args().nth(1);
+    if matches!(
+        bootstrap_mode.as_deref(),
+        Some("--owner-managed-enroll-stdin" | "--owner-managed-ready")
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| chariox_kernel::DaemonError::LocalTransport {
+                operation: "owner-managed bootstrap",
+                message: "runtime unavailable".into(),
+            })?;
+        return runtime.block_on(async {
+            if bootstrap_mode.as_deref() == Some("--owner-managed-enroll-stdin") {
+                chariox_kernel::owner_managed_bootstrap::enroll_from_stdin().await
+            } else {
+                chariox_kernel::owner_managed_bootstrap::wait_ready().await
+            }
+        });
+    }
     chariox_kernel::slice::initialize_managed_docker_broker();
     chariox_kernel::runtime_transport::initialize_kernel_local_auth_from_env()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()

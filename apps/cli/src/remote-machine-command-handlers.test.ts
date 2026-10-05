@@ -179,3 +179,19 @@ function remoteMachineHarness(kernelOverrides: Record<string, unknown> = {}) {
     },
   }
 }
+
+test("MP-07/MP-08/MP-11 SSH add forwards selection and remove retains state", async () => {
+  const calls: unknown[] = []
+  const deps = { flashFooter: (m: string) => calls.push(m), appendNotice: (m: string) => calls.push(m),
+    addSshMachine: async (host: string, options: unknown) => { calls.push({ host, options }); return { install_id: "byom-lan", status: "ready", kernel_id: "kernel", machine_id: "machine", release_digest: "sha256:approved", state_retained: false } },
+    removeSshMachine: async (id: string) => { calls.push(id); return { install_id: id, status: "removed", kernel_id: null, machine_id: null, release_digest: "sha256:approved", state_retained: true } },
+  }
+  await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add ssh linux-lan", args: ["add", "ssh", "linux-lan", "--id", "byom-lan", "--port", "55129", "--release", "approved"] })
+  assert.ok(calls.some(c => typeof c === "object" && c !== null && JSON.stringify(c) === JSON.stringify({ host: "linux-lan", options: { install_id: "byom-lan", port: 55129, release: "approved" } })))
+  await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine remove byom-lan", args: ["remove", "byom-lan"] })
+  assert.ok(calls.some(c => typeof c === "string" && c.includes("state retained")))
+  const before = calls.length
+  await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add ssh linux-lan", args: ["add", "ssh", "linux-lan", "--port", "43118"] })
+  assert.equal(calls.length, before + 1)
+  assert.match(String(calls.at(-1)), /usage:/)
+})

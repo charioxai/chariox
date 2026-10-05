@@ -2,6 +2,8 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
+    AddSshMachine(AddSshMachineRequest),
+    RemoveSshMachine(RemoveSshMachineRequest),
     RequestKernelAccess(RequestKernelAccessRequest),
     RequestKernelSudo(RequestKernelSudoRequest),
     ListKernelAccessGrants(ListKernelAccessGrantsRequest),
