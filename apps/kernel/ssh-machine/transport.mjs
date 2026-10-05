@@ -121,7 +121,11 @@ export async function runSshMachine(host, request, release, options = {}) {
   } else raw = await ssh(host, command, upload(entries), options)
   let result
   try { result = JSON.parse(raw) } catch { throw new Error("SSH target returned an invalid deployment result") }
-  if (result?.installId !== request.installId || !["installed", "ready", "stopped", "removed"].includes(result?.status)) throw new Error("SSH deployment result identity is invalid")
+  if (result?.installId !== request.installId || !["installed", "ready", "stopped", "removed", "absent"].includes(result?.status)) throw new Error("SSH deployment result identity is invalid")
+  if (request.action === "inspect") {
+    if (!["absent", "installed"].includes(result.status)) throw new Error("invalid target inspection")
+    return { installId:request.installId,status:result.status }
+  }
   const expected = { install: "installed", start: "ready", stop: "stopped", remove: "removed" }[request.action]
   if (result.status !== expected || (expected === "installed" && (result.releaseDigest !== request.releaseDigest || result.enrolled !== false))) throw new Error("SSH deployment result does not match the requested action")
   if (expected === "ready") {
