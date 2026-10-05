@@ -1,3 +1,4 @@
+import { CloudClientCollaboration } from "./cloud-client-collaboration.js"
 import { RelayAuthRenewal } from "@chariox/kernel-client/relay-auth-renewal"
 import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { CloudClientCredentialStore, type CloudClientCredential } from "./cloud-client-credential-store.js"
@@ -17,6 +18,7 @@ type LoginResult = { status: string; intervalSeconds?: number; profile?: RelayCl
 /** Client authority handles Cloud bootstrap only. Runtime requests always use
  * the ordinary encrypted LocalIpcClient path to the selected kernel. */
 export class CloudClient {
+  readonly collaboration = new CloudClientCollaboration(request => this.authenticated(request))
   private renewal: RelayAuthRenewal | undefined
   private clients = new Set<LocalIpcClient>()
   private onRevoked: (() => void) | undefined

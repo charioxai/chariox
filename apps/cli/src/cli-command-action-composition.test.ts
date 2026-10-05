@@ -4,7 +4,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 import { createCliCommandActionComposition, type CliCommandActionCompositionDeps } from "./cli-command-action-composition.js"
-import { makeCommandDeps } from "./command-actions-test-support.js"
+import { CloudClient } from "./cloud-client.js"
+import type { CloudClientCredentialStore } from "./cloud-client-credential-store.js"
+import { makeCommandDeps, makeSession } from "./command-actions-test-support.js"
 
 // MP-08 / MP-11: actual composition + slash handler, with both authority profiles.
 test("signed-in attached terminal preserves kernel enrollment when unlink is rejected", async t => {
@@ -27,3 +29,68 @@ test("signed-in attached terminal preserves kernel enrollment when unlink is rej
   assert.equal(preferenceWrites,0)
   assert.equal(notices.includes("cloud link cleared"),false)
 })
+
+// MP-08 / MP-11: the enrolled kernel contains no human authority. Cloud HTTP
+// receives the private terminal profile; only local session mutations use IPC.
+for (const action of ["deployments list", "invite create", "invite accept", "members", "collaborators"]) {
+  test(`signed-in attached terminal uses human Cloud authority for ${action}`, async t => {
+    const session = makeSession(), notices: string[] = [], ipc: string[] = [], paths: string[] = []
+    let applied = 0, attached = 0
+    const profile = {apiUrl: "http://127.0.0.1:44123", accountId: "account", userId: "human", clientId: "terminal", realmId: "realm", relayUrl: "wss://relay.test", email: "human@example.test", accountSlug: "fixture", issuerId: "fixture"}
+    const credential = {profile, clientId: "terminal", publicKeyThumbprint: "a".repeat(64), accessToken: "synthetic-human-access", refreshCredential: "synthetic-refresh", expiresAtMs: Date.now()+60_000}
+    const cloudClient = new CloudClient({load: async () => credential, session: async () => credential} as unknown as CloudClientCredentialStore, () => ({publicKeyThumbprint: credential.publicKeyThumbprint}) as any)
+    t.after(() => cloudClient.stop())
+    t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input)); paths.push(url.pathname)
+      const body = init?.body ? JSON.parse(String(init.body)) : null
+      assert.equal(body?.sessionToken ?? new Headers(init?.headers).get("authorization"), body ? credential.accessToken : `Bearer ${credential.accessToken}`)
+      assert.equal(body?.machineId, undefined)
+      assert.equal(body?.kernelCredential, undefined)
+      const results: Record<string, unknown> = {
+        "/deployment-projects": {portfolio: []},
+        "/sessions/invites": {inviteId: "cloud-invite", inviteToken: "cloud-invite-token", sessionId: session.id, accountId: profile.accountId, createdByUserId: profile.userId},
+        "/sessions/invites/cloud-invite-token/accept": {userId: profile.userId, sessionId: session.id},
+        "/sessions/members": {sessionId: session.id, members: [{userId: profile.userId, email: profile.email, displayName: "Human"}]},
+        "/collaborators/recent": {collaborators: [{userId: "friend", email: "friend@example.test", sharedSessionCount: 2}]},
+      }
+      assert.ok(url.pathname in results, "expected client control-plane route")
+      if (url.pathname === "/sessions/invites") {assert.equal(body.sessionId, session.id); assert.equal(body.collaborationLevel, "full")}
+      if (init?.method !== "POST") assert.equal(url.searchParams.get("accountId"), profile.accountId)
+      return new Response(JSON.stringify(results[url.pathname]), {status: 200})
+    })
+    const client = {isRelayTransport: () => true, send: async (request: Record<string, any>) => {
+      const variant = Object.keys(request)[0]!; ipc.push(variant)
+      if (variant === "CloudRelayStatus") return {CloudRelayStatus: {profile: {api_url: profile.apiUrl, account_id: profile.accountId, kernel_id: "kernel", kernel_enrolled: true}}}
+      if (variant === "CreateSessionInvite") return {SessionInviteCreated: {session, invite: {invite_token: "local-invite-token", invite: {invite_id: "local-invite"}}}}
+      if (variant === "JoinSessionInvite") {assert.equal(request.JoinSessionInvite.user_id, profile.userId); return {SessionInviteJoined: {session, member: {user_id: profile.userId}}}}
+      throw new Error(`human Cloud requests cannot use kernel IPC: ${variant}`)
+    }}
+    const base = {...makeCommandDeps(), client, cloudClient, options: {clientId: "terminal", accountProfile: "default"}, preferencesState: () => ({}), kernelConnected: () => true, sessionState: () => session, appendNotice: (text: string) => notices.push(text), appendCloudNotice: (text: string) => notices.push(text), applySessionState: () => {applied++}, attachBinding: async () => {attached++}}
+    const deps = new Proxy(base, {get: (target, key) => key in target ? target[key as keyof typeof target] : () => {}})
+    const handlers = createCliCommandActionComposition(deps as unknown as CliCommandActionCompositionDeps)
+    const args = action === "invite create" ? ["invite", "create", "--level", "full"] : action === "invite accept" ? ["invite", "accept", "http://127.0.0.1/invites?cloud_invite=cloud-invite-token&local_invite=local-invite-token"] : action.split(" ")
+    await handlers.handleCloudCommand({kind: "cloud", raw: `/cloud ${action}`, args})
+    assert.equal(paths.length, 1)
+    assert.ok(!ipc.some(variant => /^(CreateCloud|AcceptCloud|ListCloud)/.test(variant)))
+    assert.equal(applied, action.startsWith("invite") ? 1 : 0)
+    assert.equal(attached, action === "invite accept" ? 1 : 0)
+    if (action === "members") assert.ok(notices.some(value => value.includes("human human@example.test (Human)")))
+    if (action === "collaborators") assert.ok(notices.some(value => value.includes("friend friend@example.test shared_sessions=2")))
+  })
+}
+
+// MP-08 / MP-11: enrollment cannot stand in for a terminal login or cross realms.
+for (const state of ["signed-out", "foreign-account", "foreign-cloud"] as const) {
+  test(`attached deployment command rejects ${state} human authority`, async t => {
+    const notices: string[] = []
+    const human = state === "signed-out" ? null : {apiUrl: state === "foreign-cloud" ? "https://foreign.example.test" : "https://cloud.example.test", accountId: state === "foreign-account" ? "foreign" : "account", cloudSessionToken: "synthetic-human-access"}
+    t.mock.method(globalThis, "fetch", () => {throw new Error("conflicting or absent authority reached Cloud")})
+    const client = {send: async () => ({CloudRelayStatus: {profile: {api_url: "https://cloud.example.test", account_id: "account", kernel_enrolled: true}}})}
+    const base = {...makeCommandDeps(), client, cloudClient: {humanProfile: async () => human}, options: {}, preferencesState: () => ({}), kernelConnected: () => true, flashFooter: (value: string) => notices.push(value)}
+    const deps = new Proxy(base, {get: (target, key) => key in target ? target[key as keyof typeof target] : () => {}})
+    const handlers = createCliCommandActionComposition(deps as unknown as CliCommandActionCompositionDeps)
+    const command = {kind: "cloud" as const, raw: "/cloud deployments list", args: ["deployments", "list"]}
+    if (human) await assert.rejects(handlers.handleCloudCommand(command), /Cloud account conflict/)
+    else {await handlers.handleCloudCommand(command); assert.deepEqual(notices, ["sign in with /cloud login first"])}
+  })
+}
