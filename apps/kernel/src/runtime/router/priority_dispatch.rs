@@ -386,13 +386,21 @@ impl CommandRouter {
             request @ (LocalDaemonRequest::GetWaitingRoomInventory(_)
             | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)) => Box::pin(async move {
                 let caller_user_id = command_caller_user_id(&command);
+                let directory = if crate::runtime::cloud_relay_authorization::kernel_cloud_owner(
+                    &self.config_projection.snapshot(),
+                    &command,
+                ) {
+                    self.remote_relay_inventory_projection.clone()
+                } else {
+                    Default::default()
+                };
                 execute_waiting_room_request(
                     &self.runtime_state,
                     &self.session_projection,
                     &self.waiting_room_session_summaries,
                     Arc::clone(&self.relay_state),
                     self.config_projection.clone(),
-                    self.remote_relay_inventory_projection.clone(),
+                    directory,
                     request,
                     &caller_user_id,
                 )

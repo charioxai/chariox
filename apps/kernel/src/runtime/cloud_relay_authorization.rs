@@ -33,6 +33,15 @@ pub(crate) fn authorize_kernel_cloud_request(
     if !cloud_control && !directory {
         return Ok(());
     }
+    if kernel_cloud_owner(config, command) {
+        return Ok(());
+    }
+    Err(DaemonError::LocalTransport { operation: "authorize kernel Cloud authority", message: "only this kernel's owner can manage enrollment, list My kernels or delegate a terminal connection".into() })
+}
+
+// Use the complete authenticated caller, not a user-ID-only projection.
+// Session membership permits waiting-room access, never owner inventory.
+pub(crate) fn kernel_cloud_owner(config: &DaemonConfig, command: &KernelCommand) -> bool {
     if command.caller.caller_kind == KernelCallerKind::LocalClient
         && matches!(
             command.source,
@@ -41,17 +50,17 @@ pub(crate) fn authorize_kernel_cloud_request(
                 | KernelCommandSource::DaemonBackground
         )
     {
-        return Ok(());
+        return true;
     }
     if let Some(profile) = &config.cloud_relay {
         if command.caller.caller_kind == KernelCallerKind::RemoteClient
             && command.caller.user_id.as_deref() == Some(profile.user_id.as_str())
             && command.caller.realm_id.as_deref() == Some(profile.realm_id.as_str())
         {
-            return Ok(());
+            return true;
         }
     }
-    Err(DaemonError::LocalTransport { operation: "authorize kernel Cloud authority", message: "only this kernel's owner can manage enrollment, list My kernels or delegate a terminal connection".into() })
+    false
 }
 
 #[cfg(test)]
@@ -82,14 +91,12 @@ mod tests {
         command.caller.user_id = Some("viewer".into());
         command.caller.realm_id = Some("realm-a".into());
         assert!(authorize_kernel_cloud_request(&config, &command, &request).is_err());
-        assert!(
-            authorize_kernel_cloud_request(
-                &config,
-                &command,
-                &LocalDaemonRequest::CloudRelayStatus(crate::local::CloudRelayStatusRequest)
-            )
-            .is_err()
-        );
+        assert!(authorize_kernel_cloud_request(
+            &config,
+            &command,
+            &LocalDaemonRequest::CloudRelayStatus(crate::local::CloudRelayStatusRequest)
+        )
+        .is_err());
         command.caller.user_id = Some("owner".into());
         assert!(authorize_kernel_cloud_request(&config, &command, &request).is_ok());
         command.caller.caller_kind = KernelCallerKind::RemoteKernel;
