@@ -18,8 +18,9 @@ const dataHash = createHash('sha256').update(await readFile(`${options.upstream}
 assert.equal(dataHash, selection.datasetSha256)
 const included = selection.tasks.filter(task => !task.excludedReason)
 assert.equal(included.length, 632)
-const prior = options.priorEvidence ? await loadContinuation({ priorEvidence: options.priorEvidence, newEvidence: evidence, selection }) : null
+const prior = options.priorEvidence ? await loadContinuation({ priorEvidence: options.priorEvidence, newEvidence: evidence, selection, cleanupSettlement: options.cleanupSettlement }) : null
 const tasks = prior?.tasks ?? included
+const currentTasks = new Set(tasks.map(task => task.id))
 await writeFile(`${evidence}/FULL_SELECTION.json`, JSON.stringify(selection, null, 2) + '\n', { flag: 'wx' })
 const rows = prior?.rows ?? selection.tasks.filter(task => task.excludedReason).map(task => ({ mpItems: ['MP-08', 'MP-10'],
   benchmark: 'WebVoyager', scope: 'round3-full', taskId: task.id, excluded: true, excludedReason: task.excludedReason }))
@@ -65,7 +66,7 @@ try {
   report.failureClass = error.name; process.exitCode = 1
   console.log('MP-08/MP-10 WebVoyager campaign RED; original attempt receipts retained')
 } finally {
-  if (runtime) report.cleanup = await runtime.close({ preserveState: rows.some(row => !row.excluded && (!row.cleanupValid || row.judgeFailure?.cleanupFailed)) })
+  if (runtime) report.cleanup = await runtime.close({ preserveState: rows.some(row => currentTasks.has(row.taskId) && (!row.cleanupValid || row.judgeFailure?.cleanupFailed)) })
   report.finishedAt = new Date().toISOString(); await save()
   process.off('SIGTERM', interrupt); process.off('SIGINT', interrupt)
 }

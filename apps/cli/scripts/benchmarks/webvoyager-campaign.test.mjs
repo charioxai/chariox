@@ -40,9 +40,27 @@ async function fixture(kind) {
       priorCampaign.cleanup = { ...cleanup, stateRemoved: false }
       await writeFile(`${prior}/CAMPAIGN.json`, JSON.stringify(priorCampaign))
     }
+    let cleanupSettlement
+    if (kind === 'settled-prior') {
+      priorRows[11] = { ...priorRows[11], cleanupValid: false, harnessValid: false, turnLifecycle: 'completed',
+        owned: { sessionId: 'fixture-room', slices: [{ id: 'fixture-slice' }] }, slice: { ownerKernelId: 'kernel-1111111111111111' } }
+      priorCampaign.cleanup = { ...cleanup, stateRemoved: false, unresolvedRooms: ['fixture-room'], unresolvedSlices: ['fixture-slice'] }
+      await writeFile(`${prior}/CAMPAIGN.json`, JSON.stringify(priorCampaign))
+      await writeFile(`${prior}/RESULTS.json`, JSON.stringify(priorRows))
+      const runtime = { root: `${root}/removed-state`, workspace: `${root}/removed-workspace`, ownedPids: [9999901, 9999902], cleanup: priorCampaign.cleanup }
+      await writeFile(`${prior}/runtime.json`, JSON.stringify(runtime))
+      const hashes = await Promise.all(['CAMPAIGN.json', 'RESULTS.json', 'FULL_SELECTION.json', 'runtime.json'].map(async name => ({ name, sha256: createHash('sha256').update(await readFile(`${prior}/${name}`)).digest('hex') })))
+      cleanupSettlement = `${root}/SETTLEMENT.json`
+      await writeFile(cleanupSettlement, JSON.stringify({ ...runtime, priorEvidence: prior, source, providerSubmissions: 0,
+        stateRemoved: true, workspaceRemoved: true, processes: [{ pid: 9999903, stopped: true }],
+        settledRooms: ['fixture-room'], settledSlices: ['fixture-slice'], settledTaskIds: ['fixture--0'], priorReceipts: hashes }))
+      await mkdir(`${root}/bin`)
+      await writeFile(`${root}/bin/docker`, '#!/usr/bin/env node\nconst a=process.argv.slice(2);if(!["ps","volume"].includes(a[0])||!a.includes("label=io.chariox.slice.owner-kernel-id=kernel-1111111111111111"))process.exitCode=1\n', { mode: 0o700 })
+      process.env.PATH = `${root}/bin:${process.env.PATH}`
+    }
     const priorBefore = await readFile(`${prior}/RESULTS.json`, 'utf8')
     const options = { runtime: { evidence, image: source.image, sandboxCompatibility: false }, rooms: kind === 'parallel-pause' ? 2 : 1, upstream, selection: `${root}/selection.json`,
-      ...(!['pause', 'parallel-pause'].includes(kind) ? { priorEvidence: prior } : {}) }
+      ...(!['pause', 'parallel-pause'].includes(kind) ? { priorEvidence: prior } : {}), ...(cleanupSettlement ? { cleanupSettlement } : {}) }
     await writeFile(`${root}/options.json`, JSON.stringify(options))
     const calls = [], context = vm.createContext({ JSON, console: { log() {} },
       process: { argv: ['node', 'fixture', `${root}/options.json`], on() {}, off() {}, exitCode: 0 } })
@@ -56,6 +74,7 @@ async function fixture(kind) {
     const coordinator = new vm.SourceTextModule(await readFile(new URL('./webvoyager-round3.mjs', import.meta.url), 'utf8'), { context })
     await coordinator.link(async specifier => {
       if (specifier === './round2/runtime.mjs') return synthetic(specifier, { startOwnedRuntime: async () => ({ source: kind === 'controller-change' ? { ...source, image: `sha256:${'3'.repeat(64)}` } : source, guard: async () => {}, close: async options => {
+        if (kind === 'settled-prior') assert.equal(options?.preserveState, false, 'MP-11 prior repaired failure must not retain a fresh clean runtime')
         if (['native-cleanup-failure', 'slice-cleanup-failure'].includes(kind)) {
           assert.equal(options?.preserveState, true, 'MP-11 native or slice ownership remains unsettled')
           return { ...cleanup, stateRemoved: false, workspaceRemoved: false }
@@ -64,6 +83,7 @@ async function fixture(kind) {
       } }) })
       if (specifier === './webvoyager-task.mjs') return synthetic(specifier, { runWebVoyagerTask: async ({ task }) => {
         calls.push(task.id)
+        if (kind === 'settled-prior') return { taskId: task.id, cleanupValid: true, harnessValid: true, judgeValid: true, judgeVerdict: 'NOT SUCCESS', turnLifecycle: 'completed' }
         if (kind === 'native-cleanup-failure') return { taskId: task.id, turnLifecycle: 'completed', cleanupValid: false, judgeFailure: { cleanupFailed: true } }
         if (kind === 'slice-cleanup-failure') return { taskId: task.id, turnLifecycle: 'completed', cleanupValid: false }
         if (kind === 'parallel-pause' && calls.length === 2) return { taskId: task.id, cleanupValid: true, harnessValid: true, judgeValid: true, judgeVerdict: 'NOT SUCCESS', turnLifecycle: 'completed' }
@@ -79,6 +99,15 @@ async function fixture(kind) {
       return
     }
     await coordinator.evaluate()
+    if (kind === 'settled-prior') {
+      assert.deepEqual(calls, selection.tasks.slice(2, 632).map(t => t.id))
+      assert.equal(await readFile(`${prior}/RESULTS.json`, 'utf8'), priorBefore)
+      const report = JSON.parse(await readFile(`${evidence}/CAMPAIGN.json`, 'utf8'))
+      assert(report.completed && report.cleanup.stateRemoved)
+      const rows = JSON.parse(await readFile(`${evidence}/RESULTS.json`, 'utf8'))
+      assert.deepEqual(rows.find(r => r.taskId === 'fixture--0'), priorRows[11])
+      return
+    }
     assert.deepEqual(calls, kind === 'controller-change' ? [] : kind === 'parallel-pause' ? ['fixture--0', 'fixture--1'] : [kind !== 'pause' ? 'fixture--2' : 'fixture--0'])
     assert.equal(await readFile(`${prior}/RESULTS.json`, 'utf8'), priorBefore)
     const report = JSON.parse(await readFile(`${evidence}/CAMPAIGN.json`, 'utf8'))
@@ -88,6 +117,6 @@ async function fixture(kind) {
 }
 
 if (process.argv[2] === '--fixture') await fixture(process.argv[3])
-else for (const kind of ['pause', 'parallel-pause', 'continuation', 'ghost-admission', 'unsettled-prior', 'controller-change', 'native-cleanup-failure', 'slice-cleanup-failure']) test(`MP-08/MP-10/MP-11 actual campaign ${kind} prevents admitted-task replay`, async () => {
+else for (const kind of ['pause', 'parallel-pause', 'continuation', 'ghost-admission', 'unsettled-prior', 'controller-change', 'native-cleanup-failure', 'slice-cleanup-failure', 'settled-prior']) test(`MP-08/MP-10/MP-11 actual campaign ${kind} prevents admitted-task replay`, async () => {
   await exec(process.execPath, ['--experimental-vm-modules', fileURLToPath(import.meta.url), '--fixture', kind], { maxBuffer: 65536 })
 })
