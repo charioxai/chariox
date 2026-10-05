@@ -13,7 +13,7 @@ import { assertNotCancelled, assertCurrentDocument } from "./browser-controller-
 import { captureRegionMasks } from "./kernel-browser-region-protection.mjs";
 import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
 
-import { MirrorService } from "./kernel-browser-mirror.mjs";
+import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
 import { DisplayStream } from "./kernel-browser-display.mjs";
 import { DisplayCapture } from './kernel-browser-display-capture.mjs';
 
@@ -462,7 +462,7 @@ export class KernelBrowserHost {
       throw new Error("MD-2: unsupported host method");
     } catch (error) {
       if (error?.code === "browser_action_cancelled") await this.stop();
-      return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }
+      return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: error instanceof MirrorInputEpochRefusal ? "MP-11: stale mirror input epoch" : "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }
   }
 }
 

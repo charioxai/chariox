@@ -534,3 +534,21 @@ test("display subscription captures the current document after navigation", () =
     else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;
   }
 }));
+
+test('MP-11: only pre-dispatch mirror epoch refusal survives host error sanitization', () => using(async ({host,sent}) => {
+  const opened=await host.request({op:'open',url:'about:blank'});
+  const tab=host.tabs.get(opened.tab_id),scope='epoch-test';
+  host.mirror.streams.set('epoch-test',{scope,tab_id:tab.tab_id,document_id:tab.document_id,expires:Date.now()+60000,policy:host.protection,epochs:[]});
+  host.request=()=>host.mirror.resolveInput(tab,{subscription_id:'epoch-test',sequence:1,action:{kind:'key',key:'Enter'}},scope);
+  const before=sent.length;
+  const refused=await host.handle({id:'epoch',method:'host.browser',params:{op:'input'}});
+  assert.equal(refused.ok,false);
+  assert.equal(refused.error.code,'kernel_browser_failed');
+  assert.equal(refused.error.message,'MP-11: stale mirror input epoch');
+  assert.equal(sent.length,before,'admission must not focus or dispatch');
+  for(const error of [new Error('MP-11: stale mirror input epoch'),Object.assign(new Error('page secret'),{code:'mirror_input_epoch_stale'})]) {
+    host.request=async()=>{throw error};
+    const rejected=await host.handle({id:'other',method:'host.browser',params:{op:'input'}});
+    assert.equal(rejected.error.message,'MD-2: host browser operation failed; refresh state or check host browser readiness');
+  }
+}));

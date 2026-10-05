@@ -13,6 +13,10 @@ import { decodePng,maskPixels } from './kernel-browser-pixels.mjs';
 
 const lifetime=60000,maxWire=4*1024*1024;
 const videoSnapshot=()=>({root:'n9007199254740991',nodes:[{id:'n9007199254740991',parent:null,children:['n9007199254740988','n9007199254740990'],kind:'element',tag:'html',style:{margin:'0px'}},{id:'n9007199254740988',parent:'n9007199254740991',children:[],kind:'element',tag:'head'},{id:'n9007199254740990',parent:'n9007199254740991',children:['n9007199254740989'],kind:'element',tag:'body',style:{margin:'0px'}},{id:'n9007199254740989',parent:'n9007199254740990',children:[],kind:'tile',tag:'div',box:{x:0,y:0,width:1280,height:800},reason:'observer_bounds_or_unavailable'}],resources:[],fonts:[],scroll:{x:0,y:0},focused:null,selection:null});
+// Trusted admission error: never constructed from page/CDP error strings.
+export class MirrorInputEpochRefusal extends Error {
+  constructor() { super('MP-11: stale mirror input epoch'); }
+}
 export class MirrorService {
   constructor(host) {this.host=host;this.now=()=>performance.now();this.streams=new Map();this.expiry=setInterval(()=>this.expire(),5000);this.expiry.unref?.();}
   invalidate() {for(const stream of this.streams.values()){stream.previous=null;stream.observed=null;stream.resources.clear();stream.cache.clear();stream.policy=null;stream.epochs=[];stream.refinePending=false;}}
@@ -203,7 +207,7 @@ export class MirrorService {
     const epoch=stream.epochs.find(e=>e.sequence===input.sequence);
     // This marker ONLY means sequence admission refused before any CDP/input
     // work. A later fence or changed target is never a sequence-only refusal.
-    if(!epoch)throw new Error('MP-11: stale mirror input epoch');
+    if(!epoch)throw new MirrorInputEpochRefusal();
     const generation=this.host.generation;
     const assertEpoch=()=>{if(this.require(input.subscription_id,scope,generation)!==stream||stream.policy!==this.host.protection||stream.document_id!==tab.document_id||!stream.epochs.includes(epoch)||this.now()-epoch.issuedAt>2000)throw new Error('MP-11: stale mirror protection policy or admitted input');};
     const action=input.action;
