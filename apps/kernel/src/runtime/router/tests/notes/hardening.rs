@@ -3,7 +3,7 @@ use super::*;
 use crate::local::{KernelBrowserCommand, KernelBrowserRequest, NoteRecord};
 
 #[test]
-fn queued_browser_observation_cannot_regain_authority_after_refocus() {
+fn queued_browser_observation_cannot_regain_authority_after_revoke_and_refocus() {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -54,11 +54,19 @@ async fn check_queued_focus() {
             .is_err()
     );
     focus(&router, session.id(), second.id()).await;
+    assert!(
+        router
+            .runtime_tool_specs_for_auth_token(token)
+            .iter()
+            .any(|tool| tool.name == "chariox.kernel_browser"),
+        "MP-08: focus change retains a busy agent's existing grant"
+    );
+    revoke(&router, first.id()).await;
     focus(&router, session.id(), first.id()).await;
     drop(guard);
     assert!(
         pending.await.is_err(),
-        "a previous focus epoch must never be revived"
+        "a revoked grant epoch must never be revived"
     );
     let names = router
         .runtime_tool_specs_for_auth_token(token)
@@ -67,9 +75,21 @@ async fn check_queued_focus() {
         .collect::<Vec<_>>();
     assert!(
         !names.contains(&"chariox.kernel_browser".into()),
-        "refocus requires an explicit reload"
+        "refocus after revoke requires an explicit reload"
     );
     router.runtime_state.shutdown_cleanup().await.unwrap();
+}
+
+async fn revoke(router: &CommandRouter, agent: &str) {
+    let request = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
+        command: KernelBrowserCommand::RevokeGrants {
+            agent_id: Some(agent.into()),
+        },
+    });
+    router
+        .dispatch(terminal_command("MD-hardening-revoke", &request), request)
+        .await
+        .unwrap();
 }
 
 /// Native drill extension: all three real surfaces and both provider admissions.
@@ -98,6 +118,7 @@ pub(super) async fn check_native(
         .is_err_and(|error| matches!(error, DaemonError::UserDomainRefused { .. })));
     checks.push(json!({"case":"Room agent has no user-domain loader without explicit focus","surface":"browser/notes","client":"unfocused-agent","status":"PASS","refusals_attributed":true}));
     focus(router, session, second).await;
+    revoke(router, first).await;
     for loader in ["chariox.load_notes", "chariox.load_kernel_browser"] {
         assert!(!names(a).contains(&loader.into()));
         assert!(router
@@ -203,9 +224,10 @@ pub(super) async fn check_native(
             panic!("notes list expected")
         };
         assert!(listed.is_empty());
-        checks.push(json!({"case":"focus moves private notes atomically; Room collaborator cannot read owner records","surface":note.anchor.window,"client":"focused-agent/unfocused-agent/Room-member","status":"PASS","refusals_attributed":true}));
+        checks.push(json!({"case":"revoke retires private notes atomically; Room collaborator cannot read owner records","surface":note.anchor.window,"client":"focused-agent/unfocused-agent/Room-member","status":"PASS","refusals_attributed":true}));
     }
     focus(router, session, first).await;
+    revoke(router, second).await;
     assert!(!names(a).contains(&"chariox.read_note".into()));
     assert!(!names(a).contains(&"chariox.kernel_browser".into()));
     for note in notes {
@@ -244,6 +266,6 @@ pub(super) async fn check_native(
         .dispatch(command, request)
         .await
         .is_err_and(|error| matches!(error, DaemonError::UserDomainRefused { .. })));
-    checks.push(json!({"case":"refocus clears both lazy tool grants; forged provider transport rejected","surface":"browser/notes","client":"focused-agent/relay-peer","status":"PASS","refusals_attributed":true}));
+    checks.push(json!({"case":"explicit revoke clears both lazy tool grants; forged provider transport rejected","surface":"browser/notes","client":"focused-agent/relay-peer","status":"PASS","refusals_attributed":true}));
     checks
 }
