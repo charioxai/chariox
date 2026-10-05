@@ -65,4 +65,16 @@ test('MD-DISPLAY DPR changes fence protected capture before sampling secret pixe
   assert.equal(captured, false);
   const frame = decodePng(masked, 2);
   assert.equal(frame.width, 2560); assert.equal(frame.height, 1600); assert.equal(frame.pixels[0], 0);
+  const crop = decodePng(await captureProtectedPage(browser, { target_id:'page' }, ['synthetic-sensitive-value'], [{target_id:'page',document_id:'d'}], async()=>{assert.fail('racing crop must not capture');},2,{x:100,y:100,width:64,height:32,scale:1}),2);
+  assert.equal(crop.width,128);assert.equal(crop.height,64);assert.equal(crop.pixels[0],0);
+});
+test('MD-DISPLAY pacing credit is bounded and accrued, never unbounded idle burst', async () => {
+  let time=0;const waits=[];
+  const stream=new DisplayStream(binding,{encoder:{encode:async()=> 'YWJj',close:async()=>{}},now:()=>time,wait:async ms=>{waits.push(ms);time+=ms}});
+  await stream.frame(fixture(),'d',0);await stream.frame(fixture(),'d',1);
+  time+=1000;await stream.frame(fixture(0),'d',2);assert.equal(waits.at(-1),0,'idle credit covers a small patch');
+  // Accrual is capped at 16 KiB even after a long idle period.
+  time+=1_000_000;const noise=Buffer.from(Array.from({length:256*256*4},(_,i)=>(i*31+(i>>8)*71)&255));
+  stream.codec='png';await stream.frame({generation:1,data_base64:encodePng(256,256,noise)},'d',3);
+  assert.ok(stream.tokens<=16*1024);
 });

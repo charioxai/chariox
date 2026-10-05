@@ -10,6 +10,8 @@ struct Process {
 pub(super) struct OwnedProcessGroup {
     root: u32,
     known: BTreeMap<u32, String>,
+    #[cfg(target_os = "linux")]
+    seen: BTreeSet<u32>,
 }
 
 impl OwnedProcessGroup {
@@ -17,13 +19,19 @@ impl OwnedProcessGroup {
         let mut group = Self {
             root,
             known: BTreeMap::new(),
+            #[cfg(target_os = "linux")]
+            seen: BTreeSet::new(),
         };
         group.refresh();
         group
     }
 
     pub(super) fn refresh(&mut self) {
-        if let Some(processes) = snapshot(self.root) {
+        #[cfg(target_os = "linux")]
+        let processes = linux_refresh(self.root, &self.known, &mut self.seen);
+        #[cfg(not(target_os = "linux"))]
+        let processes = snapshot(self.root);
+        if let Some(processes) = processes {
             self.remember(&processes);
         }
     }
@@ -78,6 +86,41 @@ impl OwnedProcessGroup {
             libc::kill(-(self.root as i32), libc::SIGKILL);
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_refresh(
+    root: u32,
+    known: &BTreeMap<u32, String>,
+    seen: &mut BTreeSet<u32>,
+) -> Option<BTreeMap<u32, Process>> {
+    if root <= 1 || root > i32::MAX as u32 {
+        return None;
+    }
+    let current = std::fs::read_dir("/proc")
+        .ok()?
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
+        .collect::<BTreeSet<_>>();
+    let mut processes = BTreeMap::new();
+    // Enumerate every PID, but read identity only for new PIDs and recorded
+    // group members. Never cache a signal decision: signal() still scans ALL
+    // current identities, rejecting foreign/reused members before any kill.
+    for &pid in current
+        .iter()
+        .filter(|pid| **pid == root || !seen.contains(pid) || known.contains_key(pid))
+    {
+        let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return None,
+        };
+        let process = linux_identity(&stat)?;
+        if process.group == root {
+            processes.insert(pid, process);
+        }
+    }
+    *seen = current;
+    Some(processes)
 }
 
 fn snapshot(root: u32) -> Option<BTreeMap<u32, Process>> {
@@ -178,6 +221,8 @@ mod tests {
         let mut group = OwnedProcessGroup {
             root: 42,
             known: BTreeMap::new(),
+            #[cfg(target_os = "linux")]
+            seen: BTreeSet::new(),
         };
         let mut processes = BTreeMap::from([
             (
@@ -220,7 +265,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn md_display_proc_identity_handles_commands_and_checks_start_time() {
-        let stat = "42 (command ) with spaces) S 2 42 42 0 0 0 0 0 0 0 0 0 0 0 0 0 0 12345 0";
+        let stat = "42 (command ) with spaces) S 2 42 42 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 12345 0";
         let process = linux_identity(stat).unwrap();
         assert_eq!(process.parent, 2);
         assert_eq!(process.group, 42);
