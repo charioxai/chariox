@@ -147,6 +147,16 @@ pub(super) fn publish_ordinary_entries(root: &Path, home: &Path) -> Result<(), D
 }
 
 pub(super) fn remove_ordinary_entries(root: &Path, home: &Path) -> Result<(), DaemonError> {
+    remove_ordinary_entries_with_phase_writer(root, home, |path, identity| {
+        write_json_file(path, identity, false, &mut MaterializationBudget::new())
+    })
+}
+
+fn remove_ordinary_entries_with_phase_writer(
+    root: &Path,
+    home: &Path,
+    mut write_phase: impl FnMut(&Path, &EntryIdentity) -> Result<(), DaemonError>,
+) -> Result<(), DaemonError> {
     let entries = read_entries(root)?;
     let rollback = root.join(ROLLBACK_DIRECTORY);
     super::ensure_private_directory(&rollback)?;
@@ -193,14 +203,21 @@ pub(super) fn remove_ordinary_entries(root: &Path, home: &Path) -> Result<(), Da
             // Persist verified ownership before the first destructive unlink.
             // After a crash the tree digest may differ, but the private detached
             // inode and this phase still authorize finishing this deletion only.
-            write_json_file(
-                &deleting,
-                &entry.identity,
-                false,
-                &mut MaterializationBudget::new(),
-            )?;
-            sync_directory(&rollback)?;
+            // Incomplete writes remain pending and carry no deletion authority.
+            // Retry has just revalidated the intact tree, so it can discard an
+            // interrupted pending file and create a fresh, fsynced record.
+            let pending = deleting.with_extension("pending");
+            if present(&pending)? {
+                fs::remove_file(&pending)
+                    .map_err(|error| import_io_error("remove pending rollback phase", error))?;
+            }
+            // The production writer fsyncs the new file before returning.
+            write_phase(&pending, &entry.identity)?;
+            publish_directory_no_clobber(&pending, &deleting)?;
         }
+        // Also sync on resume: publication may have succeeded just before a
+        // directory-sync failure. No child unlink may precede this durable phase.
+        sync_directory(&rollback)?;
         let metadata = fs::symlink_metadata(&detached)
             .map_err(|error| import_io_error("inspect detached import entry", error))?;
         let removed = if metadata.is_dir() {
@@ -423,6 +440,96 @@ mod tests {
         );
         remove_ordinary_entries(&context, &home).unwrap();
         fs::remove_dir_all(root).unwrap();
+    }
+
+    struct FixtureCleanup(PathBuf);
+
+    impl Drop for FixtureCleanup {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).expect("remove owned MP-11 synthetic fixture");
+        }
+    }
+
+    #[test]
+    fn mp11_f4_failed_phase_write_preserves_intact_tree_and_allows_retry() {
+        for partial in [b"".as_slice(), b"{\"device\":".as_slice()] {
+            let (root, context, home) = fixture("failed-phase-write");
+            let _cleanup = FixtureCleanup(root);
+            let entry = read_entries(&context).unwrap().remove(0);
+            let rollback = context.join(ROLLBACK_DIRECTORY);
+            let deleting = rollback.join("deleting-0.json");
+            let failed = remove_ordinary_entries_with_phase_writer(&context, &home, |path, _| {
+                // Disk exhaustion or a failed sync after file creation must
+                // never turn an incomplete record into deletion authority.
+                fs::write(path, partial).unwrap();
+                Err(import_io_error(
+                    "injected phase write failure",
+                    io::Error::from_raw_os_error(libc::ENOSPC),
+                ))
+            });
+            assert!(failed.is_err());
+            let detached = rollback.join("0");
+            require_identity(&detached, &entry.identity).unwrap();
+            assert!(
+                !deleting.exists(),
+                "failed phase write published final journal"
+            );
+            fs::create_dir(home.join("skills/imported")).unwrap();
+            fs::write(
+                home.join("skills/imported/replacement"),
+                b"user replacement",
+            )
+            .unwrap();
+            remove_ordinary_entries(&context, &home).unwrap();
+            assert!(!detached.exists());
+            assert!(!deleting.with_extension("pending").exists());
+            assert_eq!(
+                fs::read(home.join("skills/imported/replacement")).unwrap(),
+                b"user replacement"
+            );
+            assert_eq!(
+                fs::read(home.join("skills/unrelated")).unwrap(),
+                b"user-owned"
+            );
+            remove_ordinary_entries(&context, &home).unwrap();
+        }
+    }
+
+    #[test]
+    fn mp11_f4_interrupted_pending_phase_write_is_revalidated_before_retry() {
+        for modified in [false, true] {
+            let (root, context, home) = fixture("interrupted-phase-write");
+            let _cleanup = FixtureCleanup(root);
+            let detached = detach(&context, &home);
+            let deleting = context.join(ROLLBACK_DIRECTORY).join("deleting-0.json");
+            let pending = deleting.with_extension("pending");
+            // Simulate process interruption while the private pending file
+            // is incomplete; it cannot authorize any unlink on the next run.
+            fs::write(&pending, b"{\"device\":").unwrap();
+            if modified {
+                fs::write(detached.join("user-addition"), b"user data").unwrap();
+                assert!(remove_ordinary_entries(&context, &home).is_err());
+                assert!(!deleting.exists());
+                assert_eq!(
+                    fs::read(home.join("skills/imported/user-addition")).unwrap(),
+                    b"user data"
+                );
+            } else {
+                remove_ordinary_entries(&context, &home).unwrap();
+                assert!(!detached.exists());
+                assert!(
+                    !pending.exists(),
+                    "interrupted pending phase was not replaced"
+                );
+                let phase: EntryIdentity =
+                    serde_json::from_slice(&fs::read(&deleting).unwrap()).unwrap();
+                assert!(phase == read_entries(&context).unwrap().remove(0).identity);
+            }
+            assert_eq!(
+                fs::read(home.join("skills/unrelated")).unwrap(),
+                b"user-owned"
+            );
+        }
     }
 
     #[test]
