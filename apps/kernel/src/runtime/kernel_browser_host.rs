@@ -26,6 +26,7 @@ struct HostState {
     focus: BTreeMap<String, FocusedAgent>,
     actors: BTreeMap<String, Arc<Mutex<KernelBrowserActors>>>,
     loaded: BTreeSet<(String, String)>,
+    display_gates: BTreeMap<String, Arc<tokio::sync::Semaphore>>,
 }
 struct FocusedAgent {
     agent_id: String,
@@ -59,6 +60,13 @@ impl KernelBrowserHost {
             inner: Arc::new(Mutex::new(HostState::default())),
             root: root.join("kernel-browser"),
         }
+    }
+    // MD-DISPLAY-04: queued credits wait asynchronously, away from the
+    // controller mutex. Input can enter between captures rather than behind
+    // an entire WAN window of blocking capture/encode/pacing operations.
+    pub(crate) fn display_gate(&self, user: &str) -> Arc<tokio::sync::Semaphore> {
+        let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        state.display_gates.entry(user.into()).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1))).clone()
     }
     pub(crate) fn profile_root(&self, user: &str) -> PathBuf {
         self.root.join(Self::profile_key(user))

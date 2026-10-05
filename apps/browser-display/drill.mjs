@@ -59,6 +59,19 @@ try {
  try{const magic=Buffer.alloc(4);const read=await binaryFile.read(magic,0,4,0);if(read.bytesRead!==4||!magic.equals(Buffer.from([127,69,76,70])))throw Error('MD-DISPLAY: copied Linux test binary is not ELF; wait for build completion')}finally{await binaryFile.close()}
  const digest=createHash('sha256');for await(const bytes of createReadStream(copiedBinary))digest.update(bytes);
  receipt.binary={source_path:binary,copied_sha256:digest.digest('hex')};
+ const override = {};
+ if(process.env.MD_SOURCE_ASSETS==='1') {
+   const assets=path.join(root,'controller-assets');await mkdir(assets);
+   const inventory=await readFile(path.resolve(here,'../kernel/src/runtime/kernel_browser_assets.rs'),'utf8');
+   receipt.controller_assets=[];
+   for(const match of inventory.matchAll(/include_bytes!\("\.\.\/\.\.\/slice-linux-docker\/docker\/([^"/]+)"\)/g)) {
+     const contents=await readFile(path.resolve(here,'../kernel/slice-linux-docker/docker',match[1]));
+     await writeFile(path.join(assets,match[1]),contents);
+     receipt.controller_assets.push({name:match[1],sha256:createHash('sha256').update(contents).digest('hex')});
+   }
+   override.CHARIOX_KERNEL_BROWSER_SCRIPT=path.join(assets,'kernel-browser-host.mjs');
+   receipt.asset_mode='explicit product script override, current source hashes; binary identity separately bound';
+ }
  const python=path.join(root,'python');await mkdir(python);
  for(const name of ['av','av.libs'])await cp(path.join(pytools,name),path.join(python,name),{recursive:true});
  const pythonWrapper=path.join(root,'encoder-python');
@@ -80,7 +93,7 @@ try {
  });
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  const origin=`http://127.0.0.1:${server.address().port}`;
- kernel=await launchOwned(path.join(root,'kernel-tests'),['--ignored','--exact','runtime::router::tests::kernel_browser::display::kernel_browser_display_protocol_drill','--nocapture'],{uid:65534,gid:65534,detached:true,cwd:root,env:{PATH:'/usr/bin:/bin',HOME:home,TMPDIR:home,DISPLAY:`:${screen.trim()}`,CHARIOX_HOME:path.join(home,'chariox'),CHARIOX_LOG_DIR:path.join(home,'logs'),CHARIOX_DISPLAY_DRILL_ROOT:home,CHARIOX_DISPLAY_FIXTURE_URL:`${origin}/${workload}`,CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/usr/bin/google-chrome',CHARIOX_KERNEL_BROWSER_DISPLAY:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_BROWSER_DISPLAY_PYTHON:pythonWrapper},stdio:['ignore','pipe','pipe']});groups.push(kernel.pid);
+ kernel=await launchOwned(path.join(root,'kernel-tests'),['--ignored','--exact','runtime::router::tests::kernel_browser::display::kernel_browser_display_protocol_drill','--nocapture'],{uid:65534,gid:65534,detached:true,cwd:root,env:{...override,PATH:'/usr/bin:/bin',HOME:home,TMPDIR:home,DISPLAY:`:${screen.trim()}`,CHARIOX_HOME:path.join(home,'chariox'),CHARIOX_LOG_DIR:path.join(home,'logs'),CHARIOX_DISPLAY_DRILL_ROOT:home,CHARIOX_DISPLAY_FIXTURE_URL:`${origin}/${workload}`,CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/usr/bin/google-chrome',CHARIOX_KERNEL_BROWSER_DISPLAY:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_BROWSER_DISPLAY_PYTHON:pythonWrapper},stdio:['ignore','pipe','pipe']});groups.push(kernel.pid);
  kernel.stdout.on('data',b=>log.push(b));kernel.stderr.on('data',b=>log.push(b));
  kernelExit=waitChild(kernel);
  ready=await until(async()=>{checkChild(kernel,'kernel');try{return JSON.parse(await readFile(path.join(home,'ready.json'),'utf8'))}catch{return null}},'focused MCP opens user-domain tab',45000);

@@ -97,10 +97,17 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   const accept = frame => {
     const size = JSON.stringify(frame).length;
     if (frames.length >= 8 || queuedBytes + size > 1024 * 1024) throw Error('MD-DISPLAY: credited receive window exceeded');
-    if (arrivals.length) arrivals.shift()(frame);
-    else { frames.push(frame); queuedBytes += size; }
+    const presented = presentation.then(async () => {
+      if (!await presenter.present(frame)) throw Error('MD-DISPLAY: rejected window frame');
+      options.onPresented?.(frame);
+    });
+    presentation=presented;
+    presented.catch(error => { failure=error; running=false; });
+    const item={frame,presented,size};
+    if (arrivals.length) arrivals.shift()(item);
+    else { frames.push(item); queuedBytes += size; }
   };
-  const receive = () => frames.length ? Promise.resolve((queuedBytes -= JSON.stringify(frames[0]).length, frames.shift())) : new Promise(resolve => arrivals.push(resolve));
+  const receive = () => frames.length ? Promise.resolve((queuedBytes -= frames[0].size, frames.shift())) : new Promise(resolve => arrivals.push(resolve));
   const off = transport.onEvent(event => {
     if (event.event !== 'kernel_browser_frame' || event.subscription_id !== binding.subscription_id) return;
     if (running || active.size) {
@@ -157,14 +164,10 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
       onTiming('frame_credit_round_trip', at);
       if (!receipt.frame_sent) { await new Promise(resolve => setTimeout(resolve,33)); return; }
       let timer;
-      const frame = await Promise.race([receive(), new Promise((_,reject) => {
+      const item = await Promise.race([receive(), new Promise((_,reject) => {
         timer=setTimeout(() => reject(Error('MD-DISPLAY: window event timeout')),30000);
       })]).finally(() => clearTimeout(timer));
-      presentation = presentation.then(async () => {
-        if (!await presenter.present(frame)) throw Error('MD-DISPLAY: rejected window frame');
-        options.onPresented?.(frame);
-      });
-      await presentation;
+      await item.presented;
     });
     receiptOrder = ordered.catch(() => {});
     active.add(ordered);

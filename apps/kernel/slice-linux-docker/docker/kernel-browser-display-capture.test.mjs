@@ -30,3 +30,12 @@ test('MD-DISPLAY large preview damage falls back; wrong document is rejected', a
  await assert.rejects(capture.next({tab_id:'t',document_id:'d'},{},false),/binding changed/);
  assert.equal(capture.previous,null);
 });
+test('MD-DISPLAY verified idle pixels avoid repeated full readback until deadline or input',async()=>{
+ let time=0,calls=0;
+ const pixels=Buffer.alloc(1280*800*4,255),tab={tab_id:'t',document_id:'d',input_epoch:0},policy={values:[]};
+ const capture=new DisplayCapture(async clip=>{if(!clip)calls++;const width=clip?160:1280,height=clip?100:800;return {...tab,generation:1,data_base64:encodePng(width,height,clip?Buffer.alloc(width*height*4,255):pixels)}},1,()=>{},()=>time);
+ await capture.next(tab,policy,false);assert.equal(calls,1);
+ await capture.next(tab,policy,true);assert.equal(calls,1);
+ time=251;await capture.next(tab,policy,true);assert.equal(calls,2);
+ await capture.next({...tab,input_epoch:1},policy,true);assert.equal(calls,3);
+});

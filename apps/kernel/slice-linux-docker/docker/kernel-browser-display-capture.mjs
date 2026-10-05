@@ -20,8 +20,8 @@ export function changedClip(before, after, scale) {
   return width * height <= 1280 * 800 * .15 ? { x,y,width,height,scale:1 } : null;
 }
 export class DisplayCapture {
-  constructor(capture, scale, timing = () => {}) { this.capture = capture; this.scale = scale; this.timing = timing; this.invalidate(); }
-  invalidate() { this.previous = null; this.preview = null; this.document = null; this.policy = null; this.needsVerification = false; this.inputEpoch = null; }
+  constructor(capture, scale, timing = () => {}, now = () => performance.now()) { this.capture = capture; this.scale = scale; this.timing = timing; this.now=now; this.invalidate(); }
+  invalidate() { this.previous = null; this.preview = null; this.document = null; this.policy = null; this.needsVerification = false; this.inputEpoch = null; this.verifiedAt = -Infinity; this.source = null; }
   async next(tab, policy, reusable, forceFull = false) {
     if (!reusable || this.document !== tab.document_id || this.policy !== policy) this.invalidate();
     const capture = async clip => {
@@ -35,6 +35,13 @@ export class DisplayCapture {
     const preview = previewSource ? decodePng(previewSource.data_base64,this.scale) : this.preview;
     if (previewSource && (preview.width !== 1280*this.scale*factor || preview.height !== 800*this.scale*factor)) throw Error('MD-DISPLAY: preview geometry changed');
     this.timing('preview_decode',at);
+    // Already verified pixels may be reused briefly only on an unchanged
+    // native thumbnail, unchanged input epoch and empty protection registry.
+    // Fine detail is verified at least every250ms, and every admitted input
+    // or crop forces its next full readback. No inferred pixels leave capture.
+    if (!verify && this.source && this.preview?.pixels.equals(preview?.pixels) &&
+        tab.input_epoch === this.inputEpoch && policy.values?.length === 0 &&
+        this.now()-this.verifiedAt < 250) return this.source;
     const clip = !verify && this.previous && this.preview && changedClip(this.preview,preview,this.scale*factor);
     let source, pixels;
     if (clip) {
@@ -51,11 +58,11 @@ export class DisplayCapture {
       source = await capture(null); at = timestamp();
       pixels = decodePng(source.data_base64,this.scale);
       if (pixels.width !== 1280*this.scale || pixels.height !== 800*this.scale) throw Error('MD-DISPLAY: full geometry changed');
-      this.timing('full_source_decode',at); this.fullSize = source.data_base64.length;
+      this.timing('full_source_decode',at); this.fullSize = source.data_base64.length; this.verifiedAt=this.now();
       source = { ...source, pixels };
     }
     this.previous = pixels; this.preview = preview; this.document = tab.document_id; this.policy = policy;
     this.needsVerification = Boolean(clip); this.inputEpoch = tab.input_epoch;
-    return source;
+    this.source=source; return source;
   }
 }
