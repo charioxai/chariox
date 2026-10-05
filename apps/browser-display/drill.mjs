@@ -1,8 +1,10 @@
 // MD-DISPLAY-02/04: real kernel websocket + headed, sandboxed host browser.
 // No credentials/providers/Cloud. External public tools are supplied explicitly.
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
-import { readFile, writeFile, mkdir, mkdtemp, chmod, chown, cp, rm, statfs, readdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, mkdtemp, chmod, chown, cp, rm, statfs, readdir, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -50,7 +52,12 @@ try {
  if(process.env.MD_RELAY==='0')throw Error('MD-DISPLAY: browser origins cannot attach to the native local socket; use the scoped relay drill');
  await chmod(root,0o755);
  const home=path.join(root,'home');await mkdir(home,{mode:0o700});await chown(home,65534,65534);
- await cp(binary,path.join(root,'kernel-tests'));await chmod(path.join(root,'kernel-tests'),0o755);
+ const copiedBinary=path.join(root,'kernel-tests');
+ await cp(binary,copiedBinary);await chmod(copiedBinary,0o755);
+ const binaryFile=await open(copiedBinary,'r');
+ try{const magic=Buffer.alloc(4);const read=await binaryFile.read(magic,0,4,0);if(read.bytesRead!==4||!magic.equals(Buffer.from([127,69,76,70])))throw Error('MD-DISPLAY: copied Linux test binary is not ELF; wait for build completion')}finally{await binaryFile.close()}
+ const digest=createHash('sha256');for await(const bytes of createReadStream(copiedBinary))digest.update(bytes);
+ receipt.binary={source_path:binary,copied_sha256:digest.digest('hex')};
  const python=path.join(root,'python');await mkdir(python);
  for(const name of ['av','av.libs'])await cp(path.join(pytools,name),path.join(python,name),{recursive:true});
  const pythonWrapper=path.join(root,'encoder-python');
