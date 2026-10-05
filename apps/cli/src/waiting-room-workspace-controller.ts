@@ -29,13 +29,14 @@ export function createWaitingRoomWorkspaceController(deps: {
   }
 
   function beginMachineSelection(nextMachineId: string) {
-    if (nextMachineId === machineId) return
+    if (nextMachineId === machineId && !pendingMachineId) return
     remember()
     pendingMachineId = nextMachineId
     generation += 1
     clearWaitingRoomWorktreeInventory()
-    deps.setWorkspace("")
-    deps.setWorktree("")
+    const workspace = nextMachineId === machineId ? workspaces.get(machineId) || "" : ""
+    deps.setWorkspace(workspace)
+    deps.setWorktree(workspace)
     deps.resetSelection()
     deps.render()
   }

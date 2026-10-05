@@ -342,7 +342,9 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
         homeKernelId = inventory.kernelId
         homeMachineId = inventory.machineId
       }
-      void waitingRoomWorkspaceController.applyInventory(inventory).catch((error) => deps.flashFooter(deps.formatError(error), "error"))
+      void waitingRoomWorkspaceController.applyInventory(inventory)
+        .then(() => reconcileWaitingRoomProjection(deps.waitingRoomState()))
+        .catch((error) => deps.flashFooter(deps.formatError(error), "error"))
     },
     setLaunchTarget: (target) => {
       sourceLaunchTarget = target

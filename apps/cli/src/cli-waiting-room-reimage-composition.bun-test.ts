@@ -31,7 +31,7 @@ import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
 import { managedEnvironmentMachineRef } from "./waiting-room-managed-environments.js"
 import { createWaitingRoomState } from "./waiting-room-state.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
-import { __setWaitingRoomWorktreeInventoryForTest } from "./waiting-room-worktrees.js"
+import { __setWaitingRoomWorktreeInventoryForTest, resolvePendingWaitingRoomWorktreePath, stageWaitingRoomWorktreeSelection } from "./waiting-room-worktrees.js"
 
 const LOCAL_ENDPOINT = "ws://local-kernel.test"
 const OLD_ENDPOINT = "ws://old-kernel.test"
@@ -174,6 +174,52 @@ type TestEndpoint = {
   closeCount: number
   send(request: unknown): Promise<unknown>
 }
+
+test("production Waiting Room composition defaults to current worktree after a delayed machine inventory", async () => {
+  const router = installLocalIpcClientTestRouter()
+  const harness = createHarness(router)
+  let finishWorktrees!: (response: unknown) => void
+  const worktrees = new Promise(resolve => { finishWorktrees = resolve })
+  try {
+    await harness.initialize()
+    const endpoint = router.endpoint(REPLACEMENT_ENDPOINT, request => {
+      switch (requestKind(request)) {
+        case "GetWaitingRoomPublicSnapshot": {
+          const response = snapshotResponse("kernel-new", "machine-new", emptyPlan())
+          return { WaitingRoomPublicSnapshot: { snapshot: {
+            ...response.WaitingRoomPublicSnapshot.snapshot,
+            launch_target: { workspace_id: "/home/miguel/repo", worktree_id: "/home/miguel/repo" },
+          } } }
+        }
+        case "ListSlices": return { SlicesListed: { slices: [] } }
+        case "ListManagedEnvironmentCatalog": return { ManagedEnvironmentCatalog: { catalog: {
+          computeClasses: [], contextSources: [], environments: [environment()],
+        } } }
+        case "ListWorkspaceWorktrees": return worktrees
+        default: throw new Error(`unexpected request ${requestKind(request)}`)
+      }
+    })
+    harness.client.swapClient(endpoint.client)
+    await harness.composition.refreshWaitingRoomDataNow()
+    assert.equal(requestCount(endpoint, "ListWorkspaceWorktrees"), 1)
+    assert.equal(harness.composition.waitingRoomTargets().workspacePath, "/home/miguel/repo")
+    assert.equal(harness.state().worktreeSelectionId, "")
+    finishWorktrees({ WorkspaceWorktreesListed: { worktrees: [
+      { path: "/home/miguel/other", branch: "other", current: false },
+      { path: "/home/miguel/repo", branch: "main", current: true },
+    ] } })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(harness.state().worktreeSelectionId, "existing:/home/miguel/repo")
+    assert.equal(stageWaitingRoomWorktreeSelection(harness.state().worktreeSelectionId).ok, true)
+    assert.equal(await resolvePendingWaitingRoomWorktreePath("/home/miguel/repo", "/home/miguel/repo", {
+      createWorktree: async () => { throw new Error("launch must not create a worktree by default") },
+    }), "/home/miguel/repo")
+  } finally {
+    finishWorktrees({ WorkspaceWorktreesListed: { worktrees: [] } })
+    harness.cleanup()
+    router.restore()
+  }
+})
 
 type TestRouter = ReturnType<typeof installLocalIpcClientTestRouter>
 
