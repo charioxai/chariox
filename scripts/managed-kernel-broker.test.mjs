@@ -1162,7 +1162,7 @@ test("MP-08 MP-10 MP-11 all provisioner requests use common owned lifetime", asy
     PROVISIONER: process.execPath, DOCKER_HOST: "unix:///synthetic/unused", MAX_OUTPUT_BYTES: 1024,
     // Phase 1 managed authority: no Local DEV enrollment, no verified build
     // context, and an accepting protected-layout controller.
-    LOCAL_AUTHORITY: undefined, VERIFIED_BUILD_CONTEXT_DIGEST: "", protectedLayouts: { homeVolume: name => `${name}-home`, complete: () => {} },
+    LOCAL_AUTHORITY: undefined, VERIFIED_BUILD_CONTEXT_DIGEST: "", protectedLayouts: { homeVolume: name => `${name}-home`, retainedHomeVolumes: () => [], complete: () => {} },
     validateRequest: () => {},
     provisionerQuotaRequest: () => ({ identity: { containerName: "synthetic-owned" } }),
     diskQuotaMarkerPresent: () => false,
@@ -1220,7 +1220,7 @@ test("Phase 1 local DEV broker runs unbounded slices without release F's managed
     LOCAL_AUTHORITY: { enrollment: { ownerUid: 1000 } },
     verifiedProtectedAuthority: () => { authorityChecks++ },
     localDevRuntimeEnvironment: () => ({CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY: "1"}),
-    VERIFIED_BUILD_CONTEXT_DIGEST: "", protectedLayouts: { homeVolume: name => `${name}-home`, complete: () => {} },
+    VERIFIED_BUILD_CONTEXT_DIGEST: "", protectedLayouts: { homeVolume: name => `${name}-home`, retainedHomeVolumes: () => [], complete: () => {} },
     validateRequest: () => {},
     fail: message => { throw new Error(message) },
     diskQuotaMarkerPresent: name => markers.has(name),
