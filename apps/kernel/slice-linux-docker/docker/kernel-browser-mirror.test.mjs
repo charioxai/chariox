@@ -70,3 +70,9 @@ test('MP-11: native App capability views never become an alternate DOM frontend'
  const {service,host}=fixture();host.browser.appTabs={apps:new Map([['app',{targetId:'target'}]])};
  await assert.rejects(service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),/App capability/);
 });
+
+test('MP-08/MP-11: region fallback removes selection metadata referring to its hidden descendants',async()=>{
+ const {service,state}=fixture();state.snapshot.nodes[0].children=['n3'];state.snapshot.nodes[1].parent='n3';state.snapshot.nodes.push({id:'n3',parent:'n1',children:['n2'],kind:'element',tag:'p',box:{x:0,y:0,width:80,height:40}});state.snapshot.selection={anchor_id:'n2',anchor_offset:0,focus_id:'n2',focus_offset:3};
+ const subscribed=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');const first=await service.next(next(subscribed.subscription_id),'a');assert(first.selection);
+ const fallback=await service.next(next(subscribed.subscription_id,first.sequence,['n3']),'a');assert.equal(fallback.selection,null);assert(fallback.removed.includes('n2'));assert.equal(fallback.nodes.find(n=>n.id==='n3').kind,'tile');
+});

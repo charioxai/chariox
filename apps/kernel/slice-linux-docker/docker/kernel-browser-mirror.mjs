@@ -94,6 +94,8 @@ export class MirrorService {
     const hide=id=>{hidden.add(id);for(const child of byId.get(id)?.children??[])hide(child);};
     for(const n of source.nodes)if(n.kind==='tile'||n.kind==='mask'){for(const child of n.children)hide(child);n.children=[];}
     source.nodes=source.nodes.filter(n=>!hidden.has(n.id));
+    if(source.selection&&!source.nodes.some(n=>n.id===source.selection.anchor_id&&n.kind==='text')||source.selection&&!source.nodes.some(n=>n.id===source.selection.focus_id&&n.kind==='text'))source.selection=null;
+    if(source.focused&&!source.nodes.some(n=>n.id===source.focused&&n.kind!=='mask'))source.focused=null;
     const tiles=source.nodes.filter(n=>n.kind==='tile'&&n.box?.width>0&&n.box?.height>0&&n.box.x<1280&&n.box.y<800&&n.box.x+n.box.width>0&&n.box.y+n.box.height>0);
     if(tiles.length>64)throw new Error('MP-11: visible tile limit; use display fallback');
     let tileFrame=null;
