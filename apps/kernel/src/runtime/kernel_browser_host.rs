@@ -26,7 +26,7 @@ struct HostState {
     actors: BTreeMap<String, Arc<Mutex<KernelBrowserActors>>>,
     loaded: BTreeSet<(String, String)>,
     protection_hashes: BTreeMap<String, String>,
-    display_gates: BTreeMap<String, Arc<tokio::sync::Semaphore>>,
+    display_gates: BTreeMap<String, Arc<super::kernel_browser_display_gate::DisplayGate>>,
 }
 struct FocusedAgent {
     agent_id: String,
@@ -64,12 +64,15 @@ impl KernelBrowserHost {
     // MD-DISPLAY-04: queued credits wait asynchronously, away from the
     // controller mutex. Input can enter between captures rather than behind
     // an entire WAN window of blocking capture/encode/pacing operations.
-    pub(crate) fn display_gate(&self, user: &str) -> Arc<tokio::sync::Semaphore> {
+    pub(crate) fn display_gate(
+        &self,
+        user: &str,
+    ) -> Arc<super::kernel_browser_display_gate::DisplayGate> {
         let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         state
             .display_gates
             .entry(user.into())
-            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
+            .or_insert_with(|| Arc::new(super::kernel_browser_display_gate::DisplayGate::default()))
             .clone()
     }
     pub(crate) fn profile_root(&self, user: &str) -> PathBuf {
@@ -244,9 +247,11 @@ impl KernelBrowserHost {
         }
         self.check_admission(admission)?;
         let browser = self.backend(user)?;
+        let at = std::time::Instant::now();
         let mut backend = browser
             .lock()
             .map_err(|_| "MD-2: browser operation lock poisoned")?;
+        crate::transport::kernel_browser_display::timing("host_backend_lock_wait", at);
         self.check_admission(admission)?;
         if method == "host.browser" && params["op"] == "stop" {
             let model = self.actor_model(user)?;
