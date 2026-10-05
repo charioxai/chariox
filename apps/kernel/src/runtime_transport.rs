@@ -1220,7 +1220,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
         close_requested,
         connection_class,
         peer,
-        bound_grant,
+        ..
     } = connection;
 
     let frame = match serde_json::from_slice::<KernelIncomingFrame>(payload) {
