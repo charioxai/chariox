@@ -21,7 +21,7 @@ export function changedClip(before, after, scale) {
 }
 export class DisplayCapture {
   constructor(capture, scale, timing = () => {}, now = () => performance.now()) { this.capture = capture; this.scale = scale; this.timing = timing; this.now=now; this.invalidate(); }
-  invalidate() { this.previous = null; this.preview = null; this.document = null; this.policy = null; this.needsVerification = false; this.inputEpoch = null; this.verifiedAt = -Infinity; this.source = null; this.motion=false; this.motionData=null; this.stableAt=null; }
+  invalidate() { this.previous = null; this.preview = null; this.document = null; this.policy = null; this.needsVerification = false; this.inputEpoch = null; this.verifiedAt = -Infinity; this.source = null; this.native=null; this.motion=false; this.motionData=null; this.stableAt=null; }
   async next(tab, policy, reusable, forceFull = false, motionClip = null) {
     if (!reusable || this.document !== tab.document_id || this.policy !== policy) this.invalidate();
     const capture = async clip => {
@@ -76,9 +76,17 @@ export class DisplayCapture {
         data_base64:() => encodePng(pixels.width,pixels.height,pixels.pixels) };
     } else {
       source = await capture(null); at = timestamp();
-      pixels = decodePng(source.data_base64,this.scale);
+      // Comparing a complete protected PNG is an exact verification, unlike
+      // thumbnail equality. Reuse its already-decoded immutable pixel buffer
+      // only when every byte and the policy/document binding still matches.
+      if(this.native?.data === source.data_base64) pixels=this.native.pixels;
+      else {
+        pixels = decodePng(source.data_base64,this.scale);
+        this.timing('full_source_decode',at);
+        this.native={data:source.data_base64,pixels};
+      }
       if (pixels.width !== 1280*this.scale || pixels.height !== 800*this.scale) throw Error('MD-DISPLAY: full geometry changed');
-      this.timing('full_source_decode',at); this.fullSize = source.data_base64.length; this.verifiedAt=this.now();
+      this.fullSize = source.data_base64.length; this.verifiedAt=this.now();
       source = { ...source, pixels };
     }
     this.previous = pixels; this.preview = preview; this.document = tab.document_id; this.policy = policy;

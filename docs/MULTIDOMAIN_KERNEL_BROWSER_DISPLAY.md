@@ -22,7 +22,7 @@ not. No Python/CDP endpoint, profile, cookie or codec service is exposed to the
 viewer. Missing encoder dependencies fail the awaited operation and close the
 owned child. A PNG-only viewer does not launch an encoder.
 
-The source is the existing `KernelBrowserHost.screenshot` protected PNG seam.
+The source is the existing `KernelBrowserHost.screenshot` protected capture seam. Native exact pixels use PNG; continuous motion may use protected JPEG at CSS resolution only with an empty Vault observation registry.
 An emulated canonical tab viewport stays 1280×800 CSS pixels with negotiated
 DPR 1 or 2. Different DPR selections on the same live tab are refused. Screenshots
 and Vault region masks follow that geometry, including DPR2 pixel conversion.
@@ -39,11 +39,16 @@ No encoder policy lives in the relay or Cloud.
 ## MD-DISPLAY-02: configuration and limitations
 
 Negotiate `vp09.00.10.08` plus mandatory `png`, or `png` only. Other advertised
-codecs are ignored. This first swappable implementation uses independent VP9
-keyframes, software libvpx, realtime deadline, CPU-used 6, two encoder threads,
-CRF18 and a five-frame-per-second rate-control timebase. It does not claim the
-Phase-2 persistent encoder's throughput. Independent frames make loss/reconnect
-safe but cost more than inter prediction. H.264/AV1/hardware encoders are later
+codecs are ignored. Phase 6 uses a persistent software libvpx VP9 context,
+realtime deadline, CPU-used 8, four encoder threads, no lag, 30 fps rate-control
+timebase and a 60-frame key interval. The encoder clears the PNG decoder's
+inherited I-frame hint so changed frames can become deltas. Its media target is
+45% of the negotiated application budget, reserving double base64 and metadata
+expansion. Equal min/max/target rates select CBR; intra overshoot is capped at
+200% of the average frame target, with a small VBV buffer. The source image
+demuxer clock is explicitly replaced by the encoder clock before assigning PTS. Document/base loss, geometry/rate change or transition from exact
+repair forces an independent keyframe. The persistent client decoder validates
+sequence/document dependencies and never flushes between deltas. H.264/AV1/hardware encoders are later
 adapters; neither VideoToolbox nor Media Foundation has been measured here.
 [FFmpeg's codec documentation](https://ffmpeg.org/ffmpeg-codecs.html) describes
 libvpx controls; [WebCodecs](https://www.w3.org/TR/webcodecs/) defines the browser
@@ -54,12 +59,17 @@ full protected capture. Small repairs use a full PNG; larger repairs use batches
 of 128-pixel PNG tiles against the last displayed sequence (including a video
 base). All tiles of that protected snapshot must arrive before the server marks
 it exact. New source pixels, a lost base, document or protection changes discard
-pending repair batches. Once exact, small changes use dirty tiles. Tile batches
+pending repair batches. Once exact, small changes use 32-pixel dirty tiles; larger regions use 128-pixel tiles. Tile batches
 use half a second of negotiated budget, allowing outer base64 and 4 KB overhead,
 with a 24 KB minimum / 192 KB maximum JSON allowance; one incompressible tile can
 exceed that allowance but still must fit the 1 MiB event bound. Larger moving
-changes return to independent video. One outstanding credit bounds the queue
-and lowers capture cadence automatically on slow links. No automatic retry or
+changes use continuous inter-predicted video. Four admitted credits normally
+pipeline capture/delivery; the client may select one to eight with a 1 MiB
+receive reservation and bounded source recovery window. A per-user async capture
+gate waits outside the blocking host mutex; source and encoder remain serial.
+Unchanged motion pixels skip encoding and emission. Empty credits back off
+32–100 ms independently of receipt ordering; recent motion uses 8–33 ms.
+Input or changed frames wakes all parked slots. No automatic retry or
 bitrate resubscription is introduced. Unchanged exact frames emit no event. Lost acknowledgements,
 new documents or changed protection policy discard the patch base. A fresh
 independent video frame and then complete lossless repair rebuild it. PNG-only mode is exact
@@ -70,8 +80,15 @@ are page rectangles, while the damage hint is a viewport rectangle. A thumbnail 
 crosses the relay. It locates a padded CSS rectangle (at most 15% of the viewport)
 that is captured at native DPR and merged into the protected pixel base. It is
 a damage hint: fine changes elsewhere can be missed in the first paint. The
-next poll without new input forces full protected readback to verify settled
-detail. Large changes, a lost base, a new document or policy changes require
+next poll after a crop without new input forces full protected readback to verify
+settled detail. Empty-policy unchanged verified pixels can be reused for at most
+250 ms; thumbnail equality alone never establishes exactness. A complete
+protected PNG that matches a previously decoded PNG byte for byte reuses that
+immutable native pixel buffer, avoiding duplicate decoding while still verifying
+the complete source. Large-motion JPEG
+captures stay in video until 300 ms of stable pixels, then return to a full native
+DPR readback. JPEG motion covers the complete current visual viewport using its
+CDP page origin; zoomed or unknown geometry stays on native full capture. Large changes, a lost base, a new document or policy changes require
 full capture. Exactness claims refer to that verified settled frame.
 
 Negotiate 0.5–8 Mbps; default client budget 2 Mbps. Each frame includes base64 and
@@ -81,8 +98,8 @@ Up to 16 KiB of unused budget accrues while idle/capturing, starting at zero.
 Large bootstrap and repair frames still wait for the remaining budget.
 Frames above 1 MiB serialized/encrypted estimate fail
 loudly. This is a conservative application budget, not a wire/TLS or multi-viewer
-aggregate cap. A request grants one frame credit, and its next credit follows
-presentation. No unbounded source/encode/viewer queue exists. Host limits eight
+aggregate cap. A request grants one frame credit. Each window slot is held through its
+receipt and presentation; up to eight admitted requests may overlap. No unbounded source/encode/viewer queue exists. Host limits eight
 display subscriptions per user browser; streams expire after 60 seconds.
 
 The display uses lightweight CDP loader checks for frame capture. Input routes
@@ -91,7 +108,7 @@ binding, shared actor ledger, cancellation and state reconciliation. It preserve
 that reconciliation rather than using the prototype's cheaper input receipt.
 Document/URL changes still update the kernel-owned tab registry.
 
-PNG encode/decode and software keyframes add CPU and latency; dense scroll and
+PNG encode/decode and software video add CPU and latency; dense scroll and
 media remain a known weak seam. Source capture is request-driven rather than a
 continuous compositor feed. This is not a 60 Hz display. No native browser
 chrome, desktop/file chooser, cursor-shape discovery, clipboard or live IME
@@ -136,10 +153,14 @@ unchanged because it still carries opaque encrypted terminal packets.
    for admission, request encryption and event decryption during the attachment. For a relay client this adapter
    uses its existing sender-pinned decryption, never a Cloud HTTP media route.
    `attachBrowserDisplay` negotiates, correlates events/receipts, presents atomic
-   frames and exposes `next`, `input`, and `close`. Events may be presented before
-   their receipt; the single credit remains held through both presentation and
-   receipt. Call `next` at the chosen
-   cadence, awaiting each call. Presentation failure requires a fresh attach;
+   frames and exposes `next`, `start`, `stop`, `input`, and `close`. Events may be
+   presented before their receipt; each credit remains held through both. Call
+   `start()` for a bounded continuous window, or await each `next()` for a single
+   repair/test credit. `stop()` drains existing slots. The client reorders frames
+   by source sequence before dependency decoding because encrypted event lanes
+   and decryption may complete out of order. Stale video frames are decoded to
+   retain references but may skip drawing when a newer video is queued; repairs
+   are never skipped. Presentation failure requires a fresh attach;
    do not acknowledge a lost patch base. Never automatically resend uncached
    `display_next` after a stall or connection loss: its outcome is unknown and
    a fresh attachment is required. The shared IPC client handles this nested
@@ -164,11 +185,16 @@ unchanged because it still carries opaque encrypted terminal packets.
    secrets, renderer authority or provider execution.
 
 Frames carry sequence, document ID, tab/generation, CSS/pixel geometry, DPR,
-colour `srgb`, and one payload: independent VP9, full PNG, or bounded PNG tiles
+colour `srgb`, and one payload: VP9 key/delta, full PNG, or bounded PNG tiles
 with `base_sequence`. The presenter validates bindings, dimensions and tile
 bounds before committing. Full frames use a back buffer; all tiles decode and
 validate before synchronous patch drawing, avoiding a full canvas copy/reset.
-It closes bitmaps and video frames.
+It closes bitmaps and video frames and reuses its back buffer. Motion video may
+decode to 1280×800 and is scaled to the canonical DPR canvas; native exact
+repairs restore sharp settled text. The older experimental 419 presenter only
+accepted independent full-resolution video: deploy the current source/client
+together while the flag remains off; no mixed experimental-client compatibility
+or negotiated motion-resolution extension is claimed.
 This first transport uses per-display sequences; do not feed them into session
 terminal replay cursors. Local transient display envelopes carry event ID zero;
 the shared IPC cursor ignores them. Desktop clients can implement the contract later.
@@ -204,7 +230,8 @@ input while keeping observations available; owner input and release/resumption
 must work through the shared actor API. Exact owned process/state cleanup and
 failures are recorded in a RED or PASS_LOCAL_COMPONENT receipt.
 
-The metrics and fixture modules are copied without modification from Phase 2.
+The metric implementation originated in Phase 2; fixtures and the kernel drill
+have evolved, and every receipt identifies its actual execution source.
 Phase-2 CSS viewport was 960×600; this kernel seam is 1280×800. Source docs text
 also differs. Do not plot these as a bandwidth-fair replacement baseline or
 claim unchanged Phase-2 execution files. Compare exactness and latency only as

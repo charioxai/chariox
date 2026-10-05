@@ -39,6 +39,17 @@ test('MD-DISPLAY verified idle pixels avoid repeated full readback until deadlin
  time=251;await capture.next(tab,policy,true);assert.equal(calls,2);
  await capture.next({...tab,input_epoch:1},policy,true);assert.equal(calls,3);
 });
+test('MD-DISPLAY repeated verified full PNG skips decode but never skips changed pixels',async()=>{
+ let time=0,changed=false;const timings=[];
+ const tab={tab_id:'t',document_id:'d'},policy={values:[]};
+ const capture=new DisplayCapture(async clip=>{const w=clip?160:1280,h=clip?100:800;return {...tab,generation:1,data_base64:encodePng(w,h,Buffer.alloc(w*h*4,changed?127:255))}},1,name=>timings.push(name),()=>time);
+ await capture.next(tab,policy,false,true);timings.length=0;time=300;
+ const same=await capture.next(tab,policy,true,true);assert.equal(same.pixels.pixels[0],255);
+ assert.ok(!timings.includes('full_source_decode'));
+ changed=true;timings.length=0;time=600;
+ const changedFrame=await capture.next(tab,policy,true,true);assert.equal(changedFrame.pixels.pixels[0],127);
+ assert.ok(timings.includes('full_source_decode'));
+});
 test('MD-DISPLAY changing whole viewport uses CSS motion resolution; idle returns to native pixels',async()=>{
  let changing=false,time=0;
  const tab={tab_id:'t',document_id:'d'},policy={values:[]},calls=[];

@@ -31,11 +31,17 @@ for line in sys.stdin:
             codec.thread_count = 4
             codec.options = {'deadline': 'realtime', 'cpu-used': '8', 'lag-in-frames': '0',
                              'g': '60', 'error-resilient': '1', 'undershoot-pct': '95',
-                             'overshoot-pct': '5', 'bufsize': str(int(request['bitrate'] * .1))}
+                             'overshoot-pct': '5', 'bufsize': str(int(request['bitrate'] * .1)),
+                             'minrate': str(codec.bit_rate), 'maxrate': str(codec.bit_rate),
+                             'rc_init_occupancy': str(int(request['bitrate'] * .05)),
+                             'max-intra-rate': '200', 'qmin': '4', 'qmax': '63'}
             configuration, sequence = config, 0
         frame = frame.reformat(format='yuv420p')
         # PNG decoders mark every input as I; clear that hint for inter prediction.
         frame.pict_type = av.video.frame.PictureType.NONE
+        # Image demuxers supply their own timebase (often 25fps). Its PTS must
+        # not be rebased into the negotiated 30fps video rate-control clock.
+        frame.time_base = codec.time_base
         frame.pts = sequence
         packets = list(codec.encode(frame))
         if len(packets) != 1:

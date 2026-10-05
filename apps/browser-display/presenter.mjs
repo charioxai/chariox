@@ -5,10 +5,11 @@ const VP9 = 'vp09.00.10.08';
 // Empty credits must not saturate a narrow link with control traffic. Admitted
 // input and changed frames wake every parked slot without waiting for a timer.
 export class IdleCredit {
-  constructor() { this.delay=0; this.parked=new Set(); }
-  wake() { this.delay=0;for(const wake of this.parked)wake(); }
+  constructor(now=()=>performance.now()) { this.delay=0; this.parked=new Set();this.now=now;this.activeUntil=-Infinity; }
+  wake() { this.delay=0;this.activeUntil=this.now()+300;for(const wake of this.parked)wake(); }
   wait() {
-    this.delay=Math.min(100,Math.max(32,this.delay*2));
+    const active=this.now()<this.activeUntil;
+    this.delay=Math.min(active?33:100,Math.max(active?8:32,this.delay*2));
     return new Promise(resolve=>{
       const wake=()=>{clearTimeout(timer);this.parked.delete(wake);resolve();};
       const timer=setTimeout(wake,this.delay);this.parked.add(wake);
