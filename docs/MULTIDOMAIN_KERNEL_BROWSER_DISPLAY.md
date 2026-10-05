@@ -153,7 +153,9 @@ it also boots the production relay on a dynamic loopback port, starts the normal
 kernel relay connector, issues disposable scoped tokens through the product
 auth API, and uses the existing browser WebCrypto implementation for requests
 and event decryption. Bootstrap tokens stay in private disposable runtime state
-and never enter evidence. `MD_RELAY=0` selects the local socket check. It measures
+and never enter evidence. A browser cannot connect directly to the native local
+WebSocket: the existing kernel `Origin` guard rejects it. The drill uses the
+scoped relay; native local clients keep their existing socket path. It measures
 bootstrap video and settled PNG pixel pairs/diffs, twenty source click visual
 acknowledgements, latency histograms, observed local bytes and resources. A stale
 input document must fail. Exact owned process/state cleanup and failures are

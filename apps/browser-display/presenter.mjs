@@ -72,7 +72,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   };
   const binding = { ...await request({ op: 'display_subscribe', ...tab, codecs: await supportedCodecs(), bitrate: options.bitrate ?? 2_000_000, device_scale_factor: options.deviceScaleFactor ?? 2 }), ...tab };
   const presenter = new BrowserDisplayPresenter(canvas, binding);
-  let pending = null, stopped = false;
+  let pending = null, stopped = false, creditOutstanding = false;
   const off = transport.onEvent(event => {
     if (event.event !== 'kernel_browser_frame' || event.subscription_id !== binding.subscription_id) return;
     pending?.resolve(event.frame); pending = null;
@@ -84,7 +84,8 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     throw error;
   }
   const next = async () => {
-    if (stopped || pending) throw new Error('MD-DISPLAY: stream stopped or credit outstanding');
+    if (stopped || creditOutstanding) throw new Error('MD-DISPLAY: stream stopped or credit outstanding');
+    creditOutstanding = true;
     let timer;
     const event = new Promise((resolve, reject) => {
       timer = setTimeout(() => { pending = null; reject(new Error('MD-DISPLAY: event timeout')); }, 30000);
@@ -99,7 +100,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
       if (!receipt.frame_sent) { pending?.resolve(null); return null; }
       const frame = await event;
       await presenter.present(frame); return frame;
-    } finally { clearTimeout(timer); pending = null; }
+    } finally { clearTimeout(timer); pending = null; creditOutstanding = false; }
   };
   return { binding, presenter, next,
     input: input => request(presenter.input(input)),
