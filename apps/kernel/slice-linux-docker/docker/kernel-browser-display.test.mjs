@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
 import { DisplayStream, PortableEncoder, safeChildPid, dirtyTiles } from './kernel-browser-display.mjs';
 import { encodePng, decodePng, maskPng } from './kernel-browser-pixels.mjs';
 function fixture(value = 255) {
@@ -74,7 +75,8 @@ test('MD-DISPLAY pacing credit is bounded and accrued, never unbounded idle burs
   await stream.frame(fixture(),'d',0);await stream.frame(fixture(),'d',1);
   time+=1000;await stream.frame(fixture(0),'d',2);assert.equal(waits.at(-1),0,'idle credit covers a small patch');
   // Accrual is capped at 16 KiB even after a long idle period.
-  time+=1_000_000;const noise=Buffer.from(Array.from({length:256*256*4},(_,i)=>(i*31+(i>>8)*71)&255));
+  time+=1_000_000;const noise=randomBytes(256*256*4);
   stream.codec='png';await stream.frame({generation:1,data_base64:encodePng(256,256,noise)},'d',3);
   assert.ok(stream.tokens<=16*1024);
+  assert.ok(waits.at(-1)>500,'a large random frame still pays its byte budget after long idle');
 });
