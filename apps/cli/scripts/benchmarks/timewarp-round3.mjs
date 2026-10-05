@@ -19,6 +19,7 @@ import { observeKernelRpcErrors } from './round2/rpc-errors.mjs'
 import { auditTimeWarpHistory } from './timewarp-history.mjs'
 import { permittedBrowserTool } from './round2/browser-track.mjs'
 import { verifyTimeWarpContinuation } from './timewarp-continuation.mjs'
+import { providerFailureFlags } from './round2/provider-availability.mjs'
 import { sanitizeDrillMetadata } from '../lib/drill-secrets.mjs'
 
 const options = JSON.parse(await readFile(process.argv[2], 'utf8'))
@@ -251,7 +252,8 @@ try {
       stage='history_audit'
       const entries=settled.turn?await loadTurnHistory(api,{...identity,turn:settled.turn}):[]
       row.settlement=settlementRecord({...settled,...identity,entries,helpers})
-      row.providerUnauthorized=entries.some(item=>item.entry.kind==='provider_error'&&/401|unauthorized|refresh_token_reused/i.test(item.entry.text))
+      const availability=providerFailureFlags(row.settlement.providerErrors)
+      row.providerUnauthorized=availability.unauthorized;row.providerUsageExhausted=availability.usageExhausted
       if(row.timedOut||row.turnLifecycle!=='completed'){stage='provider_settlement';throw Error('MP-10 provider settlement RED')}
       const audit=auditTimeWarpHistory(settled.turn,entries,helpers)
       row.answer=audit.answer;row.providerError=audit.providerError
@@ -283,7 +285,7 @@ try {
         }
         assert(settled,'MP-11 provider ownership did not settle')
       }
-      if(!row.admission||stage==='prompt_submit'||stage==='official_scoring'||stage==='evidence_capture')interrupted=true
+      if(!row.admission||row.providerUnauthorized||row.providerUsageExhausted||stage==='prompt_submit'||stage==='official_scoring'||stage==='evidence_capture')interrupted=true
     }
     row.finishedAt=new Date().toISOString();await checkpoint()
     console.log(JSON.stringify({mpItems:report.mpItems,taskId:episode.taskId,era:episode.era,settled:report.attempts.length,
