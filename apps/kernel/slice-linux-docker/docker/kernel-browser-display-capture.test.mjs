@@ -50,6 +50,22 @@ test('MD-DISPLAY repeated verified full PNG skips decode but never skips changed
  const changedFrame=await capture.next(tab,policy,true,true);assert.equal(changedFrame.pixels.pixels[0],127);
  assert.ok(timings.includes('full_source_decode'));
 });
+test('MD-DISPLAY coalesces empty-policy crop verification until input is quiet, then checks missed detail',async()=>{
+ let time=0,pixels=Buffer.alloc(1280*800*4,255),thumb=Buffer.alloc(160*100*4,255);const calls=[];
+ const tab={tab_id:'t',document_id:'d',input_epoch:0},policy={values:[]};
+ const capture=new DisplayCapture(async clip=>{
+  calls.push(clip?.scale<1?'preview':clip?'crop':'full');const w=clip?(clip.scale<1?160:clip.width):1280,h=clip?(clip.scale<1?100:clip.height):800;
+  const data=clip?.scale<1?thumb:Buffer.alloc(w*h*4);
+  if(!clip||clip.scale===1)for(let y=0;y<h;y++)pixels.copy(data,y*w*4,((clip?.y??0)+y)*1280*4+(clip?.x??0)*4,((clip?.y??0)+y)*1280*4+((clip?.x??0)+w)*4);
+  return {...tab,data_base64:encodePng(w,h,data)};
+ },1,()=>{},()=>time);
+ await capture.next(tab,policy,false);time=50;pixels[(104*1280+104)*4]=0;thumb[(13*160+13)*4]=0;
+ await capture.next({...tab,input_epoch:1},policy,true);calls.length=0;
+ pixels[(700*1280+1000)*4]=0;time=100;
+ await capture.next({...tab,input_epoch:1},policy,true);assert.deepEqual(calls,['preview']);
+ time=201;calls.length=0;const verified=await capture.next({...tab,input_epoch:1},policy,true);
+ assert.deepEqual(calls,['full']);assert.deepEqual(verified.pixels.pixels,pixels);
+});
 test('MD-DISPLAY changing whole viewport uses CSS motion resolution; idle returns to native pixels',async()=>{
  let changing=false,time=0;
  const tab={tab_id:'t',document_id:'d'},policy={values:[]},calls=[];

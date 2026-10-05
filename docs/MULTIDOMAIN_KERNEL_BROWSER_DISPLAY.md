@@ -79,10 +79,12 @@ Scrolled/zoomed/uncertain viewports use full protected capture: native CDP clips
 are page rectangles, while the damage hint is a viewport rectangle. A thumbnail never supplies displayed pixels or
 crosses the relay. It locates a padded CSS rectangle (at most 15% of the viewport)
 that is captured at native DPR and merged into the protected pixel base. It is
-a damage hint: fine changes elsewhere can be missed in the first paint. The
-next poll after a crop without new input forces full protected readback to verify
-settled detail. Empty-policy unchanged verified pixels can be reused for at most
-250 ms; thumbnail equality alone never establishes exactness. A complete
+a damage hint: fine changes elsewhere can be missed in the first paint. After a crop, full protected readback verifies settled detail. With an empty
+Vault registry, active inputs coalesce this verification until 150 ms of input
+quiet. Intermediate crops can miss fine changes outside their rectangle; they
+do not establish whole-source exactness. With active secrets, verification is
+immediate. Empty-policy unchanged verified pixels can be reused for at most
+250 ms while idle; thumbnail equality alone never establishes exactness. A complete
 protected PNG that matches a previously decoded PNG byte for byte reuses that
 immutable native pixel buffer, avoiding duplicate decoding while still verifying
 the complete source. Large-motion JPEG
