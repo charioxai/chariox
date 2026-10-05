@@ -411,13 +411,12 @@ pub(crate) async fn execute_get_provider_login_status_request(
                     crate::runtime::state::ProviderAuthProcessOperation::Login,
                     &error,
                 )?;
-                let rejected = runtime_state
-                    .provider_account_profile_registry()
-                    .get(owner_user_id, "codex", &record.account_profile)
-                    .is_ok_and(|profile| {
-                        profile.auth_state
-                            == crate::account_profile::ProviderAccountAuthState::Error
-                    });
+                let rejected = provider_login_profile_rejected(
+                    runtime_state.provider_account_profile_registry(),
+                    owner_user_id,
+                    "codex",
+                    &record.account_profile,
+                );
                 if rejected {
                     status = runtime_state.provider_login_process_store().set_state(
                         owner_user_id,
@@ -425,6 +424,10 @@ pub(crate) async fn execute_get_provider_login_status_request(
                         ProviderLoginProcessState::Failed,
                         now_ms,
                     )?;
+                    runtime_state
+                        .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+                        .await;
+                    runtime_state.record_waiting_room_change();
                 }
                 false
             }
@@ -544,16 +547,30 @@ pub(crate) async fn execute_get_provider_login_status_request(
             },
             crate::session::unix_epoch_ms(),
         )?;
-        if succeeded {
+        if succeeded || refresh_failed {
             runtime_state
                 .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
                 .await;
+            runtime_state.record_waiting_room_change();
         }
         let _ = runtime_state
             .with_app_side_effect(|app| app.pty_mut().remove_process(&request.login_id))
             .await;
     }
     Ok(LocalDaemonResponse::ProviderLoginStatus { login: status })
+}
+
+fn provider_login_profile_rejected(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+) -> bool {
+    registry
+        .get(owner_user_id, provider, account_profile)
+        .map_or(true, |profile| {
+            profile.auth_state == crate::account_profile::ProviderAccountAuthState::Error
+        })
 }
 
 fn provider_auth_process_succeeded(
@@ -981,6 +998,63 @@ mod tests {
             .migrate_effective_defaults("owner-a", &root.join("home"))
             .expect("defaults should migrate");
         (root, registry)
+    }
+
+    #[test]
+    fn login_completion_rejects_a_profile_rolled_back_on_first_authentication() {
+        let (root, registry) = fixture();
+        let existing = registry.create_managed("owner-a", "codex", "Work").unwrap();
+        let new = registry.create_managed("owner-a", "codex", "New").unwrap();
+        registry
+            .update_observation(
+                "owner-a",
+                "codex",
+                &existing.profile_id,
+                ProviderAccountAuthState::Authenticated,
+                Some("work@example.test".into()),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(!super::provider_login_profile_rejected(
+            &registry,
+            "owner-a",
+            "codex",
+            &new.profile_id
+        ));
+        let error = registry
+            .update_observation(
+                "owner-a",
+                "codex",
+                &new.profile_id,
+                ProviderAccountAuthState::Authenticated,
+                Some("work@example.test".into()),
+                None,
+                None,
+                None,
+            )
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("account `Work` (work@example.test)"));
+        assert!(super::provider_login_profile_rejected(
+            &registry,
+            "owner-a",
+            "codex",
+            &new.profile_id
+        ));
+        assert!(!provider_auth_process_succeeded(
+            crate::runtime::state::ProviderAuthProcessOperation::Login,
+            false,
+            true
+        ));
+        assert!(registry.get("owner-a", "codex", &new.profile_id).is_err());
+        assert!(!root
+            .join("provider-accounts/owner-a/codex")
+            .join(&new.profile_id)
+            .exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -350,16 +350,7 @@ pub(crate) fn refresh_provider_account_profile_response(
             ));
         }
     };
-    let updated = registry.update_observation(
-        owner_user_id,
-        &status.provider,
-        &status.account_profile,
-        auth_state_from_status(&status.auth_state),
-        status.identity_summary,
-        status.plan,
-        status.detected_version,
-        Some(usage),
-    )?;
+    let updated = apply_profile_auth_observation(registry, owner_user_id, &status, Some(usage))?;
     if let Some(services) = opencode_services {
         registry.update_services(owner_user_id, "opencode", &updated.profile_id, services)
     } else {
@@ -1055,18 +1046,46 @@ fn update_profile_auth_observation(
     owner_user_id: &str,
     status: &ProviderAuthStatus,
 ) -> Result<(), DaemonError> {
-    let auth_state = auth_state_from_status(&status.auth_state);
-    registry.update_observation(
+    apply_profile_auth_observation(registry, owner_user_id, status, None)?;
+    Ok(())
+}
+
+fn apply_profile_auth_observation(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    status: &ProviderAuthStatus,
+    usage: Option<crate::account_profile::ProviderAccountUsageSnapshot>,
+) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+    let result = registry.update_observation(
         owner_user_id,
         &status.provider,
         &status.account_profile,
-        auth_state,
+        auth_state_from_status(&status.auth_state),
         status.identity_summary.clone(),
         status.plan.clone(),
         status.detected_version.clone(),
-        None,
-    )?;
-    Ok(())
+        usage,
+    );
+    // A rejected first login has unregistered its new profile. Settle only
+    // that profile's endpoint; linked/native siblings continue using theirs.
+    if result.is_err()
+        && registry
+            .get(owner_user_id, &status.provider, &status.account_profile)
+            .is_err()
+    {
+        match crate::provider::canonical_provider_family(&status.provider) {
+            Some("codex") => crate::provider::invalidate_codex_account_endpoint(
+                owner_user_id,
+                &status.account_profile,
+            ),
+            Some("opencode") => crate::provider::invalidate_opencode_account_endpoint(
+                owner_user_id,
+                &status.account_profile,
+            ),
+            _ => {}
+        }
+    }
+    result
 }
 
 fn auth_state_from_status(status: &str) -> crate::account_profile::ProviderAccountAuthState {
@@ -1279,6 +1298,45 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn first_duplicate_auth_status_rolls_back_the_new_profile() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-acctdup-catalog-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("accounts.json"),
+        )
+        .unwrap();
+        let existing = registry.create_managed("owner-a", "codex", "Work").unwrap();
+        let new = registry.create_managed("owner-a", "codex", "New").unwrap();
+        let status = |profile_id: String| ProviderAuthStatus {
+            provider: "codex".into(),
+            account_profile: profile_id,
+            auth_state: "authenticated".into(),
+            identity_summary: Some("work@example.test".into()),
+            plan: Some("team".into()),
+            detected_version: None,
+            login_hint: None,
+        };
+        update_profile_auth_observation(&registry, "owner-a", &status(existing.profile_id))
+            .unwrap();
+        let error =
+            update_profile_auth_observation(&registry, "owner-a", &status(new.profile_id.clone()))
+                .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("account `Work` (work@example.test)"));
+        assert!(registry.get("owner-a", "codex", &new.profile_id).is_err());
+        assert!(!root
+            .join("provider-accounts/owner-a/codex")
+            .join(&new.profile_id)
+            .exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn drill_provider_catalog_exposes_dev_stub_without_restricting_fixture_models() {

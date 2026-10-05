@@ -724,3 +724,23 @@ test("MP-08/MP-11 TUI setup-token --run uses the kernel login workflow and expli
   assert.deepEqual(calls, [["work", true]])
   assert.match(notices.join("\n"), /login-status capture-1/)
 })
+
+// MP-08 / MP-11: safe metadata identifies the native account without another login.
+test("provider accounts list shows email, plan and machine login in each profile line", async () => {
+  const notices: string[] = []
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "codex", flashFooter: () => {}, appendNotice: (message) => notices.push(message),
+    listProviderAccountProfiles: async () => [{
+      owner_user_id: "local", provider: "codex", profile_id: "opaque-id", label: "Work",
+      origin: "default", is_default: true, auth_state: "authenticated", identity_summary: "owner@example.test", plan: "team",
+      usage: { provider: "codex", profile_id: "opaque-id", availability: "unavailable", source: "test" },
+    }],
+  }
+  await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider accounts", value: "accounts" })
+  assert.equal(notices.length, 1)
+  assert.equal(notices[0]!.split("\n").length, 1)
+  assert.match(notices[0]!, /owner@example\.test/)
+  assert.match(notices[0]!, /team/)
+  assert.match(notices[0]!, /from this machine's Codex login/)
+  assert.doesNotMatch(notices[0]!, /opaque-id/)
+})

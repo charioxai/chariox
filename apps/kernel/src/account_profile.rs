@@ -779,13 +779,9 @@ impl ProviderAccountLocator {
         }
     }
 
-    fn same_credential_scope(&self, other: &Self) -> bool {
-        // Claude's ambient scope differs from an explicit directory, and its
-        // Keychain service hashes the literal config path. Keep those scopes.
-        if matches!(self, Self::Claude { .. })
-            || std::mem::discriminant(self) != std::mem::discriminant(other)
-        {
-            return self == other;
+    fn same_roots(&self, other: &Self) -> bool {
+        if std::mem::discriminant(self) != std::mem::discriminant(other) {
+            return false;
         }
         self.roots()
             .into_iter()
@@ -887,6 +883,10 @@ struct StoredProviderAccountProfile {
     #[serde(flatten)]
     public: ProviderAccountProfile,
     locator: ProviderAccountLocator,
+    /// Only profiles registered in this flow can be automatically rolled back.
+    /// Persisted profiles have no conclusive authentication history; retain them.
+    #[serde(skip)]
+    pending_first_authentication: bool,
     /// `None` only on records written before label tracking; `open` infers it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     label_source: Option<ProviderAccountLabelSource>,
@@ -1127,6 +1127,7 @@ impl ProviderAccountProfileRegistry {
             document.profiles.push(StoredProviderAccountProfile {
                 public: profile,
                 locator,
+                pending_first_authentication: false,
                 label_source: Some(ProviderAccountLabelSource::AutomaticAlias),
                 materialized_replica: false,
                 pending_native_validation: false,
@@ -1332,6 +1333,16 @@ impl ProviderAccountProfileRegistry {
                             .then_some(index)
                         });
                 if let Some(duplicate_index) = duplicate_index {
+                    if document.profiles[profile_index].pending_first_authentication {
+                        let error = already_connected_error(
+                            "validate account profile",
+                            &document.profiles[duplicate_index].public,
+                        );
+                        let delete_data = document.profiles[profile_index].public.origin
+                            == ProviderAccountProfileOrigin::CharioxCreated;
+                        self.remove_profile_locked(&mut document, profile_index, delete_data)?;
+                        return Err(error);
+                    }
                     let incoming_wins = document.profiles[profile_index].public.is_default
                         && !document.profiles[duplicate_index].public.is_default;
                     let losing_index = if incoming_wins {
@@ -1344,15 +1355,12 @@ impl ProviderAccountProfileRegistry {
                     document.profiles[losing_index].public.last_validated_at_ms =
                         Some(crate::session::unix_epoch_ms());
                     if !incoming_wins {
-                        let existing_label =
-                            document.profiles[duplicate_index].public.label.clone();
-                        self.persist_locked(&document)?;
-                        return Err(registry_error(
+                        let error = already_connected_error(
                             "validate account profile",
-                            format!(
-                                "this {provider} login is already connected as account `{existing_label}`; use that account instead of adding it again"
-                            ),
-                        ));
+                            &document.profiles[duplicate_index].public,
+                        );
+                        self.persist_locked(&document)?;
+                        return Err(error);
                     }
                 }
             }
@@ -1360,6 +1368,9 @@ impl ProviderAccountProfileRegistry {
         let profile = &mut document.profiles[profile_index];
         let previous_identity = profile.public.identity_summary.take();
         profile.public.auth_state = auth_state;
+        if auth_state == ProviderAccountAuthState::Authenticated {
+            profile.pending_first_authentication = false;
+        }
         profile.public.identity_summary = identity_summary;
         profile.public.plan = plan;
         profile.public.detected_provider_version = detected_provider_version;
@@ -1633,6 +1644,7 @@ impl ProviderAccountProfileRegistry {
         document.profiles.push(StoredProviderAccountProfile {
             public: profile.clone(),
             locator,
+            pending_first_authentication: true,
             label_source: Some(label_source),
             materialized_replica: false,
             pending_native_validation: false,
@@ -1665,14 +1677,11 @@ impl ProviderAccountProfileRegistry {
         if let Some(existing) = document.profiles.iter().find(|stored| {
             stored.public.owner_user_id == owner_user_id
                 && stored.public.provider == provider
-                && stored.locator.same_credential_scope(&locator)
+                && stored.locator.same_roots(&locator)
         }) {
-            return Err(registry_error(
+            return Err(already_connected_error(
                 "link account profile",
-                format!(
-                    "this {provider} account directory is already registered as `{}` ({}); use that profile instead",
-                    existing.public.label, existing.public.profile_id,
-                ),
+                &existing.public,
             ));
         }
         let (label, label_source) =
@@ -1693,6 +1702,7 @@ impl ProviderAccountProfileRegistry {
         document.profiles.push(StoredProviderAccountProfile {
             public: profile.clone(),
             locator,
+            pending_first_authentication: true,
             label_source: Some(label_source),
             materialized_replica: false,
             pending_native_validation: false,
@@ -1731,9 +1741,12 @@ impl ProviderAccountProfileRegistry {
         if let Some(existing) = document.profiles.iter().find(|entry| {
             entry.public.owner_user_id == owner_user_id
                 && entry.public.provider == provider
-                && entry.locator == locator
+                && entry.locator.same_roots(&locator)
         }) {
-            return Ok(project_usage_freshness(existing.public.clone()));
+            return Err(already_connected_error(
+                "import native account profile",
+                &existing.public,
+            ));
         }
         let label = next_automatic_label(&document, owner_user_id, provider);
         let profile_id = unique_profile_id(&document, owner_user_id, provider, &label);
@@ -1751,6 +1764,7 @@ impl ProviderAccountProfileRegistry {
         document.profiles.push(StoredProviderAccountProfile {
             public: profile.clone(),
             locator,
+            pending_first_authentication: true,
             label_source: Some(ProviderAccountLabelSource::AutomaticAlias),
             materialized_replica: false,
             pending_native_validation: false,
@@ -1817,16 +1831,7 @@ impl ProviderAccountProfileRegistry {
         let provider = normalize_provider(provider)?;
         let mut document = self.write_document()?;
         let index = resolved_profile_index(&document, owner_user_id, provider, profile_id)?;
-        let removed = document.profiles.remove(index);
-        if removed.public.is_default {
-            if let Some(next) = document.profiles.iter_mut().find(|profile| {
-                profile.public.owner_user_id == owner_user_id && profile.public.provider == provider
-            }) {
-                next.public.is_default = true;
-            }
-        }
-        self.persist_locked(&document)?;
-        Ok(project_usage_freshness(removed.public))
+        self.remove_profile_locked(&mut document, index, false)
     }
 
     pub fn delete_managed_profile_data(
@@ -1845,30 +1850,43 @@ impl ProviderAccountProfileRegistry {
         let provider = normalize_provider(provider)?;
         let mut document = self.write_document()?;
         let index = resolved_profile_index(&document, owner_user_id, provider, profile_id)?;
-        let stored = &document.profiles[index];
-        if stored.public.origin != ProviderAccountProfileOrigin::CharioxCreated {
-            return Err(registry_error(
-                "delete account profile",
-                "only Chariox-created profile data can be deleted",
-            ));
-        }
-        let managed_root = self
-            .path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join("provider-accounts")
-            .join(safe_path_component(owner_user_id))
-            .join(provider)
-            .join(&stored.public.profile_id);
-        let expected_locator = ProviderAccountLocator::managed(provider, &managed_root)?;
-        if stored.locator != expected_locator {
-            return Err(registry_error(
-                "delete account profile",
-                "managed profile root does not match its registration",
-            ));
-        }
-        if path_entry_exists(&managed_root)? {
-            remove_managed_root(&managed_root, &self.path)?;
+        self.remove_profile_locked(&mut document, index, true)
+    }
+
+    fn remove_profile_locked(
+        &self,
+        document: &mut RegistryDocument,
+        index: usize,
+        delete_data: bool,
+    ) -> Result<ProviderAccountProfile, DaemonError> {
+        let owner_user_id = document.profiles[index].public.owner_user_id.clone();
+        let provider = document.profiles[index].public.provider.clone();
+        if delete_data {
+            let stored = &document.profiles[index];
+            if stored.public.origin != ProviderAccountProfileOrigin::CharioxCreated {
+                return Err(registry_error(
+                    "delete account profile",
+                    "only Chariox-created profile data can be deleted",
+                ));
+            }
+            let managed_root = self
+                .path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("provider-accounts")
+                .join(safe_path_component(&owner_user_id))
+                .join(&provider)
+                .join(&stored.public.profile_id);
+            let expected_locator = ProviderAccountLocator::managed(&provider, &managed_root)?;
+            if stored.locator != expected_locator {
+                return Err(registry_error(
+                    "delete account profile",
+                    "managed profile root does not match its registration",
+                ));
+            }
+            if path_entry_exists(&managed_root)? {
+                remove_managed_root(&managed_root, &self.path)?;
+            }
         }
         let removed = document.profiles.remove(index);
         if removed.public.is_default {
@@ -3231,6 +3249,7 @@ impl ProviderAccountProfileRegistry {
             document.profiles.push(StoredProviderAccountProfile {
                 public: public.clone(),
                 locator,
+                pending_first_authentication: false,
                 label_source: Some(ProviderAccountLabelSource::Explicit),
                 materialized_replica: true,
                 pending_native_validation,
@@ -3352,6 +3371,7 @@ impl ProviderAccountProfileRegistry {
             document.profiles[index] = StoredProviderAccountProfile {
                 public: replaced.public,
                 locator: replaced.locator,
+                pending_first_authentication: false,
                 label_source: replaced.label_source,
                 materialized_replica: false,
                 legacy_unpinned_replica: false,
@@ -4210,6 +4230,19 @@ fn resolved_profile_index(
         .iter()
         .position(|profile| std::ptr::eq(profile, resolved))
         .ok_or_else(|| registry_error("resolve account profile", "profile index disappeared"))
+}
+
+fn already_connected_error(
+    operation: &'static str,
+    existing: &ProviderAccountProfile,
+) -> DaemonError {
+    let identity = normalized_account_identity(existing.identity_summary.as_deref())
+        .map(|identity| format!(" ({identity})"))
+        .unwrap_or_default();
+    registry_error(operation, format!(
+        "this {} login is already connected as account `{}`{identity}; use that account instead of adding it again",
+        existing.provider, existing.label,
+    ))
 }
 
 fn normalized_account_identity(identity: Option<&str>) -> Option<&str> {
@@ -7140,10 +7173,15 @@ mod tests {
             .link_existing("owner-a", "codex", "second", &linked.join("."))
             .unwrap_err();
         assert!(
-            error.to_string().contains("already registered as `first`"),
+            error
+                .to_string()
+                .contains(&format!("already connected as account `{}`", first.label)),
             "{error}"
         );
-        assert!(error.to_string().contains(&first.profile_id), "{error}");
+        assert!(
+            error.to_string().contains("use that account instead"),
+            "{error}"
+        );
         assert_eq!(registry.list("owner-a", Some("codex")).unwrap().len(), 1);
         let _ = fs::remove_dir_all(root);
     }
@@ -7181,7 +7219,7 @@ mod tests {
                     .expect_err(
                         "both spellings of a native root must report the existing registration",
                     );
-                assert!(error.to_string().contains(&profile.profile_id), "{error}");
+                assert!(error.to_string().contains(&profile.label), "{error}");
             }
             assert_eq!(
                 registry
@@ -7195,7 +7233,7 @@ mod tests {
     }
 
     #[test]
-    fn directory_matching_preserves_claude_credential_scopes() {
+    fn directory_matching_refuses_the_same_claude_folder_across_ambient_scopes() {
         let explicit = ProviderAccountLocator::Claude {
             claude_config_dir: PathBuf::from("/fixture/claude"),
             ambient_default: Some(false),
@@ -7208,9 +7246,9 @@ mod tests {
             claude_config_dir: PathBuf::from("/fixture/claude/../claude"),
             ambient_default: Some(false),
         };
-        assert!(explicit.same_credential_scope(&explicit));
-        assert!(!explicit.same_credential_scope(&ambient));
-        assert!(!explicit.same_credential_scope(&alias));
+        assert!(explicit.same_roots(&explicit));
+        assert!(explicit.same_roots(&ambient));
+        assert!(!explicit.same_roots(&alias));
     }
 
     #[test]
@@ -8461,6 +8499,193 @@ mod tests {
     }
 
     #[test]
+    fn new_linked_duplicate_is_unregistered_without_deleting_the_folder() {
+        let _lock = crate::env_lock::lock();
+        let (root, registry) = fixture();
+        let existing = registry
+            .create_managed("owner-a", "claude", "Existing")
+            .unwrap();
+        observe_identity(
+            &registry,
+            "claude",
+            &existing.profile_id,
+            Some("owner@example.test"),
+        );
+        let linked = root.join("linked-claude");
+        fs::create_dir_all(&linked).unwrap();
+        set_private_dir_permissions(&linked).unwrap();
+        fs::write(linked.join("user-file"), b"keep this folder").unwrap();
+        let new = registry
+            .link_existing("owner-a", "claude", "New", &linked)
+            .unwrap();
+        registry
+            .update_observation(
+                "owner-a",
+                "claude",
+                &new.profile_id,
+                ProviderAccountAuthState::NotConfigured,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let error = registry
+            .update_observation(
+                "owner-a",
+                "claude",
+                &new.profile_id,
+                ProviderAccountAuthState::Authenticated,
+                Some("owner@example.test".into()),
+                None,
+                None,
+                None,
+            )
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("account `Existing` (owner@example.test)"));
+        assert!(registry.get("owner-a", "claude", &new.profile_id).is_err());
+        assert_eq!(
+            fs::read(linked.join("user-file")).unwrap(),
+            b"keep this folder"
+        );
+        assert_eq!(registry.list("owner-a", Some("claude")).unwrap().len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn new_native_import_duplicate_is_unregistered_without_deleting_native_data() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        let (root, registry) = fixture();
+        let existing = registry
+            .create_managed("owner-a", "claude", "Work")
+            .unwrap();
+        observe_identity(
+            &registry,
+            "claude",
+            &existing.profile_id,
+            Some("work@example.test"),
+        );
+        let native = root.join("native-claude");
+        fs::create_dir_all(&native).unwrap();
+        fs::write(native.join("user-file"), b"preserve native data").unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", &native);
+        let imported = registry
+            .import_native_default("owner-a", "claude", &root)
+            .unwrap();
+        let error = registry
+            .update_observation(
+                "owner-a",
+                "claude",
+                &imported.profile_id,
+                ProviderAccountAuthState::Authenticated,
+                Some("work@example.test".into()),
+                None,
+                None,
+                None,
+            )
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("account `Work` (work@example.test)"));
+        assert!(registry
+            .get("owner-a", "claude", &imported.profile_id)
+            .is_err());
+        assert_eq!(
+            fs::read(native.join("user-file")).unwrap(),
+            b"preserve native data"
+        );
+        assert_eq!(registry.list("owner-a", Some("claude")).unwrap().len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn previously_authenticated_duplicate_stays_registered_after_logout_and_restart() {
+        let (root, registry) = fixture();
+        let first = registry
+            .create_managed("owner-a", "codex", "First")
+            .unwrap();
+        let second = registry
+            .create_managed("owner-a", "codex", "Second")
+            .unwrap();
+        observe_identity(
+            &registry,
+            "codex",
+            &first.profile_id,
+            Some("first@example.test"),
+        );
+        observe_identity(
+            &registry,
+            "codex",
+            &second.profile_id,
+            Some("second@example.test"),
+        );
+        registry
+            .mark_logged_out("owner-a", "codex", &second.profile_id)
+            .unwrap();
+        drop(registry);
+        let registry = ProviderAccountProfileRegistry::open(root.join("accounts.json")).unwrap();
+        let error = registry
+            .update_observation(
+                "owner-a",
+                "codex",
+                &second.profile_id,
+                ProviderAccountAuthState::Authenticated,
+                Some("first@example.test".into()),
+                None,
+                None,
+                None,
+            )
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("account `First` (first@example.test)"));
+        assert_eq!(
+            registry
+                .get("owner-a", "codex", &second.profile_id)
+                .unwrap()
+                .auth_state,
+            ProviderAccountAuthState::Error
+        );
+        assert!(root
+            .join("provider-accounts/owner-a/codex")
+            .join(&second.profile_id)
+            .is_dir());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_link_refuses_native_directory_alias_before_registration() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        let (root, registry) = fixture();
+        let real = root.join("native-claude");
+        let alias = root.join("native-alias");
+        fs::create_dir_all(&real).unwrap();
+        set_private_dir_permissions(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
+        std::env::set_var("CLAUDE_CONFIG_DIR", &alias);
+        let native = registry.import_native_default("owner-a", "claude", &root);
+        match previous {
+            Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
+            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+        }
+        let native = native.unwrap();
+        for path in [&real, &alias] {
+            let error = registry
+                .link_existing("owner-a", "claude", "Duplicate", path)
+                .unwrap_err();
+            assert!(error.to_string().contains(&native.label));
+        }
+        assert_eq!(registry.list("owner-a", Some("claude")).unwrap().len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn rejects_authenticating_the_same_identity_in_two_profiles() {
         let (root, registry) = fixture();
         registry
@@ -8495,14 +8720,22 @@ mod tests {
             )
             .unwrap_err();
 
-        assert!(error.to_string().contains("already connected as account `dev`"));
-        assert_eq!(
-            registry
-                .get("owner-a", "codex", &secondary.profile_id)
-                .unwrap()
-                .auth_state,
-            ProviderAccountAuthState::Error,
-        );
+        assert!(error
+            .to_string()
+            .contains("already connected as account `dev`"));
+        assert!(registry
+            .get("owner-a", "codex", &secondary.profile_id)
+            .is_err());
+        assert!(!root
+            .join("provider-accounts/owner-a/codex")
+            .join(&secondary.profile_id)
+            .exists());
+        assert!(error.to_string().contains("(dev@example.test)"));
+        drop(registry);
+        let registry = ProviderAccountProfileRegistry::open(root.join("accounts.json")).unwrap();
+        assert!(registry
+            .get("owner-a", "codex", &secondary.profile_id)
+            .is_err());
         assert_eq!(
             registry
                 .get("owner-a", "codex", "default")
@@ -8621,17 +8854,15 @@ mod tests {
             Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
             None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
         }
-        let imported = imported.unwrap();
-        assert_ne!(imported.profile_id, existing.profile_id);
-        assert!(!imported.is_default);
+        let error = imported.unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("already connected as account `Legacy`"));
+        assert_eq!(registry.list("owner-a", Some("claude")).unwrap().len(), 1);
         assert_eq!(
             registry.get("owner-a", "claude", "default").unwrap(),
             existing
         );
-        assert!(!registry
-            .resolve_environment("owner-a", "claude", &imported.profile_id)
-            .unwrap()
-            .contains_key("CLAUDE_CONFIG_DIR"));
         assert_eq!(
             registry
                 .resolve_environment("owner-a", "claude", &existing.profile_id)
@@ -8647,7 +8878,7 @@ mod tests {
     }
 
     #[test]
-    fn native_import_is_idempotent_and_does_not_materialize_provider_state() {
+    fn native_import_refuses_registered_login_without_materializing_provider_state() {
         crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
@@ -8660,13 +8891,15 @@ mod tests {
             .unwrap();
         let repeated = registry
             .import_native_default("owner-a", "claude", &home)
-            .unwrap();
+            .unwrap_err();
         match previous {
             Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
             None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
         }
 
-        assert_eq!(repeated, first);
+        assert!(repeated
+            .to_string()
+            .contains(&format!("already connected as account `{}`", first.label)));
         assert!(first.is_default);
         assert_eq!(registry.list("owner-a", Some("claude")).unwrap().len(), 1);
         assert!(!home.join(".claude").exists());

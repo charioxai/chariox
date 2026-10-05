@@ -68,5 +68,16 @@ export function defaultProviderAccountProfileId(
 }
 
 export function providerAccountDisplayLabel(profile: ProviderAccountProfile, model?: string | null): string {
-  return providerAccountCapacityLabel(profile, Date.now(), model)
+  return [providerAccountCapacityLabel(profile, Date.now(), model), providerAccountIdentityLabel(profile)]
+    .filter(Boolean).join(" · ")
+}
+
+export function providerAccountIdentityLabel(profile: ProviderAccountProfile): string {
+  const provider = ({ codex: "Codex", claude: "Claude", opencode: "OpenCode" } as Record<string, string>)[providerAccountFamily(profile.provider)] ?? profile.provider
+  return [
+    profile.identity_summary,
+    profile.plan,
+    profile.origin === "default" ? `from this machine's ${provider} login` : null,
+  ].filter((value): value is string => Boolean(value?.trim()))
+    .map((value) => value.replace(/\s+/gu, " ").trim()).join(" · ")
 }
