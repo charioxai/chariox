@@ -12,29 +12,36 @@ use std::os::unix::process::CommandExt;
 
 #[path = "chariox-cli/app_developer.rs"]
 mod app_developer;
+#[path = "chariox-cli/arguments.rs"]
+mod arguments;
 
 fn main() -> ExitCode {
-    let _ = chariox_kernel::logging::init_process_logger("cli-launcher");
-    match run() {
-        Ok(code) => {
-            chariox_kernel::logging::info("cli.launcher", "TypeScript CLI exited");
-            code
+    let args: Vec<String> = env::args().skip(1).collect();
+    match arguments::help_requested(&args) {
+        Ok(true) => {
+            println!("{}", arguments::USAGE);
+            return ExitCode::SUCCESS;
         }
+        Ok(false) => {}
         Err(message) => {
-            chariox_kernel::logging::error_with_fields(
-                "cli.launcher",
-                "TypeScript CLI launcher failed",
-                serde_json::json!({ "error": message }),
-            );
+            eprintln!("error: {message}\nRun chariox-cli --help for usage.");
+            return ExitCode::from(2);
+        }
+    }
+    // The TypeScript CLI owns process logging after its argument admission.
+    // The launcher must stay side-effect-free for rejected/help invocations.
+    match run(&args) {
+        Ok(code) => code,
+        Err(message) => {
+            eprintln!("error: {message}");
             ExitCode::from(1)
         }
     }
 }
 
-fn run() -> Result<ExitCode, String> {
-    let args: Vec<String> = env::args().skip(1).collect();
+fn run(args: &[String]) -> Result<ExitCode, String> {
     if let Some(result) =
-        app_developer::dispatch(&args, chariox_kernel::local::LOCAL_DAEMON_PROTOCOL_VERSION)
+        app_developer::dispatch(args, chariox_kernel::local::LOCAL_DAEMON_PROTOCOL_VERSION)
     {
         return result;
     }
@@ -48,14 +55,6 @@ fn run() -> Result<ExitCode, String> {
     let cli_dir = workspace_root.join("apps/cli");
 
     let bun = env::var("BUN_BIN").unwrap_or_else(|_| "bun".to_string());
-    chariox_kernel::logging::info_with_fields(
-        "cli.launcher",
-        "launching TypeScript CLI",
-        serde_json::json!({
-            "workspace_root": workspace_root.display().to_string(),
-            "bun_bin": bun.clone(),
-        }),
-    );
 
     ensure_bun_available(&bun)?;
     ensure_cli_built(&workspace_root, &bun)?;
@@ -95,6 +94,9 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
     if args.first().map(String::as_str) == Some("--help")
         || args.first().map(String::as_str) == Some("-h")
     {
+        if args.len() != 1 {
+            return Err("help does not accept additional serve arguments".to_string());
+        }
         print_serve_help();
         return Ok(ExitCode::SUCCESS);
     }
@@ -106,6 +108,7 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
     let mut tls_key_file: Option<String> = None;
     let mut tls_cert_file: Option<String> = None;
     let mut cloud_deployment_id: Option<String> = None;
+    let mut help_requested = false;
     while index < args.len() {
         match args[index].as_str() {
             "--host" => {
@@ -127,10 +130,7 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
                 cloud_deployment_id =
                     Some(require_serve_value(args, &mut index, "--cloud-deployment")?);
             }
-            "--help" | "-h" => {
-                print_serve_help();
-                return Ok(ExitCode::SUCCESS);
-            }
+            "--help" | "-h" => help_requested = true,
             option => {
                 return Err(format!("unknown chariox serve option `{option}`"));
             }
@@ -138,6 +138,10 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
         index += 1;
     }
 
+    if help_requested {
+        print_serve_help();
+        return Ok(ExitCode::SUCCESS);
+    }
     ensure_server_built(workspace_root)?;
     let node = env::var("NODE_BIN").unwrap_or_else(|_| "node".to_string());
     let server_entry = workspace_root.join("apps/server/dist/index.js");
@@ -199,15 +203,15 @@ fn parse_serve_target(args: &[String]) -> Result<(ServeTarget, String, usize), S
     if args.first().map(String::as_str) == Some("source") {
         let session_id = args
             .get(1)
-            .filter(|value| !value.trim().is_empty())
+            .filter(|value| !value.trim().is_empty() && !value.starts_with('-'))
             .cloned()
             .ok_or_else(serve_usage)?;
         let publication_id = args
             .get(2)
-            .filter(|value| !value.trim().is_empty())
+            .filter(|value| !value.trim().is_empty() && !value.starts_with('-'))
             .cloned()
             .ok_or_else(serve_usage)?;
-        let port = args.get(3).cloned().ok_or_else(serve_usage)?;
+        let port = parse_serve_port(args.get(3))?;
         return Ok((
             ServeTarget::Source {
                 session_id,
@@ -218,7 +222,10 @@ fn parse_serve_target(args: &[String]) -> Result<(ServeTarget, String, usize), S
         ));
     }
     let package_arg = args.first().ok_or_else(serve_usage)?;
-    let port = args.get(1).cloned().ok_or_else(serve_usage)?;
+    let port = parse_serve_port(args.get(1))?;
+    if package_arg.starts_with('-') {
+        return Err(format!("unknown chariox serve option `{package_arg}`"));
+    }
     let package_path = resolve_user_path(package_arg)?;
     if !package_path.exists() {
         return Err(format!(
@@ -227,6 +234,16 @@ fn parse_serve_target(args: &[String]) -> Result<(ServeTarget, String, usize), S
         ));
     }
     Ok((ServeTarget::Package(package_path), port, 2))
+}
+
+fn parse_serve_port(value: Option<&String>) -> Result<String, String> {
+    let value = value.ok_or_else(serve_usage)?;
+    value
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port > 0)
+        .ok_or("chariox serve requires a port from 1 to 65535")?;
+    Ok(value.clone())
 }
 
 fn serve_usage() -> String {
@@ -252,6 +269,7 @@ fn run_workflow_publication_server(mut command: Command, node: &str) -> Result<E
 fn require_serve_value(args: &[String], index: &mut usize, option: &str) -> Result<String, String> {
     *index += 1;
     args.get(*index)
+        .filter(|value| !value.is_empty() && !value.starts_with('-'))
         .cloned()
         .ok_or_else(|| format!("{option} requires a value"))
 }
@@ -313,23 +331,8 @@ fn ensure_cli_built(workspace_root: &PathBuf, bun: &str) -> Result<(), String> {
     let freshness = assess_cli_build_freshness(&cli_dir)?;
 
     if !freshness.needs_build {
-        chariox_kernel::logging::info_with_fields(
-            "cli.launcher",
-            "skipping TypeScript CLI build because output is up to date",
-            serde_json::json!({
-                "dist_entry": cli_dir.join("dist/index.js").display().to_string(),
-            }),
-        );
         return Ok(());
     }
-
-    chariox_kernel::logging::info_with_fields(
-        "cli.launcher",
-        "building TypeScript CLI before launch",
-        serde_json::json!({
-            "reason": freshness.reason,
-        }),
-    );
 
     let status = Command::new("pnpm")
         .arg("--dir")
@@ -345,7 +348,10 @@ fn ensure_cli_built(workspace_root: &PathBuf, bun: &str) -> Result<(), String> {
         .map_err(|error| format!("failed to build the TypeScript CLI before launch: {error}"))?;
 
     if !status.success() {
-        return Err("failed to build the TypeScript CLI before launch".to_string());
+        return Err(format!(
+            "failed to build the TypeScript CLI before launch ({})",
+            freshness.reason
+        ));
     }
 
     if cli_dir.join("dist/index.js").exists() {
@@ -363,23 +369,8 @@ fn ensure_server_built(workspace_root: &Path) -> Result<(), String> {
     let freshness = assess_server_build_freshness(workspace_root, &server_dir)?;
 
     if !freshness.needs_build {
-        chariox_kernel::logging::info_with_fields(
-            "cli.launcher",
-            "skipping workflow publication server build because output is up to date",
-            serde_json::json!({
-                "dist_entry": server_dir.join("dist/index.js").display().to_string(),
-            }),
-        );
         return Ok(());
     }
-
-    chariox_kernel::logging::info_with_fields(
-        "cli.launcher",
-        "building workflow publication server before launch",
-        serde_json::json!({
-            "reason": freshness.reason,
-        }),
-    );
 
     let status = Command::new("pnpm")
         .arg("--dir")

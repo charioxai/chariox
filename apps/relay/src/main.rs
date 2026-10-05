@@ -3,8 +3,32 @@ use std::collections::BTreeMap;
 use chariox_relay::{RelayAuthVerifier, RelayConfig, RelayServer};
 use serde_json::json;
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    match (args.first().and_then(|arg| arg.to_str()), args.len()) {
+        (None, 0) => {}
+        (Some("--help" | "-h"), 1) => {
+            println!("usage: chariox-relay [--help | --version]\n\nWith no arguments, run the relay. Configure it through CHARIOX_RELAY_HOST,\nCHARIOX_RELAY_PORT and the relay authentication environment settings.\n  -h, --help  Print usage and exit\n  --version   Print the package version and exit");
+            return Ok(());
+        }
+        (Some("--version"), 1) => {
+            println!("chariox-relay {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        _ => {
+            eprintln!(
+                "error: unknown or additional relay argument\nRun chariox-relay --help for usage."
+            );
+            std::process::exit(2);
+        }
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async_main())
+}
+
+async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let config = RelayConfig::load_from_env()?;
     let scoped_verifier = scoped_verifier_from_env();
     if let Some(message) = open_access_startup_error(

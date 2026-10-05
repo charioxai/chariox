@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test:cli-startup": "node --test --test-concurrency=1 scripts/cli-startup.test.mjs",
     "build": "pnpm --workspace-root run build:kernel-client && node scripts/build.mjs",
     "parity:source-inventory": "node scripts/managed-parity-source-inventory.mjs",
     "test:hidden-input": "node --test scripts/hidden-input-pty.test.mjs",
