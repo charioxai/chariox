@@ -14,6 +14,8 @@ import sys
 import urllib.request
 from playwright.sync_api import sync_playwright
 from browsergym.webmall.task import WebMallTask
+sys.path.insert(0, str(Path(__file__).resolve().parent / "round2"))
+from webmall_sampling import fresh_existing_pages
 
 os.environ.update(json.loads(Path(sys.argv[1]).read_text()))
 sys.path.insert(0, sys.argv[2])
@@ -42,7 +44,7 @@ with sync_playwright() as pw:
                 assert task is not None
                 wrong, sample_infos = list(final_wrong), []
                 # Read every existing page; never navigate or create a page.
-                for page in ([] if finished else context.pages):
+                for page in ([] if finished else fresh_existing_pages(context)):
                     if page.url.startswith("chrome-extension:"): continue
                     try:
                         with contextlib.redirect_stdout(io.StringIO()):
