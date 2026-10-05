@@ -2449,6 +2449,23 @@ mod tests {
     }
 
     #[test]
+    fn md_display_host_reuse_keeps_exit_detection_and_only_repeats_cold_health() {
+        let script = responsive_controller_script().replace(
+            "*'\"method\":\"health\"'*) printf",
+            "*'\"method\":\"health\"'*) printf 'health\\n' >> \"$(dirname \"$0\")/health-count\"; printf",
+        );
+        let tool = TestTool::new(&script);
+        let mut backend = BrowserControllerProcessStdioBackend::new(tool.path(),Vec::new(),HEALTHY_TEST_CONTROLLER_TIMEOUT).for_host();
+        assert!(backend.ensure_host_started().unwrap());
+        for _ in 0..8 { assert!(!backend.ensure_host_started().unwrap()); }
+        assert_eq!(fs::read_to_string(tool.path().parent().unwrap().join("health-count")).unwrap().lines().count(),1);
+        backend.stop().unwrap();
+        assert!(backend.ensure_host_started().unwrap());
+        assert_eq!(fs::read_to_string(tool.path().parent().unwrap().join("health-count")).unwrap().lines().count(),2);
+        backend.stop().unwrap();
+    }
+
+    #[test]
     fn stdio_backend_starts_reports_health_and_stops() {
         let tool = TestTool::new(responsive_controller_script());
         let mut backend = BrowserControllerProcessStdioBackend::new(
