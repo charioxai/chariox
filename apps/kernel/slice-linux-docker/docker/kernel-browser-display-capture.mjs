@@ -22,13 +22,22 @@ export function changedClip(before, after, scale) {
 export class DisplayCapture {
   constructor(capture, scale, timing = () => {}, now = () => performance.now()) { this.capture = capture; this.scale = scale; this.timing = timing; this.now=now; this.invalidate(); }
   invalidate() { this.previous = null; this.preview = null; this.document = null; this.policy = null; this.needsVerification = false; this.inputEpoch = null; this.verifiedAt = -Infinity; this.source = null; this.native=null; this.motion=false; this.motionData=null; this.stableAt=null; }
-  async next(tab, policy, reusable, forceFull = false, motionClip = null) {
+  async next(tab, policy, reusable, forceFull = false, motionClip = null, scrollActive = false) {
     if (!reusable || this.document !== tab.document_id || this.policy !== policy) this.invalidate();
     const capture = async clip => {
       const source = await this.capture(clip);
       if (source.document_id !== tab.document_id || source.tab_id !== tab.tab_id) { this.invalidate(); throw Error('MD-DISPLAY: capture binding changed'); }
       return source;
     };
+    // Repeating paragraphs can look unchanged in a tiny thumbnail while a
+    // wheel is moving the whole document. Only admitted source input supplies
+    // this hint; it selects a complete protected viewport, never inferred pixels.
+    if(motionClip && scrollActive) {
+      const source=await capture(motionClip);
+      this.previous=null;this.document=tab.document_id;this.policy=policy;
+      this.inputEpoch=tab.input_epoch;this.motion=true;this.motionData=source.data_base64;this.stableAt=this.now();
+      return {...source,motion:true};
+    }
     if (motionClip && this.motion) {
       const source=await capture(motionClip);
       if(source.data_base64 !== this.motionData) this.stableAt=this.now();

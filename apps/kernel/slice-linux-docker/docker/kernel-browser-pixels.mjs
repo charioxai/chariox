@@ -1,7 +1,8 @@
 // MD-5: bounded CDP PNG masking, using the Room's trusted region locator.
 // Unsupported/racing layout receives an opaque whole-frame mask. Page code
 // never participates in drawing/removing the masks. No desktop dependency.
-import { deflateSync, inflateSync } from "node:zlib";
+import * as zlib from "node:zlib";
+const { deflateSync, inflateSync } = zlib;
 import { locateBrowserRegions } from "./browser-observation-regions.mjs";
 
 const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -11,6 +12,9 @@ const crcTable = Uint32Array.from({ length: 256 }, (_, byte) => {
   return value >>> 0;
 });
 function crc(bytes) {
+  // Node22's native CRC validates the same PNG bytes without walking every
+  // HiDPI IDAT byte in JavaScript. Older operator runtimes keep the exact path.
+  if (typeof zlib.crc32 === 'function') return zlib.crc32(bytes);
   let value = 0xffffffff;
   for (const byte of bytes) value = (value >>> 8) ^ crcTable[(value ^ byte) & 255];
   return (value ^ 0xffffffff) >>> 0;

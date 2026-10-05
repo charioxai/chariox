@@ -69,3 +69,11 @@ test('MD-DISPLAY forced verification of small input damage never enters motion m
  const source=await capture.next({...tab,input_epoch:1},policy,true,true,motion);
  assert.equal(source.motion,undefined);assert.equal(source.pixels.width,1280);
 });
+test('MD-DISPLAY admitted scroll uses motion even when thumbnail misses repeating text',async()=>{
+ const tab={tab_id:'t',document_id:'d'},policy={values:[]};let time=0;
+ const capture=new DisplayCapture(async clip=>{const width=clip?Math.round(1280*clip.scale*2):2560,height=clip?Math.round(800*clip.scale*2):1600;return {...tab,generation:1,width,height,data_base64:encodePng(width,height,Buffer.alloc(width*height*4,255))}},2,()=>{},()=>time);
+ const motion={x:0,y:240,width:1280,height:800,scale:.5};
+ await capture.next(tab,policy,false,true,motion);
+ const moving=await capture.next(tab,policy,true,true,motion,true);assert.equal(moving.motion,true);assert.equal(moving.width,1280);
+ time=400;const idle=await capture.next(tab,policy,true,true,motion,false);assert.equal(idle.motion,undefined);assert.equal(idle.pixels.width,2560);
+});

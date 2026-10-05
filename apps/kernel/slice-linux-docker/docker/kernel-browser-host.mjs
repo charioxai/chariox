@@ -43,6 +43,7 @@ export class KernelBrowserHost {
     this.displays = new Map();
     this.scales = new Map();
     this.inputEpochs = new Map();
+    this.scrolling = new Map();
     this.restoring = false;
     this.keepaliveTarget = null;
     this.observedDocuments = new Map();
@@ -76,7 +77,7 @@ export class KernelBrowserHost {
   async start() {
     if (this.browser && this.chromium.child?.exitCode === null && this.chromium.child?.signalCode === null) return;
     for (const stream of this.displays.values()) await stream.close();
-    this.displays.clear(); this.scales.clear(); this.inputEpochs.clear();
+    this.displays.clear(); this.scales.clear(); this.inputEpochs.clear();this.scrolling.clear();
     await this.browser?.close();
     this.browser = null;
     for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
@@ -328,7 +329,8 @@ export class KernelBrowserHost {
       const source = await stream.capture.next({ ...tab, input_epoch: this.inputEpochs.get(tab.tab_id) ?? 0 }, this.protection, stream.previous && stream.acceptsCredit(command.after_sequence), !stream.exact || !nativeCropSafe,
         stream.codec !== 'png' && this.protection.values.length === 0 && viewport?.scale === 1 &&
           Number.isFinite(viewport.pageX) && Number.isFinite(viewport.pageY)
-          ? {x:viewport.pageX,y:viewport.pageY,width:1280,height:800,scale:1/stream.device_scale_factor,display_motion:true} : null);
+          ? {x:viewport.pageX,y:viewport.pageY,width:1280,height:800,scale:1/stream.device_scale_factor,display_motion:true} : null,
+        this.scrolling.get(tab.tab_id)?.document_id === tab.document_id && this.scrolling.get(tab.tab_id).until > performance.now());
       try { await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id); }
       catch (error) { stream.invalidate(); throw error; }
       const frame = await stream.frame(source, source.document_id, command.after_sequence);
@@ -366,6 +368,7 @@ export class KernelBrowserHost {
       for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id) { await stream.close(); this.displays.delete(id); }
       this.scales.delete(tab.tab_id);
       this.inputEpochs.delete(tab.tab_id);
+      this.scrolling.delete(tab.tab_id);
       for (const [id, stream] of this.streams) {
         if (stream.tabId === tab.tab_id) await this.removeStream(id);
       }
@@ -393,6 +396,7 @@ export class KernelBrowserHost {
       }
       const post = timestamp();
       this.inputEpochs.set(tab.tab_id, (this.inputEpochs.get(tab.tab_id) ?? 0) + 1);
+      if(command.input.kind === 'scroll')this.scrolling.set(tab.tab_id,{document_id:tab.document_id,until:performance.now()+400});
       const result = this.observe(await this.reconcile(), null, scope);
       this.timing('input_post_reconcile', post);
       return result;

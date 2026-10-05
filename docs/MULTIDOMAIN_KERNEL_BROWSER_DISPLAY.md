@@ -88,7 +88,10 @@ immutable native pixel buffer, avoiding duplicate decoding while still verifying
 the complete source. Large-motion JPEG
 captures stay in video until 300 ms of stable pixels, then return to a full native
 DPR readback. JPEG motion covers the complete current visual viewport using its
-CDP page origin; zoomed or unknown geometry stays on native full capture. Large changes, a lost base, a new document or policy changes require
+CDP page origin; zoomed or unknown geometry stays on native full capture. An
+admitted wheel input keeps complete motion capture selected for 400 ms, even
+when repeating text looks unchanged in the thumbnail. The hint is bound to the
+source document and never supplies pixels or bypasses Vault protection. Large changes, a lost base, a new document or policy changes require
 full capture. Exactness claims refer to that verified settled frame.
 
 Negotiate 0.5–8 Mbps; default client budget 2 Mbps. Each frame includes base64 and
