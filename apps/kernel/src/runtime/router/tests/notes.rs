@@ -252,3 +252,6 @@ async fn check() {
 
 #[path = "notes/live.rs"]
 mod live;
+
+#[path = "notes/hardening.rs"]
+mod hardening;
