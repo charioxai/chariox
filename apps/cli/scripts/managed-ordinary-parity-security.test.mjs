@@ -58,3 +58,18 @@ for (const check of ['directory_creation', 'empty_workspace', 'basename_collisio
     });
   }
 }
+
+for (const check of ['directory_creation', 'empty_workspace', 'basename_collision']) {
+  test(`MP-11 ${check} succeeds with an exclusive private directory`, async () => {
+    const root = await mkdtemp('/tmp/chariox-parity-mp11-success-');
+    try {
+      const target = join(root, 'absent-request');
+      const values = {new_directory: target, nested_path: target, source_root: root};
+      const operation = check === 'directory_creation' ? observeDirectoryCheck : observeWorkspaceCheck;
+      const result = await operation({}, values, check);
+      const flag = {directory_creation:'created_and_accessible',empty_workspace:'workspace_created',basename_collision:'collision_rejected'}[check];
+      assert.equal(result[flag], true);
+      await assert.rejects(readFile(target), {code:'ENOENT'});
+    } finally { await rm(root,{recursive:true,force:true}); }
+  });
+}
