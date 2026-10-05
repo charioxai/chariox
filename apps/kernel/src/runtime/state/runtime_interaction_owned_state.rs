@@ -29,6 +29,23 @@ fn interaction_error(message: &str) -> DaemonError {
     }
 }
 
+// Empty scope is the detached user domain. Attribute reference failures at
+// their authoritative origin, including races after public owner admission;
+// leave Room diagnostics and unrelated passkey/storage failures unchanged.
+fn interaction_reference_error(
+    session_id: &str,
+    operation: &'static str,
+    message: String,
+) -> DaemonError {
+    if session_id.is_empty() {
+        DaemonError::UserDomainRefused {
+            reason: crate::error::UserDomainRefusalReason::NotGranted,
+        }
+    } else {
+        DaemonError::LocalTransport { operation, message }
+    }
+}
+
 impl KernelRuntimeOwnedState {
     /// The owner and operation of a pending decision whose chosen choice needs
     /// the passkey, when the caller owns that decision and it has not expired
@@ -192,10 +209,11 @@ impl KernelRuntimeOwnedState {
             pending
                 .get(interaction_id)
                 .cloned()
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "resolve runtime interaction",
-                    message: format!("interaction {interaction_id} was not pending"),
-                })?
+                .ok_or_else(|| interaction_reference_error(
+                    session_id,
+                    "resolve runtime interaction",
+                    format!("interaction {interaction_id} was not pending"),
+                ))?
         };
         if sudo.is_some()
             && (pending.terminal_credential_owner.is_some()
@@ -208,10 +226,11 @@ impl KernelRuntimeOwnedState {
             ));
         }
         if pending.session_id != session_id || !pending.belongs_to(&self.session_store) {
-            return Err(DaemonError::LocalTransport {
-                operation: "resolve runtime interaction",
-                message: "interaction does not belong to the requested session".to_string(),
-            });
+            return Err(interaction_reference_error(
+                session_id,
+                "resolve runtime interaction",
+                "interaction does not belong to the requested session".into(),
+            ));
         }
         if !self.agent_interaction_is_live(&pending) {
             self.withdraw_agent_interaction_locked(interaction_id, &pending)?;
@@ -225,8 +244,10 @@ impl KernelRuntimeOwnedState {
             .or(pending.terminal_credential_owner.as_deref())
             .is_some_and(|owner| Some(owner) != caller_user_id)
         {
-            return Err(interaction_error(
-                "Only the operation owner can answer this decision",
+            return Err(interaction_reference_error(
+                session_id,
+                "runtime interaction",
+                "Only the operation owner can answer this decision".into(),
             ));
         }
         if pending
