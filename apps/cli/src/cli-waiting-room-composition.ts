@@ -377,8 +377,14 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     persistInventory: waitingRoomInventoryCache.persist,
     getLocalKernelPresences: loadLocalKernelPresences,
   })
-  const refreshWaitingRoomDataNow = waitingRoomInventoryRefreshController.refreshNow
-  const refreshWaitingRoomData = waitingRoomInventoryRefreshController.refresh
+  const refreshWaitingRoomDataNow = async () => {
+    await waitingRoomInventoryRefreshController.refreshNow()
+    await workspacePlacementController?.refreshDisabledWorkspace()
+  }
+  const refreshWaitingRoomData = async () => {
+    await waitingRoomInventoryRefreshController.refresh()
+    await workspacePlacementController?.refreshDisabledWorkspace()
+  }
   const applyWaitingRoomRowsChanged = waitingRoomInventoryRefreshController.applyRowsChanged
   const applyRelayStatusChanged = waitingRoomInventoryRefreshController.applyRelayStatusChanged
   const applyRemoteMachinesChanged = waitingRoomInventoryRefreshController.applyRemoteMachinesChanged

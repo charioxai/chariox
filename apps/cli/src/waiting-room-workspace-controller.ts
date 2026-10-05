@@ -8,6 +8,7 @@ import {
   NO_REPOSITORY_WORKTREE_HINT,
   setWaitingRoomKernelWorktrees,
   UNBORN_WORKTREE_HINT,
+  waitingRoomWorktreeDisabledHint,
 } from "./waiting-room-worktrees.js"
 
 export function createWaitingRoomWorkspaceController(deps: {
@@ -109,6 +110,7 @@ export function createWaitingRoomWorkspacePlacementController(deps: {
   failure(error: unknown): void
 }) {
   let browsingManagedWorkspace = false
+  let refreshingDisabledWorkspace = false
   return {
     acceptsInventory(machineId: string) {
       const environmentId = managedEnvironmentIdFromMachineRef(deps.getState().selectedMachineRef)
@@ -116,6 +118,25 @@ export function createWaitingRoomWorkspacePlacementController(deps: {
         ? deps.managedEnvironments?.().find(environment => environment.environmentId === environmentId)?.runtimeMachineId
         : null
       return !browsingManagedWorkspace || !selectedMachineId || selectedMachineId === machineId
+    },
+    async refreshDisabledWorkspace() {
+      // Ordinary snapshots recheck worktrees in applyInventory. Managed previews
+      // keep the home control client, so recheck their filesystem separately.
+      if (!browsingManagedWorkspace || refreshingDisabledWorkspace || !waitingRoomWorktreeDisabledHint()) return
+      const { selectedMachineRef: machineRef, selectedKernelRef: kernelRef } = deps.getState()
+      const environmentId = managedEnvironmentIdFromMachineRef(machineRef)
+      const machineId = deps.managedEnvironments?.().find(environment => environment.environmentId === environmentId)?.runtimeMachineId
+      if (!kernelRef || !machineId || !deps.browseManaged) return
+      const isActive = () => deps.getState().selectedKernelRef === kernelRef
+        && deps.getState().selectedMachineRef === machineRef
+      refreshingDisabledWorkspace = true
+      try {
+        await deps.browseManaged(kernelRef, machineId, isActive)
+      } catch (error) {
+        deps.failure(error)
+      } finally {
+        refreshingDisabledWorkspace = false
+      }
     },
     select(state: WaitingRoomState) {
       if (!state.selectedKernelRef) return

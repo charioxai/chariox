@@ -24,7 +24,7 @@ function harness(repositoryState: "ready" | "not-repository" | "unborn" = "ready
       return { WorkspaceGitOverview: { overview: { repo_root: repositoryState === "not-repository" ? null : workspace, compare_refs: [] } } } as T
     },
   })
-  return { controller, workspace: () => workspace, worktree: () => worktree, edit: (path: string) => { workspace = path } }
+  return { controller, workspace: () => workspace, worktree: () => worktree, edit: (path: string) => { workspace = path }, setRepositoryState: (next: typeof repositoryState) => { repositoryState = next } }
 }
 
 test("TUI restores the selected machine's workspace across Mac Linux Mac and keeps same-machine paths", async () => {
@@ -143,3 +143,19 @@ test("TUI creates the selected worktree through the connected kernel", async () 
     assert.equal(requests.length, 2)
   } finally { clearWaitingRoomWorktreeInventory() }
 })
+
+for (const disabledState of ["not-repository", "unborn"] as const) {
+  test(`TUI unchanged inventory rechecks ${disabledState} after git repair in the same workspace`, async () => {
+    const h = harness(disabledState)
+    try {
+      const snapshot = inventory("mac", "/Users/miguel")
+      await h.controller.applyInventory(snapshot)
+      assert.ok(waitingRoomWorktreeDisabledHint())
+      h.setRepositoryState("ready")
+      await h.controller.applyInventory(snapshot)
+      assert.equal(h.workspace(), "/Users/miguel/project")
+      assert.equal(waitingRoomWorktreeDisabledHint(), null)
+      assert.ok(waitingRoomWorktreeOptions().some(option => option.id === "create-worktree"))
+    } finally { clearWaitingRoomWorktreeInventory() }
+  })
+}
