@@ -6,6 +6,16 @@ export const concurrencyTestSymbol = "runtime::state::tool_dispatch::slice::cont
 // Debug-build kernel futures exceed Linux's default 2 MiB test-thread stack.
 export const concurrencyRustMinStackBytes = 32 * 1024 * 1024;
 
+export function parseConcurrencyProbe(output) {
+  const prefix = `test ${concurrencyTestSymbol} ... `;
+  const probes = output.split("\n").map(line => {
+    const json = line.startsWith(prefix) ? line.slice(prefix.length) : line;
+    try { return JSON.parse(json); } catch { return null; }
+  }).filter(item => item?.schema === "chariox.controller_concurrency.v1");
+  assert.equal(probes.length, 1, "MP-08/MP-10 missing or ambiguous acceptance probe");
+  return probes[0];
+}
+
 export function assertConcurrencyArtifact({ sha256, expectedSha256, listing }) {
   if (expectedSha256 !== undefined) {
     assert.match(expectedSha256, /^[a-f0-9]{64}$/, "MP-08/MP-10/MP-11 invalid expected artifact SHA-256");

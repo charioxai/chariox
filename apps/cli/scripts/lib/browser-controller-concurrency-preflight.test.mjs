@@ -1,7 +1,15 @@
 // MP-08/MP-10/MP-11: stale artifact and shared-builder admission negatives.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertConcurrencyArtifact, assertConcurrencyResources, concurrencyTestSymbol } from "./browser-controller-concurrency-preflight.mjs";
+import { assertConcurrencyArtifact, assertConcurrencyResources, concurrencyTestSymbol, parseConcurrencyProbe } from "./browser-controller-concurrency-preflight.mjs";
+
+test("MP-08/MP-10 reads the probe after Rust's single-thread test prefix", () => {
+  const probe = { schema: "chariox.controller_concurrency.v1", status: "GREEN" };
+  assert.deepEqual(parseConcurrencyProbe(`test ${concurrencyTestSymbol} ... ${JSON.stringify(probe)}\nok\n`), probe);
+  assert.deepEqual(parseConcurrencyProbe(JSON.stringify(probe) + "\n"), probe);
+  assert.throws(() => parseConcurrencyProbe("unrelated " + JSON.stringify(probe)), /missing or ambiguous/);
+  assert.throws(() => parseConcurrencyProbe(JSON.stringify(probe) + "\n" + JSON.stringify(probe)), /missing or ambiguous/);
+});
 
 test("MP-08/MP-10/MP-11 rejects a replaced binary even with the right test symbol", () => {
   const input = { sha256: "a".repeat(64), expectedSha256: "a".repeat(64), listing: `${concurrencyTestSymbol}: test\n\n1 test, 0 benchmarks\n` };

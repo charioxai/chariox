@@ -9,7 +9,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, statfs, symlink, writeFile } fr
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { assertConcurrencyArtifact, assertConcurrencyResources, concurrencyRustMinStackBytes, concurrencyTestSymbol } from "./lib/browser-controller-concurrency-preflight.mjs";
+import { assertConcurrencyArtifact, assertConcurrencyResources, concurrencyRustMinStackBytes, concurrencyTestSymbol, parseConcurrencyProbe } from "./lib/browser-controller-concurrency-preflight.mjs";
 
 import { signalBrowserStateChild } from "./lib/browser-state-drill-process.mjs";
 
@@ -111,9 +111,7 @@ try {
       CHARIOX_CONCURRENCY_TRANSPORT_RECEIPT: path.join(options.output, "transport.jsonl"),
       CHARIOX_CONCURRENCY_CONTAINER: container, CHARIOX_CONCURRENCY_FIXTURE: mapping } });
   await writeFile(path.join(options.output, "test.log"), test.stdout + test.stderr, { mode: 0o600 });
-  receipt.probe = test.stdout.split("\n").filter(line => line.startsWith("{"))
-    .map(line => { try { return JSON.parse(line); } catch { return null; } })
-    .find(item => item?.schema === "chariox.controller_concurrency.v1");
+  receipt.probe = parseConcurrencyProbe(test.stdout);
   assert.equal(receipt.probe?.status, "GREEN", "MP-08/MP-10 missing exact acceptance probe");
   receipt.status = "GREEN";
 } catch (error) {
