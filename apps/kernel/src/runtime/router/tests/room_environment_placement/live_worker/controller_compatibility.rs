@@ -80,3 +80,48 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
     let physical: Value = serde_json::from_str(&physical).expect("worker browser state JSON");
     assert_eq!(physical["url"], url);
 }
+
+// MP-08/MP-10/MP-11: phase reporting preserves the read error and never replays input.
+pub(super) async fn check_navigation_read_failures(fixture: &LiveWorker, token: &str) {
+    let root = &fixture._worker_state.root;
+    let state_file = root.join("chromium-state.json");
+    let fault_file = root.join("navigation-read-fault.json");
+    for (phase, expected_delta) in [("preflight_reconcile", 0), ("post_navigation_reconcile", 1)] {
+        let state: Value = serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
+        let before = state["navigateCount"].as_u64().unwrap_or(0);
+        std::fs::write(
+            &fault_file,
+            serde_json::to_vec(&json!({"phase":phase,"beforeCount":before})).unwrap(),
+        )
+        .unwrap();
+        let result = fixture
+            .home
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                token,
+                "slice_open_url",
+                json!({"url":"https://worker.test/read-failure"}),
+            )
+            .await;
+        std::fs::remove_file(&fault_file).unwrap();
+        let error = result.expect_err("external read failure must remain an error");
+        let message = error.to_string();
+        assert!(
+            message.contains("browser_cdp_timeout"),
+            "original error code must survive: {message}"
+        );
+        assert!(
+            message.contains(&format!("browser_navigation_phase={phase}")),
+            "missing read phase: {message}"
+        );
+        let after: Value = serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
+        assert_eq!(after["navigateCount"].as_u64().unwrap_or(0), before + expected_delta,
+            "read diagnosis must neither navigate before preflight nor replay an acknowledged navigation");
+        fixture
+            .home
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(token, "slice_browser_status", json!({}))
+            .await
+            .expect("read recovery after fixture fault removal");
+    }
+}

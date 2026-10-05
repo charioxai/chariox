@@ -7,7 +7,7 @@ import { fixtureUploadBrowser } from "./upload-browser.fixture.mjs";
 
 const [directory, pidFile] = process.argv.slice(2);
 const { BrowserControllerStdioServer } = await import(pathToFileURL(join(directory, "browser-controller.mjs")));
-const { BrowserCdpClient } = await import(pathToFileURL(join(directory, "browser-controller-cdp.mjs")));
+const { BrowserCdpClient, BrowserControllerError } = await import(pathToFileURL(join(directory, "browser-controller-cdp.mjs")));
 // The production supervisor may fence and restart the controller while the
 // external browser remains alive. Keep the current generation convenient for
 // assertions and retain every PID so cleanup can prove that none leaked.
@@ -72,11 +72,20 @@ const chromium = {
         ] };
       }
       case "Target.attachToTarget": return { sessionId: params.targetId === "worker-popup" ? "worker-popup-session" : "worker-cdp-session" };
-      case "Page.getFrameTree": return { frameTree: { frame: {
+      case "Page.getFrameTree": {
+        // MP-08/MP-10/MP-11: external read failure before/after one navigation.
+        const faultFile = join(dirname(pidFile), "navigation-read-fault.json");
+        if (existsSync(faultFile)) {
+          const fault = JSON.parse(readFileSync(faultFile, "utf8"));
+          if (fault.phase === "preflight_reconcile" || state.navigateCount > fault.beforeCount)
+            throw new BrowserControllerError("browser_cdp_timeout", "synthetic Page.getFrameTree timeout");
+        }
+        return { frameTree: { frame: {
         id: sessionId === "worker-popup-session" ? "worker-popup-frame" : "worker-frame",
         loaderId: sessionId === "worker-popup-session" ? "worker-popup-document" : state.documentId,
         url: sessionId === "worker-popup-session" ? "https://popup.worker.test/" : state.url,
       } } };
+      }
       case "Page.navigate": {
         state.navigateCount = (state.navigateCount ?? 0) + 1;
         state.navigationSession = sessionId;
