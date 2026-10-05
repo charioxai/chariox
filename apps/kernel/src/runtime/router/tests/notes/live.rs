@@ -185,10 +185,10 @@ async fn check_live() {
         // path. This proves note capture in an App view, not package admission.
         use base64::Engine;
         use crate::runtime::browser_controller_app_view::{BrowserAppViewRequest, BrowserAppViewAsset};
-        router.runtime_state.room_browser_controller_command(session.id(),crate::transport::room_browser_controller::RoomBrowserControllerCommand::AppView { request:BrowserAppViewRequest::Open {
+        router.runtime_state.notes_drill_app_view(session.id(),BrowserAppViewRequest::Open {
             origin_label:"mdnotes-fixture".into(),installation_id:"mdnotes-fixture".into(),entry:"index.html".into(),page:None,
             assets:vec![BrowserAppViewAsset {path:"index.html".into(),content_type:"text/html".into(),body_base64:base64::engine::general_purpose::STANDARD.encode("<!doctype html><title>MD-N5 App</title><p id='quote'>MD notes selected quote</p><p>after the quote</p>")}],
-        }}).await.unwrap();
+        }).await.unwrap();
         let app_url="https://app.mdnotes-fixture.invalid/".to_string();
         let app_state=router.runtime_state.reconcile_browser_controller_environment(session.id()).await.unwrap();
         let app_tab=app_state.tabs.iter().find(|t|t.url==app_url).unwrap();
