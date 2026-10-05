@@ -181,9 +181,11 @@ async fn send_browser_request(
     request: Value,
 ) -> Value {
     use futures_util::{SinkExt, StreamExt};
+    static REQUEST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let request_id = REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     socket
         .send(tokio_tungstenite::tungstenite::Message::Text(
-            json!({"type":"request", "request_id":"artifact", "request":request})
+            json!({"type":"request", "request_id":format!("artifact-{request_id}"), "request":request})
                 .to_string()
                 .into(),
         ))
