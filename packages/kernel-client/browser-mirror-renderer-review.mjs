@@ -39,11 +39,14 @@ export async function rendererReview({source,viewer,originUrl,viewerUrl,receipt,
       assert.equal(active,expectedFocus,'MP-08: delayed packet cannot restore field A over newer local focus');
       assert.deepEqual(values,['','QR'],'MP-11: printable input intended for B never dispatches to A');
       // A post-input observation must still restore kernel-driven focus (Tab).
+      await evaluate(`document.querySelector('#ordinary').focus()`);await next();await next();
+      assert.equal(await viewer.evaluate(()=>{const r=window.mirror.renderer;return r.ids.get(r.frame.contentDocument.activeElement)}),heldPacket.focused,'MP-08: source-driven focus moves from B back to A');
       await viewer.keyboard.press('Tab');await viewer.evaluate(()=>window.mirror.renderer.inputChain);
       await next();await next();
-      const focusedSource=await evaluate(`document.activeElement?.tagName`);
-      const focusedClient=await viewer.evaluate(()=>window.mirror.renderer.frame.contentDocument.activeElement?.tagName);
-      assert.equal(focusedClient,focusedSource,'MP-08: settled authoritative focus remains observable');
+      const focusedSource=await evaluate(`document.activeElement?.placeholder`);
+      const focusedClient=await viewer.evaluate(()=>{const r=window.mirror.renderer;return r.ids.get(r.frame.contentDocument.activeElement)});
+      assert.equal(focusedSource,'Field B','MP-08: source Tab advances to the unprotected B field');
+      assert.equal(focusedClient,expectedFocus,'MP-08: settled Tab focus advances to the exact B node');
       receipt.security.push({check:'MP-08 source focus advances after local input fence settles',passed:true});
       // Local input can also advance while apply awaits packet hash/resource
       // validation. Capture A, pause that await, then focus/type into B.
