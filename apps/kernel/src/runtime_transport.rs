@@ -387,6 +387,7 @@ impl KernelTransportRuntime {
 struct ConnectionState {
     // MD-3: generated after admission, stable only for this live connection.
     local_terminal_id: String,
+    browser_terminal_contexts: std::collections::BTreeSet<(String, String)>,
     subscription: Option<KernelSubscription>,
     watch_task: Option<JoinHandle<()>>,
 }
@@ -853,6 +854,7 @@ async fn handle_kernel_connection(
         Arc::new(Semaphore::new(CONNECTION_INBOUND_REQUEST_LIMIT));
     let connection_state = Arc::new(Mutex::new(ConnectionState {
         local_terminal_id: format!("{:032x}", rand::random::<u128>()),
+        browser_terminal_contexts: Default::default(),
         subscription: None,
         watch_task: None,
     }));
@@ -1007,6 +1009,12 @@ async fn handle_kernel_connection(
             drop(state);
             detach_connection_subscription(&router, subscription).await;
         }
+    }
+    let contexts = std::mem::take(&mut connection_state.lock().await.browser_terminal_contexts);
+    for (user, actor) in contexts {
+        router
+            .runtime_state()
+            .kernel_browser_terminal_disconnected(&user, &actor);
     }
     writer_task.abort();
 
@@ -1181,6 +1189,16 @@ async fn handle_incoming_payload(
                 causation_id.clone(),
                 &request,
             );
+            if let Ok(context) = router
+                .runtime_state()
+                .kernel_browser_terminal_context(&command)
+            {
+                connection_state
+                    .lock()
+                    .await
+                    .browser_terminal_contexts
+                    .insert(context);
+            }
             let fingerprint = request_is_cacheable(&request)
                 .then(|| CommandFingerprint::from_command_and_request(&command, &request));
             if let Some(fingerprint) = fingerprint.as_ref() {

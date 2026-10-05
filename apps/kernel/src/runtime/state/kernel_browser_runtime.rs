@@ -95,7 +95,7 @@ impl KernelRuntimeState {
         self.kernel_browser_operation(&user, None, "host.browser", params)
             .await
     }
-    fn kernel_browser_terminal_context(
+    pub(crate) fn kernel_browser_terminal_context(
         &self,
         caller: &crate::runtime::command::KernelCommand,
     ) -> Result<(String, String), DaemonError> {
@@ -115,6 +115,12 @@ impl KernelRuntimeState {
             .map_err(|_| host_error("MD-3: invalid caller".into()))?;
         Ok((user, format!("terminal:{:x}", Sha256::digest(bytes))))
     }
+    pub(crate) fn kernel_browser_terminal_disconnected(&self, user: &str, actor: &str) {
+        self.owned
+            .kernel_browser_host
+            .disconnect_terminal(user, actor);
+    }
+
     /// MD-3/display: typed internal seam for the coordinator-owned public adapter.
     /// Retains the capture/Vault barrier; never accepts a client-supplied user/actor.
     pub(crate) async fn kernel_browser_display_request(

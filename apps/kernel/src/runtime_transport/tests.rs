@@ -1739,6 +1739,7 @@ async fn dispatch_transport_test_request(
         &router,
         &Arc::new(Mutex::new(ConnectionState {
             local_terminal_id: "MD-3-test-connection".into(),
+            browser_terminal_contexts: Default::default(),
             subscription: None,
             watch_task: None,
         })),

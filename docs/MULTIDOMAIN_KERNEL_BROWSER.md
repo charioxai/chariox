@@ -58,7 +58,9 @@ receive a cached observation. Browser receipts remain memory-only, preserving
 in-process mutation deduplication without persisting screenshot/frame payloads.
 MD-3 local terminals have a kernel-generated identity per admitted connection.
 Observations and takeover belong to that connection; another terminal cannot
-refresh its input receipt or release its control. Retries on the live connection
+refresh its input receipt or release its control. Closing that connection releases
+its control, withdraws pending takeover, cancels active input and removes its live
+actor/pointer presence. Retries on the live connection
 retain the identity. Reconnecting with an old browser command ID fails closed
 on the caller fingerprint mismatch; clients must observe again and explicitly
 submit a new command, never automatically replay that mutation under a new ID.
