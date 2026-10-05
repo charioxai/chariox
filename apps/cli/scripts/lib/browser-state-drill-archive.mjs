@@ -16,6 +16,9 @@ export function createBrowserStateArchiveFixture({ helper, localDev, runCommand 
     return JSON.parse(result.stdout)
   }
   return {
+    corruptionRejection: localDev
+      ? /archive integrity check failed(?::[\s\S]*managed saved home archive (?:metadata is invalid|digest does not match)|; broker-owned archive was left unchanged)/
+      : /archive integrity check failed.*quarantined/,
     async verify(state) {
       if (!helper) return verifyRetainedRoomArchive(state)
       const receipt = await call("verify", state)
@@ -29,14 +32,16 @@ export function createBrowserStateArchiveFixture({ helper, localDev, runCommand 
       if (!helper) return writeFile(state.home_archive_path, "deliberately corrupted backup archive")
       assert.equal((await call("corrupt", state)).corrupted, true)
     },
-    async verifyQuarantine(state) {
+    async verifyRejectedArchive(state) {
       const receipt = helper ? await call("quarantine", state) : {
         archivePresent: await access(state.home_archive_path).then(() => true, () => false),
         quarantineCount: (await readdir(path.dirname(state.home_archive_path)))
           .filter(entry => entry.startsWith(`${path.basename(state.home_archive_path)}.corrupt-`)).length,
       }
-      assert.equal(receipt.archivePresent, false, "corrupt archive must leave its restore path")
-      assert.equal(receipt.quarantineCount, 1, "corrupt archive must remain in one owned quarantine file")
+      assert.equal(receipt.archivePresent, localDev === true,
+        localDev ? "broker-owned corrupt archive must remain at its restore path" : "corrupt archive must leave its restore path")
+      assert.equal(receipt.quarantineCount, localDev ? 0 : 1,
+        localDev ? "broker-owned corrupt archive must not be moved by the kernel" : "corrupt archive must remain in one owned quarantine file")
     },
   }
 }
