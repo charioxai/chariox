@@ -326,6 +326,7 @@ impl DaemonApp {
         self.recover_pending_slice_backup_restores()?;
         self.reconcile_slice_backup_restore_acknowledgements()?;
         self.restore_normalized_workflow_runtime_state()?;
+        self.retire_restored_meta_tasks()?;
         self.reconcile_restored_default_project_workspaces()?;
         self.remove_restored_projects_without_visible_sessions()?;
         self.reconcile_restored_duplicate_project_names()?;
