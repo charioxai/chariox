@@ -6,26 +6,9 @@ pins. The trusted helper is built here from that immutable public source.
 import argparse, grp, hashlib, json, os, pathlib, pwd, re, shutil, stat, subprocess, tempfile
 
 ENV = {'PATH': '/usr/bin:/bin', 'HOME': '/nonexistent', 'DOCKER_HOST': 'unix:///run/docker.sock', 'DOCKER_CONFIG': '/nonexistent'}
-def refuse(message): raise SystemExit('Local Docker DEV enrollment refused: ' + message)
+from local_docker_install_paths import directory, publish, refuse
 def command(args, environment=ENV):
     return subprocess.run(['/usr/bin/docker', *args], env=environment, check=True, capture_output=True, text=True, timeout=1200).stdout
-
-def directory(path, mode):
-    try: path.mkdir(mode=mode)
-    except FileExistsError: pass
-    metadata = path.lstat()
-    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or stat.S_IMODE(metadata.st_mode) != mode or path.resolve() != path:
-        refuse('incompatible existing public/control directory')
-
-def publish(path, payload, mode):
-    if path.exists() or path.is_symlink():
-        m = path.lstat()
-        if not stat.S_ISREG(m.st_mode) or m.st_uid != 0 or m.st_nlink != 1 or stat.S_IMODE(m.st_mode) != mode or path.read_bytes() != payload:
-            refuse('existing enrollment differs; private state was not changed')
-        return
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
-    try: os.write(fd, payload); os.fsync(fd)
-    finally: os.close(fd)
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--allow-provider-sandbox-compatibility', action='store_true', required=True,

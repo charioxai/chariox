@@ -4,11 +4,14 @@ import ast
 import os
 from pathlib import Path
 import stat
+import sys
 import tempfile
 import unittest
 
 SOURCE = Path(__file__).resolve().parents[1] / 'deploy/local-linux/install-local-docker-dev.py'
 # Execute the real filesystem helpers alone, never privileged installation.
+sys.path.insert(0, str(SOURCE.parent))
+sys.dont_write_bytecode = True
 tree = ast.parse(SOURCE.read_text())
 helpers = ast.Module(body=[node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))
                          or isinstance(node, ast.FunctionDef) and node.name in ('refuse', 'directory', 'publish')], type_ignores=[])
