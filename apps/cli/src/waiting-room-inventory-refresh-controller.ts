@@ -15,6 +15,7 @@ import type {
 } from "./waiting-room-inventory-api.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import type { ManagedEnvironmentCatalog } from "@chariox/kernel-client/ipc-managed-environment-requests"
+import type { LocalIpcClient } from "./ipc.js"
 
 type WaitingRoomInventoryStatus = "loading" | "ready" | "error"
 const maximumTrackedKernelInventories = 64
@@ -48,7 +49,8 @@ type WaitingRoomInventoryRefreshControllerOptions = {
   setProviderAccounts?: (profiles: ProviderAccountProfile[]) => void
   setManagedEnvironmentCatalog?: (catalog: ManagedEnvironmentCatalog | undefined) => void
   getManagedEnvironmentCatalogScope?: (inventory: WaitingRoomInventory) => string
-  applyWorkspaceInventory?: (inventory: WaitingRoomInventory) => void
+  shouldApplyWorkspaceInventory?: (inventory: WaitingRoomInventory) => boolean
+  applyWorkspaceInventory?: (inventory: WaitingRoomInventory, client?: LocalIpcClient) => void | Promise<void>
   setLaunchTarget?: (target: WaitingRoomInventory["launchTarget"]) => void
   setExternalProviderSessions?: (sessions: ExternalProviderSessionRecord[]) => void
   setExternalProviderSessionsPage?: (page: { hasMore: boolean; nextCursor: string | null }) => void
@@ -65,6 +67,7 @@ type WaitingRoomInventoryRefreshControllerOptions = {
 }
 
 export type WaitingRoomInventoryRefreshController = {
+  applyWorkspacePreview(inventory: WaitingRoomInventory, client: LocalIpcClient): Promise<void>
   applyRowsChanged(patch: WaitingRoomRowsChangedPatch): void
   applyRelayStatusChanged(status: RelayStatusView): void
   applyRemoteMachinesChanged(machines: RemoteMachineView[]): void
@@ -200,9 +203,11 @@ export function createWaitingRoomInventoryRefreshController(
       managedEnvironmentCatalogScope = nextManagedEnvironmentCatalogScope
       options.setManagedEnvironmentCatalog?.(undefined)
     }
-    options.applyWorkspaceInventory?.(snapshot)
-    options.setLaunchTarget?.(snapshot.launchTarget)
-    options.setProjects?.(snapshot.projects ?? [])
+    if (options.shouldApplyWorkspaceInventory?.(snapshot) !== false) {
+      options.applyWorkspaceInventory?.(snapshot)
+      options.setLaunchTarget?.(snapshot.launchTarget)
+      options.setProjects?.(snapshot.projects ?? [])
+    }
     const externalProviderSessionsPage = {
       ...(snapshot.externalProviderSessions !== undefined ? { externalProviderSessions: snapshot.externalProviderSessions } : {}),
       ...(snapshot.externalProviderSessionsHasMore !== undefined
@@ -239,6 +244,15 @@ export function createWaitingRoomInventoryRefreshController(
   }
 
   return {
+    async applyWorkspacePreview(inventory, client) {
+      rememberInventory(inventory)
+      options.persistInventory?.(inventory)
+      options.setAvailableSessions(visibleSessions(inventoriesByKernel, currentDirectTargetKernelId(options)))
+      options.setLaunchTarget?.(inventory.launchTarget)
+      options.setProjects?.(inventory.projects ?? [])
+      await options.applyWorkspaceInventory?.(inventory, client)
+      options.reconcileWaitingRoom(options.getWaitingRoomState())
+    },
     applyRowsChanged(patch) {
       if (!options.isKernelConnected()) {
         return
@@ -281,7 +295,9 @@ export function createWaitingRoomInventoryRefreshController(
         rememberInventory(nextInventory)
         options.persistInventory?.(nextInventory)
         options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
-        options.setProjects?.(nextInventory.projects)
+        if (options.shouldApplyWorkspaceInventory?.(nextInventory) !== false) {
+          options.setProjects?.(nextInventory.projects)
+        }
       } else {
         options.setAvailableSessions(mergeWaitingRoomSessionRows(
           currentInventoryVersion === null ? [] : options.getAvailableSessions(),

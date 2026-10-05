@@ -41,7 +41,7 @@ export function createWaitingRoomWorkspaceController(deps: {
     deps.render()
   }
 
-  async function applyInventory(inventory: WaitingRoomInventory): Promise<void> {
+  async function applyInventory(inventory: WaitingRoomInventory, send = deps.send): Promise<void> {
     if (pendingMachineId && pendingMachineId !== inventory.machineId) return
     const previousMachine = machineId
     remember()
@@ -64,7 +64,7 @@ export function createWaitingRoomWorkspaceController(deps: {
     deps.render()
     const requestedGeneration = ++generation
     if (!workspace) return
-    const { worktrees, disabledHint } = await loadWaitingRoomKernelWorktrees(deps.send, workspace)
+    const { worktrees, disabledHint } = await loadWaitingRoomKernelWorktrees(send, workspace)
     if (requestedGeneration !== generation || deps.getWorkspace() !== workspace || inventory.machineId !== machineId) return
     setWaitingRoomKernelWorktrees(workspace, workspace, worktrees, disabledHint)
     deps.render()
@@ -104,10 +104,19 @@ export function createWaitingRoomWorkspacePlacementController(deps: {
   managedEnvironments?(): readonly { environmentId: string; runtimeMachineId: string | null }[]
   beginMachineSelection(machineId: string): void
   connect(kernelRef: string, machineRef: string | undefined, isActive: () => boolean): Promise<boolean>
+  browseManaged?(kernelRef: string, machineId: string, isActive: () => boolean): Promise<void>
   refresh(): Promise<void>
   failure(error: unknown): void
 }) {
+  let browsingManagedWorkspace = false
   return {
+    acceptsInventory(machineId: string) {
+      const environmentId = managedEnvironmentIdFromMachineRef(deps.getState().selectedMachineRef)
+      const selectedMachineId = environmentId
+        ? deps.managedEnvironments?.().find(environment => environment.environmentId === environmentId)?.runtimeMachineId
+        : null
+      return !browsingManagedWorkspace || !selectedMachineId || selectedMachineId === machineId
+    },
     select(state: WaitingRoomState) {
       if (!state.selectedKernelRef) return
       const kernelRef = state.selectedKernelRef
@@ -119,8 +128,12 @@ export function createWaitingRoomWorkspacePlacementController(deps: {
       if (machineId) deps.beginMachineSelection(machineId)
       const isActive = () => deps.getState().selectedKernelRef === kernelRef
         && deps.getState().selectedMachineRef === machineRef
-      void deps.connect(kernelRef, machineRef, isActive).then(async connected => {
-        if (connected && isActive()) await deps.refresh()
+      const browseManaged = environmentId && machineId ? deps.browseManaged : undefined
+      browsingManagedWorkspace = Boolean(browseManaged)
+      void deps.connect(browseManaged ? "local" : kernelRef, browseManaged ? "local" : machineRef, isActive).then(async connected => {
+        if (!connected || !isActive()) return
+        if (browseManaged) await browseManaged(kernelRef, machineId!, isActive)
+        else await deps.refresh()
       }).catch(deps.failure)
     },
   }
