@@ -1,4 +1,3 @@
-import { refreshWaitingRoomKernelWorktrees } from "./waiting-room-workspace-controller.js"
 import { appHostOperationIds, type AppHostTerminal } from "./app-host-action.js"
 import { getAppInstallationRequest } from "@chariox/kernel-client/ipc-requests"
 import type { AppInstallationSummary } from "@chariox/kernel-client/kernel-types"
@@ -210,6 +209,7 @@ export type CliCommandActionCompositionDeps = {
   initialWorktreeTarget: string
   pendingWorkspaceTarget: AnyFn
   pendingWorktreeTarget: AnyFn
+  editWaitingRoomWorkspace: (path: string) => Promise<void>
   setPendingWorkspaceTarget: AnyFn
   setPendingWorktreeTarget: AnyFn
   isAttached: AnyFn
@@ -452,8 +452,11 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getWorkspaceTarget: pendingWorkspaceTarget,
     getWorktreeTarget: pendingWorktreeTarget,
     setWorkspaceTarget: (path: string) => {
-      setPendingWorkspaceTarget(path)
-      void refreshWaitingRoomKernelWorktrees(request => client.send(request), path, pendingWorkspaceTarget)
+      if (isAttached()) {
+        setPendingWorkspaceTarget(path)
+        return
+      }
+      void deps.editWaitingRoomWorkspace(path)
         .then(() => deps.rebuildTranscript())
         .catch(error => flashFooter(deps.formatError(error), "error"))
     },

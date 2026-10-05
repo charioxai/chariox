@@ -1,8 +1,9 @@
 import { waitingRoomStartRows } from "./waiting-room-start-rows.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
+import { managedEnvironmentMachineRef, NEW_MANAGED_MACHINE_REF } from "./waiting-room-managed-environments.js"
 import assert from "node:assert/strict"
 import test from "node:test"
-import { createWaitingRoomWorkspaceController, createWaitingRoomWorkspacePlacementController } from "./waiting-room-workspace-controller.js"
+import { createWaitingRoomWorkspaceController, createWaitingRoomWorkspacePlacementController, waitingRoomWorkspaceSelection } from "./waiting-room-workspace-controller.js"
 import type { WaitingRoomInventory } from "./waiting-room-inventory-api.js"
 import { clearWaitingRoomWorktreeInventory, describeWaitingRoomWorktreeSelection, resolvePendingWaitingRoomWorktreePath, stageWaitingRoomWorktreeSelection, waitingRoomWorktreeDisabledHint, waitingRoomWorktreeOptions } from "./waiting-room-worktrees.js"
 
@@ -159,3 +160,121 @@ for (const disabledState of ["not-repository", "unborn"] as const) {
     } finally { clearWaitingRoomWorktreeInventory() }
   })
 }
+
+for (const scenario of ["machine", "same-machine kernel", "identical paths", "selection ABA", "managed workspace edit"] as const) {
+  for (const deferredRead of ["worktrees", "overview"] as const) {
+    test(`TUI filesystem read interleaving: ${scenario}, deferred ${deferredRead}`, async () => {
+      let selected = { machineId: "machine-a", kernelId: "kernel-a1" }
+      let workspace = "/shared/repo"
+      let defer = false
+      let finish!: (response: unknown) => void
+      const response = new Promise(resolve => { finish = resolve })
+      const requests: Array<{ kernelId: string; request: Record<string, unknown> }> = []
+      const closed: string[] = []
+      const controller = createWaitingRoomWorkspaceController({
+        getWorkspace: () => workspace, setWorkspace: path => { workspace = path }, setWorktree: () => {},
+        resetSelection: () => {}, render: () => {}, getSelection: () => selected,
+        send: async () => { throw new Error("must not read through home") },
+        withClient: async (token, read) => {
+          const kernelId = token.kernelId
+          try {
+            await read({ send: async <T>(request: unknown) => {
+              const message = request as Record<string, unknown>
+              requests.push({ kernelId, request: message })
+              if ("ListWorkspaceWorktrees" in message) {
+                if (defer && deferredRead === "worktrees") return await response as T
+                return { WorkspaceWorktreesListed: { worktrees: defer && deferredRead === "overview" ? []
+                  : [{ path: token.path, branch: `fresh-${kernelId}`, current: true }] } } as T
+              }
+              if (defer) return await response as T
+              return { WorkspaceGitOverview: { overview: { repo_root: token.path, compare_refs: [{ name: "HEAD" }] } } } as T
+            } })
+          } finally { closed.push(kernelId) }
+        },
+      })
+      try {
+        await controller.applyInventory({ ...inventory("machine-a", workspace), kernelId: "kernel-a1" })
+        defer = true
+        const pending = controller.editWorkspace(workspace)
+        await new Promise(resolve => setImmediate(resolve))
+        assert.equal(controller.isLoading(), true)
+        assert.equal(requests.at(-1)?.kernelId, "kernel-a1")
+        defer = false
+        if (scenario === "managed workspace edit") {
+          // A managed preview retains home control; the edited path still reads kernel-a1.
+          await controller.editWorkspace("/remote-only/repo")
+        } else {
+          const nextMachine = scenario === "same-machine kernel" ? "machine-a" : "machine-b"
+          selected = { machineId: nextMachine, kernelId: nextMachine === "machine-a" ? "kernel-a2" : "kernel-b" }
+          controller.beginMachineSelection(selected.machineId, selected.kernelId)
+          assert.equal(controller.isLoading(), false)
+          if (scenario === "selection ABA") {
+            selected = { machineId: "machine-a", kernelId: "kernel-a1" }
+            controller.beginMachineSelection(selected.machineId, selected.kernelId)
+          }
+          const nextPath = scenario === "machine" ? "/machine-b/repo" : "/shared/repo"
+          await controller.applyInventory({ ...inventory(selected.machineId, nextPath), kernelId: selected.kernelId })
+        }
+        const ready = waitingRoomWorktreeOptions().map(option => ({ ...option }))
+        assert.ok(ready.some(option => option.kind === "existing" && option.branch === `fresh-${selected.kernelId}`))
+        finish(deferredRead === "worktrees"
+          ? { WorkspaceWorktreesListed: { worktrees: [] } }
+          : { WorkspaceGitOverview: { overview: { repo_root: null, compare_refs: [] } } })
+        await pending
+        assert.deepEqual(waitingRoomWorktreeOptions(), ready)
+        assert.equal(waitingRoomWorktreeDisabledHint(), null)
+        assert.equal(controller.isLoading(), false)
+        assert.equal(closed.length, 3)
+        assert.equal(requests.filter(call => "GetWorkspaceGitOverview" in call.request).length, deferredRead === "overview" ? 1 : 0)
+      } finally { finish({ WorkspaceWorktreesListed: { worktrees: [] } }); clearWaitingRoomWorktreeInventory() }
+    })
+  }
+}
+
+for (const change of ["workspace edit", "kernel ABA", "machine ABA"] as const) {
+  test(`TUI fences ordinary workspace snapshots across ${change}`, async () => {
+    let selected = { machineId: "a", kernelId: "a-1" }
+    let workspace = "/shared/repo"
+    let reads = 0
+    const controller = createWaitingRoomWorkspaceController({
+      getWorkspace: () => workspace, setWorkspace: path => { workspace = path }, setWorktree: () => {},
+      getSelection: () => selected, resetSelection: () => {}, render: () => {},
+      send: async <T>() => { reads++; return { WorkspaceWorktreesListed: { worktrees: [{ path: workspace, branch: "fresh", current: true }] } } as T },
+    })
+    const old = inventory("a", workspace)
+    let finish!: (snapshot: WaitingRoomInventory) => void
+    const pending = controller.readInventory(() => new Promise(resolve => { finish = resolve }))
+    try {
+      if (change === "workspace edit") {
+        // Even recommitting the same path invalidates the previous snapshot.
+        await controller.editWorkspace(workspace)
+      } else {
+        selected = change === "kernel ABA" ? { machineId: "a", kernelId: "a-2" } : { machineId: "b", kernelId: "b-1" }
+        controller.beginMachineSelection(selected.machineId, selected.kernelId)
+        selected = { machineId: "a", kernelId: "a-1" }
+        controller.beginMachineSelection(selected.machineId, selected.kernelId)
+        workspace = "/shared/repo"
+      }
+      finish(old)
+      await pending
+      const previousReads = reads
+      assert.equal(controller.acceptsInventory(old), false)
+      await controller.applyInventory(old)
+      assert.equal(reads, previousReads)
+      assert.equal(controller.isLoading(), false)
+      const fresh = await controller.readInventory(async () => ({ ...old }))
+      assert.equal(controller.acceptsInventory(fresh), true)
+    } finally { clearWaitingRoomWorktreeInventory() }
+  })
+}
+
+test("TUI does not use the home kernel as a filesystem fallback for an unconnected managed machine", () => {
+  const target = waitingRoomWorkspaceSelection({ selectedMachineRef: managedEnvironmentMachineRef("env") },
+    { machineId: "home-machine", kernelId: "home-kernel" }, [{ environmentId: "env", runtimeMachineId: "remote-machine" }])
+  assert.deepEqual(target, { machineId: "remote-machine", kernelId: "" })
+})
+
+test("TUI machine creation keeps source filesystem identity separate from the requested placement", () => {
+  assert.deepEqual(waitingRoomWorkspaceSelection({ selectedMachineRef: NEW_MANAGED_MACHINE_REF },
+    { machineId: "home-machine", kernelId: "home-kernel" }, []), { machineId: "home-machine", kernelId: "home-kernel" })
+})

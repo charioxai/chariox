@@ -1,5 +1,5 @@
 import type { WaitingRoomState } from "./waiting-room-types.js"
-import { createWaitingRoomWorkspaceController, createWaitingRoomWorkspacePlacementController } from "./waiting-room-workspace-controller.js"
+import { createWaitingRoomWorkspaceController, createWaitingRoomWorkspacePlacementController, waitingRoomWorkspaceSelection } from "./waiting-room-workspace-controller.js"
 import { randomUUID } from "node:crypto"
 import { mergeExternalProviderSessionsSorted } from "@chariox/kernel-client/external-provider-sessions"
 import { updateAgentConfig, updateAgentProfile } from "./agent-api.js"
@@ -229,6 +229,10 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     setWorktree: deps.setPendingWorktreeTarget,
     resetSelection: () => deps.setWaitingRoomState({ ...deps.waitingRoomState(), worktreeSelectionId: "", projectSelectionId: "default" }),
     send: (request) => deps.client.send(request),
+    getSelection: () => waitingRoomWorkspaceSelection(deps.waitingRoomState(), { machineId: homeMachineId, kernelId: homeKernelId }, managedEnvironmentCatalog?.environments ?? []),
+    withClient: (token, read) => kernelConnectionController.readWorkspace({
+      ...token, isActive: () => waitingRoomWorkspaceController.isCurrent(token),
+    }, read),
     render: deps.rebuildTranscript,
   })
   const waitingRoomReconcileController = createWaitingRoomReconcileController({
@@ -327,7 +331,14 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     getInventoryStatus: deps.waitingRoomInventoryStatus,
     setInventoryStatus: deps.setWaitingRoomInventoryStatus,
     getWaitingRoomState: deps.waitingRoomState,
-    getInventory: () => getWaitingRoomInventory(deps.client),
+    getInventory: async () => {
+      const inventory = await waitingRoomWorkspaceController.readInventory(() => getWaitingRoomInventory(deps.client.currentClient()))
+      if (!homeKernelId) {
+        homeKernelId = inventory.kernelId
+        homeMachineId = inventory.machineId
+      }
+      return inventory
+    },
     isKernelHidden: deps.waitingRoomHiddenKernelController.isKernelHidden,
     getAvailableSessions: deps.availableSessions,
     setAvailableSessions: deps.setAvailableSessions,
@@ -350,12 +361,9 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
         profile?.realmId ?? null,
       ])
     },
-    shouldApplyWorkspaceInventory: (inventory) => workspacePlacementController?.acceptsInventory(inventory.machineId) ?? true,
+    shouldApplyWorkspaceInventory: (inventory) => waitingRoomWorkspaceController.acceptsInventory(inventory)
+      && (workspacePlacementController?.acceptsInventory(inventory.machineId, inventory.kernelId) ?? true),
     applyWorkspaceInventory: (inventory, client) => {
-      if (!homeKernelId) {
-        homeKernelId = inventory.kernelId
-        homeMachineId = inventory.machineId
-      }
       return waitingRoomWorkspaceController.applyInventory(inventory, client ? request => client.send(request) : undefined)
         .then(() => reconcileWaitingRoomProjection(deps.waitingRoomState()))
         .catch((error) => deps.flashFooter(deps.formatError(error), "error"))
@@ -419,9 +427,19 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     managedEnvironments: () => managedEnvironmentCatalog?.environments ?? [],
     beginMachineSelection: waitingRoomWorkspaceController.beginMachineSelection,
     connect: replaceClientForKernel,
-    browseManaged: (kernelRef, machineRef, isActive) => browseWaitingRoomKernelWorkspace(deps.client, {
-      kernelRef, machineRef, clientId: deps.options.clientId, isActive,
-    }, waitingRoomInventoryRefreshController.applyWorkspacePreview),
+    homeKernelId: () => homeKernelId,
+    workspaceLoading: waitingRoomWorkspaceController.isLoading,
+    browseManaged: async (kernelRef, machineRef, isActive) => {
+      const token = waitingRoomWorkspaceController.captureRequest()
+      try {
+        await browseWaitingRoomKernelWorkspace(deps.client, {
+          kernelRef, machineRef, clientId: deps.options.clientId,
+          isActive: () => isActive() && waitingRoomWorkspaceController.isCurrent(token),
+        }, waitingRoomInventoryRefreshController.applyWorkspacePreview)
+      } finally {
+        waitingRoomWorkspaceController.finishRequest(token)
+      }
+    },
     refresh: refreshWaitingRoomDataNow,
     failure: (error) => deps.flashFooter(deps.formatError(error), "error"),
   })
@@ -698,7 +716,8 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     },
     prepareSessionOwnerClient: async (launch) => {
       await replaceClientForKernel(launch.ownerKernelRef, launch.ownerMachineRef)
-      await waitingRoomWorkspaceController.applyInventory(await getWaitingRoomInventory(deps.client))
+      const inventory = await waitingRoomWorkspaceController.readInventory(() => getWaitingRoomInventory(deps.client.currentClient()))
+      await waitingRoomWorkspaceController.applyInventory(inventory)
     },
     prepareManagedSessionLaunch,
     prepareExistingSessionClient: async (session) => {
@@ -1013,6 +1032,10 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     projectEnvironmentSetupProjection,
     refreshWaitingRoomData,
     refreshWaitingRoomDataNow,
+    editWaitingRoomWorkspace: async (path: string) => {
+      await waitingRoomWorkspaceController.editWorkspace(path)
+      reconcileWaitingRoomProjection(deps.waitingRoomState())
+    },
     reimageManagedEnvironment,
     startSessionFromWaitingRoomDefaults,
     waitingRoomTargets,
