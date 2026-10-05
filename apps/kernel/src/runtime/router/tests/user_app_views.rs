@@ -34,11 +34,13 @@ impl Drop for Scratch {
     }
 }
 
-async fn request(
-    router: &CommandRouter,
-    user: &str,
+fn request<'a>(
+    router: &'a CommandRouter,
+    user: &'a str,
     request: LocalDaemonRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<LocalDaemonResponse, DaemonError>> + Send + 'a>> {
+    // MD-APP: allocate each dispatch at construction, before composing the drill.
+    Box::pin(async move {
     let mut command = remote_command_for_request(&request, Some(user));
     command.command_id = format!("user-view-{:016x}", rand::random::<u64>());
     command.caller.connection_class = Some(KernelConnectionClass::Terminal);
@@ -46,6 +48,7 @@ async fn request(
     assert!(std::mem::size_of_val(&dispatch) < 64 * 1024,
         "MD-APP/MD-4: App-view admission must fit an ordinary caller stack");
     Box::pin(dispatch).await
+    })
 }
 fn snapshot() -> LocalDaemonRequest {
     LocalDaemonRequest::SubscribeUserAppViews(SubscribeUserAppViewsRequest {
@@ -531,10 +534,11 @@ async fn user_app_view_detached_decision_uses_the_sessionless_reply_contract() {
     assert!(sessions.list_sessions().is_empty());
 }
 
-async fn browser_request(
+fn browser_request(
     router: &CommandRouter,
     command: KernelBrowserCommand,
-) -> serde_json::Value {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    Box::pin(async move {
     let LocalDaemonResponse::KernelBrowser { result } = request(
         router,
         "alice",
@@ -545,6 +549,7 @@ async fn browser_request(
         panic!("browser response")
     };
     result
+    })
 }
 
 async fn check_browser_page(
