@@ -1,32 +1,31 @@
-# MD-DISPLAY-02/04 — Phase 4 latency work in progress
+# MD-DISPLAY-02/04 — Phase 4 local latency, in progress
 
-2026-10-05: execution source 501c53dfc; harness follow-up c89d6a73b.
-Protocol 419 and default-off flag unchanged. Instrumented baseline at cb382fb22:
-p50/p95 744/778 ms. Full-readback optimization at 8473bf69a: 437/456 ms,
-exact settled/patch RGB, stale input and takeover/release pass. Both remain RED
-against p50 <=80 / p95 <=150 ms. Detailed raw stages remain in phase4 receipts.
+2026-10-05 03:24 UTC: source 05387e1e4, reserved slot 2 build passes.
+Protocol 419, feature defaults off. Two end-to-end DPR2/2Mbps runs passed
+p50/p95 78.10/106.60 and 72.80/88.60 ms, exact settled RGB, 20/20 visual
+acks each, stale-document/takeover/release and owned cleanup. A third clean
+run was RED on p50 88.50 ms (p95 100.20); do not hide that variability.
+Native crop bounds now limit tile scanning; measuring the correction.
 
-Largest causes: per-RPC process membership scans (14/click), full DPR2 PNG
-readback/decoding, event batching. Small admitted display events bypass batching;
-large frames retain bounded event credit. 16 KiB maximum accrued bitrate credit.
-Now testing incremental identity reads with fresh full verification at signal
-and protected thumbnail-guided native DPR crops with full idle verification.
-Focused Node checks pass; build in reserved slot 2; >16 GiB memory floor retained.
-No acceptance closure. Historical receipts keep original commits.
+MD-DISPLAY-04 review 02:17: all three fail-first fixes implemented. Real
+100s/254 polls followed by live input passes registration renewal. Its dirty
+flag records a temporary test dependency symlink, now removed; execution
+files were unchanged. IPC cursor 500 survives transient display/reconnect;
+uncached display_next has no automatic stall/loss replay. Node39 / Rust13 /
+IPC11 / TS and formatting pass. Current binary includes native tile bounds.
 
-MD-DISPLAY-02 cleanup: every completed drill removed exact owned groups and
-scratch; no containers, provider accounts, other lanes or shared caches touched.
-New ownership fixture failed because of a missing synthetic /proc stat field;
-corrected in 501c53dfc, final Rust checks pending. Signal guard logic preserved.
+MD-DISPLAY-02 evidence stays external under display/phase4, original source
+identities preserved. Every finished live run settles owned groups and removes
+exact scratch. No shared resources, accounts, Docker, CI, push or deployment.
 
 ## Coordinator asks
 
-MD-DISPLAY-04: 01:35 REVIEW_INBOX mapping remains handled in Phase 3. No newer
-inbox present. No protocol request, push/PR/CI/merge/deploy/Cloud action.
-Phase4 evidence: /root/.codex/evidence/browser-resume-20260930/display/phase4/.
+MD-DISPLAY-04: REVIEW_INBOX 01:35 and 02:17 handled; no newer entries at 03:24.
+No allocation change: local419, relay unchanged. No PID1 signal from this lane;
+phase3 startup audit and guarded ownership/cleanup remain in evidence.
 
 ## Owner questions
 
-MD-DISPLAY-04: transport design, moving-frame quality and native OS/Room gates
-remain open. Crops are an experimental first paint; full idle readback verifies
-fine details missed by the private thumbnail. Feature remains off.
+MD-DISPLAY-04: moving fidelity, WAN/Cloud, native OS, live Vault, Room migration
+and final transport design remain owner acceptance gates. Small crop paint is
+a damage heuristic; full protected settled verification establishes exactness.
