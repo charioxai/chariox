@@ -13,6 +13,7 @@ import { assertNotCancelled, assertCurrentDocument } from "./browser-controller-
 import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
 
 import { DisplayStream } from "./kernel-browser-display.mjs";
+import { DisplayCapture } from './kernel-browser-display-capture.mjs';
 
 const TAB_LIMIT = 128;
 function restorationUrl(url) {
@@ -189,7 +190,7 @@ export class KernelBrowserHost {
     }
     return { ...stored, document_id };
   }
-  async screenshot(tab) {
+  async screenshot(tab, clip = null) {
     const started = timestamp();
     const scale = this.scales.get(tab.tab_id) ?? 1;
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
@@ -197,14 +198,14 @@ export class KernelBrowserHost {
     const data = await captureProtectedPage(this.browser, tab, this.protection.values,
       this.protection.targets.filter(target => target.kind === "browser"), async () => {
         const at = timestamp();
-        const { data } = await connection.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false, optimizeForSpeed: true }, sessionId);
-        this.timing('cdp_capture', at);
+        const { data } = await connection.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false, optimizeForSpeed: true, ...(clip ? { clip } : {}) }, sessionId);
+        this.timing(clip?.scale < 1 ? 'cdp_preview' : clip ? 'cdp_crop' : 'cdp_capture', at);
         return data;
-      }, scale);
+      }, scale, clip);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
     this.timing('protected_capture', started);
     if (typeof data !== "string" || data.length > 4 * 1024 * 1024) throw new Error("MD-2: frame exceeds limit");
-    return { generation: this.generation, tab_id: tab.tab_id, document_id: tab.document_id, mime_type: "image/png", data_base64: data, width: 1280 * scale, height: 800 * scale };
+    return { generation: this.generation, tab_id: tab.tab_id, document_id: tab.document_id, mime_type: "image/png", data_base64: data, width: Math.round((clip?.width ?? 1280) * scale * (clip?.scale ?? 1)), height: Math.round((clip?.height ?? 800) * scale * (clip?.scale ?? 1)) };
   }
   async subscribe(tab, boundFrames = false) {
     if (this.streams.size >= 16) throw new Error("MD-2: frame subscription limit reached");
@@ -308,7 +309,8 @@ export class KernelBrowserHost {
       this.armDisplayExpiry(stream);
       if (command.op === "display_attach") return { attached: true, generation: this.generation };
       const tab = await this.displayTarget({ tab_id: stream.tab_id, generation: command.generation });
-      const source = await this.screenshot(tab);
+      stream.capture ??= new DisplayCapture((clip) => this.screenshot(tab, clip), stream.device_scale_factor, this.timing);
+      const source = await stream.capture.next(tab, this.protection, stream.previous && command.after_sequence === stream.sequence);
       const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
       try { await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id); }
       catch (error) { stream.invalidate(); throw error; }
