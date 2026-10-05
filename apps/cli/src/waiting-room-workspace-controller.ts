@@ -242,20 +242,24 @@ export function createWaitingRoomWorkspacePlacementController(deps: {
       }
     },
     select(state: WaitingRoomState) {
-      if (!state.selectedKernelRef) return
-      const kernelRef = state.selectedKernelRef
+      const creatingMachine = state.selectedMachineRef === NEW_MANAGED_MACHINE_REF
+      if (!state.selectedKernelRef && !creatingMachine) return
+      const kernelRef = state.selectedKernelRef ?? ""
       const machineRef = state.selectedMachineRef
       const requestedGeneration = ++placementGeneration
       const environmentId = managedEnvironmentIdFromMachineRef(machineRef)
-      const machineId = machineRef === "local" ? deps.homeMachineId()
-        : environmentId ? deps.managedEnvironments?.().find(environment => environment.environmentId === environmentId)?.runtimeMachineId
-        : machineRef
-      if (machineId) deps.beginMachineSelection(machineId, kernelRef === "local" ? deps.homeKernelId?.() || undefined : kernelRef)
-      const isActive = () => requestedGeneration === placementGeneration && deps.getState().selectedKernelRef === kernelRef
+      // Creation has no destination kernel yet; its filesystem source is home.
+      const source = waitingRoomWorkspaceSelection(state, {
+        machineId: deps.homeMachineId(), kernelId: deps.homeKernelId?.() || null,
+      }, deps.managedEnvironments?.() ?? [])
+      const machineId = source.machineId
+      if (machineId) deps.beginMachineSelection(machineId, source.kernelId || undefined)
+      const isActive = () => requestedGeneration === placementGeneration && (deps.getState().selectedKernelRef ?? "") === kernelRef
         && deps.getState().selectedMachineRef === machineRef
       const browseManaged = environmentId && machineId ? deps.browseManaged : undefined
       browsingManagedWorkspace = Boolean(browseManaged)
-      void deps.connect(browseManaged ? "local" : kernelRef, browseManaged ? "local" : machineRef, isActive).then(async connected => {
+      const connectHome = browseManaged || creatingMachine
+      void deps.connect(connectHome ? "local" : kernelRef, connectHome ? "local" : machineRef, isActive).then(async connected => {
         if (!connected || !isActive()) return
         if (browseManaged) await browseManaged(kernelRef, machineId!, isActive)
         else await deps.refresh()
