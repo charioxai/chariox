@@ -66,7 +66,9 @@ exceed that allowance but still must fit the 1 MiB event bound. Larger moving
 changes use continuous inter-predicted video. Four admitted credits normally
 pipeline capture/delivery; the client may select one to eight with a 1 MiB
 receive reservation and bounded source recovery window. A per-user async capture
-gate waits outside the blocking host mutex; source and encoder remain serial.
+gate waits outside the blocking host mutex and yields to pending admitted input;
+source and encoder remain serial. Input admission drops on completion/error/
+cancellation; capture cancellation releases its slot.
 Unchanged motion pixels skip encoding and emission. Empty credits back off
 32–100 ms independently of receipt ordering; recent motion uses 8–33 ms.
 Input or changed frames wakes all parked slots. No automatic retry or
@@ -79,11 +81,9 @@ Scrolled/zoomed/uncertain viewports use full protected capture: native CDP clips
 are page rectangles, while the damage hint is a viewport rectangle. A thumbnail never supplies displayed pixels or
 crosses the relay. It locates a padded CSS rectangle (at most 15% of the viewport)
 that is captured at native DPR and merged into the protected pixel base. It is
-a damage hint: fine changes elsewhere can be missed in the first paint. After a crop, full protected readback verifies settled detail. With an empty
-Vault registry, active inputs coalesce this verification until 150 ms of input
-quiet. Intermediate crops can miss fine changes outside their rectangle; they
-do not establish whole-source exactness. With active secrets, verification is
-immediate. Empty-policy unchanged verified pixels can be reused for at most
+a damage hint: fine changes elsewhere can be missed in the first paint. The next poll after a crop without new input forces full protected readback
+to verify settled detail. Intermediate crops can miss fine changes outside their
+rectangle; they do not establish whole-source exactness. Empty-policy unchanged verified pixels can be reused for at most
 250 ms while idle; thumbnail equality alone never establishes exactness. A complete
 protected PNG that matches a previously decoded PNG byte for byte reuses that
 immutable native pixel buffer, avoiding duplicate decoding while still verifying
@@ -489,7 +489,7 @@ fixture HTTP, CDP control and the kernel-to-relay leg are unshaped. The proxy
 forwards opaque bytes. Namespace-only loopback MTU is 1500, TSO/GSO/GRO are off;
 no host default interface is touched. Delay is applied both ways, jitter is
 normal, loss is random 1%, and the cap is shared by both directions. Raw netem
-settings, seeds, packet/drop counters, commands and cleanup are in receipts.
+settings, packet/drop counters, commands and cleanup are in receipts.
 This emulates one client/relay WAN leg, not two distant kernel/client legs.
 
 | Profile | RTT / jitter / cap | Input p50 / p95 ms | Initial exact repair s | Received application KB/s during clicks |

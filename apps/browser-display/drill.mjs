@@ -226,8 +226,8 @@ try {
  if(firstResource){const byPid=new Map(firstResource.processes.map(process=>[process.pid,process.cpu_ticks]));const delta=endResource.processes.reduce((total,process)=>total+Math.max(0,process.cpu_ticks-(byPid.get(process.pid)??process.cpu_ticks)),0);receipt.observed_owned_cpu_percent=delta/100/((endResource.at_ms-firstResource.at_ms)/1000)*100;receipt.cpu_note='live process deltas at Linux CLK_TCK=100; excludes already-exited encoder processes';}
  receipt.latency=distribution(probes);receipt.measurement_duration_ms=performance.now()-start;receipt.measured_local_response_bytes=(await page.evaluate(()=>mdWireBytes))-startBytes;receipt.local_bytes_per_second=receipt.measured_local_response_bytes*1000/receipt.measurement_duration_ms;receipt.frames=await page.evaluate(()=>mdFrames);receipt.client_timings=await page.evaluate(()=>mdTimings);
  receipt.after_input_verification=await page.evaluate(async()=>{const frame=await mdStream.next();return frame?{kind:frame.kind,sequence:frame.sequence}:null});
- await drainRepairs(()=>page.evaluate(()=>mdStream.next()));
- receipt.final_fidelity=await pair('after-input');
+ const inputVerified=await verifySettled(()=>page.evaluate(()=>mdStream.next()),attempt=>pair('after-input-verification-'+attempt));
+ receipt.final_fidelity=inputVerified.fidelity;receipt.final_verification_attempts=inputVerified.verification_attempts;
  if(!receipt.final_fidelity.lossless)throw Error('MD-DISPLAY: small-change pixels differ');
  // Full navigation preserves the display subscription and rotates its source.
  const oldDocument=await page.evaluate(()=>mdStream.presenter.documentId);
@@ -236,8 +236,8 @@ try {
  assertIndependentNavigation(navigated,oldDocument,await page.evaluate(()=>mdStream.binding.codec));
  const oldRejected=await page.evaluate(async document=>{try{await mdTransport.request({KernelBrowser:{command:{op:'display_input',tab_id:mdStream.binding.tab_id,generation:mdStream.binding.generation,document_id:document,input:{kind:'click',x:100,y:200}}}});return false}catch{return true}},oldDocument);
  if(!oldRejected)throw Error('MD-DISPLAY: navigated document accepted stale input');
- const navigation=await drainRepairs(()=>page.evaluate(()=>mdStream.next()));
- receipt.navigation={independent_kind:navigated.kind,changed_document:true,stale_input_rejected:oldRejected,repair_polls:navigation.polls,fidelity:await pair('after-navigation')};
+ const navigation=await verifySettled(()=>page.evaluate(()=>mdStream.next()),attempt=>pair('after-navigation-verification-'+attempt));
+ receipt.navigation={independent_kind:navigated.kind,changed_document:true,stale_input_rejected:oldRejected,repair_polls:navigation.polls,verification_attempts:navigation.verification_attempts,fidelity:navigation.fidelity};
  if(!receipt.navigation.fidelity.lossless)throw Error('MD-DISPLAY: navigated repair is not exact');
  // Explicit stale document must fail through the production input seam.
  const stale=await page.evaluate(async()=>{try{await mdTransport.request({KernelBrowser:{command:{op:'display_input',tab_id:mdStream.binding.tab_id,generation:mdStream.binding.generation,document_id:'stale-fixture-loader',input:{kind:'click',x:1190,y:28}}}});return false}catch{return true}});if(!stale)throw Error('MD-DISPLAY: stale document admitted');receipt.stale_document_rejected=true;

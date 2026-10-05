@@ -1,5 +1,5 @@
 // MD-DISPLAY-02: live presentation cadence and independently labelled fidelity.
-import {drainRepairs} from './drill-settle.mjs';
+import {verifySettled} from './drill-settle.mjs';
 import { distribution } from './drill-metrics.mjs';
 export async function measureWorkload({page,workload,pair,pause,resource,durationMs}) {
  const before=await page.evaluate(()=>({bytes:mdWireBytes,frames:mdFrames.length,presentations:mdPresentations?.length??0}));
@@ -25,11 +25,11 @@ export async function measureWorkload({page,workload,pair,pause,resource,duratio
  await pause(300);const settleStart=performance.now();
  // Record the frozen first-frame quality separately from its exact repair.
  const first=await page.evaluate(()=>mdStream.next());const frozen=await pair('motion-frozen-first');
- const repair=await drainRepairs(()=>page.evaluate(()=>mdStream.next()));const refinements=repair.polls,exact=await pair('motion-settled');
+ const repair=await verifySettled(()=>page.evaluate(()=>mdStream.next()),attempt=>pair('motion-settled-verification-'+attempt));const refinements=repair.polls,exact=repair.fidelity;
  if(!exact.lossless)throw Error('MD-DISPLAY: moving workload did not settle exactly');
  return {workload,duration_ms:motionEnd-started,presented_frames:samples.length,effective_fps:samples.length*1000/(motionEnd-started),
   cadence:distribution(cadence),samples,live_pairs:livePairs,received_application_bytes:after.bytes-before.bytes,application_mbps:(after.bytes-before.bytes)*8/(motionEnd-started)/1000,
   event_mbps:after.frames.slice(before.frames).reduce((n,frame)=>n+frame.bytes,0)*8/(motionEnd-started)/1000,frame_kinds:after.frames.slice(before.frames).map(frame=>frame.kind),freeze_first:{kind:first?.kind??'unchanged',fidelity:frozen},
-  settle_ms:performance.now()-settleStart,refinements,settled_fidelity:exact,
+  settle_ms:performance.now()-settleStart,refinements,verification_attempts:repair.verification_attempts,settled_fidelity:exact,
   limits:'MD-DISPLAY: bounded continuous or sequential credits, rAF/canvas presentation proxy; live pairs have temporal drift. Video is a real HTMLVideoElement playing a 30fps canvas captureStream, not DRM/network media. Measurement readbacks/resource sampling reduce cadence. application_mbps includes unpaced diagnostic capture responses; event_mbps counts only encrypted frame events.'};
 }

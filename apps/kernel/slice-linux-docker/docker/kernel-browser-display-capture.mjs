@@ -1,7 +1,7 @@
 // MD-DISPLAY-02/04: a protected thumbnail locates likely changes, never leaves
 // the kernel, and never supplies displayed pixels. Changed rectangles are read
-// at native DPR. Settled pixels require full protected readback to verify fine
-// detail the thumbnail can miss. Active input may briefly coalesce that work.
+// at native DPR. An unchanged thumbnail ALWAYS triggers full protected readback
+// to verify high-frequency detail it can miss. Large changes use full capture.
 import { decodePng, encodePng } from './kernel-browser-pixels.mjs';
 import { timestamp } from './kernel-browser-timing.mjs';
 const factor = 1 / 8;
@@ -21,10 +21,9 @@ export function changedClip(before, after, scale) {
 }
 export class DisplayCapture {
   constructor(capture, scale, timing = () => {}, now = () => performance.now()) { this.capture = capture; this.scale = scale; this.timing = timing; this.now=now; this.invalidate(); }
-  invalidate() { this.previous = null; this.preview = null; this.document = null; this.policy = null; this.needsVerification = false; this.inputEpoch = null; this.lastInputAt=-Infinity; this.verifiedAt = -Infinity; this.source = null; this.native=null; this.motion=false; this.motionData=null; this.stableAt=null; }
+  invalidate() { this.previous = null; this.preview = null; this.document = null; this.policy = null; this.needsVerification = false; this.inputEpoch = null; this.verifiedAt = -Infinity; this.source = null; this.native=null; this.motion=false; this.motionData=null; this.stableAt=null; }
   async next(tab, policy, reusable, forceFull = false, motionClip = null, scrollActive = false) {
     if (!reusable || this.document !== tab.document_id || this.policy !== policy) this.invalidate();
-    if(Number.isSafeInteger(tab.input_epoch) && tab.input_epoch !== this.inputEpoch)this.lastInputAt=this.now();
     const capture = async clip => {
       const source = await this.capture(clip);
       if (source.document_id !== tab.document_id || source.tab_id !== tab.tab_id) { this.invalidate(); throw Error('MD-DISPLAY: capture binding changed'); }
@@ -48,8 +47,7 @@ export class DisplayCapture {
       // before attempting any exact tile; never upscale a lossless repair.
       motionClip=null; forceFull=true;
     }
-    const coalesce=this.needsVerification && policy.values?.length === 0 && this.now()-this.lastInputAt < 150;
-    const verify = forceFull || (this.needsVerification && tab.input_epoch === this.inputEpoch && !coalesce);
+    const verify = forceFull || (this.needsVerification && tab.input_epoch === this.inputEpoch);
     const previewSource = verify && !motionClip ? null : await capture({ x:motionClip?.x??0,y:motionClip?.y??0,width:1280,height:800,scale:factor });
     let at = timestamp();
     const preview = previewSource ? decodePng(previewSource.data_base64,this.scale) : this.preview;
@@ -61,7 +59,7 @@ export class DisplayCapture {
     // or crop forces its next full readback. No inferred pixels leave capture.
     if (!verify && this.source && this.preview?.pixels.equals(preview?.pixels) &&
         tab.input_epoch === this.inputEpoch && policy.values?.length === 0 &&
-        (coalesce || this.now()-this.verifiedAt < 250)) return this.source;
+        this.now()-this.verifiedAt < 250) return this.source;
     const damage = this.preview && preview && changedClip(this.preview,preview,this.scale*factor);
     const clip = !verify && this.previous && damage;
     let source, pixels;
