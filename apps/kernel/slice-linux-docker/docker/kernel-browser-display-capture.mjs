@@ -45,7 +45,7 @@ export class DisplayCapture {
       for (let row = 0; row < crop.height; row++) crop.pixels.copy(pixels.pixels,
         ((clip.y*this.scale+row)*pixels.width+clip.x*this.scale)*4,row*crop.width*4,(row+1)*crop.width*4);
       this.timing('crop_decode_merge',at);
-      source = { ...source, pixels, full_size_hint:this.fullSize,
+      source = { ...source, pixels, dirty_clip:clip, full_size_hint:this.fullSize,
         data_base64:() => encodePng(pixels.width,pixels.height,pixels.pixels) };
     } else {
       source = await capture(null); at = timestamp();
