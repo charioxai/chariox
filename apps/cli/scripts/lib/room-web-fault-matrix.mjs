@@ -7,6 +7,7 @@ import path from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { startRoomQueuePressure } from './room-web-fault-queue.mjs'
 import { assertWebFaultRecovery, controllerFaultAttributed } from './room-web-fault-invariants.mjs'
+import { findRoomFaultAction } from './room-fault-boundary.mjs'
 
 export function faultRelayCredential(token, ready, mode) {
   if (mode === 'valid') return token
@@ -27,7 +28,7 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
   let latestEnvironment = null
   const rows = []
   const reportPath = path.join(evidenceRoot, 'MP-08-MP-10-webfault-matrix.json')
-  const report = async () => writeFile(reportPath, JSON.stringify({ schema: 'chariox.webfault_matrix.v1', mpItems: ['MP-08', 'MP-10'], scope: 'local provider-free signed 686; no hosted/fresh-machine or official-provider acceptance', rows }, null, 2), { mode: 0o600 })
+  const report = async () => writeFile(reportPath, JSON.stringify({ schema: 'chariox.webfault_matrix.v1', mpItems: ['MP-08', 'MP-10'], scope: 'local provider-free; artifact provenance belongs to the producer receipt; no hosted/fresh-machine or official-provider acceptance', rows }, null, 2), { mode: 0o600 })
   async function control(operation, timeoutMs = 65000) {
     const id = ++sequence
     const temporary = path.join(coordinationDir, 'fault-command.tmp')
@@ -105,12 +106,11 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
       return { response }
     } catch (error) { return { error: String(error.message).slice(0, 300) } }
   }
-  async function waitNewAction(before, state, timeout = 15000) {
-    const ids = new Set(before.page.actions.map(action => action.action_id))
+  async function waitNewAction(before, idempotencyKey, state, timeout = 15000) {
     const deadline = Date.now() + timeout
     while (Date.now() < deadline) {
       const value = await control('state')
-      const action = value.page.actions.find(item => !ids.has(item.action_id) && (!state || item.state === state))
+      const action = findRoomFaultAction(before, value, idempotencyKey, state)
       if (action) return action
       await sleep(100)
     }
@@ -130,6 +130,7 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
   assert.ok(boundaries.length && boundaries.every(boundary => supportedBoundaries.includes(boundary)))
   for (const fault of faults) for (const boundary of boundaries) {
     const label = `${fault}-${boundary}`
+    const operationKey = `webfault-${attempt}-${label}`
     const row = { fault, boundary, status: 'running', startedAt: new Date().toISOString(), assertions: [], errors: [] }
     rows.push(row); await report()
     let pending = null
@@ -146,9 +147,12 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
       // Every in-flight boundary is observed in the authoritative Action ledger.
       // Beginning is before submit, middle after running, commit after completed.
       if (boundary !== 'beginning') {
-        pending = requestAction(`webfault-${attempt}-${label}`)
-        row.operation = await waitNewAction(before, boundary === 'middle' ? 'running' : 'completed')
+        pending = requestAction(operationKey)
+        row.operation = await waitNewAction(before, operationKey, boundary === 'middle' ? 'running' : 'completed')
         if (boundary === 'commit') row.operationResponse = await pending
+        const observed = findRoomFaultAction(before, await control('state'), operationKey, row.operation.state)
+        assert.ok(observed, 'operation left the requested boundary before fault injection')
+        row.boundaryObservation = { actionId: observed.action_id, state: observed.state, observedAt: new Date().toISOString() }
       }
       const triggerAt = Date.now()
       const identityBefore = identityFaultStats?.()
@@ -220,8 +224,8 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
       }
       if (boundary === 'beginning') {
         latestEnvironment = (await freshState()).environment
-        pending = requestAction(`webfault-${attempt}-${label}`)
-        row.operation = await waitNewAction(before, 'completed')
+        pending = requestAction(operationKey)
+        row.operation = await waitNewAction(before, operationKey, 'completed')
         row.operationResponse = await pending
       }
       await control('room_status')

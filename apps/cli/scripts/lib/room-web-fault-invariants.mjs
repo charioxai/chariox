@@ -2,8 +2,10 @@
 import assert from 'node:assert/strict'
 export function controllerFaultAttributed(environment, replay, actions = []) {
   return (environment?.health ?? []).some(item => item.component === 'browser_controller' && (item.state !== 'ready' || item.diagnostic_code))
-    || (replay?.Events?.events ?? []).some(event => event.kind === 'HealthChanged')
-    || actions.some(action => action.state === 'failed' && /controller|process.lost/i.test(JSON.stringify(action.outcome)))
+    // HealthChanged has no component payload. Streamer/browser transitions also
+    // produce it, so replay alone cannot identify the failed component.
+    || actions.some(action => action.state === 'failed'
+      && action.outcome?.code === 'controller_failure')
 }
 export function assertWebFaultRecovery(before, after) {
   for (const key of ['session_id', 'environment_id']) assert.equal(after.environment[key], before.environment[key], `${key} changed`)

@@ -19,7 +19,7 @@ test('a controller component name alone is not evidence of fault attribution', (
 test('MP-08 / MP-10 unrelated process loss cannot attribute a controller fault', () => {
   const healthy = { health: [{ component: 'browser_controller', state: 'ready', diagnostic_code: null }] }
   const action = outcome => [{ state: 'failed', outcome }]
-  assert.equal(controllerFaultAttributed(healthy, null, action({ code: 'streamer_process_lost' })), false)
-  assert.equal(controllerFaultAttributed(healthy, null, action({ code: 'browser_controller_process_lost' })), true)
+  assert.equal(controllerFaultAttributed(healthy, null, action({ status: 'failed', code: 'process_lost' })), false)
+  assert.equal(controllerFaultAttributed(healthy, null, action({ status: 'failed', code: 'controller_failure' })), true)
   assert.equal(controllerFaultAttributed(healthy, null, action({ code: 'browser_action_failed', message: 'controller appears healthy' })), false)
 })
