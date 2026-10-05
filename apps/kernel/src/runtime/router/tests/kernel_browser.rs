@@ -403,6 +403,154 @@ async fn live_check() {
         )
         .await;
         assert!(snapshot.to_string().contains("MD-4 MCP typed"));
+        // MD-3/MD-4: display uses the same profile, actor model, Vault barrier
+        // and document-bound input sink. No browser/session is created for takeover.
+        use crate::runtime::kernel_browser_host::KernelBrowserDocumentBinding;
+        use crate::runtime::state::KernelBrowserDisplayRequest as Display;
+        let caller_request = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
+            command: KernelBrowserCommand::State,
+        });
+        let caller = KernelCommand::from_local_request("MD-3-display", None, None, &caller_request);
+        let runtime = router.runtime_state();
+        let bound_frame = runtime
+            .kernel_browser_display_request(
+                &caller,
+                Display::Capture {
+                    tab_id: id.clone(),
+                    generation,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(bound_frame["document_id"], document);
+        let takeover = runtime
+            .kernel_browser_display_request(
+                &caller,
+                Display::Takeover {
+                    tab_id: id.clone(),
+                    generation,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(takeover["state"], "granted");
+        assert!(router.dispatch_authenticated_runtime_tool_call(&token, "chariox.kernel_browser", json!({"document_id":document,"command":KernelBrowserCommand::Input {tab_id:id.clone(),generation,input:KernelBrowserInput::Text{text:"agent-must-not-run".into()}}})).await.is_err());
+        assert!(router
+            .dispatch_authenticated_runtime_tool_call(
+                &token,
+                "chariox.kernel_browser",
+                json!({"command":{"op":"stop"}})
+            )
+            .await
+            .is_err());
+        let binding = KernelBrowserDocumentBinding {
+            tab_id: id.clone(),
+            generation,
+            document_id: document.clone(),
+        };
+        runtime
+            .kernel_browser_display_request(
+                &caller,
+                Display::Input {
+                    binding: binding.clone(),
+                    input: KernelBrowserInput::Text {
+                        text: "MD-3 human takeover".into(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        let actors = runtime
+            .kernel_browser_display_request(&caller, Display::Actors)
+            .await
+            .unwrap();
+        assert!(actors["actors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|actor| actor["kind"] == "agent"));
+        assert_eq!(actors["input_ownership"][0]["target"]["id"], id);
+        assert!(!actors.to_string().contains("MD-3 human takeover"));
+        let mut foreign = caller.clone();
+        foreign.caller =
+            crate::runtime::command::KernelCaller::for_source(&KernelCommandSource::RelayPeer);
+        assert!(runtime
+            .kernel_browser_display_request(
+                &foreign,
+                Display::Release {
+                    tab_id: id.clone(),
+                    generation
+                }
+            )
+            .await
+            .is_err());
+        let mut stale = binding.clone();
+        stale.document_id = "not-the-captured-document".into();
+        assert!(runtime
+            .kernel_browser_display_request(
+                &caller,
+                Display::Input {
+                    binding: stale,
+                    input: KernelBrowserInput::Text {
+                        text: "stale-must-not-run".into()
+                    }
+                }
+            )
+            .await
+            .is_err());
+        runtime
+            .kernel_browser_display_request(
+                &caller,
+                Display::Release {
+                    tab_id: id.clone(),
+                    generation,
+                },
+            )
+            .await
+            .unwrap();
+        router.dispatch_authenticated_runtime_tool_call(&token, "chariox.kernel_browser", json!({"document_id":document,"command":KernelBrowserCommand::Input {tab_id:id.clone(),generation,input:KernelBrowserInput::Text{text:"MD-3 agent resumed".into()}}})).await.unwrap();
+        let bound_stream = runtime
+            .kernel_browser_display_request(
+                &caller,
+                Display::Subscribe {
+                    tab_id: id.clone(),
+                    generation,
+                },
+            )
+            .await
+            .unwrap();
+        let bound_stream_id = bound_stream["subscription_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut bound_seen = false;
+        for _ in 0..50 {
+            let polled = human(
+                &router,
+                KernelBrowserCommand::Poll {
+                    subscription_id: bound_stream_id.clone(),
+                    generation,
+                },
+            )
+            .await;
+            if polled["frame"]["document_id"] == document {
+                bound_seen = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            bound_seen,
+            "MD-3 bound display source produced no document-bound frame"
+        );
+        human(
+            &router,
+            KernelBrowserCommand::Unsubscribe {
+                subscription_id: bound_stream_id,
+                generation,
+            },
+        )
+        .await;
         let frame = human(
             &router,
             KernelBrowserCommand::Screenshot {

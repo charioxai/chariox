@@ -3,6 +3,11 @@ use super::browser_controller_process::{
     BrowserCancellation, BrowserControllerProcessBackend, BrowserControllerProcessState,
     BrowserControllerProcessStdioBackend,
 };
+use super::kernel_browser_actors::KernelBrowserActors;
+pub(crate) use super::kernel_browser_actors::KernelBrowserDocumentBinding;
+use crate::session::{
+    EnvironmentActionTerminal, EnvironmentActor, EnvironmentActorKind, TakeoverOutcome,
+};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,6 +24,7 @@ pub(crate) struct KernelBrowserHost {
 struct HostState {
     browsers: BTreeMap<String, Arc<Mutex<BrowserControllerProcessStdioBackend>>>,
     focus: BTreeMap<String, FocusedAgent>,
+    actors: BTreeMap<String, Arc<Mutex<KernelBrowserActors>>>,
     loaded: BTreeSet<(String, String)>,
     stopped: bool,
 }
@@ -255,7 +261,25 @@ impl KernelBrowserHost {
         self.require_running()?;
         self.check_admission(admission)?;
         if method == "host.browser" && params["op"] == "stop" {
-            backend.stop()?;
+            let model = self.actor_model(user)?;
+            let (id, cancellation) = model
+                .lock()
+                .map_err(|_| "MD-3: actor lock poisoned")?
+                .begin(browser_actor(admission, &params), &params)?;
+            let action = BrowserActorAction {
+                model,
+                id,
+                cancellation,
+                finished: false,
+            };
+            self.check_admission(admission)?;
+            let result = backend.stop();
+            action.finish(if result.is_ok() {
+                EnvironmentActionTerminal::Completed
+            } else {
+                EnvironmentActionTerminal::Failed
+            });
+            result?;
             self.check_admission(admission)?;
             return Ok(serde_json::json!({ "state": "stopped", "tabs": [] }));
         }
@@ -265,14 +289,116 @@ impl KernelBrowserHost {
         self.check_admission(admission)?;
         backend.host_request("host.protect", policy)?;
         self.check_admission(admission)?;
-        let result = backend.host_request_cancellable(
-            method,
-            params,
-            admission.map(|admission| admission.cancellation.clone()),
-        );
+        let model = self.actor_model(user)?;
+        let mutation = method == "host.secret"
+            || (method == "host.browser"
+                && matches!(
+                    params["op"].as_str(),
+                    Some("open" | "close" | "navigate" | "input")
+                ));
+        let action = if mutation {
+            // Reconcile the SAME supervised browser before ledger admission. Takeover
+            // uses only the model lock, so it can cancel while CDP holds the backend.
+            let state = backend.host_request("host.browser", serde_json::json!({"op":"state"}))?;
+            model
+                .lock()
+                .map_err(|_| "MD-3: actor lock poisoned")?
+                .reconcile(&state)?;
+            let actor = browser_actor(admission, &params);
+            let (id, cancellation) = model
+                .lock()
+                .map_err(|_| "MD-3: actor lock poisoned")?
+                .begin(actor, &params)?;
+            Some(BrowserActorAction {
+                model: model.clone(),
+                id,
+                cancellation,
+                finished: false,
+            })
+        } else {
+            None
+        };
+        let cancellation = match (&action, admission) {
+            (Some(action), Some(admission)) => {
+                let authority = admission.cancellation.clone();
+                Some(Arc::new(BrowserCancellation::for_authority(
+                    action.cancellation.clone(),
+                    move || !authority.requested(),
+                )))
+            }
+            (Some(action), None) => Some(action.cancellation.clone()),
+            (None, Some(admission)) => Some(admission.cancellation.clone()),
+            (None, None) => None,
+        };
+        let result = backend.host_request_cancellable(method, params, cancellation.clone());
+        if let Some(action) = action {
+            let terminal = if cancellation
+                .as_ref()
+                .is_some_and(|cancel| cancel.requested())
+            {
+                EnvironmentActionTerminal::Cancelled
+            } else if result.is_ok() {
+                EnvironmentActionTerminal::Completed
+            } else {
+                EnvironmentActionTerminal::Failed
+            };
+            action.finish(terminal);
+        }
         self.check_admission(admission)?;
+        if let Ok(state) = &result {
+            model
+                .lock()
+                .map_err(|_| "MD-3: actor lock poisoned")?
+                .reconcile(state)?;
+        }
         result
     }
+    fn actor_model(&self, user: &str) -> Result<Arc<Mutex<KernelBrowserActors>>, String> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| "MD-3: actor registry lock poisoned")?;
+        if !state.actors.contains_key(user) && state.actors.len() >= 16 {
+            return Err("MD-3: browser user limit reached".into());
+        }
+        Ok(state
+            .actors
+            .entry(user.into())
+            .or_insert_with(|| Arc::new(Mutex::new(KernelBrowserActors::default())))
+            .clone())
+    }
+    pub(crate) fn request_takeover(
+        &self,
+        user: &str,
+        actor: EnvironmentActor,
+        tab: &str,
+        generation: u64,
+    ) -> Result<TakeoverOutcome, String> {
+        self.actor_model(user)?
+            .lock()
+            .map_err(|_| "MD-3: actor lock poisoned")?
+            .takeover(actor, tab, generation)
+    }
+    pub(crate) fn release_input(
+        &self,
+        user: &str,
+        actor_id: &str,
+        tab: &str,
+        generation: u64,
+    ) -> Result<(), String> {
+        self.actor_model(user)?
+            .lock()
+            .map_err(|_| "MD-3: actor lock poisoned")?
+            .release(actor_id, tab, generation)
+    }
+    pub(crate) fn actor_snapshot(&self, user: &str) -> Result<Value, String> {
+        Ok(self
+            .actor_model(user)?
+            .lock()
+            .map_err(|_| "MD-3: actor lock poisoned")?
+            .snapshot())
+    }
+
     pub(crate) fn shutdown(&self) -> Result<(), String> {
         let browsers = {
             let mut state = self
@@ -292,6 +418,47 @@ impl KernelBrowserHost {
             }
         }
         first.map_or(Ok(()), Err)
+    }
+}
+fn browser_actor(admission: Option<&KernelBrowserAdmission>, params: &Value) -> EnvironmentActor {
+    if let Some(admission) = admission {
+        EnvironmentActor::new(
+            format!("agent:{}", admission.agent),
+            EnvironmentActorKind::Agent,
+            "Focused agent",
+        )
+    } else {
+        EnvironmentActor::new(
+            params["observed_by"].as_str().unwrap_or("kernel-adapter"),
+            EnvironmentActorKind::Human,
+            "Human",
+        )
+    }
+}
+struct BrowserActorAction {
+    model: Arc<Mutex<KernelBrowserActors>>,
+    id: String,
+    cancellation: Arc<BrowserCancellation>,
+    finished: bool,
+}
+impl BrowserActorAction {
+    fn finish(mut self, terminal: EnvironmentActionTerminal) {
+        self.model
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .finish(&self.id, terminal);
+        self.finished = true;
+    }
+}
+impl Drop for BrowserActorAction {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.cancellation.request_cancel();
+            self.model
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .finish(&self.id, EnvironmentActionTerminal::Cancelled);
+        }
     }
 }
 fn require_focus(state: &HostState, user: &str, agent: &str) -> Result<(), String> {
@@ -433,3 +600,6 @@ mod tests {
         assert!(host.check_admission(Some(&admission)).is_err());
     }
 }
+
+#[cfg(test)]
+mod actor_tests;

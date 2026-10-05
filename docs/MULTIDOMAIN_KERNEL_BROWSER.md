@@ -211,3 +211,66 @@ also uses a disposable synthetic Vault/password fixture, deliberately echoes
 secret input, captures protected pixels, retires the credential and checks
 scrubbing/frames and process recovery. These checks do not establish a real
 provider/public-site login, Web/TUI projection or native Mac execution.
+
+## MD-3 / MD-4: shared actors and document-bound display adapter
+
+The host attaches the existing `EnvironmentActionLedger`, `TabRegistry`,
+`EnvironmentActor`, pointer, ownership and takeover types to a per-user
+sessionless model (`kernel_browser_actors.rs`). It creates no Room or session.
+Authenticated terminal identity and admitted focused-agent identity select the
+actor; clients cannot supply an actor or user. Input, navigation, tab open/close,
+Vault input and stop use that ledger. Entries retain input counts/coordinates,
+never typed text, URLs or Vault payloads. Hot/cold history is bounded to 256
+entries. The shared Room model's retention policy is unchanged.
+
+Human takeover cancels a running same-tab agent action through the existing stdio
+cancellation path. Pending takeover fences subsequent mutations immediately;
+ownership is granted only once that action settles. Release requires the same
+terminal actor. Browser recovery preserves deliberate human ownership of stable
+tabs and invalidates old action/generation references. Focus/run revocation still
+uses the existing uninterrupted focus admission; release does not restore old
+focus or grant access to another agent. Observations remain available during
+takeover. Appviews retains its own admission/attribution above the unchanged App
+seam. Actor projections are currently live kernel state; persisting them over a
+full kernel restart is outside this adapter milestone.
+
+Internal API for the display lane:
+
+- `KernelRuntimeState::kernel_browser_display_request(&KernelCommand,
+  KernelBrowserDisplayRequest) -> Result<Value, DaemonError>`.
+- `Capture { tab_id, generation }`: protected PNG with the existing image fields
+  plus `document_id` from the captured source.
+- `Subscribe { tab_id, generation }`: existing subscription identity; poll and
+  unsubscribe through the existing kernel-browser command path. Bound frames
+  include their captured `document_id`; opaque pending frames omit it and cannot
+  authorize input.
+- `Input { binding: KernelBrowserDocumentBinding { tab_id, generation,
+  document_id }, input: KernelBrowserInput }`: explicit document-bound input,
+  through the same protected host path. Replacement documents are rejected.
+- `Takeover { tab_id, generation }`, `Release { tab_id, generation }`, `Actors`:
+  shared takeover outcome, owner-only release, and current actor/pointer/action
+  projection. Projection targets use stable host tab IDs.
+
+These Rust types have no serde implementation. The coordinator/display lane
+owns the new serialized public adapter and protocol allocation; this lane must
+not take an unallocated version. The existing protocol-417 screenshot/stream
+adapter keeps its original shape and caller-scoped human observation receipts.
+The App seam and ordinary screenshot/subscribe/poll/input methods stay stable.
+
+A bound capture checks the document before and after capture. Raw asynchronous
+CDP screencast pixels cannot prove document identity, so a bound subscription
+uses those events only to trigger the existing protected screenshot source,
+with one capture in flight, latest-frame storage, and the existing 5 Hz bound.
+This is a verification source, not a final display transport. The display lane
+may replace it while retaining Vault masking, source document binding, the
+capture/input barrier and kernel actor authority. After navigation, clients
+refresh state and subscribe to the new document; old frame input is rejected.
+Its public adapter must also preserve caller-scoped retry deduplication and
+recheck terminal admission before serving cached responses.
+
+MD-4 validation adds native takeover, agent fencing, owner human input, release,
+agent resumption and bound frame capture to the disposable Linux/Mac replay.
+The replay and focused API regression use default Rust thread stacks; production
+App-copy/control future boundaries are boxed to prevent the discovered overflow.
+Native Mac execution and the public display/client adapter remain external gates.
+No MP acceptance item closes from these checks.

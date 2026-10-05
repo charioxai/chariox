@@ -3,6 +3,31 @@ use super::*;
 use crate::local::KernelBrowserCommand;
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
 
+/// MD-3: no serde impl. Display owns the serialized protocol adapter/version.
+pub(crate) enum KernelBrowserDisplayRequest {
+    Capture {
+        tab_id: String,
+        generation: u64,
+    },
+    Subscribe {
+        tab_id: String,
+        generation: u64,
+    },
+    Input {
+        binding: crate::runtime::kernel_browser_host::KernelBrowserDocumentBinding,
+        input: crate::local::KernelBrowserInput,
+    },
+    Takeover {
+        tab_id: String,
+        generation: u64,
+    },
+    Release {
+        tab_id: String,
+        generation: u64,
+    },
+    Actors,
+}
+
 const LOADER: &str = "chariox.load_kernel_browser";
 pub(super) const PASTE: &str = "chariox.kernel_browser_paste_secret";
 const BROWSER: &str = "chariox.kernel_browser";
@@ -69,15 +94,78 @@ impl KernelRuntimeState {
         caller: &crate::runtime::command::KernelCommand,
         command: KernelBrowserCommand,
     ) -> Result<serde_json::Value, DaemonError> {
+        let (user, actor) = self.kernel_browser_terminal_context(caller)?;
+        let mut params = serde_json::to_value(command)
+            .map_err(|_| host_error("MD-2: invalid command".into()))?;
+        params["observed_by"] = serde_json::json!(actor);
+        self.kernel_browser_operation(&user, None, "host.browser", params)
+            .await
+    }
+    fn kernel_browser_terminal_context(
+        &self,
+        caller: &crate::runtime::command::KernelCommand,
+    ) -> Result<(String, String), DaemonError> {
         use sha2::{Digest, Sha256};
+        if self.slice_kernel_id().is_some() {
+            return Err(host_error(
+                "MD-3: the home kernel owns the user-domain browser".into(),
+            ));
+        }
+        if !caller.is_terminal_caller() {
+            return Err(host_error("MD-3: authenticated terminal required".into()));
+        }
         let user = self.provider_account_authority_owner_user_id(
             &crate::runtime::command::command_caller_user_id(caller),
         );
         let bytes = serde_json::to_vec(&caller.caller)
             .map_err(|_| host_error("MD-3: invalid caller".into()))?;
-        let mut params = serde_json::to_value(command)
-            .map_err(|_| host_error("MD-2: invalid command".into()))?;
-        params["observed_by"] = serde_json::json!(format!("terminal:{:x}", Sha256::digest(bytes)));
+        Ok((user, format!("terminal:{:x}", Sha256::digest(bytes))))
+    }
+    /// MD-3/display: typed internal seam for the coordinator-owned public adapter.
+    /// Retains the capture/Vault barrier; never accepts a client-supplied user/actor.
+    pub(crate) async fn kernel_browser_display_request(
+        &self,
+        caller: &crate::runtime::command::KernelCommand,
+        request: KernelBrowserDisplayRequest,
+    ) -> Result<serde_json::Value, DaemonError> {
+        use crate::session::{EnvironmentActor, EnvironmentActorKind};
+        let (user, actor) = self.kernel_browser_terminal_context(caller)?;
+        let host = &self.owned.kernel_browser_host;
+        let mut params = match request {
+            KernelBrowserDisplayRequest::Capture { tab_id, generation } => {
+                serde_json::json!({"op":"screenshot","tab_id":tab_id,"generation":generation,"bound_frames":true})
+            }
+            KernelBrowserDisplayRequest::Subscribe { tab_id, generation } => {
+                serde_json::json!({"op":"subscribe","tab_id":tab_id,"generation":generation,"bound_frames":true})
+            }
+            KernelBrowserDisplayRequest::Input { binding, input } => {
+                if binding.document_id.is_empty() || binding.document_id.len() > 256 {
+                    return Err(host_error("MD-3: observed document required".into()));
+                }
+                serde_json::json!({"op":"input","tab_id":binding.tab_id,"generation":binding.generation,"document_id":binding.document_id,"input":input})
+            }
+            KernelBrowserDisplayRequest::Takeover { tab_id, generation } => {
+                let outcome = host
+                    .request_takeover(
+                        &user,
+                        EnvironmentActor::new(actor, EnvironmentActorKind::Human, "Human"),
+                        &tab_id,
+                        generation,
+                    )
+                    .map_err(host_error)?;
+                return serde_json::to_value(outcome)
+                    .map_err(|_| host_error("MD-3: invalid takeover outcome".into()));
+            }
+            KernelBrowserDisplayRequest::Release { tab_id, generation } => {
+                host.release_input(&user, &actor, &tab_id, generation)
+                    .map_err(host_error)?;
+                return Ok(serde_json::json!({"released":true}));
+            }
+            KernelBrowserDisplayRequest::Actors => {
+                return host.actor_snapshot(&user).map_err(host_error)
+            }
+        };
+        params["observed_by"] = serde_json::json!(actor);
         self.kernel_browser_operation(&user, None, "host.browser", params)
             .await
     }
