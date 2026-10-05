@@ -246,13 +246,13 @@ function genericResult(rowId, checkId, topology) {
     }
   }
   if (rowId === "MP-01" && checkId === "provider_ancestry") {
-    return { observed: true, provider_observed: true, bwrap_ancestor: false, fresh_worker: true, ancestry_complete: true }
+    return { observed: true, provider_observed: true, bwrap_ancestor: false, observed_bwrap_ancestor: false, fresh_worker: true, ancestry_complete: true }
   }
   if (rowId === "MP-01" && checkId === "managed_isolation_environment") {
     return { observed: true, managed_marker_absent: true, bwrap_environment_absent: true }
   }
   if (rowId === "MP-01" && checkId === "privilege_state") {
-    return { observed: true, no_new_privs: false, capabilities_match_ordinary: true, umask_matches_ordinary: true }
+    return { observed: true, no_new_privs: false, observed_no_new_privs: false, capabilities_match_ordinary: true, umask_matches_ordinary: true }
   }
   if (rowId === "MP-07") {
     return topology === "ordinary"

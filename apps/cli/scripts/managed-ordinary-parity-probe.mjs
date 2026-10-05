@@ -7,6 +7,9 @@ import {
   access,
   constants,
   mkdir,
+  lstat,
+  open,
+  rmdir,
   mkdtemp,
   readFile,
   readdir,
@@ -212,6 +215,34 @@ function safeProbePath(path, label) {
   return resolvedPath
 }
 
+async function withOwnedProbeDirectory(requested, label, run) {
+  const candidate = safeProbePath(requested, label);
+  try {
+    await lstat(candidate);
+    throw new ProbeError(`${label} already exists; preserving caller data`);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  // Requested paths are labels, never recursive-cleanup authority. The actual
+  // operation lives under a private exclusive root and a retained directory fd.
+  const root = await mkdtemp("/tmp/chariox-parity-probe-");
+  const directory = await open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  const identity = await directory.stat();
+  const child = `/proc/self/fd/${directory.fd}/entry`;
+  try {
+    await mkdir(child, { mode: 0o700 });
+    return await run(child, join(root, "entry"));
+  } finally {
+    try {
+      await rm(child, { recursive: true, force: true });
+      const current = await lstat(root).catch(() => null);
+      if (current?.dev === identity.dev && current?.ino === identity.ino) await rmdir(root);
+    } finally {
+      await directory.close();
+    }
+  }
+}
+
 function decodeMountField(value) {
   return value.replaceAll("\\040", " ").replaceAll("\\011", "\t").replaceAll("\\012", "\n").replaceAll("\\134", "\\")
 }
@@ -359,12 +390,10 @@ async function observeDirectoryCheck(identity, values, checkId) {
     })
   }
   if (checkId === "directory_creation") {
-    const target = safeProbePath(values.new_directory, "new directory")
-    await mkdir(target, { recursive: true })
-    const metadata = await stat(target)
-    const result = { created_and_accessible: metadata.isDirectory() && await accessible(target), created_path_fingerprint: fingerprint(resolve(target)) }
-    await rm(target, { recursive: true, force: false })
-    return identityResult(identity, result)
+    return withOwnedProbeDirectory(values.new_directory, "new directory", async (target, actualPath) => {
+      const metadata = await stat(target)
+      return identityResult(identity, { created_and_accessible: metadata.isDirectory() && await accessible(target), created_path_fingerprint: fingerprint(actualPath) })
+    })
   }
   throw new ProbeError(`unsupported MP-02 check: ${checkId}`)
 }
@@ -372,11 +401,8 @@ async function observeDirectoryCheck(identity, values, checkId) {
 async function observeWorkspaceCheck(identity, values, checkId) {
   const sourceRoot = resolve(values.source_root)
   if (checkId === "empty_workspace") {
-    const target = safeProbePath(values.nested_path, "nested workspace")
-    await mkdir(target, { recursive: true })
-    const result = { workspace_created: (await stat(target)).isDirectory(), control_state_separate: resolve(target) !== sourceRoot, workspace_path_fingerprint: fingerprint(resolve(target)) }
-    await rm(target, { recursive: true, force: false })
-    return identityResult(identity, result)
+    return withOwnedProbeDirectory(values.nested_path, "nested workspace", async (target, actualPath) =>
+      identityResult(identity, { workspace_created: (await stat(target)).isDirectory(), control_state_separate: actualPath !== sourceRoot, workspace_path_fingerprint: fingerprint(actualPath) }))
   }
   if (checkId === "copied_repository") {
     return identityResult(identity, { repository_accessible: await accessible(sourceRoot), repository_path_fingerprint: fingerprint(sourceRoot) })
@@ -386,16 +412,11 @@ async function observeWorkspaceCheck(identity, values, checkId) {
     return identityResult(identity, { source_basename_preserved: top === sourceRoot && basename(top) === basename(sourceRoot), repository_basename_fingerprint: fingerprint(basename(top)) })
   }
   if (checkId === "basename_collision") {
-    const target = safeProbePath(values.new_directory, "collision directory")
-    await mkdir(target, { recursive: true })
-    let collisionRejected = false
-    try {
-      await mkdir(target)
-    } catch (error) {
-      collisionRejected = error?.code === "EEXIST"
-    }
-    await rm(target, { recursive: true, force: false })
-    return identityResult(identity, { collision_rejected: collisionRejected, collision_path_fingerprint: fingerprint(resolve(target)) })
+    return withOwnedProbeDirectory(values.new_directory, "collision directory", async (target, actualPath) => {
+      let collisionRejected = false
+      try { await mkdir(target) } catch (error) { collisionRejected = error?.code === "EEXIST" }
+      return identityResult(identity, { collision_rejected: collisionRejected, collision_path_fingerprint: fingerprint(actualPath) })
+    })
   }
   if (checkId === "worktree_placement") {
     const nested = resolve(values.nested_path)
@@ -414,18 +435,17 @@ async function observeProviderAncestry(identity, values) {
   const provider = values.provider ?? process.env.CHARIOX_PARITY_PROVIDER
   const commands = chain.map(({ command }) => command)
   const observedProvider = OFFICIAL_PROVIDERS.has(provider ?? "")
-    && (commands.some((command) => command.toLowerCase().includes(provider.toLowerCase()))
-      || parseBoolean(process.env.CHARIOX_PARITY_PROVIDER_PROCESS_OBSERVED))
+    && commands.some((command) => command.toLowerCase().includes(provider.toLowerCase()))
   const observedBwrapAncestor = commands.some((command) => /(^|\s|\/)bwrap(?:\s|$)/i.test(command))
   const worker = requireObservedEvidence(parseJsonEnv("CHARIOX_PARITY_WORKER_EVIDENCE_JSON"), "worker evidence")
-  const boundaryEvidence = process.env.CHARIOX_PARITY_ANCESTRY_EVIDENCE_JSON
-    ? requireObservedEvidence(parseJsonEnv("CHARIOX_PARITY_ANCESTRY_EVIDENCE_JSON"), "provider ancestry")
-    : null
+  if (process.env.CHARIOX_PARITY_ANCESTRY_EVIDENCE_JSON || process.env.CHARIOX_PARITY_PROVIDER_PROCESS_OBSERVED) {
+    throw new ProbeError("caller-supplied ancestry overrides are unsupported; independent provider-process observation is required")
+  }
   const comparison = {
-    provider_observed: boundaryEvidence ? boundaryEvidence.provider_observed === true : observedProvider,
-    bwrap_ancestor: boundaryEvidence ? boundaryEvidence.bwrap_ancestor === true : observedBwrapAncestor,
-    fresh_worker: boundaryEvidence ? boundaryEvidence.fresh_worker === true : worker.fresh_worker === true,
-    ancestry_complete: boundaryEvidence ? boundaryEvidence.ancestry_complete === true : chain.length > 0 && chain.at(-1)?.pid === 1,
+    provider_observed: observedProvider,
+    bwrap_ancestor: observedBwrapAncestor,
+    fresh_worker: worker.fresh_worker === true,
+    ancestry_complete: chain.length > 0 && chain.at(-1)?.pid === 1,
   }
   if (!comparison.provider_observed || comparison.bwrap_ancestor || !comparison.fresh_worker || !comparison.ancestry_complete) {
     throw new ProbeError(`provider ancestry did not prove the ordinary worker boundary: ${JSON.stringify(comparison)}`)
@@ -434,7 +454,6 @@ async function observeProviderAncestry(identity, values) {
     ...comparison,
     observed_bwrap_ancestor: observedBwrapAncestor,
     command_chain_fingerprint: fingerprint(commands.join("\n")),
-    boundary_evidence_fingerprint: boundaryEvidence ? fingerprint(boundaryEvidence.evidence_id ?? "provider-ancestry") : null,
   })
 }
 
@@ -504,13 +523,10 @@ async function observePrivilegeState(identity) {
   const uid = typeof process.getuid === "function" ? process.getuid() : null
   const gid = typeof process.getgid === "function" ? process.getgid() : null
   const baseline = parseJsonEnv("CHARIOX_PARITY_ORDINARY_PRIVILEGE_JSON")
-  const boundaryEvidence = process.env.CHARIOX_PARITY_PRIVILEGE_EVIDENCE_JSON
-    ? requireObservedEvidence(parseJsonEnv("CHARIOX_PARITY_PRIVILEGE_EVIDENCE_JSON"), "privilege state")
-    : null
-  if (boundaryEvidence && typeof boundaryEvidence.no_new_privs !== "boolean") {
-    throw new ProbeError("privilege state evidence is missing no_new_privs")
+  if (process.env.CHARIOX_PARITY_PRIVILEGE_EVIDENCE_JSON) {
+    throw new ProbeError("caller-supplied privilege overrides are unsupported; independent provider-process observation is required")
   }
-  const comparableNoNewPrivs = boundaryEvidence ? boundaryEvidence.no_new_privs === true : noNewPrivs === "1"
+  const comparableNoNewPrivs = noNewPrivs === "1"
   const capabilitiesMatch = capEff === String(baseline.cap_eff ?? "").toLowerCase()
   const umaskMatches = umask === baseline.umask && uid === baseline.uid && gid === baseline.gid
   if (!capabilitiesMatch || !umaskMatches || comparableNoNewPrivs) throw new ProbeError("privilege state differs from the observed ordinary baseline")
@@ -523,7 +539,6 @@ async function observePrivilegeState(identity) {
     uid,
     gid,
     observed_no_new_privs: noNewPrivs === "1",
-    privilege_evidence_fingerprint: boundaryEvidence ? fingerprint(boundaryEvidence.evidence_id ?? "privilege-state") : null,
   })
 }
 
@@ -930,4 +945,4 @@ if (process.argv[1]
   process.exitCode = await main()
 }
 
-export { main, observe, parseArgs, verifyProbeIdentity }
+export { main, observe, parseArgs, verifyProbeIdentity, observePrivilegeState, observeProviderAncestry, observeDirectoryCheck, observeWorkspaceCheck }

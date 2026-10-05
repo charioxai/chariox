@@ -244,6 +244,7 @@ function normalizeGenericResult(result, rowId, checkId) {
   for (const key of required) normalized[key] = result[key]
   if (rowId === "MP-01" && checkId === "privilege_state") {
     expectedBoolean(result, "no_new_privs", rowId, checkId, false)
+    expectedBoolean(result, "observed_no_new_privs", rowId, checkId, false)
     normalized.no_new_privs = false
   }
   if (rowId === "MP-02" && checkId === "directory_discovery") {
@@ -276,6 +277,7 @@ function normalizeProviderAncestry(result) {
   expectedBoolean(result, "bwrap_ancestor", "MP-01", "provider_ancestry", false)
   expectedBoolean(result, "fresh_worker", "MP-01", "provider_ancestry")
   expectedBoolean(result, "ancestry_complete", "MP-01", "provider_ancestry")
+  expectedBoolean(result, "observed_bwrap_ancestor", "MP-01", "provider_ancestry", false)
   return { observed: true, provider_observed: true, bwrap_ancestor: false, fresh_worker: true }
 }
 
@@ -1119,3 +1121,5 @@ export async function runCli(argv = process.argv.slice(2), {
 if (import.meta.url === `file://${process.argv[1]}`) {
   process.exitCode = await runCli()
 }
+
+export { normalizeGenericResult, normalizeProviderAncestry }
