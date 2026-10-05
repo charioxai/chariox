@@ -15,9 +15,6 @@ export async function inputHostTab(browser, tab, input, { signal } = {}) {
       assertNotCancelled(signal);
       return result;
     };
-    await check();
-    // MD-3: visible does not imply native keyboard focus. Keep this target local;
-    // the shared capture restores emulation without activating another OS window.
     return browser.inputCapture.run(connection, sessionId, async () => {
       await check();
       if (input.kind === "text") {
@@ -46,5 +43,5 @@ export async function inputHostTab(browser, tab, input, { signal } = {}) {
           await sendInput("Input.dispatchMouseEvent", { type: "mouseWheel", x: input.x, y: input.y, deltaX: input.delta_x, deltaY: input.delta_y });
         } else throw new Error("MD-2: unsupported input");
       }
-    }, { forceFocus: true });
+    });
   }
