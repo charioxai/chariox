@@ -1,4 +1,4 @@
-import { hasLocalKernel, offerLocalKernelSetup, startLocalKernelSetup } from "./local-kernel-setup.js"
+import { offerLocalKernelSetup, startLocalKernelSetup } from "./local-kernel-setup.js"
 import { CloudClient } from "./cloud-client.js"
 import { openExternalUrl } from "./external-url.js"
 import { loadPreferences, relayCloudProfile, saveRelayCloudProfile, type RelayCloudProfile } from "./preferences.js"

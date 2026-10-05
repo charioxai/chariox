@@ -13,19 +13,22 @@ export function targetPlatform(os = process.platform, arch = process.arch) {
   if (!["linux-x64", "darwin-arm64"].includes(value)) fail("supported Setup targets are Linux x86_64 and macOS arm64")
   return value
 }
-export function publicUrl(value) {
+export function publicUrl(value, allowPublicAssetQuery = false) {
   const url = new URL(value)
-  if (url.username || url.password || url.search || url.hash || !(url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))) fail("Setup requires HTTPS release/Cloud URLs (loopback allowed for tests)")
+  if (url.username || url.password || (url.search && !allowPublicAssetQuery) || url.hash || !(url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))) fail("Setup requires HTTPS release/Cloud URLs (loopback allowed for tests)")
   return value.replace(/\/$/, "")
 }
 async function download(url, path, limit) {
+  const initial = new URL(publicUrl(url))
   let response
   for (let redirects = 0; ; redirects++) {
-    response = await fetch(publicUrl(url), { redirect: "manual", signal: AbortSignal.timeout(300_000) })
+    response = await fetch(publicUrl(url, true), { redirect: "manual", signal: AbortSignal.timeout(300_000) })
     if (![301, 302, 303, 307, 308].includes(response.status)) break
     if (redirects >= 5 || !response.headers.get("location")) fail("release redirect refused")
     const next = new URL(response.headers.get("location"), url).href
-    publicUrl(next)
+    publicUrl(next, true)
+    const target = new URL(next)
+    if (initial.protocol === "https:" ? target.protocol !== "https:" : target.origin !== initial.origin) fail("release redirect transport refused")
     await response.body?.cancel()
     url = next
   }
@@ -143,6 +146,7 @@ async function cliLink(home, root, id, remove = false) {
 }
 export async function installLocal(options) {
   const { home = process.env.HOME, version, publicKeyHex, releaseBase = "https://github.com/charioxai/chariox/releases/download", apiUrl = "https://chariox.com", installId = "local", port = 55139, action = "install", ticket, userId, extractorSource, openBrowser = async () => {}, notice = message => process.stdout.write(`${message}\n`), serviceManager, kernelCommand } = options
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version ?? "")) fail("a pinned release version is required")
   const platform = targetPlatform(options.platform?.split("-")[0], options.platform?.split("-")[1])
 
   publicUrl(apiUrl)

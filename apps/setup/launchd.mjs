@@ -1,5 +1,4 @@
 // MP-07 / MP-08 / MP-11: per-user launchd projection for the shared installer lifecycle.
-import { lstat } from "node:fs/promises"
 import { join } from "node:path"
 import { command, isolatedKernelEnvironment } from "../kernel/ssh-machine/remote.mjs"
 const xml = value => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;")

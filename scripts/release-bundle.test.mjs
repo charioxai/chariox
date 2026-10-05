@@ -277,3 +277,15 @@ test('install.sh --check accepts only the bundle and runtime signed by their key
   assert.match(check(releasePublic).stderr, /runtime\/sdk\/src\/index\.js does not match the signed manifest/);
   assert.match(execFileSync(join(options.output, 'install.sh'), ['--help'], { encoding: 'utf8' }), /usage: sudo \.\/install\.sh/);
 });
+
+test('MP-07 generic Setup is included in the signed distribution inventory when built', async context => {
+  const { options, releaseKeyPath, releasePublic } = await fixture(context);
+  await put(join(options.executables, 'bin/chariox-setup'), '#!/bin/sh\necho generic-setup\n', 0o755);
+  await assemble(options);
+  await signBundle(options.output, releaseKeyPath);
+  await verifyBundle(options.output, releasePublic);
+  const manifest = JSON.parse(await readFile(join(options.output, 'manifest.json')));
+  assert.ok(manifest.files.some(entry => entry.path === 'bin/chariox-setup'));
+  await put(join(options.output, 'bin/chariox-setup'), '#!/bin/sh\necho modified\n', 0o755);
+  await assert.rejects(verifyBundle(options.output, releasePublic), /does not match/);
+});
