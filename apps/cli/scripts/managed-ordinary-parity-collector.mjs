@@ -652,7 +652,8 @@ export function createParityCollector({
     if (rowId === "MP-02" && checkId === "exact_path_entry" || rowId === "MP-04") {
       args.push("--expected-cwd", ctx.expectedCwd)
     }
-    if (rowId === "MP-10" && checkId === "capture_boundary") {
+    if ((rowId === "MP-01" && checkId === "provider_ancestry")
+      || (rowId === "MP-10" && checkId === "capture_boundary")) {
       args.push("--provider", ctx.provider)
     }
     return args
