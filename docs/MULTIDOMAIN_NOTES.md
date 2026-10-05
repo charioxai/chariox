@@ -58,14 +58,17 @@ the prompt editor. Preserve any existing draft. Only the user's ordinary Send
 uses `SubmitPrompt`; Ask itself never creates, dispatches or resolves a prompt.
 TUI note UI is deferred by the owner.
 
-MD-N4: `chariox.load_notes` loads list/read/reply/resolve tools on demand using
-kbrowser's existing focus loader and epoch. Browser and notes tool loading are
-independent; loading either capability never exposes the other. Only one authenticated local provider
-run for the user's currently focused agent can discover or call them. Both
-session and user-domain focus are checked on every call; focus revocation fences
-results and commits. Remote/leased agent access remains out of scope with the
-existing multidomain focus contract. A Room agent does not get notes merely by
-Room membership. Terminal users can manage only their own notes.
+MD-N4 / MP-08 / MP-11: `chariox.load_notes` loads list/read/reply/resolve on
+demand while focused. Browser and notes loading remain independent. A note read
+claims its stable note ID; changing focus retains that note while the agent has
+an active turn or a pending wake, then for the configured idle window. A retained
+holder cannot claim another note. Listing metadata does not claim contents; a
+retained list shows only claimed note IDs. Explicit revoke, idle expiry, session
+end and agent destruction fence results and commits. See
+[MULTIDOMAIN_USER_DOMAIN_ACCESS.md](MULTIDOMAIN_USER_DOMAIN_ACCESS.md) for the
+432/78 shared contract. Remote/leased calls explain both kernels without control
+forwarding. Room membership alone grants no notes. Human terminals manage only
+their own notes.
 
 MD-N5 validation receipts live outside the repository. Source/unit/native drills
 are separate proof; none closes MP-08, MP-10 or MP-11 or proves Cloud overlay,

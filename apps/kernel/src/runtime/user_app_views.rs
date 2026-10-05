@@ -50,6 +50,7 @@ impl UserAppViews {
             generation: binding.generation.to_string(),
             origin: format!("https://app.{label}.invalid"),
             browser: None,
+            access: None,
         };
         registry.views.insert(id, (binding, view.clone()));
         *registry.cursors.entry(owner.into()).or_default() += 1;

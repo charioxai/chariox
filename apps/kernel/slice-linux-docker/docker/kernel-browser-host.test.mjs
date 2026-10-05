@@ -56,6 +56,21 @@ async function using(callback) {
   try { await callback(context, root); } finally { fixture.secretFocused = false; await context.host.stop(); await rm(root, { recursive: true, force: true }); }
 }
 
+test("MP-11: revocation closes idle and in-flight grant streams without another holder's stream", () => using(async ({ host }) => {
+  const opened = await host.request({ op: "open", url: "https://example.com" });
+  const command = { op: "subscribe", tab_id: opened.tab_id, generation: opened.generation };
+  const idle = await host.request({ ...command, _subscription_owner: "old-grant" });
+  const retained = await host.request({ ...command, _subscription_owner: "another-grant" });
+  // The kernel settles an in-flight subscribe before sending owner retirement;
+  // its ID need not have reached the grant registry to be cancelled.
+  await host.request({ ...command, _subscription_owner: "old-grant" });
+  const result = await host.handle({ id: 99, method: "host.revoke_subscriptions", params: { subscription_ids: [], subscription_owners: ["old-grant"] } });
+  assert.equal(result.ok, true);
+  assert.equal(host.streams.size, 1);
+  assert(host.streams.has(retained.subscription_id));
+  assert(!host.streams.has(idle.subscription_id));
+}));
+
 test("MD-2: native launch keeps sandbox and uses a separate dynamic loopback profile", () => {
   const args = launchArguments("/tmp/private-profile", true);
   assert(args.includes("--remote-debugging-port=0"));

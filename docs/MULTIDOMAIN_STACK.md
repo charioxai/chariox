@@ -1,5 +1,9 @@
 # MD-stack: Apps, host browser, App views, display and notes
 
+MP-08 / MP-10 / MP-11 current access-model amendment: reserved local **432** /
+relay **78**. See [user-domain access](MULTIDOMAIN_USER_DOMAIN_ACCESS.md) for
+retained grants and cross-kernel badges. The 427/74 union below is its base.
+
 The canonical integration starts at Apps queue 39633aeb4 (local 416, relay 70),
 then browser a4ef64165. The coordinator allocated local **427**, relay **74**
 for the union. Unreleased feature numbers 417/418/419/424/425 are folded into

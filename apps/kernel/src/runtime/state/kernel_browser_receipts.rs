@@ -17,7 +17,13 @@ impl KernelRuntimeState {
             return Ok(None);
         };
         let (user, _) = self.kernel_browser_terminal_context(caller)?;
-        if matches!(request.command, KernelBrowserCommand::Stop) {
+        if matches!(
+            request.command,
+            KernelBrowserCommand::Stop
+                | KernelBrowserCommand::ListGrants
+                | KernelBrowserCommand::SubscribeGrants { .. }
+                | KernelBrowserCommand::RevokeGrants { .. }
+        ) {
             return Ok(None);
         }
         let protection = &self.owned.kernel_browser_secret_observations;
@@ -35,7 +41,13 @@ impl KernelRuntimeState {
             return Ok(());
         };
         let (user, _) = self.kernel_browser_terminal_context(caller)?;
-        if matches!(request.command, KernelBrowserCommand::Stop) {
+        if matches!(
+            request.command,
+            KernelBrowserCommand::Stop
+                | KernelBrowserCommand::ListGrants
+                | KernelBrowserCommand::SubscribeGrants { .. }
+                | KernelBrowserCommand::RevokeGrants { .. }
+        ) {
             return Ok(());
         }
         let protection = &self.owned.kernel_browser_secret_observations;
@@ -59,9 +71,13 @@ while IFS= read -r request; do
  id=${request#*:}; id=${id%%,*}
  case "$request" in
   *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+  *'"method":"host.input_sensitive"'*) sensitive=false; if [ -f "$1/sensitive" ]; then sensitive=true; fi; printf '{"id":%s,"ok":true,"result":{"sensitive":%s}}\n' "$id" "$sensitive" ;;
+  *'"method":"host.revoke_subscriptions"'*) printf 'revoked\n' > "$1/subscriptions-revoked"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document"}]}}\n' "$id" ;;
   *'"op":"snapshot"'*) printf '{"id":%s,"ok":true,"result":{"snapshot":{"text":"MD5-sensitive-fixture"}}}\n' "$id" ;;
+  *'"op":"subscribe"'*) printf '{"id":%s,"ok":true,"result":{"subscription_id":"fixture-stream"}}\n' "$id" ;;
+  *'"op":"poll"'*) printf '{"id":%s,"ok":true,"result":{"frame":null}}\n' "$id" ;;
   *'"op":"screenshot"'*) printf '{"id":%s,"ok":true,"result":{"data_base64":"cGl4ZWxzLWZpeHR1cmU="}}\n' "$id" ;;
   *'"op":"input"'*) printf 'input\n' > "$1/input"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;

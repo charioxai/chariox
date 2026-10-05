@@ -8,7 +8,7 @@ import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
 import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
-import { inputHostTab } from "./kernel-browser-input.mjs";
+import { inputHostTab, sensitiveHostInput } from "./kernel-browser-input.mjs";
 import { assertNotCancelled, assertCurrentDocument } from "./browser-controller-actions.mjs";
 import { captureRegionMasks } from "./kernel-browser-region-protection.mjs";
 import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
@@ -214,11 +214,11 @@ export class KernelBrowserHost {
     if (typeof data !== "string" || data.length > 4 * 1024 * 1024) throw new Error("MD-2: frame exceeds limit");
     return { generation: this.generation, tab_id: tab.tab_id, document_id: tab.document_id, mime_type: "image/png", data_base64: data, width, height, ...(protectedCapture ? { protected_regions } : {}) };
   }
-  async subscribe(tab, boundFrames = false) {
+  async subscribe(tab, boundFrames = false, owner = null) {
     if (this.streams.size >= 16) throw new Error("MD-2: frame subscription limit reached");
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
     const id = `host-stream-${randomUUID()}`;
-    const stream = { sessionId, tabId: tab.tab_id, boundFrames, latest: null, sequence: 0, expires: Date.now() + 60_000 };
+    const stream = { sessionId, tabId: tab.tab_id, boundFrames, owner, latest: null, sequence: 0, expires: Date.now() + 60_000 };
     const captureProtected = () => {
       stream.latest ??= this.maskedStreamFrame(stream);
       if (stream.capturing || this.protection.unknown || Date.now() < (stream.nextCapture ?? 0)) return;
@@ -296,7 +296,7 @@ export class KernelBrowserHost {
     return result;
   }
   async request(command, { signal } = {}) {
-    const scope = command.focused_agent ? "focused-agent" : command.observed_by ?? "adapter";
+    const scope = command.observed_by ?? (command.focused_agent ? "focused-agent" : "adapter");
     assertNotCancelled(signal);
     if (command.op.startsWith("display_") && process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
     if (command.op === "stop") return this.stop();
@@ -378,7 +378,7 @@ export class KernelBrowserHost {
       if (!observed || observed !== tab.document_id) throw new Error("MD-3: stale input document; observe the tab again");
       const at = timestamp();
       let dispatched = false;
-      try { await inputHostTab(this.browser, tab, command.input, { signal, onDispatch: () => { dispatched = true; } }); this.timing('cdp_input', at); }
+      try { await inputHostTab(this.browser, tab, command.input, { signal, requireRoutine: command._retained_agent === true || command._routine_agent_input === true, onDispatch: () => { dispatched = true; } }); this.timing('cdp_input', at); }
       catch (error) {
         if (dispatched || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) {
           // Clear any dispatched key/button state before another actor can use
@@ -400,7 +400,7 @@ export class KernelBrowserHost {
       if (!command.focused_agent && !command.bound_frames) delete frame.document_id;
       return this.observe(frame, tab, scope);
     }
-    if (command.op === "subscribe") return this.subscribe(tab, command.bound_frames === true);
+    if (command.op === "subscribe") return this.subscribe(tab, command.bound_frames === true, command._subscription_owner ?? null);
     throw new Error("MD-2: unsupported browser operation");
   }
   async handle(request, { signal } = {}) {
@@ -409,6 +409,17 @@ export class KernelBrowserHost {
       if (request.method === "health") return { id: request.id, ok: true, result: { state: "ready", process_id: process.pid, diagnostic_code: null } };
       if (request.method === "shutdown") return { id: request.id, ok: true, result: await this.stop() };
       if (request.method === "host.protect") return { id: request.id, ok: true, result: await this.protect(request.params) };
+      if (request.method === "host.revoke_subscriptions") {
+        const ids = new Set(request.params.subscription_ids ?? []);
+        const owners = new Set(request.params.subscription_owners ?? []);
+        for (const [id, stream] of this.streams) if (ids.has(id) || owners.has(stream.owner)) await this.removeStream(id);
+        return { id: request.id, ok: true, result: { revoked: true } };
+      }
+      if (request.method === "host.input_sensitive") {
+        const tab = await this.target(request.params);
+        if (tab.document_id !== request.params.document_id) throw new Error("MP-11: stale sensitivity document");
+        return { id: request.id, ok: true, result: { sensitive: await sensitiveHostInput(this.browser, tab, request.params.input) } };
+      }
       if (request.method === "host.secret") {
         await this.start();
         if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");

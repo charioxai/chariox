@@ -204,7 +204,7 @@ async fn check() {
             json!({"note_id":note.note_id})
         )
         .await
-        .is_err());
+        .is_ok());
     router
         .dispatch_authenticated_runtime_tool_call(b, "chariox.load_kernel_browser", json!({}))
         .await

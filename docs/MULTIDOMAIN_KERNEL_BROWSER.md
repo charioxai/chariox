@@ -47,18 +47,19 @@ an unrelated user's Chrome or delete its locks.
 ## MD-3: authority and secrets
 
 Human requests derive user identity from KernelCaller, not request arguments.
-Only authenticated terminals may call the public host interface. MCP derives
-user/agent identity from the admitted local provider run and checks the user's
-current focus on discovery and every call. Focus changes revoke old access;
-remote/leased runs are excluded. A small loader tool makes the capability known;
-the browser operation tool is advertised only after on-demand loading.
-No additional approval/grant path is introduced.
+Only authenticated terminals may call the public host interface. MP-08/MP-11:
+MCP derives user/agent identity from the admitted local provider run. Focus
+claims resources; active tasks and pending wakes retain their exact grant after
+focus changes. A small loader advertises tools on demand. See the authoritative
+[user-domain access amendment](MULTIDOMAIN_USER_DOMAIN_ACCESS.md) (432/78).
+Remote/leased calls name both kernels and request focus on the window's kernel;
+there is no cross-kernel control.
 
 MD-3 local socket admission carries a nonserialized connection cancellation
 lifetime through router, Vault barrier and backend waits. Disconnect cancels it
 before releasing actor presence. Ledger registration checks it under the same
 lock as disconnect, so queued physical input cannot recreate a departed actor.
-Changing focus and retiring an agent also remove its actor and pointer slots;
+Retiring or explicitly revoking an agent removes its actor and pointer slots;
 bounded terminal action history remains. A failed CDP input attempt fences the
 browser to clear uncertain held keys/buttons before another actor can dispatch.
 
@@ -85,9 +86,10 @@ Native URLs outside HTTP(S)/about:blank restore as about:blank; reconciliation
 keeps at most 128 durable tabs, prioritizes existing identities, closes excess
 native targets and truncates oversized legacy registries.
 
-Each MCP call retains one focus-interval admission through async waits and the
-controller operation. Focus change, agent destruction/session end/placement move
-or loss of the provider-run authority cancels pending host input and Vault fill
+MP-08/MP-11: each MCP call retains its grant admission through async waits and
+the controller operation. Idle expiry, explicit revoke, agent destruction/session
+end/placement move or loss of provider-run authority cancels pending input.
+Sensitive input and Vault fill also require focus throughout their operation
 through the shared stdio cancellation path. A timed-out cancellation fences the
 controller before settlement. Input checks cancellation and the observed CDP
 loader before every physical event. If input is interrupted between events, the
@@ -244,7 +246,7 @@ cancellation path. Pending takeover fences subsequent mutations immediately;
 ownership is granted only once that action settles. Release requires the same
 terminal actor. Browser recovery preserves deliberate human ownership of stable
 tabs and invalidates old action/generation references. Focus/run revocation still
-uses the existing uninterrupted focus admission; release does not restore old
+uses the existing grant admission; release does not restore old
 focus or grant access to another agent. Observations remain available during
 takeover. Appviews retains its own admission/attribution above the unchanged App
 seam. Actor projections are live kernel state. A full kernel restart releases control;

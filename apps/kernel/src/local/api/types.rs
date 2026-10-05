@@ -44,6 +44,7 @@ mod session_control;
 mod slice;
 mod terminal_command_catalog;
 mod terminal_interaction;
+mod user_domain_access;
 mod waiting_room;
 mod workflow;
 mod workspace;
@@ -82,6 +83,7 @@ pub use session_control::*;
 pub use slice::*;
 pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
+pub use user_domain_access::*;
 pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
@@ -260,4 +262,5 @@ pub use workspace::*;
 /// MD-stack: version 427 unifies host browser, detached App views, display,
 /// private Notes and protected visible-region prompt captures. Intermediate
 /// feature allocations 417/418/419/424/425 were not released.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 427;
+/// MP-08/MP-11: reserved 432 adds retained resource grants and window reachability.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 432;

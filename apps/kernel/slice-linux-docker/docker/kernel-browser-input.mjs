@@ -1,12 +1,49 @@
 // MD-3: document-bound physical input, sharing Room cancellation and document checks.
 import { assertCurrentDocument, assertNotCancelled } from "./browser-controller-actions.mjs";
+import { protectedHostRegions } from "./kernel-browser-region-protection.mjs";
 const viewport = { css_width: 1280, css_height: 800 };
-export async function inputHostTab(browser, tab, input, { signal, onDispatch } = {}) {
+// MP-11: value-free protection classification before physical agent input.
+export async function sensitiveHostInput(browser, tab, input) {
+  if (input.kind === "scroll") return false;
+  const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
+  await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
+  const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
+  const { executionContextId } = await connection.send("Page.createIsolatedWorld", {
+    frameId: frameTree.frame.id, worldName: "chariox-host-protection", grantUniveralAccess: false,
+  }, sessionId);
+  const point = input.kind === "click" ? `document.elementFromPoint(${JSON.stringify(input.x)},${JSON.stringify(input.y)})` : "document.activeElement";
+  const { result } = await connection.send("Runtime.evaluate", {
+    contextId: executionContextId,
+    expression: `(() => {
+      let e = ${point};
+      if (!e) return true;
+      while (e.shadowRoot?.activeElement) e = e.shadowRoot.activeElement;
+      const protectedSelector = '[data-chariox-sensitive],[data-chariox-observation-protected],input[type="password"],[autocomplete="one-time-code"],[autocomplete^="cc-"],iframe,frame';
+      if (e.matches(protectedSelector) || e.closest(protectedSelector) || e.shadowRoot) return true;
+      if (e.closest('form')?.querySelector(protectedSelector)) return true;
+      const action = e.closest('button,a,[role="button"],input[type="submit"]');
+      return !!action && /\\b(pay|purchase|buy|checkout|authorize|approve|confirm payment)\\b/i.test(action.textContent || action.getAttribute('aria-label') || action.value || '');
+    })()`, returnByValue: true,
+  }, sessionId);
+  if (result?.value !== false) return true;
+  // CDP sees closed shadow hosts too. Use the capture protection model rather
+  // than treating an opaque page subtree as a routine physical target.
+  try {
+    const regions = await protectedHostRegions(connection, sessionId);
+    return input.kind === "click"
+      ? regions.some(r => input.x >= r.x && input.x <= r.x + r.width && input.y >= r.y && input.y <= r.y + r.height)
+      : regions.length > 0;
+  } catch { return true; }
+}
+export async function inputHostTab(browser, tab, input, { signal, onDispatch, requireRoutine = false } = {}) {
     assertNotCancelled(signal);
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
     const check = async () => {
       assertNotCancelled(signal);
       await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
+      if (requireRoutine && await sensitiveHostInput(browser, tab, input)) {
+        throw new Error("MP-11: sensitive user-domain action requires focus or human approval");
+      }
       assertNotCancelled(signal);
     };
     const sendInput = async (method, params) => {

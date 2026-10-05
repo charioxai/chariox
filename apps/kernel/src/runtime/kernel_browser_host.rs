@@ -5,6 +5,8 @@ use super::browser_controller_process::{
 };
 use super::kernel_browser_actors::KernelBrowserActors;
 pub(crate) use super::kernel_browser_actors::KernelBrowserDocumentBinding;
+use super::user_domain_access::UserDomainAccess;
+use crate::local::UserDomainResource;
 use crate::session::{
     EnvironmentActionTerminal, EnvironmentActor, EnvironmentActorKind, TakeoverOutcome,
 };
@@ -24,7 +26,7 @@ pub(crate) struct KernelBrowserHost {
 struct HostState {
     browsers: BTreeMap<String, Arc<Mutex<BrowserControllerProcessStdioBackend>>>,
     stopped: bool,
-    focus: BTreeMap<String, FocusedAgent>,
+    access: UserDomainAccess,
     actors: BTreeMap<String, Arc<Mutex<KernelBrowserActors>>>,
     loaded: BTreeSet<(String, String, KernelBrowserCapability)>,
 }
@@ -34,11 +36,7 @@ pub(crate) enum KernelBrowserCapability {
     Notes,
 }
 
-struct FocusedAgent {
-    agent_id: String,
-    epoch: Arc<BrowserCancellation>,
-}
-/// Internal admission bound to one user, agent and uninterrupted focus interval.
+/// Internal admission bound to one user, agent and retained grant epoch.
 #[derive(Clone)]
 pub(crate) struct KernelBrowserAdmission {
     user: String,
@@ -90,65 +88,6 @@ impl KernelBrowserHost {
         }
         Ok(keys)
     }
-    pub(crate) fn set_focus(&self, user: &str, agent: Option<&str>) {
-        let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        if state.focus.get(user).map(|focus| focus.agent_id.as_str()) != agent {
-            if let Some(previous) = state.focus.get(user) {
-                previous.epoch.request_cancel();
-                if let Some(model) = state.actors.get(user) {
-                    model
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .disconnect(&format!("agent:{}", previous.agent_id));
-                }
-            }
-            state.loaded.retain(|(owner, _, _)| owner != user);
-            if let Some(agent) = agent {
-                state.focus.insert(
-                    user.into(),
-                    FocusedAgent {
-                        agent_id: agent.into(),
-                        epoch: Arc::new(BrowserCancellation::default()),
-                    },
-                );
-            } else {
-                state.focus.remove(user);
-            }
-        }
-        crate::transport::mcp_server::catalog_changed();
-    }
-    pub(crate) fn revoke_agent(&self, agent: &str) {
-        let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        let users: Vec<_> = state
-            .focus
-            .iter()
-            .filter(|(_, focus)| focus.agent_id == agent)
-            .map(|(user, _)| user.clone())
-            .collect();
-        for user in users {
-            if let Some(previous) = state.focus.remove(&user) {
-                previous.epoch.request_cancel();
-            }
-            state.loaded.retain(|(owner, _, _)| owner != &user);
-        }
-        state.loaded.retain(|(_, loaded, _)| loaded != agent);
-        for model in state.actors.values() {
-            model
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .disconnect(&format!("agent:{agent}"));
-        }
-        drop(state);
-        crate::transport::mcp_server::catalog_changed();
-    }
-    pub(crate) fn is_focused(&self, user: &str, agent: &str) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .focus
-            .get(user)
-            .is_some_and(|focused| focused.agent_id == agent)
-    }
     pub(crate) fn is_loaded(&self, user: &str, agent: &str) -> bool {
         self.is_loaded_for(user, agent, KernelBrowserCapability::Browser)
     }
@@ -159,10 +98,7 @@ impl KernelBrowserHost {
         capability: KernelBrowserCapability,
     ) -> bool {
         let state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        state
-            .focus
-            .get(user)
-            .is_some_and(|focused| focused.agent_id == agent)
+        state.access.grant(user, agent).is_ok()
             && state
                 .loaded
                 .contains(&(user.into(), agent.into(), capability))
@@ -288,8 +224,8 @@ impl KernelBrowserHost {
             user: user.into(),
             agent: Some(agent.into()),
             capability,
-            epoch: state.focus[user].epoch.clone(),
-            cancellation: state.focus[user].epoch.clone(),
+            epoch: state.access.grant(user, agent)?.epoch.clone(),
+            cancellation: state.access.grant(user, agent)?.epoch.clone(),
         })
     }
     pub(crate) fn admit_terminal(
@@ -320,14 +256,17 @@ impl KernelBrowserHost {
             if let Some(agent) = admission.agent.as_deref() {
                 let state = self.inner.lock().map_err(|_| "MD-3: focus lock poisoned")?;
                 require_loaded(&state, &admission.user, agent, admission.capability)?;
-                if !Arc::ptr_eq(&state.focus[&admission.user].epoch, &admission.epoch) {
-                    return Err("MD-3: browser focus changed; request fresh tools".into());
+                if !Arc::ptr_eq(
+                    &state.access.grant(&admission.user, agent)?.epoch,
+                    &admission.epoch,
+                ) {
+                    return Err("MD-3: browser grant changed; request fresh tools".into());
                 }
             }
         }
         Ok(())
     }
-    /// MD-N4 / MP-11: a note read/write commits within one uninterrupted focus epoch.
+    /// MD-N4 / MP-11: a note read/write commits within one uninterrupted grant epoch.
     pub(crate) fn note_operation<T>(
         &self,
         user: &str,
@@ -345,8 +284,8 @@ impl KernelBrowserHost {
                     .lock()
                     .map_err(|_| "MD-N4: focus lock unavailable")?;
                 require_loaded(&state, user, agent, admission.capability)?;
-                if !Arc::ptr_eq(&state.focus[user].epoch, &admission.epoch) {
-                    return Err("MD-N4: note focus changed".into());
+                if !Arc::ptr_eq(&state.access.grant(user, agent)?.epoch, &admission.epoch) {
+                    return Err("MD-N4: note grant changed".into());
                 }
                 call()
             } else {
@@ -374,6 +313,7 @@ impl KernelBrowserHost {
             .map_err(|_| "MD-2: browser operation lock poisoned")?;
         self.require_running()?;
         self.check_admission(admission)?;
+        self.scope_browser_request(admission, method, &params)?;
         if method == "host.browser" && params["op"] == "stop" {
             let model = self.actor_model(user)?;
             let (id, cancellation) = {
@@ -411,6 +351,19 @@ impl KernelBrowserHost {
         let mut params = params;
         if admission.is_some_and(|admission| admission.agent.is_some()) {
             params["_agent_input"] = true.into();
+            params["observed_by"] =
+                format!("agent:{}", admission.unwrap().agent.as_deref().unwrap()).into();
+            params["_retained_agent"] =
+                (!self.is_focused(user, admission.unwrap().agent.as_deref().unwrap())).into();
+            params["_subscription_owner"] = self
+                .inner
+                .lock()
+                .map_err(|_| "MP-11: grant lock unavailable")?
+                .access
+                .grant(user, admission.unwrap().agent.as_deref().unwrap())?
+                .subscription_owner
+                .clone()
+                .into();
         }
         self.check_admission(admission)?;
         backend.host_request("host.protect", policy)?;
@@ -449,7 +402,7 @@ impl KernelBrowserHost {
         } else {
             None
         };
-        let cancellation = match (&action, admission) {
+        let mut cancellation = match (&action, admission) {
             (Some(action), Some(admission)) => {
                 let authority = admission.cancellation.clone();
                 Some(Arc::new(BrowserCancellation::for_authority(
@@ -461,7 +414,37 @@ impl KernelBrowserHost {
             (None, Some(admission)) => Some(admission.cancellation.clone()),
             (None, None) => None,
         };
-        let result = backend.host_request_cancellable(method, params, cancellation.clone());
+        if method == "host.browser"
+            && params["op"] == "input"
+            && admission.is_some_and(|a| a.agent.is_some())
+        {
+            let sensitive = backend.host_request("host.input_sensitive", params.clone())?
+                ["sensitive"]
+                .as_bool()
+                .ok_or("MP-11: sensitive-action classification unavailable; focus required")?;
+            self.check_admission(admission)?;
+            if sensitive {
+                let admitted = admission.unwrap();
+                let agent = admitted.agent.clone().unwrap();
+                if !self.is_focused(user, &agent) {
+                    return Err("MP-11: sensitive user-domain action requires focus or human approval; focus this agent".into());
+                }
+                let host = self.clone();
+                let owner = user.to_string();
+                cancellation = Some(Arc::new(BrowserCancellation::for_authority(
+                    cancellation.unwrap(),
+                    move || host.is_focused(&owner, &agent),
+                )));
+            }
+            // A routine classification is rechecked before every physical event,
+            // even if focus changes after admission. Sensitive classifications
+            // instead carry a focus-bound cancellation authority throughout.
+            params["_routine_agent_input"] = (!sensitive).into();
+            params["_retained_agent"] =
+                (!self.is_focused(user, admission.unwrap().agent.as_deref().unwrap())).into();
+        }
+        let request_params = params.clone();
+        let mut result = backend.host_request_cancellable(method, params, cancellation.clone());
         if let Some(action) = action {
             let terminal = if cancellation
                 .as_ref()
@@ -476,11 +459,84 @@ impl KernelBrowserHost {
             action.finish(terminal);
         }
         self.check_admission(admission)?;
+        // Reconcile authority with full controller state before applying a
+        // retained agent's projection; scoped inventory cannot remove another
+        // actor's tabs or input ownership from the shared ledger.
         if let Ok(state) = &result {
             model
                 .lock()
                 .map_err(|_| "MD-3: actor lock poisoned")?
                 .reconcile(state)?;
+        }
+        if let (Some(admission), Ok(payload)) = (admission, &mut result) {
+            if let Some(agent) = admission.agent.as_deref() {
+                let mut state = self
+                    .inner
+                    .lock()
+                    .map_err(|_| "MP-11: grant lock unavailable")?;
+                if let Some(id) = payload.get("tab_id").and_then(Value::as_str) {
+                    if request_params["op"] == "open" {
+                        state.access.claim(
+                            user,
+                            agent,
+                            UserDomainResource::BrowserTab { tab_id: id.into() },
+                            false,
+                        )?;
+                    }
+                }
+                if let (Some(id), Some(tab)) = (
+                    payload.get("subscription_id").and_then(Value::as_str),
+                    request_params.get("tab_id").and_then(Value::as_str),
+                ) {
+                    state.access.subscribe(user, agent, id, tab)?;
+                }
+                if state.access.focused(user) != Some(agent) {
+                    let grant = state.access.grant(user, agent)?;
+                    if let Some(tabs) = payload.get_mut("tabs").and_then(Value::as_array_mut) {
+                        tabs.retain(|tab| {
+                            tab["tab_id"].as_str().is_some_and(|id| {
+                                grant
+                                    .resources
+                                    .contains(&UserDomainResource::BrowserTab { tab_id: id.into() })
+                            })
+                        });
+                    }
+                }
+                let resource = request_params["tab_id"]
+                    .as_str()
+                    .map(|tab| UserDomainResource::BrowserTab { tab_id: tab.into() })
+                    .or_else(|| {
+                        request_params["subscription_id"].as_str().and_then(|id| {
+                            state
+                                .access
+                                .grant(user, agent)
+                                .ok()?
+                                .subscriptions
+                                .get(id)
+                                .map(|tab| UserDomainResource::BrowserTab {
+                                    tab_id: tab.clone(),
+                                })
+                        })
+                    })
+                    .or_else(|| {
+                        state
+                            .access
+                            .grant(user, agent)
+                            .ok()?
+                            .resources
+                            .iter()
+                            .next()
+                            .cloned()
+                    });
+                if let Some(resource) = resource {
+                    state.access.acted(user, agent, resource);
+                }
+                if request_params["op"] == "unsubscribe" {
+                    if let Some(id) = request_params["subscription_id"].as_str() {
+                        state.access.unsubscribe(user, agent, id);
+                    }
+                }
+            }
         }
         result
     }
@@ -566,6 +622,16 @@ impl KernelBrowserHost {
                 .lock()
                 .map_err(|_| "MD-2: browser host lock poisoned")?;
             state.stopped = true;
+            let owners: BTreeSet<_> = state
+                .access
+                .holders()
+                .into_iter()
+                .map(|(owner, _)| owner)
+                .collect();
+            for owner in owners {
+                state.access.revoke(&owner, None);
+            }
+            state.loaded.clear();
             std::mem::take(&mut state.browsers)
         };
         let mut first = None;
@@ -585,7 +651,7 @@ fn browser_actor(admission: Option<&KernelBrowserAdmission>, params: &Value) -> 
         EnvironmentActor::new(
             format!("agent:{agent}"),
             EnvironmentActorKind::Agent,
-            "Focused agent",
+            "Agent",
         )
     } else {
         EnvironmentActor::new(
@@ -622,11 +688,7 @@ impl Drop for BrowserActorAction {
     }
 }
 fn require_focus(state: &HostState, user: &str, agent: &str) -> Result<(), String> {
-    if state
-        .focus
-        .get(user)
-        .is_some_and(|focused| focused.agent_id == agent)
-    {
+    if state.access.focused(user) == Some(agent) {
         Ok(())
     } else {
         Err("MD-3: user-domain browser access follows current local agent focus".into())
@@ -639,7 +701,7 @@ fn require_loaded(
     agent: &str,
     capability: KernelBrowserCapability,
 ) -> Result<(), String> {
-    require_focus(state, user, agent)?;
+    state.access.grant(user, agent)?;
     if state
         .loaded
         .contains(&(user.into(), agent.into(), capability))
@@ -654,6 +716,18 @@ fn require_loaded(
 mod tests {
     use super::*;
     #[test]
+    fn mdaccess_focus_switch_keeps_existing_grant_and_admission() {
+        let host = KernelBrowserHost::new(PathBuf::from("/unused/mdaccess"));
+        host.set_focus("owner", Some("waiting-agent"));
+        host.load("owner", "waiting-agent").unwrap();
+        let admission = host.admit("owner", "waiting-agent").unwrap();
+        host.set_focus("owner", Some("second-agent"));
+        assert!(host.is_loaded("owner", "waiting-agent"));
+        assert!(host.check_admission(Some(&admission)).is_ok());
+        host.revoke_agent("waiting-agent");
+        assert!(host.check_admission(Some(&admission)).is_err());
+    }
+    #[test]
     fn notes_loader_is_independent_and_revoked_admissions_cannot_commit() {
         let host = KernelBrowserHost::new(PathBuf::from("/unused/mdnotes-focus"));
         host.set_focus("a", Some("first"));
@@ -667,7 +741,7 @@ mod tests {
             .note_operation::<()>("other", Some(&notes), || panic!("foreign commit"))
             .is_err());
         host.load("a", "first").unwrap();
-        host.set_focus("a", Some("second"));
+        host.revoke_agent("first");
         host.set_focus("a", Some("first"));
         host.load_for("a", "first", KernelBrowserCapability::Notes)
             .unwrap();
@@ -712,34 +786,12 @@ mod tests {
         );
     }
     #[test]
-    fn focus_revokes_loaded_tools_and_never_regrants_previous_agent() {
-        let host = KernelBrowserHost::new(PathBuf::from("/tmp/md3-state"));
-        assert!(host.load("a", "agent1").is_err());
-        host.set_focus("a", Some("agent1"));
-        host.load("a", "agent1").unwrap();
-        assert!(host.is_loaded("a", "agent1"));
-        host.set_focus("a", Some("agent2"));
-        assert!(!host.is_loaded("a", "agent1"));
-        assert!(host
-            .protected_request(
-                "a",
-                Some("agent1"),
-                "host.browser",
-                serde_json::json!({"op":"state"}),
-                serde_json::Value::Null
-            )
-            .is_err());
-        assert!(!host.is_focused("b", "agent2"));
-        host.set_focus("a", Some("agent1"));
-        assert!(!host.is_loaded("a", "agent1"));
-    }
-    #[test]
-    fn admission_cannot_revive_after_focus_returns_and_tools_reload() {
+    fn admission_cannot_revive_after_revocation_and_tools_reload() {
         let host = KernelBrowserHost::new(PathBuf::from("/unused/md3-focus-epoch"));
         host.set_focus("a", Some("agent1"));
         host.load("a", "agent1").unwrap();
         let old = host.admit("a", "agent1").unwrap();
-        host.set_focus("a", Some("agent2"));
+        host.revoke_agent("agent1");
         host.set_focus("a", Some("agent1"));
         host.load("a", "agent1").unwrap();
         assert!(host.check_admission(Some(&old)).is_err());
@@ -755,7 +807,7 @@ mod tests {
         assert!(host.inner.lock().unwrap().browsers.is_empty());
         let current = host.admit("a", "agent1").unwrap();
         assert!(host.check_admission(Some(&current)).is_ok());
-        host.set_focus("a", None);
+        host.revoke_agent("agent1");
         assert!(host.check_admission(Some(&current)).is_err());
     }
     #[test]
@@ -783,7 +835,7 @@ mod tests {
         assert!(first.cancellation.requested());
         assert!(!second.cancellation.requested());
         assert!(host.check_admission(Some(&second)).is_ok());
-        host.set_focus("b", None);
+        host.revoke_agent("agent2");
         assert!(second.cancellation.requested());
     }
     #[test]
@@ -807,3 +859,5 @@ mod tests {
 
 #[cfg(test)]
 mod actor_tests;
+
+mod access;

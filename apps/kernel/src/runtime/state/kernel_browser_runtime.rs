@@ -67,7 +67,10 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
         .map_err(|_| host_error("MD-3: invalid browser command".into()))?;
     if matches!(
         &request.command,
-        KernelBrowserCommand::DisplayCapture { .. }
+        KernelBrowserCommand::ListGrants
+            | KernelBrowserCommand::SubscribeGrants { .. }
+            | KernelBrowserCommand::RevokeGrants { .. }
+            | KernelBrowserCommand::DisplayCapture { .. }
             | KernelBrowserCommand::DisplaySubscribe { .. }
             | KernelBrowserCommand::DisplayNext { .. }
             | KernelBrowserCommand::DisplayInput { .. }
@@ -158,6 +161,42 @@ impl KernelRuntimeState {
             KernelBrowserCommand::DisplayActors => KernelBrowserDisplayRequest::Actors,
             command => {
                 let (user, actor) = self.kernel_browser_terminal_context(caller)?;
+                self.refresh_user_domain_grants();
+                match &command {
+                    KernelBrowserCommand::ListGrants
+                    | KernelBrowserCommand::RevokeGrants { .. }
+                    | KernelBrowserCommand::SubscribeGrants { .. } => {
+                        if let KernelBrowserCommand::RevokeGrants { agent_id } = &command {
+                            self.owned
+                                .kernel_browser_host
+                                .revoke_grants(&user, agent_id.as_deref());
+                        }
+                        if let KernelBrowserCommand::SubscribeGrants { after, wait_ms } = command {
+                            if wait_ms > 25_000 {
+                                return Err(host_error(
+                                    "MP-08: grant subscription wait exceeds 25000 ms".into(),
+                                ));
+                            }
+                            let deadline = tokio::time::Instant::now()
+                                + std::time::Duration::from_millis(wait_ms.into());
+                            while self.owned.kernel_browser_host.grant_snapshot(&user, "")["cursor"]
+                                .as_u64()
+                                == Some(after)
+                                && tokio::time::Instant::now() < deadline
+                            {
+                                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                                self.kernel_browser_terminal_context(caller)?;
+                                self.refresh_user_domain_grants();
+                            }
+                        }
+                        let kernel = self.owned.config_projection.snapshot().daemon_id;
+                        return Ok(self
+                            .owned
+                            .kernel_browser_host
+                            .grant_snapshot(&user, &kernel));
+                    }
+                    _ => {}
+                }
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 if matches!(command, KernelBrowserCommand::Stop) {
                     for view in self.app_control().user_views().browser_views(&user) {
@@ -171,14 +210,23 @@ impl KernelRuntimeState {
                     .owned
                     .kernel_browser_host
                     .admit_terminal(&user, caller.terminal_lifetime.clone().unwrap_or_default());
-                return self
+                let mut result = self
                     .kernel_browser_operation_admitted(
                         &user,
                         Some(admission),
                         "host.browser",
                         params,
                     )
-                    .await;
+                    .await?;
+                if let Some(object) = result.as_object_mut() {
+                    object.extend(
+                        self.user_domain_window_projection(&user)
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    );
+                }
+                return Ok(result);
             }
         };
         if std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() != Ok("1") {
@@ -331,30 +379,14 @@ impl KernelRuntimeState {
         &self,
         run: &crate::provider::RuntimeProviderRun,
     ) -> Option<crate::agent::AgentInstance> {
-        let id = run.agent_instance_id()?;
-        let agent = self.owned.agent_store.get_agent(id).ok()?;
-        if agent.remote_execution().is_some()
-            || self
-                .owned
-                .provider_run_projection
-                .is_leased_provider_run(run.id())
-            || self.slice_kernel_id().is_some()
-        {
-            return None;
-        }
-        // Session focus also protects destruction/move and other existing focus paths.
-        let session = self.owned.session_snapshot(run.session_id()).ok()?;
-        (session.focused_agent_id() == Some(id)
-            && self.owned.kernel_browser_host.is_focused(
-                &self.provider_account_authority_owner_user_id(agent.owner_user_id()),
-                id,
-            ))
-        .then_some(agent)
+        self.user_domain_agent_authority(run).ok()
     }
+
     pub(super) fn kernel_browser_tool_specs(
         &self,
         runs: &[crate::provider::RuntimeProviderRun],
     ) -> Vec<RuntimeToolSpec> {
+        self.refresh_user_domain_grants();
         let [run] = runs else {
             return Vec::new();
         };
@@ -362,7 +394,7 @@ impl KernelRuntimeState {
             return Vec::new();
         };
         let mut tools = vec![RuntimeToolSpec { name: LOADER.into(),
-            description: "MD-3: load user-domain browser tools on demand. Only the user's focused local agent has access.".into(),
+            description: "MD-3: load user-domain browser tools on demand. Focus loads access; an existing task retains its claimed resources until idle expiry or revocation.".into(),
             input_schema: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}), }];
         if self.owned.kernel_browser_host.is_loaded(
             &self.provider_account_authority_owner_user_id(agent.owner_user_id()),
@@ -405,9 +437,7 @@ impl KernelRuntimeState {
                 "MD-3: admitted local provider run required".into(),
             ));
         };
-        let agent = self
-            .kernel_browser_agent(run)
-            .ok_or_else(|| host_error("MD-3: current local focus required".into()))?;
+        let agent = self.user_domain_tool_agent(run).await?;
         let host = self.owned.kernel_browser_host.clone();
         if name == LOADER {
             if arguments
@@ -427,9 +457,15 @@ impl KernelRuntimeState {
             });
         }
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+        if name == PASTE && !host.is_focused(&user, agent.id()) {
+            return Err(host_error("MP-11: Vault fill requires focus or human approval; ask the user to focus this agent".into()));
+        }
         let authority = self.clone();
         let auth_token = token.to_string();
         let run_id = run.id().to_string();
+        let sensitive = name == PASTE;
+        let authority_owner = user.clone();
+        let authority_agent = agent.id().to_string();
         let admission = host
             .admit(&user, agent.id())
             .map_err(host_error)?
@@ -441,7 +477,13 @@ impl KernelRuntimeState {
                 let [current] = runs.as_slice() else {
                     return false;
                 };
-                current.id() == run_id && authority.kernel_browser_agent(current).is_some()
+                current.id() == run_id
+                    && authority.kernel_browser_agent(current).is_some()
+                    && (!sensitive
+                        || authority
+                            .owned
+                            .kernel_browser_host
+                            .is_focused(&authority_owner, &authority_agent))
             });
         if name == PASTE {
             let scope = crate::runtime::kernel_browser_host::KernelBrowserHost::profile_key(
@@ -457,6 +499,25 @@ impl KernelRuntimeState {
                 });
         }
         let params = browser_tool_params(arguments)?;
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        if let Some(tab) = params["tab_id"].as_str() {
+            for view in self.app_control().user_views().browser_views(&user) {
+                if view
+                    .browser
+                    .as_ref()
+                    .is_some_and(|browser| browser.tab_id == tab)
+                {
+                    host.claim_resource(
+                        Some(&admission),
+                        crate::local::UserDomainResource::AppView {
+                            view_id: view.view_id,
+                        },
+                        false,
+                    )
+                    .map_err(host_error)?;
+                }
+            }
+        }
         let payload = self
             .kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params)
             .await?;

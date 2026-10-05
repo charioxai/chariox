@@ -7,6 +7,23 @@ Draft protocol aligned with `docs/spec-v1.md`.
 Apps Phase 1 protocol numbers were renumbered above release F on 2026-10-03 (local
 N → N + 9 for 368–406, relay 58 → 69); see [PROTOCOL_PHASE1_RENUMBERING.md](PROTOCOL_PHASE1_RENUMBERING.md).
 
+## MP-08 / MP-11: user-domain grant contract (local 432 / relay 78)
+
+The owner-approved multidomain access contract is specified in
+[MULTIDOMAIN_USER_DOMAIN_ACCESS.md](MULTIDOMAIN_USER_DOMAIN_ACCESS.md).
+Focus grants resource-scoped authority; changing focus does not revoke prior
+holders. Existing kernel turn/wake state retains grants until fully idle expiry,
+session/agent end or explicit revocation. Authenticated owner terminals use
+`KernelBrowser` operations `list_grants`, `subscribe_grants` and `revoke_grants`;
+agent tools cannot invoke these owner controls. Snapshots carry the live cursor,
+holders and non-focused-use notice. Revocation cancels grant epochs and idle
+subscriptions. Sensitive actions still require focus or human approval.
+Browser/App window projections identify the owning kernel and focused-agent
+reachability; cross-kernel control is refused. Consumers of these new fields and
+commands require local 432. Existing multidomain feature minima remain 427.
+The focused MP-10 drill and protocol snapshots cover these changes; they do not
+alone establish ordinary/managed parity or official-provider wait behavior.
+
 ## 1. Scope
 
 This document defines message classes and protocol contracts between:

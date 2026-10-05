@@ -43,6 +43,7 @@ impl KernelRuntimeState {
 
     pub(crate) async fn pump_transport_runtime(&self) {
         self.owned.announce_durable_writer_condition();
+        self.refresh_user_domain_grants();
         self.schedule_room_browser_health();
         self.app_control().schedule_maintenance();
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
