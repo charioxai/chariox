@@ -3,7 +3,7 @@ import {drainRepairs} from './drill-settle.mjs';
 import { distribution } from './drill-metrics.mjs';
 export async function measureWorkload({page,workload,pair,pause,resource,durationMs}) {
  const before=await page.evaluate(()=>({bytes:mdWireBytes,frames:mdFrames.length,presentations:mdPresentations?.length??0}));
- const started=performance.now(),cadence=[],samples=[];
+ const started=performance.now(),cadence=[],samples=[],livePairs=[];
  if(workload!=='scroll')await page.evaluate(()=>mdStream.input({kind:'click',x:60,y:88}));
  let last=performance.now();const continuous=process.env.MD_WINDOW==='1';
  if(continuous)await page.evaluate(()=>mdStream.start());
@@ -15,6 +15,7 @@ export async function measureWorkload({page,workload,pair,pause,resource,duratio
   // Live readback pairs include temporal/compositor drift. Never call them
   // codec PSNR or pixel exactness of the captured encoded source.
   if(samples.length===1||samples.length===4)samples.at(-1).live_pair=await pair(`moving-${samples.length}`);
+  if(continuous&&livePairs.length<2&&performance.now()-started>(livePairs.length+1)*1000)livePairs.push(await pair('moving-live-'+livePairs.length));
   await resource();
  }
  if(continuous)await page.evaluate(()=>mdStream.stop());
@@ -27,8 +28,8 @@ export async function measureWorkload({page,workload,pair,pause,resource,duratio
  const repair=await drainRepairs(()=>page.evaluate(()=>mdStream.next()));const refinements=repair.polls,exact=await pair('motion-settled');
  if(!exact.lossless)throw Error('MD-DISPLAY: moving workload did not settle exactly');
  return {workload,duration_ms:motionEnd-started,presented_frames:samples.length,effective_fps:samples.length*1000/(motionEnd-started),
-  cadence:distribution(cadence),samples,received_application_bytes:after.bytes-before.bytes,application_mbps:(after.bytes-before.bytes)*8/(motionEnd-started)/1000,
+  cadence:distribution(cadence),samples,live_pairs:livePairs,received_application_bytes:after.bytes-before.bytes,application_mbps:(after.bytes-before.bytes)*8/(motionEnd-started)/1000,
   event_mbps:after.frames.slice(before.frames).reduce((n,frame)=>n+frame.bytes,0)*8/(motionEnd-started)/1000,frame_kinds:after.frames.slice(before.frames).map(frame=>frame.kind),freeze_first:{kind:first?.kind??'unchanged',fidelity:frozen},
   settle_ms:performance.now()-settleStart,refinements,settled_fidelity:exact,
-  limits:'MD-DISPLAY: sequential credits, rAF/canvas presentation proxy; live pairs have temporal drift. Video is a real HTMLVideoElement playing a 30fps canvas captureStream, not DRM/network media. Measurement readbacks/resource sampling reduce cadence. application_mbps includes unpaced diagnostic capture responses; event_mbps counts only encrypted frame events.'};
+  limits:'MD-DISPLAY: bounded continuous or sequential credits, rAF/canvas presentation proxy; live pairs have temporal drift. Video is a real HTMLVideoElement playing a 30fps canvas captureStream, not DRM/network media. Measurement readbacks/resource sampling reduce cadence. application_mbps includes unpaced diagnostic capture responses; event_mbps counts only encrypted frame events.'};
 }

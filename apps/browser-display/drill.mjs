@@ -107,7 +107,7 @@ try {
  const port=await until(async()=>{checkChild(viewer,'viewer');try{return Number((await readFile(path.join(viewerHome,'DevToolsActivePort'),'utf8')).split('\n')[0])}catch{return null}},'viewer');
  browser=await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
  const page=await browser.contexts()[0].newPage();page.on('pageerror',()=>errors.push(Error('MD-DISPLAY browser callback failure')));await page.goto(`${origin}/harness.html`);await page.waitForFunction(()=>window.MDDisplay);
- await page.evaluate(async({ready,bitrate,pngOnly})=>{
+ await page.evaluate(async({ready,bitrate,pngOnly,creditWindow})=>{
   if(pngOnly)globalThis.VideoDecoder=undefined;
   const api=await import('/browser-relay-crypto.mjs');
   const sender=await api.createRelayKeypair();
@@ -149,14 +149,14 @@ try {
    },onEvent:listener=>{listeners.add(listener);return()=>listeners.delete(listener)}};
   mdTransport.subscribeDisplay=binding=>control({kind:'client_subscribe',subscription_id:binding.subscription_id,target:{daemon_id:bootstrap.daemon_id},session_id:binding.subscription_id,attachment_id:String(binding.generation),client_public_key:sender.publicKeyBase64,subscription_scope:'kernel_browser_display',resume_from_event_id:null});
   mdTransport.unsubscribeDisplay=binding=>control({kind:'client_unsubscribe',subscription_id:binding.subscription_id,client_public_key:sender.publicKeyBase64});
-  window.mdStream=await MDDisplay.attachBrowserDisplay(MDDisplay.canvas,mdTransport,{tab_id:ready.tab_id,generation:ready.generation},{bitrate,onTiming:timing,onPresented:frame=>{
+  window.mdStream=await MDDisplay.attachBrowserDisplay(MDDisplay.canvas,mdTransport,{tab_id:ready.tab_id,generation:ready.generation},{bitrate,creditWindow,onTiming:timing,onPresented:frame=>{
     const sample={sequence:frame.sequence,drawn_ms:stamp()};window.mdPresentation=sample;mdPresentations.push(sample);
     requestAnimationFrame(()=>{
       if(window.mdProbeLeft!==undefined){const c=MDDisplay.canvas.getContext('2d');let n=0;for(let i=0;i<5;i++){const p=c.getImageData(mdProbeLeft+8+i*16,56,1,1).data;if(p[0]>128)n|=1<<i}sample.step=n;}
       sample.presented_ms=stamp();
     });
   }});
- },{ready,bitrate:receipt.target_encrypted_bitrate,pngOnly:process.env.MD_PNG_ONLY==='1'});
+ },{ready,bitrate:receipt.target_encrypted_bitrate,pngOnly:process.env.MD_PNG_ONLY==='1',creditWindow:Number(process.env.MD_CREDIT_WINDOW||4)});
  const bootstrapStarted=performance.now();
  const first=await page.evaluate(()=>mdStream.next());receipt.bootstrap={kind:first.kind,sequence:first.sequence,duration_ms:performance.now()-bootstrapStarted};
  const reference=async()=>Buffer.from((await page.evaluate(async()=>{const r=await mdTransport.request({KernelBrowser:{command:{op:'display_capture',tab_id:mdStream.binding.tab_id,generation:mdStream.binding.generation}}});return r.KernelBrowser.result.data_base64})),'base64');

@@ -322,7 +322,10 @@ export class KernelBrowserHost {
       // viewport rectangles; use full protected capture for scroll/zoom/unknown
       // origins until that coordinate transform has separate mask/race proof.
       const nativeCropSafe = viewport?.pageX === 0 && viewport?.pageY === 0 && viewport?.scale === 1;
-      const source = await stream.capture.next({ ...tab, input_epoch: this.inputEpochs.get(tab.tab_id) ?? 0 }, this.protection, stream.previous && stream.acceptsCredit(command.after_sequence), !stream.exact || !nativeCropSafe);
+      const source = await stream.capture.next({ ...tab, input_epoch: this.inputEpochs.get(tab.tab_id) ?? 0 }, this.protection, stream.previous && stream.acceptsCredit(command.after_sequence), !stream.exact || !nativeCropSafe,
+        stream.codec !== 'png' && this.protection.values.length === 0 && viewport?.scale === 1 &&
+          Number.isFinite(viewport.pageX) && Number.isFinite(viewport.pageY)
+          ? {x:viewport.pageX,y:viewport.pageY,width:1280,height:800,scale:1/stream.device_scale_factor} : null);
       try { await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id); }
       catch (error) { stream.invalidate(); throw error; }
       const frame = await stream.frame(source, source.document_id, command.after_sequence);

@@ -105,7 +105,7 @@ export class DisplayStream {
     const bound = documentId === this.document_id && this.acceptsCredit(afterSequence);
     if (!bound) this.invalidate();
     const same = this.previous?.pixels.equals(current.pixels);
-    if (same && this.exact) return null;
+    if (same && this.exact && !source.motion) return null;
     // Private crop metadata comes only from the protected native capture. The
     // cached frame is cloned unchanged outside it; full verification has no hint.
     const clip = source.dirty_clip;
@@ -120,7 +120,7 @@ export class DisplayStream {
     // credit remains outstanding; narrow links reduce batch size/cadence.
     const patchLimit = Math.min(192_000, Math.max(24_000, this.bitrate / 8 * .5 * .75 - 4096));
     let payload, repair = null;
-    if (same && !this.exact) {
+    if (same && !this.exact && !source.motion) {
       const exact = full();
       if (JSON.stringify(exact).length <= patchLimit) payload = exact;
       else {
@@ -134,7 +134,7 @@ export class DisplayStream {
         payload = { kind:'tiles', base_sequence:this.sequence, tiles:batch };
         repair = remaining.slice(batch.length);
       }
-    } else if (tiles.length && JSON.stringify(patch).length < Math.min(patchLimit, source.full_size_hint ?? JSON.stringify(full()).length)) payload = patch;
+    } else if (!source.motion && tiles.length && JSON.stringify(patch).length < Math.min(patchLimit, source.full_size_hint ?? JSON.stringify(full()).length)) payload = patch;
     else if (this.codec === 'png') payload = full();
     else {
       const encoded = await this.encoder.encode(png(), this.bitrate, !bound || this.exact || Boolean(this.repair));
@@ -143,7 +143,7 @@ export class DisplayStream {
     this.timing('select_encode', at); at = timestamp();
     const packet = { ...payload, subscription_id: this.subscription_id, tab_id: this.tab_id,
       generation: source.generation, document_id: documentId, sequence: this.sequence + 1,
-      width: current.width, height: current.height, css_width: 1280, css_height: 800,
+      width: source.motion ? 1280*this.device_scale_factor : current.width, height: source.motion ? 800*this.device_scale_factor : current.height, css_width: 1280, css_height: 800,
       device_scale_factor: this.device_scale_factor, colour: 'srgb' };
     const bytes = Math.ceil(Buffer.byteLength(JSON.stringify(packet)) * 4 / 3) + 1024; // reserve transport/encryption envelope
     if (bytes > 1024 * 1024) throw new Error('MD-DISPLAY: packet exceeds bounded egress');

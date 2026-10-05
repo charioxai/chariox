@@ -44,7 +44,7 @@ export class BrowserDisplayPresenter {
       } else if (frame.kind === 'video' && frame.codec === VP9 && typeof frame.key === 'boolean') {
         if (!this.decoder || frame.key) {
           this.decoder?.close();
-          this.decoder = new VideoDecoder({ output: value => this.decoded?.resolve(value), error: error => this.decoded?.reject(error) });
+          this.decoder = new VideoDecoder({ output: value => (this.decoded ? this.decoded.resolve(value) : value.close()), error: error => this.decoded?.reject(error) });
           this.decoder.configure({ codec:VP9, codedWidth:frame.width, codedHeight:frame.height, optimizeForLatency:true });
           this.videoSequence = null;
         } else if (this.videoSequence !== frame.sequence-1 || this.documentId !== frame.document_id) throw Error('MD-DISPLAY: video base lost; subscribe afresh');
@@ -55,8 +55,8 @@ export class BrowserDisplayPresenter {
             this.decoded={resolve,reject};
             this.decoder.decode(new EncodedVideoChunk({type:frame.key?'key':'delta',timestamp:frame.sequence*33333,data:bytes(frame.data_base64)}));
           });
-          if (output.displayWidth !== frame.width || output.displayHeight !== frame.height) throw Error('MD-DISPLAY: decoded geometry');
-          context.drawImage(output,0,0); this.videoSequence=frame.sequence;
+          if (!((output.displayWidth === frame.width && output.displayHeight === frame.height) || (output.displayWidth === 1280 && output.displayHeight === 800))) throw Error('MD-DISPLAY: decoded geometry');
+          context.drawImage(output,0,0,frame.width,frame.height); this.videoSequence=frame.sequence;
         } finally { clearTimeout(timer); this.decoded=null; output?.close(); }
       } else throw new Error('MD-DISPLAY: unsupported frame');
       if (this.closed) return false;
@@ -179,7 +179,11 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   const start = () => {
     if (stopped || creditOutstanding || active.size || failure) throw failure ?? Error('MD-DISPLAY: stream busy');
     running=true;
-    for(let i=0;i<4;i++) issue();
+    const desired=options.creditWindow ?? 4;
+    if(!Number.isSafeInteger(desired)||desired<1||desired>8) {running=false;throw Error('MD-DISPLAY: invalid credit window');}
+    const batch=Math.min(192000,Math.max(24000,binding.bitrate/8*.5*.75-4096));
+    const count=Math.min(desired,Math.max(1,Math.floor(1024*1024/(batch*4/3+4096))));
+    for(let i=0;i<count;i++) issue();
   };
   const stop = async () => { running=false; await Promise.allSettled([...active]); if(failure) throw failure; };
   return { binding, presenter, next, start, stop,

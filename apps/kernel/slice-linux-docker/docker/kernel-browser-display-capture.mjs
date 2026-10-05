@@ -21,8 +21,8 @@ export function changedClip(before, after, scale) {
 }
 export class DisplayCapture {
   constructor(capture, scale, timing = () => {}, now = () => performance.now()) { this.capture = capture; this.scale = scale; this.timing = timing; this.now=now; this.invalidate(); }
-  invalidate() { this.previous = null; this.preview = null; this.document = null; this.policy = null; this.needsVerification = false; this.inputEpoch = null; this.verifiedAt = -Infinity; this.source = null; }
-  async next(tab, policy, reusable, forceFull = false) {
+  invalidate() { this.previous = null; this.preview = null; this.document = null; this.policy = null; this.needsVerification = false; this.inputEpoch = null; this.verifiedAt = -Infinity; this.source = null; this.motion=false; }
+  async next(tab, policy, reusable, forceFull = false, motionClip = null) {
     if (!reusable || this.document !== tab.document_id || this.policy !== policy) this.invalidate();
     const capture = async clip => {
       const source = await this.capture(clip);
@@ -30,7 +30,7 @@ export class DisplayCapture {
       return source;
     };
     const verify = forceFull || (this.needsVerification && tab.input_epoch === this.inputEpoch);
-    const previewSource = verify ? null : await capture({ x:0,y:0,width:1280,height:800,scale:factor });
+    const previewSource = verify && !motionClip ? null : await capture({ x:0,y:0,width:1280,height:800,scale:factor });
     let at = timestamp();
     const preview = previewSource ? decodePng(previewSource.data_base64,this.scale) : this.preview;
     if (previewSource && (preview.width !== 1280*this.scale*factor || preview.height !== 800*this.scale*factor)) throw Error('MD-DISPLAY: preview geometry changed');
@@ -44,6 +44,16 @@ export class DisplayCapture {
         this.now()-this.verifiedAt < 250) return this.source;
     const clip = !verify && this.previous && this.preview && changedClip(this.preview,preview,this.scale*factor);
     let source, pixels;
+    const changing = this.preview && preview && !this.preview.pixels.equals(preview.pixels);
+    if (motionClip && changing && (!clip || this.motion)) {
+      source=await capture(motionClip);
+      // This is a complete protected viewport at reduced motion resolution,
+      // never a dirty-region approximation. Idle verification stays native DPR.
+      this.previous=null;this.preview=preview;this.document=tab.document_id;this.policy=policy;
+      this.inputEpoch=tab.input_epoch;this.motion=true;
+      return {...source,motion:true};
+    }
+    this.motion=false;
     if (clip) {
       source = await capture(clip); at = timestamp();
       const crop = decodePng(source.data_base64,this.scale);
