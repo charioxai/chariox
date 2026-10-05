@@ -3207,3 +3207,23 @@ fn mp11_relay_config_has_no_host_file_even_under_foreign_paths() {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[test]
+fn mp11_log_tail_is_bounded_and_survives_split_utf8() {
+    let root = test_root("mp11-log");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("run.log");
+    // A 4000-byte tail starts inside this multibyte scalar on the old code.
+    std::fs::write(&path, format!("{}x", "€".repeat(2000))).unwrap();
+    let result = std::panic::catch_unwind(|| command_log_preview(&path));
+    std::fs::write(&path, "a".repeat(2 * 1024 * 1024)).unwrap();
+    let projected = read_slice_log_file_entry("fixture", &path, 1);
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(result.is_ok(), "log slicing panicked inside a UTF-8 scalar");
+    assert!(
+        projected.text.len() <= 65536,
+        "single-line log projection is unbounded"
+    );
+    assert!(projected.truncated);
+
+}

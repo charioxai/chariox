@@ -234,11 +234,9 @@ impl KernelRuntimeOwnedState {
             .previous_active_run_id
             .as_deref()
             .and_then(|run_id| self.provider_store.get_run(run_id).ok());
-        if let Some(binding) = binding {
-            self.provider_store
-                .apply_runtime_binding(started.run.id(), binding)?;
-        }
-        let run = self.provider_store.mark_run_running(started.run.id())?;
+        let run = self
+            .provider_store
+            .finish_current_launch(&started.run, binding)?;
         self.session_store
             .set_active_provider_run(run.session_id(), Some(run.id().to_string()))?;
         let _ = self.session_snapshot(run.session_id())?;
