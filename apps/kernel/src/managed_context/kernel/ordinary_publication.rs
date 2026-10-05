@@ -157,6 +157,12 @@ pub(super) fn remove_ordinary_entries(root: &Path, home: &Path) -> Result<(), Da
         }
         let destination = home.join(&entry.relative);
         let detached = rollback.join(index.to_string());
+        let deleting = rollback.join(format!("deleting-{index}.json"));
+        let deletion_started = present(&deleting)?;
+        // A completed deletion must never detach a later user replacement.
+        if deletion_started && !present(&detached)? {
+            continue;
+        }
         if !present(&detached)? {
             if !present(&destination)? {
                 continue;
@@ -166,13 +172,34 @@ pub(super) fn remove_ordinary_entries(root: &Path, home: &Path) -> Result<(), Da
             sync_directory(destination.parent().expect("published entry parent"))?;
             sync_directory(&rollback)?;
         }
-        if let Err(error) = require_identity(&detached, &entry.identity) {
+        if deletion_started {
+            let phase: EntryIdentity = serde_json::from_slice(&read_bounded_file(&deleting, 4096)?)
+                .map_err(|_| import_error("invalid ordinary rollback deletion phase"))?;
+            if phase != entry.identity {
+                return Err(import_error(
+                    "ordinary rollback deletion phase does not match publication",
+                ));
+            }
+            require_inode(&detached, &entry.identity)?;
+        } else if let Err(error) = require_identity(&detached, &entry.identity) {
             // A replacement racing the detach belongs to the user. Restore it
             // without clobbering a newer replacement, or retain it in this root.
             let _ = publish_directory_no_clobber(&detached, &destination);
             sync_directory(destination.parent().expect("published entry parent"))?;
             sync_directory(&rollback)?;
             return Err(error);
+        }
+        if !deletion_started {
+            // Persist verified ownership before the first destructive unlink.
+            // After a crash the tree digest may differ, but the private detached
+            // inode and this phase still authorize finishing this deletion only.
+            write_json_file(
+                &deleting,
+                &entry.identity,
+                false,
+                &mut MaterializationBudget::new(),
+            )?;
+            sync_directory(&rollback)?;
         }
         let metadata = fs::symlink_metadata(&detached)
             .map_err(|error| import_io_error("inspect detached import entry", error))?;
@@ -193,6 +220,29 @@ fn present(path: &Path) -> Result<bool, DaemonError> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(import_io_error("inspect kernel context entry", error)),
     }
+}
+
+#[cfg(unix)]
+fn require_inode(path: &Path, expected: &EntryIdentity) -> Result<(), DaemonError> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| import_io_error("inspect deleting import entry", error))?;
+    if metadata.dev() != expected.device
+        || metadata.ino() != expected.inode
+        || !(metadata.is_dir() || metadata.is_file())
+    {
+        return Err(import_error(
+            "deleting kernel context entry changed; preserving user data",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn require_inode(_path: &Path, _expected: &EntryIdentity) -> Result<(), DaemonError> {
+    Err(import_error(
+        "ordinary registry ownership requires Unix filesystem identity",
+    ))
 }
 
 fn require_identity(path: &Path, expected: &EntryIdentity) -> Result<(), DaemonError> {
@@ -372,6 +422,62 @@ mod tests {
             b"user-owned"
         );
         remove_ordinary_entries(&context, &home).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mp11_f4_partial_deletion_resumes_without_republishing() {
+        let (root, context, home) = fixture("partial-deletion");
+        let entry = read_entries(&context).unwrap().remove(0);
+        let detached = detach(&context, &home);
+        // Simulate the durable verified-deletion phase, followed by a crash
+        // after recursive removal has already unlinked one original child.
+        write_json_file(
+            &context.join(ROLLBACK_DIRECTORY).join("deleting-0.json"),
+            &entry.identity,
+            false,
+            &mut MaterializationBudget::new(),
+        )
+        .unwrap();
+        fs::remove_file(detached.join("original")).unwrap();
+        fs::create_dir(home.join("skills/imported")).unwrap();
+        fs::write(
+            home.join("skills/imported/replacement"),
+            b"user replacement",
+        )
+        .unwrap();
+        remove_ordinary_entries(&context, &home).unwrap();
+        assert!(!detached.exists());
+        assert_eq!(
+            fs::read(home.join("skills/imported/replacement")).unwrap(),
+            b"user replacement"
+        );
+        remove_ordinary_entries(&context, &home).unwrap();
+        assert_eq!(
+            fs::read(home.join("skills/unrelated")).unwrap(),
+            b"user-owned"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mp11_f4_deletion_phase_preserves_replaced_detached_inode() {
+        let (root, context, home) = fixture("deleting-replacement");
+        let entry = read_entries(&context).unwrap().remove(0);
+        let detached = detach(&context, &home);
+        write_json_file(
+            &context.join(ROLLBACK_DIRECTORY).join("deleting-0.json"),
+            &entry.identity,
+            false,
+            &mut MaterializationBudget::new(),
+        )
+        .unwrap();
+        fs::rename(&detached, root.join("reserved-owned-inode")).unwrap();
+        fs::create_dir(&detached).unwrap();
+        fs::write(detached.join("foreign"), b"foreign data").unwrap();
+        assert!(remove_ordinary_entries(&context, &home).is_err());
+        assert_eq!(fs::read(detached.join("foreign")).unwrap(), b"foreign data");
+        assert!(!home.join("skills/imported").exists());
         fs::remove_dir_all(root).unwrap();
     }
 
