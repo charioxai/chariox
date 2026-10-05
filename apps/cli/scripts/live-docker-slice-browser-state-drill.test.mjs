@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import test from "node:test"
+import { cleanupBrowserStateDockerResources } from "./lib/browser-state-drill-cleanup.mjs"
 
 const script = await readFile(new URL("./live-docker-slice-browser-state-drill.mjs", import.meta.url), "utf8")
 
@@ -21,10 +22,13 @@ test("MP-03/MP-08/MP-10: M20 delegates worker identity to kernel CreateSlice", a
 function loadRemoveContainerAndHomeVolume(docker) {
   const match = script.match(/^async function removeContainerAndHomeVolume\(\) \{[\s\S]*?^\}/m)
   assert.ok(match, "browser-state drill must define its container and home-volume removal operation")
-  return new Function("docker", "containerName", "homeVolume", `return ${match[0]}`)(
-    docker,
-    "chariox-slice-drill-test",
-    "chariox-slice-drill-test-home",
+  const labels = { "io.chariox.slice.id": "slice", "io.chariox.slice.owner-kernel-id": "kernel", "io.chariox.slice.owner-machine-id": "machine" }
+  const container = { Id: "a".repeat(64), Config: { Labels: labels } }
+  const volume = { Name: "chariox-slice-drill-test-home", CreatedAt: "created", Driver: "local", Mountpoint: "/fixture", Labels: labels }
+  return new Function("docker", "containerName", "homeVolume", "dockerOwnership", "inspectDrillDockerObject", "cleanupBrowserStateDockerResources", `return ${match[0]}`)(
+    docker, "chariox-slice-drill-test", volume.Name,
+    { runId: "drill-test", containerId: container.Id, labels, volume },
+    async kind => kind === "container" ? container : volume, cleanupBrowserStateDockerResources,
   )
 }
 
@@ -35,7 +39,7 @@ function loadParseFixturePort() {
 }
 
 const expectedCalls = [
-  ["rm", "-f", "chariox-slice-drill-test"],
+  ["rm", "-f", "a".repeat(64)],
   ["volume", "rm", "-f", "chariox-slice-drill-test-home"],
 ]
 
@@ -49,7 +53,7 @@ for (const failedIndex of [1, 2]) {
     })
 
     await assert.rejects(remove(), /simulated removal failure/)
-    assert.deepEqual(calls, expectedCalls)
+    assert.deepEqual(calls, expectedCalls.slice(0, failedIndex))
   })
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict"
-import { spawn } from "node:child_process"
+import { spawnOwned, signalOwnedProcess } from "../../kernel/slice-linux-docker/owned-process-signals.mjs"
 import { createHash, randomUUID } from "node:crypto"
 import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import net from "node:net"
@@ -9,7 +9,6 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { browserStateCleanupFailure, cleanupBrowserStateImages, assertBrowserStateDockerNamesAvailable, captureBrowserStateDockerOwnership, cleanupBrowserStateDockerResources } from "./lib/browser-state-drill-cleanup.mjs"
 import { browserStateDrillImageConfig } from "./lib/browser-state-drill-image.mjs"
-import { signalBrowserStateChild } from "./lib/browser-state-drill-process.mjs"
 import { assertLocalDevOwnedWorkspace } from "./lib/browser-state-local-dev-workspace.mjs"
 import { resolveBrowserStateDrillPaths } from "./lib/browser-state-drill-paths.mjs"
 import { startBrowserComputerFixture } from "./lib/browser-computer-fixture.mjs"
@@ -926,7 +925,7 @@ async function verifyBrowserStateDockerEngineAccess(target, { writable }) {
 }
 
 function start(label, command, args, options = {}) {
-  const child = spawn(command, args, {
+  const child = spawnOwned(command, args, {
     cwd: options.cwd ?? repoRoot,
     env: options.env ?? process.env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -998,7 +997,7 @@ async function runCommand(command, args, options = {}) {
   interruption.check()
   return await new Promise((resolve, reject) => {
     let settled = false
-    const child = spawn(command, args, {
+    const child = spawnOwned(command, args, {
       cwd: options.cwd ?? repoRoot,
       env: options.env ?? process.env,
       stdio: ["pipe", "pipe", "pipe"],
@@ -1010,9 +1009,9 @@ async function runCommand(command, args, options = {}) {
       timeout = setTimeout(() => {
         if (settled) return
         stderr += `\n[timed out after ${options.timeoutMs}ms: ${command} ${args.join(" ")}]\n`
-        signalBrowserStateChild(child, "SIGTERM")
+        signalOwnedProcess(child, "SIGTERM")
         setTimeout(() => {
-          if (!settled) signalBrowserStateChild(child, "SIGKILL")
+          if (!settled) signalOwnedProcess(child, "SIGKILL")
         }, 2_000).unref()
       }, options.timeoutMs)
       timeout.unref()
@@ -1202,9 +1201,9 @@ async function closeFixtureServer() {
 
 async function terminateChild(child) {
   if (!child || child.exitCode != null) return
-  signalBrowserStateChild(child, "SIGTERM")
+  signalOwnedProcess(child, "SIGTERM")
   if (await waitForChildExit(child, 5_000)) return
-  signalBrowserStateChild(child, "SIGKILL")
+  signalOwnedProcess(child, "SIGKILL")
   await waitForChildExit(child, 1_000)
 }
 
