@@ -477,7 +477,7 @@ mod workflow_prompt_dispatches;
 mod workflow_prompt_queue_owned_state;
 mod workflow_queue_durable;
 use workflow_prompt_dispatches::*;
-mod notification_delivery;
+pub(crate) mod notification_delivery;
 mod workflow_notification_peers;
 mod workflow_notification_router;
 mod workflow_prompt_failure_owned_state;

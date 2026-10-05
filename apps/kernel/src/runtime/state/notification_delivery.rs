@@ -31,6 +31,11 @@ impl KernelRuntimeState {
             .event_pump()
             .notification_batch(candidates, 8)
         {
+            // A saved uncertain send is reconciled before inspecting current runs.
+            // Its old turn ending is never evidence that the notification did not land.
+            if self.reconcile_notification_injection(&session, &id).await {
+                continue;
+            }
             let Ok(Some(injection)) = self.owned.prepare_notification_injection(&session, &id)
             else {
                 continue;
@@ -49,12 +54,31 @@ impl KernelRuntimeState {
             }
             // The exact active prompt is checked again by the provider seam.
             // A turn that ended while waiting for the lane cannot consume this item.
-            let accepted = if self
+            let remote = self
                 .owned
                 .agent_store
                 .get_agent(&dispatch.agent_id)
-                .is_ok_and(|agent| agent.remote_execution().is_some())
+                .ok()
+                .and_then(|agent| agent.remote_execution().cloned());
+            let structured = remote.is_none()
+                && self
+                    .owned
+                    .provider_store
+                    .get_run(&dispatch.provider_run_id)
+                    .is_ok_and(|run| {
+                        self.owned
+                            .provider_store
+                            .run_uses_structured_prompt_io(&run)
+                    });
+            if (remote.is_some() || structured)
+                && self
+                    .owned
+                    .mark_notification_submit(&session, &injection, remote.as_ref(), structured)
+                    .is_err()
             {
+                continue;
+            }
+            let accepted = if remote.is_some() {
                 let prompt = crate::session::PromptQueueItem::new(
                     &dispatch.prompt_id,
                     &dispatch.source_attachment_id,
@@ -66,6 +90,7 @@ impl KernelRuntimeState {
                     &session,
                     &prompt,
                     dispatch.target_active_prompt_id.as_deref(),
+                    remote.as_ref(),
                 )
                 .await
                 .map(|run| run.is_some())
@@ -86,10 +111,19 @@ impl KernelRuntimeState {
                 }
             };
             match accepted {
+                Ok(true) if structured => {
+                    // try_send accepted the command, not the provider prompt. The
+                    // finished-submit reapers settle the exact durable injection.
+                }
                 Ok(accepted) => {
                     let _ = self
                         .owned
                         .settle_notification_injection(&session, &injection, accepted);
+                }
+                Err(_) if structured => {
+                    let _ = self
+                        .owned
+                        .settle_notification_injection(&session, &injection, false);
                 }
                 Err(_) => {
                     // An error can follow a provider write. Retain the exact admitted
@@ -127,6 +161,11 @@ impl KernelRuntimeOwnedState {
                 sessions.restore_session(after);
                 drop(sessions);
                 self.record_notice(session_id, None, self.attachment_store.list_session_attachment_ids(session_id), "notification_inject_expired");
+                return Ok(None);
+            }
+            if queued.publication_invocation().and_then(|i| i.caller.get("notification_steer"))
+                .is_some_and(|s| s.get("remote_uncertain").is_some()
+                    || s.get("submit_epoch").and_then(serde_json::Value::as_u64) == Some(self.provider_store.structured_submit_epoch())) {
                 return Ok(None);
             }
             // Arbitrary publication envelopes cannot request a kernel injection:
@@ -214,48 +253,331 @@ impl KernelRuntimeOwnedState {
         injection: &Injection,
         accepted: bool,
     ) -> Result<(), DaemonError> {
+        settle_injection(
+            &self.durable_state_store,
+            &self.session_store,
+            session_id,
+            injection.queued.id(),
+            &injection.run_id,
+            accepted,
+        )?;
+        if !accepted {
+            self.record_notice(
+                session_id,
+                None,
+                self.attachment_store
+                    .list_session_attachment_ids(session_id),
+                "notification_inject_turn_ended_queued",
+            );
+        }
+        Ok(())
+    }
+    fn mark_notification_submit(
+        &self,
+        session_id: &str,
+        injection: &Injection,
+        remote: Option<&crate::agent::RemoteAgentBinding>,
+        structured: bool,
+    ) -> Result<(), DaemonError> {
         self.durable_state_store
             .with_workflow_runtime_transition_lock(|| {
                 let mut sessions = self.session_store.write();
                 let mut after = sessions.get_session(session_id)?;
-                let Some(item) = after.notification_prompt_mut(injection.queued.id()) else {
-                    return Ok(());
-                };
+                let item = after
+                    .notification_prompt_mut(injection.queued.id())
+                    .ok_or_else(|| notification_error("injection disappeared"))?;
                 if item.status() != WorkflowQueuedPromptStatus::Running
                     || item.workflow_run_id() != Some(injection.run_id.as_str())
                 {
-                    return Ok(());
+                    return Err(notification_error("injection changed"));
                 }
-                if accepted {
-                    item.mark_completed();
-                } else {
-                    item.mark_queued_for_retry();
-                    item.notification_invocation_mut().unwrap().caller["delivery_mode"] =
-                        serde_json::json!("queue");
+                let saved =
+                    &mut item.notification_invocation_mut().unwrap().caller["notification_steer"];
+                saved["agent_id"] = serde_json::json!(injection.dispatch.agent_id);
+                saved["source_attachment_id"] =
+                    serde_json::json!(injection.dispatch.source_attachment_id);
+                if let Some(remote) = remote {
+                    if remote.active_worker_provider_run_id.as_deref()
+                        != Some(injection.dispatch.provider_run_id.as_str())
+                    {
+                        return Err(notification_error(
+                            "original worker run changed before send intent",
+                        ));
+                    }
+                    saved["remote_uncertain"] = serde_json::to_value(RemoteInjectionIdentity {
+                        agent_id: injection.dispatch.agent_id.clone(),
+                        worker_kernel_id: remote.worker_kernel_id.clone(),
+                        worker_machine_id: remote.worker_machine_id.clone(),
+                        leased_agent_id: remote.leased_agent_id.clone(),
+                        execution_lease_id: remote.execution_lease_id.clone(),
+                        target_home_prompt_id: injection
+                            .dispatch
+                            .target_active_prompt_id
+                            .clone()
+                            .unwrap(),
+                        worker_provider_run_id: injection.dispatch.provider_run_id.clone(),
+                    })
+                    .map_err(|_| notification_error("cannot encode injection identity"))?;
+                } else if structured {
+                    saved["submit_epoch"] =
+                        serde_json::json!(self.provider_store.structured_submit_epoch());
                 }
                 self.durable_state_store
                     .persist_workflow_runtime_transition(
                         &after,
-                        if accepted {
-                            "notification_injected"
-                        } else {
-                            "notification_inject_turn_ended_queued"
-                        },
+                        "notification_inject_submitting",
                     )?;
                 sessions.restore_session(after);
-                drop(sessions);
-                if !accepted {
-                    self.record_notice(
-                        session_id,
-                        None,
-                        self.attachment_store
-                            .list_session_attachment_ids(session_id),
-                        "notification_inject_turn_ended_queued",
-                    );
-                }
                 Ok(())
             })
     }
+}
+
+// These records are kernel-owned invocation context, never client-supplied authority.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct RemoteInjectionIdentity {
+    agent_id: String,
+    worker_kernel_id: String,
+    worker_machine_id: String,
+    leased_agent_id: String,
+    execution_lease_id: String,
+    target_home_prompt_id: String,
+    worker_provider_run_id: String,
+}
+fn notification_error(message: &str) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "notification injection",
+        message: message.into(),
+    }
+}
+
+impl KernelRuntimeState {
+    // True means this item is held or settled; ordinary selection must not touch it.
+    async fn reconcile_notification_injection(&self, session_id: &str, id: &str) -> bool {
+        let Ok(snapshot) = self.owned.session_store.get_session(session_id) else {
+            return true;
+        };
+        let Some(item) = snapshot
+            .workflow_queued_prompts()
+            .iter()
+            .find(|q| q.id() == id)
+        else {
+            return true;
+        };
+        let Some(value) = item
+            .publication_invocation()
+            .and_then(|i| i.caller.get("notification_steer"))
+            .and_then(|s| s.get("remote_uncertain"))
+        else {
+            return false;
+        };
+        if item.notification_expired_at(crate::session::unix_epoch_ms()) {
+            let _ = self.owned.prepare_notification_injection(session_id, id);
+            return true;
+        }
+        if !self
+            .owned
+            .durable_state_store
+            .notification_queue_is_owned(&snapshot, item)
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        let Ok(identity) = serde_json::from_value::<RemoteInjectionIdentity>(value.clone()) else {
+            return true;
+        };
+        let result =
+            super::remote_prompt_worker_submission_runtime::query_remote_queued_steer_receipt(
+                self,
+                &identity.agent_id,
+                id,
+                &identity.worker_kernel_id,
+                &identity.worker_machine_id,
+                &identity.leased_agent_id,
+                &identity.target_home_prompt_id,
+                &identity.worker_provider_run_id,
+                &identity.execution_lease_id,
+            )
+            .await;
+        if let Ok(Some(receipt)) = result {
+            let _ = self
+                .owned
+                .settle_notification_remote_receipt(session_id, id, &receipt);
+        }
+        true
+    }
+}
+
+impl KernelRuntimeOwnedState {
+    fn settle_notification_remote_receipt(
+        &self,
+        session_id: &str,
+        id: &str,
+        receipt: &crate::transport::relay_peer::LeasedPromptReceipt,
+    ) -> Result<(), DaemonError> {
+        let snapshot = self.session_store.get_session(session_id)?;
+        let item = snapshot
+            .workflow_queued_prompts()
+            .iter()
+            .find(|q| q.id() == id)
+            .ok_or_else(|| notification_error("injection missing"))?;
+        let saved = item
+            .publication_invocation()
+            .and_then(|i| i.caller.get("notification_steer"))
+            .and_then(|s| s.get("remote_uncertain"))
+            .ok_or_else(|| notification_error("uncertainty missing"))?;
+        let identity: RemoteInjectionIdentity = serde_json::from_value(saved.clone())
+            .map_err(|_| notification_error("identity invalid"))?;
+        if !self
+            .durable_state_store
+            .notification_queue_is_owned(&snapshot, item)?
+        {
+            return Err(notification_error("receipt ownership changed"));
+        }
+        let agent = self.agent_store.get_agent(&identity.agent_id)?;
+        let binding = agent
+            .remote_execution()
+            .ok_or_else(|| notification_error("remote binding missing"))?;
+        if binding.worker_kernel_id != identity.worker_kernel_id
+            || binding.worker_machine_id != identity.worker_machine_id
+            || binding.leased_agent_id != identity.leased_agent_id
+            || binding.execution_lease_id != identity.execution_lease_id
+            || receipt.home_prompt_id != id
+            || receipt.target_home_prompt_id.as_deref()
+                != Some(identity.target_home_prompt_id.as_str())
+            || receipt.worker_provider_run_id != identity.worker_provider_run_id
+            || receipt.execution_lease_id.as_deref() != Some(identity.execution_lease_id.as_str())
+        {
+            return Err(notification_error(
+                "receipt conflicts with original worker/lease/turn",
+            ));
+        }
+        use crate::transport::relay_peer::LeasedPromptReceiptPhase;
+        let accepted = match receipt.phase {
+            LeasedPromptReceiptPhase::SteerAccepted => true,
+            LeasedPromptReceiptPhase::SteerRejected => false,
+            LeasedPromptReceiptPhase::SteerDispatching => return Ok(()),
+            _ => return Err(notification_error("receipt has no steer outcome")),
+        };
+        if accepted {
+            let source_attachment = item
+                .publication_invocation()
+                .and_then(|i| i.caller.get("notification_steer"))
+                .and_then(|s| s.get("source_attachment_id"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("workflow_notification");
+            self.append_steering_prompt_history(
+                session_id,
+                &identity.worker_provider_run_id,
+                &identity.target_home_prompt_id,
+                source_attachment,
+                &identity.agent_id,
+                id,
+                item.prompt().unwrap_or_default(),
+                &[],
+            )?;
+        }
+        settle_injection(
+            &self.durable_state_store,
+            &self.session_store,
+            session_id,
+            id,
+            item.workflow_run_id()
+                .ok_or_else(|| notification_error("injection run missing"))?,
+            accepted,
+        )
+    }
+}
+
+/// Both finished-submit reapers use this correlation before touching an active prompt.
+pub(crate) fn finish_structured_notification_submit(
+    store: &DurableKernelStateStore,
+    sessions: &SessionStateStore,
+    finished: &crate::provider::FinishedProviderPromptSubmitJob,
+) -> Result<bool, DaemonError> {
+    let Ok(snapshot) = sessions.get_session(&finished.session_id) else {
+        return Ok(false);
+    };
+    let Some(item) = snapshot
+        .workflow_queued_prompts()
+        .iter()
+        .find(|q| q.id() == finished.prompt_id)
+    else {
+        return Ok(false);
+    };
+    let Some(saved) = item
+        .publication_invocation()
+        .and_then(|i| i.caller.get("notification_steer"))
+    else {
+        return Ok(false);
+    };
+    if saved.get("submit_epoch").is_none() {
+        return Ok(false);
+    }
+    if saved
+        .get("provider_run_id")
+        .and_then(serde_json::Value::as_str)
+        != Some(finished.provider_run_id.as_str())
+        || saved.get("agent_id").and_then(serde_json::Value::as_str)
+            != Some(finished.agent_id.as_str())
+    {
+        return Err(notification_error("submit result conflicts with injection"));
+    }
+    if item.status() == WorkflowQueuedPromptStatus::Running && item.notification_injection_pending()
+    {
+        if !store.notification_queue_is_owned(&snapshot, item)? {
+            return Ok(false);
+        }
+        settle_injection(
+            store,
+            sessions,
+            &finished.session_id,
+            &finished.prompt_id,
+            item.workflow_run_id()
+                .ok_or_else(|| notification_error("injection run missing"))?,
+            finished.result.is_ok(),
+        )?;
+    }
+    Ok(true)
+}
+
+fn settle_injection(
+    store: &DurableKernelStateStore,
+    sessions: &SessionStateStore,
+    session_id: &str,
+    id: &str,
+    run_id: &str,
+    accepted: bool,
+) -> Result<(), DaemonError> {
+    store.with_workflow_runtime_transition_lock(|| {
+        let mut sessions = sessions.write();
+        let mut after = sessions.get_session(session_id)?;
+        let Some(item) = after.notification_prompt_mut(id) else {
+            return Ok(());
+        };
+        if item.status() != WorkflowQueuedPromptStatus::Running
+            || item.workflow_run_id() != Some(run_id)
+        {
+            return Ok(());
+        }
+        if accepted {
+            item.mark_completed();
+        } else {
+            item.mark_queued_for_retry();
+            item.notification_invocation_mut().unwrap().caller["delivery_mode"] =
+                serde_json::json!("queue");
+        }
+        store.persist_workflow_runtime_transition(
+            &after,
+            if accepted {
+                "notification_injected"
+            } else {
+                "notification_inject_turn_ended_queued"
+            },
+        )?;
+        sessions.restore_session(after);
+        Ok(())
+    })
 }
 
 #[cfg(test)]

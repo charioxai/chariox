@@ -494,3 +494,405 @@ async fn notification_inject_expiry_retires_hot_item_after_receipt_sweep() {
     );
     assert!(runtime.owned.terminal_stream.input_records().is_empty());
 }
+
+// MP-08 / MP-10: a real actor mailbox accepts; the unbound structured provider rejects.
+#[tokio::test]
+async fn notification_inject_structured_mailbox_acceptance_is_not_provider_ack() {
+    for (app, accepted, legacy_reaper) in [
+        (false, false, false),
+        (true, false, true),
+        (false, true, true),
+        (true, true, false),
+    ] {
+        let (_root, runtime, session, id) = fixture(app, 1).await;
+        let injection = runtime
+            .owned
+            .prepare_notification_injection(&session, &id)
+            .unwrap()
+            .unwrap();
+        let request = crate::provider::LaunchProviderRequest::new(
+            &session,
+            if accepted { "dev-stub" } else { "codex" },
+            if accepted { "slow-structured" } else { "codex" },
+            "default",
+            "model",
+        )
+        .with_agent_id(&injection.dispatch.agent_id);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            &injection.dispatch.provider_run_id,
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "notification-structured-failure".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: Some("test".into()),
+            },
+        );
+        run.mark_running();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run);
+        runtime.deliver_pending_notification_injections().await;
+        let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
+        assert_eq!(
+            snapshot
+                .workflow_queued_prompts()
+                .iter()
+                .find(|q| q.id() == id)
+                .unwrap()
+                .status(),
+            WorkflowQueuedPromptStatus::Running,
+            "mailbox accepted, provider has not acknowledged"
+        );
+        let finished = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let jobs = runtime
+                    .owned
+                    .provider_store
+                    .drain_finished_structured_prompt_submit_jobs();
+                if let Some(job) = jobs.into_iter().next() {
+                    break job;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(finished.result.is_ok(), accepted);
+        // Actor completion alone is still not a durable injection settlement.
+        runtime.deliver_pending_notification_injections().await;
+        assert!(
+            runtime
+                .owned
+                .provider_store
+                .drain_finished_structured_prompt_submit_jobs()
+                .is_empty(),
+            "one mailbox command only"
+        );
+        runtime
+            .owned
+            .provider_store
+            .push_finished_structured_prompt_submit_for_test(
+                finished.session_id,
+                finished.provider_run_id,
+                finished.agent_id,
+                finished.prompt_id,
+                finished.result,
+            );
+        if legacy_reaper {
+            runtime
+                .with_app_side_effect(|app| app.reap_structured_prompt_jobs())
+                .await;
+        } else {
+            runtime.owned.reap_structured_prompt_jobs();
+        }
+        let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
+        let item = snapshot
+            .workflow_queued_prompts()
+            .iter()
+            .find(|q| q.id() == id)
+            .unwrap();
+        assert_eq!(
+            item.status(),
+            if accepted {
+                WorkflowQueuedPromptStatus::Completed
+            } else {
+                WorkflowQueuedPromptStatus::Queued
+            }
+        );
+        assert!(!item.notification_injection_pending());
+    }
+}
+
+// MP-08 / MP-10: a lost ACK must hold the original identity after its turn ends.
+#[tokio::test]
+async fn notification_inject_remote_uncertainty_never_becomes_a_new_run() {
+    let (_root, runtime, session, id) = fixture(false, 1).await;
+    let injection = runtime
+        .owned
+        .prepare_notification_injection(&session, &id)
+        .unwrap()
+        .unwrap();
+    let mut snapshot = runtime.owned.session_store.get_session(&session).unwrap();
+    snapshot
+        .notification_prompt_mut(&id)
+        .unwrap()
+        .notification_invocation_mut()
+        .unwrap()
+        .caller["notification_steer"]["remote_uncertain"] = serde_json::json!({"worker_kernel_id":"worker","worker_machine_id":"machine","execution_lease_id":"lease","leased_agent_id":"leased","agent_id":injection.dispatch.agent_id,"target_home_prompt_id":injection.dispatch.target_active_prompt_id,"worker_provider_run_id":injection.dispatch.provider_run_id});
+    runtime
+        .owned
+        .durable_state_store
+        .persist_workflow_runtime_transition(&snapshot, "lost ACK fixture")
+        .unwrap();
+    runtime
+        .owned
+        .session_store
+        .write()
+        .restore_session(snapshot.clone());
+    runtime
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_if_matches(
+            &snapshot,
+            &injection.dispatch.agent_id,
+            injection.dispatch.target_active_prompt_id.as_deref(),
+        );
+    // Production normalized hot-state recovery, including the uncertainty record.
+    let owner = snapshot.host_daemon_id();
+    let (_, hot) = runtime
+        .owned
+        .durable_state_store
+        .load_workflow_hot_states(owner)
+        .unwrap()
+        .into_iter()
+        .find(|(s, _)| s == &session)
+        .unwrap();
+    let mut restored = runtime.owned.session_store.get_session(&session).unwrap();
+    for item in hot.workflow_queued_prompts {
+        *restored.notification_prompt_mut(item.id()).unwrap() = item.clone();
+    }
+    runtime
+        .owned
+        .session_store
+        .write()
+        .restore_session(restored);
+    runtime.deliver_pending_notification_injections().await;
+    let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
+    let item = snapshot
+        .workflow_queued_prompts()
+        .iter()
+        .find(|q| q.id() == id)
+        .unwrap();
+    assert_eq!(item.status(), WorkflowQueuedPromptStatus::Running);
+    assert!(
+        item.notification_injection_pending(),
+        "cannot queue while the exact worker outcome is unknown"
+    );
+}
+
+// MP-08 / MP-10 / MP-11: exact worker receipt is authoritative after the old turn ends.
+#[tokio::test]
+async fn notification_inject_remote_ack_loss_reconciles_after_real_bootstrap() {
+    for accepted in [true, false] {
+        let (_root, runtime, session, id) = fixture(false, 1).await;
+        let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
+        let agent_id = snapshot.workflow_runs()[0].node_runs()[0]
+            .agent_id()
+            .to_owned();
+        let binding = crate::agent::RemoteAgentBinding {
+            worker_kernel_id: "worker".into(),
+            worker_machine_id: "machine".into(),
+            leased_agent_id: "leased".into(),
+            execution_lease_id: "lease".into(),
+            active_worker_provider_run_id: Some("worker-run".into()),
+            relay_url: None,
+            relay_token: None,
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
+        };
+        runtime
+            .owned
+            .agent_store
+            .bind_remote_execution(&agent_id, binding.clone())
+            .unwrap();
+        let injection = runtime
+            .owned
+            .prepare_notification_injection(&session, &id)
+            .unwrap()
+            .unwrap();
+        runtime
+            .owned
+            .mark_notification_submit(&session, &injection, Some(&binding), false)
+            .unwrap();
+        // Worker has either applied it (ACK lost) or durably rejected it; home sees neither.
+        let receipt = crate::transport::relay_peer::LeasedPromptReceipt {
+            home_prompt_id: id.clone(),
+            worker_provider_run_id: "worker-run".into(),
+            target_home_prompt_id: injection.dispatch.target_active_prompt_id.clone(),
+            execution_lease_id: Some("lease".into()),
+            phase: if accepted {
+                crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerAccepted
+            } else {
+                crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected
+            },
+        };
+        runtime
+            .owned
+            .prompt_state_owner
+            .complete_active_prompt_if_matches(
+                &snapshot,
+                &agent_id,
+                injection.dispatch.target_active_prompt_id.as_deref(),
+            );
+        let ended = runtime.owned.session_store.get_session(&session).unwrap();
+        let (active, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&ended, &agent_id);
+        assert!(active.is_none());
+        runtime
+            .owned
+            .mirror_prompt_owner_agent_state(&session, &agent_id, active, queued)
+            .unwrap();
+        let mut ended = runtime.owned.session_store.get_session(&session).unwrap();
+        ended
+            .workflow_run_mut("active-0")
+            .unwrap()
+            .set_status(WorkflowRunStatus::Completed);
+        runtime
+            .owned
+            .durable_state_store
+            .persist_workflow_runtime_transition(&ended, "original notification target completed")
+            .unwrap();
+        runtime.owned.session_store.write().restore_session(ended);
+        let config = runtime.owned.config_projection.snapshot();
+        runtime
+            .with_app_side_effect(|app| app.save_durable_state_snapshot().unwrap())
+            .await;
+        drop(runtime);
+        let runtime =
+            super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(
+                crate::app::DaemonApp::bootstrap(config).unwrap(),
+            );
+        let restored = runtime.owned.session_store.get_session(&session).unwrap();
+        assert!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&restored, &agent_id)
+                .is_none(),
+            "the original turn is durably ended"
+        );
+        assert!(restored
+            .workflow_queued_prompts()
+            .iter()
+            .find(|q| q.id() == id)
+            .unwrap()
+            .notification_injection_pending());
+        assert!(
+            runtime
+                .owned
+                .prepare_notification_injection(&session, &id)
+                .unwrap()
+                .is_none(),
+            "an ended original turn must not bypass uncertainty"
+        );
+        let mut conflicting = receipt.clone();
+        conflicting.execution_lease_id = Some("other-lease".into());
+        assert!(runtime
+            .owned
+            .settle_notification_remote_receipt(&session, &id, &conflicting)
+            .is_err());
+        let expected = receipt.clone();
+        let target_prompt = injection
+            .dispatch
+            .target_active_prompt_id
+            .as_deref()
+            .unwrap();
+        let queried = super::super::remote_prompt_worker_submission_runtime::query_remote_queued_steer_receipt_with_transport(
+            &runtime, &agent_id, &id, "worker", "machine", "leased", target_prompt, "worker-run", "lease",
+            |_, target, request| async move {
+                assert_eq!(target.daemon_id.as_deref(), Some("worker"));
+                let RelayPeerRequest::ReconcileLeasedPromptSteerReceipt { steer_id, target_home_prompt_id, worker_provider_run_id, execution_lease_id, leased_agent_id } = request else { panic!("exact reconciliation request required") };
+                assert_eq!(steer_id, expected.home_prompt_id);
+                assert_eq!(Some(target_home_prompt_id), expected.target_home_prompt_id);
+                assert_eq!(worker_provider_run_id, expected.worker_provider_run_id);
+                assert_eq!(Some(execution_lease_id), expected.execution_lease_id);
+                assert_eq!(leased_agent_id, "leased");
+                Ok(RelayPeerResponse::LeasedPromptReceiptQueried { receipt: Some(expected) })
+            }).await.unwrap().unwrap();
+        runtime
+            .owned
+            .settle_notification_remote_receipt(&session, &id, &queried)
+            .unwrap();
+        runtime.deliver_pending_notification_injections().await;
+        let restored = runtime.owned.session_store.get_session(&session).unwrap();
+        let item = restored
+            .workflow_queued_prompts()
+            .iter()
+            .find(|q| q.id() == id)
+            .unwrap();
+        assert_eq!(
+            item.status(),
+            if accepted {
+                WorkflowQueuedPromptStatus::Completed
+            } else {
+                WorkflowQueuedPromptStatus::Queued
+            }
+        );
+        assert!(!item.notification_injection_pending());
+        assert!(
+            runtime.owned.terminal_stream.input_records().is_empty(),
+            "reconciliation never replays provider input"
+        );
+        assert_eq!(restored.workflow_queued_prompts().len(), 1);
+        // Acceptance settles receipt/lineage; rejection retains the ordinary queue.
+        let db = rusqlite::Connection::open(runtime.owned.durable_state_store.path()).unwrap();
+        let state: String = db
+            .query_row(
+                "SELECT state FROM app_outbox WHERE queued_prompt_id=?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, if accepted { "delivered" } else { "queued" });
+    }
+}
+
+// MP-08 / MP-10: a restart before actor dispatch must retain admitted work.
+#[tokio::test]
+async fn notification_inject_structured_pending_survives_restart_before_actor_write() {
+    let (_root, runtime, session, id) = fixture(false, 1).await;
+    let injection = runtime
+        .owned
+        .prepare_notification_injection(&session, &id)
+        .unwrap()
+        .unwrap();
+    runtime
+        .owned
+        .mark_notification_submit(&session, &injection, None, true)
+        .unwrap();
+    let epoch = runtime.owned.provider_store.structured_submit_epoch();
+    let config = runtime.owned.config_projection.snapshot();
+    runtime
+        .with_app_side_effect(|app| app.save_durable_state_snapshot().unwrap())
+        .await;
+    drop(runtime);
+    let runtime = super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(
+        crate::app::DaemonApp::bootstrap(config).unwrap(),
+    );
+    assert_ne!(
+        epoch,
+        runtime.owned.provider_store.structured_submit_epoch()
+    );
+    let restored = runtime.owned.session_store.get_session(&session).unwrap();
+    let item = restored
+        .workflow_queued_prompts()
+        .iter()
+        .find(|q| q.id() == id)
+        .unwrap();
+    assert_eq!(item.status(), WorkflowQueuedPromptStatus::Running);
+    assert!(item.notification_injection_pending());
+    // Startup does not mistake the old process's mailbox marker for a live actor.
+    runtime.deliver_pending_notification_injections().await;
+    let restored = runtime.owned.session_store.get_session(&session).unwrap();
+    let item = restored
+        .workflow_queued_prompts()
+        .iter()
+        .find(|q| q.id() == id)
+        .unwrap();
+    assert_ne!(item.status(), WorkflowQueuedPromptStatus::Cancelled);
+    assert!(matches!(
+        item.status(),
+        WorkflowQueuedPromptStatus::Queued | WorkflowQueuedPromptStatus::Completed
+    ));
+}

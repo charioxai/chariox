@@ -942,3 +942,163 @@ fn round1_migration_preserves_pending_and_inbox_only_queue_lineage() {
     drop(db);
     cleanup(f);
 }
+
+// MP-08 / MP-10: TTL edits govern new occurrences, never old deliveries or ACKs.
+#[test]
+fn reattach_shorter_ttl_preserves_pending_occurrence_and_duplicate_ack() {
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("ttl-source");
+    let (b, _, bp) = f.workflow("ttl-target");
+    let source = f.source(&a);
+    let mut sub = f.attach(&source, &b, &bp);
+    f.complete(
+        &a,
+        "old-seven-day",
+        None,
+        WorkflowRunStatus::Completed,
+        "old",
+    );
+    let (_, old) = f.candidates(false).remove(0);
+    sub.ttl_days = 1;
+    let target =
+        WorkflowNotificationTarget::resolve(&f.sessions, "local", &f.session, &bp, None).unwrap();
+    f.store
+        .notify(NotificationOperation::Attach {
+            subscription: sub.clone(),
+            target,
+        })
+        .unwrap();
+    for expected in [
+        WorkflowNotificationAck::Accepted,
+        WorkflowNotificationAck::Duplicate,
+    ] {
+        let NotificationOutcome::Ack(actual) = f
+            .store
+            .notify(NotificationOperation::Accept {
+                subscription: sub.clone(),
+                envelope: old.clone(),
+            })
+            .unwrap()
+        else {
+            panic!("ACK")
+        };
+        assert_eq!(actual, expected);
+        if expected == WorkflowNotificationAck::Accepted {
+            f.queue(sub.clone(), old.clone());
+            let snapshot = f.sessions.get_session(&f.session).unwrap();
+            assert_eq!(
+                snapshot
+                    .workflow_queued_prompts()
+                    .back()
+                    .unwrap()
+                    .publication_invocation()
+                    .unwrap()
+                    .input["deadline_ms"],
+                old.deadline_ms
+            );
+        }
+    }
+    f.complete(&a, "new-one-day", None, WorkflowRunStatus::Completed, "new");
+    let (_, new) = f
+        .candidates(false)
+        .into_iter()
+        .find(|(_, e)| e.occurrence_id == "new-one-day")
+        .unwrap();
+    assert!(old.deadline_ms - new.deadline_ms > 5 * 86_400_000);
+    cleanup(f);
+}
+
+// MP-08 / MP-10: generic provenance must not override the current terminal status.
+#[test]
+fn chained_completion_status_remains_authoritative_for_filters() {
+    for (first, second, expected) in [
+        (
+            WorkflowRunStatus::Completed,
+            WorkflowRunStatus::Failed,
+            "failure",
+        ),
+        (
+            WorkflowRunStatus::Failed,
+            WorkflowRunStatus::Completed,
+            "success",
+        ),
+    ] {
+        let mut f = Fixture::new();
+        let (a, _, _) = f.workflow("chain-a");
+        let (b, _, bp) = f.workflow("chain-b");
+        let (c, _, cp) = f.workflow("chain-c");
+        let sa = f.source(&a);
+        let sb = f.source(&b);
+        let ab = f.attach(&sa, &b, &bp);
+        let mut bc = f.attach(&sb, &c, &cp);
+        bc.filters = serde_json::json!({"status":expected});
+        let target =
+            WorkflowNotificationTarget::resolve(&f.sessions, "local", &f.session, &cp, None)
+                .unwrap();
+        f.store
+            .notify(NotificationOperation::Attach {
+                subscription: bc,
+                target,
+            })
+            .unwrap();
+        f.complete(&a, "a-run", None, first, "first");
+        let (_, env) = f.candidates(false).remove(0);
+        f.store
+            .notify(NotificationOperation::Accept {
+                subscription: ab.clone(),
+                envelope: env.clone(),
+            })
+            .unwrap();
+        let queued_id = f.queue(ab, env);
+        let item = f
+            .sessions
+            .get_session(&f.session)
+            .unwrap()
+            .workflow_queued_prompts()
+            .back()
+            .unwrap()
+            .clone();
+        let mut run = WorkflowRun::new(
+            "b-run",
+            &b,
+            "endpoint",
+            "node",
+            None,
+            item.publication_invocation().cloned(),
+            vec![],
+            vec![],
+        );
+        run.set_invocation_context(0, None, Some(queued_id), 0, None);
+        run.set_final_output(
+            Some(WorkflowOutputPayload::new("second", vec![])),
+            Some(true),
+            None,
+            None,
+        );
+        run.set_status(second);
+        let mut session = f.sessions.get_session(&f.session).unwrap();
+        session.create_workflow_run(run);
+        f.sessions.restore_session(session);
+        f.persist();
+        let outgoing = f
+            .candidates(false)
+            .into_iter()
+            .find(|(_, e)| e.occurrence_id == "b-run")
+            .expect("subscriber filtering on current status receives the chained completion")
+            .1;
+        assert_eq!(outgoing.fields["status"], expected);
+        assert_eq!(
+            outgoing.status,
+            if second == WorkflowRunStatus::Failed {
+                crate::local::WorkflowNotificationStatus::Failure
+            } else {
+                crate::local::WorkflowNotificationStatus::Success
+            }
+        );
+        assert_eq!(
+            outgoing.output.is_none(),
+            second == WorkflowRunStatus::Failed
+        );
+        cleanup(f);
+    }
+}

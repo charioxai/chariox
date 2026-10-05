@@ -176,8 +176,15 @@ Every App automation and workflow-notification binding has `delivery_mode:queue|
 `inject` selects the endpoint entry agent only when its workflow has exactly one
 active run and that endpoint's entry turn is active. It persists the exact run/turn
 before using ordinary provider steering. The item stays durably accepted until
-provider acceptance; restart rechecks the same turn. Idle/ended turns fall back to
-an ordinary queued run. Several active workflow runs fall back with
+provider acceptance. Structured-provider mailbox enqueue is not acceptance: both
+finished-submit reapers correlate the actual result with the durable injection. An
+in-flight submit is not enqueued twice in one process; restart retains the item and
+rechecks the original turn. Remote send intent pins the worker, machine, execution
+lease, turn and provider run before I/O. An uncertain remote outcome must reconcile
+through `ReconcileLeasedPromptSteerReceipt` before replay or fallback, even when the
+original turn has ended. Dispatching/unavailable/conflicting receipts remain held
+until an exact accepted/rejected receipt or expiry. Idle/ended turns with no
+uncertain send fall back to an ordinary queued run. Several active workflow runs fall back with
 `notification_inject_multiple_runs_queued`. An ended turn during dispatch falls back
 with `notification_inject_turn_ended_queued`. Provider errors retain the pending
 item rather than assert acceptance. Incoming ancestry is linked to the target run
@@ -191,7 +198,11 @@ host-file read or provider attachment promotion. There are at most 1,024 local s
 and active subscriptions per owner, 32 subscribers per source, 1,024 pending receipts
 and 16 MiB pending payload per kernel. Oversize/backpressure is diagnostic and cannot
 roll back successful workflow completion. Legacy accepted bytes retain their original
-TTL. Settled receipt payloads expire; deduplication tombstones remain for 30 days after
+TTL; editing a binding's TTL affects new occurrences only, and admission of older
+pending occurrences and duplicate ACKs uses the fixed 30-day protocol ceiling.
+The current completion `status` is reserved while copying opaque trigger metadata,
+so chained workflows with different outcomes filter on their own status.
+Settled receipt payloads expire; deduplication tombstones remain for 30 days after
 deadline before bounded reclamation. Causal ancestry remains in recorded runs.
 
 `ListWorkflowNotifications {session_id}` is the shared TUI/web picker request. Local

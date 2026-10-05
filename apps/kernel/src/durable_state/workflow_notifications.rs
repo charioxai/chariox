@@ -542,7 +542,9 @@ fn accept(
     if env.deadline_ms <= now {
         return Ok(NotificationOutcome::Ack(WorkflowNotificationAck::Expired));
     }
-    if env.deadline_ms > now.saturating_add(u64::from(sub.ttl_days) * 86_400_000 + 300_000)
+    // Occurrence deadlines are immutable; binding TTL edits affect future captures only.
+    // Admission uses the fixed protocol ceiling so pending retries and ACKs remain valid.
+    if env.deadline_ms > now.saturating_add(30 * 86_400_000 + 300_000)
         || env.ancestry.len() > 256
         || env.ancestry.iter().any(|id| id.len() > 512)
     {

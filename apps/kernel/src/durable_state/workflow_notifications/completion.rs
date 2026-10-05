@@ -182,7 +182,7 @@ fn provenance(
         let metadata = payload.get("metadata").unwrap_or(payload);
         if let Some(metadata) = metadata.as_object() {
             for (key, value) in metadata {
-                fields.insert(key.clone(), value.clone());
+                fields.entry(key.clone()).or_insert_with(|| value.clone());
             }
         }
     }
