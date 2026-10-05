@@ -35,6 +35,10 @@ use super::{
     KERNEL_CONTEXT_SCHEMA_VERSION,
 };
 
+#[path = "import_ownership.rs"]
+mod import_ownership;
+use import_ownership::{entry_fingerprint, PublishedEntry};
+
 const IMPORT_RECEIPT_NAME: &str = "kernel-context-import.json";
 const PUBLISHED_ENTRIES_NAME: &str = "published-entries.json";
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -1163,6 +1167,18 @@ fn record_ordinary_entries(
     if staged.exists() {
         collect_ordinary_entries(&staged, home, Path::new(""), &mut entries)?;
     }
+    let entries = entries
+        .into_iter()
+        .map(|relative| {
+            let (identity, sha256) = entry_fingerprint(&staged.join(&relative))?;
+            Ok(PublishedEntry {
+                relative,
+                identity,
+                sha256,
+                retirement: None,
+            })
+        })
+        .collect::<Result<Vec<_>, DaemonError>>()?;
     write_json_file(
         &staging.join(PUBLISHED_ENTRIES_NAME),
         &entries,
@@ -1208,7 +1224,8 @@ fn collect_ordinary_entries(
 /// any. A replay finishes the same set; an entry already moved is skipped.
 fn publish_ordinary_entries(root: &Path, home: &Path) -> Result<(), DaemonError> {
     let staged = root.join("user");
-    for relative in read_published_entries(root)? {
+    for entry in read_published_entries(root)? {
+        let relative = entry.relative;
         let source = staged.join(&relative);
         if fs::symlink_metadata(&source).is_err() {
             continue;
@@ -1225,12 +1242,23 @@ fn publish_ordinary_entries(root: &Path, home: &Path) -> Result<(), DaemonError>
     Ok(())
 }
 
-fn read_published_entries(root: &Path) -> Result<Vec<String>, DaemonError> {
+fn read_published_entries(root: &Path) -> Result<Vec<PublishedEntry>, DaemonError> {
     let bytes = read_bounded_file(&root.join(PUBLISHED_ENTRIES_NAME), 4 * 1024 * 1024)?;
-    let entries = serde_json::from_slice::<Vec<String>>(&bytes)
+    let entries = serde_json::from_slice::<Vec<PublishedEntry>>(&bytes)
         .map_err(|_| import_error("published kernel context entries are invalid"))?;
     for entry in &entries {
-        validate_portable_package_path(entry)?;
+        validate_portable_package_path(&entry.relative)?;
+        validate_sha256(&entry.sha256, "published entry digest")?;
+        if let Some(retirement) = &entry.retirement {
+            let valid = retirement
+                .strip_prefix(".chariox-kernel-retire-")
+                .is_some_and(|id| {
+                    id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                });
+            if !valid {
+                return Err(import_error("published retirement intent is invalid"));
+            }
+        }
     }
     Ok(entries)
 }
@@ -1238,20 +1266,97 @@ fn read_published_entries(root: &Path) -> Result<Vec<String>, DaemonError> {
 /// Remove only entries this import moved: one still staged was never published.
 fn remove_ordinary_entries(root: &Path, home: &Path) -> Result<(), DaemonError> {
     let staged = root.join("user");
-    for relative in read_published_entries(root)? {
+    let mut entries = read_published_entries(root)?;
+    let mut conflicts = 0;
+    for index in 0..entries.len() {
+        let relative = entries[index].relative.clone();
         if fs::symlink_metadata(staged.join(&relative)).is_ok() {
             continue;
         }
         let path = home.join(&relative);
-        let removed = match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&path),
-            Ok(_) => fs::remove_file(&path),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
+        let parent = path
+            .parent()
+            .ok_or_else(|| import_error("published entry has no parent"))?;
+        let matches = |candidate: &Path| {
+            entry_fingerprint(candidate).is_ok_and(|(identity, sha256)| {
+                identity == entries[index].identity && sha256 == entries[index].sha256
+            })
         };
-        removed.map_err(|error| import_io_error("remove published kernel context entry", error))?;
+        // Intent is durable before rename so restart can find an owned quarantine.
+        let prior_quarantine = entries[index]
+            .retirement
+            .as_ref()
+            .map(|name| parent.join(name));
+        let quarantine_exists = prior_quarantine
+            .as_ref()
+            .is_some_and(|path| fs::symlink_metadata(path).is_ok());
+        if !quarantine_exists {
+            match fs::symlink_metadata(&path) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(import_io_error(
+                        "inspect published kernel context entry",
+                        error,
+                    ))
+                }
+                Ok(_) => {}
+            }
+            if !matches(&path) {
+                conflicts += 1;
+                continue;
+            }
+            if entries[index].retirement.is_none() {
+                entries[index].retirement = Some(format!(
+                    ".chariox-kernel-retire-{:032x}",
+                    rand::random::<u128>()
+                ));
+                persist_published_entries(root, &entries)?;
+            }
+            let quarantine = parent.join(entries[index].retirement.as_ref().unwrap());
+            publish_directory_no_clobber(&path, &quarantine)?;
+            sync_directory(parent)?;
+        }
+        let quarantine = parent.join(entries[index].retirement.as_ref().unwrap());
+        if !entry_fingerprint(&quarantine).is_ok_and(|(identity, sha256)| {
+            identity == entries[index].identity && sha256 == entries[index].sha256
+        }) {
+            // Preserve a replaced/edited entry; never replace a later user publication.
+            if fs::symlink_metadata(&path)
+                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+            {
+                publish_directory_no_clobber(&quarantine, &path)?;
+                sync_directory(parent)?;
+            }
+            conflicts += 1;
+            continue;
+        }
+        if fs::symlink_metadata(&quarantine)
+            .map_err(|error| import_io_error("inspect retired entry", error))?
+            .is_dir()
+        {
+            fs::remove_dir_all(&quarantine)
+        } else {
+            fs::remove_file(&quarantine)
+        }
+        .map_err(|error| import_io_error("remove owned published kernel context entry", error))?;
+        sync_directory(parent)?;
+    }
+    if conflicts > 0 {
+        return Err(import_error(format!("{conflicts} published kernel context entries changed; ownership journal retained for recovery")));
     }
     Ok(())
+}
+
+fn persist_published_entries(root: &Path, entries: &[PublishedEntry]) -> Result<(), DaemonError> {
+    let bytes = serde_json::to_vec(entries)
+        .map_err(|_| import_error("encode published ownership journal"))?;
+    if bytes.len() > 4 * 1024 * 1024 {
+        return Err(import_error(
+            "published ownership journal exceeds byte budget",
+        ));
+    }
+    crate::config::write_private_file(&root.join(PUBLISHED_ENTRIES_NAME), &bytes)
+        .map_err(|error| import_io_error("persist published retirement intent", error))
 }
 
 fn acquire_import_lock(parent: &Path) -> Result<ImportLock, DaemonError> {
@@ -2917,4 +3022,82 @@ mod tests {
         fs::create_dir_all(&root).expect("test root should create");
         root
     }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_kernel_rollback_preserves_replaced_credentials_and_edited_packages() {
+    let root =
+        std::env::temp_dir().join(format!("mp11-kernel-owned-{:016x}", rand::random::<u64>()));
+    let staged = root.join("context");
+    let home = root.join("home");
+    fs::create_dir_all(staged.join("user/credentials")).unwrap();
+    fs::create_dir_all(staged.join("user/scripts/package")).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        staged.join("user/credentials/fixture.json"),
+        b"synthetic-original",
+    )
+    .unwrap();
+    fs::write(
+        staged.join("user/scripts/package/source"),
+        b"original package",
+    )
+    .unwrap();
+    record_ordinary_entries(&staged, &home, &mut MaterializationBudget::new()).unwrap();
+    publish_ordinary_entries(&staged, &home).unwrap();
+    fs::rename(
+        home.join("credentials/fixture.json"),
+        root.join("prior-credential"),
+    )
+    .unwrap();
+    fs::write(
+        home.join("credentials/fixture.json"),
+        b"synthetic-replacement",
+    )
+    .unwrap();
+    fs::write(home.join("scripts/package/user-file"), b"user addition").unwrap();
+    assert!(remove_ordinary_entries(&staged, &home).is_err());
+    assert_eq!(
+        fs::read(home.join("credentials/fixture.json")).unwrap(),
+        b"synthetic-replacement"
+    );
+    assert!(home.join("scripts/package/user-file").exists());
+    // Recovery retries retain the same conflicts and the ownership journal.
+    assert!(remove_ordinary_entries(&staged, &home).is_err());
+    assert!(staged.join(PUBLISHED_ENTRIES_NAME).exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_kernel_retirement_restart_finds_quarantine_and_preserves_a_later_user_publication() {
+    let root = std::env::temp_dir().join(format!(
+        "mp11-kernel-retirement-{:016x}",
+        rand::random::<u64>()
+    ));
+    let context = root.join("context");
+    let home = root.join("home");
+    fs::create_dir_all(context.join("user/credentials")).unwrap();
+    fs::create_dir(&home).unwrap();
+    fs::write(
+        context.join("user/credentials/fixture.json"),
+        b"synthetic original",
+    )
+    .unwrap();
+    record_ordinary_entries(&context, &home, &mut MaterializationBudget::new()).unwrap();
+    publish_ordinary_entries(&context, &home).unwrap();
+    let mut entries = read_published_entries(&context).unwrap();
+    let name = format!(".chariox-kernel-retire-{:032x}", rand::random::<u128>());
+    entries[0].retirement = Some(name.clone());
+    persist_published_entries(&context, &entries).unwrap();
+    let published = home.join(&entries[0].relative);
+    let quarantine = published.parent().unwrap().join(name);
+    publish_directory_no_clobber(&published, &quarantine).unwrap();
+    fs::write(&published, b"synthetic user replacement").unwrap();
+    remove_ordinary_entries(&context, &home).unwrap();
+    assert!(!quarantine.exists());
+    assert!(published.is_file());
+    assert_eq!(fs::read(published).unwrap(), b"synthetic user replacement");
+    fs::remove_dir_all(root).unwrap();
 }

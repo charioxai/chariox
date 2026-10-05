@@ -199,7 +199,7 @@ fn worktree_file_state(
         )));
     }
     let (bytes, opened_metadata) =
-        read_regular_file_without_following_symlinks(&absolute, path, MAX_OVERLAY_FILE_BYTES)?;
+        read_regular_file_without_following_symlinks(worktree, path, MAX_OVERLAY_FILE_BYTES)?;
     validate_overlay_file_bytes(path, &bytes)?;
     let executable = file_is_executable(&opened_metadata);
     store_overlay_object(
@@ -281,19 +281,13 @@ pub(super) fn validate_overlay_file_bytes(path: &str, bytes: &[u8]) -> Result<()
 }
 
 pub(super) fn read_regular_file_without_following_symlinks(
-    path: &Path,
+    root: &Path,
     display_path: &str,
     maximum_bytes: u64,
 ) -> Result<(Vec<u8>, fs::Metadata), DaemonError> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    let mut file = options
-        .open(path)
+    validate_relative_path(display_path)?;
+    let root = super::directory::open_root(root)?;
+    let mut file = super::directory::open_relative(&root, Path::new(display_path))
         .map_err(|error| context_io_error("open dirty worktree path", error))?;
     let metadata = file
         .metadata()
@@ -408,7 +402,7 @@ fn read_expert_context_ignore_patterns(worktree: &Path) -> Result<Vec<String>, D
         )));
     }
     let (bytes, _) = read_regular_file_without_following_symlinks(
-        &path,
+        worktree,
         ".charioxignore",
         MAX_CONTEXT_IGNORE_BYTES,
     )?;
@@ -510,4 +504,35 @@ fn wildcard_match(pattern: &str, value: &str) -> bool {
         }
     }
     matches[value.len()]
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_fifo_input_fails_without_waiting_for_a_writer() {
+    crate::test_support::assert_fifo_rejected(|path| {
+        read_regular_file_without_following_symlinks(path.parent().unwrap(), "input", 1024).is_err()
+    });
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_overlay_ancestor_swap_is_refused_at_descriptor_open() {
+    use std::os::unix::fs::symlink;
+    let fixture =
+        std::env::temp_dir().join(format!("mp11-overlay-swap-{:016x}", rand::random::<u64>()));
+    let root = fixture.join("workspace");
+    let outside = fixture.join("outside");
+    fs::create_dir_all(root.join("nested")).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(root.join("nested/file"), b"inside").unwrap();
+    fs::write(outside.join("file"), b"outside").unwrap();
+    reject_symlink_ancestors(&root, "nested/file").unwrap();
+    fs::rename(root.join("nested"), root.join("original")).unwrap();
+    symlink(&outside, root.join("nested")).unwrap();
+    let refused = read_regular_file_without_following_symlinks(&root, "nested/file", 1024).is_err();
+    fs::remove_dir_all(fixture).unwrap();
+    assert!(
+        refused,
+        "validation/open ancestor swap read outside the workspace"
+    );
 }

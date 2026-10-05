@@ -152,7 +152,7 @@ fn configure_no_follow(options: &mut OpenOptions) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
     }
     #[cfg(windows)]
     {
@@ -179,4 +179,10 @@ pub(super) fn transfer_io_error(operation: &'static str, error: io::Error) -> Da
         message: error.to_string(),
         retryable: true,
     }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_fifo_input_fails_without_waiting_for_a_writer() {
+    crate::test_support::assert_fifo_rejected(|path| read_private_state_file(&path).is_err());
 }
