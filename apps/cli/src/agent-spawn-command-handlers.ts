@@ -179,7 +179,7 @@ export async function handleAgentSpawnCommand(
     const effectiveProvider = provider ?? deps.currentProviderId()
     const effort = model ? deps.currentVariantId() : null
     if (parsed.metaagent) {
-      throw new Error("creating separate metaagents is deprecated; send /meta <task> to a regular agent to enter meta mode")
+      throw new Error("creating separate metaagents is deprecated; send /sudo <prompt> to a regular agent and authorize it in the passkey popup")
     }
     const remoteRef = parsed.kernelRef ?? parsed.machineRef
     const worktreePlacement = gitWorktreePlacementFromParse(parsed)

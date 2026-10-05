@@ -404,6 +404,7 @@ impl KernelRuntimeOwnedState {
             });
         }
         let session = self.session_store.get_session(session_id)?;
+        self.ensure_remote_meta_retirement_not_pending(&session, agent_id)?;
         let completed = self
             .prompt_state_owner
             .complete_active_prompt_only(&session, agent_id)
@@ -589,6 +590,8 @@ impl KernelRuntimeOwnedState {
         target_agent_id: &str,
         attachment_id: &str,
     ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        self.ensure_remote_meta_retirement_not_pending(&session, target_agent_id)?;
         let _ =
             self.begin_remote_prompt_cancellation(session_id, target_agent_id, attachment_id)?;
         let cancellation = self.finalize_local_prompt_cancellation_with_queued_advance(

@@ -644,6 +644,19 @@ impl RuntimeSession {
         &self.queued_metaagent_tasks
     }
 
+    /// Retired Meta work cannot resume or reserve the shared session task lane.
+    pub(crate) fn retire_metaagent_tasks(&mut self, reason: &str) -> Vec<String> {
+        let mut retired = Vec::new();
+        for task in &mut self.metaagent_tasks {
+            if !task.status().is_terminal() {
+                retired.push(task.task_id().to_string());
+                task.abort(Some(reason.into()));
+            }
+        }
+        retired.extend(self.queued_metaagent_tasks.drain(..).map(|task| task.id().to_string()));
+        retired
+    }
+
     pub fn enqueue_metaagent_task(&mut self, task: QueuedMetaagentTask) -> QueuedMetaagentTask {
         self.queued_metaagent_tasks.push_back(task.clone());
         task

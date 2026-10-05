@@ -30,6 +30,16 @@ impl KernelRuntimeState {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
+        if crate::app::RemoteMetaRetirementIntent::is_pending(&active_prompt) {
+            return Ok(Some(crate::app::KernelPromptCancellation {
+                cancellation: crate::session::PromptCancellation {
+                    prompt: active_prompt,
+                    started_next: None,
+                },
+                session,
+                dispatch: None,
+            }));
+        }
         if matches!(
             active_prompt.durable_delivery_phase(),
             Some(crate::session::DurablePromptDeliveryPhase::Accepted)

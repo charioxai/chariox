@@ -121,7 +121,7 @@ export async function executeAgentCommand(
     case "spawn": {
       const metaagent = args.includes("--meta") || args.includes("--metaagent")
       if (metaagent) {
-        return { ok: false, message: "creating separate metaagents is deprecated; send /meta <task> to a regular agent to enter meta mode" }
+        return { ok: false, message: "creating separate metaagents is deprecated; send /sudo <prompt> to a regular agent and authorize it in the passkey popup" }
       }
       const controlParse = parseAgentSpawnControlOptions(args.filter((arg) => arg !== "--meta" && arg !== "--metaagent"), parsed.command)
       if (!controlParse.ok) {

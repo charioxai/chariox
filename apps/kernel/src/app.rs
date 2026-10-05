@@ -6,7 +6,11 @@ pub(crate) mod attachment_artifacts;
 mod config_runtime;
 mod daemon_lifecycle;
 mod durable_runtime_state;
+mod meta_retirement;
+pub(crate) use meta_retirement::RemoteMetaRetirementIntent;
 mod external_provider_session_discovery;
+#[cfg(test)]
+mod meta_retirement_tests;
 #[cfg(test)]
 mod room_environment_durability_tests;
 pub(crate) use external_provider_session_discovery::find_external_provider_prompt_recovery_match;

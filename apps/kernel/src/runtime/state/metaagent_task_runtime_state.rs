@@ -5,21 +5,9 @@ use crate::session::MetaagentTaskStatus;
 use super::managed_activity_runtime_state::ManagedActivityMutation;
 use super::KernelRuntimeState;
 
-pub(crate) struct MetaSlashCommand {
-    pub(crate) task_prompt: String,
-}
-
-pub(crate) fn parse_meta_slash_command(prompt: &str) -> Option<MetaSlashCommand> {
-    let trimmed = prompt.trim_start();
-    let rest = trimmed.strip_prefix("/meta")?;
-    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
-        return None;
-    }
-    let task_prompt = rest.trim_start().to_string();
-    if task_prompt.is_empty() {
-        return None;
-    }
-    Some(MetaSlashCommand { task_prompt })
+/// Diagnose the retired entry without interpreting /metadata or ordinary prose.
+pub(crate) fn is_retired_meta_command(prompt: &str) -> bool {
+    prompt.trim_start().split_whitespace().next() == Some("/meta")
 }
 
 impl KernelRuntimeState {
@@ -1023,17 +1011,14 @@ mod durability_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::parse_meta_slash_command;
-
+    use super::is_retired_meta_command;
     #[test]
-    fn parse_meta_slash_command_only_matches_first_command_token() {
-        let parsed = parse_meta_slash_command("  /meta Build the thing")
-            .expect("/meta with task should parse");
-        assert_eq!(parsed.task_prompt, "Build the thing");
-
-        assert!(parse_meta_slash_command("/metadata should stay normal").is_none());
-        assert!(parse_meta_slash_command("please /meta do this").is_none());
-        assert!(parse_meta_slash_command("/meta").is_none());
-        assert!(parse_meta_slash_command("/meta\tTabbed task").is_some());
+    fn retired_meta_command_matches_only_the_first_token() {
+        for prompt in ["/meta", "  /meta Build", "/meta\tBuild", "/meta\nBuild"] {
+            assert!(is_retired_meta_command(prompt));
+        }
+        for prompt in ["/metadata Build", "please /meta Build", "/sudo Build", ""] {
+            assert!(!is_retired_meta_command(prompt));
+        }
     }
 }

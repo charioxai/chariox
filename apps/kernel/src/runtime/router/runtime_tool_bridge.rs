@@ -56,6 +56,11 @@ impl CommandRouter {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        if crate::transport::runtime_tools::canonical_meta_tool_name(tool_name).is_some() {
+            return Err(crate::runtime::kernel_access::error(
+                "Meta tools have been retired; use /sudo <prompt> and chariox_kernel_request during its authorized turn",
+            ));
+        }
         // A Claude run is silent while it waits on a runtime tool call, and a
         // person's decision (a permission prompt, a popup, an App binding
         // approval, also through Meta `run_command`) can take minutes: its turn
@@ -92,11 +97,7 @@ impl CommandRouter {
                 })?,
             });
         }
-        if crate::transport::runtime_tools::canonical_meta_tool_name(tool_name)
-            == Some(crate::transport::runtime_tools::META_RUN_COMMAND_TOOL)
-        {
-            return self.dispatch_meta_run_command(auth_token, arguments).await;
-        }
+
         self.runtime_state
             .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
             .await
@@ -204,13 +205,12 @@ impl CommandRouter {
         tool_name: String,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        if crate::transport::runtime_tools::canonical_meta_tool_name(&tool_name)
-            == Some(crate::transport::runtime_tools::META_RUN_COMMAND_TOOL)
-        {
-            return self
-                .dispatch_forwarded_meta_run_command(context, arguments)
-                .await;
+        if crate::transport::runtime_tools::canonical_meta_tool_name(&tool_name).is_some() {
+            return Err(crate::runtime::kernel_access::error(
+                "Meta tools have been retired; use /sudo <prompt> and chariox_kernel_request during its authorized turn",
+            ));
         }
+
         self.runtime_state
             .dispatch_forwarded_meta_runtime_tool_call(context, tool_name, arguments)
             .await

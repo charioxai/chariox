@@ -1,19 +1,6 @@
 [
   {"id":"sudo","label":"/sudo","description":"Authorize one sudo turn with the Chariox passkey","value":"/sudo ","searchAliases":["sudo","elevate","critical approval"]},
-  {
-    "id": "meta",
-    "label": "/meta",
-    "description": "Start a temporary Meta mode task on the focused agent",
-    "value": "/meta ",
-    "searchAliases": [
-      "meta mode",
-      "metaagent",
-      "planner",
-      "delegate",
-      "supervise",
-      "task"
-    ]
-  },
+
   {
     "id": "loop",
     "label": "/loop",
@@ -444,57 +431,7 @@
         "description": "Cycle to next agent",
         "value": "/agent cycle"
       },
-      {
-        "id": "agent-task",
-        "label": "task",
-        "description": "View or control the focused agent's Meta mode task",
-        "value": "/agent task ",
-        "searchAliases": [
-          "meta mode task",
-          "metaagent task",
-          "planner task",
-          "pause meta mode",
-          "abort meta mode"
-        ],
-        "children": [
-          {
-            "id": "agent-task-show",
-            "label": "show",
-            "description": "Show the Meta mode task and plan",
-            "value": "/agent task show "
-          },
-          {
-            "id": "agent-task-edit",
-            "label": "edit",
-            "description": "Edit the Meta mode task prompt",
-            "value": "/agent task edit "
-          },
-          {
-            "id": "agent-task-plan",
-            "label": "plan",
-            "description": "Edit the Meta mode plan document",
-            "value": "/agent task plan "
-          },
-          {
-            "id": "agent-task-pause",
-            "label": "pause",
-            "description": "Pause the Meta mode task",
-            "value": "/agent task pause "
-          },
-          {
-            "id": "agent-task-resume",
-            "label": "resume",
-            "description": "Resume a paused Meta mode task",
-            "value": "/agent task resume "
-          },
-          {
-            "id": "agent-task-abort",
-            "label": "abort",
-            "description": "Abort the Meta mode task",
-            "value": "/agent task abort "
-          }
-        ]
-      },
+
       {
         "id": "agent-substitute",
         "label": "substitute",

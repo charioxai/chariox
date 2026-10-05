@@ -106,89 +106,29 @@ impl AgentRuntimeCommandExecutor {
                 .ok_or_else(|| DaemonError::AgentNotFound {
                     agent_id: "no target agent".to_string(),
                 })?;
-        // Validate the transport attachment before Meta activation or any other
+        // Validate the transport attachment before any
         // prompt-side effect. A stale browser attachment must fail cleanly
         // instead of leaving an active task with no admitted prompt.
         self.prompt_commands
             .ensure_attachment_in_session(&request.session_id, &request.attachment_id)
             .await?;
+        if crate::runtime::state::is_retired_meta_command(&request.prompt) {
+            return Err(crate::runtime::kernel_access::error(
+                "/meta has been retired; use /sudo <prompt> and authorize it in the Chariox passkey popup",
+            ));
+        }
         let materialized_attachments = materialize_inline_prompt_attachments(
             &request.session_id,
             &target_agent_id,
             request.attachments,
         )?;
-        let meta_slash = crate::runtime::state::parse_meta_slash_command(&request.prompt);
-        if let Some(meta_slash) = meta_slash.as_ref() {
-            self.prompt_commands
-                .record_meta_migration_notice(&request.session_id, &target_agent_id);
-            if self
-                .prompt_commands
-                .session_task_lane_busy(&request.session_id)?
-            {
-                let (task, session) = self.prompt_commands.enqueue_metaagent_task(
-                    &request.session_id,
-                    &target_agent_id,
-                    &request.attachment_id,
-                    &meta_slash.task_prompt,
-                    materialized_attachments,
-                )?;
-                let queued_prompt = PromptQueueItem::new(
-                    task.id(),
-                    task.source_attachment_id(),
-                    task.metaagent_id(),
-                    task.task_markdown(),
-                    PromptStatus::Queued,
-                )
-                .with_attachments(task.attachments().to_vec());
-                if response_mode == PromptSubmitResponseMode::Full {
-                    publish_session_runtime_projection(
-                        &self.session_projection,
-                        &self.agent_runtime_projection,
-                        &session,
-                    );
-                }
-                return Ok(LocalDaemonResponse::PromptSubmitted {
-                    outcome: crate::session::PromptSubmissionOutcome::Queued {
-                        prompt: queued_prompt,
-                    },
-                    agent_activity: if response_mode == PromptSubmitResponseMode::Full {
-                        self.prompt_commands.agent_activity_for_session(&session)
-                    } else {
-                        Default::default()
-                    },
-                    agent_activity_revision: if response_mode == PromptSubmitResponseMode::Full {
-                        self.session_projection.change_sequence()
-                    } else {
-                        0
-                    },
-                    session,
-                });
-            }
-        }
-        let consumed_meta_slash = meta_slash.is_some();
-        let (provider_prompt, hidden_system_context) = if let Some(meta_slash) = meta_slash {
-            self.prompt_commands
-                .activate_meta_mode_for_prompt(
-                    &request.session_id,
-                    &target_agent_id,
-                    &meta_slash.task_prompt,
-                )
-                .await?;
-            (
-                meta_slash.task_prompt,
-                self.prompt_commands.meta_mode_entered_hidden_context()?,
-            )
-        } else {
-            (request.prompt.clone(), String::new())
-        };
         let prompt = PromptQueueItem::new(
             format!("pending-draft:{trace_id}"),
             &request.attachment_id,
             &target_agent_id,
-            provider_prompt,
+            request.prompt.clone(),
             PromptStatus::Queued,
         )
-        .with_hidden_system_context(hidden_system_context)
         .with_durable_operation(operation_id, operation_fingerprint)
         .with_attachments(materialized_attachments);
         let prepared = self
@@ -200,16 +140,7 @@ impl AgentRuntimeCommandExecutor {
                 refresh_projection: response_mode == PromptSubmitResponseMode::Full,
             })
             .await?;
-        let mut response_session = prepared.session.clone();
-        if !consumed_meta_slash {
-            if let Some(updated_session) = self.prompt_commands.start_metaagent_task_for_prompt(
-                &request.session_id,
-                &target_agent_id,
-                &request.prompt,
-            )? {
-                response_session = updated_session;
-            }
-        }
+        let response_session = prepared.session.clone();
         if response_mode == PromptSubmitResponseMode::Full {
             publish_session_runtime_projection(
                 &self.session_projection,

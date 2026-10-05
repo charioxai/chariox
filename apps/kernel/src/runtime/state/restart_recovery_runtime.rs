@@ -26,6 +26,7 @@ pub(crate) struct DurableRestartRecoverySummary {
     pub(crate) queued_local_prompts_started: usize,
     pub(crate) orphaned_workflow_prompts_finalized: usize,
     pub(crate) failed_reconciliations: usize,
+    pub(crate) remote_meta_retirements_pending: usize,
 }
 
 pub(super) enum UncertainLocalRecoveryOutcome {
@@ -134,8 +135,10 @@ impl KernelRuntimeState {
                         }
                     }
                 }
-                if (summary.transcript_recovery_pending == 0 && summary.failed_reconciliations == 0)
-                    || attempt >= 299
+                if summary.remote_meta_retirements_pending == 0
+                    && ((summary.transcript_recovery_pending == 0
+                        && summary.failed_reconciliations == 0)
+                        || attempt >= 299)
                 {
                     break summary;
                 }
@@ -156,6 +159,7 @@ impl KernelRuntimeState {
                     "queued_local_prompts_started": summary.queued_local_prompts_started,
                     "orphaned_workflow_prompts_finalized": summary.orphaned_workflow_prompts_finalized,
                     "failed_reconciliations": summary.failed_reconciliations,
+                    "remote_meta_retirements_pending": summary.remote_meta_retirements_pending,
                 }),
             );
         }))
@@ -356,6 +360,26 @@ impl KernelRuntimeState {
                         continue;
                     }
                 };
+                if crate::app::RemoteMetaRetirementIntent::is_pending(&prompt) {
+                    match self
+                        .recover_remote_meta_retirement(session.id(), agent_id, &prompt)
+                        .await
+                    {
+                        Ok(true) => {}
+                        Ok(false) => summary.remote_meta_retirements_pending += 1,
+                        Err(error) => {
+                            summary.remote_meta_retirements_pending += 1;
+                            summary.failed_reconciliations += 1;
+                            log_restart_recovery_failure(
+                                session.id(),
+                                agent_id,
+                                prompt.id(),
+                                &error,
+                            );
+                        }
+                    }
+                    continue;
+                }
                 let uncertain_remote_delivery = agent.remote_execution().is_some()
                     && (prompt.durable_delivery_reconciliation_pending()
                         || delivery_phase

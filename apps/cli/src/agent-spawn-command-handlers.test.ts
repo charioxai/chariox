@@ -190,7 +190,7 @@ test("agent spawn command rejects deprecated metaagent creation", async () => {
     },
   }, ["meta", "codex/gpt-5.4", "--meta"])
 
-  assert.equal(flashedMessage, "creating separate metaagents is deprecated; send /meta <task> to a regular agent to enter meta mode")
+  assert.equal(flashedMessage, "creating separate metaagents is deprecated; send /sudo <prompt> to a regular agent and authorize it in the passkey popup")
 })
 
 test("agent spawn command rejects deprecated metaagents before slice handling", async () => {
@@ -206,7 +206,7 @@ test("agent spawn command rejects deprecated metaagents before slice handling", 
     },
   }, ["meta", "--meta", "--slice", "new"])
 
-  assert.equal(flashedMessage, "creating separate metaagents is deprecated; send /meta <task> to a regular agent to enter meta mode")
+  assert.equal(flashedMessage, "creating separate metaagents is deprecated; send /sudo <prompt> to a regular agent and authorize it in the passkey popup")
 })
 
 test("agent spawn command rejects external imports with placement options", async () => {

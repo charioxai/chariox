@@ -44,15 +44,6 @@ fn mark_test_agent_controlled_by_metaagent(
         .expect("test agent should exist");
 }
 
-fn activate_test_agent_meta_mode(
-    app: &mut DaemonApp,
-    agent: crate::agent::AgentInstance,
-) -> crate::agent::AgentInstance {
-    app.agents_mut()
-        .activate_agent_meta_mode(agent.id(), None)
-        .expect("test agent should enter meta mode")
-}
-
 fn run_large_stack_async_test<Fut>(name: &str, test: fn() -> Fut)
 where
     Fut: std::future::Future<Output = ()> + 'static,
@@ -74,8 +65,17 @@ where
         .expect("test thread should not panic");
 }
 
+fn activate_test_agent_meta_mode(
+    app: &mut DaemonApp,
+    agent: crate::agent::AgentInstance,
+) -> crate::agent::AgentInstance {
+    app.agents_mut()
+        .activate_agent_meta_mode(agent.id(), None)
+        .expect("test agent should enter meta mode")
+}
+
 #[tokio::test]
-async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
+async fn runtime_mcp_retires_meta_tools_for_regular_and_legacy_runs() {
     let env = TestMetaRuntimeEnv::new("tool-visibility");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -117,159 +117,18 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
 
-    let standard_specs = router
-        .runtime_state
-        .runtime_tool_specs_for_auth_token(&standard_auth_token);
-    assert!(
-        standard_specs.iter().all(|spec| {
-            spec.name != crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL
-        }),
-        "standard agents must not see metaagent runtime tools"
-    );
-
-    let meta_specs = router
-        .runtime_state
-        .runtime_tool_specs_for_auth_token(&meta_auth_token);
-    assert!(
-        meta_specs
-            .iter()
-            .any(|spec| spec.name == crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL),
-        "metaagents should see the metaagent runtime MCP tools"
-    );
-    for workflow_code_tool in [
-        crate::transport::runtime_tools::META_WORKFLOW_CODE_CREATE_TOOL,
-        crate::transport::runtime_tools::META_WORKFLOW_CODE_READ_TOOL,
-        crate::transport::runtime_tools::META_WORKFLOW_CODE_LIST_TOOL,
-        crate::transport::runtime_tools::META_WORKFLOW_CODE_UPDATE_TOOL,
-        crate::transport::runtime_tools::META_WORKFLOW_CODE_DELETE_TOOL,
-        crate::transport::runtime_tools::META_WORKFLOW_CODE_VALIDATE_TOOL,
-        crate::transport::runtime_tools::META_WORKFLOW_CODE_APPLY_TOOL,
-        crate::transport::runtime_tools::META_WORKFLOW_CODE_RUN_TOOL,
-        crate::transport::runtime_tools::META_WORKFLOW_CODE_EXPORT_TOOL,
-        crate::transport::runtime_tools::META_WORKFLOW_CODE_IMPORT_TOOL,
-        crate::transport::runtime_tools::META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL,
-        crate::transport::runtime_tools::META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL,
-        crate::transport::runtime_tools::META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL,
-        crate::transport::runtime_tools::META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL,
-    ] {
-        assert!(
-            meta_specs
-                .iter()
-                .any(|spec| spec.name == workflow_code_tool),
-            "metaagents should see workflow-code runtime MCP tool `{workflow_code_tool}`"
-        );
+    for auth in [&standard_auth_token, &meta_auth_token] {
+        let specs = router.runtime_state.runtime_tool_specs_for_auth_token(auth);
+        assert!(specs.iter().all(|spec| crate::transport::runtime_tools::canonical_meta_tool_name(&spec.name).is_none()));
+        let denied = router.dispatch_authenticated_runtime_tool_call(
+            auth, crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL, serde_json::json!({}),
+        ).await.unwrap_err();
+        assert!(denied.to_string().contains("retired"));
+        assert!(denied.to_string().contains("/sudo"));
     }
-    for workflow_registry_tool in [
-        crate::transport::runtime_tools::META_WORKFLOW_REGISTRY_LIST_TOOL,
-        crate::transport::runtime_tools::META_WORKFLOW_REGISTRY_GET_TOOL,
-        crate::transport::runtime_tools::META_WORKFLOW_REGISTRY_ADD_TOOL,
-        crate::transport::runtime_tools::META_WORKFLOW_REGISTRY_ADD_FROM_WORKFLOW_TOOL,
-        crate::transport::runtime_tools::META_WORKFLOW_REGISTRY_DELETE_TOOL,
-        crate::transport::runtime_tools::META_WORKFLOW_REGISTRY_LOAD_TOOL,
-        crate::transport::runtime_tools::META_WORKFLOW_REGISTRY_RUN_TOOL,
-    ] {
-        assert!(
-            meta_specs
-                .iter()
-                .any(|spec| spec.name == workflow_registry_tool),
-            "metaagents should see workflow registry runtime MCP tool `{workflow_registry_tool}`"
-        );
-    }
-    assert!(
-        meta_specs
-            .iter()
-            .any(|spec| spec.name == crate::transport::runtime_tools::READ_ARTIFACT_TOOL),
-        "metaagents should see read-only workspace context tools"
-    );
-    assert!(
-        meta_specs
-            .iter()
-            .any(|spec| spec.name == crate::transport::runtime_tools::SEARCH_RECALL_TOOL),
-        "metaagents should see recall tools"
-    );
-    assert!(
-        meta_specs
-            .iter()
-            .all(|spec| spec.name.starts_with("chariox.meta.")
-                || spec.name == crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
-                || spec.name == crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL
-                || spec.name == crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
-                || spec.name == crate::transport::runtime_tools::READ_ARTIFACT_TOOL
-                || spec.name == crate::transport::runtime_tools::SEARCH_RECALL_TOOL
-                || spec.name == crate::transport::runtime_tools::QUERY_RECALL_TOOL),
-        "metaagents should only see meta, agent collaboration, read-only workspace, and recall tools: {meta_specs:?}"
-    );
-
-    let denied_direct_tool = router
-        .runtime_state
-        .dispatch_authenticated_runtime_tool_call(
-            &meta_auth_token,
-            crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL,
-            serde_json::json!({ "path": "README.md", "content_text": "nope" }),
-        )
-        .await
-        .expect("metaagent direct mutation tools should return structured denials");
-    assert!(
-        !denied_direct_tool.ok
-            && denied_direct_tool
-                .payload
-                .get("error")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|message| message.contains("not available to agents in Meta mode")),
-        "{:?}",
-        denied_direct_tool.payload
-    );
-
-    let canvas_contract = router
-        .runtime_state
-        .dispatch_authenticated_runtime_tool_call(
-            &meta_auth_token,
-            crate::transport::runtime_tools::META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL,
-            serde_json::json!({}),
-        )
-        .await
-        .expect("metaagent should read workflow-code canvas contract");
-    assert!(canvas_contract.ok, "{:?}", canvas_contract.payload);
-    assert_eq!(
-        canvas_contract
-            .payload
-            .pointer("/canvas_contract/coordinate_space")
-            .and_then(serde_json::Value::as_str),
-        Some(crate::workflow_code::WORKFLOW_CODE_CANVAS_COORDINATE_SPACE)
-    );
-    assert_eq!(
-        canvas_contract
-            .payload
-            .pointer("/canvas_contract/minimum_gap")
-            .and_then(serde_json::Value::as_i64),
-        Some(crate::workflow_code::WORKFLOW_CODE_CANVAS_MIN_GAP)
-    );
-
-    let denied = router
-        .runtime_state
-        .dispatch_authenticated_runtime_tool_call(
-            &standard_auth_token,
-            crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL,
-            serde_json::json!({}),
-        )
-        .await
-        .expect_err("standard agents should not be able to guess-call meta tools");
-    assert!(
-        denied
-            .to_string()
-            .contains("exactly one active provider run for an agent in Meta mode"),
-        "{denied:?}"
-    );
 }
 
-mod event_subscriptions;
-mod events;
-mod interactions;
-mod overview_docs;
-mod run_command_delegation;
-mod run_command_lifecycle;
-mod scoped_requests;
-mod task_scope;
-mod trace_projection;
+// These exercise trusted legacy settlement/source-package validation, not the
+// retired public MCP surface. Keep their common workflow regression coverage.
 mod workflow_code_crud;
 mod workflow_code_patterns;
