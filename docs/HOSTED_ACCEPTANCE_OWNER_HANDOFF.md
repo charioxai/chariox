@@ -88,9 +88,12 @@ Computer/remote-environment rows before calling the matrix complete.
    are clean. Keep implementation/review independence and true reviewer identity.
 2. **Admit local results (MP-01..MP-11).** T1/T2 functional, security,
    persistence, provider/client, concurrency, faults, regression and cleanup
-   must pass from the candidate. Source/helper tests and historical F/G2C
-   observations support diagnosis only. A replacement-aware active/idle soak
-   runner must exist; the frozen active runner only accepts old display backends.
+   must have admitted evidence for the candidate. Historical F/G2C results
+   retain their original identities; unchanged G2 source evidence may be admitted
+   through explicit coordinator equivalence review, with deltas replayed. It
+   cannot substitute for missing fresh/hosted or replacement behavior.
+   A replacement-aware active/idle soak runner must exist; the frozen active
+   runner only accepts old display backends.
 3. **Authorize an isolated campaign (MP-07/MP-09/MP-10).** Specify approved
    image, region, compute class, provider resource, lifetime/cost cap, owner
    account, explicit cleanup ownership and ordinary control. Use a fresh VM or
