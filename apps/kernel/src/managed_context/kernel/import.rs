@@ -35,8 +35,13 @@ use super::{
     KERNEL_CONTEXT_SCHEMA_VERSION,
 };
 
+#[path = "ordinary_publication.rs"]
+mod ordinary_publication;
+use ordinary_publication::{
+    publish_ordinary_entries, record_ordinary_entries, remove_ordinary_entries,
+};
+
 const IMPORT_RECEIPT_NAME: &str = "kernel-context-import.json";
-const PUBLISHED_ENTRIES_NAME: &str = "published-entries.json";
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const RUNTIME_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_RUNTIME_PROBE_BYTES: u64 = 64 * 1024;
@@ -1135,123 +1140,6 @@ fn ordinary_user_root() -> Result<Option<PathBuf>, DaemonError> {
 
 fn final_user_root(final_root: &Path) -> Result<PathBuf, DaemonError> {
     Ok(ordinary_user_root()?.unwrap_or_else(|| final_root.join("user")))
-}
-
-/// Registry directories an import may share with the user; only their
-/// children are published, so rollback never removes the directory itself.
-const ORDINARY_REGISTRY_DIRECTORIES: &[&str] = &[
-    "mcps",
-    "skills",
-    "scripts",
-    "credentials",
-    "envs",
-    "envs/.portable",
-    "connectors",
-    "connectors/definitions",
-    "connectors/adapters",
-];
-
-/// List every staged extension entry and reject any that already exists in the
-/// ordinary registries, before the Vault or capability root is installed.
-fn record_ordinary_entries(
-    staging: &Path,
-    home: &Path,
-    budget: &mut MaterializationBudget,
-) -> Result<(), DaemonError> {
-    let mut entries = Vec::new();
-    let staged = staging.join("user");
-    if staged.exists() {
-        collect_ordinary_entries(&staged, home, Path::new(""), &mut entries)?;
-    }
-    write_json_file(
-        &staging.join(PUBLISHED_ENTRIES_NAME),
-        &entries,
-        false,
-        budget,
-    )
-}
-
-fn collect_ordinary_entries(
-    staged: &Path,
-    home: &Path,
-    relative: &Path,
-    entries: &mut Vec<String>,
-) -> Result<(), DaemonError> {
-    let mut children = fs::read_dir(staged.join(relative))
-        .and_then(|entries| entries.collect::<Result<Vec<_>, _>>())
-        .map_err(|error| import_io_error("read staged kernel context", error))?;
-    children.sort_by_key(|entry| entry.file_name());
-    for child in children {
-        let path = relative.join(child.file_name());
-        let path_text = path
-            .to_str()
-            .ok_or_else(|| import_error("kernel context entry is not UTF-8"))?
-            .to_string();
-        if ORDINARY_REGISTRY_DIRECTORIES.contains(&path_text.as_str()) {
-            collect_ordinary_entries(staged, home, &path, entries)?;
-            continue;
-        }
-        match fs::symlink_metadata(home.join(&path)) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => entries.push(path_text),
-            Ok(_) => {
-                return Err(import_error(format!(
-                    "kernel context entry `{path_text}` already exists in the ordinary registry"
-                )))
-            }
-            Err(error) => return Err(import_io_error("inspect ordinary registry", error)),
-        }
-    }
-    Ok(())
-}
-
-/// Move the recorded entries into the ordinary registries without replacing
-/// any. A replay finishes the same set; an entry already moved is skipped.
-fn publish_ordinary_entries(root: &Path, home: &Path) -> Result<(), DaemonError> {
-    let staged = root.join("user");
-    for relative in read_published_entries(root)? {
-        let source = staged.join(&relative);
-        if fs::symlink_metadata(&source).is_err() {
-            continue;
-        }
-        let destination = home.join(&relative);
-        let parent = destination
-            .parent()
-            .ok_or_else(|| import_error("published kernel context entry has no parent"))?;
-        fs::create_dir_all(parent)
-            .map_err(|error| import_io_error("create ordinary registry directory", error))?;
-        publish_directory_no_clobber(&source, &destination)?;
-        sync_directory(parent)?;
-    }
-    Ok(())
-}
-
-fn read_published_entries(root: &Path) -> Result<Vec<String>, DaemonError> {
-    let bytes = read_bounded_file(&root.join(PUBLISHED_ENTRIES_NAME), 4 * 1024 * 1024)?;
-    let entries = serde_json::from_slice::<Vec<String>>(&bytes)
-        .map_err(|_| import_error("published kernel context entries are invalid"))?;
-    for entry in &entries {
-        validate_portable_package_path(entry)?;
-    }
-    Ok(entries)
-}
-
-/// Remove only entries this import moved: one still staged was never published.
-fn remove_ordinary_entries(root: &Path, home: &Path) -> Result<(), DaemonError> {
-    let staged = root.join("user");
-    for relative in read_published_entries(root)? {
-        if fs::symlink_metadata(staged.join(&relative)).is_ok() {
-            continue;
-        }
-        let path = home.join(&relative);
-        let removed = match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&path),
-            Ok(_) => fs::remove_file(&path),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
-        };
-        removed.map_err(|error| import_io_error("remove published kernel context entry", error))?;
-    }
-    Ok(())
 }
 
 fn acquire_import_lock(parent: &Path) -> Result<ImportLock, DaemonError> {
@@ -2588,6 +2476,55 @@ mod tests {
         assert!(source.is_dir());
         assert!(destination.is_dir());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ordinary_rollback_preserves_replaced_and_edited_entries() {
+        for case in [
+            "replaced-directory",
+            "replaced-file",
+            "edited-directory",
+            "edited-file",
+        ] {
+            let root = test_root(case);
+            let context = root.join("context");
+            let home = root.join("home");
+            fs::create_dir_all(context.join("user/skills")).unwrap();
+            fs::create_dir_all(home.join("skills")).unwrap();
+            let staged = context.join("user/skills/imported");
+            if case.ends_with("directory") {
+                fs::create_dir_all(&staged).unwrap();
+                fs::write(staged.join("original"), b"imported").unwrap();
+            } else {
+                fs::write(&staged, b"imported").unwrap();
+            }
+            fs::write(home.join("skills/unrelated"), b"mine").unwrap();
+            record_ordinary_entries(&context, &home, &mut MaterializationBudget::new()).unwrap();
+            publish_ordinary_entries(&context, &home).unwrap();
+            let destination = home.join("skills/imported");
+            if case.starts_with("replaced") {
+                // Keep the old inode alive to rule out inode reuse in the fixture.
+                fs::rename(&destination, root.join("old-import")).unwrap();
+                if case.ends_with("directory") {
+                    fs::create_dir(&destination).unwrap();
+                }
+            }
+            let replacement = if case.ends_with("directory") {
+                destination.join("user-added")
+            } else {
+                destination.clone()
+            };
+            fs::write(&replacement, b"user-owned replacement").unwrap();
+            let _ = remove_ordinary_entries(&context, &home);
+            assert_eq!(
+                fs::read(&replacement).unwrap(),
+                b"user-owned replacement",
+                "{case}"
+            );
+            assert_eq!(fs::read(home.join("skills/unrelated")).unwrap(), b"mine");
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[cfg(unix)]
