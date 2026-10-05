@@ -3319,6 +3319,7 @@ async function dockerLimits() {
 
 async function cleanup() {
   const tempRoot = await tempRootPromise
+  const childCleanupFailures = []
   let leakedEvidence = false
   try { localForwarding?.assertHealthy() } catch (error) { failure ??= error }
   if (failure) {
@@ -3382,7 +3383,17 @@ async function cleanup() {
   remoteAutomation?.close()
   await closeFixtureServer()
   if (localForwarding) await localForwarding.close().catch((error) => { failure ??= error })
-  for (const child of children.toReversed()) await terminateChild(child)
+  for (const child of children.toReversed()) {
+    try { await terminateChild(child) } catch (error) {
+      // Keep a refused group unsignaled, but continue tearing down independent
+      // children and resources. Cleanup remains failed even if removals succeed.
+      failure ??= error
+      childCleanupFailures.push({
+        pid: child?.pid ?? null,
+        message: redactDrillSecrets(error?.message ?? String(error)),
+      })
+    }
+  }
   // Stop resource producers before the final removal, including a kernel that
   // was still provisioning when interrupted. Otherwise a late container can
   // appear after cleanup has already removed its predecessor.
@@ -3436,6 +3447,7 @@ async function cleanup() {
     listenersReleased: occupiedPorts.length === 0,
     plaintextSecretLeak: leakedEvidence,
     occupiedPorts,
+    childCleanupFailures,
     resource: after,
   }
   await writeFile(path.join(evidenceRoot, "cleanup.json"), `${JSON.stringify(cleanupResult, null, 2)}\n`)
