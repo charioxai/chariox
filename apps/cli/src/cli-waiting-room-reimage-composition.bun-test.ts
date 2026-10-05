@@ -31,7 +31,7 @@ import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
 import { managedEnvironmentMachineRef } from "./waiting-room-managed-environments.js"
 import { createWaitingRoomState } from "./waiting-room-state.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
-import { __setWaitingRoomWorktreeInventoryForTest, resolvePendingWaitingRoomWorktreePath, stageWaitingRoomWorktreeSelection } from "./waiting-room-worktrees.js"
+import { __setWaitingRoomWorktreeInventoryForTest, resolvePendingWaitingRoomWorktreePath, stageWaitingRoomWorktreeSelection, waitingRoomWorktreeDisabledHint, waitingRoomWorktreeOptions } from "./waiting-room-worktrees.js"
 
 const LOCAL_ENDPOINT = "ws://local-kernel.test"
 const OLD_ENDPOINT = "ws://old-kernel.test"
@@ -328,6 +328,36 @@ test("production Waiting Room composition defaults to current worktree after a d
   }
 })
 
+for (const disabledState of ["not-repository", "unborn"] as const) {
+  reimageTest(`managed workspace refresh rechecks ${disabledState} after git repair without losing home authority`, async router => {
+    let repositoryState: "not-repository" | "unborn" | "ready" = disabledState
+    const harness = createHarness(router, { interactivePlacement: true, managedRepositoryState: () => repositoryState })
+    try {
+      await harness.initialize()
+      harness.composition.reconcileWaitingRoom({ ...harness.state(),
+        selectedMachineRef: managedEnvironmentMachineRef("environment-1"), selectedKernelRef: "kernel-old" })
+      await new Promise(resolve => setImmediate(resolve))
+      assert.ok(waitingRoomWorktreeDisabledHint())
+      assert.deepEqual(waitingRoomWorktreeOptions(), [])
+      assert.equal(harness.composition.waitingRoomTargets().workspacePath, "/home/managed")
+      // Git repair does not change the waiting-room snapshot or its workspace.
+      repositoryState = "ready"
+      await harness.composition.refreshWaitingRoomDataNow()
+      assert.equal(waitingRoomWorktreeDisabledHint(), null)
+      assert.ok(waitingRoomWorktreeOptions().some(option => option.id === "create-worktree"))
+      assert.equal(harness.state().worktreeSelectionId, "existing:/home/managed")
+      assert.equal(harness.composition.waitingRoomTargets().workspacePath, "/home/managed")
+      assert.equal(harness.client.currentClient(), harness.local.client)
+      assert.equal(harness.local.closeCount, 0)
+      assert.equal(harness.old.closeCount, 2)
+      assert.equal(requestCount(harness.old, "ListWorkspaceWorktrees"), 2)
+      assert.equal(requestCount(harness.old, "GetWorkspaceGitOverview"), 1)
+      await harness.composition.refreshWaitingRoomData()
+      assert.equal(requestCount(harness.old, "ListWorkspaceWorktrees"), 2)
+    } finally { harness.cleanup() }
+  })
+}
+
 type TestRouter = ReturnType<typeof installLocalIpcClientTestRouter>
 
 function installLocalIpcClientTestRouter() {
@@ -376,6 +406,7 @@ function createHarness(router: TestRouter, options: {
   stoppedEnrolled?: boolean
   interactivePlacement?: boolean
   managedWorktrees?: Promise<unknown>
+  managedRepositoryState?: () => "not-repository" | "unborn" | "ready"
   initialTargetKernelId?: string
 } = {}) {
   const contextPlan = options.contextPlan ?? emptyPlan()
@@ -447,7 +478,10 @@ function createHarness(router: TestRouter, options: {
         return options.interactivePlacement ? placementSnapshot("kernel-old", "machine-old", "/home/managed")
           : snapshotResponse("kernel-old", "machine-old", contextPlan)
       case "ListWorkspaceWorktrees":
-        return options.managedWorktrees ?? { WorkspaceWorktreesListed: { worktrees: [{ path: "/home/managed", branch: "main", current: true }] } }
+        return options.managedWorktrees ?? { WorkspaceWorktreesListed: { worktrees: options.managedRepositoryState && options.managedRepositoryState() !== "ready"
+          ? [] : [{ path: "/home/managed", branch: "main", current: true }] } }
+      case "GetWorkspaceGitOverview":
+        return { WorkspaceGitOverview: { overview: { repo_root: options.managedRepositoryState?.() === "not-repository" ? null : "/home/managed", compare_refs: [] } } }
       case "GetProviderCatalog":
         return { ProviderCatalog: { catalog: fallbackProviderCatalog() } }
       case "ResolveKernelClientConnection":
