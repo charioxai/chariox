@@ -718,3 +718,90 @@ async fn expired_token_is_rejected_for_new_client_connection() {
     let _ = shutdown_tx.send(());
     server_task.await.expect("server task should join");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn client_admission_refusals_report_the_reason_before_closing() {
+    let mut claims = BTreeMap::new();
+    let client_claim = scoped_claim(
+        "client-token",
+        "client-1",
+        RelaySubjectKind::Client,
+        "realm-a",
+        vec![RelayAction::ClientConnect],
+        Some(vec!["daemon-1"]),
+    );
+    let mut expired = client_claim.clone();
+    expired.expires_at_ms = 5;
+    claims.insert("expired".to_string(), expired);
+    let mut wrong_action = client_claim.clone();
+    wrong_action.allowed_actions = vec![RelayAction::ClientMetadataRead];
+    claims.insert("wrong-action".to_string(), wrong_action);
+    let mut wrong_target = client_claim;
+    wrong_target.allowed_targets = Some(vec!["other-daemon".to_string()]);
+    claims.insert("wrong-target".to_string(), wrong_target);
+    let server = RelayServer::with_auth_verifier(
+        RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: None,
+        },
+        RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(claims, BTreeMap::new(), Some(10))),
+    );
+    let listener = server.bind_listener().await.expect("listener should bind");
+    let url = format!("ws://{}", listener.local_addr().unwrap());
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server_task = tokio::spawn(async move {
+        server
+            .run_listener_until(listener, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("relay server should run");
+    });
+    for (token, reason) in [
+        ("invalid", "invalid relay token"),
+        ("expired", "relay token is expired"),
+        (
+            "wrong-action",
+            "relay token does not allow requested action",
+        ),
+        (
+            "wrong-target",
+            "relay token does not allow requested target",
+        ),
+    ] {
+        let (mut socket, _) = connect_async_with_retry(&url).await.unwrap();
+        socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::ClientConnect {
+                    auth_token: token.to_string(),
+                    target: ClientTarget {
+                        daemon_id: Some("daemon-1".to_string()),
+                        daemon_alias: None,
+                    },
+                })
+                .unwrap()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let response = timeout(Duration::from_millis(500), async {
+            loop {
+                match socket.next().await {
+                    Some(Ok(Message::Ping(payload))) => {
+                        socket.send(Message::Pong(payload)).await.unwrap();
+                    }
+                    Some(Ok(Message::Text(text))) => {
+                        break serde_json::from_str::<RelayEnvelope>(&text).unwrap()
+                    }
+                    other => panic!("{token}: admission refusal lost its reason: {other:?}"),
+                }
+            }
+        })
+        .await
+        .expect("admission refusal must reach the client promptly");
+        assert!(matches!(response, RelayEnvelope::Close { reason: actual } if actual == reason));
+    }
+    let _ = shutdown_tx.send(());
+    server_task.await.unwrap();
+}
