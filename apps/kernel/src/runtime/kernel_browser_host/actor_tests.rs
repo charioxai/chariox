@@ -101,3 +101,64 @@ done
     host.shutdown().unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn retired_agents_reclaim_actor_slots_beyond_the_presence_limit() {
+    let host = KernelBrowserHost::new(std::env::temp_dir().join("MD-3-retired-actors"));
+    for i in 0..80 {
+        let agent = format!("retired-{i}");
+        host.set_focus("alice", Some(&agent)); host.load("alice", &agent).unwrap();
+        let model = host.actor_model("alice").unwrap();
+        let (action, _) = model.lock().unwrap().begin(
+            EnvironmentActor::new(format!("agent:{agent}"), EnvironmentActorKind::Agent, "Agent"),
+            &json!({"op":"open"})).unwrap();
+        model.lock().unwrap().finish(&action, EnvironmentActionTerminal::Completed);
+        // Retire a non-focused agent too: the prior focus interval is already revoked.
+        host.set_focus("alice", None);
+        host.revoke_agent(&agent);
+        assert!(host.actor_snapshot("alice").unwrap()["actors"].as_array().unwrap().is_empty(),
+            "MD-3: retired presence consumes the next agent's slot");
+    }
+    assert_eq!(host.actor_snapshot("alice").unwrap()["actions"].as_array().unwrap().len(), 80);
+}
+
+#[test]
+fn disconnected_terminal_cannot_register_a_queued_mutation() {
+    let root = std::env::temp_dir().join(format!("chariox-md3-disconnect-{:032x}", rand::random::<u128>()));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+  *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+  *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id" ;;
+  *'"op":"input"'*) printf 'input\n' > "$root/input"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let backend = Arc::new(Mutex::new(BrowserControllerProcessStdioBackend::new(
+        "/bin/sh", vec![script.display().to_string(), root.display().to_string()], Duration::from_secs(2)).for_host()));
+    let host = KernelBrowserHost::new(root.clone());
+    host.inner.lock().unwrap().browsers.insert("alice".into(), backend.clone());
+    let held = backend.lock().unwrap();
+    std::thread::scope(|scope| {
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let queued = scope.spawn(|| {
+            started_tx.send(()).unwrap();
+            host.protected_request("alice", None, "host.browser", json!({"op":"input","tab_id":"host-tab-a","generation":1,"observed_by":"terminal:departed","input":{"kind":"text","text":"fixture"}}), json!({"values":[],"targets":[],"unknown":false}))
+        });
+        started_rx.recv().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        host.disconnect_terminal("alice", "terminal:departed");
+        drop(held);
+        let outcome = queued.join().unwrap();
+        assert!(outcome.is_err(), "MD-3: departed terminal survived the backend wait");
+    });
+    assert!(!root.join("input").exists(), "MD-3: departed input reached the physical sink");
+    assert!(host.actor_snapshot("alice").unwrap()["actors"].as_array().unwrap().is_empty());
+    host.shutdown().unwrap(); std::fs::remove_dir_all(root).unwrap();
+}
