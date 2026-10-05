@@ -2878,3 +2878,16 @@ must preserve browser user activation across kernel settlement (for example,
 show a fresh Copy/Open button after successful settlement). App iframe/Room gestures only create offers and never
 count as the human's acceptance. Clients exposing acceptance require protocol
 409; unrelated clients keep their existing minimum version.
+
+### MP-08 / MP-10 / MP-11 round-2 compatibility (local 423 / peer 72)
+
+Coordinator allocation 2026-10-05: local daemon protocol 423 and relay peer
+protocol 72 cover rendered DOM grounding, native selection, paged rendered text,
+fenced action errors and read recovery, verified native temporal/range fills,
+sanitized range values and constraints, and cached foreground terminal polling.
+Browser execution remains kernel-owned on the common home/worker path. Provider
+MCP tools consume these observations; existing Web/native projections do not
+depend on the added fields, so their minimum supported versions stay unchanged.
+Focused drills: the real-Chrome Browser Controller native-control fixtures and
+the room-controller protocol shape/hash tests, including the integration bump
+guard. Unsigned private benchmark runs do not establish MP acceptance.

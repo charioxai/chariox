@@ -242,4 +242,5 @@ pub use workspace::*;
 /// Version 409 adds owner-mediated App clipboard and link acceptance.
 /// Version 410 adds owner-scoped named saved App data snapshot restore.
 /// Version411 combines Apps Phase1 and Browser/Computer G2 with autonomous Vault observation masks (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 411;
+/// Version 423 admits round-2 rendered Browser observations, verified controls and cached terminal polling (MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 423;
