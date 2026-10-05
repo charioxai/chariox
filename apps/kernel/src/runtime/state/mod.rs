@@ -109,6 +109,8 @@ mod browser_import_execution_gate;
 mod computer_hold_tests;
 mod environment_execution_gate;
 mod event_delivery_runtime_state;
+#[cfg(all(test, any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+mod app_event_path_tests;
 mod human_browser_action_runtime_state;
 mod human_environment_action_runtime_state;
 mod leased_agent_operations;

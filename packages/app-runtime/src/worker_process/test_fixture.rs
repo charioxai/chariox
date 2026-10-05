@@ -51,6 +51,8 @@ pub enum Mode {
     Lifecycle,
     /// Acknowledges incoming events; a `text: "crash"` payload then kills it.
     LifecycleInbox,
+    /// Fixed inbox handler forwards a fixture occurrence through the real broker.
+    LifecycleInboxAutomation,
     LifecycleFailPrepare,
     LifecycleHangPrepare,
     LifecycleHangSuspend,
@@ -79,6 +81,7 @@ impl Mode {
             Self::BadMigration => "sdk_bad_migration",
             Self::Lifecycle => "sdk_lifecycle",
             Self::LifecycleInbox => "sdk_lifecycle_inbox",
+            Self::LifecycleInboxAutomation => "sdk_lifecycle_inbox_automation",
             Self::LifecycleFailPrepare => "sdk_lifecycle_fail_prepare",
             Self::LifecycleHangPrepare => "sdk_lifecycle_hang_prepare_update",
             Self::LifecycleHangSuspend => "sdk_lifecycle_hang_suspend",
