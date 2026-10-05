@@ -399,6 +399,22 @@ impl KernelBrowserHost {
             .snapshot())
     }
 
+    pub(crate) fn disconnect_terminal(&self, user: &str, actor: &str) {
+        let model = self
+            .inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .actors
+            .get(user)
+            .cloned();
+        if let Some(model) = model {
+            model
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .disconnect(actor);
+        }
+    }
+
     pub(crate) fn shutdown(&self) -> Result<(), String> {
         let browsers = {
             let mut state = self
