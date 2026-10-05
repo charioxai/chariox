@@ -1122,21 +1122,27 @@ async fn mcp_script_string_result_remains_available_to_strict_clients() {
 #[test]
 fn mp08_mp10_mp11_browser_artifact_native_image_attachment() {
     use base64::Engine as _;
-    let bytes = b"\x89PNG\r\n\x1a\nsynthetic-controller-pixels";
-    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
-    let (content, metadata) = super::runtime_tool_content(serde_json::json!({
-        "source":"browser_controller","artifact_id":"art-1","mime_type":"image/png","image_base64":data,
-        "identity":{"tab_id":"tab-1","document_id":"document-1","browser_generation":1,"runtime_generation":2}
-    }));
-    assert_eq!(content[0]["type"], "image");
-    assert_eq!(
-        base64::engine::general_purpose::STANDARD
-            .decode(content[0]["data"].as_str().unwrap())
-            .unwrap(),
-        bytes
-    );
-    assert_eq!(content[0]["mimeType"], "image/png");
-    assert_eq!(metadata["identity"]["document_id"], "document-1");
-    assert!(metadata.get("image_base64").is_none());
-    assert_eq!(content[1]["text"], metadata.to_string());
+    let small = b"\x89PNG\r\n\x1a\nsynthetic-controller-pixels".to_vec();
+    let mut large = vec![37; 1024 * 1024];
+    large[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+    // The native content converter retains byte equality above IPC limits.
+    // These are synthetic converter inputs, not Chromium/perception proof.
+    for bytes in [small, large] {
+        let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let (content, metadata) = super::runtime_tool_content(serde_json::json!({
+            "source":"browser_controller","artifact_id":"art-1","mime_type":"image/png","image_base64":data,
+            "identity":{"tab_id":"tab-1","document_id":"document-1","browser_generation":1,"runtime_generation":2}
+        }));
+        assert_eq!(content[0]["type"], "image");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(content[0]["data"].as_str().unwrap())
+                .unwrap(),
+            bytes
+        );
+        assert_eq!(content[0]["mimeType"], "image/png");
+        assert_eq!(metadata["identity"]["document_id"], "document-1");
+        assert!(metadata.get("image_base64").is_none());
+        assert_eq!(content[1]["text"], metadata.to_string());
+    }
 }

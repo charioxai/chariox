@@ -3,6 +3,7 @@
 import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
+import { deflateSync, crc32 } from "node:zlib";
 import { pathToFileURL } from "node:url";
 import { fixtureUploadBrowser } from "./upload-browser.fixture.mjs";
 
@@ -86,7 +87,25 @@ const chromium = {
       }
       case "Target.attachToTarget": return { sessionId: params.targetId === "worker-popup" ? "worker-popup-session" : "worker-cdp-session" };
       case "Page.getLayoutMetrics": return { cssVisualViewport: { pageX:0, pageY:0, clientWidth:1280, clientHeight:800, scale:1 } };
-      case "Page.captureScreenshot": return { data: blackPng(1280, 800).toString("base64") };
+      case "Page.captureScreenshot": {
+        if (!existsSync(join(dirname(pidFile), "large-browser-image"))) return { data: blackPng(1280, 800).toString("base64") };
+        // MP-08/MP-10/MP-11: deterministic unprotected RGB pixels with low
+        // compressibility, valid PNG chunks/CRCs and canonical dimensions.
+        const pixels = Buffer.alloc((1280 * 3 + 1) * 800); let random = 17;
+        for (let row = 0; row < 800; row++) for (let column = 1; column <= 1280 * 3; column++) {
+          random ^= random << 13; random ^= random >>> 17; random ^= random << 5;
+          pixels[row * (1280 * 3 + 1) + column] = random & 255;
+        }
+        const chunk = (name, body) => {
+          const kind = Buffer.from(name), size = Buffer.alloc(4), crc = Buffer.alloc(4);
+          size.writeUInt32BE(body.length); crc.writeUInt32BE(crc32(Buffer.concat([kind, body])));
+          return Buffer.concat([size, kind, body, crc]);
+        };
+        const header = Buffer.alloc(13); header.writeUInt32BE(1280); header.writeUInt32BE(800, 4); header[8] = 8; header[9] = 2;
+        const bytes = Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), chunk("IHDR", header), chunk("IDAT", deflateSync(pixels)), chunk("IEND", Buffer.alloc(0))]);
+        writeFileSync(join(dirname(pidFile), "large-browser-image.png"), bytes);
+        return { data: bytes.toString("base64") };
+      }
       case "Page.getFrameTree": return { frameTree: { frame: {
         id: sessionId === "worker-popup-session" ? "worker-popup-frame" : "worker-frame",
         loaderId: sessionId === "worker-popup-session" ? "worker-popup-document" : state.documentId,

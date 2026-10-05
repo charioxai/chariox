@@ -114,9 +114,95 @@ async fn check_artifacts() {
         assert!(dispatch_json(&fixture.home, json!({"RoomBrowserArtifact":{
             "session_id":room,"attachment_id":attachment_id,"tab_id":tab,
             "operation":{"action":"read","artifact_id":artifact_id,"max_bytes":1}}})).await.is_err());
+        // MP-08/MP-10/MP-11: exercise actual Unix IPC framing with an
+        // unprotected high-entropy PNG whose inline JSON exceeds 1 MiB.
+        std::fs::write(fixture._worker_state.root.join("large-browser-image"), "large").unwrap();
+        let large_provider = fixture.home.runtime_state.dispatch_authenticated_runtime_tool_call(
+            &tool_auth, "slice_browser_artifact", json!({"action":"capture","kind":"image",
+                "browser_generation":1,"return_image_base64":true})).await.unwrap();
+        let large_bytes = std::fs::read(fixture._worker_state.root.join("large-browser-image.png")).unwrap();
+        assert_eq!(large_provider.payload["identity"]["redaction"], "none");
+        assert_eq!(base64::engine::general_purpose::STANDARD.decode(large_provider.payload["image_base64"].as_str().unwrap()).unwrap(), large_bytes);
+        assert!(serde_json::to_vec(&json!({"response":{"RoomBrowserArtifact":{"result":large_provider}},"error":null})).unwrap().len() > 1024*1024);
+        // Nested isolated test roots exceed SUN_LEN. Own a short, private
+        // socket path, then use the exact production handler and home router.
+        let socket_root_path = std::path::PathBuf::from(format!(
+            "/tmp/chariox-b207-ipc-{:016x}", rand::random::<u64>()));
+        std::fs::create_dir(&socket_root_path).unwrap();
+        let socket_root = IpcFixtureDirectory(socket_root_path);
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&socket_root.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = socket_root.0.join("k.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let (shutdown, mut stopped) = tokio::sync::oneshot::channel();
+        let home = Arc::clone(&fixture.home);
+        let ipc = tokio::spawn(async move {
+            let sequence = Arc::new(std::sync::atomic::AtomicU64::new(1));
+            loop {
+                tokio::select! {
+                    _ = &mut stopped => break,
+                    accepted = listener.accept() => {
+                        let (stream, _) = accepted.unwrap();
+                        let _ = crate::local::handle_local_ipc_test_connection(
+                            Arc::clone(&home), Arc::clone(&sequence), stream).await;
+                    }
+                }
+            }
+        });
+        let client = crate::local::LocalIpcClient::new(socket);
+        let send = |wire: Value| {
+            let client = client.clone();
+            tokio::task::spawn_blocking(move || {
+                let request = serde_json::from_value::<crate::local::LocalDaemonRequest>(wire).unwrap();
+                client.send(&request).map(|response| serde_json::to_value(response).unwrap())
+            })
+        };
+        let socket_check = std::panic::AssertUnwindSafe(async {
+            std::fs::remove_file(fixture._worker_state.root.join("large-browser-image")).unwrap();
+            let small_client = send(json!({"RoomBrowserArtifact": {
+                "session_id":room,"attachment_id":attachment_id,"tab_id":tab,
+                "operation":{"action":"capture","kind":"image","browser_generation":1,"return_image_base64":true}
+            }})).await.unwrap().unwrap();
+            assert_eq!(small_client["RoomBrowserArtifact"]["result"]["payload"]["image_base64"], payload["image_base64"]);
+            std::fs::write(fixture._worker_state.root.join("large-browser-image"), "large").unwrap();
+            let large_client = send(json!({"RoomBrowserArtifact": {
+                "session_id":room,"attachment_id":attachment_id,"tab_id":tab,
+                "operation":{"action":"capture","kind":"image","browser_generation":1,"return_image_base64":true}
+            }})).await.unwrap().expect("oversized inline capture must deliver artifact metadata through the socket");
+            let metadata = &large_client["RoomBrowserArtifact"]["result"]["payload"];
+            assert!(metadata.get("image_base64").is_none());
+            assert_eq!(metadata["sha256"], format!("{:x}", Sha256::digest(&large_bytes)));
+            assert_eq!(metadata["size_bytes"], large_bytes.len());
+            assert_eq!(metadata["identity"], large_provider.payload["identity"]);
+            let mut received = Vec::new();
+            loop {
+                let chunk = send(json!({"RoomBrowserArtifact": {
+                    "session_id":room,"attachment_id":attachment_id,"tab_id":tab,
+                    "operation":{"action":"read","artifact_id":metadata["artifact_id"],"offset":received.len(),"max_bytes":131072}
+                }})).await.unwrap().unwrap();
+                let payload = &chunk["RoomBrowserArtifact"]["result"]["payload"];
+                assert_eq!(payload["offset"], received.len());
+                let bytes = base64::engine::general_purpose::STANDARD.decode(payload["data_base64"].as_str().unwrap()).unwrap();
+                assert!(!bytes.is_empty()); assert!(bytes.len() <= 131072);
+                received.extend_from_slice(&bytes);
+                if payload["eof"] == true { break; }
+            }
+            assert_eq!(received, large_bytes);
+        }).catch_unwind().await;
+        shutdown.send(()).unwrap(); ipc.await.unwrap();
+        std::fs::remove_file(fixture._worker_state.root.join("large-browser-image")).unwrap();
+        if let Err(panic) = socket_check { std::panic::resume_unwind(panic); }
     }).catch_unwind().await;
     fixture.stop().await;
     if let Err(panic) = check {
         std::panic::resume_unwind(panic);
+    }
+}
+
+// MP-08/MP-10/MP-11: remove only this test's newly created short socket root.
+struct IpcFixtureDirectory(std::path::PathBuf);
+impl Drop for IpcFixtureDirectory {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).expect("remove owned IPC fixture directory");
     }
 }
