@@ -101,22 +101,24 @@ test("MP-07/MP-08/MP-11 source-kernel add/remove, stdin redemption, replay refus
   const apiUrl = await serve(cloud)
   const sourceHome = join(h.scratch, "source-home"), sourceState = join(h.scratch, "source-state")
   await mkdir(sourceHome); await mkdir(sourceState)
-  const sourceEnv = { PATH:process.env.PATH, LANG:"C.UTF-8", HOME: sourceHome, CHARIOX_HOME: sourceState, CHARIOX_KERNEL_HOST: "127.0.0.1", CHARIOX_KERNEL_PORT: String(await availablePort()), CHARIOX_MCP_HOST:"127.0.0.1", CHARIOX_MCP_PORT:String(await availablePort()) }
+  const sourceEnv = { PATH:process.env.PATH, LANG:"C.UTF-8", HOME: sourceHome, CHARIOX_HOME: sourceState, CHARIOX_KERNEL_HOST: "127.0.0.1", CHARIOX_KERNEL_PORT: String(await availablePort()), CHARIOX_MCP_HOST:"127.0.0.1", CHARIOX_MCP_PORT:String(await availablePort()), CHARIOX_PROVIDER_PROCESS_ORPHAN_TTL_MS:"18446744073709551615" }
   Object.assign(sourceEnv, { CODEX_HOME:join(sourceHome,".codex"), CLAUDE_CONFIG_DIR:join(sourceHome,".claude"), OPENCODE_CONFIG_DIR:join(sourceHome,".config/opencode"), XDG_CONFIG_HOME:join(sourceHome,".config"), XDG_DATA_HOME:join(sourceHome,".local/share"), XDG_STATE_HOME:join(sourceHome,".local/state") })
-  for (const key of Object.keys(sourceEnv)) if (key.startsWith("CHARIOX_") && !["CHARIOX_HOME", "CHARIOX_KERNEL_HOST", "CHARIOX_KERNEL_PORT", "CHARIOX_MCP_HOST", "CHARIOX_MCP_PORT"].includes(key)) delete sourceEnv[key]
+  for (const key of Object.keys(sourceEnv)) if (key.startsWith("CHARIOX_") && !["CHARIOX_HOME", "CHARIOX_KERNEL_HOST", "CHARIOX_KERNEL_PORT", "CHARIOX_MCP_HOST", "CHARIOX_MCP_PORT", "CHARIOX_PROVIDER_PROCESS_ORPHAN_TTL_MS"].includes(key)) delete sourceEnv[key]
   const sourceTicket = randomBytes(24).toString("hex"); tickets.set(sourceTicket, "source")
   assert.equal(Object.keys(sourceEnv).some(key => /API_KEY|TOKEN|CREDENTIAL|SSH_AUTH_SOCK/.test(key)),false,"drill must not inherit provider or owner credentials")
   const boot = await bootCommand(sourceEnv, { ticket: sourceTicket, apiUrl, userId: "owner" })
   t.diagnostic("MP-08 / MP-11 source bootstrap completed")
   assert.equal(boot.code, 0, "source enrolls through product identity generation")
   const sourceIdentity = JSON.parse(boot.out)
-  const replayEnv = { ...sourceEnv, CHARIOX_HOME: join(h.scratch, "replay-state"), CHARIOX_KERNEL_PORT: String(await availablePort()), CHARIOX_MCP_HOST:"127.0.0.1", CHARIOX_MCP_PORT:String(await availablePort()) }
+  const replayEnv = { ...sourceEnv, CHARIOX_HOME: join(h.scratch, "replay-state"), CHARIOX_KERNEL_PORT: String(await availablePort()), CHARIOX_MCP_HOST:"127.0.0.1", CHARIOX_MCP_PORT:String(await availablePort()), CHARIOX_PROVIDER_PROCESS_ORPHAN_TTL_MS:"18446744073709551615" }
   await mkdir(replayEnv.CHARIOX_HOME)
   assert.equal((await bootCommand(replayEnv, { ticket: sourceTicket, apiUrl, userId: "owner" })).code, 1)
   const f = await createFixture(h.scratch, await readFile(kernel))
   // The catalogue carries only the admitted fields; release bytes/public pins stay separate.
   await writeFile(join(sourceState, "ssh-machine-releases.json"), JSON.stringify({ defaultRelease: "fixture", releases: [{ id: "fixture", archive:f.archive, releaseDigest:f.releaseDigest, releasePublicKey:f.releasePublicKey, releasePublicKeyFingerprint:f.releasePublicKeyFingerprint, builderPublicKey:f.builderPublicKey, builderPublicKeyFingerprint:f.builderPublicKeyFingerprint }] }))
   const targetPort = await availablePort()
+  const staging = join(h.home,".chariox/dev/md-staging")
+  await mkdir(staging,{recursive:true}); await writeFile(join(staging,"sentinel"),"keep")
   serviceControl = createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk
     const args = JSON.parse(raw)
@@ -128,7 +130,9 @@ test("MP-07/MP-08/MP-11 source-kernel add/remove, stdin redemption, replay refus
       out = `LoadState=${exists ? "loaded" : "not-found"}\nFragmentPath=${exists ? unit : ""}\nDropInPaths=\n`
     }
     if (args[0] === "enable" && !serviceChildren.has("byom-one")) {
-      const targetEnv = { ...sourceEnv, HOME: h.home, PATH: h.targetPath, CHARIOX_HOME: join(h.home, ".chariox/dev/ssh-machines/byom-one"), CHARIOX_KERNEL_PORT: String(targetPort), CHARIOX_MCP_PORT:String(targetPort + 1) }
+      const targetEnv = { ...sourceEnv, CHARIOX_LOG_DIR:join(staging,"forbidden-logs"), HOME: h.home, PATH: h.targetPath, CHARIOX_HOME: join(h.home, ".chariox/dev/ssh-machines/byom-one"), CHARIOX_KERNEL_PORT: String(targetPort), CHARIOX_MCP_PORT:String(targetPort + 1) }
+      const unit = await readFile(join(h.home,".config/systemd/user/chariox-ssh-byom-one.service"),"utf8")
+      for (const line of unit.split("\n")) if (line.startsWith("UnsetEnvironment=")) for (const key of line.slice("UnsetEnvironment=".length).split(/\s+/)) delete targetEnv[key]
       Object.assign(targetEnv, { CODEX_HOME:join(h.home,".codex"), CLAUDE_CONFIG_DIR:join(h.home,".claude"), OPENCODE_CONFIG_DIR:join(h.home,".config/opencode"), XDG_CONFIG_HOME:join(h.home,".config"), XDG_DATA_HOME:join(h.home,".local/share"), XDG_STATE_HOME:join(h.home,".local/state") })
       const child = spawn(join(h.home, ".local/share/chariox/ssh-machines/byom-one/current/usr/local/bin/chariox-kernel"), [], { env: targetEnv, stdio: "ignore" })
       children.add(child); serviceChildren.set("byom-one",child); calls.push("start")
@@ -168,6 +172,7 @@ test("MP-07/MP-08/MP-11 source-kernel add/remove, stdin redemption, replay refus
     }
   }
   await ticketAbsent(join(h.home,".chariox/dev/ssh-machines/byom-one"))
+  assert.deepEqual(await readdir(staging),["sentinel"],"inherited service-manager paths must not redirect kernel writes into staging")
   assert.deepEqual(errors,[])
   assert.equal(tickets.size,0,"issued and unused tickets consumed/revoked")
 })
