@@ -2834,7 +2834,9 @@ test("a terminated managed image install releases the lock for a concurrent inst
   assert.equal(firstSignal, "SIGTERM")
   await waitForPath(join(harness.state, "flock-acquired-second"))
   await writeFile(join(harness.state, "flock-release-second"), "release\n")
-  assert.equal((await withTimeout(secondExit, "second installer timed out"))[0], 0)
+  // MP-03/MP-07/MP-10: the five-second acquired-lock fence above remains
+  // separate from full installation, including protected storage admission.
+  assert.equal((await withTimeout(secondExit, "second installer timed out", 30_000))[0], 0)
 })
 
 test("managed image installer has no runtime start or network path", async () => {
