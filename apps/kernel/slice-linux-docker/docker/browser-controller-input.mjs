@@ -16,9 +16,9 @@ export class BrowserInputCapture {
     return this.visibilityBySession.get(sessionId)?.visible ?? result?.result?.value === true;
   }
 
-  async run(connection, sessionId, operation, { forceFocus = false } = {}) {
+  async run(connection, sessionId, operation) {
     const visible = await this.visibility(connection, sessionId);
-    if (visible && !forceFocus) return operation();
+    if (visible) return operation();
     const capture = { visible };
     this.visibilityBySession.set(sessionId, capture);
     let dialogOpened = false;
