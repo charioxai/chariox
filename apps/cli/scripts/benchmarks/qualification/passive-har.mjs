@@ -2,6 +2,7 @@
 import { isSensitiveDrillKey, redactDrillSecretText } from '../../lib/drill-secrets.mjs'
 const REQUEST_HEADERS = new Set(['accept', 'accept-language', 'content-type', 'sec-fetch-dest', 'sec-fetch-mode', 'sec-fetch-site', 'sec-fetch-user'])
 const RESPONSE_HEADERS = new Set(['content-type', 'content-length', 'location'])
+const metadataBytes = value => Buffer.byteLength(JSON.stringify(value))
 const headers = (values, allowlist) => Object.entries(values ?? {})
   .filter(([name]) => allowlist.has(name.toLowerCase()))
   .map(([name, value]) => ({ name: name.toLowerCase(), value: name.toLowerCase() === 'location' ? nonSecretUrl(String(value)) : redactDrillSecretText(String(value)) }))
@@ -32,10 +33,20 @@ export class PassiveHar {
 
   #fail(message) { this.#errors.add(message); throw new Error(`MP-10 HAR ${message}`) }
 
+  #charge(bytes) {
+    if (this.#retainedBytes + bytes > this.maxBytes) this.#fail('metadata byte capacity exceeded')
+    this.#retainedBytes += bytes
+  }
+
   #retain(value) {
-    this.#retainedBytes += Buffer.byteLength(JSON.stringify(value))
-    if (this.#retainedBytes > this.maxBytes) this.#fail('metadata byte capacity exceeded')
+    this.#charge(metadataBytes(value))
     return value
+  }
+
+  #update(entry, fields, releasedBytes = 0) {
+    const updated = { ...entry, ...fields }
+    this.#charge(metadataBytes(updated) - metadataBytes(entry) - releasedBytes)
+    Object.assign(entry, fields)
   }
 
   retireSession(sessionId) {
@@ -71,7 +82,7 @@ export class PassiveHar {
         if (!p.redirectResponse) this.#fail('request ID reused without redirect')
         current.expectsExtra = p.redirectHasExtraInfo
         this.#response(current.entry, p.redirectResponse)
-        current.entry._redirect = true
+        this.#update(current.entry, { _redirect: true })
       }
       if (this.entries.length >= this.maxEntries) this.#fail('entry capacity exceeded')
       const entry = {
@@ -85,18 +96,18 @@ export class PassiveHar {
         _requestMetadata: { sessionId, requestId: p.requestId, redirectIndex: state.hops.length,
           headersSource: 'Network.requestWillBeSent', extraInfo: 'pending' },
       }
-      state.hops.push({ entry, expectsExtra: undefined, assigned: false, timestamp: p.timestamp })
       this.entries.push(this.#retain(entry))
+      state.hops.push({ entry, expectsExtra: undefined, assigned: false, timestamp: p.timestamp })
     } else if (method === 'Network.responseReceived' && current) {
       this.#response(current.entry, p.response)
       current.expectsExtra = p.hasExtraInfo
     } else if (['Network.loadingFinished', 'Network.loadingFailed'].includes(method) && current) {
-      current.entry.time = Math.max(0, (p.timestamp - current.timestamp) * 1000)
-      current.entry._terminal = true
-      if (method === 'Network.loadingFinished') current.entry.response.bodySize = p.encodedDataLength
-      else {
+      const fields = { time: Math.max(0, (p.timestamp - current.timestamp) * 1000), _terminal: true }
+      if (method === 'Network.loadingFinished') fields.response = { ...current.entry.response, bodySize: p.encodedDataLength }
+      else fields._failure = 'Network.loadingFailed'
+      this.#update(current.entry, fields)
+      if (method === 'Network.loadingFailed') {
         this.#failedRequests++
-        current.entry._failure = 'Network.loadingFailed'
         if (current.expectsExtra === undefined) current.expectsExtra = false
       }
     }
@@ -105,12 +116,16 @@ export class PassiveHar {
   }
 
   #response(entry, response) {
-    entry.response.status = response.status
-    entry.response.statusText = response.statusText ?? ''
-    entry.response.httpVersion = response.protocol ?? ''
-    entry.response.headers = this.#retain(headers(response.headers, RESPONSE_HEADERS))
-    entry.response.content.mimeType = response.mimeType ?? ''
-    entry.response.redirectURL = entry.response.headers.find(header => header.name === 'location')?.value ?? ''
+    const responseHeaders = headers(response.headers, RESPONSE_HEADERS)
+    this.#update(entry, { response: {
+      ...entry.response,
+      status: response.status,
+      statusText: response.statusText ?? '',
+      httpVersion: response.protocol ?? '',
+      headers: responseHeaders,
+      content: { ...entry.response.content, mimeType: response.mimeType ?? '' },
+      redirectURL: responseHeaders.find(header => header.name === 'location')?.value ?? '',
+    } })
   }
 
   #merge(state) {
@@ -120,16 +135,20 @@ export class PassiveHar {
       // events. Wait for hasExtraInfo/redirectHasExtraInfo to skip missing hops.
       if (hop.expectsExtra === undefined) break
       if (hop.expectsExtra === false) {
-        hop.assigned = true; hop.entry._requestMetadata.extraInfo = 'not_emitted'; continue
+        this.#update(hop.entry, { _requestMetadata: { ...hop.entry._requestMetadata, extraInfo: 'not_emitted' } })
+        hop.assigned = true; continue
       }
       if (!state.extras.length) break
       const merged = new Map(hop.entry.request.headers.map(header => [header.name, header.value]))
-      for (const header of state.extras.shift()) merged.set(header.name, header.value)
+      const extra = state.extras[0]
+      for (const header of extra) merged.set(header.name, header.value)
+      this.#update(hop.entry, {
+        request: { ...hop.entry.request, headers: [...merged].map(([name, value]) => ({ name, value })) },
+        _requestMetadata: { ...hop.entry._requestMetadata, headersSource: 'Network.requestWillBeSentExtraInfo', extraInfo: 'merged' },
+      }, metadataBytes(extra))
+      state.extras.shift()
       this.#pendingExtras--
-      hop.entry.request.headers = [...merged].map(([name, value]) => ({ name, value }))
       hop.assigned = true
-      hop.entry._requestMetadata.headersSource = 'Network.requestWillBeSentExtraInfo'
-      hop.entry._requestMetadata.extraInfo = 'merged'
     }
   }
 

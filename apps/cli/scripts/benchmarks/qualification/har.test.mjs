@@ -75,3 +75,70 @@ test('MP-08 / MP-10 / MP-11 total metadata byte budget rejects oversized headers
  const har=new PassiveHar({maxBytes:100});assert.throws(()=>har.consume(extra('r','text/html;'+ 'a'.repeat(200))),/byte capacity/)
  assert.throws(()=>har.assertComplete(),/capacity/)
 })
+
+const entryBytes = har => Buffer.byteLength(JSON.stringify(har.snapshot().log.entries[0]))
+for (const field of ['statusText', 'protocol', 'mimeType']) {
+ test(`MP-08 / MP-10 / MP-11 response ${field} cannot exceed metadata budget`, () => {
+  const reference=new PassiveHar(); reference.consume(request())
+  const har=new PassiveHar({maxBytes:entryBytes(reference)+32}); har.consume(request())
+  const before=har.snapshot().log.entries[0]
+  const incoming=response('r',false); incoming.params.response[field]='界'.repeat(400)
+  assert.throws(()=>har.consume(incoming),/byte capacity/)
+  assert.deepEqual(har.snapshot().log.entries[0],before)
+  har.consume(finish())
+  assert.throws(()=>har.assertComplete(),/byte capacity/)
+  assert.throws(()=>har.acknowledgeFlush(),/byte capacity/)
+  assert.equal(har.snapshot().log._capture.flushAcknowledged,false)
+ })
+}
+
+test('MP-08 / MP-10 / MP-11 completed requests accumulate response metadata charges', () => {
+ const har=new PassiveHar({maxBytes:2000})
+ const first=response('r',false); first.params.response.statusText='a'.repeat(350)
+ for (const item of [request(),first,finish()]) har.consume(item)
+ har.assertComplete()
+ har.consume(request('r2'))
+ const second=response('r2',false); second.params.response.statusText='b'.repeat(350)
+ const before=har.snapshot().log.entries[1]
+ assert.throws(()=>har.consume(second),/byte capacity/)
+ assert.deepEqual(har.snapshot().log.entries[1],before)
+ assert.throws(()=>har.acknowledgeFlush(),/byte capacity/)
+})
+
+for (const method of ['loadingFinished','loadingFailed']) {
+ test(`MP-08 / MP-10 / MP-11 ${method} serialized growth is budgeted before mutation`, () => {
+  const reference=new PassiveHar(); reference.consume(request()); reference.consume(response('r',false))
+  const har=new PassiveHar({maxBytes:entryBytes(reference)})
+  har.consume(request()); har.consume(response('r',false))
+  const before=har.snapshot().log.entries[0]
+  const terminal=method==='loadingFinished' ? finish() : event(method,{requestId:'r',timestamp:2})
+  assert.throws(()=>har.consume(terminal),/byte capacity/)
+  assert.deepEqual(har.snapshot().log.entries[0],before)
+  assert.throws(()=>har.acknowledgeFlush({allowFailedRequests:true}),/byte capacity/)
+ })
+}
+
+test('MP-08 / MP-10 / MP-11 ExtraInfo merge charges metadata marker growth', () => {
+ const reference=new PassiveHar(); reference.consume(request()); reference.consume(response())
+ const har=new PassiveHar({maxBytes:entryBytes(reference)+2})
+ har.consume(request()); har.consume(response())
+ const before=har.snapshot().log.entries[0]
+ assert.throws(()=>har.consume(event('requestWillBeSentExtraInfo',{requestId:'r',headers:{}})),/byte capacity/)
+ assert.deepEqual(har.snapshot().log.entries[0],before)
+ assert.throws(()=>har.acknowledgeFlush(),/byte capacity/)
+})
+
+test('MP-08 / MP-10 / MP-11 byte receipt tracks retained entries and queued ExtraInfo exactly', () => {
+ const har=new PassiveHar()
+ const pending=extra('future')
+ har.consume(pending)
+ const queued=[{name:'accept',value:'text/html'}]
+ for (const item of [request(),response(),extra(),finish(),request('future'),response('future'),finish('future')]) {
+  har.consume(item)
+  const snapshot=har.snapshot()
+  const expected=snapshot.log.entries.reduce((total,entry)=>total+Buffer.byteLength(JSON.stringify(entry)),0)
+    +(snapshot.log._capture.unmatchedExtraInfo ? Buffer.byteLength(JSON.stringify(queued)) : 0)
+  assert.equal(snapshot.log._capture.retainedMetadataBytes,expected)
+ }
+ har.acknowledgeFlush()
+})

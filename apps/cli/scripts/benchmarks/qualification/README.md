@@ -13,8 +13,12 @@ only after coordinator selection of a new runner identity and exact source
 review. Do not cherry-pick another lane's runner or overwrite its files implicitly.
 
 - H1/H13: `passive-har.mjs` extends r2next's passive header correlation with
-  bounded active/entry/ExtraInfo capacity and a cumulative 64 MiB metadata budget, completed-request retirement, detached
-  session failures, missing metadata reporting, immutable snapshots and bounded
+  bounded active/entry/ExtraInfo capacity and a 64 MiB retained metadata budget.
+  Serialized entries and queued ExtraInfo are charged in UTF-8 bytes; response,
+  redirect, completion and merge growth is checked before storage. Replaced
+  fields and consumed ExtraInfo release their previous charge. It also provides
+  completed-request retirement, detached session failures, missing metadata
+  reporting, immutable snapshots and bounded
   acknowledged final drain. `har-retention.mjs` copies exclusively, syncs and
   verifies the copied hash before scorer admission. Active terminal work or missing
   ExtraInfo fails close. Failed requests require an explicit new-run policy.
