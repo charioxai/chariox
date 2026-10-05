@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { bindProviderMcpFixture, PROVIDER_MCP_FIXTURE_MODEL } from './lib/provider-mcp-fixture.mjs'
+import { createHash } from 'node:crypto'
 import http from 'node:http'
 import { spawn } from 'node:child_process'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
@@ -131,7 +133,7 @@ function optionalVariant(response, ...keys) {
   return null
 }
 
-async function launchDevStub(client, requests, workspace, label, model = 'secret-drill-model') {
+async function launchDevStub(client, requests, workspace, label, model = PROVIDER_MCP_FIXTURE_MODEL) {
   const created = variant(await client.send(requests.createSessionRequest(workspace, workspace)), 'SessionCreated')
   const session = created.session
   const agent = created.agent
@@ -151,73 +153,18 @@ async function launchDevStub(client, requests, workspace, label, model = 'secret
   }
   if (!providerRun?.id) throw new Error(`${label}: provider run did not launch`)
   providerRun = variant(await client.send(requests.getProviderRunRequest(providerRun.id)), 'ProviderRun').provider_run
-  if (!providerRun.runtime_mcp_server_url || !providerRun.runtime_mcp_auth_token) {
-    throw new Error(`${label}: provider run missing runtime MCP binding`)
-  }
+  providerRun = bindProviderMcpFixture(providerRun, { client, requests, sessionId: session.id, attachmentId: attachment.id })
   return { session, agent, attachment, providerRun }
 }
 
 async function mcpToolCall(providerRun, name, args) {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), MCP_TOOL_CALL_TIMEOUT_MS)
-  let response
-  try {
-    response = await fetch(providerRun.runtime_mcp_server_url, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${providerRun.runtime_mcp_auth_token}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: `${name}-${Date.now()}`,
-        method: 'tools/call',
-        params: { name, arguments: args ?? {} },
-      }),
-      signal: controller.signal,
-    })
-  } catch (error) {
-    if (error?.name === 'AbortError') {
-      throw new Error(`runtime MCP ${name} timed out after ${MCP_TOOL_CALL_TIMEOUT_MS}ms`)
-    }
-    throw error
-  } finally {
-    clearTimeout(timeout)
-  }
-  const text = await response.text()
-  let payload
-  try {
-    payload = JSON.parse(text)
-  } catch {
-    throw new Error(`runtime MCP response was not JSON (${response.status}): ${text}`)
-  }
-  if (!response.ok) {
-    throw new Error(`runtime MCP HTTP ${response.status}: ${text}`)
-  }
-  if (payload.error) {
-    return { ok: false, error: payload.error }
-  }
+  const payload = await providerRun.fixtureMcp.call('tools/call', { name, arguments: args ?? {} }, { timeoutMs: MCP_TOOL_CALL_TIMEOUT_MS, rawEnvelope: true })
+  if (payload.error) return { ok: false, error: payload.error }
   return {
     ok: !payload.result?.isError,
     content: payload.result?.structuredContent,
     raw: payload,
   }
-}
-
-async function pumpTerminalContains(client, requests, sessionId, attachmentId, expected) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const response = optionalVariant(
-      await client.send(requests.pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => null),
-      'TerminalOutput',
-    )
-    const records = response?.records ?? []
-    const text = records
-      .map((record) => Buffer.from(record.bytes ?? []).toString('utf8'))
-      .join('')
-    if (text.includes(expected)) return true
-    await new Promise((resolve) => setTimeout(resolve, 100))
-  }
-  return false
 }
 
 async function writeConfig(configRoot) {
@@ -375,10 +322,10 @@ async function main() {
     localAgentId = local.agent.id
     workerAgentId = worker.agent.id
 
-    if (!local.providerRun.pty_env_remove?.includes(localTokenEnv)) {
+    if (!(await local.providerRun.fixtureMcp.call('fixture/env-absent', { names: [localTokenEnv] })).absent[localTokenEnv]) {
       throw new Error(`local provider env removal did not include ${localTokenEnv}`)
     }
-    if (!worker.providerRun.pty_env_remove?.includes(workerTokenEnv)) {
+    if (!(await worker.providerRun.fixtureMcp.call('fixture/env-absent', { names: [workerTokenEnv] })).absent[workerTokenEnv]) {
       throw new Error(`worker provider env removal did not include ${workerTokenEnv}`)
     }
     completedChecks.push('provider env scrubbed')
@@ -450,8 +397,8 @@ async function main() {
     if (!terminal.ok || terminal.content?.submitted !== true) {
       throw new Error(`terminal secret handoff failed: ${JSON.stringify(terminal)}`)
     }
-    const terminalEchoed = await pumpTerminalContains(localClient, requests, local.session.id, local.attachment.id, terminalSecret)
-    if (!terminalEchoed) {
+    const receipt = await local.providerRun.fixtureMcp.call('fixture/input-digest')
+    if (receipt.sha256 !== createHash('sha256').update(terminalSecret).digest('hex')) {
       throw new Error('terminal handoff did not reach provider PTY')
     }
     completedChecks.push('terminal secret handoff reached provider PTY')

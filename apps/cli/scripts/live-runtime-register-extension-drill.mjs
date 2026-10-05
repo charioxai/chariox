@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { bindProviderMcpFixture, PROVIDER_MCP_FIXTURE_MODEL } from './lib/provider-mcp-fixture.mjs'
 import { spawn } from 'node:child_process'
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -122,7 +123,7 @@ async function launchRuntimeSession(client, workspace, alias, permission = 'yolo
         session.id,
         'dev-stub',
         `${alias}-agent`,
-        'm16-runtime-register',
+        PROVIDER_MCP_FIXTURE_MODEL,
         workspace,
         'low',
         undefined,
@@ -136,7 +137,7 @@ async function launchRuntimeSession(client, workspace, alias, permission = 'yolo
       session.id,
       'dev-stub',
       'default',
-      'm16-runtime-register',
+      PROVIDER_MCP_FIXTURE_MODEL,
       'low',
       agent.id,
     )),
@@ -149,34 +150,12 @@ async function launchRuntimeSession(client, workspace, alias, permission = 'yolo
     providerRun = state?.provider_run
   }
   providerRun = variant(await client.send(requests.getProviderRunRequest(providerRun.id)), 'ProviderRun').provider_run
-  if (!providerRun.runtime_mcp_server_url || !providerRun.runtime_mcp_auth_token) {
-    throw new Error(`${alias}: provider run missing runtime MCP binding`)
-  }
+  providerRun = bindProviderMcpFixture(providerRun, { client, requests, sessionId: session.id, attachmentId: attachment.id })
   return { session, agent, attachment, providerRun }
 }
 
 async function callRuntimeTool(providerRun, name, args = {}) {
-  const response = await fetch(providerRun.runtime_mcp_server_url, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${providerRun.runtime_mcp_auth_token}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: `${name}-${Date.now()}`,
-      method: 'tools/call',
-      params: { name, arguments: args },
-    }),
-  })
-  const text = await response.text()
-  let json
-  try {
-    json = JSON.parse(text)
-  } catch {
-    throw new Error(`runtime MCP response was not JSON (${response.status}): ${text}`)
-  }
-  if (!response.ok || json.error) throw new Error(`runtime MCP ${name} failed: ${text}`)
+  const json = { result: await providerRun.fixtureMcp.call('tools/call', { name, arguments: args }) }
   const result = json.result ?? {}
   return {
     ok: !result.isError,
@@ -186,18 +165,8 @@ async function callRuntimeTool(providerRun, name, args = {}) {
 }
 
 async function listRuntimeTools(providerRun) {
-  const response = await fetch(providerRun.runtime_mcp_server_url, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${providerRun.runtime_mcp_auth_token}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({ jsonrpc: '2.0', id: `tools-list-${Date.now()}`, method: 'tools/list', params: {} }),
-  })
-  const text = await response.text()
-  const json = JSON.parse(text)
-  if (!response.ok || json.error) throw new Error(`runtime MCP tools/list failed: ${text}`)
-  return json.result?.tools ?? []
+  const result = await providerRun.fixtureMcp.call('tools/list')
+  return result?.tools ?? []
 }
 
 async function waitForRuntimeTool(providerRun, toolName, present = true) {

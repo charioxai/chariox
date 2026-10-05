@@ -20,7 +20,7 @@ import {
 import {
   cleanupNativeDrillCapabilities,
   installNativeDrillCapabilities,
-  waitForProviderRunMcpGrant,
+  waitForProviderRunMcpAdmission,
 } from "./native-tui-capabilities.mjs"
 import {
   copyLocalPathToHetzner,
@@ -859,7 +859,7 @@ export async function runProviderScenario({
         providerRunIds.push((await waitForFileMatch(logs.b, /provider run:\s+([^\s]+)/, 90_000)).match[1])
       }
       for (const providerRunId of providerRunIds) {
-        await waitForProviderRunMcpGrant(client, providerRunId, nativeCapabilities.mcpName)
+        await waitForProviderRunMcpAdmission(client, providerRunId, nativeCapabilities.mcpName)
       }
     }
 
@@ -1066,7 +1066,7 @@ export async function runProviderScenario({
       extendedChecks.mcpSkills = {
         mcp: nativeCapabilities.mcpName,
         skill: nativeCapabilities.skillName,
-        providerRunMcpConfig: provider === "codex" && !remotePlacement ? "not directly observable before local codex bind" : "validated",
+        providerRunMcpAdmission: provider === "codex" && !remotePlacement ? "not observed before local codex bind" : "kernel_agent_grant_and_running_run",
         skillPromptContext,
         nativeSkillCheck,
         capabilityPermissionInteractions: capabilityPermissionInteractionIds.size,

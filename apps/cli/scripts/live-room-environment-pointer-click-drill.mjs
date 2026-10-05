@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { bindProviderMcpFixture, PROVIDER_MCP_FIXTURE_MODEL } from './lib/provider-mcp-fixture.mjs'
 import { publicRuntimeDiagnostic, publicProviderRun } from "../../kernel/slice-linux-docker/docker/public-runtime-diagnostics.mjs"
 
 import assert from "node:assert/strict"
@@ -2051,7 +2052,7 @@ async function launchComputerSecretAgent() {
       sessionId,
       "dev-stub",
       "computer-secret-agent",
-      "native-tui-idle",
+      PROVIDER_MCP_FIXTURE_MODEL,
       repoRoot,
       "low",
       "build",
@@ -2101,7 +2102,7 @@ async function launchComputerSecretAgent() {
       if (["ended", "failed", "error"].includes(String(current.state ?? "").toLowerCase())) {
         throw new Error(`slice provider run ended before MCP became ready: ${publicRuntimeDiagnostic(current)}`)
       }
-      if (!current.runtime_mcp_server_url || !current.runtime_mcp_auth_token) {
+      if (current.state !== "Running") {
         await candidate.close().catch(() => undefined)
         return false
       }
@@ -2112,41 +2113,17 @@ async function launchComputerSecretAgent() {
     }
   }, 120_000, "slice provider runtime MCP did not become ready")
   workerClient = ready.client
-  return { agent: spawned, providerRun: ready.providerRun }
+  const state = unwrapOneOf(await client.send(requests.getSessionStateRequest(sessionId)), "SessionStateLoaded", "SessionState")
+  const remote = state.session.agents.find(candidate => candidate.id === spawned.id)?.remote_execution
+  assert.ok(remote?.leased_agent_id, "slice fixture run has no home lease")
+  const providerRun = bindProviderMcpFixture({ ...ready.providerRun, id: `leased:${remote.leased_agent_id}:${workerProviderRunId}` }, {
+    client, requests, sessionId, attachmentId: attachment.id,
+  })
+  return { agent: spawned, providerRun }
 }
 
 async function mcpToolCall(providerRun, name, argumentsValue) {
-  const payload = JSON.stringify({
-    url: providerRun.runtime_mcp_server_url,
-    token: providerRun.runtime_mcp_auth_token,
-    body: {
-      jsonrpc: "2.0",
-      id: `${name}-${Date.now()}`,
-      method: "tools/call",
-      params: { name, arguments: argumentsValue },
-    },
-  })
-  const helper = [
-    "let input='';",
-    "process.stdin.setEncoding('utf8');",
-    "process.stdin.on('data',chunk=>{input+=chunk});",
-    "process.stdin.on('end',async()=>{",
-    "const request=JSON.parse(input);",
-    "const response=await fetch(request.url,{method:'POST',headers:{authorization:'Bearer '+request.token,'content-type':'application/json'},body:JSON.stringify(request.body)});",
-    "const text=await response.text();",
-    "process.stdout.write(JSON.stringify({status:response.status,ok:response.ok,body:text}));",
-    "});",
-  ].join("")
-  const response = await runCommandWithStdin(
-    "docker",
-    ["exec", "-i", "-u", "slice", containerName, "node", "-e", helper],
-    payload,
-    90_000,
-  )
-  assert.equal(response.code, 0, `runtime MCP ${name} transport failed: ${response.stderr}`)
-  const envelope = JSON.parse(response.stdout)
-  assert.equal(envelope.ok, true, `runtime MCP ${name} returned HTTP ${envelope.status}`)
-  const result = JSON.parse(envelope.body)
+  const result = await providerRun.fixtureMcp.call("tools/call", { name, arguments: argumentsValue }, { rawEnvelope: true })
   if (result.error) return { ok: false, error: result.error, raw: result }
   return {
     ok: result.result?.isError !== true,

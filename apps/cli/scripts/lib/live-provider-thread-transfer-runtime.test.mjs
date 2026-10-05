@@ -187,8 +187,6 @@ test("provider run evidence retains account and execution authority", () => {
       account_profile: "work",
       state: null,
       provider_session_id: null,
-      resume_state: null,
-      mcp_servers: [],
       execution_mode: "plan",
       permission_level: "required",
       write_access_mode: null,

@@ -1,3 +1,4 @@
+import { bindProviderMcpFixture, PROVIDER_MCP_FIXTURE_MODEL } from "./provider-mcp-fixture.mjs"
 import { publicRuntimeDiagnostic, publicProviderRun } from "../../../kernel/slice-linux-docker/docker/public-runtime-diagnostics.mjs"
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises"
 import http from "node:http"
@@ -12,7 +13,7 @@ import {
   waitForRuntimeTool,
 } from "./hosted-cloud-runtime-helpers.mjs"
 
-export const HOSTED_HOME_PROXY_MODEL = "native-tui-idle"
+export const HOSTED_HOME_PROXY_MODEL = PROVIDER_MCP_FIXTURE_MODEL
 
 export function withHostedKernelIsolation(env, {
   homeDir,
@@ -90,7 +91,7 @@ export async function startHostedRemoteProviderRun({
       const response = await client.send(requests.getProviderRunRequest(projectedRunId)).catch(() => null)
       const run = response?.ProviderRun?.provider_run ?? response?.provider_run ?? null
       lastRun = run
-      if (run?.runtime_mcp_server_url && run?.runtime_mcp_auth_token) return run
+      if (run?.state === "Running") return bindProviderMcpFixture(run, { client, requests, sessionId, attachmentId })
     }
     await sleep(pollMs)
   }
@@ -143,15 +144,15 @@ async function assertHostedWorkspaceLiveSyncProxy({
   log,
   unwrap,
 }) {
-  if (!launch.runtime_mcp_server_url || !launch.runtime_mcp_auth_token) {
+  if (!launch.fixtureMcp) {
     throw new Error(`launched run lacks runtime MCP binding for workspace live sync: ${publicRuntimeDiagnostic(launch)}`)
   }
   log("second-kernel-workspace-live-sync-tool-wait", { tool: "chariox.write_artifact" })
-  await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "chariox.write_artifact", true)
+  await waitForRuntimeTool(launch.fixtureMcp, null, "chariox.write_artifact", true)
   const relativePath = `outputs/hosted-managed-live-sync-${label}.txt`
   const expected = `HOSTED_MANAGED_WORKSPACE_LIVE_SYNC_${label.toUpperCase()}_OK\n`
   log("second-kernel-workspace-live-sync-write-start", { label, relativePath })
-  const write = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+  const write = await callRuntimeMcp(launch.fixtureMcp, null, "tools/call", {
     name: "chariox.write_artifact",
     arguments: { path: relativePath, content_text: expected },
   })
@@ -162,7 +163,7 @@ async function assertHostedWorkspaceLiveSyncProxy({
 
   const ignoredPath = `ignored/hosted-managed-live-sync-${label}.txt`
   log("second-kernel-workspace-live-sync-ignore-check", { label, path: ignoredPath })
-  const ignored = await expectRuntimeMcpReject(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+  const ignored = await expectRuntimeMcpReject(launch.fixtureMcp, null, "tools/call", {
     name: "chariox.write_artifact",
     arguments: { path: ignoredPath, content_text: "SHOULD_NOT_WRITE\n" },
   })
@@ -419,12 +420,12 @@ async function assertHostedHomeExtensionProxy({
   fixtures,
   label = "hosted",
 }) {
-  if (!launch.runtime_mcp_server_url || !launch.runtime_mcp_auth_token) {
+  if (!launch.fixtureMcp) {
     throw new Error(`launched run lacks runtime MCP binding: ${publicRuntimeDiagnostic(launch)}`)
   }
-  await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "hosted_home_only_lookup", true)
+  await waitForRuntimeTool(launch.fixtureMcp, null, "hosted_home_only_lookup", true)
   const scriptQuery = `${label}-remote-agent`
-  const scriptCall = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+  const scriptCall = await callRuntimeMcp(launch.fixtureMcp, null, "tools/call", {
     name: "hosted_home_only_lookup",
     arguments: { query: scriptQuery },
   })
@@ -434,13 +435,13 @@ async function assertHostedHomeExtensionProxy({
     throw new Error(`hosted home script marker mismatch: ${JSON.stringify(scriptMarker)}`)
   }
 
-  const proxyUrl = launch.runtime_mcp_server_url.replace(/\/mcp\/?$/, "/mcp/proxy/hosted_home_echo_mcp")
-  const mcpTools = await callRuntimeMcp(proxyUrl, launch.runtime_mcp_auth_token, "tools/list")
+  const proxyUrl = launch.fixtureMcp.proxy("hosted_home_echo_mcp")
+  const mcpTools = await callRuntimeMcp(proxyUrl, null, "tools/list")
   if (!mcpTools.tools.some((tool) => tool.name === "hosted_home_echo")) {
     throw new Error(`hosted home MCP tool not listed: ${JSON.stringify(mcpTools)}`)
   }
   const mcpText = `${label}-remote-mcp`
-  const mcpCall = await callRuntimeMcp(proxyUrl, launch.runtime_mcp_auth_token, "tools/call", {
+  const mcpCall = await callRuntimeMcp(proxyUrl, null, "tools/call", {
     name: "hosted_home_echo",
     arguments: { text: mcpText },
   })
@@ -450,9 +451,9 @@ async function assertHostedHomeExtensionProxy({
     throw new Error(`hosted home MCP marker mismatch: ${JSON.stringify(mcpMarker)}`)
   }
 
-  await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "hosted_home_local_api_public_echo", true)
+  await waitForRuntimeTool(launch.fixtureMcp, null, "hosted_home_local_api_public_echo", true)
   const connectorQuery = `${label}-remote-connector`
-  const connectorCall = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+  const connectorCall = await callRuntimeMcp(launch.fixtureMcp, null, "tools/call", {
     name: "hosted_home_local_api_public_echo",
     arguments: { q: connectorQuery },
   })
@@ -463,23 +464,23 @@ async function assertHostedHomeExtensionProxy({
   }
 
   await client.send(requests.revokeAgentExtensionRequest(agentId, "script", "hosted_home_only_lookup"))
-  await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "hosted_home_only_lookup", false)
-  await expectRuntimeMcpReject(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+  await waitForRuntimeTool(launch.fixtureMcp, null, "hosted_home_only_lookup", false)
+  await expectRuntimeMcpReject(launch.fixtureMcp, null, "tools/call", {
     name: "hosted_home_only_lookup",
     arguments: { query: "hosted-after-revoke" },
   })
   const afterRevokeMarker = await readFile(fixtures.homeMarker, "utf8")
   if (afterRevokeMarker !== scriptMarker) throw new Error("revoked hosted home-proxy script executed after revoke")
   await client.send(requests.revokeAgentExtensionRequest(agentId, "mcp", "hosted_home_echo_mcp"))
-  await expectRuntimeMcpReject(proxyUrl, launch.runtime_mcp_auth_token, "tools/call", {
+  await expectRuntimeMcpReject(proxyUrl, null, "tools/call", {
     name: "hosted_home_echo",
     arguments: { text: "hosted-after-mcp-revoke" },
   })
   const afterMcpRevokeMarker = await readFile(fixtures.homeMcpMarker, "utf8")
   if (afterMcpRevokeMarker !== mcpMarker) throw new Error("revoked hosted home-proxy MCP executed after revoke")
   await client.send(requests.revokeAgentExtensionRequest(agentId, "connector", "hosted_home_local_api"))
-  await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "hosted_home_local_api_public_echo", false)
-  await expectRuntimeMcpReject(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+  await waitForRuntimeTool(launch.fixtureMcp, null, "hosted_home_local_api_public_echo", false)
+  await expectRuntimeMcpReject(launch.fixtureMcp, null, "tools/call", {
     name: "hosted_home_local_api_public_echo",
     arguments: { q: "hosted-after-connector-revoke" },
   })
@@ -621,7 +622,7 @@ async function assertHostedCollaboratorHomeExtensions({
       prompt: "Initialize the hosted collaborator home-proxy extension runtime.",
       timeoutMs: pollTimeoutMs,
     })
-    const deniedRequest = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+    const deniedRequest = await callRuntimeMcp(launch.fixtureMcp, null, "tools/call", {
       name: "chariox.request_extension",
       arguments: { kind: "script", name: "hosted_home_only_lookup", environment: env.name },
     }, { retryTransient: true })
