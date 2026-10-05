@@ -32,6 +32,13 @@ identity across browser generations; re-anchoring uses the current observed
 generation, while new selection capture still rejects stale generations. The observer creates no DOM
 nodes or page-visible bindings. No note UI is injected into the browser/App.
 Existing Vault observation barriers and scrubbing apply to controller results.
+MD-N2 / MP-08/MP-10/MP-11: before splitting a quote or truncating its context,
+the isolated observer checks complete protected-value spans in the raw text
+index using the shared observation variant policy. A selection whose exact
+text or 64-code-point context overlaps a protected span is withheld (null),
+including values crossing text nodes or a context cutoff. Kernel-replayed
+retired values protect cached observers too. DOM offsets remain unchanged for
+benign selections; protected values never enter page/App JavaScript worlds.
 
 MD-N3 Cloud integration: import `notesRequest`, `noteOverlayBox`, and
 `notePromptDraft` from the OSS shared client. Gate notes at protocol 424 before
