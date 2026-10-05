@@ -1,8 +1,5 @@
-import { execFile } from "node:child_process"
 import { basename, resolve as resolvePath } from "node:path"
-import { promisify } from "node:util"
 
-const execFileAsync = promisify(execFile)
 const CREATE_WORKTREE_OPTION_ID = "create-worktree"
 const DEFAULT_CREATE_WORKTREE_LABEL = "Create worktree"
 
@@ -38,15 +35,6 @@ type PendingWaitingRoomWorktreeSelection =
 
 let activeInventory: WaitingRoomWorktreeInventory | null = null
 let pendingSelection: PendingWaitingRoomWorktreeSelection | null = null
-
-export async function primeWaitingRoomWorktreeInventory(options: {
-  cwd: string
-  workspacePath: string
-  currentWorktreePath: string
-}): Promise<void> {
-  activeInventory = await discoverWaitingRoomWorktreeInventory(options)
-  pendingSelection = null
-}
 
 export function clearWaitingRoomWorktreeInventory() {
   activeInventory = null
@@ -169,101 +157,7 @@ export function __setWaitingRoomWorktreeInventoryForTest(options: {
   pendingSelection = null
 }
 
-async function discoverWaitingRoomWorktreeInventory(options: {
-  cwd: string
-  workspacePath: string
-  currentWorktreePath: string
-}): Promise<WaitingRoomWorktreeInventory> {
-  const gitCwd = options.currentWorktreePath || options.workspacePath || options.cwd
-  const repository = await execFileAsync("git", ["rev-parse", "--show-toplevel"], { cwd: gitCwd }).then(() => true).catch(() => false)
-  const hasCommit = repository && await execFileAsync("git", ["rev-parse", "--verify", "HEAD^{commit}"], { cwd: gitCwd }).then(() => true).catch(() => false)
-  const disabledHint = !repository ? NO_REPOSITORY_WORKTREE_HINT : !hasCommit ? UNBORN_WORKTREE_HINT : null
-  if (disabledHint) return { workspacePath: options.workspacePath, currentWorktreePath: options.currentWorktreePath, options: [], disabledHint }
-  const discovered = await listGitWorktrees(gitCwd).catch(() => [])
-  const existingOptions = discovered.length > 0
-    ? discovered.map((entry) => ({
-      id: `existing:${entry.path}`,
-      kind: "existing" as const,
-      label: formatWorktreeLabel(entry, options.workspacePath),
-      path: entry.path,
-      branch: entry.branch,
-      isCurrent: samePath(entry.path, options.currentWorktreePath),
-    }))
-    : [{
-      id: `existing:${options.currentWorktreePath}`,
-      kind: "existing" as const,
-      label: formatFallbackWorktreeLabel(options.currentWorktreePath, options.workspacePath),
-      path: options.currentWorktreePath,
-      branch: null,
-      isCurrent: true,
-    }]
-
-  const sortedExistingOptions = [
-    ...existingOptions.filter((option) => option.label === "main"),
-    ...existingOptions.filter((option) => option.label !== "main"),
-  ]
-
-  return {
-    workspacePath: options.workspacePath,
-    currentWorktreePath: options.currentWorktreePath,
-    options: [
-      ...sortedExistingOptions,
-      {
-        id: CREATE_WORKTREE_OPTION_ID,
-        kind: "create",
-        label: DEFAULT_CREATE_WORKTREE_LABEL,
-      },
-    ],
-  }
-}
-
-type GitWorktreeEntry = {
-  path: string
-  branch: string | null
-}
-
-async function listGitWorktrees(cwd: string): Promise<GitWorktreeEntry[]> {
-  const { stdout } = await execFileAsync("git", ["worktree", "list", "--porcelain"], { cwd })
-  return parseGitWorktreeList(stdout)
-}
-
-function parseGitWorktreeList(stdout: string): GitWorktreeEntry[] {
-  const entries: GitWorktreeEntry[] = []
-  let current: GitWorktreeEntry | null = null
-
-  for (const rawLine of stdout.split(/\r?\n/)) {
-    const line = rawLine.trim()
-    if (!line) {
-      if (current?.path) {
-        entries.push(current)
-      }
-      current = null
-      continue
-    }
-    if (line.startsWith("worktree ")) {
-      if (current?.path) {
-        entries.push(current)
-      }
-      current = {
-        path: line.slice("worktree ".length).trim(),
-        branch: null,
-      }
-      continue
-    }
-    if (line.startsWith("branch ") && current) {
-      current.branch = normalizeGitBranch(line.slice("branch ".length).trim())
-    }
-  }
-
-  if (current?.path) {
-    entries.push(current)
-  }
-  return entries
-}
-
-function normalizeGitBranch(ref: string) {
-  return ref.replace(/^refs\/heads\//, "") || null
-}
+type GitWorktreeEntry = { path: string; branch: string | null }
 
 function formatWorktreeLabel(entry: GitWorktreeEntry, workspacePath: string) {
   if (samePath(entry.path, workspacePath)) {
@@ -273,13 +167,6 @@ function formatWorktreeLabel(entry: GitWorktreeEntry, workspacePath: string) {
     return entry.branch
   }
   return basename(entry.path) || entry.path
-}
-
-function formatFallbackWorktreeLabel(worktreePath: string, workspacePath: string) {
-  if (samePath(worktreePath, workspacePath)) {
-    return "main"
-  }
-  return basename(worktreePath) || worktreePath
 }
 
 function resolveWaitingRoomWorktreeOption(selectionId: string | null | undefined) {

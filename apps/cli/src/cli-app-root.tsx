@@ -395,7 +395,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     currentProviderSelection, currentVariantId, promptMetaParts, promptUsageMeta,
     reconcileWaitingRoom, reconcileWaitingRoomProjection, refreshWaitingRoomData,
     refreshWaitingRoomDataNow, reimageManagedEnvironment, startSessionFromWaitingRoomDefaults,
-    waitingRoomTargets,
+    waitingRoomTargets, editWaitingRoomWorkspace,
   } = createCliWaitingRoomComposition({
     client, options, appLogger, formatError,
     isAttached, kernelConnected, waitingRoomState, setWaitingRoomState, setWaitingRoomStateProjection,
@@ -893,7 +893,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     applyVariantSelection, applyModeSelection, applyPermissionSelection,
     currentExecutionMode: () => waitingRoomState().executionMode ?? "build",
     currentPermissionLevel: () => waitingRoomState().permissionLevel ?? "yolo",
-    refreshWaitingRoomData, setSlicesState, setMultiAgentResponseLayout,
+    refreshWaitingRoomData, editWaitingRoomWorkspace, setSlicesState, setMultiAgentResponseLayout,
     applyResponseLayout, applySessionState, refreshAgentPanes, setWorkspaceLiveSyncStatus,
     ...workflowActions,
     rebuildTranscript,

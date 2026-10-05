@@ -22,7 +22,25 @@ async function openWaitingRoomKernelClient(controlClient: LocalIpcClient, target
         targetDaemonId: connection!.targetDaemonId ?? undefined,
         targetDaemonAlias: connection!.targetDaemonAlias ?? undefined,
       })
-  return { client, label: localPresence?.kernelAlias ?? connection?.targetDaemonAlias ?? connection?.kernelId ?? target.kernelRef }
+  return { client, label: localPresence?.kernelAlias ?? connection?.targetDaemonAlias ?? connection?.kernelId ?? target.kernelRef,
+    machineId: localPresence?.machineId ?? connection?.machineId, kernelId: localPresence?.kernelId ?? connection?.kernelId }
+}
+
+export async function withWaitingRoomWorkspaceClient<T>(
+  controlClient: LocalIpcClient,
+  target: KernelClientTarget,
+  read: (client: LocalIpcClient) => Promise<T>,
+): Promise<T | undefined> {
+  const connection = await openWaitingRoomKernelClient(controlClient, target)
+  if (!connection) return undefined
+  try {
+    if (connection.kernelId !== target.kernelRef || target.machineRef && connection.machineId !== target.machineRef) {
+      throw new Error("workspace connection identity does not match the selected kernel")
+    }
+    return await read(connection.client)
+  } finally {
+    await connection.client.close()
+  }
 }
 
 export async function browseWaitingRoomKernelWorkspace(
@@ -39,6 +57,8 @@ export async function browseWaitingRoomKernelWorkspace(
       throw new Error("workspace inventory identity does not match the selected managed machine")
     }
     await applyInventory(inventory, connection.client)
+  } catch (error) {
+    if (target.isActive()) throw error
   } finally {
     await connection.client.close()
   }
@@ -57,6 +77,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
 }) {
   const homeDirectTargetKernelId = deps.initialTargetKernelId?.trim() || null
   let directTargetKernelId = homeDirectTargetKernelId
+  let connectedMachineId: string | null = null
   const connect = async (
     kernelRef: string | null | undefined,
     machineRef: string | null | undefined,
@@ -67,6 +88,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
     const targetKernelRef = kernelRef?.trim() === "local" ? deps.homeKernelId() : kernelRef?.trim()
     const currentKernelId = directTargetKernelId || deps.homeKernelId() || deps.currentKernelId()
     const sourceTargetKernelId = directTargetKernelId
+    const sourceMachineId = connectedMachineId
     if (!targetKernelRef || targetKernelRef === "local" || targetKernelRef === currentKernelId) {
       if (connected && targetKernelRef && targetKernelRef !== "local") {
         const inventory = await getWaitingRoomInventory(deps.client)
@@ -106,6 +128,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
       }
       const pivot = beginMutableLocalIpcClientPivot(deps.client, nextClient)
       try {
+        connectedMachineId = targetInventory.machineId
         directTargetKernelId = targetInventory.kernelId === deps.homeKernelId() ? homeDirectTargetKernelId : targetInventory.kernelId
         connected?.(targetInventory)
         retainPrevious({
@@ -120,6 +143,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
             try {
               await pivot.rollback()
             } finally {
+              connectedMachineId = sourceMachineId
               directTargetKernelId = sourceTargetKernelId
               deps.invalidateInventory()
             }
@@ -129,6 +153,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
         try {
           await pivot.rollback()
         } finally {
+          connectedMachineId = sourceMachineId
           directTargetKernelId = sourceTargetKernelId
         }
         throw error
@@ -136,6 +161,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
     } else {
       await deps.client.replaceClient(nextClient)
       deps.clearProjectSetup()
+      connectedMachineId = targetInventory.machineId
       directTargetKernelId = targetInventory.kernelId === deps.homeKernelId() ? homeDirectTargetKernelId : targetInventory.kernelId
       connected?.(targetInventory)
     }
@@ -146,6 +172,18 @@ export function createWaitingRoomKernelConnectionController(deps: {
 
   return {
     connect,
+    readWorkspace: async (target: { machineId: string; kernelId: string; isActive(): boolean }, read: (client: LocalIpcClient) => Promise<void>) => {
+      if (!target.machineId || !target.kernelId) throw new Error("Choose a connected kernel before reading its workspace.")
+      if (!target.isActive()) return
+      const currentKernelId = directTargetKernelId || deps.homeKernelId() || deps.currentKernelId()
+      if (target.kernelId === currentKernelId && target.machineId === (connectedMachineId || deps.homeMachineId())) {
+        await read(deps.client.currentClient())
+      } else {
+        await withWaitingRoomWorkspaceClient(deps.client, {
+          kernelRef: target.kernelId, machineRef: target.machineId, clientId: deps.clientId, isActive: target.isActive,
+        }, read)
+      }
+    },
     getDirectTargetKernelId: () => directTargetKernelId,
     assertLocalReimageAuthority: () => {
       if (directTargetKernelId) {
