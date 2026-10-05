@@ -198,8 +198,15 @@ async fn check_live() {
             assets:vec![BrowserAppViewAsset {path:"index.html".into(),content_type:"text/html; charset=utf-8".into(),body_base64:base64::engine::general_purpose::STANDARD.encode(format!("<!doctype html><title>MD-N5 App</title><span>🙂{}</span><p id='quote'>MD notes selected quote</p><p>{}🙂</p>","x".repeat(63),"x".repeat(63)))}],
         }).await.unwrap();
         let app_url="https://app.mdnotes-fixture.invalid/".to_string();
-        let app_state=Box::pin(router.runtime_state.reconcile_browser_controller_environment(session.id())).await.unwrap();
-        let app_tab=app_state.tabs.iter().find(|t|t.url==app_url).unwrap();
+        let app_tab = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let state = Box::pin(router.runtime_state.reconcile_browser_controller_environment(session.id())).await.unwrap();
+                if let Some(tab) = state.tabs.into_iter().find(|tab| tab.url == app_url) {
+                    break tab;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }).await.expect("MD-N5 owned App fixture document must commit");
         let app_window=NoteWindow::RoomBrowser{session_id:session.id().into(),tab_id:app_tab.tab_id.clone()};
         let mut receipts=Vec::new();
         let mut user_note=None;
