@@ -123,8 +123,10 @@ pub(super) async fn handle_incoming_envelope(
             let outgoing_tx = outgoing_tx.clone();
             let command_result_cache = Arc::clone(command_result_cache);
             let reconnect_gate = Arc::clone(reconnect_gate);
+            let display_subscriptions = Arc::clone(subscription_tasks);
             tokio::spawn(async move {
-                let relay_response = handle_daemon_request(
+                let display_sender = encrypted_request.sender_public_key.clone();
+                let mut relay_response = handle_daemon_request(
                     &router,
                     &command_sequence,
                     caller_identity,
@@ -132,6 +134,14 @@ pub(super) async fn handle_incoming_envelope(
                     &command_result_cache,
                 )
                 .await;
+                if let Some((display_id, event_id, encrypted_event)) = relay_response.display_event {
+                    if let Some(subscription_id) = super::browser_display::browser_display_delivery_id(&display_subscriptions, &display_id, &display_sender).await {
+                        if super::envelope_io::send_outgoing_event_envelope(&outgoing_tx, RelayEnvelope::DaemonEvent { subscription_id, event_id, encrypted_event }).await.is_err() { return; }
+                    } else {
+                        relay_response.encrypted_response = None;
+                        relay_response.error = Some(super::request_errors::relay_error("display_subscription_required", "MD-DISPLAY: register a fresh display subscription with the same sender identity", false));
+                    }
+                }
                 if let Err(error) = send_outgoing_envelope(
                     &outgoing_tx,
                     RelayEnvelope::DaemonResponse {
