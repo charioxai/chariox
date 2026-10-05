@@ -11,6 +11,7 @@ import {
   readFile,
   readdir,
   realpath,
+  rmdir,
   rm,
   stat,
   writeFile,
@@ -22,6 +23,7 @@ import { promisify } from "node:util"
 
 import { ROW_DEFINITIONS, SHUTDOWN_EXPECTATIONS } from "./managed-ordinary-parity-matrix.mjs"
 import { startManagedOrdinaryProviderTurnBinding } from "./lib/managed-ordinary-provider-turn-binding.mjs"
+import { observeExecutableAncestry } from "./lib/managed-ordinary-ancestry-observer.mjs"
 
 const execFileAsync = promisify(execFile)
 const PROBE_RELATIVE_PATH = "apps/cli/scripts/managed-ordinary-parity-probe.mjs"
@@ -54,10 +56,6 @@ function fingerprint(value) {
     return `sha256:${createHash("sha256").update(value).digest("hex")}`
   }
   return `sha256:${createHash("sha256").update(typeof value === "string" ? value : canonicalJson(value)).digest("hex")}`
-}
-
-function parseBoolean(value) {
-  return value === true || value === "1" || value === "true"
 }
 
 function safeIdentifier(value, label) {
@@ -337,7 +335,7 @@ async function observeDirectoryCheck(identity, values, checkId) {
   if (checkId === "home_access") return identityResult(identity, { accessible: await accessible(values.home_path) })
   if (checkId === "tmp_access") return identityResult(identity, { accessible: await accessible(values.tmp_path) })
   if (checkId === "directory_discovery") {
-    const exactPathAccessible = await accessible(values.home_path)
+    const exactPathAccessible = await accessible(values.home_path, constants.X_OK)
     let childEnumerationDenied = false
     try {
       await readdir(values.home_path)
@@ -352,7 +350,7 @@ async function observeDirectoryCheck(identity, values, checkId) {
     const current = await pathFingerprint(process.cwd(), "current directory")
     const requested = await pathFingerprint(expectedCwd, "requested working directory")
     return identityResult(identity, {
-      exact_path_accessible: await accessible(expectedCwd),
+      exact_path_accessible: await accessible(expectedCwd, constants.X_OK),
       cwd_matches_requested: current.resolved_path === requested.resolved_path,
       cwd_fingerprint: current.path_fingerprint,
       requested_cwd_fingerprint: requested.path_fingerprint,
@@ -360,23 +358,38 @@ async function observeDirectoryCheck(identity, values, checkId) {
   }
   if (checkId === "directory_creation") {
     const target = safeProbePath(values.new_directory, "new directory")
-    await mkdir(target, { recursive: true })
-    const metadata = await stat(target)
-    const result = { created_and_accessible: metadata.isDirectory() && await accessible(target), created_path_fingerprint: fingerprint(resolve(target)) }
-    await rm(target, { recursive: true, force: false })
-    return identityResult(identity, result)
+    return withOwnedProbeDirectory(target, async () => {
+      const metadata = await stat(target)
+      return identityResult(identity, { created_and_accessible: metadata.isDirectory() && await accessible(target), created_path_fingerprint: fingerprint(resolve(target)) })
+    })
   }
   throw new ProbeError(`unsupported MP-02 check: ${checkId}`)
+}
+
+// MP-02/MP-05: never adopt an existing path or recursively
+// remove data introduced by another process while the probe is running.
+async function withOwnedProbeDirectory(target, operation) {
+  await mkdir(target)
+  const owned = await stat(target)
+  try {
+    return await operation()
+  } finally {
+    const current = await stat(target)
+    if (current.dev !== owned.dev || current.ino !== owned.ino) {
+      throw new ProbeError("probe scratch directory identity changed")
+    }
+    await rmdir(target)
+  }
 }
 
 async function observeWorkspaceCheck(identity, values, checkId) {
   const sourceRoot = resolve(values.source_root)
   if (checkId === "empty_workspace") {
     const target = safeProbePath(values.nested_path, "nested workspace")
-    await mkdir(target, { recursive: true })
-    const result = { workspace_created: (await stat(target)).isDirectory(), control_state_separate: resolve(target) !== sourceRoot, workspace_path_fingerprint: fingerprint(resolve(target)) }
-    await rm(target, { recursive: true, force: false })
-    return identityResult(identity, result)
+    return withOwnedProbeDirectory(target, async () => identityResult(identity, {
+      workspace_created: (await stat(target)).isDirectory(), control_state_separate: resolve(target) !== sourceRoot,
+      workspace_path_fingerprint: fingerprint(resolve(target)),
+    }))
   }
   if (checkId === "copied_repository") {
     return identityResult(identity, { repository_accessible: await accessible(sourceRoot), repository_path_fingerprint: fingerprint(sourceRoot) })
@@ -387,15 +400,16 @@ async function observeWorkspaceCheck(identity, values, checkId) {
   }
   if (checkId === "basename_collision") {
     const target = safeProbePath(values.new_directory, "collision directory")
-    await mkdir(target, { recursive: true })
-    let collisionRejected = false
-    try {
-      await mkdir(target)
-    } catch (error) {
-      collisionRejected = error?.code === "EEXIST"
-    }
-    await rm(target, { recursive: true, force: false })
-    return identityResult(identity, { collision_rejected: collisionRejected, collision_path_fingerprint: fingerprint(resolve(target)) })
+    return withOwnedProbeDirectory(target, async () => {
+      let collisionRejected = false
+      try {
+        await mkdir(target)
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error
+        collisionRejected = true
+      }
+      return identityResult(identity, { collision_rejected: collisionRejected, collision_path_fingerprint: fingerprint(resolve(target)) })
+    })
   }
   if (checkId === "worktree_placement") {
     const nested = resolve(values.nested_path)
@@ -410,22 +424,22 @@ async function observeWorkspaceCheck(identity, values, checkId) {
 }
 
 async function observeProviderAncestry(identity, values) {
-  const chain = await processChain()
   const provider = values.provider ?? process.env.CHARIOX_PARITY_PROVIDER
-  const commands = chain.map(({ command }) => command)
-  const observedProvider = OFFICIAL_PROVIDERS.has(provider ?? "")
-    && (commands.some((command) => command.toLowerCase().includes(provider.toLowerCase()))
-      || parseBoolean(process.env.CHARIOX_PARITY_PROVIDER_PROCESS_OBSERVED))
-  const observedBwrapAncestor = commands.some((command) => /(^|\s|\/)bwrap(?:\s|$)/i.test(command))
+  if (!OFFICIAL_PROVIDERS.has(provider)) throw new ProbeError("provider ancestry requires an official provider")
+  const binding = await startManagedOrdinaryProviderTurnBinding({
+    expectedProvider: provider, expectedBoundary: "official-provider-turn",
+  })
+  const chain = await observeExecutableAncestry()
+  const proof = await binding.finish()
+  const observedProvider = chain.some(entry => entry.pid === proof.process.pid
+    && entry.startTimeTicks === proof.process.start_time_ticks)
+  const observedBwrapAncestor = chain.some(entry => entry.executable_basename === "bwrap")
   const worker = requireObservedEvidence(parseJsonEnv("CHARIOX_PARITY_WORKER_EVIDENCE_JSON"), "worker evidence")
-  const boundaryEvidence = process.env.CHARIOX_PARITY_ANCESTRY_EVIDENCE_JSON
-    ? requireObservedEvidence(parseJsonEnv("CHARIOX_PARITY_ANCESTRY_EVIDENCE_JSON"), "provider ancestry")
-    : null
   const comparison = {
-    provider_observed: boundaryEvidence ? boundaryEvidence.provider_observed === true : observedProvider,
-    bwrap_ancestor: boundaryEvidence ? boundaryEvidence.bwrap_ancestor === true : observedBwrapAncestor,
-    fresh_worker: boundaryEvidence ? boundaryEvidence.fresh_worker === true : worker.fresh_worker === true,
-    ancestry_complete: boundaryEvidence ? boundaryEvidence.ancestry_complete === true : chain.length > 0 && chain.at(-1)?.pid === 1,
+    provider_observed: observedProvider,
+    bwrap_ancestor: observedBwrapAncestor,
+    fresh_worker: worker.fresh_worker === true,
+    ancestry_complete: chain.at(-1)?.pid === 1,
   }
   if (!comparison.provider_observed || comparison.bwrap_ancestor || !comparison.fresh_worker || !comparison.ancestry_complete) {
     throw new ProbeError(`provider ancestry did not prove the ordinary worker boundary: ${JSON.stringify(comparison)}`)
@@ -433,8 +447,7 @@ async function observeProviderAncestry(identity, values) {
   return identityResult(identity, {
     ...comparison,
     observed_bwrap_ancestor: observedBwrapAncestor,
-    command_chain_fingerprint: fingerprint(commands.join("\n")),
-    boundary_evidence_fingerprint: boundaryEvidence ? fingerprint(boundaryEvidence.evidence_id ?? "provider-ancestry") : null,
+    command_chain_fingerprint: fingerprint(chain),
   })
 }
 
@@ -451,11 +464,14 @@ async function observeProviderEnvironment(identity, values) {
     && uid === baseline.uid
     && gid === baseline.gid
   const ordinaryUser = uid === baseline.uid && gid === baseline.gid
-  if (!matches || !ordinaryUser) throw new ProbeError("provider environment differs from the observed ordinary baseline")
+  const [homeMetadata, stateMetadata] = await Promise.all([stat(home.resolved_path), stat(charioxHome.resolved_path)])
+  if (!matches || !ordinaryUser || homeMetadata.uid !== uid || stateMetadata.uid !== uid) {
+    throw new ProbeError("provider environment differs from the observed ordinary baseline or user ownership")
+  }
   return identityResult(identity, {
     home_matches_ordinary: true,
     chariox_home_matches_ordinary: true,
-    cwd_matches_requested: cwd.resolved_path === resolve(values.source_root),
+    cwd_matches_requested: cwd.resolved_path === await realpath(values.expected_cwd ?? values.source_root),
     ordinary_user: ordinaryUser,
     home_fingerprint: home.path_fingerprint,
     chariox_home_fingerprint: charioxHome.path_fingerprint,
@@ -714,13 +730,16 @@ async function observeControlFileProtection(identity) {
   const controlFile = process.env.CHARIOX_PARITY_CONTROL_FILE
   const sibling = process.env.CHARIOX_PARITY_CONTROL_SIBLING
   if (!controlFile || !sibling) throw new ProbeError("control file protection paths are missing")
-  let controlDenied = false
-  try {
-    await accessible(controlFile, constants.R_OK | constants.W_OK)
-  } catch (error) {
-    if (error?.code !== "EACCES" && error?.code !== "EPERM") throw error
-    controlDenied = true
-  }
+  const denials = await Promise.all([constants.R_OK, constants.W_OK].map(async (mode) => {
+    try {
+      await accessible(controlFile, mode)
+      return false
+    } catch (error) {
+      if (error?.code !== "EACCES" && error?.code !== "EPERM") throw error
+      return true
+    }
+  }))
+  const controlDenied = denials.every(Boolean)
   const parentWorkspace = dirname(resolve(controlFile))
   const siblingPath = await realpath(sibling)
   if (dirname(siblingPath) !== await realpath(parentWorkspace)

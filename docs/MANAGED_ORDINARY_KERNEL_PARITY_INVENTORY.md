@@ -97,11 +97,16 @@ provider run, session, prompt, attachments, and kernel identity from the normal
 product client, then independently checks the provider-child ancestry and the
 running signed kernel executable through Linux process metadata.
 
-MP-10 admission and evidence signing are separate. The HMAC in
-`CHARIOX_PARITY_SIGNING_KEY` is created by the campaign runner (at least 16
-random bytes), held privately until both manifests have been compared, then
-removed. Both legs and the comparator must use the same campaign key. It is
-never installed in the kernel and cannot authenticate a WebSocket connection.
+MP-10 admission and evidence signing are separate. The collector requires a
+campaign HMAC supplied through the approved private runner context (at least
+16 bytes). Both legs and the comparator currently require the same campaign
+key. Never generate or copy a live key as a workaround for missing authorization;
+the coordinator must resolve cross-machine key handling under the operator's
+key-retention rules before live collection. Synthetic unit-test keys establish
+signing behavior only. HMAC material is excluded from owned probe and other
+command environments, including custom input names, and redacted from command
+evidence. It is never installed in the kernel and cannot authenticate a
+WebSocket connection.
 
 An ordinary loopback kernel may be started without local bearer authentication.
 If configured, the existing client accepts `CHARIOX_KERNEL_LOCAL_AUTH_TOKEN`
@@ -129,12 +134,28 @@ observer. Use the normal resolved connection contract for this collector.
 MP-03 requires `CHARIOX_PARITY_CONTROL_FILE` and
 `CHARIOX_PARITY_CONTROL_SIBLING` to identify real selected control protection
 and an unrelated sibling under the same parent. The probe observes Unix access
-as the provider user; the control file must deny combined read/write access,
+as the provider user; the control file must deny read and write access separately,
 while the parent and sibling support workspace operations. No qualified proof
 schema or producer exists for `CHARIOX_PARITY_CONTROL_PROTECTION_EVIDENCE_JSON`;
 its former caller-boolean fallback is removed. Missing paths, an accessible
 control file, or an unavailable parent/sibling fail closed. A synthetic sentinel
 only proves the probe boundary, not protection of actual product control roots.
+
+MP-01 ancestry comes from the kernel-owned official provider-turn binding and
+Linux executable metadata through PID 1. Caller ancestry booleans and provider
+names in shell arguments cannot establish an official provider descendant.
+Denied executable inspection uses the existing read-only sudo metadata helper;
+cycles, truncated ancestry and changed process identities fail closed. These
+checks do not independently establish fresh allocation or effective systemd policy.
+
+MP-02/MP-04/MP-05 probes keep the selected provider cwd distinct from the
+reviewed source checkout. Searchable exact directories remain eligible when
+child enumeration is denied. HOME and mutable state must belong to the observed
+provider user. Temporary directory probes refuse existing paths and remove only
+their own still-matching empty directory; they never recursively delete its
+contents. The basename-collision probe tests filesystem collision behavior;
+the product import/recovery and default/custom-root rows still require their
+own qualified observations.
 
 Product-route process binding requires local protocol 371's
 `RelayStatus.runtime_process_identity`. Boot ID, PID, and process start ticks
