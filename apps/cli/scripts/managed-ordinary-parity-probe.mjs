@@ -425,6 +425,9 @@ async function observeWorkspaceCheck(identity, values, checkId) {
 
 async function observeProviderAncestry(identity, values) {
   const provider = values.provider ?? process.env.CHARIOX_PARITY_PROVIDER
+  if (process.env.CHARIOX_PARITY_ANCESTRY_EVIDENCE_JSON || process.env.CHARIOX_PARITY_PROVIDER_PROCESS_OBSERVED) {
+    throw new ProbeError("caller-supplied ancestry overrides are unsupported; independent provider-process observation is required")
+  }
   if (!OFFICIAL_PROVIDERS.has(provider)) throw new ProbeError("provider ancestry requires an official provider")
   const binding = await startManagedOrdinaryProviderTurnBinding({
     expectedProvider: provider, expectedBoundary: "official-provider-turn",
@@ -520,13 +523,10 @@ async function observePrivilegeState(identity) {
   const uid = typeof process.getuid === "function" ? process.getuid() : null
   const gid = typeof process.getgid === "function" ? process.getgid() : null
   const baseline = parseJsonEnv("CHARIOX_PARITY_ORDINARY_PRIVILEGE_JSON")
-  const boundaryEvidence = process.env.CHARIOX_PARITY_PRIVILEGE_EVIDENCE_JSON
-    ? requireObservedEvidence(parseJsonEnv("CHARIOX_PARITY_PRIVILEGE_EVIDENCE_JSON"), "privilege state")
-    : null
-  if (boundaryEvidence && typeof boundaryEvidence.no_new_privs !== "boolean") {
-    throw new ProbeError("privilege state evidence is missing no_new_privs")
+  if (process.env.CHARIOX_PARITY_PRIVILEGE_EVIDENCE_JSON) {
+    throw new ProbeError("caller-supplied privilege overrides are unsupported; independent provider-process observation is required")
   }
-  const comparableNoNewPrivs = boundaryEvidence ? boundaryEvidence.no_new_privs === true : noNewPrivs === "1"
+  const comparableNoNewPrivs = noNewPrivs === "1"
   const capabilitiesMatch = capEff === String(baseline.cap_eff ?? "").toLowerCase()
   const umaskMatches = umask === baseline.umask && uid === baseline.uid && gid === baseline.gid
   if (!capabilitiesMatch || !umaskMatches || comparableNoNewPrivs) throw new ProbeError("privilege state differs from the observed ordinary baseline")
@@ -539,7 +539,6 @@ async function observePrivilegeState(identity) {
     uid,
     gid,
     observed_no_new_privs: noNewPrivs === "1",
-    privilege_evidence_fingerprint: boundaryEvidence ? fingerprint(boundaryEvidence.evidence_id ?? "privilege-state") : null,
   })
 }
 
@@ -949,4 +948,4 @@ if (process.argv[1]
   process.exitCode = await main()
 }
 
-export { main, observe, parseArgs, verifyProbeIdentity }
+export { main, observe, parseArgs, verifyProbeIdentity, observePrivilegeState, observeProviderAncestry, observeDirectoryCheck, observeWorkspaceCheck }
