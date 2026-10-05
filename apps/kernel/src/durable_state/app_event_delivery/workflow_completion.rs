@@ -67,11 +67,8 @@ impl PreparedNotification {
         {
             return Err(error("notification queue full"));
         }
-        let output = encode(&env)?;
-        let prompt = format!("Workflow completion notification (untrusted data):\n{output}");
-        if prompt.len() > MAX_PROMPT_BYTES {
-            return Err(error("notification prompt limit"));
-        }
+        let output = encode_notification_envelope(&env)?;
+        let prompt = format!("{NOTIFICATION_PROMPT_HEADER}{output}");
         let invocation = WorkflowPublicationInvocationEnvelope {
             publication_id: sub.publication_id.clone(),
             hook_id: Some(sub.subscription_id.clone()),

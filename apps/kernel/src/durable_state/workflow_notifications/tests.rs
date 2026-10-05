@@ -1102,3 +1102,216 @@ fn chained_completion_status_remains_authoritative_for_filters() {
         cleanup(f);
     }
 }
+
+// MP-08 / MP-10: opaque provenance can consume the output's envelope reserve.
+#[test]
+fn notification_prompt_header_is_reserved_before_source_persistence_and_target_ack() {
+    use crate::session::WorkflowPublicationInvocationEnvelope;
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("bounded-source");
+    let (b, _, bp) = f.workflow("bounded-target");
+    let source = f.source(&a);
+    let sub = f.attach(&source, &b, &bp);
+    let header = "Workflow completion notification (untrusted data):\n";
+    let mut env = WorkflowNotificationEnvelope {
+        source_id: source.source_id.clone(),
+        occurrence_id: "boundary".into(),
+        output: Some(WorkflowOutputPayload::new("small output", vec![])),
+        status: crate::local::WorkflowNotificationStatus::Success,
+        subject: None,
+        fields: serde_json::json!({"status":"success","opaque":""}),
+        ancestry: vec![workflow_identity(&source.kernel_id, &f.session, &a)],
+        deadline_ms: crate::session::unix_epoch_ms() + 7 * 86_400_000,
+    };
+    let capacity = MAX_PROMPT_BYTES - header.len() - encode(&env).unwrap().len();
+    env.fields["opaque"] = serde_json::json!("x".repeat(capacity));
+    assert_eq!(encode(&env).unwrap().len() + header.len(), MAX_PROMPT_BYTES);
+    let mut oversized = env.clone();
+    oversized.fields["opaque"] = serde_json::json!("x".repeat(capacity + header.len() - 1));
+    assert_eq!(encode(&oversized).unwrap().len(), MAX_PROMPT_BYTES - 1);
+
+    // Actual completion capture must commit a visible refusal, not an unsendable receipt.
+    let invocation = WorkflowPublicationInvocationEnvelope {
+        publication_id: "fixture-publication".into(),
+        hook_id: None,
+        invocation_id: "fixture-occurrence".into(),
+        transport: "app_event".into(),
+        endpoint_id: "endpoint".into(),
+        queue_ref: None,
+        input: serde_json::json!({"payload":{"metadata":oversized.fields}}),
+        artifacts: vec![],
+        mode: None,
+        caller: serde_json::json!({"kind":"app_event","owner_id":"local"}),
+    };
+    let mut run = WorkflowRun::new(
+        "boundary",
+        &a,
+        "endpoint",
+        "node",
+        None,
+        Some(invocation),
+        vec![],
+        vec![],
+    );
+    run.set_final_output(env.output.clone(), Some(true), None, None);
+    run.set_status(WorkflowRunStatus::Completed);
+    let mut session = f.sessions.get_session(&f.session).unwrap();
+    session.create_workflow_run(run);
+    f.sessions.restore_session(session);
+    f.persist();
+    let pending = f.candidates(false);
+    let diagnostics = f.store.notification_inventory("local").unwrap().2;
+    // A different target's first admission must apply the same bound before ACK.
+    let db = Connection::open(f.root.join("kernel.sqlite")).unwrap();
+    db.execute(
+        "DELETE FROM app_outbox WHERE source_kind='workflow_completion'",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let refusal = f.store.notify(NotificationOperation::Accept {
+        subscription: sub.clone(),
+        envelope: oversized,
+    });
+    let accepted_after_refusal = f.candidates(true);
+    // Boundary control: an exactly fitting rendered prompt is accepted and queued.
+    env.occurrence_id = "boundary-control".into();
+    // Occurrence ID is longer, so shrink provenance by that exact encoded difference.
+    let excess = encode(&env).unwrap().len() + header.len() - MAX_PROMPT_BYTES;
+    env.fields["opaque"] = serde_json::json!("x".repeat(capacity - excess));
+    let accepted = f
+        .store
+        .notify(NotificationOperation::Accept {
+            subscription: sub.clone(),
+            envelope: env.clone(),
+        })
+        .unwrap();
+    f.queue(sub, env);
+    let prompt_len = f
+        .sessions
+        .get_session(&f.session)
+        .unwrap()
+        .workflow_queued_prompts()
+        .back()
+        .unwrap()
+        .prompt()
+        .unwrap()
+        .len();
+    cleanup(f);
+    assert!(
+        pending.is_empty(),
+        "MP-08: source must not persist an envelope whose rendered prompt exceeds the bound"
+    );
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.code == "workflow_notification_prompt_limit"));
+    assert!(
+        refusal.is_err(),
+        "MP-08: oversized prompt must not be ACKed"
+    );
+    assert!(accepted_after_refusal.is_empty());
+    assert!(matches!(
+        accepted,
+        NotificationOutcome::Ack(WorkflowNotificationAck::Accepted)
+    ));
+    assert_eq!(prompt_len, MAX_PROMPT_BYTES);
+}
+
+// MP-08 / MP-10 / MP-11: reactivation adds an active subscriber at both ceilings.
+#[test]
+fn disabled_binding_reactivation_respects_source_fanout_limit() {
+    reactivation_limit_drill(false);
+}
+#[test]
+fn disabled_binding_reactivation_respects_owner_subscription_limit() {
+    reactivation_limit_drill(true);
+}
+fn reactivation_limit_drill(owner_limit: bool) {
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("limited-source");
+    let (b, _, bp) = f.workflow("limited-target");
+    let source = f.source(&a);
+    let original = f.attach(&source, &b, &bp);
+    f.store
+        .notify(NotificationOperation::Detach {
+            subscription_id: original.subscription_id.clone(),
+            owner: original.owner_user_id.clone(),
+            kernel: original.target_kernel_id.clone(),
+        })
+        .unwrap();
+    let limit = if owner_limit { 1024 } else { MAX_SUBSCRIPTIONS };
+    let mut last = original.clone();
+    for n in 0..limit {
+        let mut sub = original.clone();
+        sub.subscription_id = format!("filler-{n}");
+        sub.target_kernel_id = format!("target-{n}");
+        if owner_limit {
+            sub.source_id = format!("remote-source-{}", n / MAX_SUBSCRIPTIONS);
+            sub.source_kernel_id = "remote-source-kernel".into();
+        }
+        let NotificationOutcome::Subscription(saved) = f
+            .store
+            .notify(NotificationOperation::RemoteAttach { subscription: sub })
+            .unwrap()
+        else {
+            panic!("subscription")
+        };
+        last = saved;
+    }
+    // An already-active replacement at capacity still works and preserves its ID.
+    last.ttl_days = 1;
+    let replacement = f
+        .store
+        .notify(NotificationOperation::RemoteAttach {
+            subscription: last.clone(),
+        })
+        .unwrap();
+    let target =
+        WorkflowNotificationTarget::resolve(&f.sessions, "local", &f.session, &bp, None).unwrap();
+    let refusal = f.store.notify(NotificationOperation::Attach {
+        subscription: original.clone(),
+        target,
+    });
+    let db = Connection::open(f.root.join("kernel.sqlite")).unwrap();
+    let status: String = db
+        .query_row(
+            "SELECT status FROM app_automations WHERE automation_id=?1",
+            [&original.subscription_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let count: u32 = db.query_row("SELECT count(*) FROM app_automations WHERE source_kind='workflow_completion' AND owner_id='local' AND status='active'", [], |r| r.get(0)).unwrap();
+    drop(db);
+    let inventory_len = f.store.notification_inventory("local").unwrap().1.len();
+    // Free one slot: the detached row may reactivate using its original identity.
+    f.store
+        .notify(NotificationOperation::Detach {
+            subscription_id: last.subscription_id.clone(),
+            owner: last.owner_user_id.clone(),
+            kernel: last.target_kernel_id.clone(),
+        })
+        .unwrap();
+    let target =
+        WorkflowNotificationTarget::resolve(&f.sessions, "local", &f.session, &bp, None).unwrap();
+    let reactivated = f
+        .store
+        .notify(NotificationOperation::Attach {
+            subscription: original.clone(),
+            target,
+        })
+        .unwrap();
+    cleanup(f);
+    assert!(refusal.is_err(), "MP-08 / MP-11: disabled binding must consume a slot on reactivation (owner_limit={owner_limit})");
+    assert!(refusal.unwrap_err().to_string().contains(if owner_limit {
+        "workflow notification subscription limit"
+    } else {
+        "notification fanout limit"
+    }));
+    assert_eq!(status, "disabled");
+    assert_eq!(count as usize, limit);
+    assert_eq!(inventory_len, count as usize);
+    assert!(matches!(replacement, NotificationOutcome::Subscription(s) if s == last));
+    assert!(
+        matches!(reactivated, NotificationOutcome::Subscription(s) if s.subscription_id == original.subscription_id)
+    );
+}

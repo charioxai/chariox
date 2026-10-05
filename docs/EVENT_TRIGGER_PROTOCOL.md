@@ -192,8 +192,11 @@ before steering, so that run's completion keeps the no-loop fence. No agent owns
 any subscription. Run-scoped subscription creation remains design only below.
 
 New payloads and prompts use the reused App path's **64 KiB** ceilings (not the AEDS
-1 MiB transport ceiling). Final output reserves 8 KiB for envelope fields; the entire
-envelope is checked separately. At most 32 artifacts remain metadata only: no fetch,
+1 MiB transport ceiling). Final output reserves 8 KiB for envelope fields. Source
+persistence and target acceptance both reserve the rendered prompt's 51-byte header:
+the entire encoded envelope is limited to 65,485 bytes, so its prompt fits 65,536 bytes.
+Refusal leaves no delivery receipt; completion retains a visible
+`workflow_notification_prompt_limit` diagnostic. At most 32 artifacts remain metadata only: no fetch,
 host-file read or provider attachment promotion. There are at most 1,024 local sources
 and active subscriptions per owner, 32 subscribers per source, 1,024 pending receipts
 and 16 MiB pending payload per kernel. Oversize/backpressure is diagnostic and cannot

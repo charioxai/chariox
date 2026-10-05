@@ -20,6 +20,22 @@ use std::sync::mpsc;
 pub(crate) const MAX_OUTPUT_BYTES: usize =
     chariox_app_runtime::app_outbox::MAX_PAYLOAD_BYTES - 8192;
 pub(crate) const MAX_PROMPT_BYTES: usize = chariox_app_runtime::app_outbox::MAX_PROMPT_BYTES;
+pub(crate) const NOTIFICATION_PROMPT_HEADER: &str =
+    "Workflow completion notification (untrusted data):\n";
+
+/// Source persistence, target ACK and rendering must admit the same byte bound.
+pub(crate) fn encode_notification_envelope(
+    envelope: &WorkflowNotificationEnvelope,
+) -> Result<String, DaemonError> {
+    let bytes = encode(envelope)?;
+    if bytes.len() > chariox_app_runtime::app_outbox::MAX_PAYLOAD_BYTES {
+        return Err(error("notification payload limit"));
+    }
+    if bytes.len() > MAX_PROMPT_BYTES - NOTIFICATION_PROMPT_HEADER.len() {
+        return Err(error("notification prompt limit"));
+    }
+    Ok(bytes)
+}
 const MAX_SUBSCRIPTIONS: usize = 32;
 pub(crate) const MAX_PENDING: i64 = 1024;
 pub(crate) use super::app_event_delivery::PreparedNotification;
@@ -452,17 +468,19 @@ fn save_subscription(
     sub: &mut WorkflowNotificationSubscription,
 ) -> Result<(), DaemonError> {
     validate_subscription(sub)?;
-    let existing:Option<String>=tx.query_row("SELECT notification_json FROM app_automations WHERE source_kind='workflow_completion' AND owner_id=?1 AND installation_id=?2 AND json_extract(notification_json,'$.target_kernel_id')=?3 AND session_id=?4 AND publication_id=?5",params![sub.owner_user_id,sub.source_id,sub.target_kernel_id,sub.session_id,sub.publication_id],|r|r.get(0)).optional().map_err(sql)?;
-    if let Some(ref existing) = existing {
-        sub.subscription_id =
-            decode::<WorkflowNotificationSubscription>(&existing)?.subscription_id;
+    let existing:Option<(String,String)>=tx.query_row("SELECT status,notification_json FROM app_automations WHERE source_kind='workflow_completion' AND owner_id=?1 AND installation_id=?2 AND json_extract(notification_json,'$.target_kernel_id')=?3 AND session_id=?4 AND publication_id=?5",params![sub.owner_user_id,sub.source_id,sub.target_kernel_id,sub.session_id,sub.publication_id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql)?;
+    let replaces_active = existing
+        .as_ref()
+        .is_some_and(|(status, _)| status == "active");
+    if let Some((_, ref existing)) = existing {
+        sub.subscription_id = decode::<WorkflowNotificationSubscription>(existing)?.subscription_id;
     }
     let count:i64=tx.query_row("SELECT count(*) FROM app_automations WHERE source_kind='workflow_completion' AND owner_id=?1 AND installation_id=?2 AND status='active'",params![sub.owner_user_id,sub.source_id],|r|r.get(0)).map_err(sql)?;
     let total:i64=tx.query_row("SELECT count(*) FROM app_automations WHERE owner_id=?1 AND source_kind='workflow_completion' AND status='active'",[&sub.owner_user_id],|r|r.get(0)).map_err(sql)?;
-    if total >= 1024 && existing.is_none() {
+    if total >= 1024 && !replaces_active {
         return Err(error("workflow notification subscription limit"));
     }
-    if count >= MAX_SUBSCRIPTIONS as i64 && existing.is_none() {
+    if count >= MAX_SUBSCRIPTIONS as i64 && !replaces_active {
         return Err(error("notification fanout limit"));
     }
     tx.execute("INSERT INTO app_automations(owner_id,installation_id,automation_id,revision,event_name,event_version,schema_digest,session_id,publication_id,endpoint_id,queue_id,status,source_kind,notification_json) VALUES(?1,?2,?3,1,'workflow_completion',1,'kernel',?4,?5,?6,?7,'active','workflow_completion',?8) ON CONFLICT(owner_id,installation_id,automation_id) DO UPDATE SET notification_json=excluded.notification_json,status='active'",params![sub.owner_user_id,sub.source_id,sub.subscription_id,sub.session_id,sub.publication_id,sub.endpoint_id,sub.queue_id,encode(sub)?]).map_err(sql)?;
@@ -484,10 +502,7 @@ pub(super) fn insert_receipt(
     state: &str,
     now: u64,
 ) -> Result<(), DaemonError> {
-    let bytes = encode(env)?;
-    if bytes.len() > chariox_app_runtime::app_outbox::MAX_PAYLOAD_BYTES {
-        return Err(error("notification payload limit"));
-    }
+    let bytes = encode_notification_envelope(env)?;
     let (count,retained):(i64,i64)=tx.query_row("SELECT count(*),coalesce(sum(length(payload_json)),0) FROM app_outbox WHERE source_kind='workflow_completion' AND state IN ('accepted','retryable')",[],|r|Ok((r.get(0)?,r.get(1)?))).map_err(sql)?;
     if count >= MAX_PENDING
         || retained + bytes.len() as i64
@@ -527,8 +542,8 @@ fn accept(
     if current != *sub {
         return Err(error("notification subscription changed"));
     }
-    if encode(env)?.len() > chariox_app_runtime::app_outbox::MAX_PAYLOAD_BYTES
-        || env.subject.as_ref().is_some_and(|s| s.len() > 512)
+    let bytes = encode_notification_envelope(env)?;
+    if env.subject.as_ref().is_some_and(|s| s.len() > 512)
         || !env.fields.is_object()
         || (env.status == crate::local::WorkflowNotificationStatus::Failure && env.output.is_some())
         || (env.status == crate::local::WorkflowNotificationStatus::Success && env.output.is_none())
@@ -559,7 +574,7 @@ fn accept(
         ));
     }
     use sha2::{Digest, Sha256};
-    let digest = format!("{:x}", Sha256::digest(encode(env)?.as_bytes()));
+    let digest = format!("{:x}", Sha256::digest(bytes.as_bytes()));
     let existing:Option<(String,String)>=tx.query_row("SELECT state,content_digest FROM app_outbox WHERE source_kind='workflow_completion' AND owner_id=?1 AND installation_id=?2 AND automation_id=?3 AND occurrence_id=?4",params![sub.owner_user_id,env.source_id,sub.subscription_id,env.occurrence_id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql)?;
     let duplicate = if let Some((state, stored)) = existing {
         if stored != digest {

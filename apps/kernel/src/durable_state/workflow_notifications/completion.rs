@@ -134,10 +134,15 @@ pub(crate) fn capture_in(
                 run.completed_at_ms().unwrap_or(0),
             ) {
                 if let DaemonError::LocalTransport { ref message, .. } = e {
-                    if message == "notification outbox full"
-                        || message == "notification payload limit"
-                    {
-                        tx.execute("UPDATE workflow_notification_occurrences SET diagnostic='workflow_notification_delivery_limit' WHERE source_id=?1 AND occurrence_id=?2",params![source.source_id,run.id()])?;
+                    let diagnostic = match message.as_str() {
+                        "notification outbox full" | "notification payload limit" => {
+                            Some("workflow_notification_delivery_limit")
+                        }
+                        "notification prompt limit" => Some("workflow_notification_prompt_limit"),
+                        _ => None,
+                    };
+                    if let Some(code) = diagnostic {
+                        tx.execute("UPDATE workflow_notification_occurrences SET diagnostic=?3 WHERE source_id=?1 AND occurrence_id=?2",params![source.source_id,run.id(),code])?;
                         continue;
                     }
                 }
