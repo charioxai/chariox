@@ -37,11 +37,26 @@ Revocation cancels the admission epoch first, retires actor presence and
 refuses in-flight results/commits at the next authority check. The same epoch
 fences idle subscriptions; an internal controller cleanup closes their streams.
 It cannot undo physical input already delivered. Vault fills always require
-focus. Native input classifies protected/password/OTP/payment fields, opaque
-frames/shadow hosts and payment/critical approval controls before dispatch.
-Unknown classification fails closed. Enter resolves the native form's first
-associated submit control, including external controls; buttonless or unnamed
-activation requires focus. Chromium's built-in control shadow trees are not
+focus. Native input classifies protected/password/OTP/payment fields and opaque
+frames/shadow hosts before dispatch. Retained click, Enter and Space activation
+of actionable controls requires positive routine classification. This covers
+native buttons (including button/submit/image/reset inputs), links with `href`,
+ARIA button/link/menuitem/tab/switch/checkbox/option roles, label targets,
+summary controls and elements with click/pointer/key handlers. The bounded
+routine labels are Search, Find, Next, Previous, Back, Forward, Expand,
+Collapse, Show more and Show less; all supplied action labels must qualify.
+Unknown, mixed and icon-only labels require focus. Enter resolves the native
+form's first associated submit control, including external controls; buttonless
+activation requires focus. Ordinary page areas without actionable controls or
+activation handlers remain routine.
+
+MP-11: the controller checks listeners through `DOMDebugger.getEventListeners`
+on the target and ancestors through document/window, including associated
+label and submit paths. It resolves main-world listener objects by native CDP
+node identity while keeping DOM/label inspection in an isolated world. A
+failed metadata lookup refuses activation. The controller rechecks before each
+native input event and returns only sensitivity to the kernel, without page
+values. Chromium's built-in control shadow trees are not
 opaque page content; page-created and unknown shadow roots remain protected.
 Focused physical input carries live focus authority for the whole operation,
 allowing routine-to-sensitive transitions such as Tab onto an approval button.
@@ -51,6 +66,14 @@ input rechecks protection before physical events. Tab's non-activating paired
 release checks document and cancellation authority without reclassifying the
 newly focused button as an activation.
 Critical App effects continue through kernel-owned human validation/passkeys.
+
+MP-08 / MP-11: refusal reasons use the #882 vocabulary: `not_focused_agent`
+for operations that require focus/new resource claims, `sensitive_requires_focus`
+for sensitive activation or Vault fills, and `not_granted` for absent, expired
+or revoked authority. The host controller preserves `sensitive_requires_focus`
+in its existing error-code field. Kernel String/MCP errors carry those reason
+markers in their existing error text; their outer transport envelopes stay the
+same. Protocol remains 432/78 with no serialized shape change in this correction.
 
 There is no cross-kernel control. Browser windows expose `kernel_id`,
 `kernel_name`, `focused_agent_kernel_id` and `reachable_by_focused_agent`; App
@@ -73,8 +96,12 @@ execution, official-provider subagent waits, clients, and fresh-machine parity.
 None alone closes an MP item.
 
 MP-08 / MP-10 / MP-11 PR #880 regressions: the opt-in
-`kernel-browser-input.browser-test.mjs` exercises real native form submission
-and paired navigation through the production controller. The ignored Rust
+`kernel-browser-input.browser-test.mjs` exercises real native form submission,
+paired navigation and one actionable-control matrix through the production
+controller. The matrix checks zero retained native dispatch and handler effects
+for Pay/Approve, unnamed and unclassified controls, individual handler types,
+delegated listeners and associated label targets; focused controls and a
+positively routine Search control remain usable. The ignored Rust
 `runtime::kernel_browser_host::native_input_tests` drills additionally prove
 kernel-focused navigation preserves tab/document generation and idle streams,
 and retained Enter refuses payment. These credential-free native checks do not

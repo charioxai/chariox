@@ -9,7 +9,11 @@ function fixture(value) {
     sent.push({ method, params });
     if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "f", loaderId: "doc" } } };
     if (method === "Page.createIsolatedWorld") return { executionContextId: 7 };
-    if (method === "Runtime.evaluate") return { result: { value: typeof value === "function" ? value() : value } };
+    if (method === "Runtime.evaluate") {
+      const sensitive = typeof value === "function" ? value() : value;
+      return { result: sensitive === false ? { objectId:"targets", subtype:"array" } : { value:sensitive } };
+    }
+    if (method === "Runtime.getProperties") return { result:[] };
     if (method === "DOM.getDocument") return { root: { nodeId: 1 } };
     if (method === "DOM.querySelectorAll") return { nodeIds: [] };
     return {};
@@ -30,8 +34,10 @@ test("MP-08: routine retained click and scroll proceed; classification returns n
   await inputHostTab(browser, tab, { kind: "click", x: 1, y: 2 }, { requireRoutine: true });
   assert.equal(sent.filter(({ method }) => method === "Input.dispatchMouseEvent").length, 2);
   const scan = sent.find(({ method }) => method === "Runtime.evaluate").params;
-  assert.equal(scan.returnByValue, true);
+  assert.equal(scan.returnByValue, false);
   assert.match(scan.expression, /autocomplete/);
+  await sensitiveHostInput(browser, tab, {kind:'text',text:'MP-11-fixture-input-content'});
+  assert(!sent.filter(({method}) => method === 'Runtime.evaluate').some(({params}) => params.expression.includes('MP-11-fixture-input-content')));
   assert.equal(await sensitiveHostInput(browser, tab, { kind: "scroll" }), false);
 });
 test("MP-08/MP-11: retained Tab releases after focus moves onto a sensitive button", async () => {
@@ -59,4 +65,27 @@ test("MP-11: Tab release still refuses revoked authority", async () => {
   };
   await assert.rejects(inputHostTab(browser, tab, { kind: "key", key: "Tab" }, { requireRoutine: true, signal: cancellation.signal }), { code: "browser_action_cancelled" });
   assert.equal(sent.filter(call => call.method === "Input.dispatchKeyEvent").length, 1);
+});
+
+test("MP-11: unavailable native listener metadata refuses input and releases remote objects", async () => {
+  for (const failing of ['DOM.describeNode', 'DOM.resolveNode', 'DOMDebugger.getEventListeners', 'Runtime.callFunctionOn']) {
+    const { browser, sent } = fixture(false);
+    const { connection } = await browser.resolvePageTarget();
+    const send = connection.send;
+    connection.send = async (method, params) => {
+      const result = await send(method, params);
+      if (method === failing) throw new Error('MP-11: unavailable fixture metadata');
+      if (method === 'Runtime.getProperties') return { result:[{name:'0',value:{objectId:'isolated-node',subtype:'node'}}] };
+      if (method === 'DOM.describeNode') return {node:{backendNodeId:7}};
+      if (method === 'DOM.resolveNode') return {object:{objectId:'main-node'}};
+      if (method === 'DOMDebugger.getEventListeners') {
+        assert.equal(params.objectId, 'main-node');
+        return {listeners:[{type:'click',backendNodeId:7}]};
+      }
+      return result;
+    };
+    await assert.rejects(inputHostTab(browser, tab, {kind:'click',x:1,y:2}, {requireRoutine:true}), {code:'sensitive_requires_focus'});
+    assert(!sent.some(({method}) => method.startsWith('Input.')));
+    assert(sent.some(({method}) => method === 'Runtime.releaseObjectGroup'));
+  }
 });

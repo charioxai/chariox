@@ -56,6 +56,20 @@ async function using(callback) {
   try { await callback(context, root); } finally { fixture.secretFocused = false; await context.host.stop(); await rm(root, { recursive: true, force: true }); }
 }
 
+test("MP-11: retained-input refusal keeps its code and leaves Chromium live", () => using(async ({ host, sent }) => {
+  const opened = await host.request({ op:'open', url:'https://example.com' });
+  const tab = opened.tabs[0];
+  const reply = await host.handle({ id:'denied', method:'host.browser', params: {
+    op:'input', tab_id:tab.tab_id, generation:opened.generation, document_id:tab.document_id,
+    input:{kind:'click',x:1,y:2}, _retained_agent:true,
+  } });
+  assert.equal(reply.ok, false);
+  assert.equal(reply.error.code, 'sensitive_requires_focus');
+  assert.match(reply.error.message, /requires focus/);
+  assert(!sent.some(({method}) => method.startsWith('Input.')));
+  assert.equal((await host.request({op:'state'})).generation, opened.generation);
+}));
+
 test("MP-11: revocation closes idle and in-flight grant streams without another holder's stream", () => using(async ({ host }) => {
   const opened = await host.request({ op: "open", url: "https://example.com" });
   const command = { op: "subscribe", tab_id: opened.tab_id, generation: opened.generation };

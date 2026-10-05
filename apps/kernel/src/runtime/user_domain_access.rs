@@ -57,7 +57,8 @@ impl UserDomainAccess {
         self.grants
             .get(&(user.into(), agent.into()))
             .ok_or_else(|| {
-                "MP-08: user-domain access expired or revoked; focus this agent again".into()
+                "MP-08: not_granted: user-domain access expired or revoked; focus this agent again"
+                    .into()
             })
     }
     pub(crate) fn claim(
@@ -67,18 +68,19 @@ impl UserDomainAccess {
         resource: UserDomainResource,
         sensitive: bool,
     ) -> Result<(), String> {
+        self.grant(user, agent)?;
         let focused = self.focused(user) == Some(agent);
         if sensitive && !focused {
-            return Err("MP-11: sensitive user-domain action requires focus or human approval; focus this agent".into());
+            return Err("MP-11: sensitive_requires_focus: sensitive user-domain action requires focus or human approval; focus this agent".into());
         }
         let grant = self
             .grants
             .get_mut(&(user.into(), agent.into()))
-            .ok_or("MP-08: user-domain grant revoked")?;
+            .ok_or("MP-08: not_granted: user-domain grant revoked")?;
         if !grant.resources.contains(&resource) {
             if !focused {
                 return Err(
-                    "MP-08: new user-domain resource requires focus; focus this agent".into(),
+                    "MP-08: not_focused_agent: new user-domain resource requires focus; focus this agent".into(),
                 );
             }
             if grant.resources.len() >= 1024 {
@@ -160,7 +162,7 @@ impl UserDomainAccess {
         let grant = self
             .grants
             .get_mut(&(user.into(), agent.into()))
-            .ok_or("MP-08: revoked subscription")?;
+            .ok_or("MP-08: not_granted: revoked subscription")?;
         if grant.subscriptions.len() >= 16 {
             return Err("MP-08: user-domain subscription limit reached".into());
         }
@@ -244,10 +246,19 @@ mod tests {
         access.focus("owner", Some("second"));
         assert!(!epoch.requested());
         assert!(access.claim("owner", "first", tab("a"), false).is_ok());
-        assert!(access.claim("owner", "first", tab("b"), false).is_err());
-        assert!(access.claim("owner", "first", tab("a"), true).is_err());
+        assert!(access
+            .claim("owner", "first", tab("b"), false)
+            .unwrap_err()
+            .contains("not_focused_agent"));
+        assert!(access
+            .claim("owner", "first", tab("a"), true)
+            .unwrap_err()
+            .contains("sensitive_requires_focus"));
         assert!(access.claim("owner", "second", tab("b"), false).is_ok());
-        assert!(access.claim("stranger", "first", tab("a"), false).is_err());
+        assert!(access
+            .claim("stranger", "first", tab("a"), false)
+            .unwrap_err()
+            .contains("not_granted"));
     }
     #[test]
     fn mdaccess_subscription_expiry_reclaims_slots_and_poll_renews() {

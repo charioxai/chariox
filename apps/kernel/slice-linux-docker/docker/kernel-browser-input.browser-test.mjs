@@ -8,7 +8,7 @@ import { KernelBrowserHost } from "./kernel-browser-host.mjs";
 
 assert(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "MP-10: explicit disposable drill root required");
 
-async function native(markup, operation) {
+async function native(markup, operation, instrument = true) {
   const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "native-input-"));
   const server = createServer((_request, response) => {
     response.setHeader("Content-Type", "text/html");
@@ -17,8 +17,10 @@ async function native(markup, operation) {
       let submitted=0, releases=0;
       const status=()=>document.querySelector('#result').textContent=
         'submitted='+submitted+' releases='+releases+' focus='+document.activeElement.id;
-      document.addEventListener('submit',e=>{e.preventDefault();submitted++;status()});
-      document.addEventListener('keyup',e=>{if(e.key==='Tab')releases++;status()});
+      if (${instrument}) {
+        document.addEventListener('submit',e=>{e.preventDefault();submitted++;status()});
+        document.addEventListener('keyup',e=>{if(e.key==='Tab')releases++;status()});
+      }
       document.querySelector('#field').focus();
       </script>`);
   });
@@ -42,7 +44,12 @@ async function native(markup, operation) {
     const status = async () => (await connection.send("Runtime.evaluate", {
       expression: "document.querySelector('#result').textContent", returnByValue: true,
     }, sessionId)).result.value;
-    await operation({ host, bound, input, status, events });
+    const evaluate = async expression => {
+      const result = await connection.send("Runtime.evaluate", { expression, returnByValue: true }, sessionId);
+      assert(!result.exceptionDetails, 'MP-10: credential-free fixture setup/read failed');
+      return result.result.value;
+    };
+    await operation({ host, bound, input, status, events, evaluate });
   } finally {
     await host.stop();
     await new Promise(resolve => server.close(resolve));
@@ -66,10 +73,74 @@ for (const [name, markup] of [
   }));
 }
 
-test("MP-08 P1: retained Enter can activate a classified ordinary submit", () => native(`<form>${field}<button>Search</button></form>`, async ({ input, status }) => {
-  await input({ kind: "key", key: "Enter" }, { _retained_agent: true });
-  assert.match(await status(), /^submitted=1/);
-}));
+test("MP-11: retained native activation matrix fails closed; focused controls remain usable", () => native(`${field}<div id="stage"></div>`, async ({ host, bound, input, events, evaluate }) => {
+  const controls = [
+    ['button', '<button id="action">LABEL</button>'],
+    ...['button', 'submit', 'image', 'reset'].map(type => [`input-${type}`, `<input id="action" type="${type}" value="LABEL" alt="LABEL">`]),
+    ['link', '<a id="action" href="#">LABEL</a>'],
+    ...['button', 'link', 'menuitem', 'tab', 'switch', 'checkbox', 'option'].map(role => [`role-${role}`, `<div id="action" role="${role}" tabindex="0">LABEL</div>`]),
+    ['label', '<label id="action" for="target">LABEL</label><input id="target" type="checkbox" aria-label="LABEL">'],
+    ['summary', '<details><summary id="action">LABEL</summary></details>'],
+    ['handler-only', '<div id="action" tabindex="0">LABEL</div>'],
+    ...['click', 'pointerdown', 'keydown', 'keyup'].map(type => [`handler-${type}`, '<div id="action" tabindex="0">LABEL</div>']),
+    ['ancestor-handler', '<div id="listener"><div id="action" tabindex="0">LABEL</div></div>'],
+    ['document-handler', '<div id="action" tabindex="0">LABEL</div>'],
+    ['window-handler', '<div id="action" tabindex="0">LABEL</div>'],
+    ['unnamed-icon-button', '<button id="action" style="width:40px;height:30px;background:black"></button>'],
+    ['unclassified-button', '<button id="action">Continue</button>'],
+    ['routine-label-sensitive-target', '<label id="action" for="target">Search</label><input id="target" type="checkbox" aria-label="LABEL">'],
+    ['implicit-submit', '<form><input id="action"><button>LABEL</button></form>'],
+    ['external-submit', '<input id="action" form="payment"><form id="payment"></form><button form="payment">LABEL</button>'],
+  ];
+  const failures = [];
+  let refusals = 0, focused = 0;
+  for (const [kind, template] of controls) {
+    for (const label of ['Pay', 'Approve']) {
+      const configure = async () => evaluate(`(() => {
+        window.cleanup?.();
+        document.querySelector('#stage').innerHTML = ${JSON.stringify(template.replaceAll('LABEL', label))};
+        window.effects = 0;
+        const action = document.querySelector('#action');
+        const listener = ${JSON.stringify(kind)} === 'document-handler' ? document :
+          ${JSON.stringify(kind)} === 'window-handler' ? window : document.querySelector('#listener') || action;
+        const effect = event => { event.preventDefault(); window.effects++; };
+        const types = ${JSON.stringify(['implicit-submit', 'external-submit'].includes(kind) ? ['submit'] : kind.startsWith('handler-') && kind !== 'handler-only' ? [kind.slice('handler-'.length)] : ['click', 'pointerdown', 'keydown', 'keyup'])};
+        const target = types[0] === 'submit' ? action.form : listener;
+        for (const type of types) target.addEventListener(type, effect);
+        window.cleanup = () => { for (const type of types) target.removeEventListener(type, effect); };
+        action.tabIndex = 0; action.focus();
+        const r = action.getBoundingClientRect();
+        return { x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2) };
+      })()`);
+      const point = await configure();
+      const activations = ['implicit-submit', 'external-submit'].includes(kind) ? [{ kind:'key', key:'Enter' }] :
+        [{ kind:'click', ...point }, { kind:'key', key:'Enter' }, { kind:'key', key:'Space' }];
+      for (const activation of activations) {
+        refusals++;
+        await configure(); events.length = 0;
+        const result = await input(activation, { _retained_agent: true }).then(() => null, error => error);
+        const effects = await evaluate('window.effects');
+        if (result?.code !== 'sensitive_requires_focus' || !result.message.includes('requires focus') || effects !== 0 || events.length !== 0) {
+          failures.push({ kind, label, activation:activation.key || activation.kind, error:result?.message, effects, dispatched:events.length });
+        }
+      }
+      // A focused native activation must still reach this exact fixture handler.
+      await configure(); events.length = 0;
+      await input(kind.startsWith('handler-key') ? { kind:'key', key:'Enter' } : activations[0], { _retained_agent: false });
+      assert((await evaluate('window.effects')) > 0, `MP-08: focused ${kind} ${label} did not activate`);
+      focused++;
+      assert.equal((await host.request({ op:'state' })).generation, bound.generation);
+    }
+  }
+  await evaluate("window.cleanup(); document.querySelector('#stage').innerHTML='<button id=search>Search</button><p id=plain>Ordinary page area</p>'; window.effects=0; document.querySelector('#search').onclick=()=>window.effects++");
+  for (const id of ['search', 'plain']) {
+    const point = await evaluate(`(() => { const r=document.querySelector('#${id}').getBoundingClientRect(); return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}; })()`);
+    await input({ kind:'click', ...point }, { _retained_agent:true });
+  }
+  assert.equal(await evaluate('window.effects'), 1, 'MP-08: positively routine Search remains usable');
+  assert.deepEqual(failures, [], 'MP-11: retained matrix dispatched native input or handler effects');
+  console.log(`MP-08/MP-10/MP-11 native matrix: ${refusals} retained refusals, ${focused} focused activations; Search and ordinary page click pass`);
+}, false));
 
 test("MP-08 P2: paired Tab releases on an approval button without activating or stopping Chromium", () => native(`${field}<button id="pay">Approve payment</button>`, async ({ host, bound, input, status, events }) => {
   const stream = await host.request({ op: "subscribe", ...bound });

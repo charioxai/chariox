@@ -75,7 +75,7 @@ impl KernelRuntimeState {
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         if run.state() == crate::provider::ProviderRunState::Ended {
             return Err(host_error(
-                "MP-11: provider run ended; user-domain authority revoked".into(),
+                "MP-11: not_granted: provider run ended; user-domain authority revoked".into(),
             ));
         }
         let id = run
@@ -104,7 +104,7 @@ impl KernelRuntimeState {
             || !self.owned.kernel_browser_host.has_grant(&owner, id)
         {
             return Err(host_error(
-                "MP-08: user-domain access expired or revoked; ask the user to focus this agent"
+                "MP-08: not_granted: user-domain access expired or revoked; ask the user to focus this agent"
                     .into(),
             ));
         }

@@ -463,6 +463,9 @@ export class KernelBrowserHost {
       throw new Error("MD-2: unsupported host method");
     } catch (error) {
       if (error?.code === "browser_action_cancelled") await this.stop();
+      if (error?.code === "sensitive_requires_focus") {
+        return { id: request.id, ok: false, error: { code: "sensitive_requires_focus", message: "MP-11: sensitive user-domain action requires focus or human approval" } };
+      }
       return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }
   }
 }

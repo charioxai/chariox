@@ -135,7 +135,7 @@ fn mdaccess_native_retained_enter_cannot_submit_payment() {
         fixture.status().starts_with("submitted=0 "),
         "MP-11: retained Enter dispatched a native payment submit"
     );
-    assert!(result.unwrap_err().contains("requires focus"));
+    assert!(result.unwrap_err().contains("sensitive_requires_focus"));
 }
 
 #[test]

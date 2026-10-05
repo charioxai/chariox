@@ -251,7 +251,7 @@ impl KernelBrowserHost {
     ) -> Result<(), String> {
         if let Some(admission) = admission {
             if admission.cancellation.requested() {
-                return Err("MD-3: browser authority revoked".into());
+                return Err("MP-11: not_granted: browser authority revoked".into());
             }
             if let Some(agent) = admission.agent.as_deref() {
                 let state = self.inner.lock().map_err(|_| "MD-3: focus lock poisoned")?;
@@ -260,7 +260,9 @@ impl KernelBrowserHost {
                     &state.access.grant(&admission.user, agent)?.epoch,
                     &admission.epoch,
                 ) {
-                    return Err("MD-3: browser grant changed; request fresh tools".into());
+                    return Err(
+                        "MP-11: not_granted: browser grant changed; request fresh tools".into(),
+                    );
                 }
             }
         }
@@ -319,7 +321,7 @@ impl KernelBrowserHost {
             let (id, cancellation) = {
                 let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
                 if admission.is_some_and(|admission| admission.cancellation.requested()) {
-                    return Err("MD-3: browser authority revoked".into());
+                    return Err("MP-11: not_granted: browser authority revoked".into());
                 }
                 ledger.begin(browser_actor(admission, &params), &params)?
             };
@@ -389,7 +391,7 @@ impl KernelBrowserHost {
                 // it removes a registered actor or this check prevents late registration.
                 let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
                 if admission.is_some_and(|admission| admission.cancellation.requested()) {
-                    return Err("MD-3: browser authority revoked".into());
+                    return Err("MP-11: not_granted: browser authority revoked".into());
                 }
                 ledger.begin(actor, &params)?
             };
@@ -421,12 +423,12 @@ impl KernelBrowserHost {
             let sensitive = backend.host_request("host.input_sensitive", params.clone())?
                 ["sensitive"]
                 .as_bool()
-                .ok_or("MP-11: sensitive-action classification unavailable; focus required")?;
+                .ok_or("MP-11: sensitive_requires_focus: sensitive-action classification unavailable; focus required")?;
             self.check_admission(admission)?;
             let agent = admission.unwrap().agent.clone().unwrap();
             let focused = self.is_focused(user, &agent);
             if sensitive && !focused {
-                return Err("MP-11: sensitive user-domain action requires focus or human approval; focus this agent".into());
+                return Err("MP-11: sensitive_requires_focus: sensitive user-domain action requires focus or human approval; focus this agent".into());
             }
             if focused {
                 let host = self.clone();
@@ -579,7 +581,7 @@ impl KernelBrowserHost {
         let model = self.actor_model(user)?;
         let mut model = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
         if admission.is_some_and(|admission| admission.cancellation.requested()) {
-            return Err("MD-3: browser authority revoked".into());
+            return Err("MP-11: not_granted: browser authority revoked".into());
         }
         model.takeover(actor, tab, generation)
     }
@@ -695,7 +697,7 @@ fn require_focus(state: &HostState, user: &str, agent: &str) -> Result<(), Strin
     if state.access.focused(user) == Some(agent) {
         Ok(())
     } else {
-        Err("MD-3: user-domain browser access follows current local agent focus".into())
+        Err("MP-08: not_focused_agent: user-domain browser access requires current local agent focus; ask the user to focus this agent".into())
     }
 }
 

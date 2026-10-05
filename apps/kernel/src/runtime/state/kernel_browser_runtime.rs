@@ -463,7 +463,7 @@ impl KernelRuntimeState {
         }
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
         if name == PASTE && !host.is_focused(&user, agent.id()) {
-            return Err(host_error("MP-11: Vault fill requires focus or human approval; ask the user to focus this agent".into()));
+            return Err(host_error("MP-11: sensitive_requires_focus: Vault fill requires focus or human approval; ask the user to focus this agent".into()));
         }
         let authority = self.clone();
         let auth_token = token.to_string();
