@@ -9,6 +9,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { browserStateCleanupFailure, cleanupBrowserStateImages } from "./lib/browser-state-drill-cleanup.mjs"
 import { browserStateDrillImageConfig } from "./lib/browser-state-drill-image.mjs"
+import { signalBrowserStateChild } from "./lib/browser-state-drill-process.mjs"
 import { assertLocalDevOwnedWorkspace } from "./lib/browser-state-local-dev-workspace.mjs"
 import { resolveBrowserStateDrillPaths } from "./lib/browser-state-drill-paths.mjs"
 import { startBrowserComputerFixture } from "./lib/browser-computer-fixture.mjs"
@@ -1005,9 +1006,9 @@ async function runCommand(command, args, options = {}) {
       timeout = setTimeout(() => {
         if (settled) return
         stderr += `\n[timed out after ${options.timeoutMs}ms: ${command} ${args.join(" ")}]\n`
-        child.kill("SIGTERM")
+        signalBrowserStateChild(child, "SIGTERM")
         setTimeout(() => {
-          if (!settled) child.kill("SIGKILL")
+          if (!settled) signalBrowserStateChild(child, "SIGKILL")
         }, 2_000).unref()
       }, options.timeoutMs)
       timeout.unref()
@@ -1195,9 +1196,9 @@ async function closeFixtureServer() {
 
 async function terminateChild(child) {
   if (!child || child.exitCode != null) return
-  child.kill("SIGTERM")
+  signalBrowserStateChild(child, "SIGTERM")
   if (await waitForChildExit(child, 5_000)) return
-  child.kill("SIGKILL")
+  signalBrowserStateChild(child, "SIGKILL")
   await waitForChildExit(child, 1_000)
 }
 
