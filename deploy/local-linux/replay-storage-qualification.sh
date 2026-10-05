@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # MP-02/MP-03/MP-08/MP-10/MP-11: provider-free save/backup replay on an enrolled isolated host.
 set -euo pipefail
+# The isolated operator pins manifests through private, nonwritable ancestry.
+# Fresh Ubuntu users commonly inherit 0002; keep this fixture's state private.
+umask 077
 [[ ${CHARIOX_STORAGE_QUALIFICATION_ISOLATED_HOST:-} == 1 ]] || { echo 'MP-10: select a disposable isolated DEV host explicitly' >&2; exit 2; }
 [[ $(id -u) != 0 ]] || { echo 'MP-02/MP-10: run as the enrolled ordinary user' >&2; exit 2; }
 : "${M20_KERNEL_BINARY:?absolute, verified public kernel required}"
