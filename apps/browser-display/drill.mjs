@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { shapeViewerLeg } from './drill-netem.mjs';
+import { measureWorkload } from './drill-workloads.mjs';
 import { fixture } from './drill-fixtures.mjs';
 import { compare, distribution } from './drill-metrics.mjs';
 import { summarizeStages } from './drill-stages.mjs';
@@ -20,7 +22,9 @@ const pause = ms => new Promise(resolve => setTimeout(resolve,ms));
 const receipt = { item: 'MD-DISPLAY-02/04', status: 'RED', source: execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(), source_dirty: Boolean(execFileSync('git',['status','--porcelain'],{encoding:'utf8'}).trim()), commands: process.argv.slice(1), codec: 'vp09.00.10.08 + exact PNG/tiles', target_encrypted_bitrate: Number(process.env.MD_BITRATE || 2_000_000), css_geometry:[1280,800],dpr:2, transport:'production local scoped-auth relay + kernel encrypted request/event path', samples:[], cleanup:[] };
 await mkdir(output,{recursive:true});
 const root = await mkdtemp(path.join(tmpdir(),'chariox-md-display-impl-'));
-let kernel, display, viewer, browser, server, ready;
+let kernel, display, viewer, browser, server, ready, shaped;
+const workload=process.env.MD_WORKLOAD||'docs';
+receipt.workload=workload;
 let kernelExit;
 const ts=createRequire('/root/work/oss/package.json')('typescript');
 const relayCryptoSource=await readFile(path.resolve(here,'../../packages/kernel-client/src/browser-relay-crypto.ts'),'utf8');
@@ -57,7 +61,7 @@ try {
    const page=fixture(name,`http://127.0.0.1:${server.address().port}`,sourceText);
    if(page){res.setHeader('Content-Type','text/html');res.end(page);return;}
    if(name==='/browser-relay-crypto.mjs'){res.setHeader('Content-Type','text/javascript');res.end(relayCrypto);return;}
-   if(name==='/relay-bootstrap'){res.setHeader('Content-Type','application/json');res.end(await readFile(path.join(root,'home','relay-bootstrap.private.json')));return;}
+   if(name==='/relay-bootstrap'){const bootstrap=JSON.parse(await readFile(path.join(root,'home','relay-bootstrap.private.json'),'utf8'));if(shaped)bootstrap.relay_url=shaped.url;res.setHeader('Content-Type','application/json');res.end(JSON.stringify(bootstrap));return;}
    const assets={'/harness.html':'harness.html','/presenter.mjs':'presenter.mjs'};
    if(!assets[name]){res.writeHead(404).end();return;}
    res.setHeader('Content-Type',name.endsWith('.mjs')?'text/javascript':'text/html');res.end(await readFile(path.join(here,assets[name])));
@@ -65,11 +69,15 @@ try {
  });
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  const origin=`http://127.0.0.1:${server.address().port}`;
- kernel=await launchOwned(path.join(root,'kernel-tests'),['--ignored','--exact','runtime::router::tests::kernel_browser::display::kernel_browser_display_protocol_drill','--nocapture'],{uid:65534,gid:65534,detached:true,cwd:root,env:{PATH:'/usr/bin:/bin',HOME:home,TMPDIR:home,DISPLAY:`:${screen.trim()}`,CHARIOX_HOME:path.join(home,'chariox'),CHARIOX_LOG_DIR:path.join(home,'logs'),CHARIOX_DISPLAY_DRILL_ROOT:home,CHARIOX_DISPLAY_FIXTURE_URL:`${origin}/docs`,CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/usr/bin/google-chrome',CHARIOX_KERNEL_BROWSER_DISPLAY:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_BROWSER_DISPLAY_PYTHON:pythonWrapper},stdio:['ignore','pipe','pipe']});groups.push(kernel.pid);
+ kernel=await launchOwned(path.join(root,'kernel-tests'),['--ignored','--exact','runtime::router::tests::kernel_browser::display::kernel_browser_display_protocol_drill','--nocapture'],{uid:65534,gid:65534,detached:true,cwd:root,env:{PATH:'/usr/bin:/bin',HOME:home,TMPDIR:home,DISPLAY:`:${screen.trim()}`,CHARIOX_HOME:path.join(home,'chariox'),CHARIOX_LOG_DIR:path.join(home,'logs'),CHARIOX_DISPLAY_DRILL_ROOT:home,CHARIOX_DISPLAY_FIXTURE_URL:`${origin}/${workload}`,CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/usr/bin/google-chrome',CHARIOX_KERNEL_BROWSER_DISPLAY:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_BROWSER_DISPLAY_PYTHON:pythonWrapper},stdio:['ignore','pipe','pipe']});groups.push(kernel.pid);
  kernel.stdout.on('data',b=>log.push(b));kernel.stderr.on('data',b=>log.push(b));
  kernelExit=waitChild(kernel);
  ready=await until(async()=>{checkChild(kernel,'kernel');try{return JSON.parse(await readFile(path.join(home,'ready.json'),'utf8'))}catch{return null}},'focused MCP opens user-domain tab',45000);
  receipt.protocol=ready.protocol;receipt.opened_by=ready.opened_by;
+ if(process.env.MD_NETEM_PROFILE&&process.env.MD_NETEM_PROFILE!=='local'){
+  const bootstrap=JSON.parse(await readFile(path.join(home,'relay-bootstrap.private.json'),'utf8'));
+  shaped=await shapeViewerLeg(process.env.MD_NETEM_PROFILE,bootstrap.relay_url,process.env.MD_HOST_NETNS);receipt.network=shaped.info;
+ }else receipt.network={name:'local',rtt:0,jitter:0,loss:0,mbps:0};
  const viewerHome=path.join(root,'viewer');await mkdir(viewerHome,{mode:0o700});await chown(viewerHome,65534,65534);
  viewer=await launchOwned('/usr/bin/google-chrome',['--headless=new','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0',`--user-data-dir=${viewerHome}`,'--no-first-run','--disable-background-networking','--disable-dev-shm-usage','about:blank'],{uid:65534,gid:65534,detached:true,cwd:root,env:{PATH:'/usr/bin:/bin',HOME:viewerHome,TMPDIR:viewerHome},stdio:'ignore'});groups.push(viewer.pid);
  const port=await until(async()=>{checkChild(viewer,'viewer');try{return Number((await readFile(path.join(viewerHome,'DevToolsActivePort'),'utf8')).split('\n')[0])}catch{return null}},'viewer');
@@ -125,7 +133,8 @@ try {
     });
   }});
  },{ready,bitrate:receipt.target_encrypted_bitrate,pngOnly:process.env.MD_PNG_ONLY==='1'});
- const first=await page.evaluate(()=>mdStream.next());receipt.bootstrap={kind:first.kind,sequence:first.sequence};
+ const bootstrapStarted=performance.now();
+ const first=await page.evaluate(()=>mdStream.next());receipt.bootstrap={kind:first.kind,sequence:first.sequence,duration_ms:performance.now()-bootstrapStarted};
  const reference=async()=>Buffer.from((await page.evaluate(async()=>{const r=await mdTransport.request({KernelBrowser:{command:{op:'display_capture',tab_id:mdStream.binding.tab_id,generation:mdStream.binding.generation}}});return r.KernelBrowser.result.data_base64})),'base64');
  const actual=async()=>Buffer.from((await page.evaluate(()=>MDDisplay.canvas.toDataURL('image/png'))).split(',')[1],'base64');
  async function pair(name) {
@@ -133,7 +142,8 @@ try {
   await writeFile(path.join(output,name+'-source.png'),source);await writeFile(path.join(output,name+'-viewer.png'),view);if(diff)await writeFile(path.join(output,name+'-diff.png'),diff);return metric;
  }
  receipt.bootstrap.fidelity=await pair('bootstrap-video');
- const settled=await page.evaluate(()=>mdStream.next());receipt.settled={kind:settled?.kind??'unchanged-exact',sequence:settled?.sequence??first.sequence,fidelity:await pair('settled')};
+ const settleStarted=performance.now();
+ const settled=await page.evaluate(()=>mdStream.next());receipt.settle_duration_ms=performance.now()-settleStarted;receipt.settled={kind:settled?.kind??'unchanged-exact',sequence:settled?.sequence??first.sequence,fidelity:await pair('settled')};
  if(!receipt.settled.fidelity.lossless)throw Error('MD-DISPLAY: settled pixels differ');
  // A source compositor may finish painting after its first protected snapshot.
  // Permit bounded distinct refinements, then require an unchanged exact poll.
@@ -147,6 +157,7 @@ try {
   while(performance.now()-idleStarted<idleMs){await page.evaluate(()=>mdStream.next());polls++;await pause(250);}
   receipt.static_polling={duration_ms:performance.now()-idleStarted,polls};
  }
+ if(workload!=='docs')receipt.motion=await measureWorkload({page,workload,pair,pause,resource,durationMs:Number(process.env.MD_MOTION_MS||10000)});
  const sourceProbe=PNG.sync.read(await reference());
  let probeLeft=null,runStart=null;
  for(let x=sourceProbe.width-360;x<sourceProbe.width;x++){
@@ -210,6 +221,7 @@ finally {
  await collectTiming(path.join(root,'home','chariox'));
  receipt.host_timings=traces;receipt.kernel_timings=Buffer.concat(log).toString().split('\n').filter(line=>line.startsWith('MD-DISPLAY-TIMING ')).map(line=>JSON.parse(line.slice('MD-DISPLAY-TIMING '.length)));
  receipt.stage_breakdown=summarizeStages(receipt);
+ if(shaped)try{receipt.netem_stats=await shaped.close();receipt.cleanup.push('owned proxy and namespace-local qdisc removed')}catch{receipt.cleanup.push('RED: owned netem cleanup failed');receipt.status='RED';process.exitCode=1}
  if(server)await new Promise(resolve=>server.close(resolve));
  // Delete only the exact freshly-created disposable root, after owned teardown.
  if(!process.exitCode || receipt.cleanup.some(value=>value.includes('inventory empty'))){await rm(root,{recursive:true,force:true});receipt.cleanup.push('exact disposable state removed');}else receipt.cleanup.push('uncertain teardown state retained at '+root);

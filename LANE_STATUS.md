@@ -1,3 +1,20 @@
+# MD-DISPLAY-02/04 — Phase 5 active
+
+2026-10-05: resume from 6b288b330. Required plans and lane review inbox read;
+no new entries after handled 02:17 findings. No display-impl owned leftovers found.
+Root disk 217 GiB free; MemAvailable 50 GiB, above 16 GiB lane floor.
+Signal audit: positive child PID/start identity and full owned-group membership
+checks precede signals; unsafe IDs refused. No host signals or shared service changes.
+
+MD-DISPLAY-02: adding namespace-local viewer-only netem (40/80/150 ms RTT,
+jitter, 1% loss, 5/2/1 Mbps shared bidirectional caps), live canvas/video and
+dense-scroll harness. Protocol 419 and flag unchanged. Local prototype namespace
+created/deleted successfully; no default-interface qdisc changed.
+Phase-4 historical results keep their identities; Phase-5 files unvalidated yet.
+
+MD-DISPLAY-04: native OS integration design/stubs pending. Owner questions below
+remain open; no MD acceptance closure. Research branch untouched.
+
 # MD-DISPLAY-02/04 — Phase 4 final local handoff
 
 2026-10-05: execution/kernel-build source 05387e1e4; final repeat 69a4897ef
