@@ -22,7 +22,7 @@ import {
 } from "./deployed-workflow-command.js"
 
 export type CloudCommandHandlerDeps =
-  & { handleClientCloudCommand?: (args: string[]) => Promise<boolean> }
+  & { handleClientCloudCommand?: (args: string[]) => Promise<boolean>; getCloudControlProfile?: () => Promise<RelayCloudProfile | null> }
   & CloudCommandLifecycleDeps
   & CloudSessionCommandHandlerDeps
   & RelayCloudCommandHandlerDeps
@@ -118,14 +118,15 @@ export async function handleCloudSlashCommand(
     await showCloudStatus(deps, profile)
     return
   }
-  if (!profile) {
-    deps.flashFooter("cloud profile missing; run /cloud link first", "error")
+  const controlProfile = deps.getCloudControlProfile ? await deps.getCloudControlProfile() : profile
+  if (!controlProfile) {
+    deps.flashFooter(deps.getCloudControlProfile ? "sign in with /cloud login first" : "cloud profile missing; run /cloud link first", "error")
     return
   }
-  if (await handleDeployedWorkflowCloudCommand(deps, profile, area, action, args)) {
+  if (await handleDeployedWorkflowCloudCommand(deps, controlProfile, area, action, args)) {
     return
   }
-  if (await handleCloudSessionCommand(deps, profile, area, action, args)) {
+  if (await handleCloudSessionCommand(deps, controlProfile, area, action, args)) {
     return
   }
   deps.flashFooter("usage: /cloud [open|link|status|unlink] | /cloud deployments list|show|setup|create|adopt|preflight|release|promote|rollback|start|stop|restart|usage|limits|operations|credentials|domains|audience | /cloud invite create|accept | /cloud members | /cloud collaborators", "error")

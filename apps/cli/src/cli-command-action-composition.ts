@@ -32,12 +32,8 @@ import {
   updateAgentSubstitutes,
 } from "./agent-api.js"
 import {
-  acceptCloudSessionInvite,
-  createCloudSessionInvite,
   createSessionInvite,
   joinSessionInvite,
-  listCloudCollaborators,
-  listCloudSessionMembers,
 } from "./cloud-session-api.js"
 import {
   getUserConfig,
@@ -594,12 +590,14 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       refresh: refreshWaitingRoomData,
       openUrl: openExternalUrl,
     }) } : {}),
-    getCloudRelayProfile: async () => {
-      const human = await deps.cloudClient?.humanProfile()
-      if (human && deps.kernelConnected?.() === false) return human
-      const kernel = await getKernelCloudRelayProfile(client)
-      if (human && kernel && human.accountId !== kernel.accountId) throw new Error("Cloud account conflict; use a separate CHARIOX_HOME profile")
-      return kernel ?? human ?? null
+    getCloudRelayProfile: async () => deps.kernelConnected?.() === false
+      ? await deps.cloudClient?.profile() ?? null
+      : await getKernelCloudRelayProfile(client),
+    getCloudControlProfile: async () => {
+      const human = await deps.cloudClient?.humanProfile() ?? null
+      const kernel = deps.kernelConnected?.() === false ? null : await getKernelCloudRelayProfile(client)
+      if (human && kernel && (human.accountId !== kernel.accountId || new URL(human.apiUrl).origin !== new URL(kernel.apiUrl).origin)) throw new Error("Cloud account conflict; use a separate CHARIOX_HOME profile")
+      return human
     },
     connectCloudRelay: () => connectKernelCloudRelay(client),
     saveCloudRelayProfile: async (profile) => {
@@ -624,11 +622,12 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
         relayIdentity.publicKeyThumbprint,
       )
     },
-    createCloudSessionInvite: (sessionId, inviteOptions) =>
-      createCloudSessionInvite(client, sessionId, inviteOptions),
-    acceptCloudSessionInvite: (inviteToken) => acceptCloudSessionInvite(client, inviteToken),
-    listCloudSessionMembers: (sessionId) => listCloudSessionMembers(client, sessionId),
-    listCloudCollaborators: () => listCloudCollaborators(client),
+    ...(deps.cloudClient ? {
+      createCloudSessionInvite: (sessionId: string, inviteOptions: Parameters<CloudClient["collaboration"]["createSessionInvite"]>[1]) => deps.cloudClient!.collaboration.createSessionInvite(sessionId, inviteOptions),
+      acceptCloudSessionInvite: (inviteToken: string) => deps.cloudClient!.collaboration.acceptSessionInvite(inviteToken),
+      listCloudSessionMembers: (sessionId: string) => deps.cloudClient!.collaboration.sessionMembers(sessionId),
+      listCloudCollaborators: () => deps.cloudClient!.collaboration.collaborators(),
+    } : {}),
     getUserConfig: () => getUserConfig(client),
     getUserConfigSchema: () => getUserConfigSchema(client),
     setUserConfigValue: (path, value) => setUserConfigValue(client, path, value),
