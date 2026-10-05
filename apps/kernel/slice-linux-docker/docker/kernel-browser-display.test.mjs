@@ -32,6 +32,16 @@ test('MD-DISPLAY DPR2 protected pixel masking scales coordinates', () => {
   assert.equal(result.pixels[(210 * 2560 + 210) * 4], 0);
   assert.equal(result.pixels[(100 * 2560 + 100) * 4], 255);
 });
+test('MD-DISPLAY native crop tile bounds preserve all crossed tile edges', () => {
+  const previous={width:512,height:256,pixels:Buffer.alloc(512*256*4,255)};
+  const current={...previous,pixels:Buffer.from(previous.pixels)};
+  const region={x:126,y:126,width:132,height:4};
+  for(let y=region.y;y<region.y+region.height;y++)for(let x=region.x;x<region.x+region.width;x++)current.pixels[(y*512+x)*4]=0;
+  const full=dirtyTiles(previous,current),cropped=dirtyTiles(previous,current,region);
+  assert.deepEqual(cropped,full);
+  assert.equal(cropped.length,6);
+  assert.deepEqual(dirtyTiles(current,current,region),[]);
+});
 test('MD-DISPLAY async encoder launch failure rejects into cleanup', async () => {
   const original = process.env.CHARIOX_BROWSER_DISPLAY_PYTHON;
   process.env.CHARIOX_BROWSER_DISPLAY_PYTHON = '/nonexistent/md-display-python';
