@@ -283,6 +283,8 @@ pub enum LocalDaemonResponse {
         pairing: PairingJoinRecord,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_token: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        kernel_pairing: bool,
     },
     TerminalsListed { terminals: Vec<TerminalRecord>, },
     PairedClientsListed { clients: Vec<PairedClientRecord>, },

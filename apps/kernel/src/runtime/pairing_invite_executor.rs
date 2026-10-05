@@ -53,10 +53,44 @@ pub(crate) async fn execute_pairing_request(
             execute_join_terminal_pairing_link_request(runtime_state, config_projection, request)
                 .await
         }
+        LocalDaemonRequest::ListTerminals(_)
+            if super::self_host_terminal_grants::required(&config_projection.snapshot()) =>
+        {
+            Ok(LocalDaemonResponse::TerminalsListed {
+                terminals: super::self_host_terminal_grants::entries(
+                    &config_projection.snapshot(),
+                )?
+                .into_iter()
+                .map(terminal_record)
+                .collect(),
+            })
+        }
         LocalDaemonRequest::ListTerminals(_) => execute_list_terminals_request(),
+        LocalDaemonRequest::ListPairedClients(_)
+            if super::self_host_terminal_grants::required(&config_projection.snapshot()) =>
+        {
+            Ok(LocalDaemonResponse::PairedClientsListed {
+                clients: super::self_host_terminal_grants::entries(&config_projection.snapshot())?
+                    .into_iter()
+                    .map(super::terminal_pairings::paired_client_record)
+                    .collect(),
+            })
+        }
         LocalDaemonRequest::ListPairedClients(_) => execute_list_paired_clients_request(),
         LocalDaemonRequest::RecordPairedClient(request) => {
             execute_record_paired_client_request(request, unix_epoch_ms)
+        }
+        LocalDaemonRequest::RevokePairedClient(request)
+            if super::self_host_terminal_grants::required(&config_projection.snapshot()) =>
+        {
+            Ok(LocalDaemonResponse::PairedClientRevoked {
+                client: super::terminal_pairings::paired_client_record(
+                    super::self_host_terminal_grants::revoke(
+                        &config_projection.snapshot(),
+                        &request.client_id,
+                    )?,
+                ),
+            })
         }
         LocalDaemonRequest::RevokePairedClient(request) => {
             execute_revoke_paired_client_request(request)
@@ -87,6 +121,15 @@ pub(crate) async fn execute_create_pairing_invite_request(
             operation: "create pairing invite",
             message: "relay token must be configured before creating an invite".to_string(),
         })?;
+    if super::self_host_terminal_grants::required(&config)
+        && super::self_host_terminal_grants::pairing_transport_token(relay_token.clone())
+            != relay_token
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "create pairing invite",
+            message: "scoped kernel credentials cannot be exported in an invite; use an operator-issued transport credential and a terminal pairing link".into(),
+        });
+    }
     let issued_at_ms = current_unix_ms();
     let expires_at_ms =
         issued_at_ms.saturating_add(request.expires_in_ms.unwrap_or(15 * 60 * 1000));
@@ -99,7 +142,7 @@ pub(crate) async fn execute_create_pairing_invite_request(
         relay_token,
         target_daemon_id: config.daemon_id.clone(),
         target_daemon_alias: config.daemon_alias.clone().or(request.alias),
-        issuer_machine_id: config.host_machine_id,
+        issuer_machine_id: config.host_machine_id.clone(),
         issued_at_ms,
         expires_at_ms,
         terminal_type: request
@@ -182,6 +225,11 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
                     .to_string(),
             })?
     };
+    let relay_token = if super::self_host_terminal_grants::required(&config) {
+        super::self_host_terminal_grants::pairing_transport_token(relay_token)
+    } else {
+        relay_token
+    };
     let token = PairingInviteToken {
         version: 1,
         intent: PairingInviteIntent::Client,
@@ -190,7 +238,7 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
         relay_token,
         target_daemon_id,
         target_daemon_alias,
-        issuer_machine_id: config.host_machine_id,
+        issuer_machine_id: config.host_machine_id.clone(),
         issued_at_ms,
         expires_at_ms,
         terminal_type: Some(terminal_type.as_str().to_string()),
@@ -198,13 +246,24 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
         terminal_id: Some(terminal_id.clone()),
     };
     let pairing_link = encode_terminal_pairing_link(&token)?;
-    let _ = crate::config::DaemonConfig::record_paired_terminal(
-        terminal_id.clone(),
-        format!("pairing-link:{invite_id}"),
-        token.target_daemon_alias.clone(),
-        issued_at_ms,
-        terminal_type.as_str(),
-    )?;
+    if super::self_host_terminal_grants::required(&config) {
+        super::self_host_terminal_grants::register(
+            &config,
+            &pairing_link,
+            &terminal_id,
+            expires_at_ms,
+            terminal_type.as_str(),
+            token.target_daemon_alias.clone(),
+        )?;
+    } else {
+        let _ = crate::config::DaemonConfig::record_paired_terminal(
+            terminal_id.clone(),
+            format!("pairing-link:{invite_id}"),
+            token.target_daemon_alias.clone(),
+            issued_at_ms,
+            terminal_type.as_str(),
+        )?;
+    }
     Ok(LocalDaemonResponse::TerminalPairingLinkCreated {
         pairing: TerminalPairingLinkRecord {
             terminal_id,
@@ -313,6 +372,52 @@ pub(crate) async fn execute_join_terminal_pairing_link_request(
         .public_key_thumbprint
         .clone()
         .unwrap_or_else(|| public_key_thumbprint(&config.relay_public_key));
+    if super::self_host_terminal_grants::required(&config) {
+        if token.target_daemon_id != config.daemon_id
+            || config.relay_url.as_deref() != Some(token.relay_url.as_str())
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "join terminal pairing link",
+                message: "pairing link targets another kernel or relay".into(),
+            });
+        }
+        if joined_thumbprint.len() != 64
+            || !joined_thumbprint
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "join terminal pairing link",
+                message: "terminal pairing requires a SHA-256 key thumbprint".into(),
+            });
+        }
+        let grant = super::self_host_terminal_grants::redeem(
+            &config,
+            &request.pairing_link,
+            crate::config::PersistedClientPairing {
+                client_id: terminal_id.clone(),
+                public_key_thumbprint: joined_thumbprint.clone(),
+                alias: request.alias.clone(),
+                paired_at_ms: now_ms,
+                terminal_type: terminal_type.as_str().into(),
+                revoked: false,
+            },
+        )?;
+        return Ok(LocalDaemonResponse::TerminalPairingLinkJoined {
+            terminal: terminal_record(grant),
+            pairing: PairingJoinRecord {
+                intent: PairingInviteIntent::Client,
+                subject_id: terminal_id,
+                relay_url: token.relay_url,
+                target_daemon_id: token.target_daemon_id,
+                alias: request.alias,
+                public_key_thumbprint: joined_thumbprint,
+                paired_at_ms: now_ms,
+            },
+            relay_token: None,
+            kernel_pairing: request.public_key_thumbprint.is_some(),
+        });
+    }
     let relay_token = if request.public_key_thumbprint.is_some() {
         if joined_thumbprint.len() != 64
             || !joined_thumbprint
@@ -383,6 +488,7 @@ pub(crate) async fn execute_join_terminal_pairing_link_request(
             paired_at_ms: now_ms,
         },
         relay_token,
+        kernel_pairing: false,
     })
 }
 
@@ -408,4 +514,23 @@ fn current_unix_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod self_host_invite_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn generic_invites_cannot_export_a_scoped_kernel_transport_credential() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some("ws://operator-relay".into());
+        config.relay_token = Some("chariox-scoped-v1.synthetic.signature".into());
+        let projection = DaemonConfigProjectionStore::new(config);
+        for intent in [PairingInviteIntent::Client, PairingInviteIntent::Machine] {
+            let request: CreatePairingInviteRequest =
+                serde_json::from_value(serde_json::json!({"intent": intent})).unwrap();
+            let result = execute_create_pairing_invite_request(&projection, request).await;
+            assert!(result.is_err());
+        }
+    }
 }

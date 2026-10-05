@@ -71,10 +71,32 @@ pub(super) async fn handle_relay_subscribe(
     subscription_scope: Option<String>,
     resume_from_event_id: Option<u64>,
 ) -> Result<(), DaemonError> {
+    let paired = match router.admit_self_host_terminal(&client_public_key) {
+        Ok(grant) => grant.is_some(),
+        Err(error) => {
+            send_outgoing_envelope(
+                outgoing_tx,
+                RelayEnvelope::DaemonResponse {
+                    relay_request_id,
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                },
+            )?;
+            return Ok(());
+        }
+    };
     let subscriber = RelaySubscriber {
         caller: crate::runtime::command::KernelCaller::for_relay_request(caller_identity.clone()),
-        user_id: relay_subscription_caller_user_id(caller_identity.as_ref()),
-        connection_class: crate::runtime::command::relay_connection_class(caller_identity.as_ref()),
+        user_id: if paired {
+            crate::session::DEFAULT_LOCAL_USER_ID.into()
+        } else {
+            relay_subscription_caller_user_id(caller_identity.as_ref())
+        },
+        connection_class: if paired {
+            crate::local::KernelConnectionClass::Terminal
+        } else {
+            crate::runtime::command::relay_connection_class(caller_identity.as_ref())
+        },
     };
     let is_inventory_subscription =
         subscription_scope.as_deref() == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE);
@@ -125,7 +147,15 @@ pub(super) async fn handle_relay_subscribe(
         );
     }
     if !is_inventory_subscription {
-        let validation = if let Some(user_id) = caller_identity
+        let validation = if paired {
+            router
+                .ensure_relay_subscription_attachment_for_user(
+                    &session_id,
+                    &attachment_id,
+                    &subscriber.user_id,
+                )
+                .await
+        } else if let Some(user_id) = caller_identity
             .as_ref()
             .and_then(|identity| identity.user_id.as_deref())
         {
@@ -378,6 +408,9 @@ pub(super) async fn run_relay_subscription_loop(
     let event_stream_id = subscription_event_stream_id(&session_id, &attachment_id);
 
     loop {
+        if router.admit_self_host_terminal(&client_public_key).is_err() {
+            break;
+        }
         if let Some(event) = passkey_prompts.next_event(&router) {
             if emit_relay_event(
                 &router,
@@ -810,7 +843,8 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     } else {
         None
     };
-    let mut previous_remote_machines = resumed.then(|| router.relay_remote_machines_snapshot(&subscriber.caller));
+    let mut previous_remote_machines =
+        resumed.then(|| router.relay_remote_machines_snapshot(&subscriber.caller));
     let mut previous_provider_catalog = resumed
         .then(|| router.transport_provider_catalog_snapshot())
         .flatten();
@@ -819,6 +853,9 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     let mut tick: u64 = 0;
     let mut next_heartbeat_at = Instant::now();
     loop {
+        if router.admit_self_host_terminal(&client_public_key).is_err() {
+            break;
+        }
         if let Some(event) = passkey_prompts.next_event(&router) {
             if emit_relay_event(
                 &router,

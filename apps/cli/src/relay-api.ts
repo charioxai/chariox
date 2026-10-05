@@ -270,10 +270,10 @@ export async function joinKernelTerminalPairingLink(
   if (joined.pairing.public_key_thumbprint !== publicKeyThumbprint) {
     throw new Error("terminal pairing response did not confirm this CLI relay identity")
   }
-  if (!joined.relay_token?.trim()) {
-    throw new Error("key-bound terminal pairing requires a fresh protocol 349 relay token; the legacy token cannot be used for remote viewing")
+  if (!joined.kernel_pairing && !joined.relay_token?.trim()) {
+    throw new Error("key-bound terminal pairing requires a kernel-issued admission or a fresh bound relay token")
   }
-  requireRelayTokenKeyBinding(joined.relay_token, publicKeyThumbprint, "key-bound terminal pairing")
+  if (joined.relay_token) requireRelayTokenKeyBinding(joined.relay_token, publicKeyThumbprint, "key-bound terminal pairing")
   return joined
 }
 

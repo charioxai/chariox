@@ -7,7 +7,8 @@ import { handleRelayCloudCommand } from "./relay-cloud-command-handlers.js"
 import { issueKernelCloudRelayClientToken } from "./relay-api.js"
 import { parseArgs } from "./cli-options.js"
 import type { LocalIpcClient } from "./ipc.js"
-import type { CloudCredentialProfile as RelayCloudProfile } from "./cloud-relay.js"
+import type { RelayCloudProfile as PublicCloudProfile } from "./preferences.js"
+type RelayCloudProfile = PublicCloudProfile & { cloudSessionToken?: string; machineCredential?: string; cloudSessionExpiresAtMs?: number }
 
 test("relay cloud status reports missing cloud link", async () => {
   let notice = ""

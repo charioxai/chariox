@@ -80,6 +80,7 @@ The Prisma schema is the initial persistence model for the same core entities de
 - `docs/ARCHITECTURE.md`: implementation-oriented architecture view
 - `docs/PROTOCOL.md`: protocol lanes and structured message contracts
 - `docs/RUNNING_LOCAL.md`: how to run the current local daemon + CLI path
+- `docs/KERNEL_ACCESS.md`: Cloud kernel enrollment, terminal login and Cloud-free self-host pairing
 - `docs/LOGGING.md`: shared logging setup, configuration, and inspection
 - `docs/ROADMAP.md`: milestone plan
 - `docs/M4_5_KERNEL_RUNTIME_REFACTOR_PLAN.md`: implementation plan for the actor/event/projection kernel refactor

@@ -155,3 +155,5 @@ pub(crate) mod workspace_search;
 pub(crate) mod workspace_worktrees;
 
 pub(crate) mod kernel_access;
+
+pub(crate) mod self_host_terminal_grants;
