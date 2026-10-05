@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { shapeViewerLeg } from './drill-netem.mjs';
+import { drainRepairs } from './drill-settle.mjs';
 import { measureWorkload } from './drill-workloads.mjs';
 import { fixture } from './drill-fixtures.mjs';
 import { compare, distribution } from './drill-metrics.mjs';
@@ -153,7 +154,8 @@ try {
  }
  receipt.bootstrap.fidelity=await pair('bootstrap-video');
  const settleStarted=performance.now();
- const settled=await page.evaluate(()=>mdStream.next());receipt.settle_duration_ms=performance.now()-settleStarted;receipt.settled={kind:settled?.kind??'unchanged-exact',sequence:settled?.sequence??first.sequence,fidelity:await pair('settled')};
+ const settled=await drainRepairs(()=>page.evaluate(()=>mdStream.next()));
+ receipt.settle_duration_ms=performance.now()-settleStarted;receipt.settled={kind:'verified-unchanged',polls:settled.polls,sequence:await page.evaluate(()=>mdStream.presenter.sequence),fidelity:await pair('settled')};
  if(!receipt.settled.fidelity.lossless)throw Error('MD-DISPLAY: settled pixels differ');
  // A source compositor may finish painting after its first protected snapshot.
  // Permit bounded distinct refinements, then require an unchanged exact poll.
@@ -206,8 +208,8 @@ try {
  if(!navigated||navigated.document_id===oldDocument||navigated.kind!=='video')throw Error('MD-DISPLAY: navigation did not deliver fresh independent frame');
  const oldRejected=await page.evaluate(async document=>{try{await mdTransport.request({KernelBrowser:{command:{op:'display_input',tab_id:mdStream.binding.tab_id,generation:mdStream.binding.generation,document_id:document,input:{kind:'click',x:100,y:200}}}});return false}catch{return true}},oldDocument);
  if(!oldRejected)throw Error('MD-DISPLAY: navigated document accepted stale input');
- let navigationPolls=0;while(await page.evaluate(()=>mdStream.next()))if(++navigationPolls>300)throw Error('MD-DISPLAY: navigated page did not settle');
- receipt.navigation={independent_kind:navigated.kind,changed_document:true,stale_input_rejected:oldRejected,repair_polls:navigationPolls,fidelity:await pair('after-navigation')};
+ const navigation=await drainRepairs(()=>page.evaluate(()=>mdStream.next()));
+ receipt.navigation={independent_kind:navigated.kind,changed_document:true,stale_input_rejected:oldRejected,repair_polls:navigation.polls,fidelity:await pair('after-navigation')};
  if(!receipt.navigation.fidelity.lossless)throw Error('MD-DISPLAY: navigated repair is not exact');
  // Explicit stale document must fail through the production input seam.
  const stale=await page.evaluate(async()=>{try{await mdTransport.request({KernelBrowser:{command:{op:'display_input',tab_id:mdStream.binding.tab_id,generation:mdStream.binding.generation,document_id:'stale-fixture-loader',input:{kind:'click',x:1190,y:28}}}});return false}catch{return true}});if(!stale)throw Error('MD-DISPLAY: stale document admitted');receipt.stale_document_rejected=true;
