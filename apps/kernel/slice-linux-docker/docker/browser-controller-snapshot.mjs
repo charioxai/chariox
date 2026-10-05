@@ -29,7 +29,7 @@ export async function captureBrowserSnapshot({
   connection = {
     send: async (...args) => redactObservation(await rawConnection.send(...args), protectedValues),
   };
-  const options = snapshotLimits(limits);
+  const options = { ...snapshotLimits(limits), protectedValues };
   const frames = snapshotFrames(
     await assertCurrentDocument(connection, sessionId, targetId, documentId),
     options.maxFrames,
@@ -197,7 +197,13 @@ function compactAccessibilityNodes(rawNodes, options) {
     const protectedValue =
       properties.get("protected") === true ||
       role.toLowerCase().includes("password");
-    const rawValue = compactString(node?.value?.value, options.maxStringLength);
+    const value = node?.value?.value;
+    // CDP represents slider/spinbutton values as numbers. Scrub their string
+    // representation before bounding it, just as raw CDP strings are scrubbed.
+    const observedValue = typeof value === "number" && Number.isFinite(value)
+      ? redactObservation(String(value), options.protectedValues)
+      : value;
+    const rawValue = compactString(observedValue, options.maxStringLength);
     return [{
       node_ref: nodeRef,
       parent_ref: referenceByNodeId.get(node?.parentId) ?? null,

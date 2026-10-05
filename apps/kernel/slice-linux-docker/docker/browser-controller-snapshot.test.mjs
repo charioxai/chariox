@@ -120,3 +120,21 @@ test("MP-08/MP-10/MP-11 known-value scrubbing covers nested results, keys and si
   assert.deepEqual(result["[redacted]"], variants.map(() => "[redacted]"));
   assert.equal(result.nested.output, "[redacted]");
 });
+
+test("MP-08/MP-10/MP-11 preserves finite numeric AX values with protected-value redaction", async () => {
+  const values = [0, -0.5, 42, 91827, Infinity, NaN, true];
+  const connection = {
+    async send(method) {
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "root", loaderId: "page-1" } } };
+      if (method === "DOMSnapshot.captureSnapshot") return { documents: [], strings: [] };
+      return { nodes: values.map((value, index) => ({
+        nodeId: String(index + 1), backendDOMNodeId: index + 1,
+        role: { value: "slider" }, value: { type: "number", value },
+        properties: index === 2 ? [{ name: "protected", value: { value: true } }] : [],
+      })) };
+    },
+  };
+  const snapshot = await captureBrowserSnapshot({ connection, sessionId: "page", targetId: "target", documentId: "page-1",
+    browserGeneration: 1, snapshotRevision: 1, protectedValues: ["91827"], limits: { maxStringLength: 16 } });
+  assert.deepEqual(snapshot.accessibility_nodes.map(node => node.value), ["0", "-0.5", "[redacted]", "[redacted]", "", "", ""]);
+});

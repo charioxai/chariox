@@ -1413,11 +1413,15 @@ test("MP-08/MP-10/MP-11 P2/P6 native range fill respects bounds and step before 
     await page.setContent(`<label>Level<input id="range" type="range" min="-1" max="1" step="0.2" value="0"></label>
       <script>window.effects=[];for(const kind of ['input','change'])range.addEventListener(kind,()=>effects.push([kind,range.value]));</script>`);
     const target = (await request("browser.reconcile", {viewport})).result.tabs[0];
-    const node = (await request("browser.snapshot", target)).result.dom_nodes.find(n => n.attributes.id === "range");
+    const snapshot = (await request("browser.snapshot", target)).result;
+    const node = snapshot.dom_nodes.find(n => n.attributes.id === "range");
+    const observedValue = result => result.accessibility_nodes.find(n => n.node_ref === node.node_ref)?.value;
+    assert.equal(observedValue(snapshot), "0");
     const fill = text => request("browser.action", {...target, node_ref: node.node_ref, action: {kind: "fill", text}, timeout_ms: 100});
     const applied = await fill("0.6");
     assert.equal(applied.ok, true, JSON.stringify(applied.error));
     assert.equal(await page.locator("#range").inputValue(), "0.6");
+    assert.ok(Math.abs(Number(observedValue((await request("browser.snapshot", target)).result)) - 0.6) < 1e-6, "retain Chromium AX numeric precision");
     assert.equal((await fill("6e-1")).ok, true, "equivalent numeric syntax is idempotent");
     for (const value of ["", "invalid", "Infinity", "1.1", "-2", "0.5", "0x0", "+0", "0.", " 0 "]) {
       assert.equal((await fill(value)).error?.code, "browser_fill_invalid_value", "invalid/out-of-range/off-step values must not be silently rounded or clamped");
