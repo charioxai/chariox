@@ -4,7 +4,7 @@ import { kernelBrowserMinimumProtocolVersion, kernelBrowserRequest } from "./ipc
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
 test("MD-2: protocol 417 browser requests carry no session or claimed user", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 417)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 424)
   assert.equal(kernelBrowserMinimumProtocolVersion, 417)
   assert.deepEqual(kernelBrowserRequest({ op: "open", url: "https://example.com" }), {
     KernelBrowser: { command: { op: "open", url: "https://example.com" } },

@@ -741,6 +741,7 @@ async fn execute_local(
         } => processes
             .reconcile_browser(&session_id, &viewport, browser_bar_visible)
             .map(|reconciliation| Response::Reconciled { reconciliation }),
+        Command::NoteObservation { target_id, document_id, quote } => processes.note_observation(&session_id, &target_id, &document_id, quote.as_ref()).map(|observation| Response::NoteObservation { observation }),
         Command::Snapshot {
             target_id,
             document_id,

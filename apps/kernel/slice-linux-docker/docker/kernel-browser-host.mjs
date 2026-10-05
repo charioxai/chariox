@@ -277,6 +277,7 @@ export class KernelBrowserHost {
       await this.browser.navigate({ ...binding, url: navigationUrl(command.url) }, { signal });
       return this.observe(await this.reconcile(), null, scope);
     }
+    if (command.op === "note_selection" || command.op === "note_reanchor") return this.observe({ generation:this.generation, observation:await this.browser.observeNote({ ...binding, ...(command.quote ? {quote:command.quote} : {}) }) },tab,scope);
     if (command.op === "snapshot") return this.observe({ generation: this.generation, snapshot: await this.browser.snapshot(binding) }, tab, scope);
     if (command.op === "input") {
       const observed = command.document_id ?? (command.focused_agent ? null : this.observedDocuments.get(scope)?.get(tab.tab_id));

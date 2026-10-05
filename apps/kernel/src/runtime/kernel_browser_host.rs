@@ -226,6 +226,17 @@ impl KernelBrowserHost {
         }
         Ok(())
     }
+    /// MD-N4 / MP-11: a note read/write commits within one uninterrupted focus epoch.
+    pub(crate) fn note_operation<T>(&self, user: &str, admission: Option<&KernelBrowserAdmission>, call: impl FnOnce() -> Result<T,String>) -> Result<T,String> {
+        self.check_admission(admission)?;
+        if let Some(admission)=admission {
+            if admission.user!=user { return Err("MD-N4: foreign note owner".into()); }
+            let state=self.inner.lock().map_err(|_| "MD-N4: focus lock unavailable")?;
+            require_loaded(&state,user,&admission.agent)?;
+            if !Arc::ptr_eq(&state.focus[user].epoch,&admission.epoch) { return Err("MD-N4: note focus changed".into()); }
+            call()
+        } else { call() }
+    }
     pub(crate) fn protected_request_admitted(
         &self,
         user: &str,

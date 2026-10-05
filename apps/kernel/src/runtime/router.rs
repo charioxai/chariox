@@ -200,6 +200,7 @@ mod tests {
     mod agent_prompt_schedules;
     mod app_bindings;
     mod kernel_browser;
+    mod notes;
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     mod app_open;
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]

@@ -13,6 +13,7 @@ mod app_publisher;
 mod apps;
 mod browser_import;
 mod kernel_browser;
+mod notes;
 mod cloud_relay;
 mod core;
 mod credential_enrollment;

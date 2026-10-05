@@ -1,3 +1,4 @@
+import { observeBrowserNote } from "./browser-controller-notes.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { BrowserInputCapture } from "./browser-controller-input.mjs";
 import {
@@ -455,9 +456,7 @@ export class BrowserCdpClient {
   // One isolated world per document: polls reuse it, a new document gets a new one.
   // Input capture emulates focus while it runs: report the physical visibility
   // it captured before enabling emulation instead.
-  async readFocus(connection, sessionId, targetId, frame) {
-    const captured = this.inputCapture.visibilityBySession.get(sessionId);
-    if (captured) return captured.visible;
+  async ensureFocusWorld(connection, sessionId, targetId, frame) {
     let world = this.focusWorldsByTarget.get(targetId);
     if (world?.documentId !== frame.loaderId) {
       const created = await connection.send(
@@ -468,6 +467,14 @@ export class BrowserCdpClient {
       world = { documentId: frame.loaderId, contextId: created?.executionContextId };
       this.focusWorldsByTarget.set(targetId, world);
     }
+    return world;
+  }
+  async observeNote(request) { return observeBrowserNote(this, request); }
+
+  async readFocus(connection, sessionId, targetId, frame) {
+    const captured = this.inputCapture.visibilityBySession.get(sessionId);
+    if (captured) return captured.visible;
+    const world = await this.ensureFocusWorld(connection, sessionId, targetId, frame);
     let focus;
     try {
       focus = await connection.send(
