@@ -101,6 +101,9 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
   const notices = [], options = { home, port, version: f.version, publicKeyHex: f.publicKeyHex, apiUrl, releaseBase: `http://127.0.0.1:${release.address().port}`, extractorSource: await readFile(new URL("../../deploy/managed-kernel/extract-release.py", import.meta.url), "utf8"), serviceManager, notice: value => notices.push(value), openBrowser: async url => { assert.equal(url, `${apiUrl}/approve`); for (const device of devices.values()) device.approved = true; calls.push("open-browser") } }
   const first = await installLocal(options)
   assert.equal(first.status, "ready"); assert.equal(first.userId, "owner")
+  const active = join(home, ".chariox/dev/ssh-machines/local/kernels/active")
+  const records = await Promise.all((await readdir(active)).filter(name => name.endsWith(".json")).map(async name => JSON.parse(await readFile(join(active,name),"utf8"))))
+  assert.ok(records.some(record => record.kernel_id === first.kernelId && Date.now() - record.heartbeat_at_ms < 30_000), "ordinary fresh presence supports repeat-login setup suppression")
   assert.ok(calls.indexOf("device-approved") < calls.indexOf("start-local"))
   for (let i = 0; i < 50 && !registrations.has(first.kernelId); i++) await pause()
   assert.ok(registrations.has(first.kernelId))

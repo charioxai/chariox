@@ -46,6 +46,8 @@ CLI links. Other `--id ID --port PORT` installs get independent roots/services
 and `chariox-ID` / `chariox-setup-ID` links. Existing installations and
 `chariox-md-staging.service` / `~/.chariox/dev/md-staging` are never adopted.
 The install ID, kernel/MCP ports and release are explicit public selections.
+Login offers inspect ordinary fresh heartbeat records in these isolated roots
+as well as the default registry; stopped/stale kernels remain eligible for repair.
 
 ## MP-07 / MP-11 public bootstrap and owner signing
 
