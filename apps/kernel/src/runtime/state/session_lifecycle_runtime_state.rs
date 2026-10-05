@@ -705,6 +705,7 @@ impl KernelRuntimeState {
             Some(slice_id) => self.resolve_slice_worker_kernel_ref(slice_id).await?,
             None => machine_ref.to_string(),
         };
+        self.owned.kernel_browser_host.revoke_agent(local_agent.id());
         let terminated_run_ids = self
             .owned
             .terminate_idle_provider_runs_for_agent_before_remote_move(session_id, &local_agent)?;

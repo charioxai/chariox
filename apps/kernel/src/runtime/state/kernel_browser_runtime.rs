@@ -7,6 +7,36 @@ const LOADER: &str = "chariox.load_kernel_browser";
 pub(super) const PASTE: &str = "chariox.kernel_browser_paste_secret";
 const BROWSER: &str = "chariox.kernel_browser";
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowserToolArguments {
+    command: KernelBrowserCommand,
+    #[serde(default)]
+    document_id: Option<String>,
+}
+fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value, DaemonError> {
+    let request: BrowserToolArguments = serde_json::from_value(arguments)
+        .map_err(|_| host_error("MD-3: invalid browser command".into()))?;
+    let input = matches!(&request.command, KernelBrowserCommand::Input { .. });
+    if input
+        && request
+            .document_id
+            .as_ref()
+            .is_none_or(|id| id.is_empty() || id.len() > 256)
+    {
+        return Err(host_error(
+            "MD-3: input requires document_id from the observed tab/snapshot/screenshot".into(),
+        ));
+    }
+    let mut params = serde_json::to_value(request.command)
+        .map_err(|_| host_error("MD-3: invalid command".into()))?;
+    if input {
+        params["document_id"] = serde_json::json!(request.document_id);
+    }
+    params["focused_agent"] = serde_json::json!(true);
+    Ok(params)
+}
+
 impl KernelRuntimeState {
     #[cfg(test)]
     pub(crate) fn kernel_browser_profile_root(&self, user: &str) -> std::path::PathBuf {
@@ -33,6 +63,23 @@ impl KernelRuntimeState {
                 .map_err(|_| host_error("MD-2: invalid command".into()))?,
         )
         .await
+    }
+    pub(crate) async fn kernel_browser_terminal_request(
+        &self,
+        caller: &crate::runtime::command::KernelCommand,
+        command: KernelBrowserCommand,
+    ) -> Result<serde_json::Value, DaemonError> {
+        use sha2::{Digest, Sha256};
+        let user = self.provider_account_authority_owner_user_id(
+            &crate::runtime::command::command_caller_user_id(caller),
+        );
+        let bytes = serde_json::to_vec(&caller.caller)
+            .map_err(|_| host_error("MD-3: invalid caller".into()))?;
+        let mut params = serde_json::to_value(command)
+            .map_err(|_| host_error("MD-2: invalid command".into()))?;
+        params["observed_by"] = serde_json::json!(format!("terminal:{:x}", Sha256::digest(bytes)));
+        self.kernel_browser_operation(&user, None, "host.browser", params)
+            .await
     }
     /// MD-2/MD-5: appviews retains admission; observations use the same protection.
     pub(crate) async fn kernel_browser_app_view(
@@ -92,8 +139,8 @@ impl KernelRuntimeState {
         ) {
             tools.push(super::kernel_browser_secret_runtime::paste_spec());
             tools.push(RuntimeToolSpec { name: BROWSER.into(),
-                description: "MD-3: control the user's kernel browser outside sessions/slices. Read state to obtain tab IDs and generation; input accepts click/text/key/scroll. Vault input is separate.".into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","screenshot","subscribe","poll","unsubscribe"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","enum":["Tab","Enter","Escape","Backspace","Delete","ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Home","End"]},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
+                description: "MD-3: control the user's kernel browser outside sessions/slices. Read state/snapshot/screenshot to obtain tab IDs, generation and document_id; input requires the observed document_id beside command and accepts click/text/key/scroll. Vault input is separate.".into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","screenshot","subscribe","poll","unsubscribe"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","enum":["Tab","Enter","Escape","Backspace","Delete","ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Home","End"]},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
         }
         tools
     }
@@ -144,12 +191,29 @@ impl KernelRuntimeState {
                 payload: serde_json::json!({"loaded": BROWSER}),
             });
         }
+        let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+        let authority = self.clone();
+        let auth_token = token.to_string();
+        let run_id = run.id().to_string();
+        let admission = host
+            .admit(&user, agent.id())
+            .map_err(host_error)?
+            .with_authority(move || {
+                let runs = authority
+                    .owned
+                    .provider_store
+                    .get_runs_by_runtime_mcp_auth_token(&auth_token);
+                let [current] = runs.as_slice() else {
+                    return false;
+                };
+                current.id() == run_id && authority.kernel_browser_agent(current).is_some()
+            });
         if name == PASTE {
             let scope = crate::runtime::kernel_browser_host::KernelBrowserHost::profile_key(
                 &self.provider_account_authority_owner_user_id(agent.owner_user_id()),
             );
             return self
-                .kernel_browser_paste_secret(run.session_id(), &agent, arguments)
+                .kernel_browser_paste_secret(run.session_id(), &agent, arguments, admission)
                 .await
                 .map_err(|error| {
                     self.owned
@@ -157,16 +221,9 @@ impl KernelRuntimeState {
                         .scrub_error(&scope, error)
                 });
         }
-        let request: crate::local::KernelBrowserRequest = serde_json::from_value(arguments)
-            .map_err(|_| host_error("MD-3: invalid browser command".into()))?;
+        let params = browser_tool_params(arguments)?;
         let payload = self
-            .kernel_browser_operation(
-                &self.provider_account_authority_owner_user_id(agent.owner_user_id()),
-                Some(agent.id()),
-                "host.browser",
-                serde_json::to_value(request.command)
-                    .map_err(|_| host_error("MD-3: invalid command".into()))?,
-            )
+            .kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params)
             .await?;
         Ok(RuntimeToolResult { ok: true, payload })
     }
@@ -175,5 +232,22 @@ pub(super) fn host_error(message: String) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "kernel_browser",
         message,
+    }
+}
+
+#[cfg(test)]
+mod document_tests {
+    use super::*;
+    #[test]
+    fn mcp_input_requires_an_observed_document_without_changing_terminal_protocol() {
+        let input = serde_json::json!({"command":{"op":"input","tab_id":"host-tab-a","generation":1,"input":{"kind":"click","x":1,"y":2}}});
+        assert!(browser_tool_params(input.clone()).is_err());
+        let mut observed = input;
+        observed["document_id"] = serde_json::json!("observed-loader");
+        let params = browser_tool_params(observed).unwrap();
+        assert_eq!(params["document_id"], "observed-loader");
+        assert_eq!(params["focused_agent"], true);
+        assert!(browser_tool_params(serde_json::json!({"command":{"op":"state"}})).is_ok());
+        assert!(serde_json::from_value::<crate::local::KernelBrowserRequest>(serde_json::json!({"command":{"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"caller-cannot-inject-private-fields","input":{"kind":"click","x":1,"y":2}}})).is_err());
     }
 }

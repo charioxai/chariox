@@ -7,6 +7,8 @@ import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
 import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
+import { inputHostTab } from "./kernel-browser-input.mjs";
+import { assertNotCancelled } from "./browser-controller-actions.mjs";
 import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
 
 const TAB_LIMIT = 128;
@@ -35,6 +37,7 @@ export class KernelBrowserHost {
     this.streams = new Map();
     this.restoring = false;
     this.keepaliveTarget = null;
+    this.observedDocuments = new Map();
     this.protection = { values: [], targets: [], unknown: false };
   }
   async protect(policy) {
@@ -68,6 +71,7 @@ export class KernelBrowserHost {
     for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
     this.streams.clear();
     this.tabs.clear();
+    this.observedDocuments.clear();
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     let saved = { generation: 0, tabs: [] };
     try { saved = JSON.parse(await readFile(path.join(this.root, "tabs.json"), "utf8")); }
@@ -141,9 +145,10 @@ export class KernelBrowserHost {
     return redactObservation({ state: "ready", generation: this.generation,
       tabs: [...this.tabs.values()].map(({ target_id, ...tab }) => tab), viewport }, this.protection.values);
   }
-  async open(url, tabId = `host-tab-${randomUUID()}`) {
+  async open(url, tabId = `host-tab-${randomUUID()}`, { signal } = {}) {
     if (this.tabs.size >= TAB_LIMIT) throw new Error("MD-2: host tab limit reached");
     const connection = await this.browser.ensureConnection();
+    assertNotCancelled(signal);
     const { targetId } = await connection.send("Target.createTarget", { url: navigationUrl(url) });
     this.tabs.set(tabId, { tab_id: tabId, target_id: targetId, url, title: "", document_id: "" });
     const state = await this.reconcile();
@@ -155,41 +160,6 @@ export class KernelBrowserHost {
     const tab = this.tabs.get(command.tab_id);
     if (!tab) throw new Error("MD-2: host tab does not exist");
     return tab;
-  }
-  async input(tab, input) {
-    const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
-    return this.browser.inputCapture.run(connection, sessionId, async () => {
-      if (input.kind === "text") {
-        if (typeof input.text !== "string" || input.text.length > 16384) throw new Error("MD-2: input text exceeds limit");
-        const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
-        const { executionContextId } = await connection.send("Page.createIsolatedWorld", {
-          frameId: frameTree.frame.id, worldName: "chariox-host-input", grantUniveralAccess: false,
-        }, sessionId);
-        const { result } = await connection.send("Runtime.evaluate", {
-          contextId: executionContextId,
-          expression: "(() => { let e = document.activeElement; while(e?.shadowRoot?.activeElement) e = e.shadowRoot.activeElement; return !!e && (e.type === 'password' || e.tagName === 'IFRAME' || /password|one-time-code/.test(e.autocomplete || '')); })()",
-          returnByValue: true,
-        }, sessionId);
-        if (result?.value !== false) throw new Error("MD-2: secret field input requires the Vault path");
-        await connection.send("Input.insertText", { text: input.text }, sessionId);
-      } else if (input.kind === "key") {
-        if (!["Tab", "Enter", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
-        // Enter needs its native text event for Chromium's default form/button action.
-        const key = { key: input.key, code: input.key,
-          ...(input.key === "Enter" ? { windowsVirtualKeyCode: 13 } : {}) };
-        await connection.send("Input.dispatchKeyEvent", { type: "keyDown", ...key,
-          ...(input.key === "Enter" ? { text: "\r", unmodifiedText: "\r" } : {}) }, sessionId);
-        await connection.send("Input.dispatchKeyEvent", { type: "keyUp", ...key }, sessionId);
-      } else {
-        if (!Number.isInteger(input.x) || input.x < 0 || input.x >= viewport.css_width || !Number.isInteger(input.y) || input.y < 0 || input.y >= viewport.css_height) throw new Error("MD-2: pointer outside viewport");
-        if (input.kind === "click") {
-          await connection.send("Input.dispatchMouseEvent", { type: "mousePressed", x: input.x, y: input.y, button: "left", clickCount: 1 }, sessionId);
-          await connection.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: input.x, y: input.y, button: "left", clickCount: 1 }, sessionId);
-        } else if (input.kind === "scroll" && Number.isInteger(input.delta_x) && Number.isInteger(input.delta_y) && Math.abs(input.delta_x) <= 10000 && Math.abs(input.delta_y) <= 10000) {
-          await connection.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: input.x, y: input.y, deltaX: input.delta_x, deltaY: input.delta_y }, sessionId);
-        } else throw new Error("MD-2: unsupported input");
-      }
-    });
   }
   async screenshot(tab) {
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
@@ -261,13 +231,27 @@ export class KernelBrowserHost {
       await this.browser.connection?.send("Page.stopScreencast", {}, stream.sessionId).catch(() => {});
     }
   }
-  async request(command) {
+  observe(result, tab, scope) {
+    let observed = this.observedDocuments.get(scope);
+    if (!observed) {
+      if (this.observedDocuments.size >= 64) this.observedDocuments.delete(this.observedDocuments.keys().next().value);
+      observed = new Map(); this.observedDocuments.set(scope, observed);
+    }
+    const tabs = tab ? [tab] : [...this.tabs.values()];
+    for (const current of tabs) observed.set(current.tab_id, current.document_id);
+    for (const id of observed.keys()) if (!this.tabs.has(id)) observed.delete(id);
+    return result;
+  }
+  async request(command, { signal } = {}) {
+    const scope = command.focused_agent ? "focused-agent" : command.observed_by ?? "adapter";
+    assertNotCancelled(signal);
     if (command.op === "stop") return this.stop();
     await this.start();
+    assertNotCancelled(signal);
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
     for (const [id, stream] of this.streams) if (Date.now() > stream.expires) await this.removeStream(id);
-    if (["start", "state"].includes(command.op)) return this.reconcile();
-    if (command.op === "open") return this.open(command.url);
+    if (["start", "state"].includes(command.op)) return this.observe(await this.reconcile(), null, scope);
+    if (command.op === "open") return this.observe(await this.open(command.url, undefined, { signal }), null, scope);
     if (["poll", "unsubscribe"].includes(command.op)) {
       if (command.generation !== this.generation || !this.streams.has(command.subscription_id)) throw new Error("MD-2: stale frame subscription");
       const stream = this.streams.get(command.subscription_id);
@@ -281,25 +265,47 @@ export class KernelBrowserHost {
       && [...(this.browser.appTabs?.apps?.values() ?? [])].some(app => app.targetId === tab.target_id)) {
       throw new Error("Use the focused App tool channel; browser input cannot act as the human App frontend");
     }
+    assertNotCancelled(signal);
     const binding = { target_id: tab.target_id, document_id: tab.document_id };
     if (command.op === "close") {
       for (const [id, stream] of this.streams) {
         if (stream.tabId === tab.tab_id) await this.removeStream(id);
       }
-      await this.browser.manageTab({ ...binding, action: "close" });
+      await this.browser.manageTab({ ...binding, action: "close" }, { signal });
+      for (const observed of this.observedDocuments.values()) observed.delete(tab.tab_id);
       return this.reconcile();
     }
     if (command.op === "navigate") {
-      await this.browser.navigate({ ...binding, url: navigationUrl(command.url) });
-      return this.reconcile();
+      await this.browser.navigate({ ...binding, url: navigationUrl(command.url) }, { signal });
+      return this.observe(await this.reconcile(), null, scope);
     }
-    if (command.op === "snapshot") return { generation: this.generation, snapshot: await this.browser.snapshot(binding) };
-    if (command.op === "input") { await this.input(tab, command.input); return this.reconcile(); }
-    if (command.op === "screenshot") return this.screenshot(tab);
+    if (command.op === "snapshot") return this.observe({ generation: this.generation, snapshot: await this.browser.snapshot(binding) }, tab, scope);
+    if (command.op === "input") {
+      const observed = command.document_id ?? (command.focused_agent ? null : this.observedDocuments.get(scope)?.get(tab.tab_id));
+      if (!observed || observed !== tab.document_id) throw new Error("MD-3: stale input document; observe the tab again");
+      try { await inputHostTab(this.browser, tab, command.input, { signal }); }
+      catch (error) {
+        if (["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) {
+          // Clear any dispatched key/button state before another actor can use
+          // the browser. Recovery rotates generation; cancelled input never replays.
+          await this.stop();
+        }
+        throw error;
+      }
+      return this.observe(await this.reconcile(), null, scope);
+    }
+    if (command.op === "screenshot") {
+      const frame = await this.screenshot(tab);
+      // Private MCP metadata binds input to the captured source; public frame
+      // serialization/transport stays unchanged pending coordinator allocation.
+      if (command.focused_agent) frame.document_id = tab.document_id;
+      return this.observe(frame, tab, scope);
+    }
     if (command.op === "subscribe") return this.subscribe(tab);
     throw new Error("MD-2: unsupported browser operation");
   }
-  async handle(request) {
+  async handle(request, { signal } = {}) {
+    try { assertNotCancelled(signal); } catch { return { id: request.id, ok: false, error: { code: "browser_action_cancelled", message: "MD-3: browser action cancelled" } }; }
     try {
       if (request.method === "health") return { id: request.id, ok: true, result: { state: "ready", process_id: process.pid, diagnostic_code: null } };
       if (request.method === "shutdown") return { id: request.id, ok: true, result: await this.stop() };
@@ -310,12 +316,12 @@ export class KernelBrowserHost {
         const tab = await this.target(request.params);
         if (tab.document_id !== request.params.document_id) throw new Error("MD-5: stale secret document");
         await this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
-          node_ref: request.params.node_ref, action: request.params.action, timeout_ms: 10_000 });
+          node_ref: request.params.node_ref, action: request.params.action, timeout_ms: 10_000 }, { signal });
         await this.save();
         return { id: request.id, ok: true, result: { inserted: true } };
       }
       if (request.method === "host.browser") {
-        const result = await this.request(request.params);
+        const result = await this.request(request.params, { signal });
         // Structured controller observations scrub before compaction; metadata
         // and other host replies receive the same protection at this boundary.
         if (!["screenshot", "poll"].includes(request.params?.op)) {
@@ -332,7 +338,7 @@ export class KernelBrowserHost {
           || this.chromium.child?.signalCode !== null)) throw new Error("App host is no longer live");
         await this.start();
         if (generation !== undefined && generation !== this.generation) throw new Error("MD integration: stale App host generation");
-        const result = await handleBrowserControllerRequest({ ...request, params }, { browser: this.browser });
+        const result = await handleBrowserControllerRequest({ ...request, params }, { browser: this.browser, signal });
         if (result.ok) {
           await this.reconcile();
           if (request.method === "browser.app.open") {
@@ -343,7 +349,9 @@ export class KernelBrowserHost {
         return result;
       }
       throw new Error("MD-2: unsupported host method");
-    } catch { return { id: request.id, ok: false, error: { code: "kernel_browser_failed", message: "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }
+    } catch (error) {
+      if (error?.code === "browser_action_cancelled") await this.stop();
+      return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }
   }
 }
 
@@ -353,5 +361,5 @@ if (process.argv[2] === "stdio") {
   const stop = async () => { if (closing) return; closing = true; await host.stop(); process.exit(0); };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
-  await new BrowserControllerStdioServer({ handleRequest: request => host.handle(request) }).run().finally(() => host.stop());
+  await new BrowserControllerStdioServer({ handleRequest: (request, options) => host.handle(request, options) }).run().finally(() => host.stop());
 }

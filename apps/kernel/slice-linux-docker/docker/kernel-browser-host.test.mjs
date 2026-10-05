@@ -3,6 +3,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
+import { PassThrough } from "node:stream";
+import readline from "node:readline";
+import { BrowserControllerStdioServer } from "./browser-controller.mjs";
 import path from "node:path";
 import { KernelBrowserHost, navigationUrl } from "./kernel-browser-host.mjs";
 import { candidates as macCandidates, launchEnvironment as macEnvironment } from "./kernel-browser-macos.mjs";
@@ -18,6 +21,7 @@ function fixture(root) {
     isOpen: () => true,
     subscribe: handler => { handlers.add(handler); return () => handlers.delete(handler); },
     send: async (method, params, session) => {
+      if (connection.beforeSend) await connection.beforeSend(method, params, session);
       sent.push({ method, params, session });
       if (method === "Target.getTargets") return { targetInfos: [...pages].map(([targetId, tab]) => ({ targetId, type: "page", ...tab })) };
       if (method === "Target.createTarget") { const id = `target-${++next}`; pages.set(id, { url: params.url }); return { targetId: id }; }
@@ -27,7 +31,7 @@ function fixture(root) {
         return {};
       }
       if (method === "Page.captureScreenshot") return { data: Buffer.from("test-frame").toString("base64") };
-      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "frame" } } };
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "frame", loaderId: pages.get(session?.replace("session-", ""))?.document_id ?? `doc-${session?.replace("session-", "")}` } } };
       if (method === "Page.createIsolatedWorld") return { executionContextId: 42 };
       if (method === "Runtime.evaluate") return { result: { value: fixture.secretFocused ?? false } };
       return {};
@@ -42,7 +46,7 @@ function fixture(root) {
     resolvePageTarget: async target => ({ connection, sessionId: `session-${target}` }),
     inputCapture: { run: async (_connection, _session, operation) => operation() },
   });
-  return { host: new KernelBrowserHost(root, { chromium, browserFactory }), chromium, handlers, sent, pages };
+  return { host: new KernelBrowserHost(root, { chromium, browserFactory }), chromium, handlers, sent, pages, connection };
 }
 
 async function using(callback) {
@@ -308,4 +312,97 @@ test("MD-4 reviewer R3: discovery and legacy restoration stay within the durable
   assert.equal(recovered.tabs[0].tab_id, opened.tab_id);
   await host.request({ op: "close", tab_id: opened.tab_id, generation: recovered.generation });
   assert.equal((await host.request({ op: "state" })).tabs.length, 127);
+}));
+
+
+test("MD-3 b220: cancelled pending input never inserts text", () => using(async ({ host, sent, connection }) => {
+  const opened = await host.request({ op: "open", url: "about:blank" });
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  const cancel = new AbortController();
+  connection.beforeSend = async method => { if (method === "Runtime.evaluate") { entered.resolve(); await release.promise; } };
+  const pending = host.request({ op: "input", tab_id: opened.tab_id, generation: opened.generation,
+    document_id: opened.tabs[0].document_id, input: { kind: "text", text: "synthetic" } }, { signal: cancel.signal });
+  await entered.promise;
+  cancel.abort(); release.resolve();
+  await assert.rejects(pending, error => error.code === "browser_action_cancelled");
+  assert(!sent.some(call => call.method === "Input.insertText"));
+}));
+
+test("MD-3 b220: revocation between key transitions prevents further physical input", () => using(async ({ host, sent, connection }) => {
+  const opened = await host.request({ op: "open", url: "about:blank" });
+  const cancel = new AbortController();
+  connection.beforeSend = async (method, params) => { if (method === "Input.dispatchKeyEvent" && params.type === "keyDown") cancel.abort(); };
+  await assert.rejects(host.request({ op: "input", tab_id: opened.tab_id, generation: opened.generation,
+    document_id: opened.tabs[0].document_id, input: { kind: "key", key: "Enter" } }, { signal: cancel.signal }), error => error.code === "browser_action_cancelled");
+  assert.equal(sent.filter(call => call.method === "Input.dispatchKeyEvent").length, 1);
+}));
+
+test("MD-3 b220: input rejects replacement documents and missing observation binding", () => using(async ({ host, sent, pages }) => {
+  const opened = await host.request({ op: "open", url: "https://example.com/before" });
+  const command = { op: "input", tab_id: opened.tab_id, generation: opened.generation,
+    document_id: opened.tabs[0].document_id, input: { kind: "click", x: 50, y: 50 } };
+  const target = host.tabs.get(opened.tab_id).target_id;
+  pages.set(target, { url: "https://example.com/after", document_id: "replacement" });
+  await assert.rejects(host.request(command), /document/);
+  delete command.document_id;
+  await assert.rejects(host.request(command), /document/);
+  assert(!sent.some(call => call.method.startsWith("Input.")));
+}));
+
+test("MD-3 b220: navigation during text preparation rejects input before insert", () => using(async ({ host, sent, connection, pages }) => {
+  const opened = await host.request({ op: "open", url: "about:blank" });
+  const target = host.tabs.get(opened.tab_id).target_id;
+  connection.beforeSend = async method => { if (method === "Runtime.evaluate") pages.set(target, { url: "about:blank", document_id: "replacement" }); };
+  await assert.rejects(host.request({ op: "input", tab_id: opened.tab_id, generation: opened.generation,
+    document_id: opened.tabs[0].document_id, input: { kind: "text", text: "synthetic" } }), /document/);
+  assert(!sent.some(call => call.method === "Input.insertText"));
+}));
+
+
+test("MD-3 b220: production stdio cancellation reaches held host input and settles before retry", { timeout: 5000 }, () => using(async ({ host, connection, sent }) => {
+  const opened = await host.request({ op: "open", url: "about:blank" });
+  const input = new PassThrough(), output = new PassThrough();
+  const lines = readline.createInterface({ input: output }), waiters = new Map();
+  lines.on("line", line => { const reply = JSON.parse(line); waiters.get(reply.id)?.resolve(reply); });
+  const server = new BrowserControllerStdioServer({ input, output, handleRequest: (request, options) => host.handle(request, options) });
+  const running = server.run();
+  const rpc = (id, method, params) => {
+    const result = Promise.withResolvers(); waiters.set(id, result);
+    input.write(`${JSON.stringify({ id, method, params })}\n`);
+    return result.promise;
+  };
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  connection.beforeSend = async method => { if (method === "Runtime.evaluate") { entered.resolve(); await release.promise; } };
+  try {
+    const command = { op: "input", tab_id: opened.tab_id, generation: opened.generation,
+      document_id: opened.tabs[0].document_id, input: { kind: "text", text: "synthetic" } };
+    const pending = rpc(1, "host.browser", command);
+    await entered.promise;
+    assert.equal((await rpc(2, "browser.cancel", { request_id: 1 })).result.accepted, true);
+    release.resolve();
+    const settled = await pending;
+    assert.equal(settled.ok, false);
+    assert.equal(settled.error.code, "browser_action_cancelled");
+    assert(!sent.some(call => call.method === "Input.insertText"));
+    connection.beforeSend = null;
+    const recovered = await host.request({ op: "state" });
+    assert.equal(recovered.generation, opened.generation + 1);
+    assert.equal((await rpc(3, "host.browser", { ...command, generation: recovered.generation, document_id: recovered.tabs[0].document_id })).ok, true);
+    assert.equal(sent.filter(call => call.method === "Input.insertText").length, 1);
+  } finally { release.resolve(); input.end(); await running; lines.close(); output.end(); }
+}));
+
+
+test("MD-3: one terminal/agent observation cannot rebind another terminal's stale input", () => using(async ({ host, pages, sent }) => {
+  const opened = await host.request({ op: "open", url: "about:blank", observed_by: "terminal-a" });
+  const target = host.tabs.get(opened.tab_id).target_id;
+  pages.set(target, { url: "https://example.com/replacement", document_id: "replacement" });
+  const current = await host.request({ op: "state", observed_by: "terminal-b" });
+  await host.request({ op: "screenshot", focused_agent: true, tab_id: opened.tab_id, generation: opened.generation });
+  const input = { op: "input", observed_by: "terminal-a", tab_id: opened.tab_id, generation: opened.generation, input: { kind: "click", x: 20, y: 20 } };
+  await assert.rejects(host.request(input), /document/);
+  await assert.rejects(host.request({ ...input, focused_agent: true }), /document/);
+  assert(!sent.some(call => call.method.startsWith("Input.")));
+  await host.request({ ...input, focused_agent: true, document_id: current.tabs[0].document_id });
+  assert.equal(sent.filter(call => call.method === "Input.dispatchMouseEvent").length, 2);
 }));
