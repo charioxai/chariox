@@ -16,12 +16,11 @@ if (![binary,output,tools,pytools].every(value => value && path.isAbsolute(value
 const require = createRequire(path.join(tools,'package.json'));
 const { chromium } = require('playwright-core'), { PNG } = require('pngjs');
 const pause = ms => new Promise(resolve => setTimeout(resolve,ms));
-const receipt = { item: 'MD-DISPLAY-02/04', status: 'RED', source: execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(), source_dirty: Boolean(execFileSync('git',['status','--porcelain'],{encoding:'utf8'}).trim()), commands: process.argv.slice(1), codec: 'vp09.00.10.08 + exact PNG/tiles', target_encrypted_bitrate: Number(process.env.MD_BITRATE || 2_000_000), css_geometry:[1280,800],dpr:2, transport:process.env.MD_RELAY==='0'?'production local kernel websocket/events':'production local scoped-auth relay + kernel encrypted request/event path', samples:[], cleanup:[] };
+const receipt = { item: 'MD-DISPLAY-02/04', status: 'RED', source: execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(), source_dirty: Boolean(execFileSync('git',['status','--porcelain'],{encoding:'utf8'}).trim()), commands: process.argv.slice(1), codec: 'vp09.00.10.08 + exact PNG/tiles', target_encrypted_bitrate: Number(process.env.MD_BITRATE || 2_000_000), css_geometry:[1280,800],dpr:2, transport:'production local scoped-auth relay + kernel encrypted request/event path', samples:[], cleanup:[] };
 await mkdir(output,{recursive:true});
 const root = await mkdtemp(path.join(tmpdir(),'chariox-md-display-impl-'));
-let kernel, display, viewer, browser, server, peer, ready;
+let kernel, display, viewer, browser, server, ready;
 let kernelExit;
-const relayMode=process.env.MD_RELAY!=='0';
 const ts=createRequire('/root/work/oss/package.json')('typescript');
 const relayCryptoSource=await readFile(path.resolve(here,'../../packages/kernel-client/src/browser-relay-crypto.ts'),'utf8');
 const relayCrypto=ts.transpileModule(relayCryptoSource,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText;
@@ -39,7 +38,9 @@ async function resource() {
 }
 async function until(check,label,timeout=20000) {const end=Date.now()+timeout;while(Date.now()<end){if(errors.length)throw errors[0];const value=await check();if(value)return value;await pause(25);}throw Error('MD-DISPLAY timeout: '+label);}
 try {
- await resource(); await chmod(root,0o755);
+ await resource();
+ if(process.env.MD_RELAY==='0')throw Error('MD-DISPLAY: browser origins cannot attach to the native local socket; use the scoped relay drill');
+ await chmod(root,0o755);
  const home=path.join(root,'home');await mkdir(home,{mode:0o700});await chown(home,65534,65534);
  await cp(binary,path.join(root,'kernel-tests'));await chmod(path.join(root,'kernel-tests'),0o755);
  const python=path.join(root,'python');await mkdir(python);
@@ -73,13 +74,12 @@ try {
  const port=await until(async()=>{checkChild(viewer,'viewer');try{return Number((await readFile(path.join(viewerHome,'DevToolsActivePort'),'utf8')).split('\n')[0])}catch{return null}},'viewer');
  browser=await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
  const page=await browser.contexts()[0].newPage();page.on('pageerror',()=>errors.push(Error('MD-DISPLAY browser callback failure')));await page.goto(`${origin}/harness.html`);await page.waitForFunction(()=>window.MDDisplay);
- await page.evaluate(async({ready,bitrate,relayMode})=>{
+ await page.evaluate(async({ready,bitrate})=>{
   const api=await import('/browser-relay-crypto.mjs');
-  const sender=relayMode?await api.createRelayKeypair():null;
-  const bootstrap=relayMode?await (await fetch('/relay-bootstrap')).json():null;
+  const sender=await api.createRelayKeypair();
+  const bootstrap=await (await fetch('/relay-bootstrap')).json();
   let socket,daemonKey;
-  if(relayMode){
-   for(let attempt=0;attempt<100;attempt++){
+  for(let attempt=0;attempt<100;attempt++){
     try {
      socket=new WebSocket(bootstrap.relay_url);await new Promise((resolve,reject)=>{socket.onopen=resolve;socket.onerror=reject});
      const connected=new Promise((resolve,reject)=>{socket.onmessage=event=>{const m=JSON.parse(event.data);m.kind==='client_connected'?resolve(m):reject(Error('MD-DISPLAY relay target not ready'))};socket.onclose=()=>reject(Error('MD-DISPLAY relay closed before ready'))});
@@ -87,39 +87,29 @@ try {
      daemonKey=(await connected).daemon_public_key;break;
     }catch{socket?.close();await new Promise(resolve=>setTimeout(resolve,100));}
    }
-   if(!daemonKey)throw Error('MD-DISPLAY relay did not admit kernel target');
-  }else{socket=new WebSocket(ready.endpoint);await new Promise((resolve,reject)=>{socket.onopen=resolve;socket.onerror=reject});}
+  if(!daemonKey)throw Error('MD-DISPLAY relay did not admit kernel target');
   let id=0;const pending=new Map(),listeners=new Set();window.mdWireBytes=0;window.mdFrames=[];
   socket.onmessage=async event=>{
    window.mdWireBytes+=new TextEncoder().encode(event.data).length;
    const message=JSON.parse(event.data);
-   if(relayMode){
-    if(message.kind==='client_response'){
+   if(message.kind==='client_response'){
      const p=pending.get(message.request_id);pending.delete(message.request_id);
      if(!p)return;
      if(message.error)p.reject(Error(message.error.message));else try{p.resolve(JSON.parse(await api.decryptRelayPayload(sender.privateKey,message.encrypted_response,daemonKey)))}catch(error){p.reject(error)}
     }else if(message.kind==='client_event'){
      const value=JSON.parse(await api.decryptRelayPayload(sender.privateKey,message.encrypted_event,daemonKey));
      window.mdFrames.push({sequence:value.frame.sequence,kind:value.frame.kind,bytes:event.data.length});for(const listener of listeners)listener(value);
-    }
-   }else if(message.type==='response'){
-    const p=pending.get(message.request_id);pending.delete(message.request_id);message.error?p.reject(Error(message.error.message)):p.resolve(message.response);
-   }else if(message.type==='event'){
-    window.mdFrames.push({sequence:message.event.frame.sequence,kind:message.event.frame.kind,bytes:event.data.length});for(const listener of listeners)listener(message.event);
    }
   };
   const control=value=>new Promise((resolve,reject)=>{const key=String(++id),timer=setTimeout(()=>{pending.delete(key);reject(Error('MD-DISPLAY request timeout'))},20000);pending.set(key,{resolve:value=>{clearTimeout(timer);resolve(value)},reject:error=>{clearTimeout(timer);reject(error)}});socket.send(JSON.stringify({request_id:key,...value}))});
   window.mdTransport={request:async request=>{
-    if(!relayMode)return control({type:'request',request});
     const encrypted=await api.encryptRelayPayload(daemonKey,JSON.stringify({command_id:'md-display-'+(id+1),request}),sender);
     return control({kind:'client_request',target:{daemon_id:bootstrap.daemon_id},encrypted_request:encrypted.payload});
    },onEvent:listener=>{listeners.add(listener);return()=>listeners.delete(listener)}};
-  if(relayMode){
-   mdTransport.subscribeDisplay=binding=>control({kind:'client_subscribe',subscription_id:binding.subscription_id,target:{daemon_id:bootstrap.daemon_id},session_id:binding.subscription_id,attachment_id:String(binding.generation),client_public_key:sender.publicKeyBase64,subscription_scope:'kernel_browser_display',resume_from_event_id:null});
-   mdTransport.unsubscribeDisplay=binding=>control({kind:'client_unsubscribe',subscription_id:binding.subscription_id,client_public_key:sender.publicKeyBase64});
-  }
+  mdTransport.subscribeDisplay=binding=>control({kind:'client_subscribe',subscription_id:binding.subscription_id,target:{daemon_id:bootstrap.daemon_id},session_id:binding.subscription_id,attachment_id:String(binding.generation),client_public_key:sender.publicKeyBase64,subscription_scope:'kernel_browser_display',resume_from_event_id:null});
+  mdTransport.unsubscribeDisplay=binding=>control({kind:'client_unsubscribe',subscription_id:binding.subscription_id,client_public_key:sender.publicKeyBase64});
   window.mdStream=await MDDisplay.attachBrowserDisplay(MDDisplay.canvas,mdTransport,{tab_id:ready.tab_id,generation:ready.generation},{bitrate});
- },{ready,bitrate:receipt.target_encrypted_bitrate,relayMode});
+ },{ready,bitrate:receipt.target_encrypted_bitrate});
  const first=await page.evaluate(()=>mdStream.next());receipt.bootstrap={kind:first.kind,sequence:first.sequence};
  const reference=async()=>Buffer.from((await page.evaluate(async()=>{const r=await mdTransport.request({KernelBrowser:{command:{op:'screenshot',tab_id:mdStream.binding.tab_id,generation:mdStream.binding.generation}}});return r.KernelBrowser.result.data_base64})),'base64');
  const actual=async()=>Buffer.from((await page.evaluate(()=>MDDisplay.canvas.toDataURL('image/png'))).split(',')[1],'base64');
