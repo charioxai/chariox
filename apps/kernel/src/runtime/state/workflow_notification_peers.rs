@@ -912,6 +912,15 @@ mod tests {
                 "local",
             )
             .unwrap();
+        // The existing connector clears discovery on disconnect. Restore the
+        // relay's live presence before testing an online source's empty answer.
+        let presence = crate::transport::relay_discovery::get_live_kernel(&tc, &sc.daemon_id)
+            .await
+            .unwrap();
+        target_runtime
+            .owned
+            .notification_inventory_projection
+            .update(vec![], vec![presence]);
         target_runtime
             .refresh_notification_sources_from_inventory("local", true)
             .await
