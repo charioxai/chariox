@@ -45,15 +45,50 @@ export function renderedNodes(document, strings) {
   return result;
 }
 
+// DOMSnapshot separates same-renderer child documents from their embedding
+// nodes. Styles in the child cannot report opacity/visibility on that owner.
+function renderedDocuments(snapshot) {
+  const documents = snapshot.documents ?? [];
+  const strings = snapshot.strings ?? [];
+  const rendered = documents.map(document => renderedNodes(document, strings));
+  const owners = new Map();
+  for (let document = 0; document < documents.length; document++) {
+    const children = documents[document].nodes?.contentDocumentIndex ?? {};
+    for (let i = 0; i < (children.index?.length ?? 0); i++) {
+      owners.set(children.value?.[i], { document, node: children.index[i] });
+    }
+  }
+  const visible = new Map();
+  const visit = (index, pending = new Set()) => {
+    if (visible.has(index)) return visible.get(index);
+    if (pending.has(index)) return false;
+    pending.add(index);
+    const owner = owners.get(index);
+    const included = !owner || rendered[owner.document]?.has(owner.node) && visit(owner.document, pending);
+    visible.set(index, !!included);
+    return !!included;
+  };
+  return documents.flatMap((document, index) => visit(index) ? [{ document, rendered: rendered[index] }] : []);
+}
+
+// Internal capture metadata only; it is removed before the controller reply.
+// Isolated renderers need the same embedding check in their parent's snapshot.
+export function renderedFrameOwners(snapshot) {
+  const strings = snapshot.strings ?? [];
+  return renderedDocuments(snapshot).flatMap(({ document, rendered }) =>
+    [...rendered.keys()].filter(index => ["IFRAME", "FRAME"].includes(strings[document.nodes?.nodeName?.[index]]))
+      .map(index => document.nodes?.backendNodeId?.[index]).filter(Number.isSafeInteger));
+}
+
 export function renderedSnapshotText(snapshot) {
   const strings = snapshot.strings ?? [];
   const documents = [];
-  for (const document of snapshot.documents ?? []) {
+  for (const { document, rendered } of renderedDocuments(snapshot)) {
     const nodes = document.nodes ?? {};
     let output = "";
     let previousBlock;
     let previousCell;
-    for (const [index, text] of [...renderedNodes(document, strings)].sort((a, b) => a[0] - b[0])) {
+    for (const [index, text] of [...rendered].sort((a, b) => a[0] - b[0])) {
       if (strings[nodes.nodeName?.[index]] === "BR") { output += "\n"; continue; }
       const readOnlyPane = strings[nodes.nodeName?.[index]] === "TEXTAREA";
       if ((nodes.nodeType?.[index] !== 3 && !readOnlyPane) || !text) continue;

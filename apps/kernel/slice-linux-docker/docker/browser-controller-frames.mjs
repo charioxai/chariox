@@ -211,16 +211,26 @@ export async function captureBrowserFrames(options) {
   return withBrowserFrames(connection, sessionId, targetId, documentId, async (frames) => {
     let result;
     const text = [];
+    const textOwners = new Map();
+    const textVisible = new Map();
     for (const entry of frames) {
       const remaining = MAX_NODES - Math.max(result?.accessibility_nodes.length ?? 0, result?.dom_nodes.length ?? 0);
       if (remaining <= 0 && !options.textRequest) break;
+      const owner = entry.parent ? await connection.send("DOM.getFrameOwner", { frameId: entry.frame.id }, entry.parent.sessionId) : null;
       const snapshot = await captureBrowserSnapshot({ ...options, sessionId: entry.sessionId, documentId: entry.frame.loaderId, limits: { maxNodes: Math.max(1, remaining) }, captureText: !!options.textRequest });
-      if (options.textRequest) { if (snapshot.captured_text) text.push(snapshot.captured_text); delete snapshot.captured_text; }
+      if (options.textRequest) {
+        const visible = !entry.parent || textVisible.get(entry.parent.sessionId) === true &&
+          textOwners.get(entry.parent.sessionId)?.includes(owner.backendNodeId);
+        textVisible.set(entry.sessionId, !!visible);
+        textOwners.set(entry.sessionId, snapshot.captured_text_frame_owners ?? []);
+        if (visible && snapshot.captured_text) text.push(snapshot.captured_text);
+        delete snapshot.captured_text;
+        delete snapshot.captured_text_frame_owners;
+      }
       if (remaining <= 0) continue;
       if (!result) { result = snapshot; continue; }
       const ref = (value) => value ? entry.prefix + value : null;
       const offset = result.dom_documents.length;
-      const owner = await connection.send("DOM.getFrameOwner", { frameId: entry.frame.id }, entry.parent.sessionId);
       result.accessibility_nodes.push(...snapshot.accessibility_nodes.map((node) => ({ ...node, node_ref: ref(node.node_ref), parent_ref: ref(node.parent_ref), child_refs: node.child_refs.map(ref) })));
       result.dom_nodes.push(...snapshot.dom_nodes.map((node) => ({ ...node, node_ref: ref(node.node_ref), parent_ref: ref(node.parent_ref), document_index: node.document_index + offset })));
       result.dom_documents.push(...snapshot.dom_documents.map((document) => ({ ...document, document_index: document.document_index + offset, owner_node_ref: document.owner_node_ref ? ref(document.owner_node_ref) : `${entry.parent.prefix}backend:${owner.backendNodeId}` })));

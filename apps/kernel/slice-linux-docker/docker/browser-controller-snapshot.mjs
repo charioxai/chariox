@@ -1,4 +1,4 @@
-import { renderedNodes, renderedSnapshotText } from "./browser-controller-text.mjs";
+import { renderedFrameOwners, renderedNodes, renderedSnapshotText } from "./browser-controller-text.mjs";
 import { computedAppearanceByNode, SNAPSHOT_COMPUTED_STYLES, withComputedAppearance } from "./browser-controller-geometry.mjs";
 const DEFAULT_MAX_NODES = 5_000;
 const DEFAULT_MAX_STRING_LENGTH = 2_048;
@@ -66,7 +66,7 @@ export async function captureBrowserSnapshot({
     accessibility_nodes: accessibility.nodes,
     accessibility_truncated: accessibility.truncated,
     ...compactedDom,
-    ...(captureText ? { captured_text: renderedSnapshotText(dom) } : {}),
+    ...(captureText ? { captured_text: renderedSnapshotText(dom), captured_text_frame_owners: renderedFrameOwners(dom) } : {}),
   };
 }
 

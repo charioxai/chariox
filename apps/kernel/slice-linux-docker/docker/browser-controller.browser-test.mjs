@@ -1663,6 +1663,8 @@ test(`MP-08 P3 ${layout} rendered text captures only the bound tab and fences fr
 async function browserTextObservation(request, target, textRequest = {}) {
   const snapshot = await request("browser.snapshot", { ...target, text_request: { offset: 0, ...textRequest } });
   assert.equal(snapshot.ok, true, JSON.stringify(snapshot.error));
+  assert.equal(Object.hasOwn(snapshot.result, "captured_text"), false);
+  assert.equal(Object.hasOwn(snapshot.result, "captured_text_frame_owners"), false);
   return snapshot.result.text_page;
 }
 
