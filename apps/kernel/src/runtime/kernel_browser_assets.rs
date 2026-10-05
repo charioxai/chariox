@@ -95,6 +95,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/browser-controller.mjs"),
     ),
     (
+        "kernel-browser-input.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-input.mjs"),
+    ),
+    (
         "kernel-browser-host.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-host.mjs"),
     ),

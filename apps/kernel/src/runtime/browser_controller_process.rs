@@ -34,8 +34,10 @@ use crate::session::CanonicalViewport;
 
 mod app_view_bridge;
 mod cancellation;
+pub(crate) use cancellation::CancellationSignal as BrowserCancellation;
 mod configuration_cancellation;
 mod lifecycle_cancellation;
+mod owned_process_group;
 mod pending_action;
 mod pending_mutation;
 mod pending_responses;
@@ -45,6 +47,8 @@ use self::pending_mutation::BrowserTabMutationLanes;
 pub(crate) use configuration_cancellation::BrowserConfiguration;
 #[cfg(test)]
 mod action_concurrency_tests;
+#[cfg(test)]
+mod host_cancellation_tests;
 #[cfg(test)]
 mod import_cancellation_tests;
 #[cfg(test)]
@@ -248,7 +252,10 @@ impl BrowserControllerProcessStdioBackend {
         }
     }
 
-    pub(crate) fn for_host(mut self) -> Self { self.host = true; self }
+    pub(crate) fn for_host(mut self) -> Self {
+        self.host = true;
+        self
+    }
 
     fn from_script(script_path: impl Into<PathBuf>, timeout: Duration) -> Self {
         let command = std::env::var_os(CONTROLLER_NODE_ENV)
@@ -279,8 +286,25 @@ impl BrowserControllerProcessStdioBackend {
         if self.host {
             // MD-2: browser descendants receive OS display settings, never provider/control secrets.
             command.env_clear();
-            for key in ["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "TMPDIR", "CHARIOX_KERNEL_BROWSER_EXECUTABLE", "CHARIOX_KERNEL_BROWSER_HEADLESS"] {
-                if let Some(value) = std::env::var_os(key) { command.env(key, value); }
+            for key in [
+                "PATH",
+                "HOME",
+                "USER",
+                "LOGNAME",
+                "LANG",
+                "LC_ALL",
+                "DISPLAY",
+                "WAYLAND_DISPLAY",
+                "XAUTHORITY",
+                "XDG_RUNTIME_DIR",
+                "DBUS_SESSION_BUS_ADDRESS",
+                "TMPDIR",
+                "CHARIOX_KERNEL_BROWSER_EXECUTABLE",
+                "CHARIOX_KERNEL_BROWSER_HEADLESS",
+            ] {
+                if let Some(value) = std::env::var_os(key) {
+                    command.env(key, value);
+                }
             }
         }
         let mut child = command.spawn().map_err(|error| {
@@ -325,6 +349,7 @@ impl BrowserControllerProcessStdioBackend {
                 }
             });
         self.process = Some(BrowserControllerChild {
+            owned_group: owned_process_group::OwnedProcessGroup::new(child.id()),
             child: Arc::new(Mutex::new(child)),
             stdin: Arc::new(Mutex::new(stdin)),
             responses,
@@ -360,8 +385,24 @@ impl BrowserControllerProcessStdioBackend {
     }
 
     // MD-2: bounded host adapter RPC; public callers never choose the method.
-    pub(crate) fn host_request(&mut self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+    pub(crate) fn host_request(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         self.request(method, params)?.into_result(method)
+    }
+
+    pub(crate) fn host_request_cancellable(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+        signal: Option<Arc<BrowserCancellation>>,
+    ) -> Result<serde_json::Value, String> {
+        let previous = std::mem::replace(&mut self.action_cancellation, signal);
+        let result = self.host_request(method, params);
+        self.action_cancellation = previous;
+        result
     }
 
     fn request_serializable<P: Serialize>(
@@ -372,7 +413,9 @@ impl BrowserControllerProcessStdioBackend {
     ) -> Result<BrowserControllerRpcResponse, String> {
         let cancellation = matches!(
             method,
-            "browser.action"
+            "host.browser"
+                | "host.secret"
+                | "browser.action"
                 | "browser.upload"
                 | "browser.downloads.configure"
                 | "browser.permission"
@@ -397,6 +440,7 @@ impl BrowserControllerProcessStdioBackend {
             .process
             .as_mut()
             .ok_or_else(|| "browser controller is not running".to_string())?;
+        process.owned_group.refresh();
         let mut stdin = process
             .stdin
             .lock()
@@ -493,6 +537,7 @@ impl BrowserControllerProcessStdioBackend {
                     return Err(format!("browser controller exited during `{method}`"))
                 }
             };
+            process.owned_group.refresh();
             if response.id == cancellation_request_id {
                 cancellation_acknowledged = true;
                 let accepted = response.ok
@@ -588,12 +633,9 @@ impl BrowserControllerProcessStdioBackend {
             .map_err(|error| format!("failed to inspect browser controller: {error}"))?;
         drop(child);
         if status.is_some() {
-            // MD-2: a crashed host controller may leave Chromium in its owned process group.
+            // MD-2: reparented descendants must match identities recorded while owned.
             if self.host {
-                if let Ok(pid) = i32::try_from(process_id) {
-                    #[cfg(unix)]
-                    let _ = unsafe { libc::kill(-pid, libc::SIGKILL) };
-                }
+                process.owned_group.signal();
             }
             self.process.take();
             return Ok(Some(process_id));
@@ -994,6 +1036,7 @@ impl Drop for BrowserControllerProcessStdioBackend {
 }
 
 struct BrowserControllerChild {
+    owned_group: owned_process_group::OwnedProcessGroup,
     child: Arc<Mutex<Child>>,
     stdin: Arc<Mutex<ChildStdin>>,
     responses: mpsc::Receiver<Result<BrowserControllerRpcResponse, String>>,
@@ -1134,12 +1177,10 @@ fn terminate_child(child: &mut Child, timeout: Duration) {
 }
 
 fn kill_child(child: &mut Child) {
-    #[cfg(unix)]
-    {
-        if let Ok(pid) = i32::try_from(child.id()) {
-            let _ = unsafe { libc::kill(-pid, libc::SIGKILL) };
-        }
+    if child.id() <= 1 || child.id() > i32::MAX as u32 {
+        return;
     }
+    owned_process_group::OwnedProcessGroup::new(child.id()).signal();
     let _ = child.kill();
     let _ = child.wait();
 }
@@ -2653,6 +2694,7 @@ done
             .clone();
         let first_process_id = first.process_id.expect("first process id");
 
+        assert!(first_process_id > 1 && first_process_id <= i32::MAX as u32);
         let kill_result = unsafe { libc::kill(first_process_id as i32, libc::SIGKILL) };
         assert_eq!(kill_result, 0, "test controller should be killable");
         let restarted = supervisor

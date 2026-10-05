@@ -52,6 +52,34 @@ remote/leased runs are excluded. A small loader tool makes the capability known;
 the browser operation tool is advertised only after on-demand loading.
 No additional approval/grant path is introduced.
 
+MD-3 browser retry receipts include the authenticated terminal caller in their
+fingerprint. Terminal admission runs before replay lookup; another user cannot
+receive a cached observation. Browser receipts remain memory-only, preserving
+in-process mutation deduplication without persisting screenshot/frame payloads.
+Native URLs outside HTTP(S)/about:blank restore as about:blank; reconciliation
+keeps at most 128 durable tabs, prioritizes existing identities, closes excess
+native targets and truncates oversized legacy registries.
+
+Each MCP call retains one focus-interval admission through async waits and the
+controller operation. Focus change, agent destruction/session end/placement move
+or loss of the provider-run authority cancels pending host input and Vault fill
+through the shared stdio cancellation path. A timed-out cancellation fences the
+controller before settlement. Input checks cancellation and the observed CDP
+loader before every physical event. If input is interrupted between events, the
+host stops its owned Chromium to clear held keys/buttons; the next request
+recovers with a new generation. This cannot undo input already delivered before
+revocation.
+
+The private MCP browser envelope takes `document_id` beside `command` for input.
+State/snapshot and MCP screenshot supply that identity. Missing or stale
+bindings fail before input; observing another tab or another caller's refreshed
+state cannot rebind an old request. Protocol-417 human input uses a receipt scoped
+to the terminal caller until the public contract can carry explicit document
+identity. That protects input across replacement documents; explicit concurrent
+frame/document binding for public display clients requires a coordinator
+protocol allocation and client integration. It is not claimed accepted here.
+
+
 Ordinary input is not a Vault operation. Ordinary text input into password/OTP fields is refused. MD-5 adds
 `chariox.kernel_browser_paste_secret` after on-demand loading: an opaque Vault
 credential handle plus observed tab/generation/document/node reference, never
@@ -120,7 +148,7 @@ kernel restart use the common supervisor and stable tab records.
 On the Mac, compile the native kernel test artifact under an external Cargo
 target directory (`cargo test -p chariox-kernel --lib --no-run`). Run:
 `node apps/kernel/slice-linux-docker/kernel-browser-macos-drill.mjs /absolute/kernel-tests /absolute/external/evidence`.
-The script starts disposable kernel router subprocesses with dev-stub MCP
+The script is standalone (no sibling JavaScript imports) and starts disposable kernel router subprocesses with dev-stub MCP
 identity, a local fixture and a private HOME/CHARIOX_HOME, checks screenshot,
 MCP click/type, CDP frames, Chrome SIGKILL recovery, kernel restart and close.
 It never connects to a daemon listener (including :44240). This is native
