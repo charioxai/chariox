@@ -1,17 +1,23 @@
 # MD-stack: Apps, host browser, App views, display and notes
 
 The canonical integration starts at Apps queue 39633aeb4 (local 416, relay 70),
-then browser a4ef64165 (417). Feature snapshots preserve416 →417 →418 →419
-→424; current local version is424, relay stays70. Branches were replayed in
-coordinator order: display, notes, then only the App-view commits. The App-view
-replay retains424 rather than lowering it to its original418.
+then browser a4ef64165. The coordinator allocated local **427**, relay **74**
+for the union. Unreleased feature numbers 417/418/419/424/425 are folded into
+427; their shape/hash guards now pin the union version. Released snapshots
+through 416/70 retain their shape history. Current feature minimums are 427.
 
-| MD surface | Introduced protocol | Frozen input |
-| --- | --- | --- |
-| MD-2/MD-3 kernel browser | 417 | Apps-based kernel browser |
-| MD-APP user App views | 418 | md/integration e083f7c09, App commits only |
-| MD-DISPLAY-04 transport | 419 | md/display-transport 6b288b330 |
-| MD-N3 notes | 424 | md/notes 385aa5d56 |
+| MD surface | Frozen input |
+| --- | --- |
+| MD-2/MD-3 kernel browser | Apps-based kernel browser plus priority review fixes |
+| MD-APP user App views | md/integration 3e1df0081, App commits only |
+| MD-DISPLAY-04 transport | md/display-transport 6b288b330 |
+| MD-N2/MD-N3 notes | md/notes a7da9d748, including anchoring and quote protection fixes |
+| MD-CAPTURE region screenshots | md/screenshot f1f979754 |
+
+Room NoteObservation is snapshotted under relay 74. Notes refuse unknown or
+older worker protocols before sending that variant; no legacy worker receives
+an unsupported command. Visible-region capture remains an observation and
+bypasses transport receipt caching so every retry enters current protection.
 
 Apps terminal/grant admission and boxed router boundaries stay authoritative.
 The typed KernelBrowserDisplayRequest seam is unchanged. App views use its
@@ -31,7 +37,6 @@ and Node/PyAV dependencies are supplied explicitly; no host installation or
 provider account is needed. The native Mac replay still needs a Mac build/run.
 
 Display, notes and App-view lanes should rebase new work onto this combined
-stack, retaining these admission and future boundaries. Notes 979920c8 was not
-part of the frozen published head; its contextual-anchor fix is a separate
-follow-up. Exact replay maps, source identities, test commands/results and
+stack, retaining these admission and future boundaries. Notes review fixes are included. Cloud screenshot clients must adopt minimum
+427 when binding to this union. Exact replay maps, source identities, test commands/results and
 cleanup belong to the lane's external PUSH_READY and evidence receipts.

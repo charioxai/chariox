@@ -90,3 +90,7 @@ uses two actual loopback WebSockets, the production Rust authority and JavaScrip
 host adapter, and a synthetic CDP factory in an isolated child. It checks private
 document observations and takeover actors without Chromium or provider execution.
 The fixture owns and removes its state; it does not establish native or hosted acceptance.
+
+MD-stack integration: the unreleased feature allocation is folded into local
+protocol 427 (relay peer 74). This union and its shape/hash guards supersede the
+per-feature versions described during development above.

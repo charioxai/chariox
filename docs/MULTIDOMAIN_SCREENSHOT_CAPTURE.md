@@ -125,3 +125,7 @@ hash and capture client minima together, retaining historical 417/418 snapshots.
   handshake. Release acceptance requires a fresh approved signed runtime. The
   live builder drill uses the explicit private-namespace signed test fixture;
   this does not claim release-artifact acceptance or rotate durable keys.
+
+MD-stack integration: the unreleased feature allocation is folded into local
+protocol 427 (relay peer 74). This union and its shape/hash guards supersede the
+per-feature versions described during development above.

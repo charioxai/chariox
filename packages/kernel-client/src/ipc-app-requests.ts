@@ -213,7 +213,7 @@ export function restoreAppDataSnapshotRequest(installationId: string, expectedGe
     expected_generation: expectedGeneration, snapshot_id: snapshotId } }
 }
 
-export const userAppViewsMinimumProtocolVersion = 418
+export const userAppViewsMinimumProtocolVersion = 427
 
 /** User-domain views have no session, Room, slice or agent field. */
 export function openUserAppViewRequest(installationId: string, host?: "client_native" | "kernel_browser") {

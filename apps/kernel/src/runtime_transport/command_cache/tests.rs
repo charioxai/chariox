@@ -965,3 +965,15 @@ fn command_cache_replays_floats_without_precision_loss() {
         );
     }
 }
+
+#[test]
+fn md_capture_observations_reenter_live_protection_instead_of_replaying_pixels() {
+    let request: crate::local::LocalDaemonRequest = serde_json::from_value(serde_json::json!({
+        "CaptureVisibleRegion": {
+            "capture_id": "capture-1",
+            "surface": {"kind":"kernel_browser","tab_id":"host-tab-1","generation":1},
+            "region": {"x":0,"y":0,"width":1,"height":1,"viewport_width":1280,"viewport_height":800,"frame_width":1280,"frame_height":800}
+        }
+    })).unwrap();
+    assert!(!super::request_is_cacheable(&request));
+}
