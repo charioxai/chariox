@@ -653,11 +653,11 @@ async function main() {
   const safeReport = redact(serializedReport, secret)
   assert.equal(safeReport.includes(secret), false, "retained report leaked the secret")
   await writeFile(reportPath, safeReport, "utf8")
-  if (failure) throw failure
+  if (failure) throw new Error("computer-secret-input drill failed; see the redacted evidence report")
   console.log(`[computer-secret-input-x11-drill] PASS evidence=${evidenceRoot}`)
 }
 
 main().catch((error) => {
-  console.error(`[computer-secret-input-x11-drill] ${error.stack ?? error}`)
+  console.error("[computer-secret-input-x11-drill] failed; see the redacted evidence report")
   process.exitCode = 1
 })
