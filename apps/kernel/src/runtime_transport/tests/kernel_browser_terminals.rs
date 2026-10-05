@@ -91,7 +91,7 @@ async fn mdnotes_two_local_connections_child() {
                             runtime,
                             router,
                             InboundRequestAdmission::new(process_inbound_request_limit()),
-                            None,
+                            KernelLocalAuth::Unconfigured,
                             stream,
                         ))
                     };

@@ -312,16 +312,15 @@ impl KernelRuntimeState {
             // MD-N2: Ping is understood by old workers; only send the new variant
             // after a current, authenticated response from this exact target.
             let value = format!("md-notes-protocol:{:016x}", rand::random::<u64>());
-            let response = self
-                .send_room_slice_peer_request(
-                    &config,
-                    target.clone(),
-                    RelayPeerRequest::Ping {
-                        value: value.clone(),
-                    },
-                    Duration::from_secs(15),
-                )
-                .await?;
+            let response = Box::pin(self.send_room_slice_peer_request(
+                &config,
+                target.clone(),
+                RelayPeerRequest::Ping {
+                    value: value.clone(),
+                },
+                Duration::from_secs(15),
+            ))
+            .await?;
             let version = match response {
                 RelayPeerResponse::Pong {
                     value: received,
