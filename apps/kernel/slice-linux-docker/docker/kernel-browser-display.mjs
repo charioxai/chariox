@@ -85,7 +85,8 @@ export function dirtyTiles(previous, current) {
 export class DisplayStream {
   constructor(binding, { encoder = new PortableEncoder(), now = () => performance.now(), wait = delay, timing = () => {} } = {}) {
     Object.assign(this, binding); this.encoder = encoder; this.now = now; this.wait = wait;
-    this.sequence = 0; this.previous = null; this.exact = false; this.nextSend = now();
+    this.sequence = 0; this.previous = null; this.exact = false;
+    this.refillAt = now(); this.tokens = 0;
     this.expires = Date.now() + 60_000;
     this.timing = timing;
   }
@@ -114,9 +115,11 @@ export class DisplayStream {
     const bytes = Math.ceil(Buffer.byteLength(JSON.stringify(packet)) * 4 / 3) + 1024; // reserve transport/encryption envelope
     if (bytes > 1024 * 1024) throw new Error('MD-DISPLAY: packet exceeds bounded egress');
     this.timing('packet_serialize', at); at = timestamp();
-    // No burst credit: account base64+metadata, including bootstrap and repairs.
-    const sendAt = Math.max(this.now(), this.nextSend) + bytes * 8000 / this.bitrate;
-    await this.wait(Math.max(0, sendAt - this.now())); this.nextSend = sendAt;
+    // MD-DISPLAY-02/04: bounded 16 KiB burst accrued while capture/input runs.
+    // Account all base64/envelope bytes, including bootstrap and exact repairs.
+    this.tokens = Math.min(16 * 1024, this.tokens + Math.max(0, this.now() - this.refillAt) * this.bitrate / 8000);
+    await this.wait(Math.max(0, bytes - this.tokens) * 8000 / this.bitrate);
+    this.tokens = Math.max(0, this.tokens - bytes); this.refillAt = this.now();
     this.timing('pacing', at);
     this.document_id = documentId; this.previous = current; this.exact = payload.kind !== 'video'; this.sequence++;
     return packet;
