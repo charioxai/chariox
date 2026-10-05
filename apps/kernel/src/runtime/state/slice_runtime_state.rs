@@ -2045,6 +2045,22 @@ mod tests {
                 .status()
                 .unwrap();
             assert!(status.success());
+            // Source-project selection requires a registered, committed worktree.
+            let status = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=MP fixture",
+                    "-c",
+                    "user.email=fixture@example.test",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    "initial fixture",
+                ])
+                .current_dir(repository)
+                .status()
+                .unwrap();
+            assert!(status.success());
         }
         let mut config = crate::config::DaemonConfig::for_tests();
         config.user_config.state.path = Some(root.join("state.db").display().to_string());

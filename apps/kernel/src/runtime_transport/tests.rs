@@ -1221,6 +1221,10 @@ async fn slice_pending_backup_restore_interruption_rolls_back_on_restart() {
             "home-archive-policy.json",
             include_str!("../../slice-linux-docker/home-archive-policy.json"),
         ),
+        (
+            "owned_process_signals.py",
+            include_str!("../../slice-linux-docker/owned_process_signals.py"),
+        ),
     ] {
         std::fs::write(root.path().join(name), contents)
             .expect("restore fixture should include its provisioner's archive verifier and policy");
@@ -1263,6 +1267,8 @@ set -eu
 root=$CHARIOX_RESTORE_INTERRUPTION_ROOT
 printf '%s %s\n' "$1" "$CHARIOX_SLICE_DOCKER_IMAGE" >> "$root/provisioner.log"
 if [ "$1" = restore-state ] && [ ! -f "$root/interruption-triggered" ]; then
+  case "$PPID" in ''|*[!0-9]*) exit 1 ;; esac
+  [ "$PPID" -gt 1 ] || exit 1
   : > "$root/partial-target-runtime"
   : > "$root/interruption-triggered"
   kill -9 "$PPID"
