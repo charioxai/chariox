@@ -25,8 +25,18 @@ pub const DEFAULT_REVOCATION_SYNC_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Deserialize)]
 struct RevocationsDocument {
+    #[serde(rename = "revokedTokens", default)]
+    revoked_tokens: Option<Vec<TokenRevocation>>,
     #[serde(default)]
     revocations: Vec<RevocationEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TokenRevocation {
+    #[serde(rename = "tokenId")]
+    token_id: String,
+    #[serde(rename = "expiresAtMs")]
+    expires_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -50,6 +60,17 @@ pub fn apply_revocations_document(
     let document: RevocationsDocument = serde_json::from_str(body)?;
     let expires_at_ms = now_ms.saturating_add(REVOCATION_SYNC_HORIZON_MS);
     let mut applied = 0;
+    if let Some(tokens) = document.revoked_tokens {
+        for token in tokens {
+            if !token.token_id.is_empty() && token.expires_at_ms > now_ms {
+                registry.revoke_token_id(token.token_id, token.expires_at_ms);
+                applied += 1;
+            }
+        }
+        // Exact token tombstones are authoritative for upgraded Cloud feeds. They
+        // survive relink without blocking the successor credential generation.
+        return Ok(applied);
+    }
     for entry in document.revocations {
         let Some(account_id) = entry
             .account_id
@@ -452,6 +473,54 @@ mod tests {
     fn malformed_documents_surface_a_parse_error() {
         let registry = RelayRevocationRegistry::new();
         assert!(apply_revocations_document("not json", &registry, 0).is_err());
+    }
+
+    #[test]
+    fn exact_token_revocations_survive_relink_without_blocking_successor() {
+        let registry = RelayRevocationRegistry::new();
+        let verifier = ScopedTokenVerifier::new(
+            BTreeMap::from([
+                (
+                    "old-token".into(),
+                    claims(
+                        "old-jti",
+                        "account-1",
+                        "same-kernel",
+                        RelaySubjectKind::Kernel,
+                        Some("same-machine"),
+                        None,
+                    ),
+                ),
+                (
+                    "new-token".into(),
+                    claims(
+                        "new-jti",
+                        "account-1",
+                        "same-kernel",
+                        RelaySubjectKind::Kernel,
+                        Some("same-machine"),
+                        None,
+                    ),
+                ),
+            ]),
+            BTreeMap::new(),
+            Some(1_000),
+        )
+        .with_revocations(registry.clone());
+        let document = serde_json::json!({
+            "revokedTokens": [{"tokenId":"old-jti", "expiresAtMs":100_000}],
+            "revocations": [{"accountId":"account-1", "subjectKind":"KERNEL", "subject":"same-kernel"}]
+        }).to_string();
+        assert_eq!(
+            apply_revocations_document(&document, &registry, 1_000).unwrap(),
+            1
+        );
+        assert!(verify(&verifier, "old-token", RelayAction::DaemonRegister).is_err());
+        verify(&verifier, "new-token", RelayAction::DaemonRegister)
+            .expect("successor generation admitted");
+        apply_revocations_document(r#"{"revokedTokens":[],"revocations":[]}"#, &registry, 1_000)
+            .unwrap();
+        assert!(verify(&verifier, "old-token", RelayAction::DaemonRegister).is_err());
     }
 
     #[test]
