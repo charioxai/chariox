@@ -53,3 +53,44 @@ export async function cleanupBrowserStateImages({ imageRefs, imagesBefore, slice
   }
   return result
 }
+
+export async function assertBrowserStateDockerNamesAvailable({ containerName, homeVolume, inspect }) {
+  for (const [kind, name] of [["container", containerName], ["volume", homeVolume]]) {
+    if (await inspect(kind, name)) throw new Error(`refusing pre-existing drill ${kind}: ${name}`)
+  }
+}
+
+export async function captureBrowserStateDockerOwnership({ runId, containerName, homeVolume, slice, inspect }) {
+  if (!runId || !containerName.includes(runId) || !homeVolume.includes(runId)) throw new Error("Docker drill names are not bound to this unique run")
+  const labels = {
+    "io.chariox.slice.id": slice?.id,
+    "io.chariox.slice.owner-kernel-id": slice?.owner_kernel_id,
+    "io.chariox.slice.owner-machine-id": slice?.owner_machine_id,
+  }
+  if (!Object.values(labels).every(value => typeof value === "string" && value.trim())) throw new Error("missing Docker drill ownership labels")
+  const container = await inspect("container", containerName)
+  const volume = await inspect("volume", homeVolume)
+  if (!/^[a-f0-9]{64}$/.test(container?.Id ?? "") || !labelsMatch(container.Config?.Labels, labels)
+    || volume?.Name !== homeVolume || !volume.CreatedAt || !volume.Mountpoint || !labelsMatch(volume.Labels, labels)) throw new Error("Docker drill resources do not match the created slice")
+  return { runId, containerId: container.Id, labels, volume: volumeIdentity(volume) }
+}
+
+function labelsMatch(actual, expected) {
+  return Object.entries(expected).every(([key, value]) => actual?.[key] === value)
+}
+
+function volumeIdentity(volume) {
+  return { Name: volume.Name, CreatedAt: volume.CreatedAt, Driver: volume.Driver, Mountpoint: volume.Mountpoint, Labels: volume.Labels }
+}
+
+export async function cleanupBrowserStateDockerResources({ containerName, homeVolume, ownership, inspect, remove }) {
+  if (!ownership || !containerName.includes(ownership.runId) || !homeVolume.includes(ownership.runId)) return
+  const container = await inspect("container", containerName)
+  if (container?.Id === ownership.containerId && labelsMatch(container.Config?.Labels, ownership.labels)) {
+    const current = await inspect("container", ownership.containerId)
+    if (current?.Id === ownership.containerId && labelsMatch(current.Config?.Labels, ownership.labels)) await remove(["rm", "-f", ownership.containerId])
+  }
+  const sameVolume = (volume) => volume && labelsMatch(volume.Labels, ownership.labels)
+    && JSON.stringify(volumeIdentity(volume)) === JSON.stringify(volumeIdentity(ownership.volume))
+  if (sameVolume(await inspect("volume", homeVolume)) && sameVolume(await inspect("volume", homeVolume))) await remove(["volume", "rm", "-f", homeVolume])
+}
