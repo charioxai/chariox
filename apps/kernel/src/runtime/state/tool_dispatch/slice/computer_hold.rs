@@ -48,8 +48,10 @@ pub(crate) async fn run_room_computer_hold(
         }
     };
     // Sanitized helper denials release their own input. An abrupt death may not.
+    // Bash wraps child signal deaths as 128+signal (Linux signals 1..=64).
+    // Ordinary pre-press exit1 must preserve input already held by another actor.
     if !output.success {
-        if output.status_code.is_none() || output.status_code == Some(137) {
+        if output.status_code.is_none() || matches!(output.status_code, Some(129..=192)) {
             super::reset_room_computer_input().await?;
         }
         return Err(super::room_computer_input_error(

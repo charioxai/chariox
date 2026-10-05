@@ -92,3 +92,21 @@ Kernel tests cover Room/Tab identity, agent membership, human takeover, stale
 generation and redacted idempotency through the actual shared dispatch with a
 synthetic native helper. They are source evidence, not live host-browser,
 provider, transport or Web/TUI observations.
+
+MP-08/MP-10/MP-11: pass `--test-binary /absolute/path/to/chariox-kernel-tests`
+to exercise native fatal-child release through the actual kernel hold adapter.
+Build this artifact from the same source with the builder's compile-slot lock.
+The runner records its hash and explicitly executes the normally ignored
+`mp08_mp10_mp11_physical_child_death_resets_before_failed_acknowledgement` test.
+A public fault helper waits for X11's physical key/button press, identifies
+Bash's one owned child by PID/start/parent, sends SIGQUIT only to that child, and
+requires Bash exit131 while input remains held. The kernel must invoke native
+reset before returning a Failed Action; the test then queries X11 release.
+The first-party Chromium page independently acknowledges trusted key/mouse
+release events. Without this option, the physical kernel failure seam remains
+unestablished. This still does not prove live provider, Web/TUI or managed parity.
+
+Fixture group signals reject IDs0/1/negative/missing/non-integer, stale start
+identities and foreign group members before signalling. Every member must trace
+to the fixture-started group leader. Source guard tests use mock syscalls so
+forbidden-ID coverage never signals a real system process.

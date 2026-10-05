@@ -1,5 +1,26 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 fatal Computer child settlement, b204 (2026-10-04)
+
+The shared hold adapter resets input for direct signal exits and Bash's
+128+signal child statuses129..192, before relinquishing a Failed Action. Ordinary
+exit1 pre-press denial preserves another actor's held input. Source fixtures
+kill an owned child after a synthetic press with SIGQUIT, SIGABRT, SIGSEGV and
+SIGKILL, and check release before failure acknowledgement. An opt-in physical
+fixture uses the same kernel adapter, actual X11 key/button presses, SIGQUIT
+child death, native reset and first-party trusted browser release observations.
+These are source/helper seams, not live Room/provider/Web/TUI acceptance.
+
+The Computer cancellation registry rejects system/overflow group IDs before
+forming a signal target. Fixture fault/group helpers verify IDs, start identity,
+parent ancestry and owned group membership before signalling. No managed-only
+selector, provider path or serialized shape changes; local421/relay70 remain.
+New responsibility modules are public fixture-only `computer-input-process.py`
+and `computer-input-fault.py`. Exact receipts, RED reproduction and cleanup are
+external under `b204/review846-r2/`; independent exact-head review, signed
+multidomain surface evidence and the fresh ordinary/Path-1 matrix remain open.
+No MP item gains acceptance or an independent audit disposition.
+
 ## MP-08 / MP-10 / MP-11 physical Computer protection fixture, b204 (2026-10-04)
 
 A viewer-independent row supplies a synthetic value policy to the production

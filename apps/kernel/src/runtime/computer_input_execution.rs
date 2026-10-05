@@ -188,10 +188,27 @@ impl Drop for ComputerInputExecution {
 
 #[cfg(unix)]
 fn kill_process_group(process_group: u32) {
-    let Ok(process_group) = i32::try_from(process_group) else {
+    let Some(target) = owned_process_group_signal_target(process_group) else {
         return;
     };
-    let _ = unsafe { libc::kill(-process_group, libc::SIGKILL) };
+    // Only child groups created by the registered helper's Command::process_group(0)
+    // reach this seam. Never interpret an invalid child ID as a system-wide target.
+    let _ = unsafe { libc::kill(target, libc::SIGKILL) };
+}
+
+#[cfg(unix)]
+fn owned_process_group_signal_target(process_group: u32) -> Option<i32> {
+    let group = i32::try_from(process_group).ok()?;
+    (group > 1).then_some(-group)
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp08_mp10_mp11_computer_signal_rejects_system_and_overflow_ids() {
+    for group in [0, 1, u32::MAX, i32::MAX as u32 + 1] {
+        assert_eq!(owned_process_group_signal_target(group), None);
+    }
+    assert_eq!(owned_process_group_signal_target(12345), Some(-12345));
 }
 
 #[cfg(not(unix))]
