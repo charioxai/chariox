@@ -133,3 +133,9 @@ test("MP-07 interrupted activation rolls back its signed journal before repair a
   assert.equal(await readlink(join(h.root, "current")), `releases/${previous.releaseDigest.slice(7)}`)
   await assert.rejects(readFile(join(h.root, "upgrade.json")))
 })
+test("MP-07 invalid release selection is refused before creating install or state paths", async t => {
+  const h = await harness(t)
+  await assert.rejects(installLocal({ ...h.options, version: "invalid" }), /pinned release/)
+  assert.deepEqual(await readdir(h.home), [])
+  assert.deepEqual(h.requests, [])
+})

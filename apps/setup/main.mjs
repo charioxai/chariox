@@ -1,8 +1,7 @@
 // MP-07 / MP-08 / MP-11: generic Setup executable; build injects public release inputs only.
-import { readFile } from "node:fs/promises"
 import { createInterface } from "node:readline/promises"
 import { stdin, stdout } from "node:process"
-import { installLocal, targetPlatform, publicUrl } from "./installer.mjs"
+import { installLocal, publicUrl } from "./installer.mjs"
 import { command } from "../kernel/ssh-machine/remote.mjs"
 
 export async function runSetup(build, argv = process.argv.slice(2)) {
