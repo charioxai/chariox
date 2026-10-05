@@ -21,6 +21,24 @@ LOCK = "/root/.chariox/dev/browser-resume-20260930/locks/rust-compile.lock"
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class ValidationCancelled(Exception):
+    def __init__(self, signum):
+        self.signum = signum
+        super().__init__(f"MP-11: validation cancelled by signal {signum}")
+
+
+def source_identity(expected=None):
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=ROOT, text=True).strip()
+    # Only these operator handoffs are outside the source under validation.
+    dirty = git("status", "--porcelain", "--untracked-files=all", "--", ".",
+                ":!LANE_STATUS.md", ":!PUSH_READY.md")
+    current = (git("rev-parse", "HEAD"), git("rev-parse", "HEAD^{tree}"))
+    if dirty or (expected and current != expected):
+        raise RuntimeError("MP-11: source checkout changed; require clean committed source")
+    return current
+
+
 def identity(pid):
     if not isinstance(pid, int) or pid <= 1:
         return None
@@ -94,8 +112,7 @@ def main():
     if output == ROOT or ROOT in output.parents or output.exists():
         parser.error("MP-11: output must be a new evidence directory outside checkout")
     output.mkdir(parents=True, mode=0o700)
-    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT, text=True).strip()
+    head, tree = source_identity()
     state = Path(tempfile.mkdtemp(prefix="kv-"))
     environment = os.environ.copy()
     for key in list(environment):
@@ -119,8 +136,19 @@ def main():
         (state / name).mkdir(mode=0o700)
     all_owned = {}
     results = []
+    cancelled_signal = None
+    cancellation_deferred = False
+
+    def cancel(signum, _frame):
+        nonlocal cancelled_signal
+        if cancelled_signal is None:
+            cancelled_signal = signum
+            if not cancellation_deferred:
+                raise ValidationCancelled(signum)
 
     def run(name, command):
+        nonlocal cancellation_deferred
+        source_identity((head, tree))
         before = sample()
         append(output / "resources.jsonl", before)
         if before["available_gib"] < 16 or before["disk_free_gib"] < 10:
@@ -128,13 +156,21 @@ def main():
         started = time.time()
         owned = {}
         failure = None
+        child = None
         with (output / (name + ".log")).open("w") as log:
-            child = subprocess.Popen(command, cwd=ROOT, env=environment, stdout=log,
-                                     stderr=subprocess.STDOUT, start_new_session=True)
-            row = identity(child.pid)
-            if row:
-                owned[child.pid] = row[1]
             try:
+                # A pending cancellation must not escape between spawn and registration.
+                cancellation_deferred = True
+                try:
+                    child = subprocess.Popen(command, cwd=ROOT, env=environment, stdout=log,
+                                             stderr=subprocess.STDOUT, start_new_session=True)
+                    row = identity(child.pid)
+                    if row:
+                        owned[child.pid] = row[1]
+                finally:
+                    cancellation_deferred = False
+                if cancelled_signal:
+                    raise ValidationCancelled(cancelled_signal)
                 while child.poll() is None:
                     collect_owned(owned)
                     current = sample()
@@ -143,12 +179,22 @@ def main():
                         failure = "MP-10: measured resource floor during " + name
                         break
                     time.sleep(2)
+                source_identity((head, tree))
+            except (ValidationCancelled, RuntimeError) as error:
+                failure = str(error)
             finally:
-                stop_owned(owned)
-                child.wait()
+                cancellation_deferred = True
                 all_owned.update(owned)
+                stop_owned(owned)
+                if child:
+                    child.wait()
+                all_owned.update(owned)
+                cancellation_deferred = False
+        if child is None:
+            raise RuntimeError("MP-11: stage did not start " + name)
         result = {"mp": MP, "head": head, "name": name, "command": command,
-                  "started": started, "finished": time.time(), "exit": child.returncode}
+                  "tree": tree, "started": started, "finished": time.time(),
+                  "exit": child.returncode, "cancelled_signal": cancelled_signal}
         result["script_sha256"] = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
                                    for path in [ROOT / "scripts/kernel-access-validation.py",
                                                 ROOT / "scripts/sudo-kit.mjs", ROOT / "scripts/sudo-kit-smoke.mjs",
@@ -164,11 +210,16 @@ def main():
                 result["failure"] = "selector ran zero passing tests"
         results.append(result)
         append(output / "checks.jsonl", result)
-        print(f"MP-08/MP-10/MP-11 {name}: exit {child.returncode}", flush=True)
+        print(f"MP-08/MP-10/MP-11 {name}: exit {result['exit']}", flush=True)
+        if cancelled_signal:
+            raise ValidationCancelled(cancelled_signal)
         if result["exit"]:
             raise RuntimeError("MP-11: first failing seam " + name)
 
+    previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
+        for sig in previous_handlers:
+            signal.signal(sig, cancel)
         run("watchdog", ["python3", "scripts/kernel-access-validation.test.py"])
         if args.kit_only:
             run("popup-client", ["node", "--test", "--test-concurrency=1", "apps/cli/dist/passkey-popup-controller.test.js"])
@@ -179,11 +230,13 @@ def main():
             artifact = Path(receipt["binary"])
             with artifact.open("rb") as stream:
                 digest = hashlib.file_digest(stream, "sha256").hexdigest()
-            if receipt["head"] != head or digest != receipt["sha256"]:
+            if (receipt["head"] != head or receipt.get("tree") != tree
+                    or receipt.get("source_policy") != "clean_checkout" or digest != receipt["sha256"]):
                 raise RuntimeError("MP-11: artifact/source identity mismatch")
             run("kit-smoke", ["flock", LOCK, "node", "scripts/sudo-kit-smoke.mjs", str(artifact)])
             run("sandboxed-pty-child", ["flock", LOCK, str(artifact), "sandboxed_pty_survives_launching_thread_exit",
                                         "--nocapture", "--test-threads=1", "--ignored"])
+            source_identity((head, tree))
             return
         run("node-install", ["pnpm", "install", "--offline", "--frozen-lockfile", "--ignore-scripts",
                              "--store-dir", "/root/.local/share/pnpm/store",
@@ -203,7 +256,9 @@ def main():
         if not artifact:
             raise RuntimeError("MP-11: no test artifact")
         digest = hashlib.file_digest(artifact.open("rb"), "sha256").hexdigest()
+        source_identity((head, tree))
         (output / "artifact.json").write_text(json.dumps({"mp": MP, "head": head, "tree": tree,
+            "source_policy": "clean_checkout",
             "base": "74e50b787a5919ee5c3d580c5b088989fd4a1adf", "binary": str(artifact), "sha256": digest}, indent=2))
         environment["CHARIOX_SUDO_SHELL_CLI"] = str(ROOT / "apps/shell/dist/shell.js")
         for name, selector in [
@@ -226,19 +281,30 @@ def main():
         run("sandboxed-pty-child", ["flock", LOCK, str(artifact), "sandboxed_pty_survives_launching_thread_exit",
                                     "--nocapture", "--test-threads=1", "--ignored"])
         run("kit-smoke", ["flock", LOCK, "node", "scripts/sudo-kit-smoke.mjs", str(artifact)])
+        source_identity((head, tree))
     finally:
+        cancellation_deferred = True
         stop_owned(all_owned)
         remaining = [pid for pid, birth in all_owned.items()
                      if (row := identity(pid)) and row[1] == birth and row[2] != "Z"]
         cleanup = {"mp": MP, "state": str(state), "remaining_owned_processes": remaining,
-                   "state_removed": False, "results": len(results), "resources": sample()}
+                   "state_removed": False, "results": len(results), "resources": sample(),
+                   "cancelled_signal": cancelled_signal}
         if not remaining:
             shutil.rmtree(state)
             cleanup["state_removed"] = True
         (output / "cleanup.json").write_text(json.dumps(cleanup, indent=2))
         if remaining:
             raise RuntimeError("MP-11: owned processes remain; private state retained")
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
+        if cancelled_signal:
+            raise ValidationCancelled(cancelled_signal)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except ValidationCancelled as error:
+        print(str(error), flush=True)
+        raise SystemExit(128 + error.signum)

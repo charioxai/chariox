@@ -3,7 +3,8 @@
 Run after tonight's coordinator-controlled q restart, with the owner present.
 This is the human gate for **sudo validated**. PR #873 (`/meta` retirement,
 local 430) stays HOLD until this kit and the Linux automated matrix pass and
-the owner confirms retirement. Do not merge retirement to run this kit.
+the coordinator confirms sudo validation. The owner approved retirement only
+at the end of the program. Do not merge retirement to run this kit.
 Kernel Access plan §7/§9.2 PRs 3, 5, 7, 8, 10 and D1–D16 are the authority;
 `KA_SUDO_CHECK_MATRIX.md` maps every check to automated proof and remaining UI
 proof. This kit does not close MP-10 fresh-machine comparison or substitute

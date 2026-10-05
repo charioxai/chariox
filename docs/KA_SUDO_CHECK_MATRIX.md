@@ -12,6 +12,14 @@ jobs, private synthetic state and existing cfg(test) vault/passkey fixtures,
 records commands/source/binary hashes/resources/cleanup, and stops its own
 processes if MemAvailable falls below 16 GiB or disk free below 10 GiB.
 It never uses an owner vault, real provider profile or remote service.
+Use a clean committed checkout: staged, unstaged and untracked source changes
+are refused. Only top-level `LANE_STATUS.md` and `PUSH_READY.md` are excluded.
+The runner rechecks HEAD/tree and cleanliness before and after stages and
+before success. Kit-only reuse requires a matching HEAD/tree, binary hash and
+`source_policy: clean_checkout` receipt; older receipts require a rebuild.
+SIGTERM/SIGINT trigger birth-checked pidfd teardown, private-state removal and
+a cancellation receipt. Runner regression fixtures test these controls, not
+kernel or human acceptance: `python3 scripts/kernel-access-validation-regression.test.py`.
 
 Evidence classes: **WIRE** = real kernel TCP/Unix/MCP listeners and clients;
 **STATE** = actual kernel services/router with synthetic runs and explicit
