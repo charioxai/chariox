@@ -8,7 +8,7 @@ import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./
 import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
-import { assertNotCancelled } from "./browser-controller-actions.mjs";
+import { assertNotCancelled, assertCurrentDocument } from "./browser-controller-actions.mjs";
 import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
 
 const TAB_LIMIT = 128;
@@ -162,19 +162,21 @@ export class KernelBrowserHost {
   }
   async screenshot(tab) {
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
+    await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
     const data = await captureProtectedPage(this.browser, tab, this.protection.values,
       this.protection.targets.filter(target => target.kind === "browser"), async () => {
         const { data } = await connection.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false }, sessionId);
         return data;
       });
+    await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
     if (typeof data !== "string" || data.length > 4 * 1024 * 1024) throw new Error("MD-2: frame exceeds limit");
-    return { generation: this.generation, tab_id: tab.tab_id, mime_type: "image/png", data_base64: data, width: 1280, height: 800 };
+    return { generation: this.generation, tab_id: tab.tab_id, document_id: tab.document_id, mime_type: "image/png", data_base64: data, width: 1280, height: 800 };
   }
-  async subscribe(tab) {
+  async subscribe(tab, boundFrames = false) {
     if (this.streams.size >= 16) throw new Error("MD-2: frame subscription limit reached");
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
     const id = `host-stream-${randomUUID()}`;
-    const stream = { sessionId, tabId: tab.tab_id, latest: null, sequence: 0, expires: Date.now() + 60_000 };
+    const stream = { sessionId, tabId: tab.tab_id, boundFrames, latest: null, sequence: 0, expires: Date.now() + 60_000 };
     const captureProtected = () => {
       stream.latest ??= this.maskedStreamFrame(stream);
       if (stream.capturing || this.protection.unknown || Date.now() < (stream.nextCapture ?? 0)) return;
@@ -183,6 +185,7 @@ export class KernelBrowserHost {
       const policy = this.protection, generation = this.generation;
       void this.screenshot(tab).then(frame => {
         if (this.protection === policy && this.generation === generation && this.streams.get(id) === stream) {
+          if (!stream.boundFrames) delete frame.document_id;
           stream.latest = { ...frame, sequence: ++stream.sequence };
         }
       }).catch(() => {}).finally(() => { stream.capturing = false; });
@@ -192,7 +195,7 @@ export class KernelBrowserHost {
       const data = message.params?.data;
       if (typeof data === "string" && data.length <= 4 * 1024 * 1024 && Date.now() <= stream.expires) {
         const protectedPixels = this.protection.unknown || this.protection.values.length > 0;
-        if (!protectedPixels) {
+        if (!protectedPixels && !stream.boundFrames) {
           stream.latest = { generation: this.generation, tab_id: tab.tab_id, mime_type: "image/jpeg", data_base64: data,
             width: viewport.css_width, height: viewport.css_height, sequence: ++stream.sequence };
         } else {
@@ -212,7 +215,7 @@ export class KernelBrowserHost {
     this.armExpiry(id, stream);
     try { if (!alreadyStreaming) await connection.send("Page.startScreencast", { format: "jpeg", quality: 80, maxWidth: 1280, maxHeight: 800, everyNthFrame: 1 }, sessionId); }
     catch (error) { clearTimeout(stream.timer); stream.off(); this.streams.delete(id); throw error; }
-    if (this.protection.unknown || this.protection.values.length) captureProtected();
+    if (this.protection.unknown || this.protection.values.length || boundFrames) captureProtected();
     return { generation: this.generation, subscription_id: id };
   }
   armExpiry(id, stream) {
@@ -291,12 +294,12 @@ export class KernelBrowserHost {
     }
     if (command.op === "screenshot") {
       const frame = await this.screenshot(tab);
-      // Private MCP metadata binds input to the captured source; public frame
-      // serialization/transport stays unchanged pending coordinator allocation.
-      if (command.focused_agent) frame.document_id = tab.document_id;
+      // MD-3: explicit binding is an internal display/MCP seam. Legacy 417
+      // still emits its existing frame shape until the coordinator adapter lands.
+      if (!command.focused_agent && !command.bound_frames) delete frame.document_id;
       return this.observe(frame, tab, scope);
     }
-    if (command.op === "subscribe") return this.subscribe(tab);
+    if (command.op === "subscribe") return this.subscribe(tab, command.bound_frames === true);
     throw new Error("MD-2: unsupported browser operation");
   }
   async handle(request, { signal } = {}) {
