@@ -1,6 +1,9 @@
 // MD-3: document-bound physical input, sharing Room cancellation and document checks.
 import { assertCurrentDocument, assertNotCancelled } from "./browser-controller-actions.mjs";
 const viewport = { css_width: 1280, css_height: 800 };
+// MP-08: Chromium uses virtual key codes for native caret/editing commands.
+const keyCodes = { Tab: 9, Enter: 13, Escape: 27, Backspace: 8, Delete: 46,
+  ArrowLeft: 37, ArrowRight: 39, ArrowUp: 38, ArrowDown: 40, Home: 36, End: 35 };
 export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror } = {}) {
     assertNotCancelled(signal);
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
@@ -46,9 +49,8 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
         if (result?.value !== false) throw new Error("MD-2: secret field input requires the Vault path");
         await sendInput("Input.insertText", { text: input.text });
       } else if (input.kind === "key") {
-        if (!["Tab", "Enter", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
-        const key = { key: input.key, code: input.key,
-          ...(input.key === "Enter" ? { windowsVirtualKeyCode: 13 } : {}) };
+        if (!Object.hasOwn(keyCodes, input.key)) throw new Error("MD-2: unsupported key");
+        const key = { key: input.key, code: input.key, windowsVirtualKeyCode: keyCodes[input.key] };
         await sendInput("Input.dispatchKeyEvent", { type: "keyDown", ...key,
           ...(input.key === "Enter" ? { text: "\r", unmodifiedText: "\r" } : {}) });
         await sendInput("Input.dispatchKeyEvent", { type: "keyUp", ...key });

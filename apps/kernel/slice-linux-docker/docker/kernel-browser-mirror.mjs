@@ -257,20 +257,24 @@ export class MirrorService {
     if(action.kind==='selection')return {perform:(_send,mark)=>{mark?.();return call('select');}};
     if(action.kind==='focus')return {perform:(_send,mark)=>{mark?.();return call('focus');}};
     if(action.kind==='coordinate') {
-      if(!stream.fullFallback&&action.input?.kind==='text') {
-        // MP-08/MP-11: following native Tab, resolve native focus at dispatch.
+      if(!stream.fullFallback&&['text','key'].includes(action.input?.kind)) {
+        // MP-08/MP-11: following native input, resolve native focus at dispatch.
         // Never refocus the old viewer field. Unknown/protected/new focus fails.
+        // A Tab keyDown may move focus; its keyUp must stay paired.
+        const editable=action.input.kind==='text';let checked=false;
         const guard=async()=>{
-          assertEpoch();assertNotCancelled(signal);
-          const id=await this.evaluate(world,'globalThis.__charioxMirror.activeTarget()');assertEpoch();
+          assertEpoch();assertNotCancelled(signal);if(checked)return;
+          const id=await this.evaluate(world,`globalThis.__charioxMirror.activeTarget([],${editable})`);assertEpoch();
           if(!unchanged(id))throw new Error('MP-11: changed native mirror text focus');
           const expected=[];for(let node=records.get(id);node;node=records.get(node.parent))if(['element','frame','tile','mask'].includes(node.kind)) {
             if(!unchanged(node.id))throw new Error('MP-11: changed native mirror text ancestor');
             const old=JSON.parse(epoch.nodes.get(node.id));expected.push({id:old.id,kind:old.kind,box:old.box,attributes:old.attributes});
           }
-          const focused=await this.evaluate(world,`globalThis.__charioxMirror.activeTarget(${JSON.stringify(expected)})`);assertEpoch();assertNotCancelled(signal);
+          const focused=await this.evaluate(world,`globalThis.__charioxMirror.activeTarget(${JSON.stringify(expected)},${editable})`);assertEpoch();assertNotCancelled(signal);
           if(focused!==id)throw new Error('MP-11: changed native mirror text focus');
+          checked=true;
         };
+        if(!editable)return {input:action.input,guard};
         if(typeof action.input.text!=='string'||action.input.text.length>16384)throw new Error('MP-11: invalid native mirror text');
         return {guard,perform:send=>send('Input.insertText',{text:action.input.text})};
       }

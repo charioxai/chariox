@@ -292,3 +292,35 @@ false geometric drift from retiring ordinary nested native fields. The `controls
 mode isolates that fail-first geometry check; the complete input mode also
 tests post-key focus inside a frame and protected post-key refusal without
 rotating a healthy browser generation.
+
+
+## MP-08/MP-10/MP-11 round6 native keyboard review fix
+
+While native focus progress is pending, subsequent navigation/editing keys use
+the same coordinate-wrapped native-focus bridge as printable text. The first
+key retains ordinary painted-focus admission. A recent admitted epoch may
+contain both fields while a newer focus observation travels to the viewer;
+subsequent keys resolve the current native focus immediately before dispatch,
+without refocusing the painted field or waiting for another credit. The target
+and its element/frame ancestors must remain observed, connected, unchanged,
+unprotected and valid against live geometry/attributes. Keys permit observed
+noneditable focus (for example a button reached with Tab); text still requires
+an editable field/editor. The native key release remains paired when keyDown
+changes focus. Document/generation/policy/actor/cancellation/8-sequence/2-second
+fences remain in effect, including for release. Unknown/protected/changed focus
+is a real refusal without the sequence-only retry marker. No ambiguous key is
+replayed. Click/reset/navigation/close retain the native-mode clearing contract.
+
+The shared host input adapter supplies Chromium virtual key codes for all its
+existing supported navigation/editing keys, so caret/deletion effects accompany
+successful admission. The `native-keys` real-browser drill uses normal25ms
+polling with a400ms delayed post-Tab B-focus packet and verifies Backspace,
+ArrowLeft, second Tab plus immediate Enter, subsequent text, and newly protected
+focus refusal before keyDown. The complete `input` mode includes these cases
+and nested-frame key/caret input, alongside all earlier input regressions.
+
+The existing serialized coordinate/key actions are reused; no public shape,
+protocol minimum or push event is added (local433/relay79 retained). Cloud must
+copy the full renderer and repin matching kernel observer/service/input assets.
+Component evidence does not close ordinary/managed behavioural, hosted relay,
+Room/macOS/physical IME or current security-anchor review acceptance.

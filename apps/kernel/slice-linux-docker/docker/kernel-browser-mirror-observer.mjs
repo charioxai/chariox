@@ -238,14 +238,14 @@ function installMirrorObserver(initialStyles = {}) {
     unprotected(node);
     return key;
   };
-  const activeTarget = (expected=[]) => {
+  const activeTarget = (expected=[],editable=true) => {
     let node=document.activeElement;
     for(let depth=0;depth<128;depth++) {
       const nested=node?.shadowRoot?.activeElement??(node?.localName==='iframe'?node.contentDocument?.activeElement:null);
       if(!nested)break;node=nested;
     }
     const key=ids.get(node);
-    if(!key||!live.has(key)||!node.isConnected||!node.isContentEditable&&!['input','textarea'].includes(node.localName))throw new Error('mirror unavailable native text focus');
+    if(!key||!live.has(key)||!node.isConnected||editable&&!node.isContentEditable&&!['input','textarea'].includes(node.localName))throw new Error('mirror unavailable native text focus');
     unprotected(node);locate({node_id:key});
     if(expected.length){if(key!==expected[0].id)throw new Error('mirror changed native text focus');validate(expected);}
     return key;

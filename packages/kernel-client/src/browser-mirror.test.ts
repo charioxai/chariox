@@ -78,3 +78,20 @@ test('MP-08/MP-11: editable state admits only normalized inert enum values',()=>
  for(const contenteditable of ['true','false','plaintext-only'])validateMirrorNode({id:'n1',parent:null,children:[],kind:'element',tag:'div',attributes:{contenteditable}});
  for(const contenteditable of ['', 'inherit','javascript:alert(1)'])assert.throws(()=>validateMirrorNode({id:'n1',parent:null,children:[],kind:'element',tag:'div',attributes:{contenteditable}}));
 });
+
+
+test('MP-08/MP-11: keys following native focus progress use the guarded native input bridge',async()=>{
+ const listeners=new Map<string,EventListener>(),node={} as Node,actions:unknown[]=[];
+ const doc={addEventListener(kind:string,fn:EventListener){listeners.set(kind,fn)},removeEventListener(){}};
+ const renderer=Object.create(BrowserMirrorRenderer.prototype) as any;
+ Object.assign(renderer,{documentBindings:new Map(),disposed:false,applying:false,sequence:1,documentId:'d',inputChain:Promise.resolve(),pendingInputs:0,localFocus:null,nativeFocus:null,doc:null,ids:new WeakMap([[node,'n1']]),records:new Map([['n1',{id:'n1',kind:'element'}]]),input:async(action:unknown)=>{actions.push(action)},failure:(error:unknown)=>{throw error}});
+ renderer.bindEvents(doc);
+ const event=(kind:string,extra:Record<string,unknown>)=>{const e=new Event(kind);Object.assign(e,extra);Object.defineProperty(e,'composedPath',{value:()=>[node]});listeners.get(kind)!(e)};
+ event('keydown',{key:'Tab'});await renderer.inputChain;
+ // The host has captured B at sequence2 but its delayed response has not painted.
+ event('keydown',{key:'Backspace'});event('keydown',{key:'ArrowLeft'});event('keydown',{key:'Tab'});event('keydown',{key:'Enter'});
+ event('beforeinput',{inputType:'insertText',data:'Q',isComposing:false});await renderer.inputChain;
+ assert.deepEqual(actions,[{kind:'key',key:'Tab'},...['Backspace','ArrowLeft','Tab','Enter'].map(key=>({kind:'coordinate',input:{kind:'key',key}})),{kind:'coordinate',input:{kind:'text',text:'Q'}}]);
+ event('click',{});event('keydown',{key:'ArrowRight'});await renderer.inputChain;
+ assert.deepEqual(actions.slice(-2),[{kind:'click',node_id:'n1'},{kind:'key',key:'ArrowRight'}],'explicit pointer progress clears native keyboard mode');
+});
