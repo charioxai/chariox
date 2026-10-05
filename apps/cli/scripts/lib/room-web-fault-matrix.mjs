@@ -229,13 +229,14 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
         row.operationResponse = await pending
       }
       await control('room_status')
-      const after = await freshState()
       const clientsDeadline = Date.now() + 15000
       do {
         row.clientsRecovery = await control('clients')
         if (!row.clientsRecovery.local.daemonDisconnected && !row.clientsRecovery.remote.daemonDisconnected) break
         await sleep(300)
       } while (Date.now() < clientsDeadline)
+      // Reattachment can allocate new IDs during the client recovery wait.
+      const after = await freshState()
       row.webRecovery = await webSnapshot(`${label}-recovery`)
       row.recoveryMs = Date.now() - recoveryAt
       try { assertWebFaultRecovery(before, after); row.assertions.push('Room, Tabs and completed Action ledger preserved') }
