@@ -3,15 +3,24 @@
 
 The VM operator installs this public file root-owned and grants only its three
 commands to the enrolled fixture user. No archive member or payload is output.
+The separate authorize-corruption command is direct-root only, never granted
+to the replay user; it pins the disposable archive before mutation is allowed.
 """
 import hashlib
 import json
 import os
 import pwd
+import re
 from pathlib import Path
 import stat
 import subprocess
 import sys
+
+CORRUPTION_AUTHORIZATION_FILE = Path('/opt/chariox-b201-fixture/corruption-authorization.json')
+
+
+class AuthorizationPending(ValueError):
+    pass
 
 
 def pinned_open(path, root, flags=os.O_RDONLY, owner=0):
@@ -29,7 +38,7 @@ def pinned_open(path, root, flags=os.O_RDONLY, owner=0):
             metadata = os.fstat(fd)
             if metadata.st_uid not in (0, owner) or metadata.st_mode & 0o022:
                 raise ValueError('fixture ancestry is not root-controlled')
-        result = os.open(path.name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        result = os.open(path.name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=fd)
         metadata = os.fstat(result)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != owner or metadata.st_nlink != 1 or stat.S_IMODE(metadata.st_mode) != 0o600:
             os.close(result)
@@ -37,6 +46,51 @@ def pinned_open(path, root, flags=os.O_RDONLY, owner=0):
         return result
     finally:
         for fd in reversed(descriptors): os.close(fd)
+
+
+def authorize_corruption(archive, root):
+    """Root operator selects exact disposable coordinates, never a user manifest."""
+    archive, root = Path(archive), Path(root)
+    relative = archive.relative_to(root).parts
+    if (len(relative) != 4 or relative[0] != 'backups' or relative[3] != 'home.tar.zst'
+            or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,180}', relative[1])
+            or not re.fullmatch(r'generation-[A-Za-z0-9]{6,64}', relative[2])):
+        raise ValueError('invalid disposable capture coordinates')
+    fd = pinned_open(archive.parent / 'metadata.json', root)
+    with os.fdopen(fd, 'rb') as stream:
+        if os.fstat(stream.fileno()).st_size > 65536: raise ValueError('oversized private metadata')
+        metadata = json.load(stream)
+    fd = pinned_open(archive, root)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+    if (metadata.get('schemaVersion') != 1 or metadata.get('scope') != 'backup'
+            or metadata.get('id') != relative[1] or metadata.get('sizeBytes') != info.st_size
+            or info.st_size <= 0 or metadata.get('sha256') != digest):
+        raise ValueError('disposable capture proof mismatch')
+    record = dict(id=relative[1], homeArchivePath=str(archive), sizeBytes=info.st_size,
+                  sha256=digest, archiveDev=info.st_dev, archiveIno=info.st_ino)
+    fd = pinned_open(CORRUPTION_AUTHORIZATION_FILE, CORRUPTION_AUTHORIZATION_FILE.parent,
+                     os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    with os.fdopen(fd, 'w') as stream:
+        json.dump(record, stream)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def corruption_authorization(state, metadata, archive):
+    try:
+        fd = pinned_open(CORRUPTION_AUTHORIZATION_FILE, CORRUPTION_AUTHORIZATION_FILE.parent)
+    except FileNotFoundError as error:
+        raise AuthorizationPending('operator corruption authorization is pending') from error
+    with os.fdopen(fd, 'rb') as stream:
+        if os.fstat(stream.fileno()).st_size > 65536: raise ValueError('oversized operator authorization')
+        record = json.load(stream)
+    if (record.get('id') != state['id'] or record.get('homeArchivePath') != str(archive)
+            or record.get('sizeBytes') != metadata.get('sizeBytes')
+            or record.get('sha256') != metadata.get('sha256')):
+        raise ValueError('capture is not authorized for corruption')
+    return record
 
 
 def apply(operation, state, root, tar=subprocess.run, manifest_root=None, manifest_owner=0):
@@ -68,9 +122,12 @@ def apply(operation, state, root, tar=subprocess.run, manifest_root=None, manife
             fd = pinned_open(candidate, root)
             os.close(fd)
         return {'archivePresent': archive.exists(), 'quarantineCount': len(quarantines)}
+    authorization = corruption_authorization(state, metadata, archive) if operation == 'corrupt' else None
     fd = pinned_open(archive, root, os.O_RDWR if operation == 'corrupt' else os.O_RDONLY)
     with os.fdopen(fd, 'r+b' if operation == 'corrupt' else 'rb') as stream:
         before = os.fstat(stream.fileno())
+        if authorization and (authorization.get('archiveDev'), authorization.get('archiveIno')) != (before.st_dev, before.st_ino):
+            raise ValueError('authorized capture inode changed')
         if before.st_size <= 0 or before.st_size != state['size_bytes']:
             raise ValueError('fixture archive size mismatch')
         digest = hashlib.file_digest(stream, 'sha256').hexdigest()
@@ -96,6 +153,15 @@ def apply(operation, state, root, tar=subprocess.run, manifest_root=None, manife
 
 if __name__ == '__main__':
     try:
+        if len(sys.argv) == 5 and sys.argv[1] == 'authorize-corruption':
+            if os.geteuid() != 0 or 'SUDO_UID' in os.environ:
+                raise ValueError('only the direct isolated root operator may authorize corruption')
+            uid = int(sys.argv[2])
+            if uid <= 0: raise ValueError('ordinary enrolled user required')
+            root = Path(f'/var/lib/chariox/slice-local-dev/u-{uid}/private/layout/share/.broker-private/artifacts')
+            authorize_corruption(root / 'backups' / sys.argv[3] / sys.argv[4] / 'home.tar.zst', root)
+            print('MP-03/MP-10: disposable corruption identity pinned by root operator')
+            sys.exit(0)
         uid = int(os.environ['SUDO_UID'])
         if os.geteuid() != 0 or uid <= 0 or len(sys.argv) != 2:
             raise ValueError('fixture requires the isolated operator sudo grant')
@@ -105,6 +171,9 @@ if __name__ == '__main__':
         manifest_root = Path(pwd.getpwuid(uid).pw_dir) / '.chariox/dev'
         print(json.dumps(apply(sys.argv[1], json.loads(raw), root,
                                manifest_root=manifest_root, manifest_owner=uid)))
+    except AuthorizationPending:
+        print('MP-03/MP-10: operator corruption authorization is pending', file=sys.stderr)
+        sys.exit(2)
     except Exception:
         # Errors from archive tools and manifests may contain private data.
         print('MP-03/MP-10: isolated storage fixture refused', file=sys.stderr)

@@ -107,9 +107,31 @@ budget a 2 GiB slice plus the 512 MiB restore helper and home kernel, and retain
 at least 10 GiB disk reserve. Signal only a verified owned drill PID greater
 than 1 if a resource limit approaches. Never signal a process group or PID 1.
 
+The replay stops the slice after making the corrupt candidate, writes public
+`corrupt-candidate-response.json`, and waits up to ten minutes for the isolated
+root operator. In a second root terminal, select the **disposable** backup ID
+and generation from the observed candidate capture and protected capture
+coordinates. Confirm they differ from the known-good baseline. A user manifest
+name alone is not authorization. Then pin those exact coordinates:
+
+```sh
+: "${DISPOSABLE_BACKUP_ID:?operator-selected disposable backup ID}"
+: "${DISPOSABLE_GENERATION:?operator-selected generation directory name}"
+python3 /opt/chariox-b201-fixture/storage-qualification-fixture.py \
+  authorize-corruption "$(id -u b201replay)" "$DISPOSABLE_BACKUP_ID" "$DISPOSABLE_GENERATION"
+```
+
+This command is never in the user sudo grant. It verifies protected metadata,
+archive digest/size and inode and creates an exclusive root-owned mode-0600
+authorization file. Existing authorization is not replaced. The user helper
+must match its pinned ID, full generation path, digest, size and inode; changing
+a user manifest to `corrupt-candidate` cannot authorize a baseline archive.
+Absent authorization times out as RED without mutation or restore. Do not copy
+the authorization from another run or erase it to authorize an unknown target.
+
 Required reached phases: protected capture verification; container/home
 removal; **normal Start**; running restored worker; browser/download/editor and
-identity checks; named backup capture; corrupt-candidate refusal/quarantine;
+identity checks; named backup capture; corrupt-candidate refusal/preservation;
 restore by name; repeated restore by ID; offline service-worker check; cleanup.
 The new controller must select `chariox-slice-…-home-g…` after removal and resolve
 its initialization journal. A later named-backup restore must start a fresh
@@ -121,6 +143,11 @@ Use only allowlisted public projections/metadata, never dump enrollment,
 controller config, identity files, Vault data or archive contents. Keep operator
 receipts limited to generation phase, volume names and archive verification
 results; do not publish the restore environment.
+
+Protected DEV expects the broker-owned corrupt archive to remain in place with
+zero quarantine files after refusal and no container replacement. Ordinary
+unprotected local storage retains its separate quarantine expectation. This
+fixture follows the existing topology policy; it does not change that policy.
 
 ## MP-03/MP-10/MP-11: cleanup and limits
 

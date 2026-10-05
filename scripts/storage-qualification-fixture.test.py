@@ -6,6 +6,8 @@ from pathlib import Path
 import tempfile
 import unittest
 import hashlib
+import subprocess
+import sys
 
 spec = importlib.util.spec_from_file_location('fixture', Path(__file__).resolve().parents[1] / 'deploy/local-linux/storage-qualification-fixture.py')
 fixture = importlib.util.module_from_spec(spec)
@@ -114,5 +116,20 @@ class FixtureTests(unittest.TestCase):
         self.archive.chmod(0o600)
         with self.assertRaises(ValueError): self.apply('corrupt')
         self.assertEqual(self.archive.stat().st_size, 24)
+    def test_operator_selects_exact_coordinates_without_a_user_manifest(self):
+        self.authorization.unlink()
+        self.manifest.unlink()
+        fixture.authorize_corruption(self.archive, self.root)
+        authorization = json.loads(self.authorization.read_text())
+        self.assertEqual(authorization['id'], self.state['id'])
+        self.assertEqual(authorization['homeArchivePath'], str(self.archive))
+        self.assertEqual(authorization['archiveIno'], self.archive.stat().st_ino)
+        self.assertEqual(self.authorization.stat().st_mode & 0o777, 0o600)
+        with self.assertRaises(FileExistsError): fixture.authorize_corruption(self.archive, self.root)
+    def test_sudo_caller_cannot_authorize_any_corruption_identity(self):
+        result = subprocess.run([sys.executable, str(spec.origin), 'authorize-corruption', '65534', 'backup-1', 'generation-123456'],
+            env=dict(os.environ, SUDO_UID='65534'), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn('pinned by root operator', result.stdout)
 
 if __name__ == '__main__': unittest.main()

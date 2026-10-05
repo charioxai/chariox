@@ -234,15 +234,21 @@ Its hash is retained in the source receipt. The helper accepts bounded kernel
 state metadata on stdin, requires the caller's enrolled protected artifact root,
 pins the user-owned kernel manifest and root-owned private capture metadata
 and archive through no-follow descriptors, and never prints
-archive members or contents. Only the separate `corrupt-candidate` backup may
-be damaged; the known-good backup is refused. Restore and integrity rejection
+archive members or contents. Corruption additionally requires the direct-root
+operator to pin the exact disposable backup ID/generation, digest, size and
+inode in a root-owned authorization file, using the separate command in the
+restore replay runbook. It is never included in the user sudo grant. The replay
+waits up to ten minutes for that pin after recording the candidate response;
+a user-supplied `corrupt-candidate` name cannot authorize another backup.
+Restore and integrity rejection
 still run through the normal kernel/broker. This is operator fault injection
 on a disposable fixture VM, not a product permission or archive-export path.
 
 The complete replay covers
 editor/configuration/document, save plus container/home-volume destruction,
 recreation, external-service invalidation, offline service-worker behavior,
-corrupt-backup rejection, and repeated immutable named-backup restore. A RED
+corrupt-backup rejection (protected archives remain in place), and repeated
+immutable named-backup restore. A RED
 run's assertion list is planned coverage, not passed coverage: inspect `ok`,
 first failure, reached phases, and cleanup independently. Sample available
 memory and free disk every five seconds on the VM; forecast one 2 GiB slice,
