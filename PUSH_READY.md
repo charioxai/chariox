@@ -1,92 +1,69 @@
-# MD-DISPLAY-04 — Review 03:42 fixes ready; live proof pending
+# MD-DISPLAY-02/04 — Phase 5 ready for coordinator review
 
-Navigation fail-first-v2 binds the correct page target and fails only after its
-loader changes. Host recreates DisplayCapture on document change; stale input
-still fails. Drill now resolves TypeScript from supplied public tools inside
-owned cleanup. Process-local preload blocks /root/work/oss; fixed startup reaches
-intentional missing-binary failure and removes its scratch, original leaks an
-empty root (inventoried then removed). Final relocated live replay pending.
-44 Node tests pass. Full same-subscription navigation was added to every live
-case. SIGINT/SIGTERM route through owned drill cleanup; parent signals only its
-identity-bound positive child rather than killing its group before cleanup.
-No new wire shape/protocol number. Review inbox checked 03:42 findings handled
-as this batch; source/binary rebuild + final receipts will follow.
+Branch agent/display-impl; execution/kernel build933d6222d. Protocol419,
+relay wire unchanged, flag off. No publishing action. Source/binary fingerprints,
+commands/exits, embedded assets and receipts: external phase5/provenance.json.
+Doc:docs/MULTIDOMAIN_KERNEL_BROWSER_DISPLAY.md. No MD/MP acceptance closure.
 
-# MD-DISPLAY-02/04 — Phase 5 implementation milestone (validation running)
+MD-DISPLAY-02 final-v3: seven cases exit0; all140 input counter acknowledgements,
+exact settled/final RGB, same-stream navigation, stale-document rejection,
+takeover/focused-MCP fencing/owner input/release and cleanup pass. Local
+p50/p95 68.5/81.6ms; WAN40/80/150 169.6/432.5,287.5/310.9,469.0/498.1ms.
+MTU1500, offloads off, 1%loss, jitter and5/2/1Mbps caps affect only viewer/proxy
+TCP inside owned namespaces. Initial exact repairs5.35/8.39/13.17/18.21s.
+Relocated-static-100s-v3:255 polls,20/20 clicks,69.6/84.3ms, navigation/exactness
+and cleanup pass while a process-local hook blocks shared-checkout TypeScript.
+Both source933d6222d, clean trees, copied binary SHA bound individually.
 
-Local commits 740a7ffaa and 2cbfe5618; no publication. Protocol 419, flag off.
-First adds owned namespace WAN/moving harness; second fixes moving/oversized
-repair with fail-first tests and adds unavailable native design stubs.
-41 existing+repair Node tests and 2 native/netem tests pass. Slot-2 rebuild and
-final live receipts pending; do not attribute Phase-4 coverage to these files.
+MD-DISPLAY-02 media: canvas/video1.18/1.19 drawn fps and0.81/0.76 frame-event
+Mbps; settled exact in1.95/1.90s. Dense scroll0.25fps,1.44Mbps,7.73s exact
+settle and198/232ms post-scroll clicks. Diagnostic capture RPCs add unpaced
+bytes; live PSNR includes temporal drift. No matched moving-codec/Selkies/WAN
+baseline claim. The doc's short Selkies comparison preserves old geometry/source.
+Moving/WAN quality remains weak; feature is reviewable, not ready for rollout.
 
-MD-DISPLAY-02 exploratory campaign 740a7ffaa with binary built at 05387e1e4:
-local 78/92 ms, WAN40 172/193, WAN80 285/307, WAN150 457/490; exact settled
-static pixels. MTU/offloads were default in that campaign. Canvas/video under
-1 fps; dense-scroll RED on an oversized full repair. Parent exits 1; all seven
-namespace and process inventories empty after cleanup. Final packet-realism
-rerun uses only owned namespace MTU1500/offloads disabled.
+MD-DISPLAY-04 changes: stable-only refinement; bounded lossless tile batches
+sized to negotiated budget; one credit bounds source/encode/transport queues;
+full protected capture for scrolled/zoomed/unknown origins. Native VideoToolbox/
+ScreenCaptureKit and Media Foundation/Graphics Capture integration plan plus
+unavailable unregistered stubs; no native execution claim.
 
-MD-DISPLAY-04 review inbox: no new entries beyond fixed 02:17 findings. Previous
-mapping retained below. Native design and stubs are unmeasured on Mac/Windows.
-Evidence: /root/.codex/evidence/browser-resume-20260930/display/phase5/.
+MD-DISPLAY-04 review mapping:
 
-# MD-DISPLAY-02/04 — Phase 4 ready for coordinator review
+- Inbox03:42 navigation closure:7197ac202 recreates capture on loader change.
+  navigation-fail-first-v2.log fails only after navigation (v1 wrong-target setup
+  retained);46-test fixed suite and every final live case pass. Same display
+  subscription receives independent video on new document; old input rejected.
+- Inbox03:42 hard-coded TypeScript/startup leak:7197ac202 resolves supplied public
+  tools under finally. dependency-fail-first.log + exact empty-root cleanup;
+  dependency-fixed-start reaches deliberate missing binary and cleans; real
+  relocated100s final replay confirms no shared-checkout dependency.
+- Prior inbox02:17 registration/cursor/uncached-credit replay remain fixed by
+  c8518a3e2/69e1782ef, with original phase4 fail-first receipts preserved. Final
+  static100s and focused13 Rust checks include registration/protocol/queue/actors.
+- New oversized/moving repair:2cbfe5618, repair-fail-first-tests.log -> passing
+  bounded reconstruction/motion invalidation tests. Early live harness still
+  compared one partial batch; seven RED final/ receipts retained.29d3698e4 waits
+  for unchanged before checking exactness (new bounded drain test).
+- New scroll source1/viewer0:933d6222d full protected capture at unsafe origins;
+  scrolled-crop-fail-first.log ->46 passing Node checks, final-v3 scroll20/20
+  probes with exact pixels. Previous final-v2 scroll remains RED, exit1.
 
-Local branch agent/display-impl, execution + kernel build 05387e1e4; repeat
-69a4897ef differs only in lane status. Default-off flag and protocol 419 remain.
-No publishing action performed. Documentation/status-only final commits follow.
+MD-DISPLAY-04 checks:46 Node tests,13 focused reserved-slot Rust tests, slot2
+build pass (40 existing warnings), diff whitespace clean. Source shape/hash guards
+remain419. Interruption-v2 exits130, settles owned runtime, removes namespace.
+Earlier invalid interruption copied an in-progress linker output and failed
+before signaling; retained RED.79ad69619 adds ELF validation and copied SHA.
 
-MD-DISPLAY-02 result: real sandboxed headed kernel Chromium outside slices,
-DPR2 at 1280x800 CSS, 2 Mbps, existing encrypted production local-relay path.
-Before p50/p95 744.20/778.20 ms. Final two runs 73.80/92.40 and 72.80/83.90 ms,
-20/20 clicks each; exact settled/final RGB (MSE 0). Repeat includes 100.05 seconds /
-256 static polls then live input. Bootstrap VP9 remains 34.04 dB; large video/PNG
-refinement and arbitrary moving pages do not meet this small-change latency proof.
-Software rAF + checked canvas readback is a presentation proxy, not hardware photons.
-Observed CPU 162–172% of one core, received application 27.7/26.7 KB/s; rate excludes
-bootstrap/requests/TLS and includes resource-sampling time. 2 Mbps budget charges
-bootstrap/repair, with a bounded 16 KiB idle allowance. Stale input, shared actor
-takeover/fencing/owner input/release/resumption and cleanup pass in both runs.
+MD-DISPLAY-02 cleanup: every completed final namespace and exact-root process
+inventory empty; disposable state removed. Own replay worktree removed;5.91GiB
+own compiler incremental output removed after exact compiler-file inventory.
+Current public kernel binary/public dependencies retained for coordinator replay.
+No shared caches/services/containers/images/credentials/keys/reviewer state touched.
+All screenshots/diffs/JSON/logs external under
+/root/.codex/evidence/browser-resume-20260930/display/phase5/.
 
-MD-DISPLAY-04 implementation: optimized Linux owned-process identity reads
-(fresh full signal verification preserved); protected fast native PNG + private
-thumbnail-guided DPR crops; full idle verification; crop-bounded PNG tiles;
-small encrypted events use bounded priority delivery; TCP_NODELAY; event decode
-starts before receipt but single credit waits for both. No new protocol shape,
-relay inspection/authority, hosted service, Cloud media route or provider path.
-
-MD-DISPLAY-04 review mapping (REVIEW_INBOX 02:17):
-
-- Static active polls expired registration: c8518a3e2 renews only successful
-  admitted display_next. Fail-first static-100s-fail-first-v2/results.json;
-  deterministic paused-time unit + final-damage-static-100s live receipt pass.
-  Foreign key cannot renew; genuine idle still expires.
-- Transient frame overwrote session resume cursor: 69e1782ef uses local event_id 0
-  and IPC ignores kernel_browser_frame for durable cursors. Fail-first real
-  fake-WebSocket reconnect cursor 1 vs 500; fixed regression preserves 500.
-- Uncached display_next auto replayed after stall/loss: 69e1782ef recognizes the
-  nested command, keeps outcome-unknown/no automatic replay and no pixel cache.
-  Fail-first delayed/lost-response cases in client-review-fail-first.log;
-  final-client-tests.log passes 11. Cloud integration note requires same behavior.
-
-MD-DISPLAY-02 provenance: external phase4/provenance.json binds binary SHA256,
-134 unchanged execution hashes, 30 exact embedded assets, commands/exits/checks
-and historical/final receipts. Final clean receipts: final-damage-2mbps and
-final-damage-static-100s. Source 05387e1e4 and 69a4897ef respectively; no dirty flags.
-Earlier successes, failures and mixed-source/dirty receipts retain their identities.
-Intermediate final-clean-2mbps at 6cfcf6410 is RED (p50 88.50, p95 100.20); bounded
-tile scan addresses its remaining cost. Nothing is relabelled as final-file coverage.
-
-MD-DISPLAY-04 checks: 39 Node, 13 Rust ownership/registration/queue/protocol/event/
-actor/takeover/origin, 11 IPC; TypeScript, rustfmt and slot 2 build pass (40 existing
-warnings). All measurements/screenshots remain external under
-/root/.codex/evidence/browser-resume-20260930/display/phase4/.
-Cleanup.json records 6.41 GB removed own output, no scratch or owned processes;
-current binary/dependencies retained for coordinator replay. No shared resources
-or protected stores changed. Research branch agent/display remains untouched.
-
-MD-DISPLAY-04 next gates: independent review and coordinator Cloud wiring;
-matched moving-media/bitrate/WAN, slow viewer/reconnect/live Vault, native OS,
-multi-viewer and Room acceptance. This is local component readiness, no MD/MP
-acceptance closure. Owner transport/design decisions remain open; feature stays off.
+MD-DISPLAY-04 next gates: owner budgets/design, continuously credited WAN client,
+protected persistent source/encoder, coordinator Cloud wiring, native/live Vault,
+slow viewer/reconnect, cursor/IME/file chooser, multi-viewer and Room migration.
+Research agent/display branch untouched. No GitHub CI, push, PR, merge or deploy.

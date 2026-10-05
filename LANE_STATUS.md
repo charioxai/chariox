@@ -1,92 +1,45 @@
-# MD-DISPLAY-04 — Review 03:42 milestone
+# MD-DISPLAY-02/04 — Phase 5 final local handoff
 
-Fail-first-v2 proves stale loader closure on correct page; host now rebinds
-capture after navigation. Portable drill TypeScript comes from supplied tools,
-all fallible setup inside owned finally; deliberately blocked shared checkout
-now reaches expected missing-binary failure with clean teardown. Original empty
-scratch leak removed after exact inventory. 44 Node checks pass. Added real
-same-stream navigation + stale input to live cases, and awaited interruption
-cleanup. First repair binary built at 2cbfe5618; final review binary pending.
-No final live validation claim yet. Protocol 419, default-off flag unchanged.
+2026-10-05: execution/kernel build933d6222d; documentation-only handoff follows.
+Protocol419, relay unchanged, default-off flag. Final seven-case campaign exits0,
+140/140 counter checks, exact settled/final pixels, same-stream full navigation,
+stale input, shared takeover/MCP fencing/release and owned teardown pass.
+Relocated100s repeat (shared TypeScript deliberately unavailable) passes255 polls,
+20/20 clicks, p50/p95 69.6/84.3ms. No MD/MP acceptance item closes.
 
-# MD-DISPLAY-02/04 — Phase 5 repair milestone
+MD-DISPLAY-02: local docs68.5/81.6ms; realistic WAN40/80/150 p95
+432.5/310.9/498.1ms, initial exact repair8.39/13.17/18.21s. One namespace per
+case; viewer-only netem, MTU1500, TSO/GSO/GRO off, jitter, 1% random loss,
+5/2/1Mbps shared caps. No host-interface changes. Tails are noisy at n20.
+Canvas/video1.18/1.19 drawn fps; exact after freeze; no PNG repairs during
+motion. Dense scroll0.25fps, exact convergence7.73s, post-scroll click198/232ms.
+Media and scroll remain weak; this is not a smooth Selkies replacement.
 
-2026-10-05: before campaign 740a7ffaa, Phase-4 binary 05387e1e4. All four
-static cases exact; local 78/92 ms, WAN40 172/193, WAN80 285/307,
-WAN150 457/490. First WAN campaign uses loopback's default MTU/offloads:
-exploratory, not final packet-loss realism. Final rerun will use namespace-only
-MTU1500 and disabled TSO/GSO/GRO. No host interface touched.
+MD-DISPLAY-04: batched lossless repair, stable-only refinement, bitrate-scaled
+batch allowance and bounded one-credit path. Full protected capture on scrolled/
+zoomed/uncertain origins fixes source-counter1/viewer0 crop failure. Review03:42
+fixed navigation binding and supplied-dependency cleanup (7197ac202). 46 Node,
+13 Rust checks pass. Native API design + unavailable stubs only. Inbox checked:
+no unhandled entries beyond03:42. PUSH_READY.md maps fixes and evidence.
 
-MD-DISPLAY-02: moving canvas/video 0.79/0.89 fps; repeated PNG repair during
-motion is wasteful. Dense scroll RED at first oversized full exact repair
-(bound 1 MiB); campaign propagates exit 1 and cleans all seven namespaces.
-Two fail-first tests reproduce moving repair/oversized repair. Fix: repair only
-unchanged protected captures; batch large repairs as existing sequence-bound
-tiles (half-second negotiated byte budget, max192KB JSON, one tile minimum).
-Stable convergence remains exact; motion/lost base invalidates pending batches.
-Protocol shape/419 and feature flag unchanged. 41 focused Node checks pass;
-new binary/live rerun pending. No current-file measurement claim yet.
-
-MD-DISPLAY-04: native adapter design stubs stay unavailable/unregistered;
-no Mac/Windows validation. Review inbox still only handled 02:17 findings.
-
-# MD-DISPLAY-02/04 — Phase 5 active
-
-2026-10-05: resume from 6b288b330. Required plans and lane review inbox read;
-no new entries after handled 02:17 findings. No display-impl owned leftovers found.
-Root disk 217 GiB free; MemAvailable 50 GiB, above 16 GiB lane floor.
-Signal audit: positive child PID/start identity and full owned-group membership
-checks precede signals; unsafe IDs refused. No host signals or shared service changes.
-
-MD-DISPLAY-02: adding namespace-local viewer-only netem (40/80/150 ms RTT,
-jitter, 1% loss, 5/2/1 Mbps shared bidirectional caps), live canvas/video and
-dense-scroll harness. Protocol 419 and flag unchanged. Local prototype namespace
-created/deleted successfully; no default-interface qdisc changed.
-Phase-4 historical results keep their identities; Phase-5 files unvalidated yet.
-
-MD-DISPLAY-04: native OS integration design/stubs pending. Owner questions below
-remain open; no MD acceptance closure. Research branch untouched.
-
-# MD-DISPLAY-02/04 — Phase 4 final local handoff
-
-2026-10-05: execution/kernel-build source 05387e1e4; final repeat 69a4897ef
-changes status only. Local 419, relay wire unchanged, feature defaults off.
-Final DPR2 / 2 Mbps encrypted production local-relay runs: p50/p95
-73.80/92.40 and 72.80/83.90 ms (20/20 visual input acknowledgements each).
-Second run: 100.05s / 256 static polls followed by live input. Both exact
-settled and final RGB, stale-document rejection, takeover/MCP fencing,
-owner input, release/resumption and owned cleanup pass. No MD acceptance closes.
-
-MD-DISPLAY-02: before instrumentation 744.20/778.20 ms; redundant process
-identity work, full PNG readback/decode, event batching, receipt coupling and
-canvas copying dominated. Protected native crops plus full settled verification,
-crop-bounded tiles, bounded priority delivery, TCP_NODELAY and early presentation
-remove those costs. CPU observed 162–172% of one core; moving video and large
-refinement are still slow. 16 KiB maximum accrued pacing credit; large frames paid.
-An intermediate clean run missed p50 at 88.50 ms and remains RED in evidence.
-
-MD-DISPLAY-04: REVIEW_INBOX 01:35 typed seam handled in Phase 3. Review 02:17 all
-three fail-first fixes pass (registration, durable cursor, uncached credit replay).
-39 Node / 13 Rust / 11 IPC tests, TypeScript, formatting and reserved-slot build
-pass. All 30 embedded controller assets and 134 source files are bound externally.
-Evidence: /root/.codex/evidence/browser-resume-20260930/display/phase4/.
-Doc: docs/MULTIDOMAIN_KERNEL_BROWSER_DISPLAY.md; mapping: PUSH_READY.md.
-
-MD-DISPLAY-02 cleanup: no residual owned scratch; every completed drill records
-empty exact-root process inventory and removes runtime state. Removed 6.41 GB
-own incremental/test output, temporary dependency symlink and superseded draft.
-Current test binary/dependencies retained for coordinator replay. No Docker,
-accounts, shared services/caches, other lanes, CI, push/PR/merge/deploy or Cloud.
+MD-DISPLAY-02 cleanup: all final namespaces/process inventories empty; exact
+runtime roots removed. Own replay checkout removed;5.91GiB own compiler
+incremental output removed; current public binary/dependencies retained for
+coordinator replay. All failures keep original sources/RED status externally.
+Evidence:/root/.codex/evidence/browser-resume-20260930/display/phase5/.
+No CI/push/PR/merge/deploy/Cloud/accounts/shared service/cache changes.
 
 ## Coordinator asks
 
-MD-DISPLAY-04: final review inbox checked; no new entries beyond 02:17.
-No new protocol allocation. Guarded signals reject 0/1/-1/undefined/NaN;
-Rust group kill takes fresh full identity/membership verification. No unsafe
-signal sent during Phase 4; historical host-incident attribution remains unknown.
+MD-DISPLAY-04: ready for independent review and coordinator replay. No new
+protocol number requested; keep419. Future native AVC/persistent inter prediction
+needs reviewed negotiation/recovery and any allocated protocol evolution.
+Signals are identity-bound and guarded; interruption exits130 with cleanup.
+Historical host-incident attribution remains unknown; no unsafe signal this phase.
 
 ## Owner questions
 
-MD-DISPLAY-04: final design/rollout, moving fidelity, WAN/Cloud, native OS,
-live Vault, multi-viewer and Room migration remain acceptance gates. Cloud
-integration note is reviewable; presenter remains an isolated flagged module.
+MD-DISPLAY-04: decide transport/rollout and required moving/WAN fidelity, latency
+and egress budgets. Protected persistent capture/encoder remains needed for
+smooth media. Cloud/hosted WAN, native OS, live Vault, reconnect/slow viewer,
+cursor/IME/file chooser, multi-viewer and Room migration remain acceptance gates.

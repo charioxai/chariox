@@ -64,7 +64,9 @@ bitrate resubscription is introduced. Unchanged exact frames emit no event. Lost
 new documents or changed protection policy discard the patch base. A fresh
 independent video frame and then complete lossless repair rebuild it. PNG-only mode is exact
 on every full emitted frame. Phase 4 adds private, protected thumbnail-guided
-native crops for small changes. A thumbnail never supplies displayed pixels or
+native crops for small changes at an unscrolled, unzoomed known viewport origin.
+Scrolled/zoomed/uncertain viewports use full protected capture: native CDP clips
+are page rectangles, while the damage hint is a viewport rectangle. A thumbnail never supplies displayed pixels or
 crosses the relay. It locates a padded CSS rectangle (at most 15% of the viewport)
 that is captured at native DPR and merged into the protected pixel base. It is
 a damage hint: fine changes elsewhere can be missed in the first paint. The
@@ -436,3 +438,147 @@ usable after full navigation while old document input remains refused. Drill
 TypeScript loads from the explicitly supplied Node tools under cleanup coverage;
 no shared checkout path is required. Campaign interruptions ask the owned drill
 to settle its children before namespace removal; unsafe/group IDs stay guarded.
+
+## MD-DISPLAY-02/04: Phase-5 WAN and moving-page result
+
+Final execution/kernel-build source **933d6222d**; receipts in external
+`phase5/final-v3/`. A second clean checkout at
+`/root/work/agent-display-impl-replay` ran the same source with a process-local
+hook making `/root/work/oss` TypeScript unavailable. Its 100-second static poll,
+then input/navigation/actor checks pass in `phase5/relocated-static-100s-v3/`.
+Both sources are bound to the copied ELF's SHA-256 in each receipt; external
+`phase5/provenance.json` binds execution hashes, embedded assets and checks.
+Documentation/status handoff commits change no measured execution file.
+
+The same real headed sandboxed kernel Chromium, DPR2 / 1280×800 CSS geometry,
+2 Mbps frame budget and production encrypted relay are used. Each campaign case
+owns a fresh network namespace. Only the viewer-to-relay TCP proxy leg is shaped;
+fixture HTTP, CDP control and the kernel-to-relay leg are unshaped. The proxy
+forwards opaque bytes. Namespace-only loopback MTU is 1500, TSO/GSO/GRO are off;
+no host default interface is touched. Delay is applied both ways, jitter is
+normal, loss is random 1%, and the cap is shared by both directions. Raw netem
+settings, seeds, packet/drop counters, commands and cleanup are in receipts.
+This emulates one client/relay WAN leg, not two distant kernel/client legs.
+
+| Profile | RTT / jitter / cap | Input p50 / p95 ms | Initial exact repair s | Received application KB/s during clicks |
+| --- | --- | ---: | ---: | ---: |
+| Local | 0 / 0 / uncapped link | 68.5 / 81.6 | 5.35 | 29.2 |
+| WAN40 | 40 / ±2 ms / 5 Mbps, 1% loss | 169.6 / 432.5 | 8.39 | 20.5 |
+| WAN80 | 80 / ±5 ms / 2 Mbps, 1% loss | 287.5 / 310.9 | 13.17 | 15.0 |
+| WAN150 | 150 / ±10 ms / 1 Mbps, 1% loss | 469.0 / 498.1 | 18.21 | 11.0 |
+
+Every row has 20/20 verified counter changes and exact settled/final RGB (MSE 0).
+The input probes remain a software rAF/readback endpoint. Initial repair time
+starts after bootstrap video and its diagnostic pair; it includes credited
+capture/encode/transit/decode until an unchanged poll, not reference comparison.
+Bootstrap quality remains about 34 dB. Click KB/s excludes bootstrap, repairs,
+requests and TLS, and includes receipt responses/resource-sampling time.
+The final 100-second repeat is 69.6 / 84.3 ms, 255 unchanged polls, followed by
+fresh independent navigation, exact repair and stale-document rejection.
+
+WAN loss tails are noisy at n=20. Historical clean source `29d3698e4` / binary
+`7197ac202` measured WAN40/80/150 p95 262.9/671.8/486.4 ms. Keep both series
+with their identities rather than selecting the better tail. The earlier
+`740a7ffaa` campaign used default loopback MTU/offloads, so its lower tails are
+exploratory and not packet-loss realism. No Selkies WAN run is claimed.
+
+| Stage p50 ms (spans overlap) | Local docs | WAN80 docs | Local post-scroll click |
+| --- | ---: | ---: | ---: |
+| Input request round-trip | 28.1 | 120.1 | 32.7 |
+| Capture layout metrics | 0.45 | 0.61 | 0.55 |
+| Source capture | Preview 5.56 + native crop | Preview 6.44 + native crop | Full 90.16 |
+| Source decode | Crop merge 1.07 | Crop merge 1.20 | Full 44.92 |
+| Frame pacing wait | 1.08 | 1.13 | 1.18 |
+| Entire next-credit round-trip | 35.1 | 161.6 | 167.1 |
+| Enqueued frame to viewer | 2.0 | 68.6 | 2.1 |
+| Browser decode | 1.6 | 1.9 | 1.8 |
+
+Raw per-stage histograms retain capture, encoding, credit, encryption, delivery,
+decode and presentation timings. Network delay and TCP retransmission dominate
+WAN, while full PNG readback/decode dominates scrolled input. The harness waits
+for input acknowledgement before asking for its frame, paying roughly two RTTs.
+A continuously credited viewer may differ; it has not been measured here.
+
+The new repair policy waits for an unchanged protected snapshot. Large exact
+repairs are delivered as sequence-bound tile batches; a lost base or new pixels
+restart independent video rather than queue stale refinement. Batches scale
+with negotiated bitrate, and one outstanding credit adapts cadence to the link.
+No automatic bitrate resubscription was added: steady static-input frame traffic is
+below the constrained link caps, and lowering fidelity does not remove RTT/TCP
+loss or PNG capture cost. This is bounded credit/repair behavior, not a claim
+of a congestion-control encoder.
+
+| Moving workload, local 2 Mbps | Before drawn fps | Final drawn fps | Frame-event Mbps | Freeze-to-exact s | Post-settle click p50 / p95 ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Canvas animation | 0.79 | 1.18 | 0.81 | 1.95 | 104.0 / 120.7 |
+| HTML video playing | 0.89 | 1.19 | 0.76 | 1.90 | 104.4 / 114.3 |
+| Dense long-page scrolling | RED oversized repair | 0.25 | 1.44 | 7.73 | 198.0 / 232.0 |
+
+Canvas/video used only dirty tiles during the final moving interval, with no
+full PNG repair while motion continues. Video is an actual HTMLVideoElement
+playing a 30fps canvas captureStream, not network/DRM playback. Scroll shifts
+most text and uses large independent VP9 keyframes. The cadence is decoded/
+drawn frames under sequential credits; two diagnostic capture/readback pairs
+and resource scans reduce it. Live pixel pairs include motion age/compositor
+drift and are not codec-only PSNR. Frozen first and final pairs/diffs are saved;
+all workloads converge to exact RGB. The event rate counts only encrypted
+frame events; diagnostic capture responses are separate and unpaced. Including
+those responses yields 1.23/1.16/2.18 Mbps respectively, so the diagnostic total
+must not be presented as a hard 2 Mbps egress cap.
+
+Observed owned CPU over startup/repair/workload/click intervals is about 200%
+for local docs, 263% canvas, 222% video and 102% scroll (one core = 100%). This
+includes fixture/viewer readback and excludes exited workers; it is neither
+steady encoder CPU nor GPU accounting. Minimum final-campaign MemAvailable is
+47.1 GiB. Software capture and independent keyframes remain the moving bottleneck;
+this is not yet smooth interactive media or dense scrolling.
+
+### MD-DISPLAY-02: historical Selkies comparison for the owner
+
+These retained Phase-1/default-path figures are from the research branch's
+Phase-2 rerun, not a new baseline. Source/browser/geometry differ: Selkies uses
+Chrome147 at 960×600 CSS; this kernel run uses Chrome154 at 1280×800 CSS, both
+DPR2. The baseline's frozen quality is not moving codec-only fidelity.
+
+| Observation | Historical Selkies default path | Final flagged kernel path |
+| --- | --- | --- |
+| Frozen docs RGB | 48.30 dB, 0.482 Mbps observed | Exact after repair; bootstrap ~34 dB |
+| Frozen media RGB | 47.23 dB, 0.253 Mbps observed | Exact after freeze; live temporal drift retained separately |
+| Small docs click p95 | 90.56 ms | 81.6 ms local; WAN 311–498 ms in this final series |
+| Media click p95 | 90.02 ms | 114.3 ms after motion has stopped |
+| Dense motion/scroll | Historical CBR2 wheel p95 86.4 ms, frozen public page 23.81 dB | 0.25 drawn fps; post-scroll click p95 232 ms; eventual exact RGB |
+
+This supports exact settled text and a portable flag-gated seam. It does not
+establish a bandwidth-fair universal replacement, higher moving fidelity than
+Selkies, hosted Cloud acceptance or native-OS performance. Keep Selkies available
+for Rooms and keep the new kernel-browser flag off by default.
+
+### MD-DISPLAY-04: review, failures and next gate
+
+Review 03:42 fixes are `7197ac202`: recreated document-bound capture closure and
+portable supplied TypeScript dependency under cleanup. Corrected navigation
+fail-first-v2, fixed unit and every final live navigation prove one subscription
+survives a full document replacement; old document input is still rejected.
+Relocated 100-second live replay proves the dependency fix without shared checkout
+resolution. SIGTERM interruption exits 130 after owned cleanup; namespace inventory
+is empty. An earlier interruption attempt copied a binary during linking and
+exited before the signal; it remains RED, and ELF/hash checks now bind each copy.
+
+Historical RED cases remain: early partial-repair harness comparison; dense
+scroll overflow; source counter1/viewer0 under a scrolled crop; and the initial
+wrong-target unit setup. Corrected fail-first tests identify the actual seams.
+`933d6222d` falls back to full protected capture for scroll/zoom/unknown origins,
+preserving masking and exactness at a measured latency cost. Final seven-case
+campaign exits 0; all stale input, owner takeover, focused MCP fencing, release,
+navigation, exactness and owned teardown assertions pass. 46 Node and 13 focused
+Rust checks pass. No protocol shape/version change beyond existing 419.
+
+Next: measure a continuously credited client before changing input/credit
+semantics; replace full-PNG capture and independent encoders with a protected
+persistent source/encoder before promising smooth media. Native stubs and their
+API plan above remain unregistered. Cloud wiring, hosted WAN, live Vault,
+slow-viewer/reconnect, native OS, cursor/IME/file chooser, multi-viewer and Room
+migration are separate gates. PNG-only oversized first-frame/high-entropy pages
+retain the bounded-packet limitation; this campaign negotiated VP9 + PNG.
+Owner decisions remain the motion/WAN/fidelity budgets and final transport.
+No MD/MP acceptance item is closed by these component receipts.
