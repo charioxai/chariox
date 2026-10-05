@@ -594,7 +594,7 @@ function stripComments(text, format) {
 function readText(fsApi, absolutePath) {
   const value = fsApi.readFileSync(absolutePath);
   if (value.includes(0)) throw new Error(`unsupported binary source: ${absolutePath}`);
-  return new TextDecoder("utf-8", { fatal: true }).decode(value);
+  return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(value);
 }
 
 function inferSymbol(lines, lineIndex) {
@@ -907,7 +907,7 @@ function collectTrackedFiles({ sourceRoot, sourceRef, fsApi, runGit }) {
         || batch.stdout[end + size + 1] !== 10) throw new Error("Git batch blob identity/framing mismatch");
       const bytes = batch.stdout.subarray(end + 1, end + 1 + size);
       if (bytes.includes(0)) throw new Error(`unsupported binary source: ${entry.path}`);
-      blobs.set(entry.blob, new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+      blobs.set(entry.blob, new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes));
       cursor = end + size + 2;
     }
     if (cursor !== batch.stdout.length) throw new Error("Git batch trailing data");
