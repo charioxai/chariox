@@ -100,6 +100,7 @@ pub(crate) mod metaagent_event_control;
 pub(crate) mod metaagent_guides;
 pub(crate) mod metaagent_trace;
 pub(crate) mod native_interaction_bridge;
+pub(crate) mod owned_process_signals;
 pub(crate) mod pairing_invite_executor;
 pub mod process_health;
 pub(crate) mod project_environment_setup_utility;
@@ -155,3 +156,5 @@ pub(crate) mod workspace_search;
 pub(crate) mod workspace_worktrees;
 
 pub(crate) mod kernel_access;
+
+pub(crate) mod relay_peer_authority;

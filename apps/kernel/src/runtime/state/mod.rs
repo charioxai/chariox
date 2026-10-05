@@ -143,6 +143,8 @@ pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
     external_command_authority: Option<ExternalCommandAuthority>,
+    relay_peer_authority: Option<crate::runtime::relay_peer_authority::RelayPeerAuthority>,
+    forwarded_peer_binding: Option<forwarded_peer_authority::ForwardedPeerBinding>,
     #[cfg(test)]
     app_lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
     app: Arc<Mutex<DaemonApp>>,
@@ -406,6 +408,7 @@ mod provider_mcp_continuation_runtime;
 mod provider_output_runtime;
 mod provider_process_runtime_state;
 pub(crate) use provider_process_runtime_state::*;
+mod forwarded_peer_authority;
 mod project_environment_setup;
 mod provider_auth_recovery;
 #[cfg(test)]
@@ -748,6 +751,8 @@ impl KernelRuntimeState {
         );
         let runtime = Self {
             external_command_authority: None,
+            relay_peer_authority: None,
+            forwarded_peer_binding: None,
             #[cfg(test)]
             app_lock_wait_probe: None,
             app,

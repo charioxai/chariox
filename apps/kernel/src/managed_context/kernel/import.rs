@@ -42,6 +42,9 @@ use ordinary_publication::{
 };
 #[path = "import_ownership.rs"]
 mod import_ownership;
+#[cfg(unix)]
+#[path = "registry_paths.rs"]
+mod registry_paths;
 
 const IMPORT_RECEIPT_NAME: &str = "kernel-context-import.json";
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -127,6 +130,10 @@ pub fn import_kernel_context(
     )?;
     validate_import_paths(&request.capability_root, &request.vault_path)?;
 
+    #[cfg(unix)]
+    let ordinary_root = ordinary_user_root()?
+        .map(|home| registry_paths::RegistryDirectory::root(&home))
+        .transpose()?;
     let parent = request
         .capability_root
         .parent()
@@ -156,6 +163,11 @@ pub fn import_kernel_context(
             false,
             &mut budget,
         )?;
+        #[cfg(unix)]
+        if let Some(home) = ordinary_root.as_ref() {
+            record_ordinary_entries_at(&staging, home, &mut budget)?;
+        }
+        #[cfg(not(unix))]
         if let Some(home) = ordinary_user_root()? {
             record_ordinary_entries(&staging, &home, &mut budget)?;
         }
@@ -176,6 +188,11 @@ pub fn import_kernel_context(
             }
             Err(error) => return Err(error),
         }
+        #[cfg(unix)]
+        if let Some(home) = ordinary_root.as_ref() {
+            publish_ordinary_entries_at(&request.capability_root, home)?;
+        }
+        #[cfg(not(unix))]
         if let Some(home) = ordinary_user_root()? {
             publish_ordinary_entries(&request.capability_root, &home)?;
         }
@@ -1573,11 +1590,21 @@ fn wait_for_child(
     maximum_entries: u64,
     allow_python_venv_symlink: bool,
 ) -> Result<ExitStatus, DaemonError> {
+    let mut signals = crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(child)
+        .map_err(|error| import_io_error(operation, error))?;
     let started = std::time::Instant::now();
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                terminate_child_descendants(child.id());
+        signals
+            .refresh()
+            .map_err(|error| import_io_error(operation, error))?;
+        match child_exited_without_reaping(child) {
+            Ok(true) => {
+                signals
+                    .kill_group()
+                    .map_err(|error| import_io_error(operation, error))?;
+                let status = child
+                    .wait()
+                    .map_err(|error| import_io_error(operation, error))?;
                 ensure_tree_within_limits(
                     budget_root,
                     maximum_bytes,
@@ -1586,9 +1613,9 @@ fn wait_for_child(
                 )?;
                 return Ok(status);
             }
-            Ok(None) => {}
+            Ok(false) => {}
             Err(error) => {
-                terminate_child_tree(child);
+                terminate_child_tree(child, &mut signals);
                 return Err(import_io_error(operation, error));
             }
         }
@@ -1598,38 +1625,66 @@ fn wait_for_child(
             maximum_entries,
             allow_python_venv_symlink,
         ) {
-            terminate_child_tree(child);
+            terminate_child_tree(child, &mut signals);
             return Err(error);
         }
         if started.elapsed() >= timeout {
-            terminate_child_tree(child);
+            terminate_child_tree(child, &mut signals);
             return Err(import_error(format!("{operation} timed out")));
         }
         std::thread::sleep(Duration::from_millis(100));
     }
 }
 
+#[cfg(target_os = "linux")]
+fn child_exited_without_reaping(child: &mut Child) -> io::Result<bool> {
+    let mut status: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            child.id(),
+            &mut status,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // Retain the exited session leader until its descendants have been checked and stopped.
+    Ok(unsafe { status.si_pid() } != 0)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn child_exited_without_reaping(child: &mut Child) -> io::Result<bool> {
+    child.try_wait().map(|status| status.is_some())
+}
+
 #[cfg(unix)]
 fn configure_child_process_group(command: &mut Command) {
     use std::os::unix::process::CommandExt;
-    command.process_group(0);
+    // An exclusive session proves fast reparented descendants while the leader is retained.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
 }
 
 #[cfg(not(unix))]
 fn configure_child_process_group(_command: &mut Command) {}
 
-#[cfg(unix)]
-fn terminate_child_descendants(process_group: u32) {
-    let _ = unsafe { libc::kill(-(process_group as i32), libc::SIGKILL) };
-}
-
-#[cfg(not(unix))]
-fn terminate_child_descendants(_process_group: u32) {}
-
-fn terminate_child_tree(child: &mut Child) {
-    terminate_child_descendants(child.id());
-    let _ = child.kill();
-    let _ = child.wait();
+fn terminate_child_tree(
+    child: &mut Child,
+    signals: &mut crate::runtime::owned_process_signals::OwnedProcessSignals,
+) {
+    if signals.kill_group().is_ok() {
+        let _ = signals.kill_child();
+        let _ = child.wait();
+    }
 }
 
 struct TemporaryDirectoryCleanup(PathBuf);
@@ -2040,6 +2095,42 @@ fn import_error(message: impl Into<String>) -> DaemonError {
 mod tests {
     use super::*;
     use crate::secret::{TransferredVaultSourceBinding, VaultUnlockLease};
+
+    #[cfg(unix)]
+    #[test]
+    fn mp11_ordinary_registry_symlink_is_rejected_before_publication_and_rollback() {
+        let root = test_root("registry-parent-symlink");
+        let home = root.join("home/.chariox");
+        let outside = root.join("outside");
+        let staging = root.join("staging");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(staging.join("user/skills/imported")).unwrap();
+        fs::write(outside.join("untouched"), "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, home.join("skills")).unwrap();
+        assert!(
+            record_ordinary_entries(&staging, &home, &mut MaterializationBudget::new()).is_err(),
+            "symlinked registry parent was admitted before Vault publication"
+        );
+        fs::write(
+            staging.join(PUBLISHED_ENTRIES_NAME),
+            b"[\"skills/imported\"]",
+        )
+        .unwrap();
+        fs::create_dir_all(outside.join("imported")).unwrap();
+        fs::write(outside.join("imported/user-entry"), "user").unwrap();
+        fs::remove_dir_all(staging.join("user")).unwrap();
+        assert!(remove_ordinary_entries(&staging, &home).is_err());
+        assert_eq!(
+            fs::read_to_string(outside.join("untouched")).unwrap(),
+            "outside"
+        );
+        assert_eq!(
+            fs::read_to_string(outside.join("imported/user-entry")).unwrap(),
+            "user"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn imports_unified_kernel_context_and_replays_exact_receipt() {

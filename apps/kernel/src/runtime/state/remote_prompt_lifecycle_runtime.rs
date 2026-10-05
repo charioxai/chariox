@@ -484,9 +484,36 @@ impl KernelRuntimeState {
         else {
             return Ok(None);
         };
+        let session = owned.session_store.get_session(session_id)?;
+        let completion_prompt = owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, target_agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.into(),
+            })?;
+        let revalidate_receipt = || {
+            let agent = owned.agent_store.get_agent(target_agent_id)?;
+            let session = owned.session_store.get_session(session_id)?;
+            if agent.session_id() != session_id
+                || agent.remote_execution() != Some(&remote_execution)
+                || owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, target_agent_id)
+                    .as_ref()
+                    .map(|prompt| prompt.id())
+                    != Some(completion_prompt.id())
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "complete remote prompt",
+                    message: "completion receipt was superseded".into(),
+                });
+            }
+            Ok(())
+        };
         let completion_response = self
             .with_app_side_effect(|app| {
                 self.authorize_prompt_command(authority)?;
+                revalidate_receipt()?;
                 let relay_config = app.relay_config_for_remote_execution(&remote_execution);
                 app.block_on_relay_future(
                     crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
@@ -514,6 +541,15 @@ impl KernelRuntimeState {
                     workspace_live_sync_change,
                     ..
                 }) => {
+                    revalidate_receipt()?;
+                    if provider_run_id.as_deref()
+                        != remote_execution.active_worker_provider_run_id.as_deref()
+                    {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "complete remote prompt",
+                            message: "completion receipt names another provider run".into(),
+                        });
+                    }
                     if let Err(error) = crate::git_observer::append_observations(
                         &owned.operational_history_store,
                         git_observations,
@@ -536,6 +572,7 @@ impl KernelRuntimeState {
                         )
                         .await;
                     }
+                    revalidate_receipt()?;
                     (
                         provider_run_id
                             .unwrap_or_else(|| "remote-provider-run-completed".to_string()),
@@ -556,8 +593,10 @@ impl KernelRuntimeState {
                         }),
                     );
                     (
-                        owned_provider_run_id
+                        remote_execution
+                            .active_worker_provider_run_id
                             .clone()
+                            .or_else(|| owned_provider_run_id.clone())
                             .unwrap_or_else(|| "remote-provider-run-completed".to_string()),
                         None,
                         None,
@@ -599,12 +638,13 @@ impl KernelRuntimeState {
                 }
             };
         // The worker completion is committed; settle its home receipt even after revocation.
-        let completion = owned.complete_remote_prompt_owner_with_termination(
+        let completion = owned.complete_remote_prompt_owner_for_receipt(
             session_id,
             target_agent_id,
             &remote_provider_run_id,
             next_queued_prompt,
             provider_termination.clone(),
+            Some((completion_prompt.id(), &remote_execution)),
         )?;
         if completion.completed.workflow_run_id().is_some() {
             if let Some(diagnostic) = provider_termination

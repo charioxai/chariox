@@ -80,6 +80,7 @@ impl KernelRuntimeState {
         caller_user_id: &str,
         wait_for_slot: bool,
     ) -> Result<Result<crate::agent::AgentInstance, NotBound>, DaemonError> {
+        self.authorize_current_forwarded_binding()?;
         grant.validate_app_binding()?;
         self.owned.ensure_agent_extension_authority(
             agent_ref,
@@ -107,7 +108,9 @@ impl KernelRuntimeState {
         let installation_id = grant.name.clone();
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         let control = self.app_control().clone();
+        let state = self.clone();
         let checked = tokio::task::spawn_blocking(move || {
+            state.authorize_current_forwarded_binding()?;
             let _permit = permit;
             let binding = store.check_app_binding(&owner, &installation_id);
             // Under the same slot: its tools are listed at once, even before
@@ -117,15 +120,16 @@ impl KernelRuntimeState {
             if binding.is_ok() {
                 control.seed_dormant(&owner, &installation_id);
             }
-            binding
+            Ok::<_, DaemonError>(binding)
         })
         .await
-        .map_err(|_| app_binding_error("App binding check did not complete"))?;
+        .map_err(|_| app_binding_error("App binding check did not complete"))??;
         if checked.is_err() {
             return Ok(Err(NotBound::Refused));
         }
         // Ownership is checked again after the writer wait. A binding does not
         // retain invocation authority if the App is subsequently retired/revoked.
+        self.authorize_current_forwarded_binding()?;
         let agent = self
             .owned
             .grant_agent_extension(agent.id(), grant.clone(), caller_user_id)?;

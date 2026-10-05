@@ -34,22 +34,29 @@ impl KernelRuntimeState {
                 let operation_name = operation.name.clone();
                 let credential = grant.credential.clone();
                 let adapters = connector_adapter_registry()?;
+                let state = self.clone();
+                let invocation = context.clone();
                 let prepared = tokio::task::spawn_blocking(move || {
-                    registry.prepare_call(
-                        &adapters,
-                        &connector_name,
-                        &operation_name,
-                        credential.as_deref(),
-                        max_safety,
-                        arguments,
-                        vault_config,
-                    )
+                    HomeExtensionAuthorizationService::new(&state)
+                        .authorize_invocation_context(&invocation)?;
+                    state.with_forwarded_binding_operation(|| {
+                        registry.prepare_call(
+                            &adapters,
+                            &connector_name,
+                            &operation_name,
+                            credential.as_deref(),
+                            max_safety,
+                            arguments,
+                            vault_config,
+                        )
+                    })
                 })
                 .await
                 .map_err(|error| DaemonError::LocalTransport {
                     operation: "home connector proxy",
                     message: error.to_string(),
                 })??;
+                self.authorize_current_forwarded_binding()?;
                 let execution = self
                     .owned
                     .connector_adapter_processes

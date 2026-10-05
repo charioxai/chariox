@@ -886,6 +886,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
 
     pub(crate) fn project_remote_runtime_projection(
         &mut self,
+        authority: crate::runtime::relay_peer_authority::RemoteProjectionAuthority,
         session_id: &str,
         agent_id: &str,
         provider_run_id: &str,
@@ -898,7 +899,43 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let _ = self.app.sessions.get_session(session_id)?;
         let mut outcome = RemoteRuntimeProjectionOutcome::default();
         let agent = self.app.agents.get_agent(agent_id)?;
-        if let Some(remote) = agent.remote_execution() {
+        let Some(remote) = agent.remote_execution() else {
+            return Ok(outcome);
+        };
+        if agent.session_id() != session_id
+            || remote.execution_lease_id.is_empty()
+            || remote.leased_agent_id.is_empty()
+            || authority
+                .peer
+                .authorize_worker(&remote.worker_kernel_id)
+                .is_err()
+            || authority
+                .expected_binding
+                .as_ref()
+                .is_some_and(|expected| expected != remote)
+            || provider_run
+                .as_ref()
+                .is_some_and(|run| run.id() != provider_run_id)
+        {
+            return Ok(outcome);
+        }
+        if let Some(expected) = authority.expected_prompt_id.as_deref() {
+            if self
+                .app
+                .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+                .as_ref()
+                .is_none_or(|prompt| {
+                    prompt.id() != expected
+                        || !matches!(
+                            prompt.status(),
+                            PromptStatus::Running | PromptStatus::Cancelling
+                        )
+                })
+            {
+                return Ok(outcome);
+            }
+        }
+        {
             let admitted = match remote.active_worker_provider_run_id.as_deref() {
                 Some(current) => current == provider_run_id,
                 // Native TUI prompts originate on the worker. Managed prompts
@@ -2841,6 +2878,7 @@ mod explicit_completion_tests {
 
         let projected = RemoteLeaseRuntime::new(&mut app)
             .project_remote_runtime_projection(
+                crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
                 &leased_agent.backing_session_id,
                 &leased_agent.backing_agent_id,
                 &provider_run_id,
@@ -2900,6 +2938,7 @@ mod explicit_completion_tests {
             .expect("dispatch acknowledgement should bind the worker run");
         let projected = RemoteLeaseRuntime::new(&mut app)
             .project_remote_runtime_projection(
+                crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
                 &leased_agent.backing_session_id,
                 &leased_agent.backing_agent_id,
                 &provider_run_id,
@@ -2976,4 +3015,104 @@ fn leased_tool_stream_key(leased: &LeasedAgent, run: &str, identity: &Option<Str
         leased.backing_agent_id,
         serde_json::to_string(identity).expect("tool identity serializes")
     )
+}
+
+#[cfg(test)]
+mod mp11_projection_admission_tests {
+    use super::*;
+    #[test]
+    fn mp11_projection_requires_exact_source_session_and_retained_lease() {
+        let mut app =
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new("home", "home"))
+            .unwrap();
+        let (foreign_session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "foreign", "foreign",
+            ))
+            .unwrap();
+        let binding = crate::agent::RemoteAgentBinding {
+            worker_kernel_id: "worker-kernel-1".into(),
+            worker_machine_id: "worker-machine".into(),
+            execution_lease_id: "lease".into(),
+            leased_agent_id: "leased".into(),
+            active_worker_provider_run_id: Some("run".into()),
+            relay_url: None,
+            relay_token: None,
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
+        };
+        app.agents
+            .bind_remote_execution(agent.id(), binding.clone())
+            .unwrap();
+        let project = |app: &mut crate::app::DaemonApp, authority, session_id: &str| {
+            RemoteLeaseRuntime::new(app)
+                .project_remote_runtime_projection(
+                    authority,
+                    session_id,
+                    agent.id(),
+                    "run",
+                    None,
+                    vec![],
+                    vec![],
+                    vec![],
+                    vec![],
+                )
+                .unwrap()
+                .accepted
+        };
+        let good =
+            crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1");
+        assert!(project(&mut app, good.clone(), session.id()));
+        let wrong =
+            crate::runtime::relay_peer_authority::test_projection_authority("unrelated-peer");
+        assert!(!project(&mut app, wrong, session.id()));
+        let mut wrong_key = good.clone();
+        wrong_key.peer.public_key = "wrong-key".into();
+        wrong_key.peer.sender_bound = false;
+        assert!(!project(&mut app, wrong_key, session.id()));
+        assert!(!project(&mut app, good.clone(), foreign_session.id()));
+        let mut retained = good;
+        retained.expected_binding = Some(binding.clone());
+        let mut replacement = binding;
+        replacement.execution_lease_id = "replacement-lease".into();
+        app.agents
+            .bind_remote_execution(agent.id(), replacement)
+            .unwrap();
+        assert!(
+            !project(&mut app, retained, session.id()),
+            "a drained old lease projected after rebind"
+        );
+    }
+
+    #[test]
+    fn mp11_projection_rejects_local_agent_before_any_side_effect() {
+        let mut app =
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "mp11-local",
+                "mp11-local",
+            ))
+            .unwrap();
+        let outcome = RemoteLeaseRuntime::new(&mut app)
+            .project_remote_runtime_projection(
+                crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
+                session.id(),
+                agent.id(),
+                "foreign-run",
+                None,
+                Vec::new(),
+                Vec::new(),
+                vec!["foreign-notice".into()],
+                Vec::new(),
+            )
+            .unwrap();
+        assert!(
+            !outcome.accepted,
+            "a local agent accepted a remote projection"
+        );
+    }
 }

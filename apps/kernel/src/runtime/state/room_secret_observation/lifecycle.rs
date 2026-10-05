@@ -141,6 +141,13 @@ impl KernelRuntimeState {
                 }
             }
         }
-        service.upsert_vault_backed_credential_with_secret(registry, credential, secret, overwrite)
+        self.with_authorized_app_side_effect(|_| {
+            self.with_forwarded_binding_operation(|| {
+                service.upsert_vault_backed_credential_with_secret(
+                    registry, credential, secret, overwrite,
+                )
+            })
+        })
+        .await
     }
 }

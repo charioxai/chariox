@@ -502,3 +502,50 @@ fn verified_cleanup_absence_keeps_relay_business_code() {
     assert_eq!(mapped.code, "leased_agent_not_found");
     assert!(!mapped.retryable);
 }
+
+#[tokio::test]
+async fn mp11_persistent_peer_response_rejects_another_key() {
+    let home = crate::config::DaemonConfig::for_tests();
+    let worker = crate::config::DaemonConfig::for_tests();
+    let attacker = crate::config::DaemonConfig::for_tests();
+    let state = Arc::new(RwLock::new(RelayClientState::default()));
+    let (sender, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(4);
+    state
+        .write()
+        .await
+        .test_set_connected_sender(sender, "ws://fixture");
+    let waiter = peer_client::enqueue_peer_request_to_known_kernel_via_relay_with_timeout(
+        &home,
+        &state,
+        ClientTarget {
+            daemon_id: Some("worker".into()),
+            daemon_alias: None,
+        },
+        &worker.relay_public_key,
+        RelayPeerRequest::Ping {
+            value: "fixture".into(),
+        },
+        Duration::from_secs(3),
+    )
+    .await
+    .unwrap();
+    let RelayEnvelope::DaemonPeerRequest { request_id, .. } = priority_rx.recv().await.unwrap()
+    else {
+        panic!("expected request");
+    };
+    let response = RelayPeerResponse::Pong {
+        value: "forged".into(),
+        daemon_id: "worker".into(),
+    };
+    let encrypted = relay_crypto::encrypt_payload_for_peer(
+        &attacker.relay_private_key,
+        &home.relay_public_key,
+        &serde_json::to_vec(&response).unwrap(),
+    )
+    .unwrap();
+    resolve_pending_peer_response_for_test(&state, request_id, "worker".into(), encrypted).await;
+    assert!(
+        waiter.wait().await.is_err(),
+        "persistent response accepted the wrong encrypted sender key"
+    );
+}

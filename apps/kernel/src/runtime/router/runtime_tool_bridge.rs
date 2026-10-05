@@ -2,6 +2,35 @@ use super::CommandRouter;
 use crate::error::DaemonError;
 
 impl CommandRouter {
+    pub(crate) fn with_forwarded_response_authority<R>(
+        &self,
+        operation: impl FnOnce() -> Result<R, DaemonError>,
+    ) -> Result<R, DaemonError> {
+        self.runtime_state
+            .with_forwarded_binding_operation(operation)
+    }
+
+    pub(crate) async fn authorize_forwarded_peer_request(
+        &self,
+        request: &crate::transport::relay_peer::RelayPeerRequest,
+    ) -> Result<Self, DaemonError> {
+        let mut router = self.clone();
+        router.runtime_state = self
+            .runtime_state
+            .prepare_forwarded_peer_request(request)
+            .await?;
+        Ok(router)
+    }
+
+    pub(crate) fn with_relay_peer_authority(
+        &self,
+        peer: crate::runtime::relay_peer_authority::RelayPeerAuthority,
+    ) -> Self {
+        let mut router = self.clone();
+        router.runtime_state = router.runtime_state.with_relay_peer_authority(peer);
+        router
+    }
+
     /// Notification delivery cannot broaden token scope. A stream belongs to
     /// exactly one still-live run; normal tool authorization remains unchanged.
     pub(crate) fn runtime_mcp_catalog_run(
@@ -204,6 +233,8 @@ impl CommandRouter {
         tool_name: String,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.runtime_state
+            .authorize_forwarded_workspace_context(&context)?;
         if crate::transport::runtime_tools::canonical_meta_tool_name(&tool_name)
             == Some(crate::transport::runtime_tools::META_RUN_COMMAND_TOOL)
         {

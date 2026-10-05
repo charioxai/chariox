@@ -893,6 +893,7 @@ impl CommandRouter {
 
     pub(crate) async fn relay_project_remote_runtime_projection(
         &self,
+        authority: crate::runtime::relay_peer_authority::RemoteProjectionAuthority,
         session_id: &str,
         agent_id: &str,
         provider_run_id: &str,
@@ -904,6 +905,7 @@ impl CommandRouter {
     ) -> Result<(), DaemonError> {
         relay_peer_runtime::project_relay_remote_runtime_projection(
             &self.runtime_state,
+            authority,
             session_id,
             agent_id,
             provider_run_id,

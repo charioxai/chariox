@@ -29,8 +29,9 @@ impl KernelRuntimeState {
                 "worker provider-run association changed before projection drain".to_string(),
             );
         }
+        let relay_binding = binding.clone();
         let relay_config = self
-            .with_app_side_effect(move |app| app.relay_config_for_remote_execution(&binding))
+            .with_app_side_effect(move |app| app.relay_config_for_remote_execution(&relay_binding))
             .await;
         let target = ClientTarget {
             daemon_id: Some(dispatch.worker_kernel_id.clone()),
@@ -45,7 +46,7 @@ impl KernelRuntimeState {
         let relay_state = self.connected_relay_state_for_config(&relay_config).await;
         let response = match relay_state {
             Some(relay_state) => {
-                crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+                crate::transport::relay_client::send_peer_request_via_connected_relay_authenticated(
                     &relay_config,
                     &relay_state,
                     target,
@@ -55,7 +56,7 @@ impl KernelRuntimeState {
                 .await
             }
             None => {
-                crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                crate::transport::relay_client::send_peer_request_via_temporary_connection_authenticated(
                     &relay_config,
                     target,
                     request,
@@ -65,6 +66,12 @@ impl KernelRuntimeState {
             }
         }
         .map_err(|error| format!("completed receipt projection drain failed: {error}"))?;
+        let (response, peer) = response;
+        let authority = crate::runtime::relay_peer_authority::RemoteProjectionAuthority {
+            peer,
+            expected_binding: Some(binding),
+            expected_prompt_id: Some(dispatch.prompt_id.clone()),
+        };
         let event = match response {
             RelayPeerResponse::LeasedRuntimeProjectionDrained { event: Some(event) } => event,
             RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None } => {
@@ -94,7 +101,7 @@ impl KernelRuntimeState {
                     .to_string(),
             );
         }
-        self.project_remote_runtime_projection_event(event)
+        self.project_remote_runtime_projection_event(authority, event)
             .await
             .map_err(|error| format!("completed worker projection could not be applied: {error}"))
     }
@@ -261,46 +268,58 @@ impl KernelRuntimeState {
         {
             return Ok(RemotePromptRunBindingRecovery::Rejected);
         }
-        let session = self.owned.session_store.get_session(session_id)?;
-        let Some(active_prompt) = self
-            .owned
-            .prompt_state_owner
-            .active_prompt_for_agent(&session, agent_id)
-        else {
-            return Ok(RemotePromptRunBindingRecovery::Rejected);
-        };
-        if active_prompt.durable_delivery_phase()
-            != Some(crate::session::DurablePromptDeliveryPhase::Delivered)
-            || active_prompt.durable_delivery_provider_run_id() != Some(provider_run_id)
-            || (!completions.is_empty()
-                && !completions.iter().any(|completion| {
-                    completion.home_prompt_id.as_deref() == Some(active_prompt.id())
-                }))
-        {
+        // Exclusive session ownership excludes settlement/release lanes while agent
+        // and prompt ownership are held together through run-binding recovery.
+        let sessions = self.owned.session_store.write();
+        let session = sessions.get_session(session_id)?;
+        let mut agents = self.owned.agent_store.write();
+        let agent = agents.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
             return Ok(RemotePromptRunBindingRecovery::Rejected);
         }
-        let agent = self.owned.agent_store.get_agent(agent_id)?;
         let Some(current_binding) = agent.remote_execution() else {
             return Ok(RemotePromptRunBindingRecovery::Rejected);
         };
         if !same_remote_prompt_worker_binding(current_binding, expected_binding) {
             return Ok(RemotePromptRunBindingRecovery::Rejected);
         }
-        match current_binding.active_worker_provider_run_id.as_deref() {
-            Some(current_provider_run_id) if current_provider_run_id == provider_run_id => {
-                return Ok(RemotePromptRunBindingRecovery::Recovered);
-            }
-            Some(_) => return Ok(RemotePromptRunBindingRecovery::Rejected),
-            None => {}
+        let outcome = self.owned.prompt_state_owner.with_active_prompt(
+            &session,
+            agent_id,
+            |active_prompt| {
+                let Some(active_prompt) = active_prompt else {
+                    return Ok(RemotePromptRunBindingRecovery::Rejected);
+                };
+                if active_prompt.durable_delivery_phase()
+                    != Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                    || active_prompt.durable_delivery_provider_run_id() != Some(provider_run_id)
+                    || (!completions.is_empty()
+                        && !completions.iter().any(|completion| {
+                            completion.home_prompt_id.as_deref() == Some(active_prompt.id())
+                        }))
+                {
+                    return Ok(RemotePromptRunBindingRecovery::Rejected);
+                }
+                match current_binding.active_worker_provider_run_id.as_deref() {
+                    Some(current) if current == provider_run_id => {
+                        return Ok(RemotePromptRunBindingRecovery::Recovered)
+                    }
+                    Some(_) => return Ok(RemotePromptRunBindingRecovery::Rejected),
+                    None => {}
+                }
+                agents.set_remote_execution_active_worker_provider_run_id(
+                    agent_id,
+                    Some(provider_run_id.to_string()),
+                )?;
+                Ok(RemotePromptRunBindingRecovery::Recovered)
+            },
+        )?;
+        drop(agents);
+        drop(sessions);
+        if outcome == RemotePromptRunBindingRecovery::Recovered {
+            let _ = self.owned.session_snapshot(session_id)?;
         }
-        self.owned
-            .agent_store
-            .set_remote_execution_active_worker_provider_run_id(
-                agent_id,
-                Some(provider_run_id.to_string()),
-            )?;
-        let _ = self.owned.session_snapshot(session_id)?;
-        Ok(RemotePromptRunBindingRecovery::Recovered)
+        Ok(outcome)
     }
 
     pub(super) async fn drain_active_remote_prompt_projections_for_session(
@@ -329,6 +348,11 @@ impl KernelRuntimeState {
         else {
             return Ok(false);
         };
+        let expected_prompt_id = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&self.owned.session_store.get_session(session_id)?, agent_id)
+            .map(|prompt| prompt.id().to_string());
         let recover_missing_run_binding = remote_execution.active_worker_provider_run_id.is_none();
         let relay_config = self
             .with_app_side_effect(|app| app.relay_config_for_remote_execution(&remote_execution))
@@ -344,7 +368,7 @@ impl KernelRuntimeState {
         };
         let response = match self.connected_relay_state_for_config(&relay_config).await {
             Some(relay_state) => {
-                crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+                crate::transport::relay_client::send_peer_request_via_connected_relay_authenticated(
                     &relay_config,
                     &relay_state,
                     target,
@@ -354,7 +378,7 @@ impl KernelRuntimeState {
                 .await
             }
             None => {
-                crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                crate::transport::relay_client::send_peer_request_via_temporary_connection_authenticated(
                     &relay_config,
                     target,
                     request,
@@ -382,22 +406,49 @@ impl KernelRuntimeState {
             }
             Err(error) => return Err(error),
         };
+        let (response, peer) = response;
+        let mut authority = crate::runtime::relay_peer_authority::RemoteProjectionAuthority {
+            peer,
+            expected_binding: Some(remote_execution.clone()),
+            expected_prompt_id,
+        };
         match response {
             RelayPeerResponse::LeasedRuntimeProjectionDrained { event } => {
                 if let Some(event) = event {
+                    if !projection_reply_matches(session_id, agent_id, &provider_run_id, &event) {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "drain remote prompt projection",
+                            message: "worker projection returned unrelated resource identities"
+                                .into(),
+                        });
+                    }
                     if recover_missing_run_binding {
-                        match self.recover_remote_prompt_run_binding_from_projection(
-                            session_id,
-                            agent_id,
-                            &remote_execution,
-                            &provider_run_id,
-                            &event,
-                        )? {
-                            RemotePromptRunBindingRecovery::Recovered => {}
+                        match self
+                            .with_app_side_effect(|_| {
+                                authority
+                                    .peer
+                                    .authorize_worker(&remote_execution.worker_kernel_id)?;
+                                self.recover_remote_prompt_run_binding_from_projection(
+                                    session_id,
+                                    agent_id,
+                                    &remote_execution,
+                                    &provider_run_id,
+                                    &event,
+                                )
+                            })
+                            .await?
+                        {
+                            RemotePromptRunBindingRecovery::Recovered => {
+                                if let Some(binding) = authority.expected_binding.as_mut() {
+                                    binding.active_worker_provider_run_id =
+                                        Some(provider_run_id.clone());
+                                }
+                            }
                             RemotePromptRunBindingRecovery::Rejected => return Ok(false),
                         }
                     }
-                    self.project_remote_runtime_projection_event(event).await?;
+                    self.project_remote_runtime_projection_event(authority, event)
+                        .await?;
                 }
                 Ok(true)
             }
@@ -410,6 +461,7 @@ impl KernelRuntimeState {
 
     pub(super) async fn project_remote_runtime_projection_event(
         &self,
+        authority: crate::runtime::relay_peer_authority::RemoteProjectionAuthority,
         event: crate::transport::relay_peer::RelayPeerEvent,
     ) -> Result<(), DaemonError> {
         match event {
@@ -424,6 +476,7 @@ impl KernelRuntimeState {
                 completions,
             } => {
                 self.project_relay_remote_runtime_projection(
+                    authority,
                     &home_session_id,
                     &home_agent_id,
                     &provider_run_id,
@@ -481,4 +534,57 @@ pub(super) fn remote_prompt_projection_error_should_refresh_binding(
     error: &DaemonError,
 ) -> bool {
     !recovering_missing_run_binding && remote_prompt_error_should_refresh_binding(error)
+}
+
+fn projection_reply_matches(
+    session_id: &str,
+    agent_id: &str,
+    expected_run_id: &str,
+    event: &RelayPeerEvent,
+) -> bool {
+    let RelayPeerEvent::LeasedRuntimeProjection {
+        home_session_id,
+        home_agent_id,
+        provider_run_id,
+        provider_run,
+        ..
+    } = event;
+    home_session_id == session_id
+        && home_agent_id == agent_id
+        && provider_run_id == expected_run_id
+        && provider_run
+            .as_ref()
+            .is_none_or(|run| run.id() == expected_run_id)
+}
+
+#[cfg(test)]
+mod mp11_drain_tests {
+    use super::*;
+    #[test]
+    fn mp11_drain_reply_binds_requested_resource_identities() {
+        let event = RelayPeerEvent::LeasedRuntimeProjection {
+            home_session_id: "home".into(),
+            home_agent_id: "agent".into(),
+            provider_run_id: "run".into(),
+            provider_run: None,
+            prompts: vec![],
+            output_chunks: vec![],
+            notices: vec![],
+            completions: vec![],
+        };
+        assert!(projection_reply_matches("home", "agent", "run", &event));
+        assert!(!projection_reply_matches("foreign", "agent", "run", &event));
+        assert!(!projection_reply_matches(
+            "home",
+            "other-agent",
+            "run",
+            &event
+        ));
+        assert!(!projection_reply_matches(
+            "home",
+            "agent",
+            "other-run",
+            &event
+        ));
+    }
 }
