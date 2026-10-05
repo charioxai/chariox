@@ -33,7 +33,9 @@ parser.add_argument("operation", choices=["start", "cleanup", "probe"])
 parser.add_argument("--upstream", required=True)
 parser.add_argument("--lane", required=True)
 parser.add_argument("--evidence", required=True)
+parser.add_argument("--compose-binary", required=True)
 args = parser.parse_args()
+assert Path(args.compose_binary).is_absolute()
 source, lane, evidence = map(Path, [args.upstream, args.lane, args.evidence])
 root = lane / "sites"
 root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -79,9 +81,20 @@ def command(argv, timeout=300, check=True, protected=False):
                 break
             time.sleep(0.1)
         stdout.seek(0); out = stdout.read()
+        stderr.seek(0); err = stderr.read()
+        # Only allowlisted diagnostics leave the private subprocess buffers.
+        diagnostics = {name: needle in err or needle in out for name, needle in {
+            "unsupportedJvmOption": b"Unrecognized VM option",
+            "searchNotResponding": b"Elasticsearch nodes are not responding",
+            "alreadySyncing": b"currently syncing",
+            "unsupportedSearchVersion": b"Elasticsearch version",
+            "phpFatal": b"Fatal error",
+            "missingCommand": b"not a registered wp command",
+            "connectionRefused": b"Connection refused",
+        }.items()}
     with (evidence / "site-commands.jsonl").open("a") as f:
         f.write(json.dumps({"mp_items": MP, "argv": argv, "exitCode": p.returncode,
-                            "seconds": time.time() - start}) + "\n")
+                            "seconds": time.time() - start, "diagnosticFlags": diagnostics}) + "\n")
     if check and p.returncode:
         # Runtime logs may contain synthetic DB credentials. Do not export them.
         raise RuntimeError(f"MP-10 command failed: {argv[:3]}, exit {p.returncode}")
@@ -131,7 +144,7 @@ def collect_search_readiness():
         count, _ = docker("exec", name, "wp", "post", "list", "--post_type=product", "--post_status=publish", "--format=count", "--skip-plugins", "--skip-themes", "--path=/opt/bitnami/wordpress")
         index, _ = docker("exec", name, "wp", "eval", r'echo \ElasticPress\Indexables::factory()->get("post")->get_index_name();')
         host, _ = docker("exec", name, "wp", "option", "get", "ep_host")
-        assert host.strip() == "http://elasticsearch:9200", "MP-10 WordPress search wiring mismatch"
+        assert host.strip().rstrip("/") == "http://elasticsearch:9200", "MP-10 WordPress search wiring mismatch"
         shops.append({"shop": i, "index": index.strip(), "publishedProducts": int(count.strip()),
                       "expectedProducts": initial[i-1]["publishedProducts"]})
     ports = json.loads((root / "ports.json").read_text())
@@ -265,7 +278,7 @@ try:
     compose["networks"] = {"webmall": {"name": owned["network"], "labels": {"io.chariox.benchmark.lane": PREFIX}}}
     (root / "compose.yaml").write_text(yaml.safe_dump(compose)); (root / "compose.yaml").chmod(0o600)
     stage = "official_services_start"
-    command(["docker", "compose", "-p", PREFIX, "-f", str(root / "compose.yaml"), "up", "-d"], timeout=300)
+    command([args.compose_binary, "-p", PREFIX, "-f", str(root / "compose.yaml"), "up", "-d"], timeout=300)
     stage = "wordpress_readiness"
     catalog = []
     for i in range(1, 5):
@@ -287,6 +300,17 @@ try:
               "documentedCatalog": [1150, 1095, 1156, 1020],
               "catalogMatchesWebsite": [s["publishedProducts"] for s in catalog] == [1150, 1095, 1156, 1020],
               "loopbackPorts": ports, "network": owned["network"], "source": "2697d35cdfcfedcf1ade89b7ad86722db8daa8a7"}
+    stage = "search_service_readiness"
+    for attempt in range(90):
+        guard()
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:" + str(ports["elasticsearch"]) + "/_cluster/health", timeout=4) as response:
+                health = json.load(response)
+            if health.get("status") in ("yellow", "green") and health.get("timed_out") is False:
+                break
+        except (OSError, ValueError): pass
+        time.sleep(2)
+    else: raise RuntimeError("MP-10 search service readiness deadline")
     stage = "search_index_sync"
     for i in range(1, 5):
         docker("exec", PREFIX + f"-wordpress_shop{i}", "wp", "elasticpress", "sync", "--setup", "--yes", "--stop-on-error", timeout=300)

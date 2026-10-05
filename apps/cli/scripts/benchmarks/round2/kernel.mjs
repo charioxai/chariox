@@ -31,6 +31,20 @@ export async function loadTurnHistory({ client, requests }, { sessionId, agentId
   return entries
 }
 
+// Audit complete original events, never JSON fragments or summary previews.
+export function assembleTurnEntries(entries, helpers) {
+  const groups = new Map()
+  for (const item of entries) {
+    const group = groups.get(item.entry_index) ?? []
+    group.push(item); groups.set(item.entry_index, group)
+  }
+  return [...groups].sort(([a], [b]) => a - b).map(([, group]) => {
+    const text = helpers.assembleSessionHistoryEntry(group)
+    return { ...group[0], fragment_start: 0, fragment_end: Array.from(text).length,
+      total_chars: Array.from(text).length, entry: { ...group[0].entry, text } }
+  })
+}
+
 export async function waitForSettlement(api, identity, {
   maxMs, cancel, guard = async () => null, observe = async () => {},
   now = () => performance.now(), pause = ms => new Promise(resolve => setTimeout(resolve, ms)),

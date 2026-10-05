@@ -8,7 +8,11 @@ import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {statfs} from 'node:fs/promises';
 import {roomProviderToolName} from '../lib/room-provider-tool-record.mjs';
-const guard=async()=>{const mem=Number((await readFile('/proc/meminfo','utf8')).match(/MemAvailable:\s+(\d+)/)[1])*1024;const fs=await statfs('/');const disk=fs.bavail*fs.bsize;if(mem<9*1024**3||disk<10*1024**3)throw Error('MP-10 resource floor reached');};
+import {stopOwnedProcess} from './round2/owned-processes.mjs';
+import {observeKernelRpcErrors,rpcErrorRecord} from './round2/rpc-errors.mjs';
+import {loadTurnHistory,assembleTurnEntries} from './round2/kernel.mjs';
+import {sanitizeDrillMetadata} from '../lib/drill-secrets.mjs';
+const guard=async()=>{const mem=Number((await readFile('/proc/meminfo','utf8')).match(/MemAvailable:\s+(\d+)/)[1])*1024;const fs=await statfs('/');const disk=fs.bavail*fs.bsize;if(mem<16*1024**3||disk<10*1024**3)throw Error('MP-10 resource floor reached');};
 const exec=promisify(execFile), sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const config=JSON.parse(await readFile(process.argv[2],'utf8'));
 const taskId=process.argv[3];
@@ -17,26 +21,28 @@ const task=JSON.parse(await readFile(config.agentInputs,'utf8')).find(t=>t.task_
 assert(task,'task is absent from frozen public inputs');
 const {LocalIpcClient}=await import(pathToFileURL(config.clientRoot+'/dist/ipc.js'));
 const requests=await import(pathToFileURL(config.clientRoot+'/dist/ipc-requests.js'));
+const helpers=await import(pathToFileURL(config.clientRoot+'/dist/session-history-fragments.js'));
 const client=new LocalIpcClient(config.kernelUrl,{controlResponseStallMs:240000});
 const keepAlive=setInterval(()=>{},1000);
 const one=(r,k)=>{assert(r[k],'expected '+k);return r[k]};
 const runId=randomUUID().slice(0,8), dir=path.join(config.outputRoot,String(taskId));
 await mkdir(config.outputRoot,{recursive:true,mode:0o700});
 await mkdir(dir,{recursive:false,mode:0o700});
-const report={mp_items:['MP-08','MP-10'],taskId,runId,source:config.source,release:config.release,kernelSha256:config.kernelSha256,provider:'codex',model:'gpt-6.1-sol',effort:'high',seed:42,maxSeconds:config.maxSeconds??600,maxActions:config.maxActions??80,startedAt:new Date().toISOString(),scope:'smoke',benchmark:'WebMall v1.0',status:'starting',cleanup:[],leaderboard:config.leaderboard};
+const report={mp_items:['MP-08','MP-10'],taskId,runId,source:config.source,release:config.release,kernelSha256:config.kernelSha256,provider:'codex',model:'gpt-6.1-sol',effort:'high',seed:42,maxSeconds:config.maxSeconds??600,maxActions:config.maxActions??80,startedAt:new Date().toISOString(),scope:'round3-full',benchmark:'WebMall v1.0',status:'starting',cleanup:[],leaderboard:config.leaderboard};
 let sessionId,sliceId,agentId,attachmentId,grader,container,seam='room_create';
 let grade;
 let interrupted=false;
 process.on('SIGTERM',()=>{interrupted=true});
 process.on('SIGINT',()=>{interrupted=true});
-const checkpoint=()=>writeFile(path.join(dir,'run.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600});
+const checkpoint=()=>writeFile(path.join(dir,'run.json'),JSON.stringify(sanitizeDrillMetadata(report),null,2)+'\n',{mode:0o600});
+observeKernelRpcErrors(client,async failure=>{(report.rpcErrors??=[]).push({seam,...failure});await checkpoint()});
 const docker=(args,opts={})=>exec('docker',args,{timeout:60000,maxBuffer:1024*1024,...opts});
 try {
- const session=one(await client.send(requests.createSessionRequest(config.workspace,config.workspace,'benchwm-task-'+taskId+'-'+runId)),'SessionCreated').session;
+ const session=one(await client.send(requests.createSessionRequest(config.workspace,config.workspace,'r2next-webmall-task-'+taskId+'-'+runId)),'SessionCreated').session;
  sessionId=session.id;report.sessionId=sessionId;await checkpoint();seam='slice_create';
  let name,slice;
  for(let attempt=0;attempt<3;attempt++){
-  name='benchwm-'+runId+'-'+attempt;
+  name='r2next-webmall-'+runId+'-'+attempt;
   slice=one(await client.send(requests.createSliceRequest({name,displayMode:'headed',displayBackend:'selkies',workspaceMount:config.workspace,base:'clean'})),'SliceCreated').slice;
   sliceId=slice.id;report.sliceId=sliceId;report.kernelId=slice.owner_kernel_id;await checkpoint();
   one(await client.send(requests.bindRoomEnvironmentSliceRequest(sessionId,sliceId)),'RoomEnvironmentSlice');seam='slice_start';
@@ -67,6 +73,11 @@ try {
  grader.on('exit',()=>{if(pending){clearTimeout(pending.timer);pending.reject(Error('grader exited'));pending=null}});
  grade=request=>new Promise((resolve,reject)=>{assert(!pending);const timer=setTimeout(()=>{pending=null;reject(Error('grader timeout'))},20000);pending={resolve,reject,timer};grader.stdin.write(JSON.stringify(request)+'\n')});
  await grade({op:'setup',task:taskId,goal:task.intent});
+ seam='fixture_admission';
+ await exec(config.python,[path.join(import.meta.dirname,'webmall-sites.py'),'probe','--upstream',config.upstream,'--lane',config.fixtureLane,'--evidence',config.fixtureEvidence,'--compose-binary',config.composeBinary],{timeout:60000,maxBuffer:65536});
+ const admission=JSON.parse(await readFile(path.join(config.fixtureEvidence,'search-admission.json'),'utf8'));
+ assert.equal(admission.status,'ready');assert(Date.now()/1000-admission.observedAt<30);
+ report.fixtureAdmission=admission;
  seam='agent_spawn';
  const spawned=one(await client.send(requests.spawnAgentRequest(sessionId,'codex','benchwm-codex','gpt-6.1-sol',config.workspace,'high','build','yolo',undefined,undefined,undefined,config.accountProfile)),'AgentSpawned');
  agentId=spawned.agent.id;report.agentId=agentId;
@@ -92,8 +103,7 @@ try {
  }
  if(!completed){report.budgetExhausted??='time';attachmentId=one(await client.send(requests.attachToSessionRequest(sessionId,'benchwm-budget-cancel')),'SessionAttached').attachment.id;await client.send(requests.cancelActivePromptRequest(sessionId,attachmentId,agentId));throw Error('provider budget exhausted')}
  report.turnId=completed.turn_id;report.lifecycle=completed.lifecycle;
- let entries=[...(completed.entries??[]),...(completed.summary?[completed.summary]:[])];
- for(const b of completed.blobs??[]){const content=one(await client.send(requests.getSessionHistoryBlobContentRequest(sessionId,agentId,b.blob_id)),'SessionHistoryBlobContent');entries.push(...content.entries)}
+ const entries=assembleTurnEntries(await loadTurnHistory({client,requests},{sessionId,agentId,turn:completed}),helpers);
  report.providerUnauthorized=entries.some(x=>x.entry.kind==='provider_error'&&/\b401\b|unauthorized/i.test(x.entry.text??''));
  if(report.providerUnauthorized)console.log('MP-08 / MP-10 coordinator notice: linked provider returned 401/unauthorized');
  const tools=entries.filter(x=>x.entry.kind==='provider_tool');
@@ -119,10 +129,10 @@ try {
  await writeFile(path.join(dir,'agent-response.json'),JSON.stringify(entries.filter(x=>x.entry.kind==='provider_output').map(x=>x.entry.text)),{mode:0o600});
  report.status='scored';
  await writeFile(path.join(dir,'actions.json'),JSON.stringify(actions,null,2),{mode:0o600});
-} catch(error){report.status='RED';report.firstFailingSeam=seam;report.failureCode=error.code??error.name;report.failure=String(error.message).slice(0,500)}
+} catch(error){report.status='RED';report.firstFailingSeam=seam;report.failureCode=error.code??error.name;report.failure=rpcErrorRecord(error)}
 finally{
  if(agentId&&sessionId){try{const state=one(await client.send(requests.getSessionStateRequest(sessionId)),'SessionState');if(state.session.agents.find(a=>a.id===agentId)?.is_processing){attachmentId??=one(await client.send(requests.attachToSessionRequest(sessionId,'benchwm-cleanup')),'SessionAttached').attachment.id;await client.send(requests.cancelActivePromptRequest(sessionId,attachmentId,agentId));for(let i=0;i<40;i++){const s=one(await client.send(requests.getSessionStateRequest(sessionId)),'SessionState');if(!s.session.agents.find(a=>a.id===agentId)?.is_processing)break;await sleep(250)}}}catch{report.cleanup.push('provider_cancel_failed')}}
- if(grader){if(!report.grade)try{report.grade=await grade({op:'finish'})}catch{report.gradingIncomplete=true};grader.stdin.end();grader.kill('SIGTERM');}
+ if(grader){if(!report.grade)try{report.grade=await grade({op:'finish'})}catch{report.gradingIncomplete=true};grader.stdin.end();try{assert(await stopOwnedProcess(grader),'grader exit acknowledgement missing');report.cleanup.push('grader_stopped')}catch{report.cleanup.push('grader_stop_failed')}}
  if(attachmentId)try{await client.send(requests.detachFromSessionRequest(attachmentId));report.cleanup.push('attachment_detached')}catch{report.cleanup.push('attachment_detach_failed')}
  if(sessionId)try{await client.send(requests.deleteSessionRequest(sessionId,config.workspace));report.cleanup.push('owned_room_deleted')}catch{report.cleanup.push('room_delete_failed')}
  if(sliceId)try{await client.send(requests.stopSliceRequest(sliceId));await client.send(requests.deleteSliceRequest(sliceId));report.cleanup.push('owned_slice_deleted')}catch{report.cleanup.push('slice_delete_failed')}
