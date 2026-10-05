@@ -479,6 +479,46 @@ async fn detached_host_decline_and_accept_arbitrate_before_one_use_payload_deliv
         .runtime_state
         .app_host_action_pass(crate::session::unix_epoch_ms())
         .await;
+    // Decline arbitrates immediately but updates durable state asynchronously.
+    // The pump shows only the oldest pending offer for an installation, so
+    // advance it until the terminal can actually see the next offer.
+    let subscription =
+        LocalDaemonRequest::SubscribeUserAppViews(crate::local::SubscribeUserAppViewsRequest {
+            after: None,
+            wait_ms: 0,
+        });
+    let mut observer =
+        KernelCommand::from_local_request("observe-host-offer", None, None, &subscription);
+    observer.source = KernelCommandSource::LocalIpc;
+    observer.caller.caller_kind = KernelCallerKind::LocalClient;
+    observer.caller.user_id = Some("alice".into());
+    observer.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            router
+                .runtime_state
+                .app_host_action_pass(crate::session::unix_epoch_ms())
+                .await;
+            let reply = router
+                .runtime_state
+                .execute_user_app_view_request(&observer, &subscription)
+                .await
+                .unwrap()
+                .unwrap();
+            let LocalDaemonResponse::UserAppViewsChanged { interactions, .. } = reply else {
+                panic!("expected owner decision projection");
+            };
+            if interactions
+                .iter()
+                .any(|interaction| interaction.id() == "app_host_detached-race")
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("detached offer must be projected before racing replies");
     let (taken, declined) = tokio::join!(
         accept(
             &router,
@@ -498,7 +538,8 @@ async fn detached_host_decline_and_accept_arbitrate_before_one_use_payload_deliv
     );
     assert_eq!(
         matches!(taken, LocalDaemonResponse::AppHostActionAccepted { .. }),
-        declined.is_err()
+        declined.is_err(),
+        "take result: {taken:?}; decline result: {declined:?}"
     );
     assert!(matches!(
         accept(
