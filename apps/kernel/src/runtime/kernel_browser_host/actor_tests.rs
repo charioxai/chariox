@@ -1,6 +1,7 @@
 //! MD-3/MD-4: actual host ledger → controller cancellation, no Chromium dependency.
 use super::*;
 use serde_json::json;
+use std::time::Instant;
 #[test]
 fn human_takeover_cancels_the_running_controller_and_fences_the_focused_agent() {
     check_running_cancellation(false, false);
@@ -391,4 +392,65 @@ fn mdaccess_startup_authority_rechecks_focus_without_revoking_retained_grants() 
         retained.requested(),
         "MP-11: retained startup observation ignored revocation"
     );
+}
+
+#[test]
+fn mdaccess_controller_startup_does_not_block_immediate_revocation() {
+    let root =
+        std::env::temp_dir().join(format!("mdaccess-startup-{:032x}", rand::random::<u128>()));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script,r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+  *'"method":"health"'*)
+   printf 'started' > "$root/started"
+   while [ ! -f "$root/release" ]; do sleep 0.01; done
+   printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+  *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("owner", &script, &root);
+    host.set_focus("owner", Some("first"));
+    host.load("owner", "first").unwrap();
+    let admission = host.admit("owner", "first").unwrap();
+    let epoch = admission.cancellation.clone();
+    let caller = host.clone();
+    let run = std::thread::spawn(move || {
+        caller.protected_request_admitted(
+            "owner",
+            Some(&admission),
+            "host.browser",
+            json!({"op":"state"}),
+            json!({"values":[],"targets":[],"unknown":false}),
+        )
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !root.join("started").exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let started = root.join("started").exists();
+    let revoker = host.clone();
+    let revoke = std::thread::spawn(move || revoker.revoke_agent("first"));
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while !epoch.requested() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let immediate = epoch.requested();
+    // Always settle the run-owned controller before reporting a failure.
+    std::fs::write(root.join("release"), "release").unwrap();
+    revoke.join().unwrap();
+    let outcome = run.join().unwrap();
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(
+        started,
+        "MP-10: startup fixture never reached its native handshake"
+    );
+    assert!(immediate, "MP-11: startup I/O blocked grant revocation");
+    assert!(outcome.unwrap_err().contains("not_granted"));
 }

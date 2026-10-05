@@ -343,16 +343,21 @@ impl KernelBrowserHost {
         } else {
             if !matches!(backend.health(), Ok(health) if health.state == BrowserControllerProcessState::Ready)
             {
-                // MP-11: observation cannot recover a stopped controller under
-                // retained authority. Keep focus stable across actual startup.
-                let state = self
-                    .inner
-                    .lock()
-                    .map_err(|_| "MP-11: grant lock unavailable")?;
-                if let Some(agent) = admission.and_then(|a| a.agent.as_deref()) {
-                    require_focus(&state, user, agent).map_err(|_| "MP-11: not_focused_agent: user browser controller is stopped or unavailable; focus this agent to restart it")?;
+                // MP-11: retained observations cannot recover the controller.
+                // Never hold the grant lock across startup I/O: revoke must be
+                // immediate. Chromium has a separate live-focus/no-start gate.
+                {
+                    let state = self
+                        .inner
+                        .lock()
+                        .map_err(|_| "MP-11: grant lock unavailable")?;
+                    if let Some(agent) = admission.and_then(|a| a.agent.as_deref()) {
+                        require_focus(&state, user, agent).map_err(|_| "MP-11: not_focused_agent: user browser controller is stopped or unavailable; focus this agent to restart it")?;
+                    }
                 }
+                self.check_admission(admission)?;
                 backend.start()?;
+                self.check_admission(admission)?;
             }
         }
         let mut params = params;

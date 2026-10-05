@@ -68,7 +68,8 @@ or unavailable browser returns `not_focused_agent` with a request to focus the
 agent before restarting. This applies after human stop, controller loss and
 Chromium loss with a live controller; saved profiles do not confer startup
 authority. Focused/human observations may intentionally recover it. The kernel
-checks live focus across controller startup and controller request dispatch;
+checks focus before controller startup and live authority after the handshake,
+without holding the grant mutex across I/O, then rechecks focus at dispatch;
 focused asynchronous requests carry a live focus cancellation guard through
 Chromium startup. Focus changes preserve grants, so cancelled operations may
 retry through retained authority.
