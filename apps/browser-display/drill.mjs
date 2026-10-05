@@ -120,8 +120,8 @@ try {
   window.mdStream=await MDDisplay.attachBrowserDisplay(MDDisplay.canvas,mdTransport,{tab_id:ready.tab_id,generation:ready.generation},{bitrate,onTiming:timing,onPresented:frame=>{
     const sample={sequence:frame.sequence,drawn_ms:stamp()};window.mdPresentation=sample;
     requestAnimationFrame(()=>{
-      sample.presented_ms=stamp();
       if(window.mdProbeLeft!==undefined){const c=MDDisplay.canvas.getContext('2d');let n=0;for(let i=0;i<5;i++){const p=c.getImageData(mdProbeLeft+8+i*16,56,1,1).data;if(p[0]>128)n|=1<<i}sample.step=n;}
+      sample.presented_ms=stamp();
     });
   }});
  },{ready,bitrate:receipt.target_encrypted_bitrate,pngOnly:process.env.MD_PNG_ONLY==='1'});
