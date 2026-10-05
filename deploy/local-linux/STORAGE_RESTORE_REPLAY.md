@@ -26,7 +26,7 @@ export PUBLIC=/opt/chariox-b201-public
 export NODE="$PUBLIC/node/bin/node"
 export BUILDX="$PUBLIC/docker-buildx"
 export KERNEL="$PUBLIC/chariox-kernel"
-export PATH="$PUBLIC/node/bin:/usr/bin:/bin"
+export PATH="$PUBLIC/node/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 : "${WORKER_IMAGE:?public receipt image ID}"
 : "${WORKER_KERNEL_SHA256:?public receipt kernel hash}"
 : "${WORKER_REVISION:?public receipt runtime-source-revision label}"
@@ -53,6 +53,15 @@ cd "$SOURCE"
 pnpm install --frozen-lockfile
 pnpm --workspace-root run build:kernel-client
 ```
+
+Root preparation commands such as `useradd`, `apparmor_parser`, and `visudo`
+need `/usr/sbin` in the operator's PATH, or use their absolute paths. Extract
+public Node packages with `tar --no-same-owner` as root so publisher UIDs do not
+become executable ancestry. Verify the checksum first. The replay wrapper sets
+`umask 077` before creating its state and evidence: a fresh Ubuntu user's default
+`0002` would otherwise create group-writable manifest ancestry and the operator
+fixture correctly refuses it. Use a fresh enrolled user/home after a failed run;
+do not change protected state or reuse retained slice identities to retry.
 
 Keep loader/enrollment refusal as RED; do not chmod/adopt incompatible ancestry
 or disable admission/probes. Record the new host's SSH public fingerprint,
