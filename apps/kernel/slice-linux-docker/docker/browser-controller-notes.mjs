@@ -1,4 +1,5 @@
 import { withBrowserFrames } from "./browser-controller-frames.mjs";
+import { observationProtectedVariants } from "./browser-controller-snapshot.mjs";
 // MD-N2 / MP-08 / MP-11: runs ONLY in the #607 controller isolated world.
 // No DOM overlay, main-world binding, postMessage, or page-visible note data.
 export const NOTE_OBSERVER_EXPRESSION = `(${installNoteObserver.toString()})()`;
@@ -45,9 +46,26 @@ function installNoteObserver() {
     }
     return result;
   };
-  let latest = null;
-  const capture = () => {
-    latest = null;
+  let protectedVariants = [];
+  const contextBoundary = (text, at, direction) => {
+    for (let i=0;i<64 && (direction<0?at>0:at<text.length);i++) {
+      if (direction>0) at+=text.codePointAt(at)>0xffff?2:1;
+      else {
+        at--;
+        if (at>0 && text.charCodeAt(at)>=0xdc00 && text.charCodeAt(at)<=0xdfff
+            && text.charCodeAt(at-1)>=0xd800 && text.charCodeAt(at-1)<=0xdbff) at--;
+      }
+    }
+    return at;
+  };
+  const protectedSpan = (text, start, end) => protectedVariants.some(value => {
+    // Search the unsplit index, including values beginning before the output
+    // window or ending beyond it. Exact/context boundaries cannot hide them.
+    const at=text.indexOf(value,Math.max(0,start-value.length+1));
+    return at>=0 && at<end;
+  });
+  const capture = (variants=protectedVariants) => {
+    protectedVariants=variants;
     const selection = document.getSelection();
     if (!selection || selection.isCollapsed || selection.rangeCount !== 1) return null;
     let range = selection.getRangeAt(0);
@@ -61,11 +79,12 @@ function installNoteObserver() {
     const indexed = index(root instanceof ShadowRoot?root:document.body??document.documentElement); if (!indexed) return null;
     const start = offset(indexed.nodes, range.startContainer, range.startOffset);
     const end = offset(indexed.nodes, range.endContainer, range.endOffset);
+    const before=contextBoundary(indexed.text,start,-1), after=contextBoundary(indexed.text,end,1);
+    if (protectedSpan(indexed.text,before,after)) return null;
     const exact = indexed.text.slice(start,end);
     if (!exact.isWellFormed() || !exact.trim() || new TextEncoder().encode(exact).length > 16384) return null;
     const rect = box(range); if (!rect) return null;
-    latest = { quote: { exact, prefix:Array.from(indexed.text.slice(Math.max(0,start-256),start)).slice(-64).join('').toWellFormed(), suffix:Array.from(indexed.text.slice(end,end+256)).slice(0,64).join('').toWellFormed() }, box_css:rect, hint:JSON.stringify({start,end}) };
-    return latest;
+    return { quote: { exact, prefix:indexed.text.slice(before,start).toWellFormed(), suffix:indexed.text.slice(end,after).toWellFormed() }, box_css:rect, hint:JSON.stringify({start,end}) };
   };
   const matchQuote = (quote,root,exactOnly) => {
     const indexed = index(root);
@@ -91,16 +110,17 @@ function installNoteObserver() {
     if (matches.some(result=>result.anchor_state==='ambiguous') || attached.length>1) return {anchor_state:'ambiguous',box_css:null};
     return attached[0]??{anchor_state:'missing',box_css:null};
   };
-  document.addEventListener('selectionchange',capture);
+  document.addEventListener('selectionchange',()=>capture());
   new MutationObserver(()=>{ capture(); }).observe(document.documentElement,{subtree:true,childList:true,characterData:true});
   globalThis.__charioxNotes=Object.freeze({capture,reanchor});
-  capture(); return true;
+  return true;
 }
 
 export async function observeBrowserNote(browser, request) {
   if (typeof request?.target_id !== 'string' || typeof request?.document_id !== 'string') throw new Error('MD-N2: observed target/document required');
   if (request.quote && (!request.quote.exact || new TextEncoder().encode(request.quote.exact).length>16384 || [request.quote.prefix,request.quote.suffix].some(s=>typeof s!=='string'||new TextEncoder().encode(s).length>512))) throw new Error('MD-N2: invalid quote');
   const connection=await browser.ensureConnection();
+  const protectedVariants=observationProtectedVariants(browser.protectedValues??[]);
   const session=await browser.ensureTargetSession(connection,request.target_id);
   const readFrame=async()=> (await connection.send('Page.getFrameTree',{},session)).frameTree?.frame;
   const frame=await readFrame();
@@ -137,7 +157,7 @@ export async function observeBrowserNote(browser, request) {
     // after none match may changed surroundings use a unique exact quote.
     for (const exactOnly of request.quote?[false,true]:[false]) {
       for (const {item,world} of worlds) {
-        const expression=request.quote ? `globalThis.__charioxNotes.reanchor(${JSON.stringify(request.quote)}${exactOnly?',true':''})` : 'globalThis.__charioxNotes.capture()';
+        const expression=request.quote ? `globalThis.__charioxNotes.reanchor(${JSON.stringify(request.quote)}${exactOnly?',true':''})` : `globalThis.__charioxNotes.capture(${protectedVariants.length?JSON.stringify(protectedVariants):''})`;
         const result=await connection.send('Runtime.evaluate',{expression,contextId:world.contextId,returnByValue:true,awaitPromise:false},item.sessionId);
         if (result.exceptionDetails || !Object.hasOwn(result.result??{},'value')) throw new Error('MD-N2: selection observation failed');
         const value=result.result.value;
