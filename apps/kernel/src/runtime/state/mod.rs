@@ -423,11 +423,11 @@ mod slice_development_runtime_state;
 mod slice_project_source;
 mod slice_runtime_state;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
+mod kernel_browser_runtime;
+mod kernel_browser_secret_runtime;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
 mod tool_dispatch;
-mod kernel_browser_runtime;
-mod kernel_browser_secret_runtime;
 mod transport_runtime_state;
 mod workflow;
 mod workflow_access_owned_state;
@@ -1103,3 +1103,6 @@ impl KernelRuntimeState {
         ).await
     }
 }
+
+// MD-3: typed internal seam for display integration; public protocol remains coordinator-owned.
+pub(crate) use kernel_browser_runtime::KernelBrowserDisplayRequest;
