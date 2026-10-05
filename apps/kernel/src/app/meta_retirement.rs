@@ -27,10 +27,17 @@ impl DaemonApp {
                         retired_prompts.push(prompt.id().to_string());
                     }
                     let (_, queued) = self.prompt_state_owner.state_parts(&session, agent.id());
+                    // Task edits use ordinary automation attachments. Their
+                    // client attribution survives in durable private prompt
+                    // state even though the attachment itself does not.
+                    let task_notifier_client_id = format!("metaagent:{}:task", agent.id());
                     for prompt in queued {
-                        if crate::scheduler::runtime::is_workflow_prompt_attachment(
-                            prompt.source_attachment_id(),
-                        ) && prompt.prompt()
+                        let is_meta_notification_source =
+                            crate::scheduler::runtime::is_workflow_prompt_attachment(
+                                prompt.source_attachment_id(),
+                            ) || prompt.source_client_id()
+                                == Some(task_notifier_client_id.as_str());
+                        if is_meta_notification_source && prompt.prompt()
                             == crate::scheduler::prompt_injection::METAAGENT_EVENT_VISIBLE_PROMPT
                         {
                             self.prompt_state_owner.remove_queued_prompt(

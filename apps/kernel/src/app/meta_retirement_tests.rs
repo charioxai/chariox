@@ -2,6 +2,159 @@
 use super::*;
 use crate::session::{CreateSessionRequest, MetaagentTaskStatus, WorkflowQueuedPromptSource};
 
+#[tokio::test]
+async fn retired_meta_restart_removes_real_paused_task_edit_notifications() {
+    let config = DaemonConfig::for_tests();
+    let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+    let (session, agent) = KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("meta-edits", "meta-edits"))
+        .unwrap();
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    app.agents_mut()
+        .activate_agent_meta_mode(&agent_id, None)
+        .unwrap();
+    app.sessions_mut()
+        .start_or_update_metaagent_task(&session_id, &agent_id, "Old task")
+        .unwrap();
+    app.sessions_mut()
+        .set_metaagent_task_status(&session_id, &agent_id, MetaagentTaskStatus::Paused)
+        .unwrap();
+    app.prompt_state_owner
+        .submit_prepared_prompt(
+            &session,
+            crate::session::PromptQueueItem::new(
+                "old-turn",
+                "terminal",
+                &agent_id,
+                "Old Meta turn",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
+        )
+        .unwrap();
+    // Preserve the paused task while projecting the prompt fixture.
+    let mut session = app.sessions().get_session(&session_id).unwrap();
+    app.prompt_state_owner.project_into_session(&mut session);
+    app.sessions_mut().restore_session(session);
+    let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+        std::sync::Arc::clone(&app),
+        1,
+    );
+    let runtime = router.runtime_state();
+    // Exercise the legacy update handler, including its ordinary automation
+    // attachment, hidden continuation context, and forced paused-task queue.
+    runtime
+        .execute_metaagent_task_request(crate::local::LocalDaemonRequest::UpdateMetaagentTask(
+            crate::local::UpdateMetaagentTaskRequest {
+                session_id: session_id.clone(),
+                metaagent_id: agent_id.clone(),
+                task_markdown: Some("Updated retired task".into()),
+                plan_markdown: Some("Updated retired plan".into()),
+            },
+        ))
+        .await
+        .unwrap();
+    let (notification_id, user_ids) = {
+        let app = app.lock().await;
+        let mut session = app.sessions().get_session(&session_id).unwrap();
+        let (_, queue) = app.prompt_state_owner.state_parts(&session, &agent_id);
+        assert_eq!(queue.len(), 1);
+        let notification = queue.front().unwrap();
+        assert_eq!(notification.prompt(), "<metaagent-event/>");
+        assert_eq!(
+            notification.source_client_id(),
+            Some(format!("metaagent:{agent_id}:task").as_str())
+        );
+        assert!(!crate::scheduler::runtime::is_workflow_prompt_attachment(
+            notification.source_attachment_id()
+        ));
+        assert!(notification
+            .hidden_system_context()
+            .contains("Updated retired task"));
+        assert!(notification
+            .hidden_system_context()
+            .contains("Updated retired plan"));
+        let notification_id = notification.id().to_string();
+        let mut user_ids = Vec::new();
+        for text in ["Ordinary follow-up", "<metaagent-event/>"] {
+            let outcome = app
+                .prompt_state_owner
+                .submit_prepared_prompt(
+                    &session,
+                    crate::session::PromptQueueItem::new(
+                        "user-followup",
+                        "terminal",
+                        &agent_id,
+                        text,
+                        crate::session::PromptStatus::Queued,
+                    )
+                    .with_source_attribution("owner-terminal", agent.owner_user_id())
+                    .with_hidden_system_context("Ordinary kernel-supplied context"),
+                    true,
+                )
+                .unwrap();
+            let crate::session::PromptSubmissionOutcome::Queued { prompt } = outcome else {
+                panic!("user follow-up must queue");
+            };
+            user_ids.push(prompt.id().to_string());
+        }
+        app.prompt_state_owner.project_into_session(&mut session);
+        app.sessions_mut().restore_session(session);
+        app.save_durable_state_snapshot().unwrap();
+        (notification_id, user_ids)
+    };
+    drop(runtime);
+    drop(router);
+    drop(app);
+    for _ in 0..2 {
+        let app = DaemonApp::bootstrap(config.clone()).unwrap();
+        let session = app.sessions().get_session(&session_id).unwrap();
+        assert_eq!(
+            session.metaagent_task(&agent_id).unwrap().status(),
+            MetaagentTaskStatus::Aborted
+        );
+        assert!(!app.agents().get_agent(&agent_id).unwrap().is_metaagent());
+        assert!(session.active_prompt_for_agent(&agent_id).is_none());
+        let queued = session.queued_prompts_for_agent(&agent_id).unwrap();
+        assert_eq!(
+            queued
+                .iter()
+                .map(|prompt| prompt.id().to_string())
+                .collect::<Vec<_>>(),
+            user_ids,
+            "restart must remove task-notifier {notification_id} and preserve user prompts"
+        );
+        assert!(queued
+            .iter()
+            .all(|prompt| prompt.hidden_system_context() == "Ordinary kernel-supplied context"));
+        let receipts = app
+            .durable_state_store()
+            .load_events_by_kind("session.updated")
+            .unwrap();
+        assert!(receipts
+            .iter()
+            .any(|event| event.payload["reason"] == "meta_retired"
+                && event.payload["retired_prompt_ids"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|id| id == &notification_id)));
+        let next = app
+            .prompt_state_owner
+            .activate_next_queued_prompt(&session, &agent_id, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            next.id(),
+            user_ids[0],
+            "ordinary work must advance instead of the retired task"
+        );
+        assert!(app.providers().list_runs().is_empty());
+    }
+}
+
 #[test]
 fn retired_meta_restart_aborts_legacy_tasks_and_advances_workflow_queue() {
     for status in [
