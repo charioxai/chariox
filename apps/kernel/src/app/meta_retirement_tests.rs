@@ -155,6 +155,237 @@ async fn retired_meta_restart_removes_real_paused_task_edit_notifications() {
     }
 }
 
+// MP-08 / MP-11: turn events inherit the worker's real terminal attachment.
+#[tokio::test]
+async fn retired_meta_restart_removes_paused_terminal_completion_notifications() {
+    assert_retired_terminal_turn_notification_removed(true).await;
+}
+
+#[tokio::test]
+async fn retired_meta_restart_removes_paused_terminal_failure_notifications() {
+    assert_retired_terminal_turn_notification_removed(false).await;
+}
+
+async fn assert_retired_terminal_turn_notification_removed(completed: bool) {
+    let config = DaemonConfig::for_tests();
+    let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+    let (session, agent) = KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "meta-turn-events",
+            "meta-turn-events",
+        ))
+        .unwrap();
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let worker = KernelSessionService::new(&mut app)
+        .spawn_agent(crate::agent::CreateAgentRequest::new(
+            &session_id,
+            "dev-stub",
+        ))
+        .unwrap();
+    let terminal = KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::for_user(
+            &session_id,
+            "owner-terminal",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+            agent.owner_user_id(),
+        ))
+        .unwrap();
+    app.agents_mut()
+        .activate_agent_meta_mode(&agent_id, None)
+        .unwrap();
+    app.sessions_mut()
+        .start_or_update_metaagent_task(&session_id, &agent_id, "Old task")
+        .unwrap();
+    app.sessions_mut()
+        .set_metaagent_task_status(&session_id, &agent_id, MetaagentTaskStatus::Paused)
+        .unwrap();
+    let session = app.sessions().get_session(&session_id).unwrap();
+    for (id, target) in [("old-meta-turn", agent.id()), ("worker-turn", worker.id())] {
+        app.prompt_owner_submit_prepared_prompt(
+            &session_id,
+            crate::session::PromptQueueItem::new(
+                id,
+                terminal.id(),
+                target,
+                "Terminal-submitted work",
+                crate::session::PromptStatus::Queued,
+            )
+            .with_source_attribution(terminal.client_id(), terminal.owner_user_id()),
+            false,
+        )
+        .unwrap();
+    }
+    let settled = if completed {
+        app.prompt_owner_complete_active_prompt_only(&session_id, worker.id())
+            .unwrap()
+    } else {
+        app.prompt_state_owner
+            .cancel_active_prompt_only(&session, worker.id())
+            .unwrap()
+    };
+    let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+        std::sync::Arc::clone(&app),
+        1,
+    );
+    let runtime = router.runtime_state();
+    if completed {
+        runtime
+            .inject_metaagent_turn_completion_event(
+                &session_id,
+                worker.id(),
+                &crate::session::PromptCompletion {
+                    completed: settled,
+                    started_next: None,
+                },
+            )
+            .unwrap();
+    } else {
+        runtime
+            .inject_metaagent_turn_failure_event(
+                &session_id,
+                worker.id(),
+                &settled,
+                None,
+                "Synthetic worker failure",
+            )
+            .unwrap();
+    }
+    let (notification_id, user_ids, user_context) = {
+        let app = app.lock().await;
+        let mut session = app.sessions().get_session(&session_id).unwrap();
+        let (_, queue) = app.prompt_state_owner.state_parts(&session, &agent_id);
+        assert_eq!(
+            queue.len(),
+            1,
+            "paused turn event must queue through the real submission path"
+        );
+        let notification = queue.front().unwrap();
+        assert_eq!(notification.prompt(), "<metaagent-event/>");
+        assert_eq!(notification.source_attachment_id(), terminal.id());
+        assert_eq!(notification.source_client_id(), Some(terminal.client_id()));
+        assert!(!crate::scheduler::runtime::is_workflow_prompt_attachment(
+            notification.source_attachment_id()
+        ));
+        let notification_id = notification.id().to_string();
+        let event_context = notification.hidden_system_context().to_string();
+        assert!(event_context.contains("chariox.meta."));
+        assert!(event_context.starts_with("<metaagent-event>\n"));
+        assert!(event_context.ends_with("\n</metaagent-event>"));
+        let user_context =
+            "Ordinary kernel-supplied context containing a literal <metaagent-event/>".to_string();
+        let records = app.metaagent_events.snapshot().records;
+        let record = records
+            .iter()
+            .find(|event| {
+                event.kind
+                    == if completed {
+                        "agent.turn.completed"
+                    } else {
+                        "agent.turn.failed"
+                    }
+            })
+            .unwrap();
+        // Legacy queue admission rewrites the reserved injection ID. The
+        // kernel-rendered private event component survives that rewrite.
+        assert!(record.injected_prompt_id.is_some());
+        assert_ne!(
+            record.injected_prompt_id.as_deref(),
+            Some(notification_id.as_str())
+        );
+        assert!(event_context.contains(&format!("Event id: {}", record.event_id)));
+        assert_eq!(record.session_id, session_id);
+        assert_eq!(record.metaagent_id, agent_id);
+        assert_eq!(
+            record.kind,
+            if completed {
+                "agent.turn.completed"
+            } else {
+                "agent.turn.failed"
+            }
+        );
+        assert_eq!(
+            record.prompt_delivery_status,
+            crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Queued
+        );
+        let mut user_ids = Vec::new();
+        // The sentinel and copied event text in public user input are not
+        // kernel-owned private event provenance.
+        for (id, text) in [
+            ("ordinary-user", "Ordinary follow-up"),
+            ("literal-user", "<metaagent-event/>"),
+            ("copied-event-user", event_context.as_str()),
+        ] {
+            let outcome = app
+                .prompt_state_owner
+                .submit_prepared_prompt(
+                    &session,
+                    crate::session::PromptQueueItem::new(
+                        id,
+                        terminal.id(),
+                        &agent_id,
+                        text,
+                        crate::session::PromptStatus::Queued,
+                    )
+                    .with_source_attribution(terminal.client_id(), terminal.owner_user_id())
+                    .with_hidden_system_context(&user_context),
+                    true,
+                )
+                .unwrap();
+            let crate::session::PromptSubmissionOutcome::Queued { prompt } = outcome else {
+                panic!("user follow-up must queue");
+            };
+            user_ids.push(prompt.id().to_string());
+        }
+        app.prompt_state_owner.project_into_session(&mut session);
+        app.sessions_mut().restore_session(session);
+        app.save_durable_state_snapshot().unwrap();
+        (notification_id, user_ids, user_context)
+    };
+    drop(runtime);
+    drop(router);
+    drop(app);
+    for _ in 0..2 {
+        let app = DaemonApp::bootstrap(config.clone()).unwrap();
+        let session = app.sessions().get_session(&session_id).unwrap();
+        assert_eq!(
+            session.metaagent_task(&agent_id).unwrap().status(),
+            MetaagentTaskStatus::Aborted
+        );
+        assert!(!app.agents().get_agent(&agent_id).unwrap().is_metaagent());
+        assert!(session.active_prompt_for_agent(&agent_id).is_none());
+        let queue = session.queued_prompts_for_agent(&agent_id).unwrap();
+        assert_eq!(queue.iter().map(|p| p.id().to_string()).collect::<Vec<_>>(), user_ids,
+            "restart must remove terminal-attributed event {notification_id} and preserve user work");
+        assert!(queue
+            .iter()
+            .all(|p| p.hidden_system_context() == user_context));
+        assert!(app
+            .durable_state_store()
+            .load_events_by_kind("session.updated")
+            .unwrap()
+            .iter()
+            .any(|event| event.payload["reason"] == "meta_retired"
+                && event.payload["retired_prompt_ids"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|id| id == &notification_id)));
+        let next = app
+            .prompt_state_owner
+            .activate_next_queued_prompt(&session, &agent_id, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            next.id(),
+            user_ids[0],
+            "ordinary work must advance instead of the retired event"
+        );
+        assert!(app.providers().list_runs().is_empty());
+    }
+}
+
 #[test]
 fn retired_meta_restart_aborts_legacy_tasks_and_advances_workflow_queue() {
     for status in [

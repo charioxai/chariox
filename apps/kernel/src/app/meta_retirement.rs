@@ -31,12 +31,31 @@ impl DaemonApp {
                     // client attribution survives in durable private prompt
                     // state even though the attachment itself does not.
                     let task_notifier_client_id = format!("metaagent:{}:task", agent.id());
+                    let injected_prompt_ids = self
+                        .metaagent_events
+                        .list(agent.id(), None, None, usize::MAX)
+                        .into_iter()
+                        .filter(|event| event.session_id == session.id())
+                        .filter_map(|event| event.injected_prompt_id)
+                        .collect::<std::collections::BTreeSet<_>>();
                     for prompt in queued {
+                        // Turn events inherit the worker's terminal attachment.
+                        // Legacy queue admission rewrites their injection IDs,
+                        // but the kernel-rendered private event component is
+                        // durable (even with a custom template or pruned inbox).
+                        // Public user text cannot supply this private component.
+                        let has_private_event_component = prompt
+                            .hidden_system_context()
+                            .strip_prefix("<metaagent-event>\n")
+                            .and_then(|body| body.strip_suffix("\n</metaagent-event>"))
+                            .is_some();
                         let is_meta_notification_source =
                             crate::scheduler::runtime::is_workflow_prompt_attachment(
                                 prompt.source_attachment_id(),
                             ) || prompt.source_client_id()
-                                == Some(task_notifier_client_id.as_str());
+                                == Some(task_notifier_client_id.as_str())
+                                || injected_prompt_ids.contains(prompt.id())
+                                || has_private_event_component;
                         if is_meta_notification_source && prompt.prompt()
                             == crate::scheduler::prompt_injection::METAAGENT_EVENT_VISIBLE_PROMPT
                         {
