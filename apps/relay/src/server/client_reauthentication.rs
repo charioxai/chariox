@@ -9,3 +9,15 @@ pub(super) fn same_client(previous: &VerifiedRelayIdentity, fresh: &VerifiedRela
         && previous.client_id == fresh.client_id
         && previous.public_key_thumbprint == fresh.public_key_thumbprint
 }
+
+// Retained request/subscription routes were admitted using the old actions.
+// Close on reduction rather than let those routes outlive their authorization.
+pub(super) fn retains_permissions(
+    previous: &VerifiedRelayIdentity,
+    fresh: &VerifiedRelayIdentity,
+) -> bool {
+    previous
+        .allowed_actions
+        .iter()
+        .all(|action| fresh.allowed_actions.contains(action))
+}

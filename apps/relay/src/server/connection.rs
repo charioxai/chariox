@@ -370,6 +370,12 @@ pub(crate) async fn handle_connection(
                                 send_close(&outgoing_tx, "client renewal changed identity or key".to_string());
                                 break;
                             }
+                            if verified_identity.as_ref().is_some_and(|previous| {
+                                !super::client_reauthentication::retains_permissions(previous, &identity)
+                            }) {
+                                send_close(&outgoing_tx, "client renewal reduced permissions".to_string());
+                                break;
+                            }
                             auth_expiry_deadline = relay_auth_expiry_deadline(
                                 &auth_verifier,
                                 identity.expires_at_ms,

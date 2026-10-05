@@ -215,3 +215,97 @@ async fn remote_session_projection_redacts_other_users_private_agent_and_workflo
         DEFAULT_LOCAL_USER_ID,
     );
 }
+
+#[test]
+fn collaborator_waiting_room_responses_hide_owner_directory_but_keep_shared_sessions() {
+    run_remote_authorization_large_stack_test(
+        "waiting-directory-redaction",
+        collaborator_waiting_room_directory_redaction_inner,
+    );
+}
+
+async fn collaborator_waiting_room_directory_redaction_inner() {
+    let worktree = crate::test_support::TestWorktree::new("waiting-directory-redaction");
+    let mut config = DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: DEFAULT_LOCAL_USER_ID.into(),
+        realm_id: "realm-1".into(),
+        ..Default::default()
+    });
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let session = app
+        .sessions_mut()
+        .create_session(worktree.session_request())
+        .unwrap();
+    let session_id = session.id().to_string();
+    let (_, invite) = app
+        .sessions_mut()
+        .create_session_invite(
+            &session_id,
+            "waiting-invite".into(),
+            DEFAULT_LOCAL_USER_ID.into(),
+            None,
+            Some(1),
+            crate::session::CollaborationLevel::Private,
+        )
+        .unwrap();
+    app.sessions_mut()
+        .join_session_invite(&session_id, invite.invite_id(), "viewer".into(), 1)
+        .unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    router.remote_relay_inventory_projection.update(
+        vec![crate::local::RemoteMachineRecord {
+            machine_id: "private-machine".into(),
+            machine_alias: Some("private-host".into()),
+            registry_alias: None,
+            display_name: "private-host".into(),
+            trust_status: crate::local::RemoteMachineTrustStatus::Approved,
+            online: true,
+            pending: false,
+            kernel_count: 1,
+            available_providers: vec!["codex".into()],
+            provider_accounts: vec![],
+        }],
+        vec![chariox_relay::protocol::RelayKernelPresence {
+            kernel_id: "private-kernel".into(),
+            machine_id: "private-machine".into(),
+            machine_alias: Some("private-host".into()),
+            relay_alias: None,
+            kernel_alias: Some("private-alias".into()),
+            available_providers: vec!["codex".into()],
+            provider_accounts: vec![],
+            capabilities: vec![],
+            accepting_remote_leases: false,
+            leased_agent_count: 0,
+            local_session_count: 5,
+            public_key: "public-fixture-key".into(),
+        }],
+    );
+    for request in [
+        serde_json::from_value(serde_json::json!({"GetWaitingRoomInventory": null})).unwrap(),
+        LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
+            crate::local::GetWaitingRoomPublicSnapshotRequest,
+        ),
+    ] {
+        let owner = router
+            .dispatch(
+                remote_command_for_request(&request, Some(DEFAULT_LOCAL_USER_ID)),
+                request.clone(),
+            )
+            .await
+            .unwrap();
+        let owner = serde_json::to_value(owner).unwrap();
+        assert!(owner.to_string().contains("private-kernel"));
+        let viewer = router
+            .dispatch(
+                remote_command_for_request(&request, Some("viewer")),
+                request,
+            )
+            .await
+            .unwrap();
+        let viewer = serde_json::to_value(viewer).unwrap();
+        assert!(!viewer.to_string().contains("private-kernel"));
+        assert!(!viewer.to_string().contains("private-machine"));
+        assert!(viewer.to_string().contains(&session_id));
+    }
+}

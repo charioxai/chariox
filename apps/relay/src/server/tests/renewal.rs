@@ -23,6 +23,15 @@ async fn receive(socket: &mut Socket) -> RelayEnvelope {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn client_renewal_preserves_one_subscription_across_expiries_and_revocation_stops_it() {
+    renewal_drill(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn client_renewal_removing_packet_route_stops_existing_subscription_events() {
+    renewal_drill(true).await;
+}
+
+async fn renewal_drill(reduce_permissions: bool) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -57,6 +66,10 @@ async fn client_renewal_preserves_one_subscription_across_expiries_and_revocatio
     different_key.token_id = "different-key".into();
     different_key.public_key_thumbprint = Some("a".repeat(64));
     claims.insert("different-key".into(), different_key);
+    let mut reduced = claims["client-6"].clone();
+    reduced.token_id = "reduced-actions".into();
+    reduced.allowed_actions = vec![RelayAction::ClientConnect];
+    claims.insert("reduced-actions".into(), reduced);
     let server = RelayServer::with_auth_verifier(
         RelayConfig {
             host: "127.0.0.1".into(),
@@ -201,11 +214,50 @@ async fn client_renewal_preserves_one_subscription_across_expiries_and_revocatio
         );
         assert_eq!(registry.read().await.subscription_count(), 1);
     }
-    // The active token's revocation immediately closes the existing connection.
-    revocations.revoke_token_id("client-6", now + 2_200);
-    assert!(
-        matches!(receive(&mut client).await, RelayEnvelope::Close { reason } if reason == "relay token revoked")
-    );
+    if reduce_permissions {
+        send(
+            &mut client,
+            RelayEnvelope::ClientConnect {
+                auth_token: "reduced-actions".into(),
+                target: target.clone(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            receive(&mut client).await,
+            RelayEnvelope::Close { .. }
+        ));
+        sleep(Duration::from_millis(25)).await;
+        assert_eq!(registry.read().await.subscription_count(), 0);
+        send(
+            &mut daemon_socket,
+            RelayEnvelope::DaemonEvent {
+                subscription_id: "terminal-stream".into(),
+                event_id: 99,
+                encrypted_event: EncryptedRelayPayload {
+                    sender_public_key: "fixture-daemon-key".into(),
+                    nonce: "fixture-nonce".into(),
+                    ciphertext: "fixture-event".into(),
+                },
+            },
+        )
+        .await;
+        // The old route has gone; no event can be forwarded after reduction.
+        while let Ok(Some(Ok(message))) = timeout(Duration::from_millis(100), client.next()).await {
+            if let Message::Text(text) = message {
+                assert!(!matches!(
+                    serde_json::from_str::<RelayEnvelope>(&text).unwrap(),
+                    RelayEnvelope::ClientEvent { .. }
+                ));
+            }
+        }
+    } else {
+        // The active token's revocation immediately closes the existing connection.
+        revocations.revoke_token_id("client-6", now + 2_200);
+        assert!(
+            matches!(receive(&mut client).await, RelayEnvelope::Close { reason } if reason == "relay token revoked")
+        );
+    }
     let _ = client.close(None).await;
     let _ = daemon_socket.close(None).await;
     let _ = stop.send(());
