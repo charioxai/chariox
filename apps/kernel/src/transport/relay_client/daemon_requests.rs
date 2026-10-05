@@ -40,7 +40,6 @@ impl Drop for BrowserImportDeliveryGuard {
 
 #[derive(Debug, Clone)]
 pub(super) struct RelayRequestOutcome {
-    pub(super) display_activity: Option<String>,
     pub(super) display_event: Option<(String, u64, EncryptedRelayPayload)>,
     pub(super) encrypted_response: Option<EncryptedRelayPayload>,
     pub(super) error: Option<RelayError>,
@@ -52,6 +51,7 @@ pub(super) async fn handle_daemon_request(
     caller_identity: Option<RelayCallerIdentity>,
     encrypted_request: EncryptedRelayPayload,
     command_result_cache: &Arc<CommandResultCache>,
+    display_subscriptions: &super::subscriptions::RelaySubscriptionTasks,
 ) -> RelayRequestOutcome {
     if relay_crypto::validate_encrypted_payload_shape(
         &encrypted_request,
@@ -60,7 +60,6 @@ pub(super) async fn handle_daemon_request(
     .is_err()
     {
         return RelayRequestOutcome {
-            display_activity: None,
             display_event: None,
             encrypted_response: None,
             error: Some(relay_error(
@@ -73,7 +72,6 @@ pub(super) async fn handle_daemon_request(
     if let Err(error) = validate_bound_service_sender(caller_identity.as_ref(), &encrypted_request)
     {
         return RelayRequestOutcome {
-            display_activity: None,
             display_event: None,
             encrypted_response: None,
             error: Some(error),
@@ -88,7 +86,6 @@ pub(super) async fn handle_daemon_request(
             Ok(payload) => payload,
             Err(error) => {
                 return RelayRequestOutcome {
-                    display_activity: None,
                     display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
@@ -103,7 +100,6 @@ pub(super) async fn handle_daemon_request(
             Ok(request) => request,
             Err(error) => {
                 return RelayRequestOutcome {
-                    display_activity: None,
                     display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
@@ -119,13 +115,11 @@ pub(super) async fn handle_daemon_request(
         };
         (request, decrypted.sender_public_key, daemon_private_key)
     };
-    let mut display_activity = None;
     let (request_kind, command_id, bind_import_response, result) = match message {
         ParsedRelayClientMessage::Request(request) => {
             if let Err(error) = validate_cli_relay_sender_key(&request.request, &client_public_key)
             {
                 return RelayRequestOutcome {
-                    display_activity: None,
                     display_event: None,
                     encrypted_response: None,
                     error: Some(error),
@@ -137,7 +131,6 @@ pub(super) async fn handle_daemon_request(
                 &encrypted_request,
             ) {
                 return RelayRequestOutcome {
-                    display_activity: None,
                     display_event: None,
                     encrypted_response: None,
                     error: Some(error),
@@ -154,7 +147,7 @@ pub(super) async fn handle_daemon_request(
             };
             let request_kind = relay_request_kind(&request.request);
             let bind_import_response = is_browser_import_request(&request.request);
-            let result = dispatch_relay_client_request(
+            let mut result = dispatch_relay_client_request(
                 router,
                 command_sequence,
                 caller_identity,
@@ -163,8 +156,17 @@ pub(super) async fn handle_daemon_request(
                 command_result_cache,
             )
             .await;
-            if matches!(&result, RelayDispatchOutcome::Response(_)) {
-                display_activity = poll;
+            if let Some(id) = poll {
+                if matches!(&result, RelayDispatchOutcome::Response(_))
+                    && !super::browser_display::refresh_admitted_display_poll(
+                        display_subscriptions,
+                        &id,
+                        &client_public_key,
+                    )
+                    .await
+                {
+                    result = RelayDispatchOutcome::RelayError(relay_error("display_subscription_required", "MD-DISPLAY: register a fresh display subscription with the same sender identity", false));
+                }
             }
             (
                 request_kind,
@@ -181,7 +183,6 @@ pub(super) async fn handle_daemon_request(
                 .is_err()
             {
                 return RelayRequestOutcome {
-                    display_activity: None,
                     display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
@@ -197,7 +198,6 @@ pub(super) async fn handle_daemon_request(
                     Ok(identity) => identity.clone(),
                     Err(error) => {
                         return RelayRequestOutcome {
-                            display_activity: None,
                             display_event: None,
                             encrypted_response: None,
                             error: Some(error),
@@ -272,7 +272,6 @@ pub(super) async fn handle_daemon_request(
                     Some(payload) => Some((id, sequence, payload)),
                     None => {
                         return RelayRequestOutcome {
-                            display_activity: None,
                             display_event: None,
                             encrypted_response: None,
                             error: Some(relay_error(
@@ -313,7 +312,6 @@ pub(super) async fn handle_daemon_request(
                 Ok(bytes) => bytes,
                 Err(error) => {
                     return RelayRequestOutcome {
-                        display_activity: None,
                         display_event: None,
                         encrypted_response: None,
                         error: Some(relay_error(
@@ -351,14 +349,12 @@ pub(super) async fn handle_daemon_request(
                         );
                     }
                     RelayRequestOutcome {
-                        display_activity,
                         display_event,
                         encrypted_response: Some(encrypted_response),
                         error: None,
                     }
                 }
                 Err(error) => RelayRequestOutcome {
-                    display_activity: None,
                     display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
@@ -370,7 +366,6 @@ pub(super) async fn handle_daemon_request(
             }
         }
         RelayDispatchOutcome::RelayError(error) => RelayRequestOutcome {
-            display_activity: None,
             display_event: None,
             encrypted_response: None,
             error: Some(error),

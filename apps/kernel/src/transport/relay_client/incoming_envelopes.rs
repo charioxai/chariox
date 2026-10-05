@@ -132,12 +132,7 @@ pub(super) async fn handle_incoming_envelope(
                     caller_identity,
                     encrypted_request,
                     &command_result_cache,
-                )
-                .await;
-                super::browser_display::refresh_idle_display_response(
                     &display_subscriptions,
-                    &mut relay_response,
-                    &display_sender,
                 )
                 .await;
                 if let Some((display_id, event_id, encrypted_event)) = relay_response.display_event
