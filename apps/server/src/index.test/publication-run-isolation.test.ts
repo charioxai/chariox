@@ -120,3 +120,56 @@ test("MP-11 same subject in another account and foreign publication runs stay pr
     assert.doesNotMatch(response.body, /private-A-/)
   }
 })
+
+for (const invocationLookup of [false, true]) {
+  test(`MP-11 ${invocationLookup ? 'invocation' : 'run'} SSE rechecks caller ownership on later fetches`, async (t) => {
+    configurePublicationCallerClaimsRuntimeForTests({ deploymentId: "deployment", environmentId: "environment",
+      secret: fixtureSecret, now: () => now })
+    t.after(() => configurePublicationCallerClaimsRuntimeForTests(undefined))
+    const foreign = privateRun()
+    const owned: WorkflowRun = { ...foreign, status: "Running", final_output: undefined,
+      intermediate_outputs: [], node_runs: [], publication_invocation: {
+        ...foreign.publication_invocation!, input: {}, caller: publicationInvocationCaller(caller("user:B"), {}),
+      } }
+    let reads = 0
+    t.mock.method(LocalIpcClient.prototype, "send", async (request: Record<string, unknown>) => {
+      if ("ListWorkflowRuns" in request) return { WorkflowRunsListed: { workflow_runs: [owned] } }
+      if ("GetWorkflowRun" in request) {
+        reads += 1
+        return { WorkflowRun: { workflow_run: invocationLookup || reads > 1 ? foreign : owned } }
+      }
+      return {}
+    })
+    const { app } = buildServer(config, { getProviderReadiness: async () => [] })
+    t.after(() => app.close())
+    const url = invocationLookup ? paths[3]! : paths[2]!
+    const response = await app.inject({ method: "GET", url, headers: headers("user:B") })
+    assert.match(response.body, /event: status/)
+    assert.match(response.body, /workflow run not found/)
+    assert.doesNotMatch(response.body, /private-A-|trace-A|node-run-A|partial-A/)
+  })
+}
+
+test("MP-11 authenticated status admission also applies without an HTTP ingress hook", async (t) => {
+  configurePublicationCallerClaimsRuntimeForTests({ deploymentId: "deployment", environmentId: "environment",
+    secret: fixtureSecret, now: () => now })
+  t.after(() => configurePublicationCallerClaimsRuntimeForTests(undefined))
+  mockKernel(t, privateRun)
+  for (const kind of [undefined, "event_based"] as const) {
+    const { app } = buildServer({ ...config, ...(kind ? { kind, transport: "event_based" } : {}) }, {
+      getProviderReadiness: async () => [],
+    })
+    try {
+      const missingClaims = await app.inject({ method: "GET", url: paths[0]! })
+      assert.equal(missingClaims.statusCode, 401)
+      assert.doesNotMatch(missingClaims.body, /private-A-/)
+      const other = await app.inject({ method: "GET", url: paths[0]!, headers: headers("user:B") })
+      assert.equal(other.statusCode, 200)
+      assert.doesNotMatch(other.body, /private-A-/)
+      const own = await app.inject({ method: "GET", url: paths[0]!, headers: headers("user:A") })
+      assert.match(own.body, /private-A-output/)
+    } finally {
+      await app.close()
+    }
+  }
+})

@@ -12,6 +12,8 @@ import type {
   WorkflowWatchdogDefinition,
 } from "@chariox/kernel-client/kernel-types"
 
+import type { VerifiedPublicationCallerClaims } from "./publication-caller-claims.js"
+import { publicationRunAccessibleToCaller } from "./publication-run-access.js"
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
 import { publicationTakesRequests } from "./publication-config.js"
 import { normalizeFinalOutput } from "./publication-final-output.js"
@@ -28,6 +30,7 @@ import type {
 export async function publicationStatusPayload(
   publication: WorkflowPublicationConfig,
   deps: GatewayDeps,
+  caller: VerifiedPublicationCallerClaims | null = null,
 ) {
   const base = {
     ...basePublicationStatusPayload(publication),
@@ -42,7 +45,7 @@ export async function publicationStatusPayload(
   if (deps.invokeWorkflow) return base
   return {
     ...base,
-    ...(await lookupPublicationRuntimeStatus(publication)),
+    ...(await lookupPublicationRuntimeStatus(publication, caller)),
   }
 }
 
@@ -67,12 +70,12 @@ function basePublicationStatusPayload(publication: WorkflowPublicationConfig) {
   return payload
 }
 
-async function lookupPublicationRuntimeStatus(publication: WorkflowPublicationConfig) {
+async function lookupPublicationRuntimeStatus(publication: WorkflowPublicationConfig, caller: VerifiedPublicationCallerClaims | null) {
   const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
   try {
     await pumpPublicationRuntime(client, publication).catch(() => {})
     const watchdogs = await listEndpointWatchdogs(client, publication)
-    const { latestRun, latestOutputRun, recentRuns } = await latestEndpointRunStatus(client, publication, watchdogs)
+    const { latestRun, latestOutputRun, recentRuns } = await latestEndpointRunStatus(client, publication, watchdogs, caller)
     return {
       runtime: { reachable: true },
       queue_depth: await lookupPublicationQueueDepth(client, publication),
@@ -166,6 +169,7 @@ async function latestEndpointRunStatus(
   client: LocalIpcClient,
   publication: WorkflowPublicationConfig,
   watchdogs: readonly WorkflowWatchdogDefinition[],
+  caller: VerifiedPublicationCallerClaims | null,
 ) {
   const latestWatchdogRunIds = new Set(
     watchdogs
@@ -176,13 +180,14 @@ async function latestEndpointRunStatus(
     listWorkflowRunsRequest(publication.session_id, publication.workflow_ref, { limit: 200 }),
   )
   const runs = (response.WorkflowRunsListed as { workflow_runs?: WorkflowRun[] } | undefined)?.workflow_runs ?? []
-  const matchingRuns = runs.filter((run) => isPublicationEndpointRun(run, publication, latestWatchdogRunIds))
+  const matchingRuns = runs.filter((run) => isPublicationEndpointRun(run, publication, latestWatchdogRunIds)
+    && publicationRunAccessibleToCaller(publication, run, caller))
   const sortedRuns = matchingRuns.sort((left, right) => runSortKey(right) - runSortKey(left))
-  const latestRun = sortedRuns[0] ? await detailedWorkflowRun(client, publication, sortedRuns[0]) : null
+  const latestRun = sortedRuns[0] ? await detailedWorkflowRun(client, publication, sortedRuns[0], caller) : null
   const recentRuns = latestRun ? [latestRun, ...sortedRuns.slice(1, 5)] : sortedRuns.slice(0, 5)
   let latestOutputRun = latestWorkflowRunOutput(latestRun) ? latestRun : null
   for (const run of sortedRuns.slice(latestOutputRun ? 1 : 0)) {
-    const detailed = await detailedWorkflowRun(client, publication, run)
+    const detailed = await detailedWorkflowRun(client, publication, run, caller)
     if (latestWorkflowRunOutput(detailed)) {
       latestOutputRun = detailed
       break
@@ -195,11 +200,13 @@ async function detailedWorkflowRun(
   client: LocalIpcClient,
   publication: WorkflowPublicationConfig,
   run: WorkflowRun,
+  caller: VerifiedPublicationCallerClaims | null,
 ) {
   const detail = await client.send<Record<string, unknown>>(
     getWorkflowRunRequest(publication.session_id, run.id),
   )
-  return (detail.WorkflowRun as { workflow_run?: WorkflowRun } | undefined)?.workflow_run ?? run
+  const detailed = (detail.WorkflowRun as { workflow_run?: WorkflowRun } | undefined)?.workflow_run ?? run
+  return publicationRunAccessibleToCaller(publication, detailed, caller) ? detailed : null
 }
 
 function isPublicationEndpointRun(

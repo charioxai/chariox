@@ -5,31 +5,35 @@ import type {
   WorkflowPublicationConfig,
   WorkflowRun,
 } from "./publication-types.js"
+import type { VerifiedPublicationCallerClaims } from "./publication-caller-claims.js"
+import { publicationRunAccessibleToCaller } from "./publication-run-access.js"
 import { publicationWaitTimeoutMs } from "./publication-timeouts.js"
 
 export async function findWorkflowRunByInvocationRequestId(
   client: KernelLookupClient,
   publication: WorkflowPublicationConfig,
   requestId: string,
+  caller: VerifiedPublicationCallerClaims | null = null,
 ): Promise<WorkflowRun | null> {
   const response = await client.send(
     listWorkflowRunsRequest(publication.session_id, publication.workflow_ref, { limit: 200 }),
   )
   const workflowRuns = (response.WorkflowRunsListed as { workflow_runs?: WorkflowRun[] } | undefined)?.workflow_runs ?? []
-  return workflowRuns.find((workflowRun) => workflowRunMatchesInvocationRequestId(workflowRun, requestId)) ?? null
+  return workflowRuns.find((workflowRun) => publicationRunAccessibleToCaller(publication, workflowRun, caller)
+    && workflowRunMatchesInvocationRequestId(workflowRun, requestId)) ?? null
 }
 
 export async function waitForWorkflowRunByInvocationRequestId(
   client: KernelLookupClient,
   publication: WorkflowPublicationConfig,
   requestId: string,
-  options: { timeoutMs?: number; pollMs?: number; shouldContinue?: () => boolean } = {},
+  options: { timeoutMs?: number; pollMs?: number; shouldContinue?: () => boolean; caller?: VerifiedPublicationCallerClaims | null } = {},
 ): Promise<WorkflowRun | null> {
   const timeoutMs = options.timeoutMs ?? publicationWaitTimeoutMs(publication)
   const pollMs = options.pollMs ?? publication.poll_ms ?? 500
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline && (options.shouldContinue?.() ?? true)) {
-    const workflowRun = await findWorkflowRunByInvocationRequestId(client, publication, requestId)
+    const workflowRun = await findWorkflowRunByInvocationRequestId(client, publication, requestId, options.caller ?? null)
     if (workflowRun) return workflowRun
     await sleep(pollMs)
   }
