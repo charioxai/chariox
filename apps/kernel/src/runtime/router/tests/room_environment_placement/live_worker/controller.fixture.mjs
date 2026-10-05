@@ -182,14 +182,14 @@ const chromium = {
         properties: [{ name: "focused", value: { value: state.focused === "worker-note" } }],
       }] };
       case "DOMSnapshot.captureSnapshot": return {
-        strings: ["#document", "BUTTON", "", "Save on worker", "https://worker.test/", "INPUT", "type", existsSync(join(dirname(pidFile), "secret-input-mode")) ? "password" : "file", "IFRAME", "DIV", "#document-fragment", "open", "https://frame.worker.test/"],
-        documents: [{ documentURL: 4, nodes: {
+        strings: ["#document", "BUTTON", "", "Save on worker", "https://worker.test/", "INPUT", "type", existsSync(join(dirname(pidFile), "secret-input-mode")) ? "password" : "file", "IFRAME", "DIV", "#document-fragment", "open", "https://frame.worker.test/", "worker-frame", "worker-child-frame"],
+        documents: [{ documentURL: 4, frameId: 13, nodes: {
           parentIndex: [-1, 0, 0, 0, 0, 4, 5], nodeType: [9, 1, 1, 1, 1, 11, 1], nodeName: [0, 1, 5, 8, 9, 10, 1],
           nodeValue: [2, 3, 2, 2, 2, 2, 2], backendNodeId: [100, 103, 104, 105, 106, 107, 108], attributes: [[], [], [6, 7], [], [], [], []],
           contentDocumentIndex: { index: [3], value: [1] },
           shadowRootType: { index: [5], value: [11] },
         }, layout: { nodeIndex: [1, 2, 3, 4, 5, 6], bounds: [[10, 20, 100, 30], [10, 60, 100, 30], [10, 100, 200, 80], [230, 100, 200, 80], [230, 100, 200, 80], [240, 110, 100, 30]] } }, {
-          documentURL: 12, nodes: {
+          documentURL: 12, frameId: 14, nodes: {
             parentIndex: [-1, 0], nodeType: [9, 1], nodeName: [0, 1],
             nodeValue: [2, 2], backendNodeId: [200, 201], attributes: [[], []],
           }, layout: { nodeIndex: [1], bounds: [[20, 110, 100, 30]] },
