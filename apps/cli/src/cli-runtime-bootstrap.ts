@@ -1,3 +1,4 @@
+import { startPairedRelayRenewal } from "./paired-relay-renewal.js"
 import { issueCloudPairingBootstrapToken } from "./cloud-client.js"
 import type { LocalIpcClient } from "./ipc.js"
 import type { RelayClientIdentity } from "./ipc.js"
@@ -207,7 +208,15 @@ export async function bootstrapCliRuntime(
         kernelEndpoint,
         relayClientOptions(cliOptions, relayIdentity, joined.relay_token ?? undefined),
       )
+      if (joined.relay_token) {
+        startPairedRelayRenewal(client, {
+          token: joined.relay_token, subject: joined.pairing.subject_id, endpoint: kernelEndpoint, target: joined.pairing.target_daemon_id,
+          terminalId: cliOptions.clientId, identity: relayIdentity, createClient: deps.createClient,
+          ...(deps.resolvePairingBootstrapToken ? {bootstrapToken: () => deps.resolvePairingBootstrapToken!(joined.pairing.relay_url, joined.pairing.target_daemon_id, relayIdentity)} : {}),
+        })
+      }
     } catch (error) {
+      if (client !== bootstrapClient) await Promise.resolve(client.close()).catch(() => {})
       await Promise.resolve(bootstrapClient.close()).catch(() => {})
       throw error
     }
