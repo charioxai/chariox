@@ -40,6 +40,9 @@ mod ordinary_publication;
 use ordinary_publication::{
     publish_ordinary_entries, record_ordinary_entries, remove_ordinary_entries,
 };
+#[path = "import_ownership.rs"]
+mod import_ownership;
+
 
 const IMPORT_RECEIPT_NAME: &str = "kernel-context-import.json";
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -1141,6 +1144,7 @@ fn ordinary_user_root() -> Result<Option<PathBuf>, DaemonError> {
 fn final_user_root(final_root: &Path) -> Result<PathBuf, DaemonError> {
     Ok(ordinary_user_root()?.unwrap_or_else(|| final_root.join("user")))
 }
+
 
 fn acquire_import_lock(parent: &Path) -> Result<ImportLock, DaemonError> {
     let path = parent.join(".kernel-context-import.lock");
@@ -2854,4 +2858,82 @@ mod tests {
         fs::create_dir_all(&root).expect("test root should create");
         root
     }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_kernel_rollback_preserves_replaced_credentials_and_edited_packages() {
+    let root =
+        std::env::temp_dir().join(format!("mp11-kernel-owned-{:016x}", rand::random::<u64>()));
+    let staged = root.join("context");
+    let home = root.join("home");
+    fs::create_dir_all(staged.join("user/credentials")).unwrap();
+    fs::create_dir_all(staged.join("user/scripts/package")).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        staged.join("user/credentials/fixture.json"),
+        b"synthetic-original",
+    )
+    .unwrap();
+    fs::write(
+        staged.join("user/scripts/package/source"),
+        b"original package",
+    )
+    .unwrap();
+    record_ordinary_entries(&staged, &home, &mut MaterializationBudget::new()).unwrap();
+    publish_ordinary_entries(&staged, &home).unwrap();
+    fs::rename(
+        home.join("credentials/fixture.json"),
+        root.join("prior-credential"),
+    )
+    .unwrap();
+    fs::write(
+        home.join("credentials/fixture.json"),
+        b"synthetic-replacement",
+    )
+    .unwrap();
+    fs::write(home.join("scripts/package/user-file"), b"user addition").unwrap();
+    assert!(remove_ordinary_entries(&staged, &home).is_err());
+    assert_eq!(
+        fs::read(home.join("credentials/fixture.json")).unwrap(),
+        b"synthetic-replacement"
+    );
+    assert!(home.join("scripts/package/user-file").exists());
+    // Recovery retries retain the same conflicts and the ownership journal.
+    assert!(remove_ordinary_entries(&staged, &home).is_err());
+    assert!(staged.join(PUBLISHED_ENTRIES_NAME).exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_kernel_retirement_restart_finds_quarantine_and_preserves_a_later_user_publication() {
+    let root = std::env::temp_dir().join(format!(
+        "mp11-kernel-retirement-{:016x}",
+        rand::random::<u64>()
+    ));
+    let context = root.join("context");
+    let home = root.join("home");
+    fs::create_dir_all(context.join("user/credentials")).unwrap();
+    fs::create_dir(&home).unwrap();
+    fs::write(
+        context.join("user/credentials/fixture.json"),
+        b"synthetic original",
+    )
+    .unwrap();
+    record_ordinary_entries(&context, &home, &mut MaterializationBudget::new()).unwrap();
+    publish_ordinary_entries(&context, &home).unwrap();
+    let mut entries = read_published_entries(&context).unwrap();
+    let name = format!(".chariox-kernel-retire-{:032x}", rand::random::<u128>());
+    entries[0].retirement = Some(name.clone());
+    persist_published_entries(&context, &entries).unwrap();
+    let published = home.join(&entries[0].relative);
+    let quarantine = published.parent().unwrap().join(name);
+    publish_directory_no_clobber(&published, &quarantine).unwrap();
+    fs::write(&published, b"synthetic user replacement").unwrap();
+    remove_ordinary_entries(&context, &home).unwrap();
+    assert!(!quarantine.exists());
+    assert!(published.is_file());
+    assert_eq!(fs::read(published).unwrap(), b"synthetic user replacement");
+    fs::remove_dir_all(root).unwrap();
 }

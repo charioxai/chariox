@@ -1593,7 +1593,7 @@ fn configure_no_follow(options: &mut OpenOptions) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
     }
     #[cfg(windows)]
     {
@@ -2700,4 +2700,21 @@ mod tests {
         assert!(!parent.join("context-overflow").exists());
         remove_artifact_root(&parent).expect("cleanup");
     }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_fifo_input_fails_without_waiting_for_a_writer() {
+    crate::test_support::assert_fifo_rejected(|path| {
+        read_bounded_regular_file(&path, 1024).is_err()
+    });
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_fifo_metadata_and_retirement_inputs_fail_without_a_writer() {
+    crate::test_support::assert_fifo_rejected(|path| {
+        bounded_regular_file_size(&path, 1024, "test").is_err()
+    });
+    crate::test_support::assert_fifo_rejected(|path| retired_marker_age_ms(&path, 0).is_err());
 }

@@ -75,7 +75,7 @@ enum GitCredentialBindingPhase {
     Removing,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct GitCredentialBinding {
     schema_version: u32,
@@ -86,6 +86,19 @@ struct GitCredentialBinding {
     hostname: String,
     token_sha256: String,
     phase: GitCredentialBindingPhase,
+    #[serde(default)]
+    previous_git_helpers: std::collections::BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    installed_git_helpers: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+impl std::fmt::Debug for GitCredentialBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GitCredentialBinding")
+            .field("context_id", &self.context_id)
+            .field("phase", &self.phase)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -297,13 +310,17 @@ pub(crate) fn materialize_git_credentials(
                 "GitHub credential removal must finish before import can resume",
             ));
         }
-        Some(_) => true,
+        Some(persisted) => {
+            binding = persisted;
+            true
+        }
         None => {
             if read_github_token(context)?.is_some() {
                 return Err(scm_error(
                     "refusing to replace an existing GitHub credential on the target kernel",
                 ));
             }
+            binding.previous_git_helpers = snapshot_git_helpers(context)?;
             write_binding(context, &binding)?;
             false
         }
@@ -351,9 +368,12 @@ pub(crate) fn materialize_git_credentials(
         ));
     }
     if let Err(error) = ensure_github_git_helper(context) {
+        binding.installed_git_helpers = snapshot_git_helpers(context)?;
+        write_binding(context, &binding)?;
         cleanup_failed_install(context, &receipt, &expected_token_sha256)?;
         return Err(error);
     }
+    binding.installed_git_helpers = snapshot_git_helpers(context)?;
     binding.phase = GitCredentialBindingPhase::Installed;
     write_binding(context, &binding)?;
     Ok(vec![receipt])
@@ -474,6 +494,8 @@ fn binding_for_receipt(
         hostname: receipt.hostname.clone(),
         token_sha256: receipt.token_sha256.clone(),
         phase,
+        previous_git_helpers: Default::default(),
+        installed_git_helpers: Default::default(),
     }
 }
 
@@ -858,56 +880,94 @@ fn logout_owned_github_credential(
     Ok(())
 }
 
-fn remove_github_git_helper(context: &GitCredentialCommandContext) -> Result<(), DaemonError> {
-    for (section, pattern) in [
-        (
-            "credential.https://github.com",
-            r"^credential\.https://github\.com\.",
-        ),
-        (
-            "credential.https://gist.github.com",
-            r"^credential\.https://gist\.github\.com\.",
-        ),
-    ] {
-        if !git_config_pattern_exists(context, pattern)? {
-            continue;
-        }
+const GITHUB_HELPER_KEYS: &[&str] = &[
+    "credential.https://github.com.helper",
+    "credential.https://gist.github.com.helper",
+];
+fn snapshot_git_helpers(
+    context: &GitCredentialCommandContext,
+) -> Result<std::collections::BTreeMap<String, Vec<String>>, DaemonError> {
+    let mut snapshot = std::collections::BTreeMap::new();
+    for key in GITHUB_HELPER_KEYS {
         let output = run_command(
             context,
             "git",
-            &["config", "--global", "--remove-section", section],
+            &["config", "--global", "--null", "--get-all", key],
             None,
             false,
         )?;
-        if !output.status.success() || git_config_pattern_exists(context, pattern)? {
+        if output.status.code() == Some(1) {
+            snapshot.insert((*key).into(), Vec::new());
+            continue;
+        }
+        if !output.status.success() {
+            return Err(scm_unavailable("inspect scoped Git helper failed"));
+        }
+        let text = String::from_utf8(output.stdout)
+            .map_err(|_| scm_error("Git helper configuration is not UTF-8"))?;
+        snapshot.insert(
+            (*key).into(),
+            text.split_terminator('\0').map(str::to_owned).collect(),
+        );
+    }
+    Ok(snapshot)
+}
+fn remove_github_git_helper(context: &GitCredentialCommandContext) -> Result<(), DaemonError> {
+    let binding = read_binding(context)?.ok_or_else(|| {
+        scm_unavailable("Git helper has no ownership snapshot; recovery required")
+    })?;
+    if binding.previous_git_helpers.len() != GITHUB_HELPER_KEYS.len() {
+        return Err(scm_unavailable(
+            "legacy Git helper ownership is unknown; recovery required",
+        ));
+    }
+    let current = snapshot_git_helpers(context)?;
+    for key in GITHUB_HELPER_KEYS {
+        let previous = binding
+            .previous_git_helpers
+            .get(*key)
+            .ok_or_else(|| scm_error("Git helper ownership snapshot is invalid"))?;
+        let values = current
+            .get(*key)
+            .expect("scoped snapshot includes every key");
+        if values == previous {
+            continue;
+        }
+        let Some(owned) = binding.installed_git_helpers.get(*key) else {
             return Err(scm_unavailable(
-                "remove managed GitHub Git credential helper failed",
+                "interrupted Git helper installation needs ownership recovery",
             ));
+        };
+        // A later user edit owns the entire current key. Never reset it or neighboring settings.
+        if values != owned {
+            continue;
+        }
+        let removed = run_command(
+            context,
+            "git",
+            &["config", "--global", "--unset-all", key],
+            None,
+            false,
+        )?;
+        if !removed.status.success() && removed.status.code() != Some(5) {
+            return Err(scm_unavailable("remove scoped managed Git helper failed"));
+        }
+        for value in previous {
+            if !run_command(
+                context,
+                "git",
+                &["config", "--global", "--add", key, value],
+                None,
+                false,
+            )?
+            .status
+            .success()
+            {
+                return Err(scm_unavailable("restore scoped prior Git helper failed"));
+            }
         }
     }
     Ok(())
-}
-
-fn git_config_pattern_exists(
-    context: &GitCredentialCommandContext,
-    pattern: &str,
-) -> Result<bool, DaemonError> {
-    let output = run_command(
-        context,
-        "git",
-        &["config", "--global", "--get-regexp", pattern],
-        None,
-        false,
-    )?;
-    if output.status.success() {
-        Ok(true)
-    } else if output.status.code() == Some(1) {
-        Ok(false)
-    } else {
-        Err(scm_unavailable(
-            "inspect managed GitHub Git credential helper failed",
-        ))
-    }
 }
 
 fn cleanup_failed_install(
@@ -1287,6 +1347,15 @@ esac
             r#"#!/bin/sh
 set -eu
 case "$1 $2 $3" in
+  "config --global --null")
+    test -f "$HOME/git-helper" || exit 1
+    printf '!gh auth git-credential\0'
+    ;;
+  "config --global --unset-all")
+    test ! -f "$HOME/git-remove-error" || exit 2
+    /bin/rm -f "$HOME/git-helper"
+    ;;
+  "config --global --add") /usr/bin/touch "$HOME/git-helper" ;;
   "config --global --get-regexp") test -f "$HOME/git-helper" ;;
   "config --global --remove-section")
     test ! -f "$HOME/git-remove-error" || exit 2
@@ -1839,6 +1908,15 @@ esac
             r#"#!/bin/sh
 set -eu
 case "$1 $2 $3" in
+  "config --global --null")
+    test -f "$HOME/git-helper" || exit 1
+    printf '!gh auth git-credential\0'
+    ;;
+  "config --global --unset-all")
+    test ! -f "$HOME/git-remove-error" || exit 2
+    /bin/rm -f "$HOME/git-helper"
+    ;;
+  "config --global --add") /usr/bin/touch "$HOME/git-helper" ;;
   "config --global --get-regexp") test -f "$HOME/git-helper" ;;
   "config --global --remove-section") /bin/rm -f "$HOME/git-helper" ;;
   *) exit 2 ;;
@@ -1883,5 +1961,86 @@ esac
         assert!(!target_home.join("token").exists());
         rollback_git_credentials(&target, &receipts).expect("repeat GitHub rollback");
         fs::remove_dir_all(root).expect("remove GitHub fixture");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod mp11_helper_tests {
+    use super::*;
+    #[test]
+    fn mp11_git_rollback_restores_owned_helper_and_preserves_host_settings_and_rotation() {
+        let root =
+            std::env::temp_dir().join(format!("mp11-git-helper-{:016x}", rand::random::<u64>()));
+        fs::create_dir_all(&root).unwrap();
+        let context =
+            GitCredentialCommandContext::for_tests(root.clone(), OsString::from("/usr/bin:/bin"));
+        let run = |args: &[&str]| {
+            assert!(run_command(&context, "git", args, None, false)
+                .unwrap()
+                .status
+                .success())
+        };
+        let key = "credential.https://github.com.helper";
+        run(&["config", "--global", "--add", key, "!owned-helper"]);
+        run(&[
+            "config",
+            "--global",
+            "credential.https://github.com.username",
+            "fixture-user",
+        ]);
+        let binding = serde_json::json!({"schemaVersion":RECEIPT_SCHEMA_VERSION,"contextId":"fixture","packageSha256":"a".repeat(64),
+            "materializationSha256":"b".repeat(64),"credentialId":GITHUB_CREDENTIAL_ID,"hostname":GITHUB_HOSTNAME,
+            "tokenSha256":"c".repeat(64),"phase":"installed",
+            "previousGitHelpers":{key:["!prior-helper"],"credential.https://gist.github.com.helper":[]},
+            "installedGitHelpers":{key:["!owned-helper"],"credential.https://gist.github.com.helper":[]}});
+        let binding_path = binding_path(&context);
+        fs::create_dir_all(binding_path.parent().unwrap()).unwrap();
+        crate::config::write_private_file(&binding_path, &serde_json::to_vec(&binding).unwrap())
+            .unwrap();
+        remove_github_git_helper(&context).unwrap();
+        let helper = run_command(
+            &context,
+            "git",
+            &["config", "--global", "--get", key],
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(helper.stdout).unwrap().trim(),
+            "!prior-helper"
+        );
+        let username = run_command(
+            &context,
+            "git",
+            &[
+                "config",
+                "--global",
+                "--get",
+                "credential.https://github.com.username",
+            ],
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(username.stdout).unwrap().trim(),
+            "fixture-user"
+        );
+        run(&["config", "--global", key, "!user-rotated-helper"]);
+        remove_github_git_helper(&context).unwrap();
+        let helper = run_command(
+            &context,
+            "git",
+            &["config", "--global", "--get", key],
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(helper.stdout).unwrap().trim(),
+            "!user-rotated-helper"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }

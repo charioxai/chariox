@@ -590,8 +590,18 @@ pub(super) fn resolve_project_environment_input_attestations(
     workspace_root: &Path,
     definition: &ProjectEnvironmentDefinition,
 ) -> Result<ProjectEnvironmentDefinition, String> {
+    resolve_project_environment_input_attestations_before_open(workspace_root, definition, |_| {})
+}
+
+fn resolve_project_environment_input_attestations_before_open(
+    workspace_root: &Path,
+    definition: &ProjectEnvironmentDefinition,
+    mut before_open: impl FnMut(&Path),
+) -> Result<ProjectEnvironmentDefinition, String> {
     definition.validate_for_utility_output()?;
     let mut resolved = definition.clone();
+    let root = crate::managed_context::development::directory::open_root(workspace_root)
+        .map_err(|_| "worker project root is unavailable".to_string())?;
     let mut total_bytes_read = 0_u64;
     for input in &mut resolved.inputs {
         let candidate = workspace_root.join(&input.path);
@@ -607,24 +617,25 @@ pub(super) fn resolve_project_environment_input_attestations(
                 input.path
             ));
         }
-        let canonical = candidate.canonicalize().map_err(|error| {
+        before_open(&candidate);
+        let mut file = crate::managed_context::development::directory::open_relative(
+            &root,
+            Path::new(&input.path),
+        )
+        .map_err(|_| {
             format!(
-                "worker project input could not be canonicalized: {} ({error})",
+                "worker project input could not be opened safely: {}",
                 input.path
             )
         })?;
-        if !canonical.starts_with(workspace_root) {
+        if !file.metadata().is_ok_and(|metadata| {
+            metadata.is_file() && metadata.len() <= MAX_PROJECT_ENVIRONMENT_INPUT_BYTES
+        }) {
             return Err(format!(
-                "worker project input escapes the materialized worktree: {}",
+                "worker project input is not a bounded regular file: {}",
                 input.path
             ));
         }
-        let mut file = std::fs::File::open(&canonical).map_err(|error| {
-            format!(
-                "worker project input could not be read: {} ({error})",
-                input.path
-            )
-        })?;
         let mut digest = Sha256::new();
         let mut buffer = [0_u8; 8192];
         let mut bytes_read = 0_u64;
@@ -2463,6 +2474,55 @@ done
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn mp11_attestation_ancestor_and_fifo_swaps_fail_at_the_actual_open_seam() {
+        use std::os::unix::fs::symlink;
+        crate::test_support::assert_fifo_rejected(|fifo| {
+            let root = fifo.parent().unwrap().join("workspace");
+            let outside = fifo.parent().unwrap().join("outside");
+            std::fs::create_dir_all(root.join("nested")).unwrap();
+            std::fs::create_dir(&outside).unwrap();
+            std::fs::write(root.join("nested/package.json"), b"synthetic inside").unwrap();
+            std::fs::write(outside.join("package.json"), b"synthetic outside").unwrap();
+            let definition = ProjectEnvironmentDefinition {
+                schema_version: 1,
+                origin: ProjectEnvironmentDefinitionOrigin::UserAuthored,
+                source: ProjectEnvironmentDefinitionSource::Devcontainer,
+                target_platform: "linux-x86_64".into(),
+                source_path: Some("nested/package.json".into()),
+                inputs: vec![ProjectEnvironmentInput {
+                    kind: ProjectEnvironmentInputKind::Recipe,
+                    path: "nested/package.json".into(),
+                    sha256: crate::session::KERNEL_COMPUTED_INPUT_ATTESTATION.into(),
+                }],
+                path_entries: Vec::new(),
+                setup_steps: Vec::new(),
+                validation_commands: vec!["true".into()],
+            };
+            let ancestor = resolve_project_environment_input_attestations_before_open(
+                &root,
+                &definition,
+                |_| {
+                    std::fs::rename(root.join("nested"), root.join("original")).unwrap();
+                    symlink(&outside, root.join("nested")).unwrap();
+                },
+            )
+            .is_err();
+            std::fs::remove_file(root.join("nested")).unwrap();
+            std::fs::rename(root.join("original"), root.join("nested")).unwrap();
+            let leaf = resolve_project_environment_input_attestations_before_open(
+                &root,
+                &definition,
+                |candidate| {
+                    std::fs::remove_file(candidate).unwrap();
+                    symlink(&fifo, candidate).unwrap();
+                },
+            )
+            .is_err();
+            ancestor && leaf
+        });
+    }
     #[test]
     fn worker_input_attestation_is_content_bound_and_fails_closed() {
         let root = std::env::temp_dir().join(format!(
