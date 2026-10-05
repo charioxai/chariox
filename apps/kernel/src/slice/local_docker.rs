@@ -1277,14 +1277,9 @@ fn configure_local_docker_slice_command(
             ..
         } = relay;
         if let Some(cloud_relay_config_json) = cloud_relay_config_json {
-            if !broker::configured() {
-                let host_config_path =
-                    write_cloud_relay_config_file(record, options, &cloud_relay_config_json)?;
-                command.env(
-                    "CHARIOX_SLICE_CLOUD_RELAY_CONFIG_HOST_PATH",
-                    host_config_path,
-                );
-            }
+            // Transfer through the existing stdin path in the provisioner.
+            // Keeping a second host copy exposes credentials under configured
+            // roots and is unnecessary for both broker and local provisioning.
             command.env(
                 "CHARIOX_SLICE_CLOUD_RELAY_CONFIG_JSON",
                 cloud_relay_config_json,
@@ -1345,30 +1340,6 @@ fn local_docker_error(message: impl Into<String>) -> DaemonError {
         operation: "slice.local_docker",
         message: message.into(),
     }
-}
-
-fn write_cloud_relay_config_file(
-    record: &SliceRecord,
-    options: &LocalDockerSliceOptions,
-    config_json: &str,
-) -> Result<PathBuf, DaemonError> {
-    let dir = options.root.join("runtime").join(&record.id);
-    std::fs::create_dir_all(&dir).map_err(|error| DaemonError::LocalTransport {
-        operation: "slice.local_docker",
-        message: format!(
-            "failed to create slice runtime config dir {}: {error}",
-            dir.display()
-        ),
-    })?;
-    let path = dir.join("cloud-relay-config.json");
-    std::fs::write(&path, config_json).map_err(|error| DaemonError::LocalTransport {
-        operation: "slice.local_docker",
-        message: format!(
-            "failed to write slice cloud relay config {}: {error}",
-            path.display()
-        ),
-    })?;
-    Ok(path)
 }
 
 fn compact_login_message(output: &str) -> String {
