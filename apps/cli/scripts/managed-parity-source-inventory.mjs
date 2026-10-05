@@ -12,6 +12,11 @@ import { stripPostgresComments } from "./lib/managed-parity-sql-source.mjs";
 import { patchSourceViews } from "./lib/managed-parity-patch-source.mjs";
 import { FROZEN_SEMANTIC_REVIEWS } from "./lib/managed-parity-semantic-reviews.mjs";
 import { sourceRuleCandidates, sourceClassification, groupSourceClassifications, sourceAuditGaps } from "./lib/managed-parity-source-rules.mjs";
+import { currentDeclarationCandidates } from "./lib/managed-parity-current-declarations.mjs";
+import { CURRENT_SEMANTIC_REVIEWS } from "./lib/managed-parity-current-reviews.mjs";
+
+import { classifySecurityPath, SECURITY_CLASSES, SECURITY_SCOPE_SCHEMA, evaluateParityMatrix, evaluateSecurityGate } from "./lib/managed-parity-security-scope.mjs";
+import { SECURITY_SEMANTIC_REVIEWS } from "./lib/managed-parity-security-reviews.mjs";
 
 export const INVENTORY_SCHEMA = "chariox.managed-parity.source-inventory.v2";
 // These approvals are bound to a historical source only. They must not be
@@ -22,9 +27,14 @@ export const DEFAULT_SOURCE_REF = "HEAD";
 const INVENTORY_TOOL_PATH = "apps/cli/scripts/managed-parity-source-inventory.mjs";
 const INVENTORY_TOOL_MODULES = [
   ["./managed-parity-source-inventory.mjs", INVENTORY_TOOL_PATH],
+  ["./lib/managed-parity-security-scope.mjs", "apps/cli/scripts/lib/managed-parity-security-scope.mjs"],
+  ["./lib/managed-parity-security-reviews.mjs", "apps/cli/scripts/lib/managed-parity-security-reviews.mjs"],
+
   ["./lib/managed-parity-semantic-reviews.mjs", "apps/cli/scripts/lib/managed-parity-semantic-reviews.mjs"],
   ["./lib/managed-parity-patch-source.mjs", "apps/cli/scripts/lib/managed-parity-patch-source.mjs"],
   ["./lib/managed-parity-source-rules.mjs", "apps/cli/scripts/lib/managed-parity-source-rules.mjs"],
+  ["./lib/managed-parity-current-declarations.mjs", "apps/cli/scripts/lib/managed-parity-current-declarations.mjs"],
+  ["./lib/managed-parity-current-reviews.mjs", "apps/cli/scripts/lib/managed-parity-current-reviews.mjs"],
   ["./lib/managed-parity-fragment-source.mjs", "apps/cli/scripts/lib/managed-parity-fragment-source.mjs"],
   ["./lib/managed-parity-sql-source.mjs", "apps/cli/scripts/lib/managed-parity-sql-source.mjs"],
   ["./lib/managed-parity-caddy-source.mjs", "apps/cli/scripts/lib/managed-parity-caddy-source.mjs"],
@@ -116,6 +126,8 @@ const SCANNABLE_EXTENSIONS = new Set([
   ".apparmor",
   ".awk",
   ".c",
+  ".cc",
+  ".h",
   ".caddyfile",
   ".bash",
   ".cjs",
@@ -123,6 +135,7 @@ const SCANNABLE_EXTENSIONS = new Set([
   ".container",
   ".dockerfile",
   ".env",
+  ".entitlements",
   ".fish",
   ".js",
   ".jsx",
@@ -133,6 +146,7 @@ const SCANNABLE_EXTENSIONS = new Set([
   ".network",
   ".path",
   ".patch",
+  ".plist",
   ".policy",
   ".profile",
   ".py",
@@ -181,6 +195,8 @@ const IGNORED_PATH_PARTS = [
 ];
 
 const PRODUCTION_PATH_PREFIXES = [
+  "apps/app-worker/",
+  "apps/app-storage-helper/",
   "adapters/",
   "apps/cli/",
   "apps/ios/",
@@ -197,6 +213,17 @@ const PRODUCTION_PATH_PREFIXES = [
   "scripts/",
 ];
 
+// MP-11: these are exact non-executable synthetic fixtures, not source formats.
+// Changed contents/mode require a fresh exclusion decision, never inheritance.
+const EXCLUDED_FIXTURE_BLOBS = Object.freeze({
+  "apps/kernel/src/runtime/state/testdata/claude-setup-token-2.1.281-start.pty": "d95a0f81eeed8d1ed7d7c015148db4ae94fcecba",
+  "packages/app-package/fuzz/seeds/archive/0": "26bc3530acf221ec9be6f0aec5dac3afa24ea72c",
+  "packages/app-package/fuzz/seeds/signed/0": "cc0d165b5ec9e865402a8192fce4003e3a0095a4",
+  "packages/app-package/fuzz/seeds/signed/1": "d8313ed338ac58bed4f958eed6ed672edc6daabd",
+  "packages/app-package/fuzz/seeds/signed/2": "c7e62e2614e5743c93982528642ae423805099c9",
+  "packages/app-package/fuzz/seeds/signed/3": "1fad10dc55a0499ba151d40adfc82277fa5f771d",
+});
+
 // These are tracked repository assets, documentation, native build metadata,
 // or foreign-language implementation files. They are intentionally outside
 // this MP source inventory; a new production suffix is not silently ignored.
@@ -205,11 +232,9 @@ const NON_INVENTORIED_PRODUCTION_EXTENSIONS = new Set([
   ".charioxignore",
   ".css",
   ".dockerignore",
-  ".entitlements",
   ".example",
   ".gitignore",
   ".gitkeep",
-  ".h",
   ".html",
   ".license",
   ".lock",
@@ -380,9 +405,14 @@ const SEMANTIC_DISPOSITIONS = new Set([
 // are not semantic approvals because they contain no independent reviewer
 // metadata. New approvals must bind the complete current source/candidate
 // anchor and the review that authorized the classification.
-export const DEFAULT_SEMANTIC_DISPOSITIONS = FROZEN_SEMANTIC_REVIEWS;
+export const DEFAULT_SEMANTIC_DISPOSITIONS = Object.freeze([...FROZEN_SEMANTIC_REVIEWS, ...CURRENT_SEMANTIC_REVIEWS, ...SECURITY_SEMANTIC_REVIEWS]);
 
 const OWNED_DIRTY_PATHS = new Set([
+  "apps/cli/scripts/lib/managed-parity-security-scope.mjs",
+  "apps/cli/scripts/lib/managed-parity-security-reviews.mjs",
+  "apps/cli/scripts/lib/managed-parity-security-scope.test.mjs",
+  "apps/cli/scripts/lib/managed-parity-current-reviews.mjs",
+  "apps/cli/scripts/lib/managed-parity-current-declarations.mjs",
   "apps/cli/scripts/lib/managed-parity-semantic-reviews.mjs",
   "apps/cli/scripts/lib/managed-parity-patch-source.mjs",
   "apps/cli/scripts/lib/managed-parity-source-rules.mjs",
@@ -392,9 +422,15 @@ const OWNED_DIRTY_PATHS = new Set([
   "apps/cli/scripts/managed-parity-source-inventory.mjs",
   "apps/cli/scripts/managed-parity-source-inventory.test.mjs",
   "docs/MANAGED_PATH1_PARITY_INVENTORY.md",
+  "docs/BROWSER_COMPUTER_USE_END_TO_END_PLAN.md",
 ]);
 
 const SELF_EXCLUDED_PATHS = new Set([
+  "apps/cli/scripts/lib/managed-parity-security-scope.mjs",
+  "apps/cli/scripts/lib/managed-parity-security-reviews.mjs",
+  "apps/cli/scripts/lib/managed-parity-security-scope.test.mjs",
+  "apps/cli/scripts/lib/managed-parity-current-reviews.mjs",
+  "apps/cli/scripts/lib/managed-parity-current-declarations.mjs",
   "apps/cli/scripts/lib/managed-parity-semantic-reviews.mjs",
   "apps/cli/scripts/lib/managed-parity-patch-source.mjs",
   "apps/cli/scripts/lib/managed-parity-source-rules.mjs",
@@ -462,8 +498,13 @@ function isProductionPath(path) {
   return PRODUCTION_PATH_PREFIXES.some((prefix) => path.startsWith(prefix));
 }
 
-function classifyProductionPath(path) {
+export function classifyProductionPath(path, requireKnownFormat = false) {
   if (isIgnoredPath(path)) return null;
+  // MP-11: six exact synthetic/non-executable fixtures, never a directory exemption.
+  if (Object.hasOwn(EXCLUDED_FIXTURE_BLOBS, path)) {
+    if (requireKnownFormat) throw new Error(`unsupported patch fixture content: ${path}`);
+    return null;
+  }
   const parts = path.split("/");
   if (parts.some((part) => IGNORED_DIRECTORY_NAMES.has(part))) return null;
   const fileName = basename(path);
@@ -471,11 +512,11 @@ function classifyProductionPath(path) {
   const extension = extname(path).toLowerCase();
   if (CONTAINER_FILE_RE.test(path) || COMPOSE_FILE_RE.test(path)) return "container";
   if (SCANNABLE_EXTENSIONLESS_BASENAMES.has(fileName)) return fileName === "Makefile" ? "shell" : "container";
-  if (fileName === "chariox-open-url") return "shell";
+  if (fileName === "chariox-open-url" || path === "scripts/macos-pkg/postinstall") return "shell";
   if (fileName === "tint2rc") return "config";
   if (path.endsWith(".service.in")) return "unit";
   if (!SCANNABLE_EXTENSIONS.has(extension)) {
-    if (!isProductionPath(path)) return null;
+    if (!isProductionPath(path) && !requireKnownFormat) return null;
     if (NON_INVENTORIED_PRODUCTION_BASENAMES.has(fileName)
       || NON_INVENTORIED_PRODUCTION_EXTENSIONS.has(extension)
       // extname(".gitignore") is empty, so match only exact dotfile names
@@ -485,7 +526,7 @@ function classifyProductionPath(path) {
   }
   if (extension === ".patch") return "patch";
   if ([".rs"].includes(extension)) return "rust";
-  if (extension === ".c") return "c";
+  if ([".c", ".cc", ".h"].includes(extension)) return "c";
   if (extension === ".sql") return "sql";
   if (extension === ".caddyfile") return "caddy";
   if (extension === ".py") return "python";
@@ -565,8 +606,8 @@ function stripComments(text, format) {
 
 function readText(fsApi, absolutePath) {
   const value = fsApi.readFileSync(absolutePath);
-  if (value.includes(0)) return null;
-  return value.toString("utf8");
+  if (value.includes(0)) throw new Error(`unsupported binary source: ${absolutePath}`);
+  return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(value);
 }
 
 function inferSymbol(lines, lineIndex) {
@@ -760,13 +801,20 @@ function validateSemanticReview(review) {
   const anchor = review?.anchor;
   const metadata = review?.independentReview;
   const validSha = (value) => typeof value === "string" && /^[0-9a-f]{40}$/.test(value);
-  if (typeof review?.id !== "string" || !review.id.trim()
+  const invalidSecurityReview = anchor?.category === "security_critical" && (
+    !["OK", "FINDING"].includes(metadata?.verdict)
+    || typeof metadata?.enforces !== "string" || !metadata.enforces.trim()
+    || typeof metadata?.check !== "string" || metadata.check.trim().length < 20
+    || (metadata.verdict === "FINDING"
+      ? !["P0", "P1", "P2", "P3"].includes(metadata.severity) || review.disposition !== "removal_required"
+      : metadata.severity !== null || review.disposition !== "ordinary_path1_behavior"));
+  if (invalidSecurityReview || typeof review?.id !== "string" || !review.id.trim()
     || !validSha(review.sourceCommit) || !validSha(review.sourceTree)
     || !anchor || typeof anchor.path !== "string" || !anchor.path
     || !validSha(anchor.blob) || !Number.isInteger(anchor.line) || anchor.line < 1
     || !Number.isInteger(anchor.column) || anchor.column < 1
     || !(anchor.symbol === null || (typeof anchor.symbol === "string" && anchor.symbol))
-    || !REQUIRED_CATEGORIES.includes(anchor.category)
+    || !(REQUIRED_CATEGORIES.includes(anchor.category) || anchor.category === "security_critical")
     || typeof anchor.selector !== "string" || !anchor.selector
     || !/^[0-9a-f]{64}$/.test(anchor.contextHash ?? "")
     || !SEMANTIC_DISPOSITIONS.has(review.disposition)
@@ -851,17 +899,47 @@ function buildRowCoverage(entries) {
 
 function collectTrackedFiles({ sourceRoot, sourceRef, fsApi, runGit }) {
   const treeEntries = parseLsTree(runGit(["ls-tree", "-r", "--full-tree", "-z", sourceRef], sourceRoot));
-  return treeEntries.map((entry) => {
-    const format = classifyProductionPath(entry.path);
-    if (!format) return null;
+  for (const entry of treeEntries) {
+    if (Object.hasOwn(EXCLUDED_FIXTURE_BLOBS, entry.path)
+      && (entry.mode !== "100644" || entry.blob !== EXCLUDED_FIXTURE_BLOBS[entry.path])) {
+      throw new Error(`excluded fixture source drift: ${entry.path}`);
+    }
+  }
+  const selected = treeEntries.map((entry) => ({ ...entry, format: classifyProductionPath(entry.path) }))
+    .filter((entry) => entry.format);
+  for (const entry of selected) {
+    if (!["100644", "100755"].includes(entry.mode)) throw new Error(`unsupported source mode: ${entry.path}`);
+  }
+  const blobs = new Map();
+  if (runGit === defaultRunGit && selected.length) {
+    // MP-11: read immutable objects even for HEAD. A mutable working copy
+    // must never be attributed to an unchanged committed blob.
+    const batch = spawnSync("git", ["cat-file", "--batch"], { cwd: sourceRoot,
+      input: selected.map((entry) => entry.blob).join("\n") + "\n", maxBuffer: 256 * 1024 * 1024 });
+    if (batch.error || batch.status !== 0) throw batch.error ?? new Error("Git blob batch failed");
+    let cursor = 0;
+    for (const entry of selected) {
+      const end = batch.stdout.indexOf(10, cursor);
+      const header = batch.stdout.subarray(cursor, end).toString("ascii").split(" ");
+      const size = Number(header[2]);
+      if (end < cursor || header[0] !== entry.blob || header[1] !== "blob"
+        || !Number.isSafeInteger(size) || size < 0 || end + size + 1 >= batch.stdout.length
+        || batch.stdout[end + size + 1] !== 10) throw new Error("Git batch blob identity/framing mismatch");
+      const bytes = batch.stdout.subarray(end + 1, end + 1 + size);
+      if (bytes.includes(0)) throw new Error(`unsupported binary source: ${entry.path}`);
+      blobs.set(entry.blob, new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes));
+      cursor = end + size + 2;
+    }
+    if (cursor !== batch.stdout.length) throw new Error("Git batch trailing data");
+  }
+  return selected.map((entry) => {
     return {
       ...entry,
-      format,
-      text: sourceRef === "HEAD"
+      text: blobs.has(entry.blob) ? blobs.get(entry.blob) : sourceRef === "HEAD"
         ? readText(fsApi, join(sourceRoot, entry.path))
         : runGit(["show", `${sourceRef}:${entry.path}`], sourceRoot),
     };
-  }).filter((entry) => entry !== null && entry.text !== null);
+  });
 }
 
 export function collectSourceInventory({
@@ -872,7 +950,10 @@ export function collectSourceInventory({
   expectedTree = null,
   sourceRef = DEFAULT_SOURCE_REF,
   claimedDispositions = [],
+  scope = "full-inventory",
+  parityMatrix = null,
 } = {}) {
+  if (!["full-inventory", "security-critical"].includes(scope)) throw new Error(`unknown MP-11 scope: ${scope}`);
   if (!sourceRoot || !isAbsolute(sourceRoot)) throw new Error("sourceRoot must be an absolute path");
   const source = {
     ref: sourceRef,
@@ -895,7 +976,8 @@ export function collectSourceInventory({
   const semanticReviewIndex = buildSemanticReviewIndex(semanticReviews);
   assertDispositionClaims(claimedDispositions, semanticReviews, source);
 
-  const files = collectTrackedFiles({ sourceRoot, sourceRef, fsApi, runGit });
+  const files = collectTrackedFiles({ sourceRoot,
+    sourceRef: runGit === defaultRunGit ? source.commit : sourceRef, fsApi, runGit });
   const entries = [];
   const fragments = fragmentSourceViews(files);
   const locatedAnchors = new Set();
@@ -903,18 +985,27 @@ export function collectSourceInventory({
   const appliedSemanticReviewIds = new Set();
   for (const file of fragments.files) {
     const rawLines = file.text.split(/\r?\n/);
-    const views = file.format === "patch" ? patchSourceViews(file, classifyProductionPath)
+    const views = file.format === "patch" ? patchSourceViews(file, (path) => classifyProductionPath(path, true))
       : [{ path: file.path, format: file.format, text: file.text, lineOffset: 0, patchLines: [] }];
     for (const view of views) {
       // Patch context may be omitted. Even with a verified fragment order,
       // the generic JavaScript mask cannot parse nested templates or regexes.
       // Retain raw fragment candidates, including apparent comments, for review.
-      const preserveCandidates = file.format === "patch" || file.unverifiedFragment || file.assembly;
+      const preserveCandidates = file.format === "patch" || file.unverifiedFragment || file.assembly
+        // MP-11: the generic mask does not parse XML or C++ raw literals.
+        // Retain apparent comments in these new formats for semantic review.
+        || [".plist", ".cc", ".h"].includes(extname(file.path).toLowerCase());
       const lines = (preserveCandidates ? view.text : stripComments(view.text, view.format)).split(/\r?\n/);
       const testRanges = view.format === "rust" ? findRustTestRanges(view.text, view.path) : [];
       const unitTopology = explicitUnitTopology(view.path, view.text);
       const embeddedPath = file.format === "patch" ? view.path : null;
-      const manuals = sourceRuleCandidates(file, lines, embeddedPath);
+      const manuals = sourceRuleCandidates(file, lines, embeddedPath, view.lineOffset);
+      if (file.format !== "patch" && !file.assembly) {
+        for (const current of currentDeclarationCandidates(file, source)) {
+          if (!manuals.some((manual) => manual.ruleId === current.ruleId && manual.symbol === current.symbol
+            && manual.lineIndex === current.lineIndex)) manuals.push(current);
+        }
+      }
       for (const manual of manuals) locatedAnchors.add(manual.ruleId + ":" + manual.symbol);
       for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
         const scanLine = lines[lineIndex];
@@ -957,7 +1048,7 @@ export function collectSourceInventory({
             sourceRoleHints.lexicalContext = "unparsed_fragment_assembly";
             sourceRoleHints.executionRole = "fragment_candidate";
           }
-          if (patchSource?.change === "removed") {
+          if (patchSource?.change === "removed" || view.oldOnly) {
             sourceRoleHints.executionRole = "removed_patch_source_candidate";
             sourceRoleHints.positivePath1Directive = false;
           }
@@ -970,6 +1061,7 @@ export function collectSourceInventory({
           if (disposition.status === "reviewed") appliedSemanticReviewIds.add(disposition.reviewId);
           entries.push({
             candidateId, ...finding, candidateOrigin: match.candidateOrigin, sourceRoleHints,
+            ...(match.currentDeclarationExpectation ? { currentDeclarationExpectation: true } : {}),
             ...(patchSource ? { patchSource } : {}),
             ...(anchor.fragmentSource ? { fragmentSource: anchor.fragmentSource } : {}),
             sourceClassification: sourceClassification(file, embeddedPath, physicalLine + 1),
@@ -1016,6 +1108,11 @@ export function collectSourceInventory({
     };
   });
   const pendingSemanticReviews = semanticReviewStatus.filter((review) => review.status !== "applied").length;
+  // MP-11: retained historical/other-repository records stay visible, but
+  // cannot be reapplied to this source. A missing same-source reviewed anchor
+  // still blocks the gate, including approved anchors that disappeared.
+  const unappliedCurrentSemanticReviews = semanticReviewStatus.filter((review) =>
+    review.sourceCommit === source.commit && review.sourceTree === source.tree && review.status !== "applied").length;
   const report = {
     schema: INVENTORY_SCHEMA,
     source: {
@@ -1044,6 +1141,7 @@ export function collectSourceInventory({
       unreviewed,
       pendingReviewedPredicates,
       pendingSemanticReviews,
+      unappliedCurrentSemanticReviews,
       allowedReleaseDeployment: entries.filter((entry) => entry.semanticDisposition.disposition === "allowed_release_deployment").length,
       requiredAutomaticShutdown: entries.filter((entry) => entry.semanticDisposition.disposition === "required_automatic_shutdown").length,
     },
@@ -1051,10 +1149,46 @@ export function collectSourceInventory({
       && missingRows.length === 0
       && removalRequired === 0
       && unreviewed === 0
-      && pendingSemanticReviews === 0
+      && unappliedCurrentSemanticReviews === 0
       ? "pass"
       : "fail",
   };
+  report.scope = scope;
+  report.gating = scope === "security-critical";
+  if (scope === "security-critical") {
+    // MP-11: scan physical files before fragment assembly; each anchor binds the
+    // complete blob, including unknown lexical classes and zero-match helpers.
+    const securityEntries = files.flatMap(file => classifySecurityPath(file.path, file.text).map(securityClass => {
+      const finding = { path: file.path, blob: file.blob, line: 1, column: 1,
+        symbol: null, category: "security_critical", selector: securityClass,
+        contextHash: sha256(file.text) };
+      const semanticDisposition = resolveSemanticDisposition(finding, source, semanticReviewIndex);
+      return { ...finding, securityClass, candidateOrigin: "security_whole_blob",
+        affectedBehavior: SECURITY_CLASSES[securityClass]?.purpose ?? "MP-11 unknown trust-boundary class",
+        applicableMpIds: ["MP-11"], semanticDisposition,
+        candidateId: sha256(stableJson({ commit: source.commit, tree: source.tree, ...finding })) };
+    }));
+    const securityReviews = semanticReviews.filter(review => review.anchor.category === "security_critical"
+      && review.sourceCommit === source.commit && review.sourceTree === source.tree);
+    const applied = new Set(securityEntries.map(entry => entry.semanticDisposition.reviewId));
+    const staleReviews = securityReviews.filter(review => !applied.has(review.independentReview.reviewId)).length;
+    // Old managed-selector declaration ranges do not define narrowed admission.
+    // Unverified assemblies touching security files still block observation.
+    const securityPaths = new Set(securityEntries.map(entry => entry.path));
+    const securityGaps = fragments.gaps.filter(gap => !gap.path || securityPaths.has(gap.path));
+    const parity = evaluateParityMatrix(parityMatrix, source);
+    const gate = evaluateSecurityGate({ entries: securityEntries, gaps: securityGaps, staleReviews, parity });
+    report.fullInventory = { summary: report.summary, status: report.status, gating: false };
+    report.entries = securityEntries;
+    report.semanticReviews = report.semanticReviews.map(review => review.sourceCommit === source.commit
+      && review.sourceTree === source.tree && securityReviews.some(r => r.id === review.id)
+      ? { ...review, status: applied.has(review.independentReviewId) ? "applied" : "source_drift" } : review);
+    report.securityScope = { schema: SECURITY_SCOPE_SCHEMA, anchorUnit: "complete exact Git blob per trust-boundary class",
+      classes: Object.fromEntries(Object.keys(SECURITY_CLASSES).map(name => [name, securityEntries.filter(e => e.securityClass === name).length])), gate };
+    report.summary = gate.summary;
+    report.sourceAuditGaps = securityGaps;
+    report.status = gate.status;
+  }
   return stable(report);
 }
 
@@ -1065,6 +1199,8 @@ export function parseArgs(argv) {
     expectedCommit: null,
     expectedTree: null,
     sourceRef: DEFAULT_SOURCE_REF,
+    scope: "full-inventory",
+    parityMatrixPath: null,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -1073,6 +1209,11 @@ export function parseArgs(argv) {
     else if (argument === "--expect-source-commit") options.expectedCommit = argv[++index];
     else if (argument === "--expect-source-tree") options.expectedTree = argv[++index];
     else if (argument === "--source-ref") options.sourceRef = argv[++index];
+    else if (argument === "--scope") {
+      options.scope = argv[++index];
+      if (!["full-inventory", "security-critical"].includes(options.scope)) throw new Error("MP-11 --scope requires full-inventory or security-critical");
+    }
+    else if (argument === "--parity-matrix") options.parityMatrixPath = resolve(argv[++index]);
     else if (argument === "--help") options.help = true;
     else throw new Error(`unknown argument: ${argument}`);
   }
@@ -1080,9 +1221,11 @@ export function parseArgs(argv) {
 }
 
 export function runCli(argv = process.argv.slice(2), io = { write: (value) => process.stdout.write(value), error: (value) => process.stderr.write(value) }) {
-  const options = parseArgs(argv);
+  let options;
+  try { options = parseArgs(argv); }
+  catch (error) { io.error(`${error instanceof Error ? error.message : String(error)}\n`); return 2; }
   if (options.help) {
-    io.write("usage: node managed-parity-source-inventory.mjs [--root DIR] [--source-ref REF] [--expect-source-commit SHA] [--expect-source-tree TREE] [--output FILE]\n");
+    io.write("usage: node managed-parity-source-inventory.mjs [--root DIR] [--source-ref REF] [--expect-source-commit SHA] [--expect-source-tree TREE] [--output FILE] [--scope full-inventory|security-critical] [--parity-matrix FILE]\n");
     return 0;
   }
   try {
@@ -1091,6 +1234,8 @@ export function runCli(argv = process.argv.slice(2), io = { write: (value) => pr
       sourceRef: options.sourceRef,
       expectedCommit: options.expectedCommit,
       expectedTree: options.expectedTree,
+      scope: options.scope,
+      parityMatrix: options.parityMatrixPath ? JSON.parse(readFileSync(options.parityMatrixPath, "utf8")) : null,
     });
     const output = stableJson(report);
     if (options.output) {
@@ -1098,7 +1243,7 @@ export function runCli(argv = process.argv.slice(2), io = { write: (value) => pr
     } else {
       io.write(output);
     }
-    return report.status === "pass" ? 0 : 1;
+    return !report.gating || report.status === "pass" ? 0 : 1;
   } catch (error) {
     io.error(`${error instanceof Error ? error.message : String(error)}\n`);
     return 2;

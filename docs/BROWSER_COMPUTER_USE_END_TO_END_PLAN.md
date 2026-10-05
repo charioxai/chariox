@@ -256,6 +256,18 @@ absence of another user report cannot close an item.
   automatic shutdown. The audit must find inconsistencies proactively rather
   than wait for users to report them.
 
+### MP-11 owner narrowing (2026-10-05)
+
+MP-11 no longer requires individual exact-blob semantic approval of every
+shipped lexical anchor. It passes when both the ordinary/managed parity matrix
+(MP-01..MP-10 plus b211 CURRENT_INVENTORY items) is GREEN or each RED row has an
+owner-visible disposition, and current semantic records cover security-critical
+trust-boundary anchors in OSS and Cloud. The narrowed classes and executable
+gate are defined in `docs/MANAGED_PATH1_PARITY_INVENTORY.md` and the checked-in
+`managed-parity-security-scope.mjs`. Full lexical inventory remains available
+for investigation and does not gate. Other code remains covered by PR-head
+reviewer workflow and CI; fresh-machine parity requirements remain applicable.
+
 ### MP-09 / MP-11 provisional outage decision for 2026-10-01
 
 The coordinator/user authorized a bounded quiescence-acknowledgement outage
