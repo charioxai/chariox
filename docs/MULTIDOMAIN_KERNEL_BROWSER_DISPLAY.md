@@ -49,19 +49,29 @@ adapters; neither VideoToolbox nor Media Foundation has been measured here.
 libvpx controls; [WebCodecs](https://www.w3.org/TR/webcodecs/) defines the browser
 decoder/support-query contract. Codec support must be queried per viewer.
 
-A changed large frame first gets VP9. The next identical protected capture gets
-an exact full PNG. Once the viewer acknowledges exact pixels, small changes may
+A changed large frame first gets VP9. The next full protected capture gets
+an exact full PNG, including when the source changed slightly during refinement.
+Once the viewer acknowledges exact pixels, small changes may
 use 128-pixel PNG tiles against that exact sequence. Compare serialized patch
 size against full PNG; use patches only below 48 KB. Larger moving changes
 return to video. Unchanged exact frames emit no event. Lost acknowledgements,
 new documents or changed protection policy discard the patch base. A fresh
 independent video frame and then full PNG rebuild it. PNG-only mode is exact
-on every emitted frame.
+on every full emitted frame. Phase 4 adds private, protected thumbnail-guided
+native crops for small changes. A thumbnail never supplies displayed pixels or
+crosses the relay. It locates a padded CSS rectangle (at most 15% of the viewport)
+that is captured at native DPR and merged into the protected pixel base. It is
+a damage hint: fine changes elsewhere can be missed in the first paint. The
+next poll without new input forces full protected readback to verify settled
+detail. Large changes, a lost base, a new document or policy changes require
+full capture. Exactness claims refer to that verified settled frame.
 
 Negotiate 0.5–8 Mbps; default client budget 2 Mbps. Each frame includes base64 and
 metadata. Pacing additionally reserves the relay encrypted payload's base64
 expansion plus 1 KB of envelope overhead, including bootstrap and repairs.
-There is no burst credit. Frames above 1 MiB serialized/encrypted estimate fail
+Up to 16 KiB of unused budget accrues while idle/capturing, starting at zero.
+Large bootstrap and repair frames still wait for the remaining budget.
+Frames above 1 MiB serialized/encrypted estimate fail
 loudly. This is a conservative application budget, not a wire/TLS or multi-viewer
 aggregate cap. A request grants one frame credit, and its next credit follows
 presentation. No unbounded source/encode/viewer queue exists. Host limits eight
@@ -96,7 +106,8 @@ unchanged because it still carries opaque encrypted terminal packets.
    session ID equal to the display ID, attachment ID equal to the generation
    string, and the same persistent client keypair used for requests.
    The kernel rechecks the display owner and maps its ID to the relay delivery
-   ID. Registration expires after 60 idle seconds; pixels are never replayed.
+   ID. Registration expires after 60 idle seconds; each admitted display-next
+   poll renews it even when there are no changed pixels. Pixels are never replayed.
    `display_next` carries the ID, generation and last presented `after_sequence`.
    A changed frame emits `event: "kernel_browser_frame"`, `subscription_id`,
    and `frame`. Its response is a small receipt with `frame_sent`; event and
@@ -117,9 +128,14 @@ unchanged because it still carries opaque encrypted terminal packets.
    for admission, request encryption and event decryption during the attachment. For a relay client this adapter
    uses its existing sender-pinned decryption, never a Cloud HTTP media route.
    `attachBrowserDisplay` negotiates, correlates events/receipts, presents atomic
-   frames and exposes `next`, `input`, and `close`. Call `next` at the chosen
+   frames and exposes `next`, `input`, and `close`. Events may be presented before
+   their receipt; the single credit remains held through both presentation and
+   receipt. Call `next` at the chosen
    cadence, awaiting each call. Presentation failure requires a fresh attach;
-   do not acknowledge a lost patch base. Closing clears the display and
+   do not acknowledge a lost patch base. Never automatically resend uncached
+   `display_next` after a stall or connection loss: its outcome is unknown and
+   a fresh attachment is required. The shared IPC client handles this nested
+   command explicitly. Closing clears the display and
    unsubscribes. Reconnect requires a fresh display ID.
 5. The public adapter routes through
    `KernelRuntimeState::kernel_browser_display_request(&KernelCommand, ...)` from
@@ -142,9 +158,12 @@ unchanged because it still carries opaque encrypted terminal packets.
 Frames carry sequence, document ID, tab/generation, CSS/pixel geometry, DPR,
 colour `srgb`, and one payload: independent VP9, full PNG, or bounded PNG tiles
 with `base_sequence`. The presenter validates bindings, dimensions and tile
-bounds before committing its back buffer. It closes bitmaps and video frames.
+bounds before committing. Full frames use a back buffer; all tiles decode and
+validate before synchronous patch drawing, avoiding a full canvas copy/reset.
+It closes bitmaps and video frames.
 This first transport uses per-display sequences; do not feed them into session
-terminal replay cursors. Desktop clients can implement the same contract later.
+terminal replay cursors. Local transient display envelopes carry event ID zero;
+the shared IPC cursor ignores them. Desktop clients can implement the contract later.
 
 ## MD-DISPLAY-02/04: focused validation
 
@@ -192,8 +211,8 @@ onto kbrowser `d6d03751ffea37198fb33530829f4cd76ae30fbf`. Final receipt:
 `/root/.codex/evidence/browser-resume-20260930/display/phase3/final-typed-relay-2mbps/results.json`.
 `phase3/provenance.json` binds this source, the test binary SHA-256, 118 source
 file hashes, 28 exact embedded controller assets, commands, exits and receipt.
-This document/handoff may follow in a documentation-only commit; execution file
-hashes must still match that manifest. Earlier receipts and research results
+This is historical Phase-3 coverage; Phase-4 execution files differ and the
+current binary was rebuilt. Earlier receipts and research results
 retain their original sources, including the pre-rebase implementation.
 
 The real headed, sandboxed kernel Chromium runs outside slices. The focused
@@ -224,16 +243,16 @@ cost and excluding already-exited workers. These are scoped observations, not
 sustained video throughput, total egress caps or full input-to-photon hardware
 measurements. Screenshots/diffs and raw latency histograms remain external.
 
-**Latency remains RED against the owner's comparable-latency goal.** Historical
+**Phase-3 latency was RED against the owner's comparable-latency goal.** Historical
 Phase-2 docs at DPR2/960×600 measured Selkies CBR 2 Mbps p95 74.72 ms (46.17 dB)
 and paced exact PNG p95 115.81 ms. The new kernel authority/actor/capture path is
 substantially slower; changed geometry, docs content and request/observation
 cost mean these are not bandwidth-fair curves. Phase-2 source identities and
 limits remain in `docs/MULTIDOMAIN_DISPLAY_TRANSPORT.md` on `agent/display`.
 The bootstrap VP9 quality also does not beat that Selkies fixture. Exact settled
-text is proven here; a universally higher-quality replacement at comparable
-latency is not. Keep the feature off while profiling and replacing redundant
-PNG/serialization work behind the protected seam.
+text was proven there; a universally higher-quality replacement at comparable
+latency was not. Phase-4 component measurements below supersede only the local
+latency result. Keep the feature off for remaining acceptance gates.
 
 Focused checks: 33 Node tests, 14 Rust shape/event/conformance/actor/takeover/origin
 checks, kernel-client TypeScript, changed-Rust formatting and local build pass.
@@ -242,6 +261,85 @@ receipts. The kernel origin guard remains intact: a browser connecting directly
 to the native local WebSocket is correctly refused. No hosted WAN, production
 Cloud, native Mac/Windows, live Vault login, multi-viewer or Room migration gate
 closes from these results.
+
+## MD-DISPLAY-02/04: Phase-4 latency measurements
+
+Execution source `4d4ebd85a` (kernel build source `c8518a3e2`; subsequent changes
+only adjust the harness timestamp/settling assertion). Clean receipt:
+`phase4/final-2mbps-v2/results.json` under the external display evidence root.
+The same headed, sandboxed Linux source, DPR2 geometry, 2 Mbps negotiated budget,
+production scoped relay and encrypted runtime events are used. Twenty clicks
+change a small binary counter on the docs fixture. The endpoint is a headless
+browser rAF callback **after** reading back and checking the visible counter.
+This is a software presentation proxy, not physical monitor photon timing.
+
+| Measurement | Instrumented before (`cb382fb22`) | Optimized (`4d4ebd85a`) |
+| --- | ---: | ---: |
+| Input to verified presentation p50 / p95 | 744.20 / 778.20 ms | 78.10 / 106.60 ms |
+| Input request round-trip p50 | 227.70 ms | 31.50 ms |
+| CDP input p50 | 3.87 ms | 3.42 ms |
+| Full CDP capture p50 | 148.59 ms | Small-change preview 6.18 + native crop 2.97 ms |
+| Source PNG decode p50 | 101.67 ms | Preview 1.33 + crop decode/merge 1.15 ms |
+| Dirty comparison/tile encode p50 | 4.85 ms | 7.21 ms |
+| Selected payload encode p50 | 1.62 ms | 0.02 ms (already encoded tiles) |
+| Pacing wait p50 | 27.36 ms | 1.00 ms |
+| Event serialize/encrypt p50 | 0.85 ms | 0.87 ms |
+| Bounded frame-credit acquisition p50 | 0.09 ms | 0.04 ms |
+| Enqueued event → viewer arrival p50 | 42.60 ms | 2.00 ms |
+| Client decode p50 | 12.40 ms | 1.80 ms |
+| Client synchronous presentation p50 | 1.00 ms | <0.10 ms |
+| Entire next-credit round-trip p50 | 455.50 ms | 45.00 ms |
+| Observed received application bytes/s | 7,551 | 28,850 |
+| Observed live owned CPU (one core = 100%) | 88.9% | 160.3% |
+
+Spans overlap and are not additive. The event arrival span includes writer queue
+and both same-host relay hops; it does not isolate individual relay transit.
+Raw timestamps, per-stage p50/p95/p99 and histograms are in each JSON receipt.
+CPU excludes exited encoder workers and includes fixture/viewer readback. Byte
+rate excludes bootstrap, requests and TLS, includes intervening control responses
+and resource-sampling time; faster interaction increases bytes/s. Bootstrap and
+refinement remain charged to the budget. A bounded 16 KiB allowance permits small
+idle changes without an additional serialization-duration sleep.
+
+Full-readback intermediate source `8473bf69a` measured 437.40 / 455.70 ms, still
+RED. Its process refresh cost was 13.50 ms per refresh (14 per click). Incremental
+Linux PID enumeration/identity reads reduce that to 1.47 ms in the final run.
+Signaling always takes a fresh full membership/start-time snapshot; unsafe,
+foreign and reused groups remain rejected. The Mac `ps` path is unchanged and
+unmeasured. Fast native PNG capture and row-specific PNG predictors retain RGB;
+flagged Chromium disables the capture frame-rate limit. That flag can increase
+animation CPU and needs moving-content tests before rollout.
+
+Small admitted display packets bypass the existing 33 ms event batching window
+through a bounded priority queue; large frames retain bounded event credit.
+TCP_NODELAY removes delayed receipt coupling on the local relay sockets. The
+presenter begins decoding an event while awaiting its receipt, then releases
+credit only after both finish. Native damage crops avoid full readback on each
+small input; full protected idle verification preserves settled pixels.
+
+The final local run passes both latency thresholds, all 20 visual counter checks,
+exact settled and final RGB (MSE 0), stale-document rejection, takeover fencing,
+owner input and release/resumption. VP9 bootstrap remains 34.04 dB, followed by
+exact PNG. This does not improve large moving-video fidelity or prove arbitrary
+page interaction under 150 ms. Full refinement is about 1,023,108 encrypted
+application bytes here and is intentionally slow at 2 Mbps. Keep that distinction
+from settled small-input latency explicit.
+
+Review regressions have fail-first evidence: delayed/connection-lost uncached
+credits replayed in shared IPC, local transient frames overwrote session resume
+cursor 500 with 1, and real 100-second static polling expired delivery before the
+next change. Fixes recognize nested `display_next` as outcome-unknown/no-replay,
+exclude transient display events from durable cursors, and renew delivery only
+inside successful admitted polling. The registration unit also rejects another
+client key and expires genuine idle. The final live static run is recorded
+separately in `phase4/final-static-100s/results.json`.
+
+Focused checks: 38 Node tests, 13 Rust ownership/registration/queue/protocol/
+event/actor/takeover/origin checks, 11 shared IPC tests and TypeScript typecheck.
+Build and checks have their own logs; historical RED receipts remain RED. The
+initial final run observed a distinct compositor refinement after the first exact
+capture; the harness now allows at most five distinct refinements before requiring
+an unchanged exact poll. It does not silently discard failures.
 
 ## MD-DISPLAY-04: owner decisions and migration
 
