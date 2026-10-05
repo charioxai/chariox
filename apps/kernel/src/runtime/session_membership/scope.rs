@@ -22,6 +22,8 @@ pub(crate) fn request_session_scope(
     request: &LocalDaemonRequest,
 ) -> Option<SessionMembershipScope> {
     match request {
+        // MD-2: user-domain tabs have no session; browser admission binds the caller.
+        LocalDaemonRequest::KernelBrowser(_) => None,
         LocalDaemonRequest::PrepareBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.selection.session_id.clone()),
         ),

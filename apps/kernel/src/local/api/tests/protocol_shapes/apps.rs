@@ -999,7 +999,7 @@ fn saved_snapshot_restore_protocol_410_shape_and_hash() {
 
 #[test]
 fn receipt_expiry_protocol_416_refuses_with_a_stable_error_shape() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 417);
     let response = LocalDaemonResponse::AppRequestFailed {
         code: AppRequestErrorCode::ReceiptExpired,
     };
