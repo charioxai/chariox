@@ -3,6 +3,63 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::{accept_async, WebSocketStream};
 
 #[tokio::test]
+async fn persistent_peer_relay_refusal_preserves_retryability_without_peer_authority() {
+    let home = crate::config::DaemonConfig::for_tests();
+    let worker = crate::config::DaemonConfig::for_tests();
+    let state = Arc::new(RwLock::new(RelayClientState::default()));
+    let (sender, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(4);
+    state
+        .write()
+        .await
+        .test_set_connected_sender(sender, "ws://fixture");
+    let waiter = peer_client::enqueue_peer_request_to_known_kernel_via_relay_authorized(
+        &home,
+        &state,
+        ClientTarget {
+            daemon_id: Some("worker".into()),
+            daemon_alias: None,
+        },
+        &worker.relay_public_key,
+        RelayPeerRequest::DestroyLeasedAgent {
+            leased_agent_id: "bound-agent".into(),
+        },
+        Duration::from_secs(3),
+        || Ok(()),
+    )
+    .await
+    .unwrap();
+    let RelayEnvelope::DaemonPeerRequest { request_id, .. } = priority_rx.recv().await.unwrap()
+    else {
+        panic!("expected peer request")
+    };
+    // MP-11: a relay refusal carries no peer identity or encrypted success.
+    peer_client::resolve_pending_peer_response(
+        &state,
+        request_id,
+        RelayPeerResponseEnvelope {
+            from_daemon_id: String::new(),
+            encrypted_response: None,
+            error: Some(chariox_relay::protocol::RelayError {
+                code: "target_not_connected".into(),
+                message: "target daemon is not connected to relay".into(),
+                retryable: true,
+            }),
+        },
+    )
+    .await;
+    assert!(
+        matches!(waiter.wait().await.unwrap_err(), DaemonError::RelayTransport {
+        code, retryable: true, ..
+    } if code == "target_not_connected")
+    );
+    assert!(state
+        .read()
+        .await
+        .pinned_peer_public_key("worker")
+        .is_none());
+}
+
+#[tokio::test]
 async fn known_peer_request_rechecks_authority_after_enqueue_lock_wait() {
     use std::sync::atomic::{AtomicBool, Ordering};
     let home = crate::config::DaemonConfig::for_tests();
@@ -482,12 +539,13 @@ async fn persistent_peer_cleanup_rejects_encrypted_ack_from_another_identity() {
             },
         )
         .await;
-        assert!(waiter
-            .wait()
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("peer response identity mismatch"));
+        assert!(matches!(
+            waiter.wait().await.unwrap_err(),
+            DaemonError::LocalTransport {
+                operation: "authenticate relay peer response",
+                ..
+            }
+        ));
     }
 }
 

@@ -331,8 +331,15 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
                 });
             }
         };
-        if canonical_peer_daemon_id(&envelope.from_daemon_id).unwrap_or(&envelope.from_daemon_id)
-            != expected_kernel_id
+        // MP-11: the relay has no peer identity when it refuses a request
+        // before dispatch. Preserve that error without authenticating a peer.
+        let relay_refusal = envelope.from_daemon_id.is_empty()
+            && envelope.encrypted_response.is_none()
+            && envelope.error.is_some();
+        if !relay_refusal
+            && canonical_peer_daemon_id(&envelope.from_daemon_id)
+                .unwrap_or(&envelope.from_daemon_id)
+                != expected_kernel_id
         {
             return Err(DaemonError::LocalTransport {
                 operation: "authenticate relay peer response",
