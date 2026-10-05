@@ -1,3 +1,4 @@
+mod cloud_terminal_pairing;
 mod client_requests;
 mod ordinary_lease_caller;
 mod peer_events;

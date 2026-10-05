@@ -121,8 +121,11 @@ pub(crate) async fn execute_create_pairing_invite_request(
             operation: "create pairing invite",
             message: "relay token must be configured before creating an invite".to_string(),
         })?;
-    if super::self_host_terminal_grants::required(&config)
-        && super::self_host_terminal_grants::pairing_transport_token(relay_token.clone())
+    if config
+        .cloud_relay
+        .as_ref()
+        .is_some_and(|profile| profile.kernel_credential.is_some())
+        || super::self_host_terminal_grants::pairing_transport_token(relay_token.clone())
             != relay_token
     {
         return Err(DaemonError::LocalTransport {
@@ -189,7 +192,13 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
     let mut terminal_id = format!("{}-{}", terminal_type.as_str(), random_hex_id());
     let target_daemon_id = config.daemon_id.clone();
     let target_daemon_alias = config.daemon_alias.clone().or(request.alias);
-    let relay_token = if let Some(profile) = config.cloud_relay.clone().filter(|profile| {
+    // Enrollment can issue a CLIENT grant only after the receiving terminal
+    // supplies its key. Bootstrap belongs to that terminal's own client profile.
+    let relay_token = if config.cloud_relay.as_ref().is_some_and(|profile| {
+        profile.relay_url == relay_url && profile.kernel_credential.is_some()
+    }) {
+        "cloud-client-token-required".into()
+    } else if let Some(profile) = config.cloud_relay.clone().filter(|profile| {
         profile.relay_url == relay_url
             && (profile.cloud_session_token.is_some() || profile.machine_credential.is_some())
     }) {
@@ -216,14 +225,17 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
             }
         }
     } else {
-        config
-            .relay_token
-            .clone()
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "create terminal pairing link",
-                message: "relay token must be configured before creating a terminal pairing link"
-                    .to_string(),
-            })?
+        super::self_host_terminal_grants::pairing_transport_token(
+            config
+                .relay_token
+                .clone()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "create terminal pairing link",
+                    message:
+                        "relay token must be configured before creating a terminal pairing link"
+                            .to_string(),
+                })?,
+        )
     };
     let relay_token = if super::self_host_terminal_grants::required(&config) {
         super::self_host_terminal_grants::pairing_transport_token(relay_token)
@@ -360,6 +372,21 @@ pub(crate) async fn execute_join_terminal_pairing_link_request(
         });
     }
     let config = config_projection.snapshot();
+    if config
+        .cloud_relay
+        .as_ref()
+        .is_some_and(|profile| profile.kernel_credential.is_some())
+        && (token.target_daemon_id != config.daemon_id
+            || config.relay_url.as_deref() != Some(token.relay_url.as_str())
+            || request.public_key_thumbprint.is_none())
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "join terminal pairing link",
+            message:
+                "enrolled terminal pairing requires the receiving key and this exact kernel/relay"
+                    .into(),
+        });
+    }
     let terminal_type = request
         .terminal_type
         .or_else(|| token.terminal_type.as_deref().map(terminal_type_from_str))
@@ -435,7 +462,8 @@ pub(crate) async fn execute_join_terminal_pairing_link_request(
             .clone()
             .filter(|profile| {
                 profile.relay_url == token.relay_url
-                    && (profile.cloud_session_token.is_some()
+                    && (profile.kernel_credential.is_some()
+                        || profile.cloud_session_token.is_some()
                         || profile.machine_credential.is_some())
             })
             .ok_or_else(|| DaemonError::LocalTransport {
@@ -519,6 +547,25 @@ fn current_unix_ms() -> u64 {
 #[cfg(test)]
 mod self_host_invite_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cloud_generic_invites_cannot_export_kernel_transport_tokens() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some("wss://cloud-relay".into());
+        config.relay_token = Some("chariox-scoped-v1.synthetic.signature".into());
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            kernel_credential: Some("synthetic-kernel-credential".into()),
+            relay_url: "wss://cloud-relay".into(),
+            ..Default::default()
+        });
+        let projection = DaemonConfigProjectionStore::new(config);
+        for intent in [PairingInviteIntent::Client, PairingInviteIntent::Machine] {
+            let request = serde_json::from_value(serde_json::json!({"intent": intent})).unwrap();
+            assert!(execute_create_pairing_invite_request(&projection, request)
+                .await
+                .is_err());
+        }
+    }
 
     #[tokio::test]
     async fn generic_invites_cannot_export_a_scoped_kernel_transport_credential() {

@@ -78,3 +78,37 @@ test("different CLI profiles rotate independently while another profile waits fo
     } finally { if (timeout) clearTimeout(timeout); release(); await pendingA }
   } finally { release(); globalThis.fetch = before; await rm(root, { recursive: true, force: true }) }
 })
+
+
+test("lost reply recovery persists an expired successor before rotating again, including another restart", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-client-refresh-expired-")), before = globalThis.fetch
+  try {
+    const store = new CloudClientCredentialStore(join(root, "client.json"))
+    await store.saveLogin(credential())
+    let firstRotation: string | undefined, secondRotation: string | undefined, calls = 0
+    globalThis.fetch = (async (_url, options) => {
+      const body = JSON.parse(options!.body as string)
+      calls++
+      if (calls === 1) { firstRotation = body.rotationId; throw new Error("fixture first lost reply") }
+      if (calls === 2) {
+        assert.equal(body.rotationId, firstRotation)
+        assert.equal(body.refreshCredential, "synthetic-refresh")
+        return Response.json({ refreshCredential: "synthetic-successor", cloudSessionToken: "synthetic-expired", cloudSessionExpiresAt: new Date(Date.now()-60_000).toISOString() })
+      }
+      assert.equal(body.refreshCredential, "synthetic-successor")
+      assert.notEqual(body.rotationId, firstRotation)
+      const durable = await store.load()
+      assert.equal(durable!.refreshCredential, "synthetic-successor")
+      assert.equal(durable!.pendingRotationId, body.rotationId)
+      if (calls === 3) { secondRotation = body.rotationId; throw new Error("fixture second lost reply") }
+      assert.equal(body.rotationId, secondRotation)
+      return Response.json({ refreshCredential: "synthetic-fresh", cloudSessionToken: "synthetic-fresh-access", cloudSessionExpiresAt: new Date(Date.now()+900_000).toISOString() })
+    }) as typeof fetch
+    await assert.rejects(store.session(key), /first lost reply/)
+    await assert.rejects(new CloudClientCredentialStore(store.filePath).session(key), /second lost reply/)
+    const recovered = await new CloudClientCredentialStore(store.filePath).session(key)
+    assert.equal(recovered.accessToken, "synthetic-fresh-access")
+    assert.equal(recovered.pendingRotationId, undefined)
+    assert.equal(calls, 4)
+  } finally { globalThis.fetch = before; await rm(root, { recursive: true, force: true }) }
+})
