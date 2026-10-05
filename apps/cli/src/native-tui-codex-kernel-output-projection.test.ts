@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import type { TerminalOutputRecord } from "./cli-types.js"
 
 import { createCodexKernelOutputProjection } from "./native-tui/codex-kernel-output-projection.js"
 import {
@@ -169,3 +170,34 @@ function debugLabels(entries: readonly unknown[], label: string) {
     && (entry as { payload?: unknown }).payload !== null
   )
 }
+
+test("MP-08 MP-10 steering echoes remain input items on the active prompt turn", () => {
+  const broadcasts: unknown[] = []
+  const mappings: string[] = []
+  const projection = createCodexKernelOutputProjection({
+    agentId: "agent-1", broadcast: (message) => broadcasts.push(message), debug: () => {},
+    onTurnMapped: (_thread, _turn, prompt) => mappings.push(prompt),
+  })
+  projection.setThreadId("thread-1")
+  const record = (kind: TerminalOutputRecord["kind"], prompt: string, text: string, merge_key?: string) => ({
+    agent_id: "agent-1", prompt_id: prompt, timestamp_ms: 1000, kind, bytes: [...Buffer.from(text)],
+    ...(merge_key ? { merge_key } : {}),
+  })
+  projection.project([
+    record("prompt_echo", "A", "ordinary prompt"), record("provider_reasoning", "A", "thinking"),
+    record("prompt_echo", "S", "steer from another attachment", "steering-prompt:S"),
+  ])
+  assert.deepEqual(mappings, ["A"], "steering item S must not replace active prompt A")
+  assert.equal(broadcasts.filter(m => messageMethod(m) === "turn/started").length, 1)
+  const items = broadcasts.filter(m => messageMethod(m) === "item/started") as { params: { turnId: string } }[]
+  assert.equal(new Set(items.map(m => m.params.turnId)).size, 1)
+})
+
+test("MP-08 MP-10 steering echo without an active display turn cannot manufacture work", () => {
+  const broadcasts: unknown[] = []
+  const projection = createCodexKernelOutputProjection({ agentId: "agent-1", broadcast: m => broadcasts.push(m), debug: () => {} })
+  projection.setThreadId("thread-1")
+  projection.project([{ agent_id: "agent-1", prompt_id: "S", merge_key: "steering-prompt:S", timestamp_ms: 1000,
+    kind: "prompt_echo", bytes: [...Buffer.from("orphan steering echo")] }])
+  assert.deepEqual(broadcasts, [])
+})

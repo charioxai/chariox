@@ -12,7 +12,7 @@ import { runCodexNativeTui } from "./codex.js"
 import { waitForNativeProviderRunReady } from "./provider-run-control.js"
 
 // MP-08 / MP-10: actual entry point + proxy with distinct display/managed turns.
-async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "steer" | "compact" | "controls" | "stale") {
+async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "steer" | "compact" | "controls" | "stale" | "lifecycle" | "steering-echo" | "projected-cancel") {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-codex-lifecycle-"))
   const reservation = net.createServer().listen(0, "127.0.0.1")
   await once(reservation, "listening")
@@ -27,6 +27,10 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "s
   let tuiStarted = false
   const interrupts: unknown[] = []
   const controls: { method: string, params: Record<string, unknown> }[] = []
+  const records: Record<string, unknown>[] = []
+  let completion: "completed" | "cancelled" | null = null
+  let echoSent = false
+  const record = (kind: string, text: string, extra = {}) => ({ agent_id: "agent", prompt_id: "home-prompt", kind, bytes: [...Buffer.from(text)], timestamp_ms: Date.now(), ...extra })
   let compacted = false
   const promptContexts: boolean[] = []
   const startServer = async () => {
@@ -51,9 +55,14 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "s
         if (r.method === "thread/compact/start") { compacted = true; running = false }
         result = r.method === "turn/steer" ? { turnId: "managed-turn" } : {}
       }
+      if (r.method === "fixture/complete") {
+        records.push(record("provider_output", "finished"))
+        running = false
+        completion = "completed"
+      }
       if (r.method === "turn/interrupt") {
         interrupts.push(r.params)
-        if (r.params.threadId === "managed-thread" && r.params.turnId === "managed-turn") running = false
+        if (r.params.threadId === "managed-thread" && r.params.turnId === "managed-turn") { running = false; completion = "cancelled" }
       }
       socket.send(JSON.stringify({ id: r.id, result }))
     }))
@@ -83,6 +92,9 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "s
       case "SubmitPrompt":
         assert.equal(payload.target_agent_id, "agent")
         await managedRequest("turn/start", { threadId: "managed-thread", input: [{ type: "text", text: payload.prompt }] })
+        if (["lifecycle", "steering-echo", "projected-cancel"].includes(mode)) {
+          records.push(record("prompt_echo", "long prompt"), record("provider_reasoning", "thinking"))
+        }
         return { PromptSubmitted: { outcome: { Started: { prompt: { id: "home-prompt", target_agent_id: "agent" } } } } }
       case "SteerActivePrompt":
         assert.deepEqual(payload, {
@@ -95,7 +107,20 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "s
         assert.deepEqual(payload, { session_id: "session", attachment_id: "attachment", target_agent_id: "agent" })
         await managedRequest("turn/interrupt", { threadId: "managed-thread", turnId: "managed-turn" })
         return { PromptCancelled: {} }
-      case "PumpTerminalOutput": return { TerminalOutput: { records: [] } }
+      case "GetSessionState": return { SessionState: {
+        session: { id: "session", prompt_states: { agent: { active_prompt: running ? { id: "home-prompt" } : null, queued_prompts: [] } } },
+        agent_activity: { agent: { last_completed_turn: completion ? {
+          prompt_id: "home-prompt", agent_id: "agent", completed_at_ms: Date.now(), settlement_status: completion,
+        } : null } },
+      } }
+      case "PumpTerminalOutput": {
+        const batch = records.splice(0)
+        if (mode === "steering-echo" && running && batch.length && !echoSent) {
+          echoSent = true
+          records.push(record("prompt_echo", "from another attachment", { prompt_id: "steering-item", merge_key: "steering-prompt:steering-item" }))
+        }
+        return { TerminalOutput: { records: batch } }
+      }
       default: throw new Error(`unexpected kernel request ${kind}`)
     }
   })
@@ -105,17 +130,40 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "s
 import { createRequire } from 'node:module';
 const WebSocket = createRequire(import.meta.url)(${JSON.stringify(createRequire(import.meta.url).resolve("ws"))});
 const socket = new WebSocket(process.argv[process.argv.indexOf('--remote') + 1]);
-let next = 1; const pending = new Map();
-socket.on('message', raw => { const r = JSON.parse(raw.toString()); const p = pending.get(r.id); if (p) { pending.delete(r.id); r.error ? p.reject(new Error(r.error.message)) : p.resolve(r.result); } });
+let next = 1; const pending = new Map(); const notifications = [];
+socket.on('message', raw => { const r = JSON.parse(raw.toString()); if (r.method) notifications.push(r); const p = pending.get(r.id); if (p) { pending.delete(r.id); r.error ? p.reject(new Error(r.error.message)) : p.resolve(r.result); } });
 socket.on('close', () => { for (const p of pending.values()) p.reject(new Error('connection closed before response')); });
 const request = (method, params) => new Promise((resolve, reject) => { const id = next++; pending.set(id, { resolve, reject }); socket.send(JSON.stringify({ id, method, params })); });
-const timer = setTimeout(() => { process.stderr.write('fixture timed out\\n'); process.exit(1); }, 3000);
+const timer = setTimeout(() => { process.stderr.write('fixture timed out\\n'); process.exit(1); }, 6000);
 try {
 await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
 await request('initialize', { clientInfo: { name: 'codex-tui', version: 'fixture' } });
 await request('thread/start', {});
-if (['interrupt', 'steer', 'compact', 'controls', 'stale'].includes(${JSON.stringify(mode)})) {
+if (['interrupt', 'steer', 'compact', 'controls', 'stale', 'lifecycle', 'steering-echo', 'projected-cancel'].includes(${JSON.stringify(mode)})) {
  const result = await request('turn/start', { threadId: 'display-thread', input: [{ type: 'text', text: 'long prompt' }] });
+ if (['lifecycle', 'steering-echo', 'projected-cancel'].includes(${JSON.stringify(mode)})) {
+   const waitFor = async predicate => { while (!predicate()) await new Promise(resolve => setTimeout(resolve, 10)); };
+   await waitFor(() => notifications.some(r => r.method === 'item/reasoning/textDelta'));
+   if (${JSON.stringify(mode)} === 'steering-echo') {
+     await waitFor(() => notifications.some(r => r.method === 'item/completed' && r.params.item.type === 'userMessage' && r.params.item.content[0].text === 'from another attachment'));
+     const latest = notifications.filter(r => r.method === 'turn/started').at(-1).params.turn.id;
+     await request('turn/steer', { threadId: 'display-thread', expectedTurnId: latest, input: [{ type: 'text', text: 'change direction' }] });
+   }
+   await new Promise(resolve => setTimeout(resolve, 900));
+   if (notifications.some(r => r.method === 'turn/completed')) throw new Error('output silence completed the managed turn');
+   if (notifications.some(r => r.method === 'thread/status/changed' && r.params.status.type === 'idle')) throw new Error('approval wait marked the managed turn idle');
+   const started = notifications.filter(r => r.method === 'turn/started');
+   if (started.length !== 1 || started[0].params.turn.id !== result.turn.id) throw new Error('one kernel prompt split into display turns');
+   if (${JSON.stringify(mode)} === 'projected-cancel') await request('turn/interrupt', { threadId: 'display-thread', turnId: result.turn.id });
+   else await request('fixture/complete', {});
+   await waitFor(() => notifications.some(r => r.method === 'turn/completed'));
+   await new Promise(resolve => setTimeout(resolve, 50));
+   const completed = notifications.filter(r => r.method === 'turn/completed');
+   if (completed.length !== 1 || completed[0].params.turn.id !== result.turn.id) throw new Error('kernel completion did not settle the original display turn once');
+   const expectedStatus = ${JSON.stringify(mode)} === 'projected-cancel' ? 'interrupted' : 'completed';
+   if (completed[0].params.turn.status !== expectedStatus) throw new Error('kernel settlement status lost');
+   if (${JSON.stringify(mode)} !== 'projected-cancel' && !notifications.some(r => r.method === 'item/agentMessage/delta' && r.params.delta === 'finished')) throw new Error('final output lost at settlement');
+ }
  if (${JSON.stringify(mode)} === 'stale') {
    for (const params of [
      { threadId: 'display-thread', expectedTurnId: 'unknown-turn' },
@@ -157,6 +205,10 @@ finally { clearTimeout(timer); socket.close(); }
         if (mode !== "steer") expected.push({ method: "thread/compact/start", params: { threadId: "managed-thread" } })
         assert.deepEqual(controls, expected)
         assert.deepEqual(promptContexts, mode === "steer" ? [false] : [false, true], "subsequent prompts must use the compacted managed conversation")
+      } else if (["lifecycle", "steering-echo", "projected-cancel"].includes(mode)) {
+        assert.equal(running, false)
+        assert.equal(completion, mode === "projected-cancel" ? "cancelled" : "completed")
+        assert.equal(controls.length, mode === "steering-echo" ? 1 : 0)
       } else if (mode === "stale") assert.deepEqual(controls, [], "unknown display identities must never reach the provider")
       else assert.ok(polls >= 2, "must wait for asynchronous launch completion before starting the TUI")
     }
@@ -193,3 +245,7 @@ test("MP-08 MP-10 managed endpoint readiness also bounds a stalled status RPC", 
   await assert.rejects(waitForNativeProviderRunReady(client, "stalled-run", { timeoutMs: 20 }),
     /timed out.*stalled-run \(unknown\)/)
 })
+
+test("MP-08 MP-10 native entry point keeps reasoning and approval waits live until kernel completion", (t) => fixture(t, "lifecycle"))
+test("MP-08 MP-10 native entry point retains the active prompt through another attachment steering echo", (t) => fixture(t, "steering-echo"))
+test("MP-08 MP-10 native entry point completes the original projected turn on kernel cancellation", (t) => fixture(t, "projected-cancel"))
