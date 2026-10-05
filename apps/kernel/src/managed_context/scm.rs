@@ -894,7 +894,7 @@ fn snapshot_git_helpers(
             "git",
             &["config", "--global", "--null", "--get-all", key],
             None,
-            false,
+            true,
         )?;
         if output.status.code() == Some(1) {
             snapshot.insert((*key).into(), Vec::new());
@@ -2003,7 +2003,7 @@ mod mp11_helper_tests {
             "git",
             &["config", "--global", "--get", key],
             None,
-            false,
+            true,
         )
         .unwrap();
         assert_eq!(
@@ -2020,7 +2020,7 @@ mod mp11_helper_tests {
                 "credential.https://github.com.username",
             ],
             None,
-            false,
+            true,
         )
         .unwrap();
         assert_eq!(
@@ -2034,7 +2034,7 @@ mod mp11_helper_tests {
             "git",
             &["config", "--global", "--get", key],
             None,
-            false,
+            true,
         )
         .unwrap();
         assert_eq!(
