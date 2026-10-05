@@ -19,7 +19,7 @@ import { finalizeDrillArtifacts } from "./lib/drill-artifacts.mjs"
 import { resolveBuiltBinary } from "./lib/drill-runtime-helpers.mjs"
 import { completeBrowserStateEditorHandoff, createBrowserStateEditorDrill } from "./lib/browser-state-drill-editor.mjs"
 import { createDrillInterruption } from "./lib/drill-interruption.mjs"
-import { verifyRetainedRoomArchive } from "./lib/room-provider-retention.mjs"
+import { createBrowserStateArchiveFixture } from "./lib/browser-state-drill-archive.mjs"
 import {
   browserStateDrillWorkspaceSliceOptions,
   cleanupBrowserStateDrillWorkspace,
@@ -267,7 +267,10 @@ async function run() {
   assert.ok(saved.state?.id, "save-state should create a saved state record")
   savedState = saved.state
   await writeFile(path.join(artifactDir, "save-state-response.json"), JSON.stringify(saved, null, 2))
-  const verifiedArchive = await verifyRetainedRoomArchive(savedState)
+  const archiveFixture = createBrowserStateArchiveFixture({
+    helper: process.env.M20_STORAGE_FIXTURE_HELPER, localDev: workspaceFixture.localDev === true, runCommand,
+  })
+  const verifiedArchive = await archiveFixture.verify(savedState)
   await writeFile(path.join(artifactDir, "saved-home-verification.json"),
     `${JSON.stringify({ stateId: savedState.id, ...verifiedArchive }, null, 2)}\n`)
   log("removing container and home volume to force saved-state restore")
@@ -355,7 +358,7 @@ async function run() {
   await client.send(requests.stopSliceRequest(slice.id))
   slice = await waitForSliceStatus(slice.id, "stopped")
   const containerBeforeRejectedRestore = await inspectContainerId()
-  await writeFile(corruptBackup.home_archive_path, "deliberately corrupted backup archive")
+  await archiveFixture.corrupt(corruptBackup)
   await assert.rejects(
     client.send(requests.restoreSliceBackupRequest(slice.id, corruptBackup.id)),
     /archive integrity check failed.*quarantined/,
@@ -366,18 +369,7 @@ async function run() {
     containerBeforeRejectedRestore,
     "corrupt backup rejection must happen before container replacement",
   )
-  assert.equal(
-    await access(corruptBackup.home_archive_path).then(() => true, () => false),
-    false,
-    "the corrupt archive must leave its restore path",
-  )
-  assert.equal(
-    (await readdir(path.dirname(corruptBackup.home_archive_path)))
-      .filter((entry) => entry.startsWith(`${path.basename(corruptBackup.home_archive_path)}.corrupt-`))
-      .length,
-    1,
-    "the corrupt archive must remain in one owned quarantine file",
-  )
+  await archiveFixture.verifyQuarantine(corruptBackup)
 
   log("restoring the named backup by its human-readable name")
   const firstBackupRestore = unwrap(
@@ -833,6 +825,8 @@ async function captureSourceIdentity(kernelBinary) {
     trackedWorktreeClean: trackedStatus.stdout.trim().length === 0,
     buildMode: usePrebuilt ? "explicit-prebuilt" : "local-build",
     drillSha256: createHash("sha256").update(await readFile(fileURLToPath(import.meta.url))).digest("hex"),
+    storageFixtureHelperSha256: process.env.M20_STORAGE_FIXTURE_HELPER
+      ? createHash("sha256").update(await readFile(process.env.M20_STORAGE_FIXTURE_HELPER)).digest("hex") : null,
     editorDrillSha256: createHash("sha256").update(await readFile(new URL("./lib/browser-state-drill-editor.mjs", import.meta.url))).digest("hex"),
     editorMenuSha256: createHash("sha256").update(await readFile(new URL("./fixtures/browser-state-editor/menu.xml", import.meta.url))).digest("hex"),
     editorLaunchSha256: createHash("sha256").update(await readFile(new URL("./fixtures/browser-state-editor/launch.sh", import.meta.url))).digest("hex"),
