@@ -93,11 +93,12 @@ jobs:
       - name: Test Python scripts
         # Every tracked Python test runs as its own script with the runner's
         # stdlib python3, unprivileged; one failure does not hide the others.
-        # Excluded: both import the hash-pinned Selkies runtime (aiohttp,
+        # Excluded: these import the hash-pinned Selkies runtime (aiohttp,
         # psutil), which exists only in the slice image venv. The slice image
         # build runs docker/test_*.py (test_slice_selkies.py) in that venv.
         #   apps/kernel/slice-linux-docker/docker/canonical-display.test.py
         #   apps/kernel/slice-linux-docker/docker/test_slice_selkies.py
+        #   apps/kernel/slice-linux-docker/docker/test_slice_keyboard_overlays.py
         env:
           PYTHONDONTWRITEBYTECODE: 1
         run: |
@@ -106,7 +107,8 @@ jobs:
           while IFS= read -r test_file; do
             case "$test_file" in
               apps/kernel/slice-linux-docker/docker/canonical-display.test.py | \
-              apps/kernel/slice-linux-docker/docker/test_slice_selkies.py) continue ;;
+              apps/kernel/slice-linux-docker/docker/test_slice_selkies.py | \
+              apps/kernel/slice-linux-docker/docker/test_slice_keyboard_overlays.py) continue ;;
             esac
             count=$((count + 1))
             echo "::group::$test_file"

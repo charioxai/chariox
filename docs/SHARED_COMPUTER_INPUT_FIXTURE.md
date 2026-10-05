@@ -82,7 +82,7 @@ Join those observations to the same Room/host-browser surface and attributed
 input action seen in Web, local TUI and remote TUI. A captured file or one correct
 guess does not prove this gate. Human clipboard transport, Vault secret policy,
 IME preedit/composition, stream-loss takeover and physical viewer replay remain
-separate rows. Allocated local protocol421 adds bounded `keyboard_hold` and `pointer_hold`.
+separate rows. Union local protocol426 adds bounded `keyboard_hold` and `pointer_hold`.
 The physical fixture now records trusted initial press/release timestamps,
 modifier chords, interrupt finalization, kernel-style SIGKILL/reset, invalid
 bounds, pre-existing foreign-hold preservation, and Mousepad selection/focus.

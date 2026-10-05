@@ -1216,7 +1216,7 @@ identity. Inspection is limited to 256 KiB; PDF extraction requires installed
 `pdftotext` with child time/output/resource limits. The provider may request
 native MCP image bytes from the same CDP Page capture. Unix-socket clients requesting
 inline bytes receive them only when the complete encoded response fits the local
-IPC 1 MiB frame. Otherwise capture returns artifact metadata for existing bounded
+WebSocket response 1 MiB inline-image budget. Otherwise capture returns artifact metadata for existing bounded
 chunk reads; the native MCP image bound remains 8 MiB. No new serialized shape
 is needed for this delivery bound. Protected images are
 conservatively masked in full; protected download bytes are withheld. Passive
@@ -1226,7 +1226,7 @@ auth and bodies. `slice_browser_upload` also accepts Room-owned opaque
 admission, staging and recovery path. The new controller peer Artifact variant
 and opaque upload variant require relay peer protocol v73. The existing lease
 admission/rebind and hosted token installation/confirmation gates reject v70
-peers before these operations; image preflight requires v71 and matching runtime
+peers before these operations; image preflight requires v73 and matching runtime
 source lineage. Local client protocol is v426. See
 `docs/BROWSER_CONTROLLERFILES_ACCEPTANCE.md` for bounds and validation limits.
 

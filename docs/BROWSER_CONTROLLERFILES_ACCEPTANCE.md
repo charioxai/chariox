@@ -69,7 +69,7 @@ again when the attachment is captured.
 
 `RoomBrowserArtifact` exposes the same capture/read/inspect service to attached
 Web/local/remote TUI clients, with membership and attachment-owner checks. The
-shared TypeScript builder declares minimum local protocol 426. Unix-socket client capture
+shared TypeScript builder declares minimum local protocol 426. Client capture
 with `return_image_base64=true` includes inline bytes only when the complete encoded
 local IPC response fits its 1 MiB frame. Larger captures still return the opaque
 artifact metadata; clients read ordered chunks of at most 128 KiB and verify the
@@ -107,8 +107,8 @@ attachment client authorization. A synthetic permitted transfer-store record
 travels through real encrypted upload routing/staging and preserves Unicode
 filename, length and hash; missing artifacts never reuse the prior selection.
 The socket regression uses a valid high-entropy canonical PNG whose inline
-response exceeds 1 MiB, verifies complete artifact metadata through actual Unix
-framing, reads every chunk and compares bytes/hash, and retains inline provider
+response exceeds 1 MiB, verifies complete artifact metadata through the shared Unix WebSocket
+dispatcher, reads every chunk and compares bytes/hash, and retains inline provider
 bytes. Its CDP pixels are synthetic, so it does not prove actual Chromium or
 official-provider perception. A separate MCP converter
 check verifies byte-exact native image content; protocol snapshot/hash tests pin
@@ -121,7 +121,7 @@ Path-1 comparison and outside-slice browser integration remain acceptance gates.
 The coordinator schedules the live client/provider conjunction. None of the
 source or fixture checks closes MP-08/MP-10/MP-11.
 
-## MP-08/MP-10/MP-11 peer71 compatibility review drill
+## MP-08/MP-10/MP-11 peer73 compatibility review drill
 
 ```sh
 cargo test --manifest-path apps/kernel/Cargo.toml --lib mp08_mp10_mp11_browser_artifact -- --test-threads=1

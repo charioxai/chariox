@@ -61,8 +61,6 @@ class ComputerTextKeyboard(_XTestKeyboard):
         return code, modifiers, group
 
 
-
-
 def focused_target(connection):
     """MP-08: native focus identity/geometry only; never titles or field values."""
     focus = connection.get_input_focus().focus
