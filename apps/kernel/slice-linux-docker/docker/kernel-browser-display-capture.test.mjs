@@ -58,3 +58,22 @@ test('MD-DISPLAY forced verification of small input damage never enters motion m
  const source=await capture.next({...tab,input_epoch:1},policy,true,true,motion);
  assert.equal(source.motion,undefined);assert.equal(source.pixels.width,1280);
 });
+test('MD-DISPLAY private prefetch is single-flight and fenced by input, policy and close',async()=>{
+ let time=0,calls=0,finish;
+ const tab={tab_id:'t',document_id:'d',input_epoch:0},policy={values:[]},clip={x:0,y:0,width:1280,height:800,scale:.5};
+ const source={...tab,generation:1,width:1280,height:800,data_base64:'opaque-protected-motion'};
+ const capture=new DisplayCapture(async()=>{calls++;return source},2,()=>{},()=>time);
+ Object.assign(capture,{document:'d',policy,motion:true});
+ capture.prefetch(tab,policy,clip);capture.prefetch(tab,policy,clip);
+ await Promise.allSettled([...capture.tasks]);assert.equal(calls,1);
+ assert.equal((await capture.next(tab,policy,true,true,clip)).motion,true);assert.equal(calls,1);
+ capture.prefetch(tab,policy,clip);await Promise.allSettled([...capture.tasks]);
+ await capture.next({...tab,input_epoch:1},policy,true,true,clip);assert.equal(calls,3,'input invalidates the captured epoch');
+ capture.capture=()=>new Promise(resolve=>{finish=resolve});capture.prefetch(tab,policy,clip);
+ let closed=false;const closing=capture.close().then(()=>closed=true);
+ await Promise.resolve();assert.equal(closed,false);finish(source);await closing;
+ assert.equal(capture.prefetched,null);assert.equal(capture.tasks.size,0);
+ // Policy invalidation while a readback is pending can never publish old bytes.
+ Object.assign(capture,{document:'d',policy,motion:true});capture.prefetch(tab,policy,clip);capture.invalidate();
+ finish(source);await Promise.allSettled([...capture.tasks]);assert.equal(capture.prefetched,null);
+});
