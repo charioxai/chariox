@@ -313,16 +313,17 @@ impl BrowserControllerProcessStdioBackend {
                 self.command.display()
             )
         })?;
+        let mut owned_group = owned_process_group::OwnedProcessGroup::new(child.id());
         let stdin = child.stdin.take().ok_or_else(|| {
-            kill_child(&mut child);
+            kill_owned_child(&mut child, &mut owned_group);
             "browser controller did not expose stdin".to_string()
         })?;
         let stdout = child.stdout.take().ok_or_else(|| {
-            kill_child(&mut child);
+            kill_owned_child(&mut child, &mut owned_group);
             "browser controller did not expose stdout".to_string()
         })?;
         let stderr = child.stderr.take().ok_or_else(|| {
-            kill_child(&mut child);
+            kill_owned_child(&mut child, &mut owned_group);
             "browser controller did not expose stderr".to_string()
         })?;
         let (responses_tx, responses) = mpsc::channel();
@@ -334,7 +335,7 @@ impl BrowserControllerProcessStdioBackend {
                 read_controller_responses(stdout, responses_tx, reader_pending_responses)
             })
         {
-            kill_child(&mut child);
+            kill_owned_child(&mut child, &mut owned_group);
             return Err(format!(
                 "failed to start browser controller response reader: {error}"
             ));
@@ -349,7 +350,7 @@ impl BrowserControllerProcessStdioBackend {
                 }
             });
         self.process = Some(BrowserControllerChild {
-            owned_group: owned_process_group::OwnedProcessGroup::new(child.id()),
+            owned_group,
             child: Arc::new(Mutex::new(child)),
             stdin: Arc::new(Mutex::new(stdin)),
             responses,
@@ -502,11 +503,12 @@ impl BrowserControllerProcessStdioBackend {
                     // A timeout is not proof that physical input stopped. Kill
                     // and reap the only process capable of sending more input
                     // before confirming cancellation to the home kernel.
-                    kill_child(
+                    kill_owned_child(
                         &mut process
                             .child
                             .lock()
                             .unwrap_or_else(|error| error.into_inner()),
+                        &mut process.owned_group,
                     );
                     signal.confirm_fence();
                     return Ok(BrowserControllerRpcResponse {
@@ -730,12 +732,13 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         match self.health_request() {
             Ok(health) => Ok(health),
             Err(error) => {
-                if let Some(process) = self.process.take() {
-                    kill_child(
+                if let Some(mut process) = self.process.take() {
+                    kill_owned_child(
                         &mut process
                             .child
                             .lock()
                             .unwrap_or_else(|error| error.into_inner()),
+                        &mut process.owned_group,
                     );
                 }
                 Err(error)
@@ -748,21 +751,23 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
             return Ok(());
         }
         let shutdown_requested = self.request("shutdown", serde_json::json!({})).is_ok();
-        if let Some(process) = self.process.take() {
+        if let Some(mut process) = self.process.take() {
             if shutdown_requested {
                 terminate_child(
                     &mut process
                         .child
                         .lock()
                         .unwrap_or_else(|error| error.into_inner()),
+                    &mut process.owned_group,
                     self.timeout,
                 );
             } else {
-                kill_child(
+                kill_owned_child(
                     &mut process
                         .child
                         .lock()
                         .unwrap_or_else(|error| error.into_inner()),
+                    &mut process.owned_group,
                 );
             }
         }
@@ -1169,18 +1174,27 @@ fn read_controller_responses(
     pending_responses.fail_all_on_exit();
 }
 
-fn terminate_child(child: &mut Child, timeout: Duration) {
-    if child.wait_timeout(timeout).ok().flatten().is_some() {
-        return;
-    }
-    kill_child(child);
+fn terminate_child(
+    child: &mut Child,
+    group: &mut owned_process_group::OwnedProcessGroup,
+    timeout: Duration,
+) {
+    let _ = child.wait_timeout(timeout);
+    // MD-4: even a successful shutdown can leave recorded browser descendants.
+    kill_owned_child(child, group);
 }
 
 fn kill_child(child: &mut Child) {
+    let mut group = owned_process_group::OwnedProcessGroup::new(child.id());
+    kill_owned_child(child, &mut group);
+}
+
+fn kill_owned_child(child: &mut Child, group: &mut owned_process_group::OwnedProcessGroup) {
     if child.id() <= 1 || child.id() > i32::MAX as u32 {
         return;
     }
-    owned_process_group::OwnedProcessGroup::new(child.id()).signal();
+    // MD-4: preserve start identities recorded before the controller exited.
+    group.signal();
     let _ = child.kill();
     let _ = child.wait();
 }
@@ -2772,6 +2786,68 @@ done
                 .state,
             BrowserControllerProcessState::Stopped
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn md4_stop_retains_descendant_ownership_after_controller_exit() {
+        fn alive(pid: u32) -> bool {
+            fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .is_some_and(|s| {
+                    s.rsplit_once(')')
+                        .is_some_and(|(_, tail)| !tail.trim_start().starts_with('Z'))
+                })
+        }
+        for crash in [true, false] {
+            let tool = TestTool::new(
+                r#"#!/bin/sh
+set -eu
+sleep 30 &
+printf '%s' "$!" > "$0.survivor"
+while IFS= read -r request; do
+id=${request#*:}; id=${id%%,*}
+case "$request" in
+*'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+*'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; exit 0 ;;
+esac
+done
+"#,
+            );
+            let mut backend = BrowserControllerProcessStdioBackend::new(
+                tool.path(),
+                Vec::new(),
+                Duration::from_millis(250),
+            );
+            backend.start().unwrap();
+            let survivor: u32 = fs::read_to_string(tool.path().with_extension("sh.survivor"))
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!(survivor > 1 && alive(survivor));
+            // Retain an independent ownership witness only to clean up a RED run.
+            let process = backend.process.as_mut().unwrap();
+            process.owned_group.refresh();
+            let mut cleanup = super::owned_process_group::OwnedProcessGroup::new(
+                process.child.lock().unwrap().id(),
+            );
+            if crash {
+                let mut child = process.child.lock().unwrap();
+                assert!(child.id() > 1);
+                child.kill().unwrap();
+                child.wait().unwrap();
+            }
+            backend.stop().unwrap(); // No health()/take_exited_process() before Stop.
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while alive(survivor) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let leaked = alive(survivor);
+            cleanup.signal();
+            assert!(!leaked, "MD-4: Stop/shutdown must reap the recorded Chrome survivor (controller crash={crash})");
+            backend.start().unwrap();
+            backend.stop().unwrap();
+        }
     }
 
     #[test]
