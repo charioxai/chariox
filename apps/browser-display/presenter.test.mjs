@@ -38,7 +38,7 @@ test('MD-DISPLAY bounded window sends four credits before any receipt and drains
  stream.start(); await new Promise(resolve=>setTimeout(resolve,10));
  assert.equal(credits.length,4);
  const stopped=stream.stop();
- for(let i=0;i<4;i++){listener({event:'kernel_browser_frame',subscription_id:'s',frame:{sequence:i+1}});credits[i].resolve({frame_sent:true})}
+ for(const i of [2,0,3,1]){listener({event:'kernel_browser_frame',subscription_id:'s',frame:{sequence:i+1}});credits[i].resolve({frame_sent:true})}
  await stopped;assert.equal(credits.length,4);assert.equal(stream.presenter.sequence,4);
  await stream.close();
 });

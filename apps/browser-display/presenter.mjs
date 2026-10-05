@@ -99,7 +99,8 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   let pending = null, stopped = false, creditOutstanding = false;
   let running = false, failure = null, presentation = Promise.resolve(), active = new Set();
   const frames = [], arrivals = [];
-  let latest = null;
+  let latest = null,nextSequence=null,heldBytes=0;
+  const held=new Map();
   let queuedBytes = 0;
   const accept = frame => {
     const size = JSON.stringify(frame).length;
@@ -119,7 +120,17 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   const off = transport.onEvent(event => {
     if (event.event !== 'kernel_browser_frame' || event.subscription_id !== binding.subscription_id) return;
     if (running || active.size) {
-      try { accept(event.frame); } catch (error) { failure = error; running = false; }
+      try {
+        const frame=event.frame,size=JSON.stringify(frame).length;
+        if(!Number.isSafeInteger(frame.sequence)||frame.sequence<nextSequence||held.has(frame.sequence)||held.size+frames.length>=8||heldBytes+queuedBytes+size>1024*1024) throw Error('MD-DISPLAY: reordered receive window exceeded');
+        held.set(frame.sequence,frame);heldBytes+=size;
+        // Relay control/large-event lanes and concurrent decryption may finish
+        // in different orders. Decode every dependency in source sequence.
+        while(held.has(nextSequence)) {
+          const ordered=held.get(nextSequence);held.delete(nextSequence++);
+          heldBytes-=JSON.stringify(ordered).length;accept(ordered);
+        }
+      } catch (error) { failure = error; running = false; }
     } else { pending?.resolve(event.frame); pending = null; }
   });
   try { await transport.subscribeDisplay?.(binding); }
@@ -186,7 +197,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   };
   const start = () => {
     if (stopped || creditOutstanding || active.size || failure) throw failure ?? Error('MD-DISPLAY: stream busy');
-    running=true;
+    running=true;nextSequence=presenter.sequence+1;
     const desired=options.creditWindow ?? 4;
     if(!Number.isSafeInteger(desired)||desired<1||desired>8) {running=false;throw Error('MD-DISPLAY: invalid credit window');}
     const batch=Math.min(192000,Math.max(24000,(binding.bitrate??options.bitrate??2000000)/8*.5*.75-4096));
