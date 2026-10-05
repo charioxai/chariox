@@ -437,11 +437,9 @@ async function runDrill(privateRoot) {
     await mkdir(xdgCacheHome, { recursive: true })
     if (options.providers.includes("opencode")) {
       const sourceXdgDataHome = process.env.XDG_DATA_HOME?.trim()
-        || path.join(realHomeDir, ".local", "share")
       const sourceOpenCodeDataHome = process.env.OPENCODE_DATA_HOME?.trim()
-        || path.join(sourceXdgDataHome, "opencode")
-      const sourceXdgCacheHome = process.env.XDG_CACHE_HOME?.trim()
-        || path.join(realHomeDir, ".cache")
+        || path.join(requireScopedProviderPath(process.env,"XDG_DATA_HOME"), "opencode")
+      const sourceXdgCacheHome = requireScopedProviderPath(process.env,"XDG_CACHE_HOME")
       const homeCredentialPath = await seedLocalOpenCodeRuntimeProfile({
         sourceDataHome: sourceOpenCodeDataHome,
         sourceCacheHome: path.join(sourceXdgCacheHome, "opencode"),
@@ -546,7 +544,8 @@ async function runDrill(privateRoot) {
         XDG_DATA_HOME: xdgDataHome,
         XDG_CACHE_HOME: xdgCacheHome,
         ...(options.providers.includes("codex")?{CODEX_HOME: requireScopedProviderPath(process.env,"CODEX_HOME")} : {}),
-        OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR ?? path.join(realHomeDir, ".config", "opencode"),
+        OPENCODE_CONFIG_DIR: options.providers.includes("opencode") ? requireScopedProviderPath(process.env,"OPENCODE_CONFIG_DIR") : undefined,
+        CHARIOX_HOME: path.join(root,"kernel-home"),
         CHARIOX_LOG_DIR: path.join(root, "logs"),
         CHARIOX_KERNEL_PORT: String(ports.kernelPort),
         CHARIOX_MCP_PORT: String(ports.mcpPort),
@@ -581,7 +580,9 @@ async function runDrill(privateRoot) {
           XDG_DATA_HOME: path.posix.join(remoteRuntimeRoot, "xdg-data"),
           XDG_CACHE_HOME: path.posix.join(remoteRuntimeRoot, "xdg-cache"),
           ...(options.providers.includes("codex")?{CODEX_HOME: requireScopedProviderPath(process.env,"CHARIOX_DRILL_WORKER_CODEX_HOME")} : {}),
-          OPENCODE_CONFIG_DIR: "/root/.config/opencode",
+          OPENCODE_CONFIG_DIR: options.providers.includes("opencode") ? requireScopedProviderPath(process.env,"CHARIOX_DRILL_WORKER_OPENCODE_CONFIG_DIR") : undefined,
+          OPENCODE_DATA_HOME: options.providers.includes("opencode") ? requireScopedProviderPath(process.env,"CHARIOX_DRILL_WORKER_OPENCODE_DATA_HOME") : undefined,
+          CHARIOX_HOME: path.posix.join(remoteRuntimeRoot,"kernel-home"),
           CHARIOX_LOG_DIR: path.posix.join(remoteRuntimeRoot, "worker-logs"),
           CHARIOX_KERNEL_PORT: String(ports.workerKernelPort),
           CHARIOX_MCP_PORT: String(ports.workerMcpPort),
@@ -610,8 +611,9 @@ async function runDrill(privateRoot) {
             XDG_DATA_HOME: path.join(root, "worker-xdg-data"),
             XDG_CACHE_HOME: path.join(root, "worker-xdg-cache"),
             ...(options.providers.includes("codex")?{CODEX_HOME: requireScopedProviderPath(process.env,"CODEX_HOME")} : {}),
-            OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR ?? path.join(realHomeDir, ".config", "opencode"),
+            OPENCODE_CONFIG_DIR: options.providers.includes("opencode") ? requireScopedProviderPath(process.env,"OPENCODE_CONFIG_DIR") : undefined,
             CHARIOX_LOG_DIR: path.join(root, "worker-logs"),
+            CHARIOX_HOME: path.join(root,"worker-kernel-home"),
             CHARIOX_KERNEL_PORT: String(ports.workerKernelPort),
             CHARIOX_MCP_PORT: String(ports.workerMcpPort),
             CHARIOX_RELAY_URL: relayUrl,

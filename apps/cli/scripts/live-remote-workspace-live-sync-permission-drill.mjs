@@ -25,26 +25,9 @@ const repoRoot = path.resolve(cliRoot, '..', '..')
 const execFileAsync = promisify(execFile)
 const realHomeDir = os.homedir()
 
-async function loadCliModules(runtimeDir) {
-  const [{ transformAsync }, tsPreset] = await Promise.all([
-    import('@babel/core'),
-    import('@babel/preset-typescript'),
-  ])
-  for (const rel of ['src/ipc.ts', 'src/ipc-requests.ts']) {
-    const sourcePath = path.join(cliRoot, rel)
-    const outPath = path.join(runtimeDir, path.basename(rel).replace(/\.tsx?$/, '.js'))
-    const code = await readFile(sourcePath, 'utf8')
-    const transformed = await transformAsync(code, {
-      filename: sourcePath,
-      presets: [[tsPreset.default ?? tsPreset]],
-      sourceMaps: false,
-    })
-    await writeFile(outPath, transformed?.code ?? '', 'utf8')
-  }
-  const ipcUrl = new URL(`file://${path.join(runtimeDir, 'ipc.js')}`).href
-  const requestsUrl = new URL(`file://${path.join(runtimeDir, 'ipc-requests.js')}`).href
-  const { LocalIpcClient } = await import(ipcUrl)
-  const requests = await import(requestsUrl)
+async function loadCliModules() {
+  const { LocalIpcClient } = await import('../dist/ipc.js')
+  const requests = await import('../dist/ipc-requests.js')
   return { LocalIpcClient, requests }
 }
 
@@ -156,12 +139,14 @@ function daemonEnv({
   return {
     ...process.env,
     HOME: homeDir,
-    CODEX_HOME: process.env.CODEX_HOME ?? path.join(realHomeDir, '.codex'),
-    OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR ?? path.join(realHomeDir, '.config', 'opencode'),
+    CODEX_HOME: process.env.CODEX_HOME,
+    OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR,
+    OPENCODE_DATA_HOME: process.env.OPENCODE_DATA_HOME,
     XDG_CONFIG_HOME: path.join(homeDir, '.config'),
-    XDG_DATA_HOME: process.env.XDG_DATA_HOME ?? path.join(realHomeDir, '.local', 'share'),
-    XDG_STATE_HOME: process.env.XDG_STATE_HOME ?? path.join(realHomeDir, '.local', 'state'),
-    XDG_CACHE_HOME: process.env.XDG_CACHE_HOME ?? path.join(realHomeDir, '.cache'),
+    XDG_DATA_HOME: process.env.XDG_DATA_HOME ?? path.join(homeDir, '.local', 'share'),
+    XDG_STATE_HOME: path.join(homeDir, '.local', 'state'),
+    XDG_CACHE_HOME: path.join(homeDir, '.cache'),
+    CHARIOX_HOME: path.join(homeDir,'.chariox'),
     CHARIOX_KERNEL_PORT: String(kernelPort),
     CHARIOX_MCP_PORT: String(mcpPort),
     CHARIOX_OPENCODE_PORT: String(opencodePort),
@@ -199,7 +184,7 @@ async function runCommand(command, args, options = {}) {
 }
 
 async function buildKernelClient() {
-  const result = await runCommand('pnpm', ['--workspace-root', 'run', 'build:kernel-client'])
+  const result = await runCommand('pnpm', ['--workspace-root', 'run', 'build:cli'])
   if (result.code !== 0) {
     throw new Error(`kernel client build failed\n${result.stdout}\n${result.stderr}`)
   }
@@ -410,14 +395,20 @@ async function runDrill(privateRoot) {
     return
   }
 
+  for (const provider of options.providers) {
+    if (provider === 'codex') requireScopedProviderPath(process.env,'CODEX_HOME')
+    if (provider.startsWith('claude')) requireScopedProviderPath(process.env,'CLAUDE_CONFIG_DIR')
+    if (provider === 'opencode') {
+      requireScopedProviderPath(process.env,'OPENCODE_CONFIG_DIR')
+      if (!process.env.OPENCODE_DATA_HOME) requireScopedProviderPath(process.env,'XDG_DATA_HOME')
+    }
+  }
   const ports = await makePorts()
   const runId = `${process.pid}-${Date.now()}`
   const rootDir = privateRoot
   const evidenceRoot=path.join(os.homedir(),".codex","evidence","remote-permission",runId)
-  const cliRuntimeDir = path.join(cliRoot, `.tmp-live-remote-workspace-live-sync-permission-drill-${runId}`)
+  const cliRuntimeDir = path.join(cliRoot, "dist")
   await mkdir(rootDir, { recursive: true, mode: 0o700 })
-  await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
-  await mkdir(cliRuntimeDir, { recursive: true })
 
   await buildKernelClient()
   const { LocalIpcClient, requests } = await loadCliModules(cliRuntimeDir)
@@ -534,8 +525,10 @@ async function runDrill(privateRoot) {
         XDG_STATE_HOME: '/root/.local/state',
         XDG_DATA_HOME: '/root/.local/share',
         XDG_CACHE_HOME: '/root/.cache',
-        CODEX_HOME: '/root/.codex',
-        OPENCODE_CONFIG_DIR: '/root/.config/opencode',
+        CODEX_HOME: options.providers.includes('codex') ? requireScopedProviderPath(process.env,'CHARIOX_DRILL_WORKER_CODEX_HOME') : undefined,
+        OPENCODE_CONFIG_DIR: options.providers.includes('opencode') ? requireScopedProviderPath(process.env,'CHARIOX_DRILL_WORKER_OPENCODE_CONFIG_DIR') : undefined,
+        OPENCODE_DATA_HOME: options.providers.includes('opencode') ? requireScopedProviderPath(process.env,'CHARIOX_DRILL_WORKER_OPENCODE_DATA_HOME') : undefined,
+        CHARIOX_HOME: path.posix.join(remoteRoot,'kernel-home'),
         CHARIOX_LOG_DIR: path.posix.join(remoteRoot, 'worker-logs'),
         CHARIOX_KERNEL_PORT: String(ports.workerKernelPort),
         CHARIOX_MCP_PORT: String(ports.workerMcpPort),
@@ -688,12 +681,7 @@ async function runDrill(privateRoot) {
       },
       log: (name, details) => console.log(`[remote-workspace-live-sync-permission-drill] ${name}`, JSON.stringify(details)),
     })
-    if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
-    } else {
-      console.error(`remote workspace live sync permission drill transient CLI modules kept at ${cliRuntimeDir}`)
-      if (childRootDir) console.error(`remote workspace live sync permission child drill artifacts kept at ${childRootDir}`)
-    }
+
   }
 }
 

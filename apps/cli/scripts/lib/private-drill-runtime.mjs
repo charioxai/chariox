@@ -21,7 +21,7 @@ export async function withPrivateDrillRuntime(label,operation) {
 }
 export function requireScopedProviderPath(environment,name) {
   const value=environment[name]?.trim()
-  if(!value||!path.isAbsolute(value))throw new Error(`explicit linked provider scope ${name} is required`)
+  if(!value||!path.isAbsolute(value)||value.split(path.sep).includes(".codex-agents"))throw new Error(`explicit linked provider scope ${name} is required`)
   return value
 }
 export async function readBoundedPrivateInput(file,maximum=16*1024*1024) {
