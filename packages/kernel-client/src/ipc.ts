@@ -1377,7 +1377,7 @@ function isBrowserObservation(request: unknown): boolean {
   if (request === null || typeof request !== "object") return false
   const browser = (request as { KernelBrowser?: { command?: { op?: string } } }).KernelBrowser
   return browser !== undefined
-    && ["state", "snapshot", "screenshot", "frames"].includes(browser.command?.op ?? "")
+    && ["state", "snapshot", "screenshot", "frames", "list_grants", "subscribe_grants"].includes(browser.command?.op ?? "")
 }
 
 function kernelEventFromValue(value: unknown): KernelEvent {

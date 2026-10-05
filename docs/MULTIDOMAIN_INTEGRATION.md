@@ -1,5 +1,9 @@
 # First multidomain integration
 
+MP-08 / MP-10 / MP-11: [user-domain access](MULTIDOMAIN_USER_DOMAIN_ACCESS.md)
+amends this historical integration at reserved 432/78. Focus changes retain
+existing task grants; window metadata exposes same-kernel reachability.
+
 Branch `md/integration` combines OSS main `358491d66`, Apps queue
 `b02d9b1a3` / `70a17a4f8` / `de553fcdd`, the three published kernel-browser
 commits (`b9bdcc29d`, `66fb55a7a`, `8c3d6bafd`) and the three App-view commits
@@ -48,12 +52,12 @@ Detached RuntimeInteractions are still kernel-owned and projected through
 endpoint. Existing passkey/receipt ownership and one-use parameter binding apply.
 Chromium is a rendering host, not an approval surface or runtime authority.
 
-Focused browser MCP keeps its existing loader and selector. Browser input/navigation/close from
-that agent is refused on a live App target: it cannot turn the human App page
+Browser MCP uses the shared retained-grant authority and on-demand loader.
+Browser input/navigation/close from an agent is refused on a live App target: it cannot turn the human App page
 bridge into agent authority. The proposed focused App MCP adapter must supply an
 agent actor through the App queue; its names/selector are documented in
 MULTIDOMAIN_APP_VIEWS.md and are not invented by this integration. Ordinary tab
-control through the focused browser tool remains available after on-demand load.
+control remains available over claimed resources after on-demand load.
 
 ## Ephemeral App lifecycle vs ordinary tabs
 

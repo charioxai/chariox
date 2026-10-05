@@ -4,6 +4,14 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KernelBrowserCommand {
+    ListGrants,
+    SubscribeGrants {
+        after: u64,
+        wait_ms: u32,
+    },
+    RevokeGrants {
+        agent_id: Option<String>,
+    },
     DisplayCapture {
         tab_id: String,
         generation: u64,

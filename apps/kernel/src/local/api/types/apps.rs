@@ -684,6 +684,8 @@ pub struct UserAppView {
     /// Transport-neutral tab reference, never a raw CDP target or endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<UserAppViewBrowser>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<UserDomainWindowAccess>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

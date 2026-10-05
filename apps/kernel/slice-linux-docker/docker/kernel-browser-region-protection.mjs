@@ -1,5 +1,5 @@
 // Screenshot-region masks from trusted CDP metadata, never page JavaScript.
-async function regions(connection, sessionId) {
+export async function protectedHostRegions(connection, sessionId) {
   const { root } = await connection.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
   const { nodeIds } = await connection.send("DOM.querySelectorAll", {
     nodeId: root.nodeId,
@@ -11,7 +11,10 @@ async function regions(connection, sessionId) {
   while (pending.length) {
     if (++visited > 100_000) throw new Error("Capture protection tree limit exceeded");
     const node = pending.pop();
-    if (node.shadowRoots?.length) nodes.push(node.nodeId);
+    // MP-11: Chromium's native control internals are not opaque page content.
+    // Password/OTP/payment fields still match the explicit protection selector.
+    // Unknown and page-created open/closed roots remain protected.
+    if (node.shadowRoots?.some(root => root.shadowRootType !== "user-agent")) nodes.push(node.nodeId);
     pending.push(...(node.children ?? []));
   }
   if (nodes.length > 1024) throw new Error("Capture protection limit exceeded");
@@ -30,12 +33,12 @@ async function regions(connection, sessionId) {
 
 export async function captureRegionMasks(connection, sessionId) {
   // Layout changes or failed metadata checks cannot reveal an unmapped field.
-  const before = await regions(connection, sessionId);
+  const before = await protectedHostRegions(connection, sessionId);
   return { async afterCapture({ width = 1280, height = 800 } = {}) {
     if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) throw new Error("Capture geometry unavailable");
     const fullFrame = [{ x: 0, y: 0, width, height }];
     try {
-      const after = await regions(connection, sessionId);
+      const after = await protectedHostRegions(connection, sessionId);
       if (JSON.stringify(before) !== JSON.stringify(after)) return fullFrame;
       // CDP bounds are CSS coordinates; the raster crop masks native PNG pixels.
       return after.map(region => ({ x: region.x * width / 1280, y: region.y * height / 800,

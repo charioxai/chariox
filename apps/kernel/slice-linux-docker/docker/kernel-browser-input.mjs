@@ -10,8 +10,26 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch } =
       await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
       assertNotCancelled(signal);
     };
+    // MP-11: all text-producing paths share the Vault-only target fence.
+    // The public key string and MCP schema are not security boundaries.
+    const checkTextTarget = async () => {
+      const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
+      const { executionContextId } = await connection.send("Page.createIsolatedWorld", {
+        frameId: frameTree.frame.id, worldName: "chariox-host-input", grantUniveralAccess: false,
+      }, sessionId);
+      const { result } = await connection.send("Runtime.evaluate", {
+        contextId: executionContextId,
+        expression: "(() => { let e = document.activeElement; while(e?.shadowRoot?.activeElement) e = e.shadowRoot.activeElement; return !!e && (e.type === 'password' || e.tagName === 'IFRAME' || /password|one-time-code/.test(e.autocomplete || '')); })()",
+        returnByValue: true,
+      }, sessionId);
+      if (result?.value !== false) throw new UserDomainRefusal("sensitive_requires_focus");
+    };
     const sendInput = async (method, params) => {
       await check();
+      if (method === "Input.insertText" || (method === "Input.dispatchKeyEvent" && params.text)) {
+        await checkTextTarget();
+        await check();
+      }
       onDispatch?.();
       const result = await connection.send(method, params, sessionId);
       assertNotCancelled(signal);
@@ -21,23 +39,17 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch } =
       await check();
       if (input.kind === "text") {
         if (typeof input.text !== "string" || input.text.length > 16384) throw new Error("MD-2: input text exceeds limit");
-        const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
-        const { executionContextId } = await connection.send("Page.createIsolatedWorld", {
-          frameId: frameTree.frame.id, worldName: "chariox-host-input", grantUniveralAccess: false,
-        }, sessionId);
-        const { result } = await connection.send("Runtime.evaluate", {
-          contextId: executionContextId,
-          expression: "(() => { let e = document.activeElement; while(e?.shadowRoot?.activeElement) e = e.shadowRoot.activeElement; return !!e && (e.type === 'password' || e.tagName === 'IFRAME' || /password|one-time-code/.test(e.autocomplete || '')); })()",
-          returnByValue: true,
-        }, sessionId);
-        if (result?.value !== false) throw new UserDomainRefusal("sensitive_requires_focus");
         await sendInput("Input.insertText", { text: input.text });
       } else if (input.kind === "key") {
-        if (!["Tab", "Enter", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
-        const key = { key: input.key, code: input.key,
-          ...(input.key === "Enter" ? { windowsVirtualKeyCode: 13 } : {}) };
+        const printable = typeof input.key === "string" && /^[^\p{C}]$/u.test(input.key);
+        if (!printable && !["Tab", "Shift+Tab", "Enter", "Space", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
+        const name = input.key === "Shift+Tab" ? "Tab" : input.key;
+        const key = { key: name === "Space" ? " " : name, code: name,
+          ...(input.key === "Shift+Tab" ? { modifiers: 8 } : {}),
+          windowsVirtualKeyCode: { Tab:9, Enter:13, Space:32, Escape:27, Backspace:8, Delete:46, ArrowLeft:37, ArrowUp:38, ArrowRight:39, ArrowDown:40, Home:36, End:35 }[name] };
         await sendInput("Input.dispatchKeyEvent", { type: "keyDown", ...key,
-          ...(input.key === "Enter" ? { text: "\r", unmodifiedText: "\r" } : {}) });
+          ...(["Enter", "Space"].includes(input.key) || printable ? { text: printable ? input.key : input.key === "Enter" ? "\r" : " ", unmodifiedText: printable ? input.key : input.key === "Enter" ? "\r" : " " } : {}) });
+        // MP-08: paired releases keep document and live cancellation checks.
         await sendInput("Input.dispatchKeyEvent", { type: "keyUp", ...key });
       } else {
         if (!Number.isInteger(input.x) || input.x < 0 || input.x >= viewport.css_width || !Number.isInteger(input.y) || input.y < 0 || input.y >= viewport.css_height) throw new Error("MD-2: pointer outside viewport");

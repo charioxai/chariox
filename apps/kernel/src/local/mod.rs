@@ -282,6 +282,7 @@ pub use api::{
     NoteAnchor, NoteBox, NoteCommand, NoteRecord, NoteReply, NoteResult, NoteSelection,
     NoteSummary, NoteTextQuote, NoteWindow, NotesRequest,
 };
+pub use api::{UserDomainGrant, UserDomainNotice, UserDomainResource, UserDomainWindowAccess};
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
 
