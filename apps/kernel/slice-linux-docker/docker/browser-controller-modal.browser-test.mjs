@@ -14,12 +14,12 @@ const { chromium } = await import(process.env.PLAYWRIGHT_MODULE);
 const viewport = { css_width: 1280, css_height: 800, device_scale_factor: 1,
   desktop_pixel_width: 1280, desktop_pixel_height: 800 };
 
-test("MP-08/MP-10/MP-11 navigation with a pending dialog reconciles without replying or replaying", async () => {
+for (const race of [false, true]) test(`MP-08/MP-10/MP-11 ${race ? "dialog opening during read" : "pending dialog"} reconciles without replying or replaying`, async () => {
   let navigations = 0;
   const server = createServer((request, response) => {
     if (request.url === "/modal") navigations++;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end('<body><button>Ready</button><script>alert("Continue?");document.body.dataset.resolved="yes"</script></body>');
+    response.end('<body><button>Ready</button>' + (race ? '' : '<script>alert("Continue?");document.body.dataset.resolved="yes"</script>') + '</body>');
   });
   const profile = await mkdtemp(path.join(os.tmpdir(), "chariox-controller-modal-browser-"));
   let context, browser;
@@ -38,13 +38,37 @@ test("MP-08/MP-10/MP-11 navigation with a pending dialog reconciles without repl
     const opened = page.waitForEvent("dialog");
     const navigation = await request("browser.navigate", { ...old, url: `http://127.0.0.1:${server.address().port}/modal` });
     assert.equal(navigation.ok, true, JSON.stringify(navigation.error));
-    await opened;
+    let blockedReads = 0;
+    if (race) {
+      const connection = await browser.ensureConnection();
+      const send = connection.send.bind(connection);
+      let armed = true;
+      connection.send = async (method, params, sessionId) => {
+        if (armed && method === "Page.getFrameTree") {
+          armed = false;
+          blockedReads++;
+          // The real renderer pauses after the observation precheck. This
+          // fixture alone opens it; only the normal dialog action answers it.
+          void send("Runtime.evaluate", {
+            expression: 'alert("Continue?");document.body.dataset.resolved="yes"',
+          }, sessionId).catch(() => {});
+          await opened;
+          const deadline = Date.now() + 1000;
+          while (!browser.dialogDefaults.isOpen(old.target_id)) {
+            assert.ok(Date.now() < deadline, "controller must observe the dialog");
+            await new Promise(resolve => setTimeout(resolve, 5));
+          }
+        }
+        return send(method, params, sessionId);
+      };
+    } else await opened;
     const reconciled = await request("browser.reconcile", { viewport });
     assert.equal(reconciled.ok, true, JSON.stringify(reconciled.error));
     const target = reconciled.result.tabs[0];
     assert.equal(target.document_id, navigation.result.document_id);
     assert.equal(reconciled.result.focused_target_id, initial.focused_target_id);
     assert.equal(navigations, 1);
+    assert.equal(blockedReads, race ? 1 : 0);
     assert.equal(browser.dialogDefaults.isOpen(target.target_id), true);
     const resized = await request("browser.reconcile", { viewport: { ...viewport, css_width: 1024 } });
     assert.equal(resized.error?.code, "browser_dialog_open");

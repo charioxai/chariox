@@ -462,11 +462,7 @@ export class BrowserCdpClient {
       // Metrics differ per target (App pages lay out beside their panel).
       // Reapply only when this target's metrics changed.
       const metricsKey = JSON.stringify(metrics);
-      const modal = this.dialogDefaults.pageObservation(target,
-        this.documentIdsByTarget.get(target.targetId),
-        this.viewportByTarget.get(target.targetId) === metricsKey,
-        this.inputCapture.visibilityBySession.get(sessionId)?.visible
-          ?? this.focusWorldsByTarget.get(target.targetId)?.visible);
+      const modal = this.modalPageObservation(target, metrics, sessionId);
       if (modal) return modal;
       if (this.viewportByTarget.get(target.targetId) !== metricsKey) {
         await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
@@ -492,9 +488,23 @@ export class BrowserCdpClient {
         focused: focus === true,
       };
     } catch (error) {
+      // MP-08/MP-10/MP-11: the dialog may open while a renderer read is in
+      // flight. Use its now-observed binding, without retrying or replying.
+      if (error?.code === "browser_cdp_timeout") {
+        const modal = this.modalPageObservation(target, metrics, sessionId);
+        if (modal) return modal;
+      }
       await this.retireFailedReadSession(connection, target.targetId, error, sessionId);
       throw error;
     }
+  }
+
+  modalPageObservation(target, metrics, sessionId) {
+    return this.dialogDefaults.pageObservation(target,
+      this.documentIdsByTarget.get(target.targetId),
+      this.viewportByTarget.get(target.targetId) === JSON.stringify(metrics),
+      this.inputCapture.visibilityBySession.get(sessionId)?.visible
+        ?? this.focusWorldsByTarget.get(target.targetId)?.visible);
   }
 
   // One isolated world per document: polls reuse it, a new document gets a new one.
