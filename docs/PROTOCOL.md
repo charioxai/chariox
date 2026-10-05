@@ -3217,3 +3217,30 @@ WebSocket frames through the ordinary router and provider-native export paths
 with disposable synthetic Codex, Claude and OpenCode profiles. It establishes
 local protocol/portability behavior, not live provider login, provisioning or
 fresh-machine MP-10 acceptance.
+### MP-07 / MP-08 / MP-11 owner-managed SSH machines (local 444)
+
+`AddSshMachine { host, install_id?, port?, release? }` and
+`RemoveSshMachine { install_id }` use the owning kernel's normal admitted
+request transport. Only that kernel's owner may execute them; session guests,
+peers and external agents do not receive enrollment/install authority. The
+kernel selects an approved signed release from its local operator catalogue
+and invokes the user's SSH config/agent. Client requests contain no release
+paths, trust pins, SSH credentials, enrollment tickets or provider credentials.
+
+The source requests a user-bound single-use `owner_managed_machine` ticket
+from Cloud using its per-kernel credential. The separate owner-managed target
+bootstrap receives it solely on SSH stdin and shares device enrollment's
+kernel/machine/public-key admission and private credential storage. Managed VM
+bootstrap admission remains unchanged. The target installs a marked per-user
+root, starts only its own `systemd --user` unit, and must report authenticated
+local status with a relay connection before returning ready. The selected
+kernel port and its companion MCP port (`port+1`) must both be available.
+
+`SshMachine { machine: { install_id, status, kernel_id, machine_id,
+release_digest, state_retained } }` exposes only a deployment receipt. A repeat
+with the same ID/release/port reuses the enrolled identity; another release
+requires an explicit later upgrade. Remove stops/uninstalls the owned service
+and release tree while retaining private kernel state and directory identity.
+No VM provisioning/deletion or runtime proxy is involved. Relay peer protocol
+remains 70; native/web minimums are unchanged for existing behavior. The SSH
+commands themselves require a local-444-capable kernel/client pair.

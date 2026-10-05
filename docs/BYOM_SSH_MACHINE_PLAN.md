@@ -1,7 +1,7 @@
 # BYOM over SSH (MP-07 / MP-08 / MP-11)
 
-Frozen source: `74e50b787a5919ee5c3d580c5b088989fd4a1adf` (local 416,
-relay 70). Owner request 2026-10-05 adds an owner-managed machine, not a
+PR1 continuation base: OSS ownership `0d02073f5` (local 439, relay 70);
+BYOM adds local 444, with no relay shape change. Owner request 2026-10-05 adds an owner-managed machine, not a
 Cloud-disposable environment. The ordinary runtime remains the authority.
 MP-11 follows the owner's narrowed behavioural/security-anchor scope.
 
@@ -37,12 +37,17 @@ existing bounded extractor, then verify signature, all artifact hashes, source
 identity, builder attestation and target before executing any uploaded binary.
 
 Both entry points end with a fresh independent kernel owned by the same user,
-using the per-kernel credential and delegated grant model of OSS #888 / Cloud
-#296 (not present at frozen base 74e50b787). Read-only inspection of #888 at
-`e224df83c5f7c8c9047fe26e7cccd2acf39e835e` confirms key-bound KERNEL device
-enrollment and public status; it is a prerequisite identity, not this lane base. Do not transfer a machine credential
-or home Cloud session. SSH push asks the source kernel for a short-lived one-time
-target enrollment ticket; self-setup uses existing browser device approval.
+using OSS #888 / Cloud #296 per-kernel credentials. The coordinator approved
+source-kernel issue/revoke at `/v1/kernel-enrollment-tickets`, with purpose
+`owner_managed_machine`, optional machine label and TTL at most 600 seconds.
+The source credential uses `x-chariox-kernel-credential`; no browser credential
+is copied. Ticket delivery is exclusively SSH stdin. The target uses a separate
+`--owner-managed-enroll-stdin` bootstrap and the same #888 approval validation
+and private profile storage as device enrollment, without relaxing Path-1 checks.
+The proposed ticket variant of `/auth/device/poll` carries `ticket`, `kernelId`,
+`machineId`, `publicKey`, `publicKeyThumbprint`, `kernelAlias` and expects the
+ordinary `approved` profile plus `kernelCredential`. Cloud route alignment is
+tracked in the lane status until byomcloud confirms that unspecified seam.
 Cloud stores ownership/directory/tickets, never runtime context or terminal data.
 
 The preferred self-setup entry point is **Chariox Setup**: one generic signed
@@ -80,7 +85,7 @@ selected kernel configuration copy remain distinct operations.
 
 Each install ID has `$HOME/.local/share/chariox/ssh-machines/<id>` (release
 roots) and `$HOME/.chariox/dev/ssh-machines/<id>` (explicit `CHARIOX_HOME`),
-`chariox-ssh-<id>.service`, and an explicit distinct loopback port. Preserve
+`chariox-ssh-<id>.service`, and an explicit distinct loopback port pair (kernel `port`, runtime MCP `port+1`). Preserve
 ordinary HOME/PATH; no provider sandbox or workspace allowlist. Refuse symlinked
 ancestors, foreign roots/units, missing user bus, and occupied ports. Repeating
 the same digest/ID/port is idempotent; different selections require an explicit
@@ -103,40 +108,29 @@ separate explicit purge and account identity retirement. Never stop/rewrite
 `chariox-md-staging.service` or `~/.chariox/dev/md-staging`. Reserve a distinct
 ID and port in the Mac-to-Omarchy drill.
 
-## Lean slices and blocking decision
+## MP-07 / MP-08 / MP-11 lean slices
 
-1. **PR1 — SSH push** (MP-07 / MP-08 / MP-11): source-kernel transport,
-   shared per-user verified installer, one-time target enrollment, start/relay
-   readiness, TUI add/remove, tests, localhost SSH drill, Mac→Omarchy handoff.
-   The independent installer is implemented first; the ticket/ownership bridge
-   and client wiring require the agreed Cloud contract.
-2. **PR2 — Chariox Setup** (MP-07 / MP-08 / MP-11): generic installer app +
-   shared core, device-flow enrollment, public versioned install script with
-   tests, CLI login/waiting-room setup offer. Shared detection/idempotency,
-   repair/upgrade/rollback/uninstall. Signing/notarization is owner-supplied.
-3. **PR3 — web Add this machine** (MP-08 / MP-11): generic download links,
-   one-liner, Cloud revocable single-use user-bound enrollment-code API.
-4. **PR4 — Copy kernel here** (MP-08 / MP-10 / MP-11): source/target picker,
-   existing reviewed export/context import, ordinary target provider login,
-   multi-client/reconnect drills. No provider credential syncing.
+1. PR1 SSH push: kernel-owned approved release catalogue; `/machine add ssh
+   <host> [--id <id>] [--port <port>] [--release <release>]` and `/machine remove
+   <install-id>`; upload, target verify, install, one-time enrollment, owned
+   service start and authenticated local relay readiness. Stop/uninstall retains
+   identity/state. Repeat selects the same digest/root/port/identity. A different
+   release is refused pending explicit upgrade support. Local 444 snapshot/hash
+   and localhost source-kernel/SSH drill; Mac-to-Omarchy handoff is required.
+2. PR2 Chariox Setup plus public install.sh and CLI login offer: shared install
+   core, device-flow enrollment, repair/upgrade/rollback/uninstall. macOS app
+   signing/notarization needs owner credentials kept off builders.
+3. PR3 Web Add this machine: generic download links and revocable one-liner
+   ticket UX; Cloud implements the same user-bound, single-use exchange.
+4. PR4 Copy kernel here: existing export approval and encrypted managed-context
+   flow adapted to independent targets. Provider login stays on the target.
 
-Owner/coordinator decision: supply/assign the #888/#296 integration and confirm the Cloud owner-managed ticket
-issue/exchange and context-ticket contract. At this source the managed bootstrap
-requires an environment ID and protected `/etc/chariox/bootstrap` envelope;
-`BootstrapConfig` enforces `CHARIOX_HOME=HOME/.chariox`. Existing account machine
-pairing consumes an opaque `/machines/pair` response and cannot establish a
-safe target per-kernel credential exchange. Do not weaken Path-1 checks or invent
-Cloud responses. Enrollment/context-dependent work is blocked on this seam;
-the installer layer is independent and continues. Local protocol **444** is
-reserved for new add/remove shapes and snapshots; relay **87** only if needed.
-No new protocol shape is needed for the independent install layer. This
-checkpoint provides `apps/kernel/ssh-machine/{transport,remote}.mjs`; it verifies
-and installs, supports repeat/stop/remove, retains mutable state and refuses
-start until enrollment exists. It has no TUI/kernel request wiring yet. It
-requires integration into the home kernel's owner-admitted operation service
-and trusted release catalogue; the raw file inputs are internal deployment
-inputs, not a client authority. Upgrade/repair/start/Cloud readiness are designed
-above and not implemented here.
-
-Passing fixtures/localhost transport do not close MP-07/MP-08/MP-10 or supply
-current MP-11 security review, signed fresh-machine parity or hosted acceptance.
+PR1 release selection is an operator-owned `ssh-machine-releases.json` beside
+this kernel's `config.toml`, with a default release ID and approved immutable
+archive/digest plus independent public pins/fingerprints. Client requests never
+choose raw paths or trust pins. Catalogue hosting/download UX is later work.
+Multiple installs coexist by explicit ID and port; defaults derive stably from
+SSH host. No sudo, VM provisioning/deletion, Cloud runtime proxy, automatic
+provider credential sync or system-service mutation. macOS/arm64 install and
+upgrade execution remain later slices. See lane LIVE_TEST.md for the catalogue
+schema and coordinator commands.

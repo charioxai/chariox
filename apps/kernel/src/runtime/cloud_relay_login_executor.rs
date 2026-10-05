@@ -74,64 +74,8 @@ pub(crate) async fn execute_poll_cloud_relay_login_request(
             profile: None,
         },
         "approved" => {
-            let profile = response
-                .profile
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "poll cloud relay login",
-                    message: "cloud approval response did not include a profile".to_string(),
-                })?;
-            let kernel_credential =
-                response
-                    .kernel_credential
-                    .ok_or_else(|| DaemonError::LocalTransport {
-                        operation: "poll cloud relay login",
-                        message: "cloud approval response did not include a kernel credential"
-                            .to_string(),
-                    })?;
             let config = config_projection.snapshot();
-            if profile.kernel_id.as_deref() != Some(config.daemon_id.as_str())
-                || profile.machine_id.as_deref() != Some(config.host_machine_id.as_str())
-                || profile.public_key_thumbprint.as_deref()
-                    != Some(
-                        crate::runtime::terminal_pairings::public_key_thumbprint(
-                            &config.relay_public_key,
-                        )
-                        .as_str(),
-                    )
-            {
-                return Err(DaemonError::LocalTransport {
-                    operation: "complete kernel Cloud enrollment",
-                    message: "approval does not match this kernel identity and key".into(),
-                });
-            }
-            if config
-                .cloud_relay
-                .as_ref()
-                .is_some_and(|old| old.account_id != profile.account_id)
-            {
-                return Err(DaemonError::LocalTransport { operation: "complete kernel Cloud enrollment", message: "Cloud account conflicts with this root; unlink first or use a separate root/profile".into() });
-            }
-            let persisted = PersistedCloudRelayProfile {
-                api_url,
-                email: profile.email,
-                account_id: profile.account_id,
-                user_id: profile.user_id,
-                account_slug: profile.account_slug,
-                realm_id: profile.realm_id,
-                relay_url: profile.relay_url,
-                issuer_id: profile.issuer_id,
-                client_id: None,
-                client_alias: None,
-                machine_id: profile.machine_id,
-                machine_alias: profile.machine_alias,
-                machine_credential: None,
-                kernel_id: profile.kernel_id,
-                kernel_credential: Some(kernel_credential),
-                kernel_public_key_thumbprint: profile.public_key_thumbprint,
-                cloud_session_token: None,
-                cloud_session_expires_at_ms: None,
-                token_expires_at_ms: None,
-            };
+            let persisted = enrolled_profile(&config, api_url, response)?;
             persist_cloud_profile(runtime_state, persisted.clone()).await?;
             CloudRelayLoginPoll {
                 status: CloudRelayLoginPollStatus::Approved,
@@ -216,5 +160,104 @@ mod enrollment_display_tests {
         assert_eq!(body["machineAlias"], "fixture-machine");
         assert_eq!(body["kernelAlias"], "fixture-kernel");
         assert_eq!(body["kernelId"], config.daemon_id);
+    }
+}
+
+// MP-08 / MP-11: device flow and owner-managed tickets share identity/ownership admission.
+pub(crate) fn enrolled_profile(
+    config: &crate::config::DaemonConfig,
+    api_url: String,
+    response: CloudDevicePollResponse,
+) -> Result<PersistedCloudRelayProfile, DaemonError> {
+    if response.status != "approved" {
+        return Err(DaemonError::LocalTransport {
+            operation: "complete kernel Cloud enrollment",
+            message: "kernel enrollment was not approved".into(),
+        });
+    }
+    let profile = response
+        .profile
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "poll cloud relay login",
+            message: "cloud approval response did not include a profile".to_string(),
+        })?;
+    let kernel_credential = response
+        .kernel_credential
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "poll cloud relay login",
+            message: "cloud approval response did not include a kernel credential".to_string(),
+        })?;
+    if profile.kernel_id.as_deref() != Some(config.daemon_id.as_str())
+        || profile.machine_id.as_deref() != Some(config.host_machine_id.as_str())
+        || profile.public_key_thumbprint.as_deref()
+            != Some(
+                crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key)
+                    .as_str(),
+            )
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "complete kernel Cloud enrollment",
+            message: "approval does not match this kernel identity and key".into(),
+        });
+    }
+    if config
+        .cloud_relay
+        .as_ref()
+        .is_some_and(|old| old.account_id != profile.account_id)
+    {
+        return Err(DaemonError::LocalTransport { operation: "complete kernel Cloud enrollment", message: "Cloud account conflicts with this root; unlink first or use a separate root/profile".into() });
+    }
+    Ok(PersistedCloudRelayProfile {
+        api_url,
+        email: profile.email,
+        account_id: profile.account_id,
+        user_id: profile.user_id,
+        account_slug: profile.account_slug,
+        realm_id: profile.realm_id,
+        relay_url: profile.relay_url,
+        issuer_id: profile.issuer_id,
+        client_id: None,
+        client_alias: None,
+        machine_id: profile.machine_id,
+        machine_alias: profile.machine_alias,
+        machine_credential: None,
+        kernel_id: profile.kernel_id,
+        kernel_credential: Some(kernel_credential),
+        kernel_public_key_thumbprint: profile.public_key_thumbprint,
+        cloud_session_token: None,
+        cloud_session_expires_at_ms: None,
+        token_expires_at_ms: None,
+    })
+}
+
+#[cfg(test)]
+mod shared_enrollment_tests {
+    use super::*;
+    #[test]
+    fn byom_mp08_mp11_ticket_and_device_enrollment_share_key_machine_kernel_and_owner_checks() {
+        let config = crate::config::DaemonConfig::new("new-kernel", "new-machine", "owner");
+        let thumbprint =
+            crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key);
+        let response = serde_json::json!({"status":"approved","kernelCredential":"fixture-independent-credential","profile":{"email":"fixture@example.test","accountId":"owner","userId":"owner","accountSlug":"owner","realmId":"owner","relayUrl":"wss://relay.example.test","issuerId":"fixture","kernelId":config.daemon_id,"machineId":config.host_machine_id,"publicKeyThumbprint":thumbprint}});
+        let admit = |value| {
+            enrolled_profile(
+                &config,
+                "https://cloud.example.test".into(),
+                serde_json::from_value(value).unwrap(),
+            )
+        };
+        assert!(admit(response.clone()).is_ok());
+        for field in ["kernelId", "machineId", "publicKeyThumbprint"] {
+            let mut value = response.clone();
+            value["profile"][field] = serde_json::json!("foreign");
+            assert!(admit(value).is_err());
+        }
+        let mut value = response.clone();
+        value["kernelCredential"] = serde_json::json!("");
+        assert!(admit(value).is_err());
+        let mut value = response;
+        value["status"] = serde_json::json!("authorization_pending");
+        assert!(admit(value).is_err());
     }
 }

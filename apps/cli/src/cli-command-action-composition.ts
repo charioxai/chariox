@@ -130,6 +130,8 @@ import {
   updateSessionConfig,
 } from "./provider-api.js"
 import {
+  addSshMachine,
+  removeSshMachine,
   approveRemoteMachine,
   forgetRemoteMachine,
   listRemoteMachineKernels,
@@ -624,6 +626,8 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getRemoteMachines: remoteMachinesState,
     setRemoteMachines: setRemoteMachinesState,
     reconcileWaitingRoom: () => reconcileWaitingRoom(),
+    addSshMachine: (host, options) => addSshMachine(client, host, options),
+    removeSshMachine: (installId) => removeSshMachine(client, installId),
     listRemoteMachines: () => listRemoteMachines(client),
     listRemoteMachineKernels: (machineRef) => listRemoteMachineKernels(client, machineRef),
     approveRemoteMachine: (machineRef) => approveRemoteMachine(client, machineRef),

@@ -112,12 +112,22 @@ export async function runSshMachine(host, request, release, options = {}) {
   }
   // All outer members are home-owned fixed names; the untrusted inner archive is bounded by the shared extractor.
   const command = `set -eu; umask 077; stage=$(mktemp -d \"$HOME/.chariox-byom-upload.XXXXXXXX\"); trap 'rm -rf -- \"$stage\"' EXIT HUP INT TERM; tar -xf - -C \"$stage\" --no-same-owner; node \"$stage/remote.mjs\" \"$stage/request.json\"`
-  const raw = await ssh(host, command, upload(entries), options)
+  let raw
+  if (request.action === "start") {
+    // Public helper bytes only in the command. The ticket remains a bounded stdin JSON frame.
+    const writes = entries.filter(([name]) => name !== "request.json").map(([name, bytes]) => `printf '%s' '${bytes.toString("base64")}' | base64 -d > "$stage/${name}"`).join("; ")
+    const start = `set -eu; umask 077; stage=$(mktemp -d "$HOME/.chariox-byom-upload.XXXXXXXX"); trap 'rm -rf -- "$stage"' EXIT HUP INT TERM; ${writes}; node "$stage/remote.mjs" --stdin`
+    raw = await ssh(host, start, [Buffer.from(JSON.stringify({ request, enrollment: options.enrollment }))], options)
+  } else raw = await ssh(host, command, upload(entries), options)
   let result
   try { result = JSON.parse(raw) } catch { throw new Error("SSH target returned an invalid deployment result") }
-  if (result?.installId !== request.installId || !["installed", "started_unenrolled", "stopped", "removed"].includes(result?.status)) throw new Error("SSH deployment result identity is invalid")
-  const expected = { install: "installed", stop: "stopped", remove: "removed" }[request.action]
+  if (result?.installId !== request.installId || !["installed", "ready", "stopped", "removed"].includes(result?.status)) throw new Error("SSH deployment result identity is invalid")
+  const expected = { install: "installed", start: "ready", stop: "stopped", remove: "removed" }[request.action]
   if (result.status !== expected || (expected === "installed" && (result.releaseDigest !== request.releaseDigest || result.enrolled !== false))) throw new Error("SSH deployment result does not match the requested action")
+  if (expected === "ready") {
+    if (result.releaseDigest !== request.releaseDigest || result.userId !== options.enrollment?.userId || result.connected !== true || ["kernelId", "machineId", "publicKeyThumbprint"].some(k => typeof result[k] !== "string" || !result[k] || result[k].length > 512)) throw new Error("SSH target did not return bound relay readiness")
+    return { installId: request.installId, status: "ready", releaseDigest: result.releaseDigest, kernelId: result.kernelId, machineId: result.machineId, userId: result.userId, publicKeyThumbprint: result.publicKeyThumbprint, ticketConsumed: result.ticketConsumed === true, connected: true }
+  }
   return expected === "installed"
     ? { installId: request.installId, status: expected, releaseDigest: request.releaseDigest, enrolled: false }
     : { installId: request.installId, status: expected, stateRetained: true }

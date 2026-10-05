@@ -284,3 +284,5 @@ pub fn default_access_holder_pid() -> std::io::Result<u32> {
     let (peer, _) = crate::runtime::kernel_access::process::inspect(std::process::id())?;
     crate::runtime::kernel_access::requester::default_holder(&peer).map(|holder| holder.pid)
 }
+
+pub use api::{AddSshMachineRequest, RemoveSshMachineRequest, SshMachineResult};

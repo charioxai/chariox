@@ -23,7 +23,8 @@ async function treeHash(root) {
   await walk(root)
   return `sha256:${hash.digest("hex")}`
 }
-export async function createFixture(dir) {
+export async function createFixture(dir, chosenKernelBytes) {
+  const kernelBytes = chosenKernelBytes ?? Buffer.from('#!/bin/sh\nif [ "$1" = "--print-local-daemon-protocol-version" ]; then printf "444\\n"; exit 0; fi\nexit 64\n')
   const root = join(dir, "image"); await mkdir(root)
   const releaseKeys = generateKeyPairSync("ed25519"), builderKeys = generateKeyPairSync("ed25519")
   const publicKey = key => key.export({ format: "der", type: "spki" }).subarray(-32).toString("base64")
@@ -39,9 +40,9 @@ export async function createFixture(dir) {
     ["deploy/managed-kernel/chariox-docker-admission-locks.service", "../../../deploy/managed-kernel/chariox-docker-admission-locks.service"],
     ...["chariox-data-volume-admission.mjs", "slice-data-volume-device.mjs", "slice-data-volume-protected-io.mjs", "slice-disk-quota-xfs-readback.mjs"].map(p => [`apps/kernel/slice-linux-docker/${p}`, `../slice-linux-docker/${p}`]),
   ]) await put(root, `${context}/${path}`, await readFile(new URL(source, import.meta.url)))
-  const attestation = Buffer.from(JSON.stringify({ schemaVersion: 1, sourceCommit, sourceTree, target: "x86_64-unknown-linux-gnu", artifacts: ["chariox-kernel", "chariox-managed-bootstrap", "chariox-relay"].map(name => ({ name, sha256: sha(bytes) })) }))
+  const attestation = Buffer.from(JSON.stringify({ schemaVersion: 1, sourceCommit, sourceTree, target: "x86_64-unknown-linux-gnu", artifacts: ["chariox-kernel", "chariox-managed-bootstrap", "chariox-relay"].map(name => ({ name, sha256: sha(name === "chariox-kernel" && kernelBytes ? kernelBytes : bytes) })) }))
   const specs = [
-    ["chariox-kernel", "/usr/local/bin/chariox-kernel", bytes, 0o755],
+    ["chariox-kernel", "/usr/local/bin/chariox-kernel", kernelBytes ?? bytes, 0o755],
     ["chariox-managed-bootstrap", "/usr/local/bin/chariox-managed-bootstrap", bytes, 0o755],
     ...["chariox-managed-bootstrap.service", "chariox-path1-managed-bootstrap.service", "chariox-disposable-worker-bootstrap.service", "chariox-rootless-docker.service", "chariox-slice-broker.service"].map(n => [n, `/etc/systemd/system/${n}`, new URL(`../../../deploy/managed-kernel/${n}`, import.meta.url)]),
     ["chariox-data-volume-admission.service", "/etc/systemd/system/chariox-data-volume-admission.service", new URL("../slice-linux-docker/chariox-data-volume-admission.service", import.meta.url)],

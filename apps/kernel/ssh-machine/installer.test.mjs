@@ -11,10 +11,10 @@ import { sshArguments, validateDestination } from "./transport.mjs"
 
 const base = process.env.CHARIOX_BYOM_TEST_STATE ?? join(tmpdir(), "chariox-byom-tests")
 await mkdir(base, { recursive: true, mode: 0o700 })
-async function harness(t) {
+async function harness(t, kernelBytes) {
   const dir = await mkdtemp(join(base, "installer-test-")); t.after(() => rm(dir, { recursive: true, force: true }))
   const home = join(dir, "home"), stage = join(dir, "upload"); await mkdir(home); await mkdir(stage)
-  const f = await createFixture(dir)
+  const f = await createFixture(dir, kernelBytes)
   for (const [name, p] of [["release.tar.gz", f.archive], ["release-public-pin", f.releasePublicKey], ["builder-public-pin", f.builderPublicKey]]) await copyFile(p, join(stage, name))
   for (const [name, p] of [["extract-release.py", "../../../deploy/managed-kernel/extract-release.py"], ["verify-image-release.mjs", "../../../deploy/managed-kernel/verify-image-release.mjs"], ["path1-service-policy.mjs", "../../../deploy/managed-kernel/path1-service-policy.mjs"]]) await copyFile(new URL(p, import.meta.url), join(stage, name))
   const calls = [], request = { action: "install", installId: "byom-test", port: 55129, releaseDigest: f.releaseDigest }
@@ -74,7 +74,7 @@ test("MP-07 occupied port refuses installation and preserves existing listener",
 })
 test("MP-08 start cannot treat installed as enrolled or relay-ready", async t => {
   const h = await harness(t)
-  await assert.rejects(runMachine({ ...h.request, action: "start" }, h.options), /enrollment contract unavailable/)
+  await assert.rejects(runMachine({ ...h.request, action: "start" }, h.options), /no owned install found|enrollment input required/)
   assert.equal(h.calls.length, 0)
 })
 test("MP-07 repeat install rejects corruption of an installed signed binary", async t => {
@@ -102,4 +102,46 @@ test("MP-11 existing unmarked state is never adopted as an install", async t => 
   await mkdir(state, { recursive: true }); await writeFile(join(state, "operator-sentinel"), "keep")
   await assert.rejects(runMachine(h.request, h.options), /state.*another installation|unmarked state/)
   assert.equal(await readFile(join(state, "operator-sentinel"), "utf8"), "keep")
+})
+
+test("MP-08/MP-11 start enrolls before service start and projects only bound readiness", async t => {
+  const h = await harness(t)
+  await runMachine(h.request, h.options)
+  const order = []
+  const safe = { kernelId: "new-kernel", machineId: "new-machine", userId: "owner", publicKeyThumbprint: "bound-key", connected: true }
+  const enrollment = { ticket: "fixture-one-use-secret", apiUrl: "http://127.0.0.1:1", userId: "owner" }
+  const result = await runMachine({ ...h.request, action: "start" }, { ...h.options, enrollment,
+    kernelCommand: async (args, input) => { order.push(args[0]); if (args[0] === "--owner-managed-enroll-stdin") { assert.deepEqual(input, enrollment); return safe } return safe },
+    serviceManager: async (args, capture) => { order.push(args[0]); return h.options.serviceManager(args, capture) },
+  })
+  assert.ok(order.indexOf("--owner-managed-enroll-stdin") < order.indexOf("enable"))
+  assert.equal(result.status, "ready")
+  assert.equal(result.kernelId, "new-kernel")
+  assert.equal(JSON.stringify(result).includes("fixture-one-use-secret"), false)
+})
+
+test("MP-08/MP-11 failed redemption never starts service; relay failure stops only owned service", async t => {
+  const h = await harness(t)
+  await runMachine(h.request, h.options)
+  const request = { ...h.request, action: "start" }
+  const enrollment = { ticket: "fixture-one-use-secret", apiUrl: "http://127.0.0.1:1", userId: "owner" }
+  await assert.rejects(runMachine(request, { ...h.options, enrollment, kernelCommand: async () => { throw new Error("redemption refused") } }), /redemption refused/)
+  assert.equal(h.calls.some(args => args[0] === "enable"), false)
+  await assert.rejects(runMachine(request, { ...h.options, enrollment, kernelCommand: async args => ({ kernelId: "kernel", machineId: "machine", userId: "owner", publicKeyThumbprint: "key", connected: args[0] === "--owner-managed-enroll-stdin" }) }), /relay/)
+  assert.ok(h.calls.some(args => args[0] === "disable" && args.includes("chariox-ssh-byom-test.service")))
+})
+
+test("MP-07/MP-11 an occupied companion MCP port fails before install publication", async t => {
+  const h = await harness(t)
+  const server = createServer(); await new Promise(r => server.listen(0,"127.0.0.1",r))
+  t.after(() => new Promise(r => server.close(r)))
+  const request = { ...h.request, port: server.address().port - 1 }
+  await assert.rejects(runMachine(request, h.options), /already occupied/)
+  assert.deepEqual(await readdir(join(h.home,".config/systemd/user")),[])
+})
+
+test("MP-07/MP-08 a signed pre-BYOM kernel release cannot publish an install", async t => {
+  const h = await harness(t, Buffer.from('#!/bin/sh\nprintf "439\\n"\n'))
+  await assert.rejects(runMachine(h.request,h.options), /bootstrap protocol 444/)
+  assert.deepEqual(await readdir(join(h.home,".config/systemd/user")),[])
 })
