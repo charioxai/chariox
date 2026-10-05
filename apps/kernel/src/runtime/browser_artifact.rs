@@ -123,18 +123,17 @@ impl BrowserArtifactCapture {
             return Err("Browser artifact geometry is invalid".into());
         }
         let bytes = self.bytes.decode()?;
-        if self.kind == BrowserArtifactKind::Image {
-            if self.bytes.mime_type != "image/png"
+        if self.kind == BrowserArtifactKind::Image
+            && (self.bytes.mime_type != "image/png"
                 || bytes.len() < 24
                 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n")
                 || u32::from_be_bytes(bytes[16..20].try_into().unwrap())
                     != self.viewport.css_width * self.viewport.device_scale_factor
                 || u32::from_be_bytes(bytes[20..24].try_into().unwrap())
                     != self.viewport.css_height * self.viewport.device_scale_factor
-                || !matches!(self.redaction.as_str(), "none" | "full_viewport")
-            {
-                return Err("invalid canonical Browser image".into());
-            }
+                || !matches!(self.redaction.as_str(), "none" | "full_viewport"))
+        {
+            return Err("invalid canonical Browser image".into());
         }
         if matches!(
             self.kind,
