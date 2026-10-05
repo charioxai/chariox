@@ -14,6 +14,7 @@ pub(super) type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, RelaySubscri
 /// Who a relay subscription serves: the caller's user and, for its passkey
 /// popups (protocol 403), its connection class.
 pub(super) struct RelaySubscriber {
+    pub(super) caller: crate::runtime::command::KernelCaller,
     pub(super) user_id: String,
     pub(super) connection_class: crate::local::KernelConnectionClass,
 }
@@ -71,6 +72,7 @@ pub(super) async fn handle_relay_subscribe(
     resume_from_event_id: Option<u64>,
 ) -> Result<(), DaemonError> {
     let subscriber = RelaySubscriber {
+        caller: crate::runtime::command::KernelCaller::for_relay_request(caller_identity.clone()),
         user_id: relay_subscription_caller_user_id(caller_identity.as_ref()),
         connection_class: crate::runtime::command::relay_connection_class(caller_identity.as_ref()),
     };
@@ -808,7 +810,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     } else {
         None
     };
-    let mut previous_remote_machines = resumed.then(|| router.transport_remote_machines_snapshot());
+    let mut previous_remote_machines = resumed.then(|| router.relay_remote_machines_snapshot(&subscriber.caller));
     let mut previous_provider_catalog = resumed
         .then(|| router.transport_provider_catalog_snapshot())
         .flatten();
@@ -839,7 +841,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
             || (!resumed && tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS))
         {
             match router
-                .waiting_room_public_snapshot(&subscriber.user_id)
+                .waiting_room_public_snapshot(&subscriber.user_id, Some(&subscriber.caller))
                 .await
             {
                 Ok(snapshot) => {
@@ -911,7 +913,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
             );
         }
         if tick.is_multiple_of(RELAY_REMOTE_MACHINE_DISCOVERY_INTERVAL_TICKS) {
-            let machines = router.transport_remote_machines_snapshot();
+            let machines = router.relay_remote_machines_snapshot(&subscriber.caller);
             if previous_remote_machines.as_ref() != Some(&machines) {
                 previous_remote_machines = Some(machines.clone());
                 if emit_relay_event(

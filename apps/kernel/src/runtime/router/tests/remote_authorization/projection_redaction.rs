@@ -308,4 +308,31 @@ async fn collaborator_waiting_room_directory_redaction_inner() {
         assert!(!viewer.to_string().contains("private-machine"));
         assert!(viewer.to_string().contains(&session_id));
     }
+    let request = LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
+        crate::local::GetWaitingRoomPublicSnapshotRequest,
+    );
+    for (user, owns_directory) in [(DEFAULT_LOCAL_USER_ID, true), ("viewer", false)] {
+        let mut caller = remote_command_for_request(&request, Some(user)).caller;
+        for wrong_realm in [false, true] {
+            if wrong_realm {
+                caller.realm_id = Some("other-realm".into());
+            }
+            let visible = owns_directory && !wrong_realm;
+            let snapshot = router
+                .waiting_room_public_snapshot(user, Some(&caller))
+                .await
+                .unwrap();
+            let body = serde_json::to_string(&snapshot).unwrap();
+            assert_eq!(body.contains("private-kernel"), visible);
+            assert_eq!(body.contains("private-machine"), visible);
+            let mut projection =
+                crate::transport::kernel_protocol::WaitingRoomInventoryEventProjection::default();
+            let events = serde_json::to_string(&projection.project(snapshot)).unwrap();
+            assert!(!events.contains("private-kernel"));
+            assert!(!events.contains("private-machine"));
+            assert!(events.contains(&session_id));
+            let machines = router.relay_remote_machines_snapshot(&caller);
+            assert_eq!(!machines.is_empty(), visible);
+        }
+    }
 }
