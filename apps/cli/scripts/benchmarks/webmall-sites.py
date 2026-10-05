@@ -154,8 +154,12 @@ def collect_search_readiness():
         # so incidental PHP notices cannot contaminate the public values.
         output, _ = docker("exec", name, "wp", "eval", r'echo "\nMP10_PUBLIC_SEARCH=" . json_encode(["host" => \ElasticPress\Utils\get_host(), "index" => \ElasticPress\Indexables::factory()->get("post")->get_index_name(), "publishedProducts" => (int) wp_count_posts("product")->publish]) . "\n";')
         metadata = parse_search_metadata(output)
+        output, _ = docker("exec", name, "wp", "eval", r'global $wpdb; echo "\nMP10_PUBLIC_IDS=" . json_encode($wpdb->get_col("SELECT ID FROM {$wpdb->posts} WHERE post_type=\"product\" AND post_status=\"publish\" ORDER BY ID")) . "\n";')
+        lines = [line.removeprefix("MP10_PUBLIC_IDS=") for line in output.splitlines() if line.startswith("MP10_PUBLIC_IDS=")]
+        assert len(lines) == 1, "MP-10 published catalog IDs unavailable"
+        ids = json.loads(lines[0])
         shops.append({"shop": i, "index": metadata["index"], "publishedProducts": metadata["publishedProducts"],
-                      "expectedProducts": initial[i-1]["publishedProducts"]})
+                      "expectedProducts": initial[i-1]["publishedProducts"], "publishedProductIds": ids})
     ports = json.loads((root / "ports.json").read_text())
     (evidence / "search-metadata.json").write_text(json.dumps({"mp_items": MP, "shops": shops}, indent=2) + "\n")
     return probe_search("http://127.0.0.1:" + str(ports["elasticsearch"]), shops)

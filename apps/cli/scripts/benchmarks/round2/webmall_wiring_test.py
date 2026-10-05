@@ -27,8 +27,8 @@ class SearchWiring(unittest.TestCase):
         namespace["sync_search_indexes"]()
         self.assertEqual(len(calls), 8)
         for offset in range(0, 8, 2):
-            self.assertEqual(calls[offset][3:], ("wp", "elasticpress", "clear-sync"))
-            self.assertEqual(calls[offset + 1][3:6], ("wp", "elasticpress", "sync"))
+            self.assertEqual(calls[offset][2:], ("wp", "elasticpress", "clear-sync"))
+            self.assertEqual(calls[offset + 1][2:5], ("wp", "elasticpress", "sync"))
             self.assertIn("--setup", calls[offset + 1])
             self.assertEqual(calls[offset][2], calls[offset + 1][2])
 
@@ -64,6 +64,8 @@ class SearchWiring(unittest.TestCase):
             if "MP10_PUBLIC_SEARCH=" in args[-1]:
                 data = {"host": "http://elasticsearch:9200/", "index": f"shop-{shop}-post-1", "publishedProducts": 1100}
                 return "Notice: harmless fixture warning\nMP10_PUBLIC_SEARCH=" + json.dumps(data) + "\n", 0
+            if "MP10_PUBLIC_IDS=" in args[-1]:
+                return "MP10_PUBLIC_IDS=" + json.dumps([str(i + 1) for i in range(1100)]) + "\n", 0
             if "ep_host" in args: return "https://old-public-fixture.invalid", 0
             if "eval" in args: return f"shop-{shop}-post-1", 0
             return "1100", 0
@@ -71,12 +73,12 @@ class SearchWiring(unittest.TestCase):
             root = Path(scratch)
             (root / "catalog-restored.json").write_text(json.dumps([{"publishedProducts": 1100}] * 4))
             (root / "ports.json").write_text(json.dumps({"elasticsearch": 9200}))
-            namespace = dict(json=json, re=re, docker=docker, evidence=root, root=root, PREFIX="r2next-webmall-r3",
+            namespace = dict(json=json, re=re, docker=docker, evidence=root, root=root, PREFIX="r2next-webmall-r3", MP=["MP-08", "MP-10", "MP-11"],
                              probe_search=lambda endpoint, shops: {"status": "ready", "shops": shops})
             exec(compile(ast.Module(body=functions, type_ignores=[]), str(source), "exec"), namespace)
             result = namespace["collect_search_readiness"]()
             self.assertEqual(result["status"], "ready")
             self.assertEqual(len(result["shops"]), 4)
-            self.assertTrue(all("get_host()" in args[-1] for args in calls))
+            self.assertTrue(all("get_host()" in args[-1] or "MP10_PUBLIC_IDS=" in args[-1] for args in calls))
 
 if __name__ == "__main__": unittest.main()

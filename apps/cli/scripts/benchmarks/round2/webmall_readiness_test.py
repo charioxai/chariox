@@ -8,12 +8,14 @@ class SearchReadiness(unittest.TestCase):
     def setUp(self):
         counts = [1150, 1095, 1156, 1020]  # published fixture metadata
         self.shops = [{"shop": i + 1, "index": f"shop-{i+1}-post-1",
-                       "expectedProducts": n, "publishedProducts": n} for i, n in enumerate(counts)]
+                       "expectedProducts": n, "publishedProducts": n,
+                       "publishedProductIds": [str(j + 1) for j in range(n)]} for i, n in enumerate(counts)]
         self.health = "yellow"  # a single-node replica need not be assigned
         self.failed_shards = 0
         self.count_delta = 0
         self.uuid_change = False
         self.calls = []
+        self.non_catalog_product_documents = 0
 
     def request(self, path, body=None):
         self.calls.append((path, body))
@@ -24,8 +26,17 @@ class SearchReadiness(unittest.TestCase):
             serial = sum(index + "/_settings" in call[0] for call in self.calls)
             return {index: {"settings": {"index": {"uuid": index + ("-new" if self.uuid_change and serial > 1 else "-old")}}}}
         count = next(s["expectedProducts"] for s in self.shops if s["index"] == index)
-        self.assertEqual(body, {"query": {"bool": {"filter": [{"term": {"post_type": "product"}}, {"term": {"post_status": "publish"}}]}}})
-        return {"count": count + self.count_delta, "_shards": {"failed": self.failed_shards}}
+        filters = body["query"]["bool"]["filter"]
+        self.assertEqual(filters[:2], [{"term": {"post_type": "product"}}, {"term": {"post_status": "publish"}}])
+        extra = self.non_catalog_product_documents if not any("ids" in item for item in filters) else 0
+        return {"count": count + self.count_delta + extra, "_shards": {"failed": self.failed_shards}}
+
+    def test_public_catalog_ids_distinguish_misclassified_non_product_documents(self):
+        self.non_catalog_product_documents = 1
+        result = self.probe()
+        self.assertEqual(result["status"], "ready")
+        self.assertTrue(all(shop["indexedProducts"] == shop["expectedProducts"] for shop in result["shops"]))
+        self.assertTrue(all(shop["otherProductDocuments"] == 1 for shop in result["shops"]))
 
     def probe(self, shops=None):
         return probe_search("http://127.0.0.1:9200", shops or self.shops, self.request)
