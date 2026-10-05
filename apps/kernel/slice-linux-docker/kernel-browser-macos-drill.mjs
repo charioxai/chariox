@@ -7,7 +7,20 @@ import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { inflateSync } from "node:zlib";
-import { executable } from "./docker/kernel-browser-process.mjs";
+async function executable(environment) {
+  const names = ["Chromium.app/Contents/MacOS/Chromium", "Google Chrome.app/Contents/MacOS/Google Chrome", "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"];
+  const candidates = environment.CHARIOX_KERNEL_BROWSER_EXECUTABLE ? [environment.CHARIOX_KERNEL_BROWSER_EXECUTABLE]
+    : ["/Applications", path.join(os.homedir(), "Applications")].flatMap(root => names.map(name => path.join(root, name)));
+  for (const candidate of candidates) {
+    assert(path.isAbsolute(candidate), "MD-4: Chrome executable must be absolute");
+    try { await access(candidate, 1); return candidate; } catch {}
+  }
+  throw new Error("MD-4: install native Chromium/Chrome or select a pinned executable");
+}
+function signalOwnedProcess(pid, signal) {
+  assert(Number.isSafeInteger(pid) && pid > 1, "MD-4: refusing unsafe process ID");
+  process.kill(pid, signal);
+}
 
 assert.equal(process.platform, "darwin", "MD-4: native Mac replay only");
 const [binary, output] = process.argv.slice(2);
@@ -32,12 +45,12 @@ const ownedProcesses = () => {
     const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\S+\s+\d+)\s+(.*)$/);
     return match ? [{ pid: +match[1], parent: +match[2], identity: `${match[3]} ${match[4]}`, command: match[4] }] : [];
   });
-  const selected = new Set(rows.filter(row => row.pid !== process.pid &&
+  const selected = new Set(rows.filter(row => row.pid > 1 && row.pid !== process.pid &&
     ((row.pid === child?.pid && child.exitCode === null && child.signalCode === null) || owned.get(row.pid) === row.identity || row.command.includes(root) || row.command.includes(temporary))).map(row => row.pid));
   let previous;
   do {
     previous = selected.size;
-    for (const row of rows) if (selected.has(row.parent)) selected.add(row.pid);
+    for (const row of rows) if (row.pid > 1 && selected.has(row.parent)) selected.add(row.pid);
   } while (selected.size !== previous);
   const current = rows.filter(row => selected.has(row.pid));
   for (const row of current) owned.set(row.pid, row.identity);
@@ -58,7 +71,9 @@ try {
       CHARIOX_MD4_PHASE: "", RUST_BACKTRACE: "0" }, stdio: "inherit",
   });
   const sampling = setInterval(sample, 5000);
-  const timeout = setTimeout(() => child.kill("SIGTERM"), 180_000);
+  const timeout = setTimeout(() => {
+    if (Number.isSafeInteger(child?.pid) && child.pid > 1 && child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+  }, 180_000);
   const status = await new Promise((resolve, reject) => { child.once("error", reject); child.once("exit", (code, signal) => resolve({ code, signal })); }).finally(() => { clearInterval(sampling); clearTimeout(timeout); });
   receipt.exit = status;
   assert.equal(status.code, 0, "MD-4: Mac kernel replay failed");
@@ -84,7 +99,7 @@ try {
   // Also settle this replay's processes if its timeout interrupted normal cleanup.
   for (const signal of ["SIGTERM", "SIGKILL"]) {
     const remaining = ownedProcesses();
-    for (const row of remaining) { try { process.kill(row.pid, signal); } catch (error) { if (error.code !== "ESRCH") throw error; } }
+    for (const row of remaining) { try { signalOwnedProcess(row.pid, signal); } catch (error) { if (error.code !== "ESRCH") throw error; } }
     if (remaining.length) await new Promise(resolve => setTimeout(resolve, signal === "SIGTERM" ? 3000 : 1000));
   }
   const remaining = ownedProcesses();
