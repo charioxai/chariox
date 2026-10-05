@@ -134,3 +134,9 @@ SSH host. No sudo, VM provisioning/deletion, Cloud runtime proxy, automatic
 provider credential sync or system-service mutation. macOS/arm64 install and
 upgrade execution remain later slices. See lane LIVE_TEST.md for the catalogue
 schema and coordinator commands.
+
+## MP-07 / MP-08 / MP-11 reviewer corrections
+
+Cloud ticket redemption uses the strict #302 ticket variant of `/auth/device/poll`: ticket, machineId, kernelId, publicKeyThumbprint, and an optional string kernelAlias. Account IDs and user IDs are separate; owner admission compares the returned userId to the source owner's userId, with the normal shared kernel/key/machine binding checks. An absent alias is omitted.
+
+A ticket-issue failure cannot reserve an install. Failed deployment and corrected retries reconcile the source selection only after an SSH inspection positively proves no install root or loaded/on-disk service exists. Unknown access failures, edited units and published installs remain protected. Remove can clear a proven absent selection. These helper messages are internal SSH installer inputs, not new local/relay protocol shapes.

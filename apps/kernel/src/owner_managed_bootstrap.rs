@@ -72,16 +72,17 @@ async fn enroll(
         identity["ticketConsumed"] = json!(false);
         return Ok(identity);
     }
-    let response: CloudDevicePollResponse = redeem_ticket(api_url.clone(), "/auth/device/poll", json!({
-        "ticket":ticket.as_str(), "kernelId":config.daemon_id,"machineId":config.host_machine_id,
-        "publicKey":config.relay_public_key,
-        "publicKeyThumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key),
-        "kernelAlias":config.daemon_alias,
-    })).await.map_err(|_| error())?;
+    let response: CloudDevicePollResponse = redeem_ticket(
+        api_url.clone(),
+        "/auth/device/poll",
+        ticket_enrollment_body(config, ticket.as_str()),
+    )
+    .await
+    .map_err(|_| error())?;
     let profile =
         crate::runtime::cloud_relay_login_executor::enrolled_profile(config, api_url, response)
             .map_err(|_| error())?;
-    if profile.user_id != input.user_id || profile.account_id != input.user_id {
+    if profile.user_id != input.user_id {
         return Err(error());
     }
     // Hosted registration must use TLS; loopback mock relay is allowed for the drill.
@@ -96,6 +97,14 @@ async fn enroll(
     let mut identity = public_identity(config)?;
     identity["ticketConsumed"] = json!(true);
     Ok(identity)
+}
+fn ticket_enrollment_body(config: &DaemonConfig, ticket: &str) -> Value {
+    let mut body = json!({"ticket":ticket,"kernelId":config.daemon_id,"machineId":config.host_machine_id,
+        "publicKeyThumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key)});
+    if let Some(alias) = &config.daemon_alias {
+        body["kernelAlias"] = json!(alias);
+    }
+    body
 }
 // A ticket must not follow redirects or decode an unbounded control-plane body.
 async fn redeem_ticket(
@@ -269,5 +278,61 @@ mod ticket_transport_tests {
         .await
         .is_err());
         assert!(!fixture.join().unwrap());
+    }
+}
+
+#[cfg(test)]
+mod review_contract_tests {
+    use super::*;
+    #[test]
+    fn byom_mp11_ticket_body_matches_cloud302_strict_schema() {
+        let config = DaemonConfig::for_tests();
+        let body = ticket_enrollment_body(&config, "synthetic-single-use-code");
+        let allowed = [
+            "ticket",
+            "machineId",
+            "kernelId",
+            "publicKeyThumbprint",
+            "kernelAlias",
+        ];
+        assert!(body
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|field| allowed.contains(&field.as_str())));
+        assert!(body.get("kernelAlias").is_none());
+    }
+    #[tokio::test]
+    async fn byom_mp11_distinct_account_and_user_enroll_without_losing_consumed_credential() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api_url = format!("http://{}", listener.local_addr().unwrap());
+        let mut config = DaemonConfig::for_tests();
+        let scratch =
+            std::env::temp_dir().join(format!("chariox-byom-review-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        config.user_config_path = scratch.join("config.toml");
+        let response = json!({"status":"approved","kernelCredential":"synthetic-credential","profile":{"email":"fixture@example.test","accountId":"account-owner","userId":"user-owner","accountSlug":"owner","realmId":"realm-owner","relayUrl":"ws://127.0.0.1:1234","issuerId":"fixture","kernelId":config.daemon_id,"machineId":config.host_machine_id,"publicKeyThumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key)}}).to_string();
+        let fixture = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut bytes = [0u8; 8192];
+            let _ = stream.read(&mut bytes).unwrap();
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",response.len(),response).unwrap();
+        });
+        let result = enroll(
+            &mut config,
+            EnrollmentInput {
+                ticket: "synthetic-one-use-code".into(),
+                api_url,
+                user_id: "user-owner".into(),
+            },
+        )
+        .await;
+        fixture.join().unwrap();
+        std::fs::remove_dir_all(&scratch).unwrap();
+        assert!(
+            result.is_ok(),
+            "Cloud account ID is distinct from its owner user ID"
+        );
     }
 }
