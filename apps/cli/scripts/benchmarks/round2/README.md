@@ -123,7 +123,7 @@ It never prunes Docker or deletes another lane's resources. The API caller owns
 the kernel connection and closes it after its run cohort. Evidence directories
 must be external lane-owned paths, never repository paths.
 
-## MP-08 / MP-10 / MP-11 H6 — open official mechanism gate
+## MP-08 / MP-10 / MP-11 H6 — external-CDP mechanism proof
 
 The frozen upstream BrowserGym fork is `1aaef63d737308144f13b32e37ab5dbc3688d070`.
 Its unchanged [StringEvaluator](https://github.com/wbsg-uni-mannheim/BrowserGym/blob/1aaef63d737308144f13b32e37ab5dbc3688d070/browsergym/webmall/src/browsergym/webmall/evaluator.py)
@@ -133,13 +133,29 @@ multiple synthetic pages, then verifies a read-only `title()` round trip before
 validation. `sampleExistingPages()` is preparation for adapters using that API;
 it is not wired into the frozen Python grader.
 
-This fixture models the suspected seam. It does **not** execute synchronous
-Playwright, external Chromium CDP navigation, unchanged official StringEvaluator,
-URL mapping or expected sets. Node-only scope therefore leaves H6 unaccepted.
-Before changing the official grader or scoring again, run the first-party
-external-CDP shop→frontend fixture through that exact synchronous evaluator,
-with multiple tabs and unchanged submitted synthetic text. Do not infer string
-credit, repaired done state or corrected round-1 scores from this modeled test.
+`webmall_sampling_test.py` now proves this seam with real synchronous Playwright,
+two existing Chromium tabs, an independent CDP connection, and that unchanged
+official StringEvaluator. The historical cached-URL ordering fails all three
+synthetic submissions; passive event pumping returns the exact correct, partial,
+and wrong-set scores and done states. Submitted text remains unchanged, and the
+sampler stops at the first terminal validation. `webmall-grader.py` uses this
+passive observation before consulting cached page URLs. No grader source, URL
+normalizer, expected set or historical score changes.
+
+Run with a Python environment containing Playwright, beautifulsoup4 and requests,
+and its installed Chromium. `WEBMALL_OFFICIAL_SOURCE` points to the pinned fork's
+`browsergym/webmall/src`. Set `PYTHONDONTWRITEBYTECODE=1` to keep source-only
+checkouts. The standalone test requires no provider or live WebMall deployment.
+This proves the synthetic official-evaluator seam, not full WebMallTask routing,
+live fixture readiness, recovered benchmark wins or MP acceptance.
+
+MP-08 / MP-10 H10: `webmall_readiness.probe_search` separately requires four
+distinct product indexes, current published catalog counts, healthy search,
+complete count responses and unchanged index UUIDs across each read. Callers
+must collect current shop counts and bind index names from their owned fixture,
+then probe immediately before prompt admission. It writes no index and reads no
+task answers. Its synthetic tests do not establish a deployed fixture's schema,
+WordPress search wiring, JVM compatibility or frozen asset provenance.
 
 ## MP-08 / MP-10 / MP-11 focused checks
 
@@ -165,6 +181,6 @@ shared successful/failed episode wiring, plus H3/H4 consent, live/fixed date,
 answer packaging and unchanged official-zero fixtures. Retain commands, exit codes, exact
 runner commit, resource samples and cleanup receipts outside the repository.
 
-MP-08 / MP-10 / MP-11 H6 remains an owner/coordinator assignment for the actual
-official synchronous/CDP fixture. H3/H4 policy is implemented here; H5 leaves
-the official verdict and frozen round-1 zero unchanged.
+MP-08 / MP-10 / MP-11: full fixture admission and benchmark remeasurement remain
+separate from the H6 mechanism proof and H10 probe preparation. H3/H4 policy is
+implemented here; H5 leaves the official verdict and frozen round-1 zero unchanged.
