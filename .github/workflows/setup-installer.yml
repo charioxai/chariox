@@ -31,7 +31,7 @@ jobs:
           bun-version: '1.3.10'
       - name: Focused installer tests (MP-07 / MP-11)
         if: matrix.target == 'linux-x64'
-        run: node --test --test-concurrency=1 apps/setup/installer.test.mjs scripts/chariox-setup-install-script.test.mjs
+        run: node --test --test-concurrency=1 apps/setup/installer.test.mjs scripts/chariox-setup-install-script.test.mjs scripts/package-chariox-setup-linux.test.mjs
       - name: Compile generic Setup with public pins only (MP-07 / MP-11)
         env:
           VERSION: ${{ inputs.version }}
@@ -42,6 +42,11 @@ jobs:
       - name: macOS app skeleton (MP-07 / MP-11)
         if: matrix.target == 'darwin-arm64'
         run: node scripts/package-chariox-setup-macos.mjs "$RUNNER_TEMP/setup/chariox-setup" "$RUNNER_TEMP/setup/Chariox Setup.app"
+      - name: Unsigned Linux package (MP-07 / MP-11)
+        if: matrix.target == 'linux-x64'
+        env:
+          VERSION: ${{ inputs.version }}
+        run: node scripts/package-chariox-setup-linux.mjs "$RUNNER_TEMP/setup/chariox-setup" "$RUNNER_TEMP/setup/chariox-setup.deb" "$VERSION"
       - name: Preserve executable modes (MP-07)
         run: tar -czf "$RUNNER_TEMP/chariox-setup-${{ matrix.target }}-unsigned.tar.gz" -C "$RUNNER_TEMP/setup" .
       - uses: actions/upload-artifact@v4

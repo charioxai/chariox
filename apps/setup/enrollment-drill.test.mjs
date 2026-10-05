@@ -17,6 +17,7 @@ if (!kernel?.startsWith("/")) throw new Error("MP-07/MP-08/MP-11: choose exact b
 const pause = () => new Promise(r => setTimeout(r, 100))
 test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempotence, readiness and state-retaining uninstall", { timeout: 300_000 }, async t => {
   const dir = await mkdtemp(join(await realpath(process.env.CHARIOX_BYOM_TEST_STATE ?? tmpdir()), "setup-live-"))
+  const errors = []
   const children = new Set(), services = new Map(), registrations = new Map(), devices = new Map(), credentials = new Map(), calls = [], tickets = new Set()
   let cloud, release, relay
   t.after(async () => {
@@ -35,19 +36,23 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
   const relayUrl = `ws://127.0.0.1:${relay.address().port}`
   let apiUrl
   cloud = createServer(async (req, res) => {
+    try {
     let raw = ""; for await (const chunk of req) raw += chunk
     const body = raw ? JSON.parse(raw) : {}
     const send = (status, value) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value)) }
     if (req.url === "/auth/device/start") {
       assert.equal(body.enrollmentKind, "KERNEL")
+      assert.ok(Object.keys(body).every(k => ["enrollmentKind","kernelId","machineId","publicKeyThumbprint","kernelAlias","machineAlias"].includes(k)))
       const deviceCode = randomBytes(24).toString("hex"); devices.set(deviceCode, { ...body, approved: false }); calls.push("device-start")
       return send(200, { deviceCode, userCode: "PUBLIC", verificationUrl: `${apiUrl}/approve`, expiresAt: new Date(Date.now() + 60_000).toISOString(), intervalSeconds: 1 })
     }
     if (req.url === "/auth/device/poll") {
       let identity
       if (body.ticket) {
+        const allowed = ["ticket","kernelId","machineId","publicKeyThumbprint","kernelAlias"]
+        if (Object.keys(body).some(k => !allowed.includes(k)) || (Object.hasOwn(body,"kernelAlias") && typeof body.kernelAlias !== "string")) return send(400,{})
+        assert.match(body.publicKeyThumbprint,/^[a-f0-9]{64}$/)
         if (!tickets.delete(body.ticket)) return send(401, {})
-        assert.equal(body.publicKeyThumbprint, createHash("sha256").update(Buffer.from(body.publicKey)).digest("hex"))
         calls.push("ticket-redeem"); identity = body
       } else {
         const device = devices.get(body.deviceCode)
@@ -55,7 +60,7 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
         devices.delete(body.deviceCode); identity = device; calls.push("device-approved")
       }
       const credential = randomBytes(32).toString("hex"); credentials.set(credential, identity.kernelId)
-      return send(200, { status: "approved", kernelCredential: credential, profile: { email: "fixture@example.test", accountId: "owner", userId: "owner", accountSlug: "owner", realmId: "owner", issuerId: "fixture", relayUrl, kernelId: identity.kernelId, machineId: identity.machineId, publicKeyThumbprint: identity.publicKeyThumbprint } })
+      return send(200, { status: "approved", kernelCredential: credential, profile: { email: "fixture@example.test", accountId: "account-owner", userId: "owner", accountSlug: "owner", realmId: "owner", issuerId: "fixture", relayUrl, kernelId: identity.kernelId, machineId: identity.machineId, publicKeyThumbprint: identity.publicKeyThumbprint } })
     }
     if (req.url === "/relay/token") {
       assert.equal(credentials.get(body.kernelCredential), body.subject)
@@ -65,6 +70,7 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
     if (req.url === "/kernels/presence") return send(200, {})
     if (req.url.startsWith("/relay/targets")) return send(200, { kernels: [] })
     return send(404, {})
+    } catch { errors.push("Cloud schema assertion failed"); res.writeHead(500); res.end("{}") }
   })
   await new Promise(r => cloud.listen(0, "127.0.0.1", r)); apiUrl = `http://127.0.0.1:${cloud.address().port}`
   const f = await setupFixture(dir, { kernel: await readFile(kernel) }), archive = await readFile(f.archive)
@@ -122,6 +128,7 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
     }
   }
   await noSecrets(join(home, ".chariox/dev/ssh-machines"))
+  assert.deepEqual(errors,[])
   assert.equal(notices.some(value => value.includes(secondTicket)), false)
   t.diagnostic(`MP-07/MP-08/MP-11: seams=${calls.join(",")}; published identities=2; source kernel SHA256=${createHash("sha256").update(await readFile(kernel)).digest("hex")}`)
 })

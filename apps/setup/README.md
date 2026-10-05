@@ -6,7 +6,11 @@ PR1's marked per-user installer, signed immutable release trees, isolated servic
 and state roots. Linux uses systemd --user; macOS uses launchd in the user's GUI
 domain. Setup requires Python 3 for the existing bounded archive extractor.
 The Linux executable carries its JavaScript runtime (no Node/Bun install); its
-libc floor is the build target's. macOS .app packaging is an unsigned skeleton
+libc floor is the build target's. CI also packages an unsigned amd64 `.deb`
+for Linux (libc 2.35+); it contains only the generic executable and metadata,
+with no install scripts or service activation. Kernel setup still runs as the
+intended user. The executable/install script is the default per-user path without
+sudo. macOS .app packaging is an unsigned skeleton
 opening the terminal flow; real signing/notarization and launchd are owner gates.
 
 ## MP-07 / MP-08 installation and lifecycle
