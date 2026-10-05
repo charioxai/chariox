@@ -1410,20 +1410,12 @@ copy_provider_auth_file() {
     return 0
   fi
 
-  local target_dir
-  target_dir="$(dirname "$target_path")"
-  local backup_path="${target_path}.before-slice-auth"
-  run_with_file_stdin_timeout 90 "$source_path" docker exec -i -u slice "$SLICE_NAME" bash -lc "
-    set -euo pipefail
-    mkdir -p '$target_dir'
-    rm -f '${target_path}.before-slice-auth-'*
-    if [[ -f '$target_path' ]]; then
-      cp '$target_path' '$backup_path'
-    fi
-    umask 077
-    cat > '$target_path'
-    chmod 600 '$target_path'
-  "
+  local auth_writer auth_program_q target_q
+  auth_writer="$(cat "$SCRIPT_DIR/provider-auth-file.cjs")"
+  printf -v auth_program_q '%q' "$auth_writer"
+  printf -v target_q '%q' "$target_path"
+  run_with_file_stdin_timeout 90 "$source_path" docker exec -i -u slice "$SLICE_NAME" \
+    bash -lc "node -e $auth_program_q import $target_q"
   log "imported $label auth into $target_path"
 }
 
@@ -1521,7 +1513,11 @@ import_codex_auth() {
 }
 
 remove_codex_auth() {
-  exec_slice bash -lc "rm -f '$SLICE_ACCOUNT_ROOT/codex/$SLICE_ACCOUNT_PROFILE/codex/auth.json'"
+  local auth_writer auth_program_q target_q
+  auth_writer="$(cat "$SCRIPT_DIR/provider-auth-file.cjs")"
+  printf -v auth_program_q '%q' "$auth_writer"
+  printf -v target_q '%q' "$SLICE_ACCOUNT_ROOT/codex/$SLICE_ACCOUNT_PROFILE/codex/auth.json"
+  exec_slice bash -lc "node -e $auth_program_q remove $target_q"
   log "removed Codex auth from slice"
 }
 
