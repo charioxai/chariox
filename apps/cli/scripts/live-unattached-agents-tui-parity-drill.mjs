@@ -1,5 +1,5 @@
-import { privateClientEnvironment } from "./lib/native-tui-remote-execution.mjs"
 #!/usr/bin/env node
+import { privateClientEnvironment } from "./lib/native-tui-remote-execution.mjs"
 import assert from "node:assert/strict"
 import { randomUUID } from "node:crypto"
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
