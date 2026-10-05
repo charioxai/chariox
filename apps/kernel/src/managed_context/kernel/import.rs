@@ -43,7 +43,6 @@ use ordinary_publication::{
 #[path = "import_ownership.rs"]
 mod import_ownership;
 
-
 const IMPORT_RECEIPT_NAME: &str = "kernel-context-import.json";
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const RUNTIME_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1144,7 +1143,6 @@ fn ordinary_user_root() -> Result<Option<PathBuf>, DaemonError> {
 fn final_user_root(final_root: &Path) -> Result<PathBuf, DaemonError> {
     Ok(ordinary_user_root()?.unwrap_or_else(|| final_root.join("user")))
 }
-
 
 fn acquire_import_lock(parent: &Path) -> Result<ImportLock, DaemonError> {
     let path = parent.join(".kernel-context-import.lock");
@@ -2901,7 +2899,7 @@ fn mp11_kernel_rollback_preserves_replaced_credentials_and_edited_packages() {
     assert!(home.join("scripts/package/user-file").exists());
     // Recovery retries retain the same conflicts and the ownership journal.
     assert!(remove_ordinary_entries(&staged, &home).is_err());
-    assert!(staged.join(PUBLISHED_ENTRIES_NAME).exists());
+    assert!(staged.join("published-entries.json").exists());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -2923,12 +2921,11 @@ fn mp11_kernel_retirement_restart_finds_quarantine_and_preserves_a_later_user_pu
     .unwrap();
     record_ordinary_entries(&context, &home, &mut MaterializationBudget::new()).unwrap();
     publish_ordinary_entries(&context, &home).unwrap();
-    let mut entries = read_published_entries(&context).unwrap();
-    let name = format!(".chariox-kernel-retire-{:032x}", rand::random::<u128>());
-    entries[0].retirement = Some(name.clone());
-    persist_published_entries(&context, &entries).unwrap();
-    let published = home.join(&entries[0].relative);
-    let quarantine = published.parent().unwrap().join(name);
+    let published = home.join("credentials/fixture.json");
+    // MP-11: simulate interruption after private detachment, before deletion.
+    let rollback = context.join(".ordinary-rollback");
+    ensure_private_directory(&rollback).unwrap();
+    let quarantine = rollback.join("0");
     publish_directory_no_clobber(&published, &quarantine).unwrap();
     fs::write(&published, b"synthetic user replacement").unwrap();
     remove_ordinary_entries(&context, &home).unwrap();

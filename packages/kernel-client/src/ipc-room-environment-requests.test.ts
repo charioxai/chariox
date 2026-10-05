@@ -740,8 +740,8 @@ test("Room Environment clipboard requests use protocol 303 without accepting Act
 // MP-08/MP-10/MP-11: Web/local/remote TUI use the shared attachment request.
 import { roomBrowserArtifactRequest, roomBrowserArtifactMinimumProtocolVersion } from "./ipc-room-environment-requests.js"
 import { createHash } from "node:crypto"
-test("MP-08/MP-10/MP-11 Browser artifact request is protocol 426 and opaque", () => {
-  assert.equal(roomBrowserArtifactMinimumProtocolVersion, 426)
+test("MP-08/MP-10/MP-11 Browser artifact request is protocol 435 and opaque", () => {
+  assert.equal(roomBrowserArtifactMinimumProtocolVersion, 435)
   const request = roomBrowserArtifactRequest("room-a", "client-a", "tab-a", {action:"read",artifact_id:"art-a",offset:0,max_bytes:131072})
   const expected = {RoomBrowserArtifact:{session_id:"room-a",attachment_id:"client-a",tab_id:"tab-a",operation:{action:"read",artifact_id:"art-a",offset:0,max_bytes:131072}}}
   assert.deepEqual(request, expected)

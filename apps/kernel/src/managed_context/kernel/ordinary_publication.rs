@@ -272,7 +272,11 @@ fn require_identity(path: &Path, expected: &EntryIdentity) -> Result<(), DaemonE
 #[cfg(unix)]
 fn entry_identity(path: &Path) -> Result<EntryIdentity, DaemonError> {
     let ((device, inode), tree_sha256) = super::import_ownership::entry_fingerprint(path)?;
-    Ok(EntryIdentity { device, inode, tree_sha256 })
+    Ok(EntryIdentity {
+        device,
+        inode,
+        tree_sha256,
+    })
 }
 
 #[cfg(not(unix))]
@@ -310,6 +314,18 @@ mod tests {
         let detached = rollback.join("0");
         fs::rename(home.join("skills/imported"), &detached).unwrap();
         detached
+    }
+
+    #[test]
+    fn mp11_f4_same_content_child_replacement_preserves_user_data() {
+        let (root, context, home) = fixture("same-content-child");
+        let _cleanup = FixtureCleanup(root.clone());
+        let child = home.join("skills/imported/original");
+        fs::rename(&child, root.join("retained-original-inode")).unwrap();
+        fs::write(&child, b"imported").unwrap();
+        assert!(remove_ordinary_entries(&context, &home).is_err());
+        assert_eq!(fs::read(child).unwrap(), b"imported");
+        assert!(context.exists());
     }
 
     #[test]

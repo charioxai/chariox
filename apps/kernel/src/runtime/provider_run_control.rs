@@ -131,17 +131,27 @@ mod mp11_f7_tests {
     fn mp11_f7_read_projection_keeps_private_authority_and_enforces_owner() {
         let projection = ProviderRunProjectionStore::default();
         let mut run = RuntimeProviderRun::from_control_capability_inference(
-            "leased:lease:worker-run", "session".into(), Some("agent".into()), "codex".into(),
+            "leased:lease:worker-run",
+            "session".into(),
+            Some("agent".into()),
+            "codex".into(),
         );
         run.set_runtime_mcp_auth_token(Some("mp11-private-sentinel".into()));
         run.mark_ended();
         projection.update(run.clone());
-        let request = GetProviderRunRequest { provider_run_id: run.id().into() };
-        let response = projected_provider_run_response(&projection, &request, "local").unwrap().unwrap();
+        let request = GetProviderRunRequest {
+            provider_run_id: run.id().into(),
+        };
+        let response = projected_provider_run_response(&projection, &request, "local")
+            .unwrap()
+            .unwrap();
         let bytes = serde_json::to_string(&response).unwrap();
         assert!(!bytes.contains("mp11-private-sentinel"));
         assert!(!bytes.contains("runtime_mcp_auth_token"));
-        assert!(matches!(projected_provider_run_response(&projection, &request, "foreign-user"), Err(DaemonError::OwnershipAccessDenied { .. })));
+        assert!(matches!(
+            projected_provider_run_response(&projection, &request, "foreign-user"),
+            Err(DaemonError::OwnershipAccessDenied { .. })
+        ));
         assert_eq!(projection.get(run.id()).unwrap(), run);
     }
 }

@@ -284,7 +284,10 @@ fn local_daemon_protocol_turn_undo_and_agent_fork_shape_is_versioned() {
         snapshot.pointer("/3/AgentForked/provider_run/agent_instance_id"),
         Some(&serde_json::json!("agent-2"))
     );
-    assert_eq!(snapshot.pointer("/3/AgentForked/provider_run/pty_env"), None);
+    assert_eq!(
+        snapshot.pointer("/3/AgentForked/provider_run/pty_env"),
+        None
+    );
     let serialized = serde_json::to_string(&snapshot).expect("turn action snapshot should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(

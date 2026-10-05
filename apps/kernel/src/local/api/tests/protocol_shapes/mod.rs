@@ -35,6 +35,7 @@ mod provider_auth_recovery;
 mod provider_usage_activity;
 mod publication;
 mod recall_terminal_metaagent;
+mod released_provider_run;
 mod resource_telemetry;
 mod room_controller;
 mod room_environment;

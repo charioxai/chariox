@@ -529,7 +529,10 @@ impl RuntimeSecretService {
         }
         let service = self.vault_service_name()?;
         let cache_key = self.vault_cache_key(&vault_key)?;
-        let previous_secret = self.vault_store.find_secret(service, &vault_key)?.map(Zeroizing::new);
+        let previous_secret = self
+            .vault_store
+            .find_secret(service, &vault_key)?
+            .map(Zeroizing::new);
 
         crate::config::validate_credentials(std::slice::from_ref(&credential))?;
         let _ = registry.path_for(&credential.id)?;
@@ -551,14 +554,18 @@ impl RuntimeSecretService {
             }),
             Err(error) => {
                 let rollback = if let Some(previous_secret) = previous_secret {
-                    self.vault_store.set_secret(service, &vault_key, previous_secret.as_str())
+                    self.vault_store
+                        .set_secret(service, &vault_key, previous_secret.as_str())
                         .and_then(|_| cache_vault_secret(cache_key, previous_secret.as_str()))
                 } else {
                     self.delete_vault_secret(&vault_key)
                 };
                 if rollback.is_err() {
                     let _ = forget_cached_vault_secret(self.vault_cache_key(&vault_key)?);
-                    return Err(secret_error("credential_vault_upsert", format!("{error}; Vault rollback failed; recovery required")));
+                    return Err(secret_error(
+                        "credential_vault_upsert",
+                        format!("{error}; Vault rollback failed; recovery required"),
+                    ));
                 }
                 Err(error)
             }

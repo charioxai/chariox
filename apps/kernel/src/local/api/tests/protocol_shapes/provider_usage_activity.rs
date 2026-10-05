@@ -383,9 +383,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
     });
 
     let response = LocalDaemonResponse::ProviderRun {
-
         provider_run: provider_run.into(),
-
     };
     let snapshot = serde_json::to_value(response).expect("response should serialize");
 
@@ -1028,13 +1026,13 @@ fn local_daemon_protocol_provider_run_room_browser_capability_shape_is_versioned
     });
 
     let response = LocalDaemonResponse::ProviderRun {
-
         provider_run: provider_run.into(),
-
     };
     let snapshot = serde_json::to_value(response).expect("response should serialize");
     // MP-11 F7: provider launch manifests are internal capability/configuration state.
-    assert!(snapshot.pointer("/ProviderRun/provider_run/remote_extension_manifest").is_none());
+    assert!(snapshot
+        .pointer("/ProviderRun/provider_run/remote_extension_manifest")
+        .is_none());
 }
 
 #[test]

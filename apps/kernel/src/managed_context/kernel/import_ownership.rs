@@ -28,7 +28,7 @@ pub(super) fn entry_fingerprint(path: &Path) -> Result<((u64, u64), String), Dae
         let mut hash = Sha256::new();
         let mut bytes = 0_u64;
         let mut entries = 0_u64;
-        hash_entry(&file, path, &mut hash, &mut bytes, &mut entries)?;
+        hash_entry(&file, path, &mut hash, &mut bytes, &mut entries, 0)?;
         Ok((identity, format!("{:x}", hash.finalize())))
     }
 }
@@ -40,10 +40,14 @@ fn hash_entry(
     hash: &mut Sha256,
     bytes: &mut u64,
     entries: &mut u64,
+    depth: usize,
 ) -> Result<(), DaemonError> {
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    if depth > 128 {
+        return Err(import_error("published tree exceeds its depth limit"));
+    }
     *entries += 1;
     if *entries > MAX_MATERIALIZED_CONTEXT_ENTRIES {
         return Err(import_error("published entry exceeds tree budget"));
@@ -51,6 +55,9 @@ fn hash_entry(
     let metadata = file
         .metadata()
         .map_err(|error| import_io_error("inspect published tree", error))?;
+    // MP-11: identical bytes do not confer ownership on a replacement inode.
+    hash.update(metadata.dev().to_le_bytes());
+    hash.update(metadata.ino().to_le_bytes());
     hash.update(metadata.permissions().mode().to_le_bytes());
     if metadata.is_file() {
         hash.update(b"file");
@@ -138,16 +145,38 @@ fn hash_entry(
                 if *entries > MAX_MATERIALIZED_CONTEXT_ENTRIES {
                     return Err(import_error("published entry exceeds tree budget"));
                 }
+                hash.update(before.st_dev.to_le_bytes());
+                hash.update(before.st_ino.to_le_bytes());
                 hash.update(b"symlink");
                 hash.update((length as u64).to_le_bytes());
                 hash.update(&target[..length as usize]);
                 continue;
             }
             let child_file = unsafe { File::from_raw_fd(fd) };
-            hash_entry(&child_file, &child.path(), hash, bytes, entries)?;
+            hash_entry(&child_file, &child.path(), hash, bytes, entries, depth + 1)?;
         }
     } else {
         return Err(import_error("published tree contains a special file"));
+    }
+    let after = file
+        .metadata()
+        .map_err(|error| import_io_error("recheck published tree", error))?;
+    let stamp = |value: &fs::Metadata| {
+        (
+            value.dev(),
+            value.ino(),
+            value.mode(),
+            value.len(),
+            value.mtime(),
+            value.mtime_nsec(),
+            value.ctime(),
+            value.ctime_nsec(),
+        )
+    };
+    if stamp(&metadata) != stamp(&after) {
+        return Err(import_error(
+            "published tree changed during ownership inspection",
+        ));
     }
     Ok(())
 }

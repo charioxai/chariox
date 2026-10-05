@@ -193,10 +193,7 @@ fn import_codex_session_without_model_uses_persisted_thread_model() {
         assert_eq!(agent.provider(), "codex");
         assert_eq!(agent.model(), Some("default"));
         assert_eq!(provider_run.model(), "default");
-        assert_eq!(
-            provider_run.provider_session_id(),
-            Some("thread-1")
-        );
+        assert_eq!(provider_run.provider_session_id(), Some("thread-1"));
     });
 }
 

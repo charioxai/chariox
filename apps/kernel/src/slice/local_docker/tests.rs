@@ -3225,5 +3225,4 @@ fn mp11_log_tail_is_bounded_and_survives_split_utf8() {
         "single-line log projection is unbounded"
     );
     assert!(projected.truncated);
-
 }

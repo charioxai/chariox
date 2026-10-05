@@ -1341,7 +1341,6 @@ fn local_docker_error(message: impl Into<String>) -> DaemonError {
     }
 }
 
-
 fn compact_login_message(output: &str) -> String {
     strip_ansi(output)
         .lines()
