@@ -5,7 +5,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { createWaitingRoomWorkspaceController, createWaitingRoomWorkspacePlacementController, waitingRoomWorkspaceSelection } from "./waiting-room-workspace-controller.js"
 import type { WaitingRoomInventory } from "./waiting-room-inventory-api.js"
-import { clearWaitingRoomWorktreeInventory, describeWaitingRoomWorktreeSelection, resolvePendingWaitingRoomWorktreePath, stageWaitingRoomWorktreeSelection, waitingRoomWorktreeDisabledHint, waitingRoomWorktreeOptions } from "./waiting-room-worktrees.js"
+import { clearWaitingRoomWorktreeInventory, describeWaitingRoomWorktreeSelection, normalizeWaitingRoomWorktreeSelectionId, resolvePendingWaitingRoomWorktreePath, stageWaitingRoomWorktreeSelection, waitingRoomWorktreeDisabledHint, waitingRoomWorktreeOptions } from "./waiting-room-worktrees.js"
 
 function inventory(machineId: string, path: string): WaitingRoomInventory {
   return { machineId, kernelId: `${machineId}-1`, sessions: [], launchTarget: { workspaceId: path, worktreeId: path } } as unknown as WaitingRoomInventory
@@ -16,6 +16,7 @@ function harness(repositoryState: "ready" | "not-repository" | "unborn" = "ready
   let worktree = workspace
   const controller = createWaitingRoomWorkspaceController({
     getWorkspace: () => workspace,
+    getWorktree: () => worktree,
     setWorkspace: path => { workspace = path }, setWorktree: path => { worktree = path },
     resetSelection: () => {}, render: () => {},
     send: async <T>(request: unknown) => {
@@ -173,6 +174,7 @@ for (const scenario of ["machine", "same-machine kernel", "identical paths", "se
       const closed: string[] = []
       const controller = createWaitingRoomWorkspaceController({
         getWorkspace: () => workspace, setWorkspace: path => { workspace = path }, setWorktree: () => {},
+        getWorktree: () => workspace,
         resetSelection: () => {}, render: () => {}, getSelection: () => selected,
         send: async () => { throw new Error("must not read through home") },
         withClient: async (token, read) => {
@@ -238,6 +240,7 @@ for (const change of ["workspace edit", "kernel ABA", "machine ABA"] as const) {
     let reads = 0
     const controller = createWaitingRoomWorkspaceController({
       getWorkspace: () => workspace, setWorkspace: path => { workspace = path }, setWorktree: () => {},
+      getWorktree: () => workspace,
       getSelection: () => selected, resetSelection: () => {}, render: () => {},
       send: async <T>() => { reads++; return { WorkspaceWorktreesListed: { worktrees: [{ path: workspace, branch: "fresh", current: true }] } } as T },
     })
@@ -277,4 +280,45 @@ test("TUI does not use the home kernel as a filesystem fallback for an unconnect
 test("TUI machine creation keeps source filesystem identity separate from the requested placement", () => {
   assert.deepEqual(waitingRoomWorkspaceSelection({ selectedMachineRef: NEW_MANAGED_MACHINE_REF },
     { machineId: "home-machine", kernelId: "home-kernel" }, []), { machineId: "home-machine", kernelId: "home-kernel" })
+})
+
+test("TUI uses the kernel current worktree when the pending path is absent from its inventory", async () => {
+  let workspace = "/repo"
+  let worktree = "/not-listed"
+  const controller = createWaitingRoomWorkspaceController({
+    getWorkspace: () => workspace, getWorktree: () => worktree,
+    setWorkspace: path => { workspace = path }, setWorktree: path => { worktree = path },
+    resetSelection: () => {}, render: () => {},
+    send: async <T>() => ({ WorkspaceWorktreesListed: { worktrees: [
+      { path: "/repo", branch: "main", current: false },
+      { path: "/repo-feature", branch: "feature", current: true },
+    ] } }) as T,
+  })
+  try {
+    await controller.applyInventory(inventory("local", "/repo"))
+    assert.equal(normalizeWaitingRoomWorktreeSelectionId(""), "existing:/repo-feature")
+    assert.equal(normalizeWaitingRoomWorktreeSelectionId("existing:/repo"), "existing:/repo")
+  } finally { clearWaitingRoomWorktreeInventory() }
+})
+
+test("TUI inventory defaults retain the kernel launch worktree when no CLI workspace was supplied", async () => {
+  let workspace = ""
+  let worktree = ""
+  const controller = createWaitingRoomWorkspaceController({
+    getWorkspace: () => workspace, getWorktree: () => worktree,
+    setWorkspace: path => { workspace = path }, setWorktree: path => { worktree = path },
+    resetSelection: () => {}, render: () => {},
+    send: async <T>() => ({ WorkspaceWorktreesListed: { worktrees: [
+      { path: "/repo", branch: "main", current: false },
+      { path: "/repo-feature", branch: "feature", current: true },
+    ] } }) as T,
+  })
+  try {
+    await controller.applyInventory({ ...inventory("local", "/repo"),
+      launchTarget: { workspaceId: "/repo", worktreeId: "/repo-feature" },
+    })
+    assert.equal(workspace, "/repo")
+    assert.equal(worktree, "/repo-feature")
+    assert.equal(normalizeWaitingRoomWorktreeSelectionId(""), "existing:/repo-feature")
+  } finally { clearWaitingRoomWorktreeInventory() }
 })

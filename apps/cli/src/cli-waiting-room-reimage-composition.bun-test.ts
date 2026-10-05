@@ -38,6 +38,31 @@ const LOCAL_ENDPOINT = "ws://local-kernel.test"
 const OLD_ENDPOINT = "ws://old-kernel.test"
 const REPLACEMENT_ENDPOINT = "ws://replacement-kernel.test"
 
+for (const [cliWorktree, kernelWorktree] of [["/repo-feature", "/repo"], ["/repo", "/repo-feature"]] as const) {
+  reimageTest(`detached CLI worktree ${cliWorktree} survives kernel launch in ${kernelWorktree} through CreateSession`, async router => {
+    const harness = createHarness(router, { interactivePlacement: true,
+      initialTargets: { workspace: "/repo", worktree: cliWorktree },
+      localLaunchTarget: { workspace: "/repo", worktree: kernelWorktree },
+      localWorktrees: [
+        { path: "/repo", branch: "main", current: kernelWorktree === "/repo" },
+        { path: "/repo-feature", branch: "feature", current: kernelWorktree === "/repo-feature" },
+      ],
+    })
+    try {
+      assert.equal(harness.state().worktreeSelectionId, "")
+      await harness.initialize()
+      await new Promise(resolve => setImmediate(resolve))
+      await harness.composition.startSessionFromWaitingRoomDefaults()
+      assert.equal(requestCount(harness.local, "CreateSession"), 1)
+      const request = harness.local.requests.find(request => requestKind(request) === "CreateSession")
+      assert.equal(requestPayload(request, "CreateSession").workspace_id, "/repo")
+      assert.equal(requestPayload(request, "CreateSession").worktree_id, cliWorktree)
+      assert.equal(harness.state().worktreeSelectionId, `existing:${cliWorktree}`)
+      assert.equal(requestCount(harness.local, "CreateWorkspaceWorktree"), 0)
+    } finally { harness.cleanup() }
+  })
+}
+
 function reimageTest(name: string, run: (router: TestRouter) => Promise<void>) {
   test(`production Waiting Room reimage composition: ${name}`, async () => {
   const router = installLocalIpcClientTestRouter()
@@ -434,6 +459,9 @@ function createHarness(router: TestRouter, options: {
   managedFilesystemRequest?: (request: unknown) => unknown
   managedRepositoryState?: () => "not-repository" | "unborn" | "ready"
   initialTargetKernelId?: string
+  initialTargets?: { workspace: string; worktree: string }
+  localLaunchTarget?: { workspace: string; worktree: string }
+  localWorktrees?: Array<{ path: string; branch: string; current: boolean }>
 } = {}) {
   const contextPlan = options.contextPlan ?? emptyPlan()
   const oldEnvironment = environment({
@@ -458,10 +486,26 @@ function createHarness(router: TestRouter, options: {
   const local = router.endpoint(LOCAL_ENDPOINT, async (request) => {
     switch (requestKind(request)) {
       case "GetWaitingRoomPublicSnapshot":
+        if (options.localLaunchTarget) {
+          const response = snapshotResponse("kernel-local", "machine-local", contextPlan)
+          return { WaitingRoomPublicSnapshot: { snapshot: {
+            ...response.WaitingRoomPublicSnapshot.snapshot,
+            launch_target: { workspace_id: options.localLaunchTarget.workspace, worktree_id: options.localLaunchTarget.worktree },
+          } } }
+        }
         return options.interactivePlacement ? placementSnapshot("kernel-local", "machine-local", "/home/local")
           : snapshotResponse("kernel-local", "machine-local", contextPlan)
       case "ListWorkspaceWorktrees":
-        return { WorkspaceWorktreesListed: { worktrees: [{ path: "/home/local", branch: "main", current: true }] } }
+        return { WorkspaceWorktreesListed: { worktrees: options.localWorktrees ?? [{ path: "/home/local", branch: "main", current: true }] } }
+      case "CreateSession": {
+        const payload = requestPayload(request, "CreateSession")
+        return { SessionCreated: { session: { ...runtimeSession(contextPlan), id: "session-local",
+          workspace_id: payload.workspace_id, worktree_id: payload.worktree_id } } }
+      }
+      case "StartProjectEnvironmentSetup": {
+        const input = requestPayload(request, "StartProjectEnvironmentSetup") as unknown as ProjectEnvironmentSetupStartInput
+        return { ProjectEnvironmentSetupStarted: { status: setupStatus(input) } }
+      }
       case "GetProviderCatalog":
         return { ProviderCatalog: { catalog: fallbackProviderCatalog() } }
       case "ListSlices":
@@ -575,7 +619,7 @@ function createHarness(router: TestRouter, options: {
   const cacheDirectory = mkdtempSync(join(tmpdir(), "chariox-reimage-composition-"))
   const previousCacheDirectory = process.env.CHARIOX_WAITING_ROOM_INVENTORY_CACHE_DIR
   process.env.CHARIOX_WAITING_ROOM_INVENTORY_CACHE_DIR = cacheDirectory
-  __setWaitingRoomWorktreeInventoryForTest({
+  __setWaitingRoomWorktreeInventoryForTest(options.initialTargets ? null : {
     workspacePath: "/staged",
     currentWorktreePath: "/staged/worktree",
     options: [{
@@ -589,7 +633,7 @@ function createHarness(router: TestRouter, options: {
   })
   let waitingRoomState: WaitingRoomState = {
     ...createWaitingRoomState([], fallbackProviderCatalog(), "opencode", "opencode/gpt-5.4", "high"),
-    worktreeSelectionId: "existing:/staged/worktree",
+    worktreeSelectionId: options.initialTargets ? "" : "existing:/staged/worktree",
     selectedMachineRef: options.interactivePlacement ? "local" : managedEnvironmentMachineRef("environment-1"),
     selectedKernelRef: options.interactivePlacement ? "local" : "kernel-old",
     projectSelectionId: contextPlan.developmentSetup.kind === "source_project"
@@ -607,8 +651,8 @@ function createHarness(router: TestRouter, options: {
   let slices: unknown[] = []
   let externalSessions: unknown[] = []
   let externalPage = { hasMore: false, nextCursor: null as string | null }
-  let pendingWorkspace = ""
-  let pendingWorktree = ""
+  let pendingWorkspace = options.initialTargets?.workspace ?? ""
+  let pendingWorktree = options.initialTargets?.worktree ?? ""
   let providerCatalog = fallbackProviderCatalog()
   let preferences = {}
   const attachments: Array<{ sessionId: string; created: boolean }> = []
@@ -619,7 +663,9 @@ function createHarness(router: TestRouter, options: {
   const noop = () => {}
   const deps: CliWaitingRoomCompositionDeps = {
     client: mutableClient,
-    options: { clientId: "client-1", provider: "opencode", model: "opencode/gpt-5.4", effort: "high", targetDaemonId: options.initialTargetKernelId },
+    options: { clientId: "client-1", provider: "opencode", model: "opencode/gpt-5.4", effort: "high", targetDaemonId: options.initialTargetKernelId,
+      ...(options.initialTargets ? { detached: true, ...options.initialTargets } : {}),
+    },
     appLogger: { warn: noop, info: noop, debug: noop },
     formatError: (error: unknown) => error instanceof Error ? error.message : String(error),
     isAttached: () => false,
