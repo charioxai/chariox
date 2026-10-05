@@ -30,16 +30,16 @@ try {
  const page=await browser.contexts()[0].newPage();await page.goto(`http://127.0.0.1:${server.address().port}/docs`);
  const cdp=await page.context().newCDPSession(page);await cdp.send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:2,mobile:false});await pause(200);
  let reference;
- for(const settings of [{optimizeForSpeed:false},{optimizeForSpeed:true},{optimizeForSpeed:true,clip:{x:0,y:0,width:1280,height:800,scale:1}}]) {
+ for(const settings of [{optimizeForSpeed:false},{optimizeForSpeed:true},{optimizeForSpeed:true,clip:{x:0,y:0,width:1280,height:800,scale:0.5}},{optimizeForSpeed:true,clip:{x:1120,y:0,width:160,height:64,scale:1}}]) {
   const captures=[],decodes=[],sizes=[];
   for(let i=0;i<12;i++) {
    let at=performance.now();const {data}=await cdp.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false,...settings});captures.push(performance.now()-at);
    at=performance.now();decodePng(data,2);decodes.push(performance.now()-at);sizes.push(Buffer.from(data,'base64').length);
    if(!reference)reference=Buffer.from(data,'base64');
-   const metric=compare(reference,Buffer.from(data,'base64'),PNG);if(!metric.lossless)throw Error('MD-DISPLAY: capture-speed setting changed RGB');
+   const metric=compare(reference,Buffer.from(data,'base64'),PNG);if(!settings.clip&&!metric.lossless)throw Error('MD-DISPLAY: capture-speed setting changed RGB');
    if(i===0)await writeFile(path.join(output,`method-${receipt.methods.length}.png`),Buffer.from(data,'base64'));
   }
-  receipt.methods.push({settings,capture:distribution(captures),decode:distribution(decodes),png_bytes:sizes,pixels_exact:true});
+  receipt.methods.push({settings,capture:distribution(captures),decode:distribution(decodes),png_bytes:sizes,scope:settings.clip?'preview/crop geometry only':'full RGB exact'});
  }
  receipt.status='PASS_CAPTURE_COMPONENT';
 }catch(error){receipt.error=error.message;process.exitCode=1;}
