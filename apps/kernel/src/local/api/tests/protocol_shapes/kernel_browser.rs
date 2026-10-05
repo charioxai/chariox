@@ -165,6 +165,19 @@ fn kernel_browser_display_protocol_419_shapes_and_hash() {
                 text: "fixture".into(),
             },
         },
+        Command::DisplayCapture {
+            tab_id: "t".into(),
+            generation: 2,
+        },
+        Command::DisplayTakeover {
+            tab_id: "t".into(),
+            generation: 2,
+        },
+        Command::DisplayRelease {
+            tab_id: "t".into(),
+            generation: 2,
+        },
+        Command::DisplayActors,
     ];
     let values: Vec<_> = commands
         .iter()
@@ -188,6 +201,6 @@ fn kernel_browser_display_protocol_419_shapes_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "7192df1e900e2ed5cdeb2c4d282bf5815d4ef29c220777b9324a381936c67b00"
+        "9df723cb7058e131e171fcc0856836b14b98fd8556da51962f11070d533cda51"
     );
 }

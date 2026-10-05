@@ -291,8 +291,9 @@ export class KernelBrowserHost {
     if (["start", "state"].includes(command.op)) return this.observe(await this.reconcile(), null, scope);
     if (command.op === "open") return this.observe(await this.open(command.url, undefined, { signal }), null, scope);
     for (const [id, stream] of this.displays) if (Date.now() > stream.expires) { await stream.close(); this.displays.delete(id); }
-    if (["display_next", "display_attach"].includes(command.op) || (command.op === "unsubscribe" && this.displays.has(command.subscription_id))) {
-      const stream = this.displays.get(command.subscription_id);
+    const encodedCapture = command.op === "screenshot" && typeof command.display_subscription_id === "string";
+    if (encodedCapture || command.op === "display_attach" || (command.op === "unsubscribe" && this.displays.has(command.subscription_id))) {
+      const stream = this.displays.get(command.display_subscription_id ?? command.subscription_id);
       if (!stream || stream.observed_by !== scope || command.generation !== this.generation) throw new Error("MD-DISPLAY: stale or foreign display");
       if (command.op === "unsubscribe") { await stream.close(); this.displays.delete(command.subscription_id); return { generation: this.generation, unsubscribed: true }; }
       stream.expires = Date.now() + 60_000;
@@ -303,7 +304,7 @@ export class KernelBrowserHost {
       const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
       try { await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id); }
       catch (error) { stream.invalidate(); throw error; }
-      const frame = await stream.frame(source, tab.document_id, command.after_sequence);
+      const frame = await stream.frame(source, source.document_id, command.after_sequence);
       return { generation: this.generation, frame_sent: frame !== null, display_frame: frame };
     }
     if (["poll", "unsubscribe"].includes(command.op)) {
@@ -314,7 +315,7 @@ export class KernelBrowserHost {
       if (command.op === "unsubscribe") { await this.removeStream(command.subscription_id); return { generation: this.generation, unsubscribed: true }; }
       return { generation: this.generation, frame: stream.latest };
     }
-    const tab = command.op === "display_input" ? await this.displayTarget(command) : await this.target(command);
+    const tab = await this.target(command);
     assertNotCancelled(signal);
     const binding = { target_id: tab.target_id, document_id: tab.document_id };
     if (command.op === "display_subscribe") {
@@ -349,8 +350,8 @@ export class KernelBrowserHost {
       return this.observe(await this.reconcile(), null, scope);
     }
     if (command.op === "snapshot") return this.observe({ generation: this.generation, snapshot: await this.browser.snapshot(binding) }, tab, scope);
-    if (["input", "display_input"].includes(command.op)) {
-      const observed = command.op === "display_input" ? command.document_id : command.document_id ?? (command.focused_agent ? null : this.observedDocuments.get(scope)?.get(tab.tab_id));
+    if (command.op === "input") {
+      const observed = command.document_id ?? (command.focused_agent ? null : this.observedDocuments.get(scope)?.get(tab.tab_id));
       if (!observed || observed !== tab.document_id) throw new Error("MD-3: stale input document; observe the tab again");
       try { await inputHostTab(this.browser, tab, command.input, { signal }); }
       catch (error) {
@@ -361,7 +362,6 @@ export class KernelBrowserHost {
         }
         throw error;
       }
-      if (command.op === "display_input") return { generation: this.generation, tab_id: tab.tab_id, document_id: tab.document_id, input_applied: true };
       return this.observe(await this.reconcile(), null, scope);
     }
     if (command.op === "screenshot") {
@@ -394,7 +394,7 @@ export class KernelBrowserHost {
         const result = await this.request(request.params, { signal });
         // Structured controller observations scrub before compaction; metadata
         // and other host replies receive the same protection at this boundary.
-        if (!["screenshot", "poll", "display_next"].includes(request.params?.op)) {
+        if (!["screenshot", "poll"].includes(request.params?.op)) {
           return { id: request.id, ok: true, result: redactObservation(result, this.protection.values) };
         }
         return { id: request.id, ok: true, result };

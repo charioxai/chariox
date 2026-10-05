@@ -87,11 +87,11 @@ impl KernelRuntimeState {
         let host = self.owned.kernel_browser_host.clone();
         let admission = admission.cloned();
         let (user, method) = (user.to_string(), method.to_string());
-        let pixels = method == "host.browser"
-            && (params["op"] == "screenshot"
-                || params["op"] == "poll"
-                || params["op"] == "display_next");
-        let display = method == "host.browser" && params["op"] == "display_next";
+        let pixels =
+            method == "host.browser" && (params["op"] == "screenshot" || params["op"] == "poll");
+        let display = method == "host.browser"
+            && params["op"] == "screenshot"
+            && params["display_subscription_id"].is_string();
         let mut result = tokio::task::spawn_blocking(move || {
             host.protected_request_admitted(&user, admission.as_ref(), &method, params, policy)
         })
