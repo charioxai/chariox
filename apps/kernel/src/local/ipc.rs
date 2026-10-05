@@ -2,7 +2,7 @@
 use std::fs;
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::net::UnixListener;
 
 pub(crate) struct LocalIpcListener {

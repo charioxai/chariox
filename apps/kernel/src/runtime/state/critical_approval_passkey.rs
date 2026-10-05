@@ -706,6 +706,24 @@ impl KernelRuntimeState {
     }
 }
 
+/// The `critical_approval.passkey` event: the outcome and, since protocol
+/// 402, the answering connection's class. Never the passkey.
+pub(crate) fn critical_approval_audit_payload(
+    owner: &str,
+    interaction_id: &str,
+    outcome: &str,
+    remember_minutes: Option<u32>,
+    connection_class: Option<KernelConnectionClass>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "owner": owner,
+        "interaction_id": interaction_id,
+        "outcome": outcome,
+        "remember_minutes": remember_minutes,
+        "connection_class": connection_class,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -962,22 +980,4 @@ mod tests {
             .unwrap();
         assert!(f.accepts(NEW) && f.vault_opens_with(NEW));
     }
-}
-
-/// The `critical_approval.passkey` event: the outcome and, since protocol
-/// 402, the answering connection's class. Never the passkey.
-pub(crate) fn critical_approval_audit_payload(
-    owner: &str,
-    interaction_id: &str,
-    outcome: &str,
-    remember_minutes: Option<u32>,
-    connection_class: Option<KernelConnectionClass>,
-) -> serde_json::Value {
-    serde_json::json!({
-        "owner": owner,
-        "interaction_id": interaction_id,
-        "outcome": outcome,
-        "remember_minutes": remember_minutes,
-        "connection_class": connection_class,
-    })
 }

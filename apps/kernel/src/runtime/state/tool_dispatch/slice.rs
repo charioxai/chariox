@@ -807,22 +807,6 @@ async fn run_slice_screen_command_inner(
     .await
 }
 
-async fn run_slice_screen_command_inner_exact_stdout(
-    args: Vec<String>,
-    timeout_override_ms: Option<u64>,
-) -> Result<SliceScreenCommandOutput, DaemonError> {
-    run_slice_screen_command_inner_with_output_policy(
-        args,
-        None,
-        timeout_override_ms,
-        None,
-        true,
-        None,
-        None,
-    )
-    .await
-}
-
 async fn run_slice_screen_command_inner_with_cancellation(
     args: Vec<String>,
     stdin: Option<zeroize::Zeroizing<String>>,

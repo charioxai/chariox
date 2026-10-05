@@ -1284,15 +1284,6 @@ impl DaemonApp {
         Ok(rebound)
     }
 
-    pub(crate) fn move_agent_to_remote(
-        &mut self,
-        session_id: &str,
-        agent_ref: &str,
-        machine_ref: &str,
-    ) -> Result<AgentInstance, DaemonError> {
-        self.move_agent_to_remote_authorized(session_id, agent_ref, machine_ref, &|| Ok(()))
-    }
-
     pub(crate) fn move_agent_to_remote_authorized(
         &mut self,
         session_id: &str,
@@ -1359,14 +1350,6 @@ impl DaemonApp {
             relay_override,
             authorize,
         )
-    }
-
-    pub(crate) fn move_agent_to_local(
-        &mut self,
-        session_id: &str,
-        agent_ref: &str,
-    ) -> Result<AgentInstance, DaemonError> {
-        self.move_agent_to_local_authorized(session_id, agent_ref, &|| Ok(()))
     }
 
     pub(crate) fn move_agent_to_local_authorized(

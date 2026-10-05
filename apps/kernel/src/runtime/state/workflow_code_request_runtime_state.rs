@@ -131,17 +131,19 @@ impl KernelRuntimeState {
             .with_authorized_app_side_effect(move |app| {
                 let result = workflow_code_artifact_apply_result(
                     app,
-                    &request.session_id,
                     &request.name,
-                    &request.provider_rebindings,
-                    &request.agent_rebindings,
-                    caller_user_id,
-                    controlled_by_metaagent_id,
                     crate::workflow_code::WorkflowCodeArtifactHistoryAction::Applied,
-                    "workflow_code_artifact.apply",
-                    None,
-                    None,
-                    &|| self.authorize_current_external_command(),
+                    WorkflowApplyContext {
+                        session_id: &request.session_id,
+                        provider_rebindings: &request.provider_rebindings,
+                        agent_rebindings: &request.agent_rebindings,
+                        caller_user_id,
+                        controlled_by_metaagent_id,
+                        operation: "workflow_code_artifact.apply",
+                        run_endpoint: None,
+                        run_queue: None,
+                        authorize: &|| self.authorize_current_external_command(),
+                    },
                 )?;
                 let session =
                     crate::app::KernelSessionReadService::new(app).session_snapshot(&session_id)?;
@@ -326,17 +328,19 @@ impl KernelRuntimeState {
                 move |app| {
                     workflow_code_artifact_apply_result(
                         app,
-                        &session_id,
                         &name,
-                        &provider_rebindings,
-                        &agent_rebindings,
-                        caller_user_id,
-                        controlled_by_metaagent_id,
                         crate::workflow_code::WorkflowCodeArtifactHistoryAction::Run,
-                        "workflow_code_artifact.run",
-                        Some(endpoint.as_deref()),
-                        queue_ref.as_deref(),
-                        &|| self.authorize_current_external_command(),
+                        WorkflowApplyContext {
+                            session_id: &session_id,
+                            provider_rebindings: &provider_rebindings,
+                            agent_rebindings: &agent_rebindings,
+                            caller_user_id,
+                            controlled_by_metaagent_id,
+                            operation: "workflow_code_artifact.run",
+                            run_endpoint: Some(endpoint.as_deref()),
+                            run_queue: queue_ref.as_deref(),
+                            authorize: &|| self.authorize_current_external_command(),
+                        },
                     )
                 }
             })

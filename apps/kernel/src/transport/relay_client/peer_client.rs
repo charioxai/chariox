@@ -466,6 +466,27 @@ pub(crate) async fn enqueue_peer_request_via_connected_relay_authorized(
     }))
 }
 
+pub(crate) async fn send_peer_request_via_connected_relay_authorized(
+    config: &crate::config::DaemonConfig,
+    state: &Arc<RwLock<RelayClientState>>,
+    target: ClientTarget,
+    request: RelayPeerRequest,
+    response_timeout: Duration,
+    authorize: impl Fn() -> Result<(), DaemonError> + Send + Sync,
+) -> Result<RelayPeerResponse, DaemonError> {
+    enqueue_peer_request_via_connected_relay_authorized(
+        config,
+        state,
+        target,
+        request,
+        response_timeout,
+        authorize,
+    )
+    .await?
+    .wait()
+    .await
+}
+
 #[cfg(test)]
 pub async fn send_peer_request_via_relay(
     app: &Arc<Mutex<DaemonApp>>,
@@ -1188,25 +1209,4 @@ mod relay_rtt_tests {
         assert_eq!(fields["transport"], serde_json::json!("temporary"));
         assert_eq!(fields["error"], serde_json::json!("timed out"));
     }
-}
-
-pub(crate) async fn send_peer_request_via_connected_relay_authorized(
-    config: &crate::config::DaemonConfig,
-    state: &Arc<RwLock<RelayClientState>>,
-    target: ClientTarget,
-    request: RelayPeerRequest,
-    response_timeout: Duration,
-    authorize: impl Fn() -> Result<(), DaemonError> + Send + Sync,
-) -> Result<RelayPeerResponse, DaemonError> {
-    enqueue_peer_request_via_connected_relay_authorized(
-        config,
-        state,
-        target,
-        request,
-        response_timeout,
-        authorize,
-    )
-    .await?
-    .wait()
-    .await
 }

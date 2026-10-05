@@ -2103,20 +2103,26 @@ async fn dispatch_transport_test_request(
     })
     .expect("transport request should encode");
     handle_incoming_payload(
-        &runtime,
-        &router,
-        &Arc::new(Mutex::new(ConnectionState {
-            subscription: None,
-            watch_task: None,
-        })),
-        &InboundRequestAdmission::new(process_inbound_request_limit()),
-        &Arc::new(Semaphore::new(CONNECTION_INBOUND_REQUEST_LIMIT)),
-        &outgoing,
-        &close_tx,
-        &Arc::new(AtomicBool::new(false)),
-        KernelConnectionClass::Unauthenticated,
-        None,
-        &Arc::default(),
+        IncomingConnection {
+            runtime: &runtime,
+            router: &router,
+            connection_state: &Arc::new(Mutex::new(ConnectionState {
+                subscription: None,
+                watch_task: None,
+            })),
+            inbound_request_admission: &InboundRequestAdmission::new(
+                process_inbound_request_limit(),
+            ),
+            connection_inbound_request_permits: &Arc::new(Semaphore::new(
+                CONNECTION_INBOUND_REQUEST_LIMIT,
+            )),
+            outgoing_tx: &outgoing,
+            close_tx: &close_tx,
+            close_requested: &Arc::new(AtomicBool::new(false)),
+            connection_class: KernelConnectionClass::Unauthenticated,
+            peer: None,
+            bound_grant: &Arc::default(),
+        },
         &payload,
     )
     .await;

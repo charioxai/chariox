@@ -1,6 +1,7 @@
 //! Payload receipts are bounded; durable identity markers prevent redispatch forever.
 use super::*;
 use std::collections::BTreeSet;
+use std::path::Path;
 
 #[derive(Debug, Default)]
 pub(super) struct ReceiptRetention {
@@ -10,7 +11,7 @@ pub(super) struct ReceiptRetention {
 }
 
 impl ReceiptRetention {
-    pub(super) fn load(path: &PathBuf) -> io::Result<Self> {
+    pub(super) fn load(path: &Path) -> io::Result<Self> {
         Self::load_with_sync(path, |file, path| {
             file.sync_all()?;
             if let Some(parent) = path.parent() {
@@ -21,8 +22,8 @@ impl ReceiptRetention {
     }
 
     fn load_with_sync(
-        path: &PathBuf,
-        sync: impl FnOnce(&fs::File, &PathBuf) -> io::Result<()>,
+        path: &Path,
+        sync: impl FnOnce(&fs::File, &Path) -> io::Result<()>,
     ) -> io::Result<Self> {
         let path = Self::marker_path(path);
         let file = match fs::OpenOptions::new().read(true).write(true).open(&path) {
@@ -75,7 +76,7 @@ impl ReceiptRetention {
         })
     }
 
-    pub(super) fn marker_path(path: &PathBuf) -> PathBuf {
+    pub(super) fn marker_path(path: &Path) -> PathBuf {
         path.with_extension("expired")
     }
 
@@ -95,13 +96,13 @@ impl ReceiptRetention {
         self.expired.contains(&Self::digest(command_id))
     }
 
-    pub(super) fn expire(&mut self, path: &PathBuf, command_id: &str) -> io::Result<()> {
+    pub(super) fn expire(&mut self, path: &Path, command_id: &str) -> io::Result<()> {
         self.expire_with_write(path, command_id, |file, bytes| file.write_all(bytes))
     }
 
     fn expire_with_write(
         &mut self,
-        path: &PathBuf,
+        path: &Path,
         command_id: &str,
         write: impl FnOnce(&mut fs::File, &[u8]) -> io::Result<()>,
     ) -> io::Result<()> {

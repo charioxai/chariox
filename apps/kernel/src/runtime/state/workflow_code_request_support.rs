@@ -175,19 +175,23 @@ pub(super) fn workflow_registry_write_scope(
     Ok(crate::workflow_code::WorkflowRegistrySourceScope::User)
 }
 
+pub(super) struct WorkflowApplyContext<'a> {
+    pub session_id: &'a str,
+    pub provider_rebindings: &'a [crate::workflow_code::WorkflowCodeProviderRebinding],
+    pub agent_rebindings: &'a [crate::workflow_code::WorkflowCodeAgentRebinding],
+    pub caller_user_id: String,
+    pub controlled_by_metaagent_id: Option<String>,
+    pub operation: &'static str,
+    pub run_endpoint: Option<Option<&'a str>>,
+    pub run_queue: Option<&'a str>,
+    pub authorize: &'a (dyn Fn() -> Result<(), DaemonError> + Send + Sync),
+}
+
 pub(super) fn workflow_registry_apply_result(
     app: &mut crate::app::DaemonApp,
-    session_id: &str,
     name: &str,
     parameters: &std::collections::BTreeMap<String, serde_json::Value>,
-    provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
-    agent_rebindings: &[crate::workflow_code::WorkflowCodeAgentRebinding],
-    caller_user_id: String,
-    controlled_by_metaagent_id: Option<String>,
-    operation: &'static str,
-    run_endpoint: Option<Option<&str>>,
-    run_queue: Option<&str>,
-    authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
+    context: WorkflowApplyContext<'_>,
 ) -> Result<
     (
         crate::workflow_code::WorkflowRegistryEntryMetadata,
@@ -195,6 +199,18 @@ pub(super) fn workflow_registry_apply_result(
     ),
     DaemonError,
 > {
+    let WorkflowApplyContext {
+        session_id,
+        provider_rebindings,
+        agent_rebindings,
+        caller_user_id,
+        controlled_by_metaagent_id,
+        operation,
+        run_endpoint,
+        run_queue,
+        authorize,
+    } = context;
+
     authorize()?;
     let entry = workflow_registry_for_session(app, session_id)?.resolve(name)?;
     let limits = app.config().workflow_code_limits();
@@ -250,18 +266,22 @@ pub(super) fn workflow_registry_apply_result(
 
 pub(super) fn workflow_code_artifact_apply_result(
     app: &mut crate::app::DaemonApp,
-    session_id: &str,
     artifact_name: &str,
-    provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
-    agent_rebindings: &[crate::workflow_code::WorkflowCodeAgentRebinding],
-    caller_user_id: String,
-    controlled_by_metaagent_id: Option<String>,
     history_action: crate::workflow_code::WorkflowCodeArtifactHistoryAction,
-    operation: &'static str,
-    run_endpoint: Option<Option<&str>>,
-    run_queue: Option<&str>,
-    authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
+    context: WorkflowApplyContext<'_>,
 ) -> Result<crate::workflow_code::WorkflowCodeCompileAndApplyResult, DaemonError> {
+    let WorkflowApplyContext {
+        session_id,
+        provider_rebindings,
+        agent_rebindings,
+        caller_user_id,
+        controlled_by_metaagent_id,
+        operation,
+        run_endpoint,
+        run_queue,
+        authorize,
+    } = context;
+
     authorize()?;
     let artifact = {
         let registry = workflow_code_registry_for_session(app, session_id)?;

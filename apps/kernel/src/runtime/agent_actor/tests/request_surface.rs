@@ -2,7 +2,6 @@ use super::*;
 
 #[test]
 fn handles_prompt_submit_through_agent_request_surface() {
-    let worktree = crate::test_support::TestWorktree::new("handles-prompt-submit-through");
     let worktree = TestWorktree::new("access-submit-surface");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -55,7 +54,6 @@ fn handles_prompt_submit_through_agent_request_surface() {
 
 #[test]
 fn handles_prompt_cancel_through_agent_request_surface() {
-    let worktree = crate::test_support::TestWorktree::new("handles-prompt-cancel-through");
     let worktree = TestWorktree::new("access-cancel-surface");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)

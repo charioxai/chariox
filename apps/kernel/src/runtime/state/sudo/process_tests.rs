@@ -375,13 +375,10 @@ done
     let allowed: serde_json::Value =
         serde_json::from_str(&file(&scratch_root.join("result")).await).unwrap();
     assert!(allowed["error"].is_null(), "{allowed}");
-    assert!(
-        allowed["response"]["SessionsListed"]["sessions"]
-            .as_array()
-            .unwrap()
-            .len()
-            >= 1
-    );
+    assert!(!allowed["response"]["SessionsListed"]["sessions"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     if cli.is_some() {
         let status = file(&scratch_root.join("cli-status")).await;
         let output = file(&scratch_root.join("cli-output")).await;

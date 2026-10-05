@@ -4,17 +4,22 @@ use crate::runtime::command::KernelCaller;
 use crate::runtime::kernel_access::process::ProcessIdentity;
 
 pub(super) async fn admit_frame(
-    runtime: &Arc<KernelTransportRuntime>,
-    router: &Arc<CommandRouter>,
-    inbound_request_admission: &InboundRequestAdmission,
-    connection_inbound_request_permits: &Arc<Semaphore>,
-    outgoing_tx: &KernelOutgoingSender,
-    close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
-    close_requested: &Arc<AtomicBool>,
+    connection: &IncomingConnection<'_>,
     peer: &ProcessIdentity,
-    bound_grant: &Arc<std::sync::Mutex<Option<String>>>,
     frame: &KernelIncomingFrame,
 ) -> Result<KernelCaller, ()> {
+    let IncomingConnection {
+        runtime,
+        router,
+        inbound_request_admission,
+        connection_inbound_request_permits,
+        outgoing_tx,
+        close_tx,
+        close_requested,
+        bound_grant,
+        ..
+    } = *connection;
+
     let runtime_state = router.runtime_state();
     let bound = bound_grant.lock().expect("bound grant poisoned").clone();
     let sudo = if bound.as_deref().is_none_or(|id| id.starts_with("sudo:")) {

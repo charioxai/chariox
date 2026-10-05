@@ -1011,34 +1011,38 @@ where
         match message {
             Message::Text(payload) => {
                 handle_incoming_payload(
-                    &runtime,
-                    &router,
-                    &connection_state,
-                    &inbound_request_admission,
-                    &connection_inbound_request_permits,
-                    &outgoing_tx,
-                    &close_tx,
-                    &close_requested,
-                    connection_class,
-                    peer.as_ref(),
-                    &bound_grant,
+                    IncomingConnection {
+                        runtime: &runtime,
+                        router: &router,
+                        connection_state: &connection_state,
+                        inbound_request_admission: &inbound_request_admission,
+                        connection_inbound_request_permits: &connection_inbound_request_permits,
+                        outgoing_tx: &outgoing_tx,
+                        close_tx: &close_tx,
+                        close_requested: &close_requested,
+                        connection_class,
+                        peer: peer.as_ref(),
+                        bound_grant: &bound_grant,
+                    },
                     payload.as_bytes(),
                 )
                 .await;
             }
             Message::Binary(payload) => {
                 handle_incoming_payload(
-                    &runtime,
-                    &router,
-                    &connection_state,
-                    &inbound_request_admission,
-                    &connection_inbound_request_permits,
-                    &outgoing_tx,
-                    &close_tx,
-                    &close_requested,
-                    connection_class,
-                    peer.as_ref(),
-                    &bound_grant,
+                    IncomingConnection {
+                        runtime: &runtime,
+                        router: &router,
+                        connection_state: &connection_state,
+                        inbound_request_admission: &inbound_request_admission,
+                        connection_inbound_request_permits: &connection_inbound_request_permits,
+                        outgoing_tx: &outgoing_tx,
+                        close_tx: &close_tx,
+                        close_requested: &close_requested,
+                        connection_class,
+                        peer: peer.as_ref(),
+                        bound_grant: &bound_grant,
+                    },
                     &payload,
                 )
                 .await;
@@ -1190,20 +1194,35 @@ fn incoming_frame_decode_error(payload: &[u8], error: &serde_json::Error) -> Ker
     }
 }
 
-async fn handle_incoming_payload(
-    runtime: &Arc<KernelTransportRuntime>,
-    router: &Arc<CommandRouter>,
-    connection_state: &Arc<Mutex<ConnectionState>>,
-    inbound_request_admission: &InboundRequestAdmission,
-    connection_inbound_request_permits: &Arc<Semaphore>,
-    outgoing_tx: &KernelOutgoingSender,
-    close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
-    close_requested: &Arc<AtomicBool>,
+struct IncomingConnection<'a> {
+    runtime: &'a Arc<KernelTransportRuntime>,
+    router: &'a Arc<CommandRouter>,
+    connection_state: &'a Arc<Mutex<ConnectionState>>,
+    inbound_request_admission: &'a InboundRequestAdmission,
+    connection_inbound_request_permits: &'a Arc<Semaphore>,
+    outgoing_tx: &'a KernelOutgoingSender,
+    close_tx: &'a mpsc::UnboundedSender<ConnectionCloseCommand>,
+    close_requested: &'a Arc<AtomicBool>,
     connection_class: KernelConnectionClass,
-    peer: Option<&crate::runtime::kernel_access::process::ProcessIdentity>,
-    bound_grant: &Arc<std::sync::Mutex<Option<String>>>,
-    payload: &[u8],
-) {
+    peer: Option<&'a crate::runtime::kernel_access::process::ProcessIdentity>,
+    bound_grant: &'a Arc<std::sync::Mutex<Option<String>>>,
+}
+
+async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[u8]) {
+    let IncomingConnection {
+        runtime,
+        router,
+        connection_state,
+        inbound_request_admission,
+        connection_inbound_request_permits,
+        outgoing_tx,
+        close_tx,
+        close_requested,
+        connection_class,
+        peer,
+        bound_grant,
+    } = connection;
+
     let frame = match serde_json::from_slice::<KernelIncomingFrame>(payload) {
         Ok(frame) => frame,
         Err(error) => {
@@ -1221,20 +1240,7 @@ async fn handle_incoming_payload(
     };
 
     let external_caller = if let Some(peer) = peer {
-        match unix_access::admit_frame(
-            runtime,
-            router,
-            inbound_request_admission,
-            connection_inbound_request_permits,
-            outgoing_tx,
-            close_tx,
-            close_requested,
-            peer,
-            bound_grant,
-            &frame,
-        )
-        .await
-        {
+        match unix_access::admit_frame(&connection, peer, &frame).await {
             Ok(caller) => Some(caller),
             Err(()) => return,
         }

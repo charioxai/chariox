@@ -88,9 +88,8 @@ impl KernelRuntimeState {
         turn: &KernelSudoTurn,
         reason: &str,
     ) -> Result<(), DaemonError> {
-        self.audit_sudo(turn, reason).map_err(|error| {
+        self.audit_sudo(turn, reason).inspect_err(|error| {
             crate::logging::warn_with_fields("kernel_access.sudo", "sudo authority removed but its durable receipt failed", serde_json::json!({"entry_id": turn.entry_id, "outcome": reason, "error": error.to_string()}));
-            error
         })
     }
 

@@ -768,21 +768,6 @@ impl KernelRuntimeState {
         }
     }
 
-    pub(crate) async fn cancel_agent_prompt(
-        &self,
-        session_id: &str,
-        target_agent_id: &str,
-        attachment_id: &str,
-    ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
-        self.cancel_agent_prompt_with_external_authority(
-            session_id,
-            target_agent_id,
-            attachment_id,
-            None,
-        )
-        .await
-    }
-
     pub(crate) async fn cancel_agent_prompt_with_external_authority(
         &self,
         session_id: &str,
@@ -817,23 +802,6 @@ impl KernelRuntimeState {
                         .to_string(),
             })
         }
-    }
-
-    pub(crate) async fn steer_queued_prompt(
-        &self,
-        session_id: &str,
-        target_agent_id: &str,
-        attachment_id: &str,
-        prompt_id: &str,
-    ) -> Result<crate::app::KernelQueuedPromptSteer, DaemonError> {
-        self.steer_queued_prompt_with_external_authority(
-            session_id,
-            target_agent_id,
-            attachment_id,
-            prompt_id,
-            None,
-        )
-        .await
     }
 
     pub(crate) async fn steer_queued_prompt_with_external_authority(
@@ -1232,21 +1200,6 @@ impl KernelRuntimeState {
                 prompt,
             )
         }
-    }
-
-    pub(crate) async fn complete_agent_prompt(
-        &self,
-        session_id: &str,
-        target_agent_id: &str,
-        next_queued_prompt: Option<&crate::session::PromptQueueItem>,
-    ) -> Result<crate::session::PromptCompletion, DaemonError> {
-        self.complete_agent_prompt_with_external_authority(
-            session_id,
-            target_agent_id,
-            next_queued_prompt,
-            None,
-        )
-        .await
     }
 
     pub(crate) async fn complete_agent_prompt_with_external_authority(

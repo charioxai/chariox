@@ -285,7 +285,7 @@ impl CommandResultCache {
     fn new_with_retention_loader(
         path: impl Into<PathBuf>,
         retention: CommandResultRetentionPolicy,
-        load: impl FnOnce(&PathBuf) -> io::Result<ReceiptRetention>,
+        load: impl FnOnce(&std::path::Path) -> io::Result<ReceiptRetention>,
     ) -> io::Result<Self> {
         let path = path.into();
         let mut cache = Self {

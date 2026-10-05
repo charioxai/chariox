@@ -3,7 +3,7 @@ use crate::app::DaemonApp;
 use crate::durable_prompt_state::{
     DurablePromptStateEventPayload, DURABLE_PROMPT_STATE_EVENT_KIND,
 };
-use crate::durable_snapshot::{DurableKernelSnapshotPayload, DurableSnapshotScheduler};
+use crate::durable_snapshot::DurableKernelSnapshotPayload;
 use crate::durable_state::{DurableKernelStateStore, DurableStateEvent};
 use crate::error::DaemonError;
 use crate::runtime::metaagent_event::{
@@ -1185,21 +1185,6 @@ impl DaemonApp {
                 )?;
                 Ok(())
             })
-    }
-
-    pub(crate) fn durable_snapshot_scheduler(&self) -> Option<DurableSnapshotScheduler> {
-        let policy = crate::durable_snapshot::DurableCheckpointPolicy::from_user_state_config(
-            &self.config.user_config.state,
-        )?;
-        Some(DurableSnapshotScheduler::new_with_policy(
-            self.config.daemon_id.clone(),
-            self.durable_state_store(),
-            self.session_state_store(),
-            self.agents.clone(),
-            self.slices.clone(),
-            self.metaagent_events.clone(),
-            policy,
-        ))
     }
 
     fn restore_durable_state_event(

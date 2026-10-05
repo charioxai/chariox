@@ -22,7 +22,7 @@ fn ka_validation_live_server() {
         config.user_config.credential_vault.unlock_policy = crate::config::CredentialVaultUnlockPolicy::KernelInit;
         let passkey = std::fs::read_to_string(root.join("test-passkey")).unwrap();
         crate::secret::create_chariox_encrypted_vault_for_test(&root.join("vault.json"), &passkey).unwrap();
-        crate::secret::unlock_chariox_encrypted_vault(&root.join("vault.json"), &passkey, crate::secret::VaultUnlockLease::KernelShutdown).unwrap();
+        crate::secret::unlock_chariox_encrypted_vault(root.join("vault.json"), &passkey, crate::secret::VaultUnlockLease::KernelShutdown).unwrap();
         let mut app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
         let worktree = root.join("workspace");
         std::fs::create_dir_all(&worktree).unwrap();

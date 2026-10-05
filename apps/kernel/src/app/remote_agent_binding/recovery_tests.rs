@@ -688,10 +688,11 @@ async fn slice_selector_move_to_canonical_worker_does_not_treat_it_as_machine() 
         .clear_remote_execution(&fixture.agent_id)
         .unwrap();
     let moved = home
-        .move_agent_to_remote(
+        .move_agent_to_remote_authorized(
             agent.session_id(),
             agent.id(),
             &fixture.presences[0].kernel_id,
+            &|| Ok(()),
         )
         .unwrap();
     assert_eq!(
@@ -776,10 +777,11 @@ async fn slice_machine_selection_cannot_move_ordinary_agent_into_room_slice() {
         .clear_remote_execution(&fixture.agent_id)
         .unwrap();
     let moved = home
-        .move_agent_to_remote(
+        .move_agent_to_remote_authorized(
             agent.session_id(),
             agent.id(),
             &fixture.binding.worker_machine_id,
+            &|| Ok(()),
         )
         .unwrap();
     assert_eq!(
@@ -889,10 +891,11 @@ async fn slice_machine_selection_reserved_worker_without_local_record_is_exclude
         .clear_remote_execution(&fixture.agent_id)
         .unwrap();
     let moved = home
-        .move_agent_to_remote(
+        .move_agent_to_remote_authorized(
             agent.session_id(),
             agent.id(),
             &fixture.binding.worker_machine_id,
+            &|| Ok(()),
         )
         .unwrap();
     assert_eq!(

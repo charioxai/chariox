@@ -169,6 +169,7 @@ fn kernel_access_client_child() {
             .unwrap();
             println!("ACCESS_READY");
             std::io::stdout().flush().unwrap();
+            let mut descendants = Vec::new();
             for line in std::io::stdin().lock().lines() {
                 let line = line.unwrap();
                 if line == "exit" {
@@ -207,6 +208,7 @@ fn kernel_access_client_child() {
                     })
                     .await
                     .unwrap();
+                    descendants.push(child);
                     println!("ACCESS {{\"subscriber\":true}}");
                 } else if line == "child" {
                     // A fresh OS descendant opens its own connection and presents nothing.
@@ -269,6 +271,10 @@ fn kernel_access_client_child() {
                     println!("ACCESS {response}");
                 }
                 std::io::stdout().flush().unwrap();
+            }
+            for mut child in descendants {
+                let _ = child.kill();
+                child.wait().unwrap();
             }
         });
 }
