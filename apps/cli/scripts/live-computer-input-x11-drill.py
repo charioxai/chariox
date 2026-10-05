@@ -390,7 +390,9 @@ def main():
             assert len(receipt()["value"]["value"]) == size, "physical typing continued after cancel"
             held = int(execute(PYTHON, "-c", "from selkies.Xlib import display; d=display.Display(); print(sum(n.bit_count() for n in d.query_keymap())); d.close()"))
             assert held == 0, "keys remained down after reset"
-            execute("xdotool", "keydown", "Shift_L", "Control_L", "a", "mousedown", "1")
+            # Ctrl+Shift+A opens Chromium's tab-search UI. Seed a held key
+            # without invoking a browser command in this reset-only fixture.
+            execute("xdotool", "keydown", "Shift_L", "Control_L", "F8", "mousedown", "1")
             screen("computer-input-reset")
             reset = json.loads(execute(PYTHON, "-c", "from selkies.Xlib import display; import json; d=display.Display(); print(json.dumps({'keys':sum(n.bit_count() for n in d.query_keymap()),'buttons':d.screen().root.query_pointer().mask & 7936})); d.close()"))
             assert reset == {"keys": 0, "buttons": 0}, "held native keys/buttons remained after reset"
@@ -419,6 +421,48 @@ def main():
             return {"geometry": inspect["size"], "sha256": hashlib.sha256(data).hexdigest(), "sizeBytes": len(data),
                     "ocrMatches": len(matches), "nativeFocusRetained": True, "modelDelivery": "NOT_RUN"}
         case("observe.screenshot-ocr", observation_check)
+
+        def protected_observation_check():
+            prepare()
+            # Public static input/media canary only. Vault insertion and
+            # authorization are not established by this supplied policy.
+            text = "Private Marker"
+            focus = json.loads(execute(PYTHON, "/opt/computer-source/slice-keyboard.py", "secret-target"))
+            # Locate the actual public canary pixels using real OCR. A value
+            # policy masks echoed text bounds, not every blank input pixel.
+            screen("protected-screenshot", f"{ROOT}/canary-baseline.png",
+                   stdin=b'{"unknown":false,"targets":[],"values":[]}')
+            raw_matches = [json.loads(line) for line in screen("find-text", text, f"{ROOT}/canary-baseline.png").splitlines()]
+            assert len(raw_matches) == 2, "public canary must render in both the field and opaque media"
+            boxes = [(m["left"], m["top"], m["left"] + m["width"], m["top"] + m["height"]) for m in raw_matches]
+            policy = json.dumps({"unknown": False, "targets": [], "values": [text]}).encode()
+            screen("protected-screenshot", f"{ROOT}/protected.png", stdin=policy)
+            secret_region = receipt()["value"]["geometry"]["secret"]
+            sx, sy = point(secret_region[0], secret_region[1])
+            # Decode the PNG, check every opaque-media pixel and both rendered
+            # text boxes, then check a benign marker outside protected regions.
+            inspect = json.loads(execute(PYTHON, "-c", "from PIL import Image; import json; "
+                "i=Image.open('" + ROOT + "/protected.png').convert('RGB'); "
+                "box=" + repr((sx, sy, sx + round(secret_region[2]), sy + round(secret_region[3]))) + "; "
+                "print(json.dumps({'size':i.size,'opaqueBlack':i.crop(box).getextrema()==((0,0),(0,0),(0,0)),"
+                "'textBoxesBlack':all(i.crop(b).getextrema()==((0,0),(0,0),(0,0)) for b in " + repr(boxes) + "),"
+                "'benign':i.getpixel(" + repr(point(80, 300)) + ")})); i.close()"))
+            assert inspect["size"] == [1280, 800], "protected screenshot changed canonical geometry"
+            assert inspect["opaqueBlack"] and inspect["textBoxesBlack"], "protected text or opaque-media pixels escaped masking"
+            assert inspect["benign"] == [34, 170, 68], "redaction obscured unrelated marker pixels"
+            missing = screen("protected-find-text", text, stdin=policy, accepted=(1,))
+            assert missing.strip() == b"null", "protected text escaped real OCR masking"
+            benign = screen("protected-find-text", "Open Room", stdin=policy)
+            assert len(benign.splitlines()) == 2, "redacted OCR lost distinct benign matches"
+            assert json.loads(execute(PYTHON, "/opt/computer-source/slice-keyboard.py", "secret-target")) == focus, "protected observation changed native focus"
+            docker("cp", f"{name}:{ROOT}/protected.png", str(evidence / "protected.png"))
+            data = (evidence / "protected.png").read_bytes()
+            assert len(data) <= 16 * 1024**2, "protected screenshot exceeds image byte limit"
+            return {"geometry": inspect["size"], "opaqueMediaMasked": True, "inputMasked": True,
+                    "benignPixelsRetained": True, "protectedOcrMatches": 0, "benignOcrMatches": 2,
+                    "nativeFocusRetained": True, "sha256": hashlib.sha256(data).hexdigest(),
+                    "sizeBytes": len(data), "modelDelivery": "NOT_RUN", "vaultAuthorization": "NOT_RUN"}
+        case("observe.known-protection-pixels-ocr", protected_observation_check)
 
         def withheld_check():
             screen("protected-screenshot", f"{ROOT}/withheld.png", stdin=b'{"unknown":true,"targets":[],"values":[]}', accepted=(75,))

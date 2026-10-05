@@ -10,15 +10,22 @@
   #scroll div { width: 1500px; height: 1500px; background: #dddddd; }
   #ocr { position: absolute; left: 40px; top: 390px; font-size: 32px; }
   #secret { position: absolute; left: 900px; top: 100px; width: 240px; height: 90px; background: #cc3344; }
+  #protected { position: absolute; left: 40px; top: 560px; width: 500px; font: 32px sans-serif; }
 </style>
 <textarea aria-label="Text editor" autofocus></textarea>
 <div id="pointer">Pointer target</div>
 <div id="scroll"><div>Scroll target</div></div>
 <div id="ocr">Open Room<br><span style="font-size:48px">Open Room</span><br>Grüße Straße</div>
 <canvas id="secret" width="240" height="90"></canvas>
+<input id="protected" aria-label="Public privacy fixture" value="Private Marker" readonly>
 <script>
   const documentId = crypto.randomUUID()
   const events = []
+  // Public privacy canary, not a credential. Opaque media must be masked when
+  // the kernel supplies protected values, even without DOM-visible text.
+  const canvas = document.getElementById("secret").getContext("2d")
+  canvas.font = "32px sans-serif"
+  canvas.fillText("Private Marker", 12, 50)
   for (const kind of ["keydown", "keyup", "input", "compositionstart", "compositionupdate", "compositionend",
                       "mousedown", "mouseup", "mousemove", "click", "dblclick", "contextmenu", "wheel"]) {
     document.addEventListener(kind, event => {

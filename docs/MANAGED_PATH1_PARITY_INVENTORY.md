@@ -1,5 +1,19 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 physical Computer protection fixture, b204 (2026-10-04)
+
+A viewer-independent row supplies a synthetic value policy to the production
+observation helper. Real OCR must acknowledge two public field/canvas canaries
+before masking, then find neither afterward while two benign labels remain
+readable. Decoded screenshot pixels must cover both text boxes and all canvas
+pixels, preserve the benign marker and retain canonical geometry/native focus.
+No real secret or Vault authorization is involved. The raw baseline remains
+private to the disposable container; model delivery is explicitly NOT_RUN.
+The native reset fixture seeds Ctrl+Shift+F8, avoiding Ctrl+Shift+A's browser
+tab-search side effect. No production or serialized contract changes here.
+Live official-provider, Room/host-browser, Web/TUI and fresh Path-1 conjunctions
+remain coordinator-scheduled MP-08/MP-10/MP-11 acceptance gates.
+
 ## MP-08 / MP-10 / MP-11 PR846 shared Computer review correction, b204 (2026-10-04)
 
 The safe Unicode allocation pool remains keycodes 8/92, while core and XKB

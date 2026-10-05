@@ -35,6 +35,14 @@ and a rendered color marker. Actual Tesseract checks no-match, two occurrences,
 different font sizes and German text. Unknown secret protection must withhold
 pixels and publish no image. Clipboard values and command output are never
 retained in the receipt. Screenshots contain public fixture data only.
+The known-protection row uses public static field/canvas canaries and a supplied
+value policy. Real OCR first acknowledges two visible canaries; the masked PNG
+must cover both text boxes and every canvas pixel, preserve the benign marker,
+retain canonical geometry/focus, and make protected OCR return no match while
+the two benign labels remain readable. Its private raw baseline stays in the
+disposable container. This tests helper masking, not Vault authorization or
+model-visible delivery. Reset seeding uses Ctrl+Shift+F8 instead of Chromium's
+Ctrl+Shift+A tab-search command so later cases retain the original browser UI.
 
 The G2 native Unicode failure can trigger BrowserRefresh because an unassigned
 X11 keycode may still have a Chromium hardware fallback. The Computer helper
