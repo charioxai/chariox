@@ -138,6 +138,8 @@ def main():
                                 for ws in sockets: ws.close()
                         browser.close()
                 finally:
+                    if not isinstance(chrome.pid, int) or chrome.pid <= 1:
+                        raise ValueError('MP-10 invalid owned Chrome cleanup PID')
                     chrome.terminate()
                     try: chrome.wait(timeout=10)
                     except subprocess.TimeoutExpired: chrome.kill(); chrome.wait(timeout=5)

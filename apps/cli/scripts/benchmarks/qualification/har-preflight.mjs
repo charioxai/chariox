@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { observePassiveHar } from './passive-har.mjs'
 import { retainFinalHar } from './har-retention.mjs'
+import { signalBrowserStateChild } from '../../lib/browser-state-drill-process.mjs'
 const [stateRoot, output]=process.argv.slice(2)
 if (!stateRoot?.startsWith('/') || !output?.startsWith('/')) throw new Error('MP-10 absolute external state/output required')
 const repository=await realpath(path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../../../../..'))
@@ -55,8 +56,8 @@ try {
 
 }finally{
  observer?.detach();if(ws){ws.close();await Promise.race([once(ws,'close'),delay(1000)])}
- if(chrome?.exitCode===null){chrome.kill('SIGTERM');await Promise.race([chromeExited,delay(5000)])
-  if(chrome.exitCode===null){chrome.kill('SIGKILL');await chromeExited}}
+ if(chrome?.exitCode===null){signalBrowserStateChild(chrome,'SIGTERM');await Promise.race([chromeExited,delay(5000)])
+  if(chrome.exitCode===null){signalBrowserStateChild(chrome,'SIGKILL');await chromeExited}}
  if(server.listening)await new Promise(resolve=>server.close(resolve))
  await logs?.close();await rm(scratch,{recursive:true})
 }
