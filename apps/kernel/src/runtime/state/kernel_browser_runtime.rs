@@ -95,6 +95,10 @@ impl KernelRuntimeState {
         self.kernel_browser_operation(&user, None, "host.browser", params)
             .await
     }
+    pub(crate) async fn kernel_browser_display_attach(&self, caller: &crate::runtime::command::KernelCommand, subscription_id: String, generation: u64) -> Result<serde_json::Value, DaemonError> {
+        let (user, actor) = self.kernel_browser_terminal_context(caller)?;
+        self.kernel_browser_operation(&user, None, "host.browser", serde_json::json!({"op":"display_attach","subscription_id":subscription_id,"generation":generation,"observed_by":actor})).await
+    }
     fn kernel_browser_terminal_context(
         &self,
         caller: &crate::runtime::command::KernelCommand,

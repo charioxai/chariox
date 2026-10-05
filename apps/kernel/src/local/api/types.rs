@@ -245,4 +245,4 @@ pub use workspace::*;
 /// Version 410 adds owner-scoped named saved App data snapshot restore.
 /// Version411 combines Apps Phase1 and Browser/Computer G2 with autonomous Vault observation masks (MP-08/MP-10/MP-11).
 /// MD-2: version 417 adds kernel-owned sessionless host browser control.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 417;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 419;

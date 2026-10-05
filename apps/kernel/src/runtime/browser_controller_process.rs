@@ -301,6 +301,8 @@ impl BrowserControllerProcessStdioBackend {
                 "TMPDIR",
                 "CHARIOX_KERNEL_BROWSER_EXECUTABLE",
                 "CHARIOX_KERNEL_BROWSER_HEADLESS",
+                "CHARIOX_KERNEL_BROWSER_DISPLAY",
+                "CHARIOX_BROWSER_DISPLAY_PYTHON",
             ] {
                 if let Some(value) = std::env::var_os(key) {
                     command.env(key, value);

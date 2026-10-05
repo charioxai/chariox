@@ -38,6 +38,7 @@ mod connection_config;
 mod connection_state;
 mod connector;
 mod daemon_requests;
+mod browser_display;
 mod display_ingress;
 mod display_tunnel;
 mod envelope_io;
