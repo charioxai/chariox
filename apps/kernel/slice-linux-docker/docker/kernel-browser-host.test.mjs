@@ -56,10 +56,10 @@ async function using(callback) {
   try { await callback(context, root); } finally { fixture.secretFocused = false; await context.host.stop(); await rm(root, { recursive: true, force: true }); }
 }
 
-test("MD-2: native launch keeps sandbox and uses a separate dynamic loopback profile", () => {
+test("MD-2: native launch keeps sandbox and a private inherited CDP pipe", () => {
   const args = launchArguments("/tmp/private-profile", true);
-  assert(args.includes("--remote-debugging-port=0"));
-  assert(args.includes("--remote-debugging-address=127.0.0.1"));
+  assert(args.includes("--remote-debugging-pipe"));
+  assert(!args.some(arg => /remote-debugging-(port|address)/.test(arg)));
   assert(args.includes("--user-data-dir=/tmp/private-profile"));
   assert(!args.some(arg => /no-sandbox|disable-setuid-sandbox/.test(arg)));
 });

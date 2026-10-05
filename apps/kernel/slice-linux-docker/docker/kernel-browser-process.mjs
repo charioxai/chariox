@@ -1,10 +1,11 @@
 // MD-2: host Chromium lifetime. Never touches a slice or an existing Chrome.
 import { spawn } from "node:child_process";
-import { access, mkdir, readFile, readlink, unlink } from "node:fs/promises";
+import { access, mkdir, readlink } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import * as linux from "./kernel-browser-linux.mjs";
 import * as macos from "./kernel-browser-macos.mjs";
+import { connectCdpPipe } from './kernel-browser-cdp-pipe.mjs';
 
 function platformPolicy(platform) {
   if (platform === "linux") return linux;
@@ -25,8 +26,8 @@ export async function executable(environment = process.env, platform = process.p
 
 export function launchArguments(profile, headless, display = false) {
   return [
-    `--user-data-dir=${profile}`, "--remote-debugging-address=127.0.0.1",
-    "--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check",
+    `--user-data-dir=${profile}`, "--remote-debugging-pipe",
+    "--no-first-run", "--no-default-browser-check",
     "--disable-session-crashed-bubble", "--disable-background-networking",
     "--window-size=1280,800", ...(headless ? ["--headless=new"] : []),
     ...(display ? ["--disable-frame-rate-limit"] : []), "about:blank",
@@ -40,11 +41,14 @@ export class HostChromium {
     this.child = null;
   }
   async start() {
-    if (this.child && this.child.exitCode === null && this.child.signalCode === null) return this.endpoint;
+    if (this.child && this.child.exitCode === null && this.child.signalCode === null) {
+      if (this.connection?.isOpen()) return this.connection;
+      await this.stop();
+    }
     const environment = platformPolicy(process.platform).launchEnvironment(this.environment);
     const profile = path.join(this.root, "profile");
     await mkdir(profile, { recursive: true, mode: 0o700 });
-    // Refuse a live profile owner before touching its debugger marker. Never
+    // Refuse a live profile owner before launching Chromium. Never
     // adopt an existing Chromium, delete singleton locks, or steal its profile.
     let lock;
     try { lock = await readlink(path.join(profile, "SingletonLock")); }
@@ -59,36 +63,24 @@ export class HostChromium {
       }
       if (alive) throw new Error("MD-2: browser profile is already owned by a live process");
     }
-    // This marker belongs only to this profile. Chromium's singleton lock stays intact.
-    await unlink(path.join(profile, "DevToolsActivePort")).catch(error => {
-      if (error.code !== "ENOENT") throw error;
-    });
     const child = spawn(await executable(environment), launchArguments(profile,
       environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1"), {
-      stdio: "ignore", env: environment,
+      stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env: environment,
     });
     this.child = child;
-    let spawnFailed = false;
-    child.once("error", () => { spawnFailed = true; });
-    const deadline = Date.now() + 10_000;
-    while (Date.now() < deadline) {
-      if (spawnFailed || child.exitCode !== null || child.signalCode !== null) break;
-      try {
-        const [port] = (await readFile(path.join(profile, "DevToolsActivePort"), "utf8")).split("\n");
-        if (/^[0-9]+$/.test(port) && +port > 0 && +port <= 65535) {
-          const endpoint = `http://127.0.0.1:${port}`;
-          const response = await fetch(`${endpoint}/json/version`, { signal: AbortSignal.timeout(1000) });
-          if (response.ok) { this.endpoint = endpoint; return endpoint; }
-        }
-      } catch {}
-      await delay(50);
-    }
+    const connection = connectCdpPipe(child.stdio[3], child.stdio[4]);
+    this.connection = connection;
+    child.once('error', () => { void connection.close(); });
+    child.once('exit', () => { void connection.close(); });
+    try { await connection.send('Browser.getVersion'); return connection; }
+    catch {}
     await this.stop();
     throw new Error("MD-2: sandboxed host Chromium did not become ready (check executable, display and profile ownership)");
   }
-  async stop(connection) {
+  async stop(connection = this.connection) {
     const child = this.child;
     this.child = null;
+    this.connection = null;
     if (!Number.isSafeInteger(child?.pid) || child.pid <= 1) {
       if (child?.pid !== undefined) throw new Error("MD-2: refusing unsafe browser process ID");
       return;
@@ -100,5 +92,6 @@ export class HostChromium {
     for (let count = 0; count < 40 && !exited(); count++) await delay(50);
     if (!exited()) child.kill("SIGKILL");
     if (!exited()) await new Promise(resolve => child.once("exit", resolve));
+    await connection?.close();
   }
 }
