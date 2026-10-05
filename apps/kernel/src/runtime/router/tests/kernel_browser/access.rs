@@ -74,6 +74,76 @@ fn mdaccess_cross_kernel_tool_names_both_kernels_and_badges_window() {
 }
 
 #[test]
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+fn mdaccess_cloud_owner_window_alias_keeps_collaborators_separate() {
+    run_test(|| {
+        Box::pin(async {
+            let workspace = crate::test_support::TestWorktree::new("mdaccess-owner-alias");
+            let mut config = DaemonConfig::for_tests();
+            config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+                user_id: "cloud-owner".into(),
+                ..Default::default()
+            });
+            let mut app = DaemonApp::bootstrap(config).unwrap();
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(workspace.session_request())
+                .unwrap();
+            let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+            focus(&router, session.id(), agent.id()).await;
+            let request = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
+                command: KernelBrowserCommand::ListGrants,
+            });
+            let mut owner = terminal_command("mdaccess-cloud-owner", &request);
+            owner.caller.user_id = Some("cloud-owner".into());
+            let LocalDaemonResponse::KernelBrowser { result: grants } =
+                terminal(&router, owner, request.clone()).await.unwrap()
+            else {
+                panic!("grant snapshot")
+            };
+            assert_eq!(grants["grants"][0]["agent_id"], agent.id());
+            let mut collaborator = terminal_command("mdaccess-collaborator", &request);
+            collaborator.caller.user_id = Some("collaborator".into());
+            let LocalDaemonResponse::KernelBrowser { result: grants } =
+                terminal(&router, collaborator, request).await.unwrap()
+            else {
+                panic!("grant snapshot")
+            };
+            assert!(grants["grants"].as_array().unwrap().is_empty());
+            // A native App view uses the same Cloud/local alias when projecting
+            // reachability, without aliasing another collaborator's registry.
+            router
+                .runtime_state()
+                .app_control()
+                .user_views()
+                .open(
+                    "cloud-owner",
+                    crate::runtime::app_views::AppViewBinding {
+                        owner: "cloud-owner".into(),
+                        installation: "fixture".into(),
+                        generation: 1,
+                        panel: Default::default(),
+                        logical_tab: None,
+                    },
+                    "fixture",
+                )
+                .unwrap();
+            let request =
+                LocalDaemonRequest::ListUserAppViews(crate::local::ListUserAppViewsRequest {});
+            let mut owner = terminal_command("mdaccess-cloud-window", &request);
+            owner.caller.user_id = Some("cloud-owner".into());
+            let LocalDaemonResponse::UserAppViewsListed { views } =
+                terminal(&router, owner, request).await.unwrap()
+            else {
+                panic!("view projection")
+            };
+            assert_eq!(views.len(), 1);
+            assert!(views[0].access.as_ref().unwrap().reachable_by_focused_agent);
+            router.runtime_state().shutdown_cleanup().await.unwrap();
+        })
+    });
+}
+
+#[test]
 #[ignore = "MP-10: sandbox-capable native Linux browser and disposable CHARIOX_MDACCESS_DRILL_ROOT required"]
 fn mdaccess_native_two_agent_held_turn_drill() {
     run_test(|| Box::pin(check(true)));

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { kernelBrowserMinimumProtocolVersion, kernelBrowserRequest, userDomainAccessMinimumProtocolVersion } from "./ipc-kernel-browser-requests.js"
-import { LOCAL_DAEMON_PROTOCOL_VERSION, userDomainWindowBadge } from "./kernel-types.js"
+import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
+import { userDomainWindowBadge } from "./index.js"
 
 test("MD-2: protocol 417 browser requests carry no session or claimed user", () => {
   assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 432)

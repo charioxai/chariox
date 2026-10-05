@@ -199,7 +199,12 @@ impl KernelRuntimeState {
                 }
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 if matches!(command, KernelBrowserCommand::Stop) {
-                    for view in self.app_control().user_views().browser_views(&user) {
+                    let views = self.app_control().user_views();
+                    for view in self
+                        .user_domain_owner_aliases(&user)
+                        .iter()
+                        .flat_map(|owner| views.browser_views(owner))
+                    {
                         self.forget_user_app_view(&user, &view.view_id);
                     }
                 }
@@ -501,7 +506,12 @@ impl KernelRuntimeState {
         let params = browser_tool_params(arguments)?;
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         if let Some(tab) = params["tab_id"].as_str() {
-            for view in self.app_control().user_views().browser_views(&user) {
+            let views = self.app_control().user_views();
+            for view in self
+                .user_domain_owner_aliases(&user)
+                .iter()
+                .flat_map(|owner| views.browser_views(owner))
+            {
                 if view
                     .browser
                     .as_ref()

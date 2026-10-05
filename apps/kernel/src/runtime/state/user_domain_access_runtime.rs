@@ -132,12 +132,25 @@ impl KernelRuntimeState {
         }
         self.user_domain_agent(run)
     }
+    pub(super) fn user_domain_owner_aliases(&self, owner: &str) -> Vec<String> {
+        let canonical = self.provider_account_authority_owner_user_id(owner);
+        let mut aliases = vec![canonical.clone()];
+        if canonical == crate::session::DEFAULT_LOCAL_USER_ID {
+            if let Some(profile) = self.owned.config_projection.snapshot().cloud_relay {
+                if !profile.user_id.is_empty() && profile.user_id != canonical {
+                    aliases.push(profile.user_id);
+                }
+            }
+        }
+        aliases
+    }
     pub(super) fn user_domain_window_projection(&self, owner: &str) -> serde_json::Value {
+        let owner = self.provider_account_authority_owner_user_id(owner);
         let kernel = self.owned.config_projection.snapshot().daemon_id;
         let focused = self
             .owned
             .kernel_browser_host
-            .focused_agent(owner)
+            .focused_agent(&owner)
             .and_then(|id| self.owned.agent_store.get_agent(&id).ok());
         let focused_kernel = focused.as_ref().map(|agent| {
             agent
