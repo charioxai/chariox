@@ -8,7 +8,7 @@ const script = await readFile(new URL("./live-docker-slice-browser-state-drill.m
 function loadRemoveContainerAndHomeVolume(docker) {
   const match = script.match(/^async function removeContainerAndHomeVolume\(\) \{[\s\S]*?^\}/m)
   assert.ok(match, "browser-state drill must define its container and home-volume removal operation")
-  const labels = { "io.chariox.slice.id": "slice", "io.chariox.slice.owner-kernel-id": "kernel", "io.chariox.slice.owner-machine-id": "machine" }
+  const labels = { "io.chariox.slice.id": "slice", "io.chariox.slice.owner-kernel-id": "kernel", "io.chariox.slice.owner-machine-id": "machine", "io.chariox.slice.runtime-name": "chariox-slice-drill-test" }
   const container = { Id: "a".repeat(64), Config: { Labels: labels } }
   const volume = { Name: "chariox-slice-drill-test-home", CreatedAt: "created", Driver: "local", Mountpoint: "/fixture", Labels: labels }
   return new Function("docker", "containerName", "homeVolume", "dockerOwnership", "inspectDrillDockerObject", "cleanupBrowserStateDockerResources", `return ${match[0]}`)(

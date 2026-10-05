@@ -66,6 +66,7 @@ export async function captureBrowserStateDockerOwnership({ runId, containerName,
     "io.chariox.slice.id": slice?.id,
     "io.chariox.slice.owner-kernel-id": slice?.owner_kernel_id,
     "io.chariox.slice.owner-machine-id": slice?.owner_machine_id,
+    "io.chariox.slice.runtime-name": containerName,
   }
   if (!Object.values(labels).every(value => typeof value === "string" && value.trim())) throw new Error("missing Docker drill ownership labels")
   const container = await inspect("container", containerName)
