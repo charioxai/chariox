@@ -6,6 +6,65 @@ Drills C/E and the six-row placement matrix in
 run do not close MP-08, MP-10 or MP-11. The frozen runtime source is
 `9334141d420f8a32393f206102c5b8b4a1b0b609` (local 411 / relay 70).
 
+## MP-08/MP-10/MP-11 b216 results, 2026-10-04
+
+Evidence is retained outside Git under
+`/root/.codex/evidence/browser-resume-20260930/b216/`. The test artifact was
+compiled in the private `cargo-target-b216` directory, with `fresh=false`,
+SHA-256 `a62fc4ae1b25565a7ee418458ddb516a0ccc046549c6c74d954cc08d2a70b49f`.
+Harness head `e60568c1472393e8a05afb5123ba0d83d3ea17cd` has unchanged Rust/Cargo
+inputs relative to the frozen runtime. The artifact, harness and image are
+separate identities in the receipts.
+
+- MP-08/MP-10/MP-11 focused Node fixtures: 61/61 PASS, zero skips. These cover
+  evidence validation, placement configuration/owned cleanup, TUI notices,
+  stdio ordering/cancellation and exactly-once promotion after failure.
+- MP-08/MP-10/MP-11 focused Rust artifact: 18 unique checks PASS. The first
+  permission check aborted on Linux's default test stack; its recorded
+  32 MiB-stack retry passed. The two-client credential-interaction test and
+  the Claude permission bridge are separate proofs, not one live three-client
+  permission drill.
+- MP-08/MP-10/MP-11 live timing: GREEN with 51 ms physical read overlap,
+  112 ms different-tab fill overlap, serialized same-tab fills, two exact
+  takeover cancellations, 12 terminal Actions and selected-Tab retention.
+  Container/listener/process cleanup is GREEN. The first attempt aborted on
+  the debug test-thread stack before controller assertions; retain that RED
+  result alongside the GREEN retry. The runner now records and applies a
+  bounded 32 MiB `RUST_MIN_STACK` for this large debug test.
+- MP-08/MP-10/MP-11 image provenance: all 52 `browser*.mjs` files in the
+  lane-created image match frozen G2 bytes. The substrate remains F image
+  `sha256:e76b80392f3368efaceed6e6636cc4d736fe57c25be0206ca4cf8f132a168f64`;
+  overlay image is
+  `sha256:b406939e827fc99c176ce76bcbadd0aa9ea1473141ab7a8ff4d2b0e09c1e04a8`.
+  This does not prove a complete G2 image, renderer sandbox, production launch
+  or signed release. No display-backend implementation was changed.
+- MP-08/MP-10/MP-11 cleanup: the exact lane-created image, disposable test
+  state and private Cargo target were removed after ownership/process checks.
+  No real provider profiles were used. Periodic receipts include 96 samples;
+  the earlier `free -h` compile observation reached approximately 33 GiB
+  available memory. All observations stayed above the 16 GiB floor. Final
+  available memory/disk are 50.369 / 227.228 GiB. Full frontend/provider/hosted
+  acceptance is still open.
+
+| MP-08/MP-10/MP-11 placement row | b216 result and limit |
+| --- | --- |
+| Home Environment / home agent | PASS: `room_home_local_slice` public Browser/Computer/Action/display fixture; simulated physical slice |
+| Home Environment / different home slice agent | PASS: `room_slice_cross_placement` home admission and distinct worker/membership records; OS isolation unproven |
+| Home Environment / remote worker agent | NOT RUN as an exact physical placement; configuration/evidence negatives pass, no substituted topology credited |
+| Remote Environment / home agent | PASS: `controller_worker_mcp::home_room_agent_uses_remote_environment_worker_browser_and_web_view`; real same-host relay, synthetic controller/display/provider |
+| Remote Environment / Environment-worker agent | PASS: `controller_worker_mcp::room_browser_on_environment_worker_serves_same_worker_agent_and_web_view`; home admission and wrong-Room/forged-lease denial |
+| Remote Environment / different worker agent | PASS: `controller_worker_mcp::room_browser_on_environment_worker_serves_remote_agent_and_web_view`; home authority and wrong-Room/worker denial, no physical remote host |
+
+MP-08/MP-10/MP-11 client ledger: the TUI notice fixtures and public Action/Tab
+projections pass, as do authenticated takeover/release, relay Computer
+cancellation, wrong-worker/stale-binding denial and first-reply-wins shared
+interaction fixtures. Live rendered Web/local/remote TUI, one shared permission
+interaction across all three, reconnect and official3-provider realism are
+NOT RUN. No product-linked official3 profiles or client frontend were supplied
+to this lane; the bootstrap agent profile was not used. Managed repetition
+awaits an owner-issued VM path. Host-browser focus-scoped access awaits the
+multidomain contract; no membership-derived user-domain grant was added.
+
 ## MP-08/MP-10/MP-11 local evidence boundaries
 
 | Seam | Local proof | Remaining acceptance |
