@@ -56,8 +56,14 @@ pub(crate) fn resident_set_bytes_for_pid(_pid: u32) -> Option<u64> {
 }
 
 #[cfg(unix)]
+fn signal_pid(pid: u32) -> Option<i32> {
+    i32::try_from(pid).ok().filter(|pid| *pid > 1)
+}
+
+#[cfg(unix)]
 pub fn process_running(pid: u32) -> bool {
-    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    let Some(pid) = signal_pid(pid) else { return false; };
+    let result = unsafe { libc::kill(pid, 0) };
     result == 0
 }
 
@@ -68,18 +74,22 @@ pub fn process_running(pid: u32) -> bool {
 
 #[cfg(unix)]
 pub(crate) fn terminate_process_tree(pid: u32) -> bool {
+    // Reject special PIDs before ancestry traversal; pid 0 would collect the
+    // host's unrelated process trees, and an overflowing cast could signal a group.
+    if signal_pid(pid).is_none() { return false; }
     let mut pids = descendant_process_ids(pid);
     pids.push(pid);
     pids.dedup();
 
-    for child_pid in pids.iter().rev() {
-        let _ = unsafe { libc::kill(*child_pid as libc::pid_t, libc::SIGTERM) };
+    for child_pid in pids.iter().rev().filter_map(|pid| signal_pid(*pid)) {
+        let _ = unsafe { libc::kill(child_pid, libc::SIGTERM) };
     }
     wait_for_processes_to_exit(&pids, std::time::Duration::from_millis(1_000));
     let mut killed = false;
     for child_pid in pids.iter().rev() {
         if process_running(*child_pid) {
-            let result = unsafe { libc::kill(*child_pid as libc::pid_t, libc::SIGKILL) };
+            let Some(child_pid) = signal_pid(*child_pid) else { continue; };
+            let result = unsafe { libc::kill(child_pid, libc::SIGKILL) };
             killed |= result == 0;
         } else {
             killed = true;
@@ -124,7 +134,8 @@ fn descendant_process_ids(root_pid: u32) -> Vec<u32> {
     let mut frontier = vec![root_pid];
     while let Some(parent_pid) = frontier.pop() {
         for (pid, ppid) in &rows {
-            if *ppid == parent_pid && !descendants.contains(pid) {
+            if *ppid == parent_pid && *pid != root_pid && signal_pid(*pid).is_some()
+                && !descendants.contains(pid) {
                 descendants.push(*pid);
                 frontier.push(*pid);
             }
@@ -166,6 +177,18 @@ fn rusage_maxrss_to_bytes(max_rss: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{resident_set_bytes_for_pid, KernelProcessHealthSnapshot};
+
+    #[cfg(unix)]
+    #[test]
+    fn process_signal_targets_reject_special_and_overflow_pids() {
+        for pid in [0, 1, i32::MAX as u32 + 1, u32::MAX] {
+            assert_eq!(super::signal_pid(pid), None, "unsafe signal target {pid}");
+            assert!(!super::process_running(pid));
+            assert!(!super::terminate_process_tree(pid));
+        }
+        assert_eq!(super::signal_pid(2), Some(2));
+        assert_eq!(super::signal_pid(i32::MAX as u32), Some(i32::MAX));
+    }
 
     #[test]
     fn kernel_process_health_reports_current_pid() {

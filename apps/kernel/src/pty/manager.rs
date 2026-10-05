@@ -1523,7 +1523,9 @@ mod tests {
         impl Drop for DescendantGuard {
             fn drop(&mut self) {
                 if let Some(pid) = self.0 {
-                    let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+                    if let Some(pid) = i32::try_from(pid).ok().filter(|pid| *pid > 1) {
+                        let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+                    }
                 }
             }
         }
@@ -1598,8 +1600,10 @@ mod tests {
 
         // MP-08/MP-10: an abrupt native harness exit must not leave its children alive.
         let leader = manager.process_id(provider_run_id).unwrap().unwrap();
+        let leader = i32::try_from(leader).ok().filter(|pid| *pid > 1)
+            .expect("fixture PTY leader must be a positive process PID");
         assert_eq!(
-            unsafe { libc::kill(leader as libc::pid_t, libc::SIGKILL) },
+            unsafe { libc::kill(leader, libc::SIGKILL) },
             0
         );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1651,9 +1655,9 @@ mod tests {
         impl Drop for Probe {
             fn drop(&mut self) {
                 if matches!(self.0.try_wait(), Ok(None)) {
-                    unsafe {
-                        libc::kill(-(self.0.id() as i32), libc::SIGKILL);
-                    }
+                    // The fixture's child and OS descendants belong to this
+                    // run; positive-PID traversal avoids process-group signals.
+                    crate::runtime::process_health::terminate_process_tree(self.0.id());
                     let _ = self.0.wait();
                 }
             }
