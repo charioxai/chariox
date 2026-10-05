@@ -83,3 +83,10 @@ This fixture does not supply a Docker PID namespace or verify slice provisioning
 It provides genuine DOM selection stimuli, including page-world forgery, to the
 normal kernel host and Room controller paths. Receipt output contains fixture
 checks only; remove all fixture browser profiles and product identities afterward.
+
+MD-N5 / MP-08/MP-10/MP-11 local-connection regression:
+`runtime_transport::tests::kernel_browser_terminals::mdnotes_two_local_connections_keep_observation_and_takeover_private`
+uses two actual loopback WebSockets, the production Rust authority and JavaScript
+host adapter, and a synthetic CDP factory in an isolated child. It checks private
+document observations and takeover actors without Chromium or provider execution.
+The fixture owns and removes its state; it does not establish native or hosted acceptance.

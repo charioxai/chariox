@@ -578,6 +578,20 @@ impl CommandResultCache {
     }
 
     #[cfg(test)]
+    pub(super) async fn completed_browser_caller(
+        &self,
+        command_id: &str,
+    ) -> Option<crate::runtime::command::KernelCaller> {
+        self.completed_results_snapshot()
+            .await
+            .into_iter()
+            .find(|entry| entry.command_id == command_id)?
+            .result
+            .fingerprint
+            .browser_caller
+    }
+
+    #[cfg(test)]
     pub(super) async fn insert_completed_for_test(
         &self,
         command_id: String,

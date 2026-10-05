@@ -106,10 +106,11 @@ test('MD-N2 / MP-10: withhold complete and partial protected selections before q
 });
 
 test('MD-N2 / MP-10: protect spans across prefix/suffix 64-code-point cutoffs', async () => {
-  for (const secretText of [secret, `synthetic-${'x'.repeat(128)}-vault-secret`]) {
-    const text = `${secretText}${'🙂'.repeat(60)}selected${'🙂'.repeat(60)}${secretText}`;
-    const at = text.indexOf('selected');
-    assert.equal((await fixture(text, at, at + 8).capture([secretText])).result.selection, null);
+  for (const secretText of [secret, `synthetic-${'x'.repeat(128)}-vault-secret`, `synthetic-${'x'.repeat(1024)}-vault-secret`]) {
+    for (const text of [`${secretText}${'🙂'.repeat(60)}selected`, `selected${'🙂'.repeat(60)}${secretText}`]) {
+      const at = text.indexOf('selected');
+      assert.equal((await fixture(text, at, at + 8).capture([secretText])).result.selection, null);
+    }
   }
 });
 

@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(unix)]
+mod kernel_browser_terminals;
+
 use std::path::{Path, PathBuf};
 
 use crate::local::{
