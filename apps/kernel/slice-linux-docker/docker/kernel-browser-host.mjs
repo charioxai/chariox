@@ -372,9 +372,10 @@ export class KernelBrowserHost {
       const observed = command.document_id ?? (command.focused_agent ? null : this.observedDocuments.get(scope)?.get(tab.tab_id));
       if (!observed || observed !== tab.document_id) throw new Error("MD-3: stale input document; observe the tab again");
       const at = timestamp();
-      try { await inputHostTab(this.browser, tab, command.input, { signal }); this.timing('cdp_input', at); }
+      let dispatched = false;
+      try { await inputHostTab(this.browser, tab, command.input, { signal, onDispatch: () => { dispatched = true; } }); this.timing('cdp_input', at); }
       catch (error) {
-        if (["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) {
+        if (dispatched || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) {
           // Clear any dispatched key/button state before another actor can use
           // the browser. Recovery rotates generation; cancelled input never replays.
           await this.stop();

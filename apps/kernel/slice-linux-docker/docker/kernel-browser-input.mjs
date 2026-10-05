@@ -1,7 +1,7 @@
 // MD-3: document-bound physical input, sharing Room cancellation and document checks.
 import { assertCurrentDocument, assertNotCancelled } from "./browser-controller-actions.mjs";
 const viewport = { css_width: 1280, css_height: 800 };
-export async function inputHostTab(browser, tab, input, { signal } = {}) {
+export async function inputHostTab(browser, tab, input, { signal, onDispatch } = {}) {
     assertNotCancelled(signal);
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
     const check = async () => {
@@ -11,6 +11,7 @@ export async function inputHostTab(browser, tab, input, { signal } = {}) {
     };
     const sendInput = async (method, params) => {
       await check();
+      onDispatch?.();
       const result = await connection.send(method, params, sessionId);
       assertNotCancelled(signal);
       return result;
