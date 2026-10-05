@@ -5,6 +5,13 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
+// MP-08/MP-10/MP-11: validate even signal-zero probes before entering the OS.
+export function fixtureBrowserPid(record) {
+  if (!Number.isSafeInteger(record?.browser?.pid) || record.browser.pid <= 1)
+    throw new Error("owned fixture browser PID must be an integer greater than one");
+  return record.browser.pid;
+}
+
 export async function fixtureUploadBrowser(directory, root) {
   const { BrowserUploadStaging } = await import(pathToFileURL(join(directory, "browser-controller-upload-staging.mjs")));
   process.env.CHARIOX_BROWSER_LIFECYCLE_ROOT = join(root, "upload-browser-lifetimes");
@@ -19,7 +26,7 @@ export async function fixtureUploadBrowser(directory, root) {
     let record;
     if (existsSync(receipt)) {
       record = JSON.parse(readFileSync(receipt, "utf8"));
-      process.kill(record.browser.pid, 0);
+      process.kill(fixtureBrowserPid(record), 0);
     } else {
       const code = `import socket,time\ns=socket.socket();s.bind(("127.0.0.1",0));s.listen()\nopen(${JSON.stringify(portFile)},"w").write(str(s.getsockname()[1]))\ntime.sleep(180)`;
       record = JSON.parse(execFileSync("python3", [join(directory, "browser-lifecycle.py"), "start", profile,

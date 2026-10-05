@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod environment;
+mod process_groups;
 mod runtime_mcp;
 pub(crate) use environment::{environment_test_isolated, isolate_environment_test};
 pub(crate) use runtime_mcp::TestRuntimeMcp;
