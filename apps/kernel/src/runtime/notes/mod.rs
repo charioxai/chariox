@@ -90,7 +90,7 @@ impl NoteStore {
             };
             for record in existing {
                 let previous: NoteSelection = serde_json::from_str(&record).map_err(failure)?;
-                if previous.anchor.window != selection.anchor.window {
+                if !validation::same_window(&previous.anchor.window, &selection.anchor.window) {
                     continue;
                 }
                 if previous.anchor == selection.anchor {
@@ -193,7 +193,7 @@ impl NoteStore {
             for row in rows {
                 let note: NoteRecord =
                     serde_json::from_str(&row.map_err(failure)?).map_err(failure)?;
-                if &note.anchor.window == window {
+                if validation::same_window(&note.anchor.window, window) {
                     notes.push(NoteSummary {
                         note_id: note.note_id,
                         window: note.anchor.window,

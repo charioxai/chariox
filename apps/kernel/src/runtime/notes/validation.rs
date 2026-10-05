@@ -58,3 +58,14 @@ pub(super) fn validate_comment(comment: &str) -> Result<(), String> {
         .then_some(())
         .ok_or("MD-N1: comment must contain 1–16384 bytes".into())
 }
+
+// MD-N1: generations fence new selections; durable tab identity survives restarts.
+pub(crate) fn same_window(a: &NoteWindow, b: &NoteWindow) -> bool {
+    match (a, b) {
+        (
+            NoteWindow::KernelBrowser { tab_id: a, .. },
+            NoteWindow::KernelBrowser { tab_id: b, .. },
+        ) => a == b,
+        _ => a == b,
+    }
+}

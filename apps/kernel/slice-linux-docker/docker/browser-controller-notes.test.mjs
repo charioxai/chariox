@@ -44,3 +44,24 @@ test('MD-N2 / MP-10: serialized quotes cannot inject evaluator code',async()=>{
   assert.equal(calls.filter(c=>c.method==='Runtime.evaluate').at(-1).params.expression,`globalThis.__charioxNotes.reanchor(${JSON.stringify(quote)})`);
   await assert.rejects(()=>observeBrowserNote(browser,{target_id:'t',document_id:'d',quote:{exact:'x'.repeat(16385),prefix:'',suffix:''}}),/invalid quote/);
 });
+
+test('MD-N2 / MP-11: frame geometry refuses a missing isolated context without main-world fallback',async()=>{
+  const evaluations=[];let worldCount=0;
+  const tree={frame:{id:'top',loaderId:'d',url:'https://fixture.test/'},childFrames:[{frame:{id:'child',parentId:'top',loaderId:'child-d',url:'https://fixture.test/frame'}}]};
+  const connection={async send(method,params){
+    if (method==='Target.getTargets') return {targetInfos:[]};
+    if (method==='Page.getFrameTree') return {frameTree:tree};
+    if (method==='Page.createIsolatedWorld') return {executionContextId:++worldCount===1?43:undefined};
+    if (method==='DOM.getFrameOwner') return {backendNodeId:1};
+    if (method==='DOM.getBoxModel') return {model:{content:[0,0,100,0,100,100,0,100]}};
+    if (method==='Runtime.evaluate') {
+      evaluations.push(params);
+      if (params.expression===NOTE_OBSERVER_EXPRESSION) return {result:{value:true}};
+      return {result:{value:params.contextId===42?null:{quote:{exact:'child',prefix:'',suffix:''},box_css:{x:1,y:2,width:30,height:10},hint:'range'}}};
+    }
+  }};
+  const browser={ensureConnection:async()=>connection,ensureTargetSession:async()=>'s',ensureFocusWorld:async()=>({contextId:42})};
+  await assert.rejects(()=>observeBrowserNote(browser,{target_id:'t',document_id:'d'}),/isolated frame geometry unavailable/);
+  assert.ok(evaluations.every(e=>Number.isSafeInteger(e.contextId)&&e.contextId>0));
+  assert.ok(!evaluations.some(e=>e.expression==='({width:innerWidth,height:innerHeight})'));
+});
