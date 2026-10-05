@@ -100,27 +100,14 @@ pub(super) async fn browser_display_delivery_id(
     Some(task.relay_subscription_id.clone())
 }
 
-pub(super) async fn refresh_idle_display_response(
+pub(super) async fn refresh_admitted_display_poll(
     tasks: &RelaySubscriptionTasks,
-    response: &mut super::daemon_requests::RelayRequestOutcome,
+    display_id: &str,
     public_key: &str,
-) {
-    if response.display_event.is_some() {
-        return;
-    }
-    if let Some(id) = response.display_activity.as_deref() {
-        if browser_display_delivery_id(tasks, id, public_key)
-            .await
-            .is_none()
-        {
-            response.encrypted_response = None;
-            response.error = Some(super::request_errors::relay_error(
-                "display_subscription_required",
-                "MD-DISPLAY: register a fresh display subscription with the same sender identity",
-                false,
-            ));
-        }
-    }
+) -> bool {
+    browser_display_delivery_id(tasks, display_id, public_key)
+        .await
+        .is_some()
 }
 
 #[cfg(test)]
@@ -140,14 +127,7 @@ mod tests {
         tokio::task::yield_now().await;
         for _ in 0..4 {
             tokio::time::advance(Duration::from_secs(20)).await;
-            let mut response = super::super::daemon_requests::RelayRequestOutcome {
-                display_activity: Some("d".into()),
-                display_event: None,
-                encrypted_response: None,
-                error: None,
-            };
-            refresh_idle_display_response(&tasks, &mut response, "key").await;
-            assert!(response.error.is_none());
+            assert!(refresh_admitted_display_poll(&tasks, "d", "key").await);
             tokio::task::yield_now().await;
         }
         assert_eq!(
