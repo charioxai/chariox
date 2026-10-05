@@ -11,7 +11,7 @@ import { portIsAvailable, resolveBuiltBinary } from './lib/drill-runtime-helpers
 import {
   assertHetznerCharioxBinaries,
   assertHetznerTcpPortAvailable,
-  remoteEnvCommand,
+  spawnRemoteEnv,
   runHetznerCommand,
   shellQuote,
   sshArgs,
@@ -492,13 +492,13 @@ async function main() {
       }
       await assertHetznerRelayPortAvailable(options, ports.relayPort)
       await assertHetznerWorkerPortsAvailable(options, ports)
-      relayChild = spawn('ssh', sshArgs(options, remoteEnvCommand({
+      relayChild = spawnRemoteEnv(options, {
         CHARIOX_REMOTE_REPO: options.hetznerRepo,
         CHARIOX_RELAY_HOST: '127.0.0.1',
         CHARIOX_RELAY_PORT: String(ports.relayPort),
         CHARIOX_RELAY_TOKEN: relayToken,
         CHARIOX_WORKSPACE_LIVE_SYNC_DRILL_RUN_ID: runId,
-      }, './apps/relay/target/debug/chariox-relay')), { stdio: ['ignore', 'ignore', 'inherit'] })
+      }, './apps/relay/target/debug/chariox-relay', { stdio: ['ignore', 'ignore', 'inherit'] })
       relayTunnel = spawn('ssh', [
         '-i',
         options.hetznerKey,
@@ -541,7 +541,7 @@ async function main() {
 
     if (options.hetznerWorker) {
       const remoteRoot = `/tmp/chariox-remote-workspace-live-sync-permission-${runId}`
-      workerChild = spawn('ssh', sshArgs(options, remoteEnvCommand({
+      workerChild = spawnRemoteEnv(options, {
         CHARIOX_REMOTE_REPO: options.hetznerRepo,
         PATH: '/root/.bun/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
         HOME: '/root',
@@ -565,7 +565,7 @@ async function main() {
         CHARIOX_ACCEPT_REMOTE_LEASES: '1',
         CHARIOX_DAEMON_SOCKET: path.posix.join(remoteRoot, 'worker.sock'),
         CHARIOX_SESSION_HISTORY_DIR: path.posix.join(remoteRoot, 'worker-history'),
-      }, `mkdir -p ${shellQuote(remoteRoot)} && ./apps/kernel/target/debug/chariox-kernel`)), {
+      }, `mkdir -p ${shellQuote(remoteRoot)} && ./apps/kernel/target/debug/chariox-kernel`, {
         stdio: ['ignore', 'ignore', 'inherit'],
       })
     } else {

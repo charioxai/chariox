@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process"
+import { execFile, spawn } from "node:child_process"
 import { access, chmod, copyFile, mkdir, readFile, rm } from "node:fs/promises"
 import path from "node:path"
 import { promisify } from "node:util"
@@ -20,10 +20,43 @@ export function sshArgs(options, remoteCommand) {
 }
 
 export function remoteEnvCommand(env, command) {
+  if (Object.keys(env).some(name => /token|secret|password|credential|auth/i.test(name))) {
+    throw new Error("credential environment requires private stdin transport")
+  }
   const assignments = Object.entries(env)
     .map(([key, value]) => `${key}=${shellQuote(String(value))}`)
     .join(" ")
   return `cd ${shellQuote(env.CHARIOX_REMOTE_REPO)} && env ${assignments} bash -lc ${shellQuote(command)}`
+}
+
+// Only this fixed program appears in SSH argv; the environment and command use stdin.
+const privateRemoteLauncher = `import json,os,sys
+try:
+ data=json.load(sys.stdin)
+ env={str(k):str(v) for k,v in data["environment"].items()}
+ if any(not k or "=" in k or "\\0" in k+v for k,v in env.items()): raise ValueError()
+ env.setdefault("PATH","/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+ os.chdir(env["CHARIOX_REMOTE_REPO"])
+ os.execve("/bin/bash",["bash","-c",data["command"]],env)
+except Exception:
+ sys.stderr.write("private remote launch failed\\n")
+ sys.exit(1)`
+
+export function privateClientEnvironment(environment) {
+  return Object.fromEntries(Object.entries(environment).filter(([name]) =>
+    ["PATH", "HOME", "USER", "SHELL", "LANG", "TERM", "TMPDIR", "TEMP", "TMP", "RUST_MIN_STACK"].includes(name)
+      || name.startsWith("XDG_") || name.startsWith("CHARIOX_") || name.startsWith("LC_")))
+}
+
+export function spawnRemoteEnv(options, environment, command, spawnOptions = {}, spawnImpl = spawn) {
+  const child = spawnImpl("ssh", sshArgs(options, `python3 -c ${shellQuote(privateRemoteLauncher)}`), {
+    ...spawnOptions,
+    env: Object.fromEntries(["PATH", "HOME", "LANG", "SSH_AUTH_SOCK"].filter(name => process.env[name]).map(name => [name, process.env[name]])),
+    stdio: ["pipe", spawnOptions.stdio?.[1] ?? "ignore", "ignore"],
+  })
+  child.stdin.on("error", () => {})
+  child.stdin.end(JSON.stringify({ environment, command }))
+  return child
 }
 
 export async function assertHetznerCharioxBinaries(options) {
