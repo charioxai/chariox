@@ -18,12 +18,32 @@ test("MP-03/MP-10: operator operations use stdin metadata and retain fail-closed
   assert.deepEqual(JSON.parse(calls[0][2].stdin), state)
   response = { corrupted: true }
   await fixture.corrupt(state)
-  response = { archivePresent: false, quarantineCount: 1 }
-  await fixture.verifyQuarantine(state)
   response = { archivePresent: true, quarantineCount: 0 }
-  await assert.rejects(fixture.verifyQuarantine(state))
+  await fixture.verifyRejectedArchive(state)
+  assert.match("backup `backup-1` archive integrity check failed: managed saved home archive metadata is invalid",
+    fixture.corruptionRejection)
+  assert.match("backup `backup-1` managed archive integrity check failed; broker-owned archive was left unchanged",
+    fixture.corruptionRejection)
+  response = { archivePresent: false, quarantineCount: 1 }
+  await assert.rejects(fixture.verifyRejectedArchive(state))
   response = { private: false }
   await assert.rejects(fixture.verify(state))
+})
+
+test("MP-08/MP-10: unprotected archive rejection retains quarantine expectations", async t => {
+  const {mkdtemp, writeFile, rm, rename} = await import("node:fs/promises")
+  const path = await import("node:path")
+  const root = await mkdtemp(path.join(process.env.CHARIOX_HOME ?? process.env.HOME, ".chariox-quarantine-test-"))
+  t.after(() => rm(root, {recursive: true, force: true}))
+  const state = {home_archive_path: path.join(root, "home.tar.zst")}
+  await writeFile(state.home_archive_path, "synthetic archive")
+  const fixture = createBrowserStateArchiveFixture({localDev: false})
+  await assert.rejects(fixture.verifyRejectedArchive(state))
+  await rename(state.home_archive_path, `${state.home_archive_path}.corrupt-fixture`)
+  await fixture.verifyRejectedArchive(state)
+  assert.match("archive integrity check failed; corrupt archive quarantined", fixture.corruptionRejection)
+  assert.doesNotMatch("archive integrity check failed: managed saved home archive metadata is invalid",
+    fixture.corruptionRejection)
 })
 
 test("MP-03/MP-10: operator refusal cannot fall back to unprivileged archive access", async () => {
