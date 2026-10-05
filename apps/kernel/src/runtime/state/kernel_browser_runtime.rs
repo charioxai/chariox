@@ -303,7 +303,7 @@ impl KernelRuntimeState {
         self.kernel_browser_operation(&user, None, request.method(), request.params())
             .await
     }
-    fn kernel_browser_agent(
+    pub(super) fn kernel_browser_agent(
         &self,
         run: &crate::provider::RuntimeProviderRun,
     ) -> Option<crate::agent::AgentInstance> {
@@ -349,6 +349,7 @@ impl KernelRuntimeState {
                 description: "MD-3: control the user's kernel browser outside sessions/slices. Read state/snapshot/screenshot to obtain tab IDs, generation and document_id; input requires the observed document_id beside command and accepts click/text/key/scroll. Vault input is separate.".into(),
                 input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","screenshot","subscribe","poll","unsubscribe"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","enum":["Tab","Enter","Escape","Backspace","Delete","ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Home","End"]},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
         }
+        tools.extend(self.notes_tool_specs(run, &agent));
         tools
     }
     pub(super) async fn try_kernel_browser_tool(
@@ -357,6 +358,7 @@ impl KernelRuntimeState {
         name: &str,
         arguments: serde_json::Value,
     ) -> Option<Result<RuntimeToolResult, DaemonError>> {
+        if Self::is_note_tool(name) { return Some(Box::pin(self.notes_tool(token, name, arguments)).await); }
         if ![LOADER, BROWSER, PASTE].contains(&name) {
             return None;
         }
