@@ -74,6 +74,28 @@ per-anchor pending review request index live outside the repositories at
 provider/runtime/container creation, protocol allocation, push, deployment or
 protected-machine contact was performed.
 
+## MP-04 / MP-07 / MP-08 / MP-10 / MP-11 b212 recovery qualification (2026-10-04)
+
+The G2-based b212 lane qualifies recovery against independently supplied release
+and builder pins. `deploy/managed-kernel/managed-kernel-recovery-release.sh`
+re-verifies the selected signed immutable release before rollback execution or
+terminal journal settlement; package/journal pins do not become trust authority.
+This is the signed-deployment exception, with no provider/client/protocol fork.
+Three fail-first cases reproduced acceptance of a corrupted executable during
+interrupted activation, committed replay and terminal replay. The recovery suite
+also exercises incoming-image removal, publication interruption, foreign-command
+rejection and a synthetic signed B-to-new-to-B-to-new cycle with state inode and
+history/profile-marker continuity. Shared fixtures live in the named
+`scripts/lib/managed-kernel-upgrade-fixture.mjs` responsibility module.
+
+These are Linux-root fixtures with synthetic binaries, systemd, health and
+provider state. They do not prove execution of historical B tooling or live VM
+acceptance. Exact independent review, signed successor publication and authorized
+VM/Cloud/provider/cleanup evidence remain open. The detailed scope and owner-side
+prerequisites are in
+[`MANAGED_PATH1_UPGRADE_RECOVERY_VALIDATION.md`](MANAGED_PATH1_UPGRADE_RECOVERY_VALIDATION.md).
+No MP item is closed by this source qualification.
+
 ## MP-07 / MP-02 / MP-10 / MP-11 managedfix recovery scope (2026-10-03)
 
 Based on OSS main `f1c402b82aa0053bb69f0f8fffe04b06e02a5c73` (signed F
