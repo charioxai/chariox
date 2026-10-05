@@ -79,11 +79,18 @@ pub(crate) fn isolate_environment_test() -> bool {
         .expect("isolated environment test should start");
     let status = child.wait_timeout(Duration::from_secs(180)).unwrap();
     if status.is_none() {
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        // MP-08/MP-10/MP-11: reject unsafe IDs and verify every group member.
+        if let Ok(pid) = i32::try_from(child.id()) {
+            if pid > 1 {
+                #[cfg(unix)]
+                if super::process_groups::current_group_is_owned(pid) {
+                    unsafe {
+                        libc::kill(-pid, libc::SIGKILL);
+                    }
+                }
+                let _ = child.kill();
+            }
         }
-        let _ = child.kill();
         let _ = child.wait();
     }
     let stdout = std::fs::read_to_string(stdout).unwrap();
