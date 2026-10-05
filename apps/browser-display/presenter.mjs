@@ -27,7 +27,9 @@ export class BrowserDisplayPresenter {
     const at = performance.timeOrigin + performance.now();
     const patch = frame.kind === 'tiles';
     if (patch && (this.canvas.width !== frame.width || this.canvas.height !== frame.height)) { this.busy = false; throw new Error('MD-DISPLAY: repair canvas changed'); }
-    const back = patch ? null : new OffscreenCanvas(frame.width, frame.height), context = back?.getContext('2d');
+    if(!patch && (!this.back || this.back.width !== frame.width || this.back.height !== frame.height))
+      this.back=new OffscreenCanvas(frame.width,frame.height);
+    const back=patch?null:this.back,context=back?.getContext('2d');
     const bitmaps = [];
     try {
       if (frame.kind === 'tiles') {
@@ -73,7 +75,8 @@ export class BrowserDisplayPresenter {
         const front = this.canvas.getContext('2d');
         for (let i = 0; i < bitmaps.length; i++) front.drawImage(bitmaps[i], frame.tiles[i].x, frame.tiles[i].y);
       } else {
-        this.canvas.width = frame.width; this.canvas.height = frame.height;
+        if(this.canvas.width !== frame.width)this.canvas.width=frame.width;
+        if(this.canvas.height !== frame.height)this.canvas.height=frame.height;
         this.canvas.getContext('2d').drawImage(back, 0, 0);
       }
       this.sequence = frame.sequence; this.documentId = frame.document_id;
@@ -85,7 +88,7 @@ export class BrowserDisplayPresenter {
     if (this.closed || !this.documentId) throw new Error('MD-DISPLAY: no displayed document');
     return { op: 'display_input', tab_id: this.binding.tab_id, generation: this.binding.generation, document_id: this.documentId, input };
   }
-  close() { this.decoder?.close(); this.decoder=null; this.closed = true; this.documentId = null; this.canvas.width = 1; this.canvas.height = 1; }
+  close() { if(this.back){this.back.width=1;this.back.height=1;this.back=null;} this.decoder?.close(); this.decoder=null; this.closed = true; this.documentId = null; this.canvas.width = 1; this.canvas.height = 1; }
 }
 // One outstanding credit; events and responses can arrive in either order.
 export async function attachBrowserDisplay(canvas, transport, tab, options = {}) {

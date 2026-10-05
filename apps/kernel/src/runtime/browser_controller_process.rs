@@ -629,6 +629,15 @@ impl BrowserControllerProcessStdioBackend {
         )
     }
 
+    // MD-DISPLAY-04: host RPCs validate their own outcome. The host health RPC
+    // reports only this same supervisor PID, so don't repeat it per frame.
+    // Keep exact owned-child exit detection and cold/recovery health admission.
+    pub(crate) fn ensure_host_started(&mut self) -> Result<bool, String> {
+        if !self.host { return Err("host controller required".into()); }
+        self.take_exited_process()?;
+        if self.process.is_none() { self.start()?; return Ok(true); }
+        Ok(false)
+    }
     fn take_exited_process(&mut self) -> Result<Option<u32>, String> {
         let Some(process) = self.process.as_mut() else {
             return Ok(None);

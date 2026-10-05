@@ -1,6 +1,6 @@
 //! MD-2: kernel authority for Chromium running directly on the host.
 use super::browser_controller_process::{
-    BrowserCancellation, BrowserControllerProcessBackend, BrowserControllerProcessState,
+    BrowserCancellation, BrowserControllerProcessBackend,
     BrowserControllerProcessStdioBackend,
 };
 use super::kernel_browser_actors::KernelBrowserActors;
@@ -26,6 +26,7 @@ struct HostState {
     focus: BTreeMap<String, FocusedAgent>,
     actors: BTreeMap<String, Arc<Mutex<KernelBrowserActors>>>,
     loaded: BTreeSet<(String, String)>,
+    protection_hashes: BTreeMap<String, String>,
     display_gates: BTreeMap<String, Arc<tokio::sync::Semaphore>>,
 }
 struct FocusedAgent {
@@ -189,13 +190,6 @@ impl KernelBrowserHost {
         }
         Ok(state.browsers.get(user).unwrap().clone())
     }
-    fn ensure_ready(backend: &mut BrowserControllerProcessStdioBackend) -> Result<(), String> {
-        if !matches!(backend.health(), Ok(health) if health.state == BrowserControllerProcessState::Ready)
-        {
-            backend.start()?;
-        }
-        Ok(())
-    }
     #[cfg(test)]
     pub(crate) fn protected_request(
         &self,
@@ -274,9 +268,19 @@ impl KernelBrowserHost {
             self.check_admission(admission)?;
             return Ok(serde_json::json!({ "state": "stopped", "tabs": [] }));
         }
-        Self::ensure_ready(&mut backend)?;
+        let fresh = backend.ensure_host_started()?;
         self.check_admission(admission)?;
-        backend.host_request("host.protect", policy)?;
+        let hash = format!("{:x}",Sha256::digest(serde_json::to_vec(&policy).map_err(|_| "MD-5: invalid policy")?));
+        let applied = self.inner.lock().map_err(|_| "MD-5: protection lock poisoned")?
+            .protection_hashes.get(user).is_some_and(|previous| previous == &hash);
+        // The scoped Vault barrier and backend mutex are held. Policy changes,
+        // including insertion/retirement, and every new controller still apply
+        // before capture/input; unchanged policies need no redundant RPC.
+        if fresh || !applied {
+            backend.host_request("host.protect", policy)?;
+            self.inner.lock().map_err(|_| "MD-5: protection lock poisoned")?
+                .protection_hashes.insert(user.into(),hash);
+        }
         self.check_admission(admission)?;
         let model = self.actor_model(user)?;
         let mutation = method == "host.secret"
