@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let config = RelayConfig::load_from_env()?;
-    let scoped_verifier = scoped_verifier_from_env();
+    let scoped_verifier = scoped_verifier_from_env()?;
     if let Some(message) = open_access_startup_error(
         &config.host,
         config.shared_token.is_some(),
@@ -172,19 +172,32 @@ fn host_is_loopback(host: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn scoped_verifier_from_env() -> Option<RelayAuthVerifier> {
-    let issuer = std::env::var("CHARIOX_RELAY_SCOPED_ISSUER")
-        .ok()
+fn scoped_verifier_from_env() -> Result<Option<RelayAuthVerifier>, String> {
+    scoped_verifier_from_settings(
+        std::env::var("CHARIOX_RELAY_SCOPED_ISSUER").ok(),
+        std::env::var("CHARIOX_RELAY_SCOPED_HMAC_SECRET").ok(),
+    )
+}
+
+fn scoped_verifier_from_settings(
+    issuer: Option<String>,
+    secret: Option<String>,
+) -> Result<Option<RelayAuthVerifier>, String> {
+    if issuer.is_none() && secret.is_none() {
+        return Ok(None);
+    }
+    let issuer = issuer
         .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())?;
-    let secret = std::env::var("CHARIOX_RELAY_SCOPED_HMAC_SECRET")
-        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "scoped relay configuration requires a nonblank issuer".to_string())?;
+    let secret = secret
         .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())?;
-    Some(RelayAuthVerifier::scoped_hmac(
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "scoped relay configuration requires a nonblank HMAC secret".to_string())?;
+    Ok(Some(RelayAuthVerifier::scoped_hmac(
         BTreeMap::from([(issuer, secret)]),
         None,
-    ))
+    )))
 }
 
 #[cfg(test)]
@@ -219,5 +232,29 @@ mod tests {
         assert!(open_access_startup_error("127.0.0.1", false, false, false).is_none());
         assert!(open_access_startup_error("::1", false, false, false).is_none());
         assert!(open_access_startup_error("localhost", false, false, false).is_none());
+    }
+    #[test]
+    fn partial_or_blank_scoped_configuration_fails_closed() {
+        assert!(scoped_verifier_from_settings(None, None).unwrap().is_none());
+        assert!(scoped_verifier_from_settings(
+            Some("issuer".into()),
+            Some("synthetic-secret".into())
+        )
+        .unwrap()
+        .is_some());
+        for (issuer, secret) in [
+            (Some("issuer"), None),
+            (None, Some("synthetic-secret")),
+            (Some(""), None),
+            (None, Some(" ")),
+            (Some("issuer"), Some(" ")),
+            (Some(" "), Some("synthetic-secret")),
+        ] {
+            assert!(scoped_verifier_from_settings(
+                issuer.map(str::to_string),
+                secret.map(str::to_string)
+            )
+            .is_err());
+        }
     }
 }
