@@ -78,6 +78,7 @@ try {
   receipt.testBinaryDigestPinned = options["test-binary-sha256"] !== undefined;
   await docker(["run", "-d", "--name", container, "--label", "io.chariox.drill=controller-concurrency",
     "--label", "io.chariox.lane=ctlconc", "--cpus=1", "--memory=2g", "--memory-swap=2g", "--pids-limit=512",
+    "-e", "CHARIOX_SLICE_PRIVATE_ROOT=/tmp/chariox-ctlconc", "-e", "PYTHONDONTWRITEBYTECODE=1",
     "--security-opt", `seccomp=${path.join(root, "apps/kernel/slice-linux-docker/chromium-seccomp.json")}`,
     "--mount", `type=bind,source=${path.join(root, "apps/kernel/slice-linux-docker/docker")},target=/opt/chariox-slice,readonly`,
     "-p", "127.0.0.1::60222", "--entrypoint", "/usr/bin/sleep", options.image, "infinity"]);
