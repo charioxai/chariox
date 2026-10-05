@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { decodePng, encodePng } from './kernel-browser-pixels.mjs';
+import { timestamp } from './kernel-browser-timing.mjs';
 
 export function safeChildPid(child) {
   if (!Number.isSafeInteger(child?.pid) || child.pid <= 1) throw new Error('MD-DISPLAY: unsafe child PID');
@@ -82,34 +83,41 @@ export function dirtyTiles(previous, current) {
 }
 
 export class DisplayStream {
-  constructor(binding, { encoder = new PortableEncoder(), now = () => performance.now(), wait = delay } = {}) {
+  constructor(binding, { encoder = new PortableEncoder(), now = () => performance.now(), wait = delay, timing = () => {} } = {}) {
     Object.assign(this, binding); this.encoder = encoder; this.now = now; this.wait = wait;
     this.sequence = 0; this.previous = null; this.exact = false; this.nextSend = now();
     this.expires = Date.now() + 60_000;
+    this.timing = timing;
   }
   invalidate() { this.previous = null; this.exact = false; }
   async frame(source, documentId, afterSequence) {
+    let at = timestamp();
     const current = decodePng(source.data_base64, this.device_scale_factor);
+    this.timing('png_decode', at); at = timestamp();
     const bound = documentId === this.document_id && afterSequence === this.sequence;
     if (!bound) this.invalidate();
     const same = this.previous?.pixels.equals(current.pixels);
     if (same && this.exact) return null;
     const tiles = this.exact ? dirtyTiles(this.previous, current) : [];
+    this.timing('compare_tiles', at); at = timestamp();
     const full = { kind: 'png', data_base64: source.data_base64 };
     const patch = { kind: 'tiles', base_sequence: this.sequence, tiles };
     let payload;
     if (same || this.codec === 'png') payload = full;
     else if (tiles.length && JSON.stringify(patch).length < Math.min(48_000, JSON.stringify(full).length)) payload = patch;
     else payload = { kind: 'video', codec: 'vp09.00.10.08', key: true, data_base64: await this.encoder.encode(source.data_base64, this.bitrate) };
+    this.timing('select_encode', at); at = timestamp();
     const packet = { ...payload, subscription_id: this.subscription_id, tab_id: this.tab_id,
       generation: source.generation, document_id: documentId, sequence: this.sequence + 1,
       width: current.width, height: current.height, css_width: 1280, css_height: 800,
       device_scale_factor: this.device_scale_factor, colour: 'srgb' };
     const bytes = Math.ceil(Buffer.byteLength(JSON.stringify(packet)) * 4 / 3) + 1024; // reserve transport/encryption envelope
     if (bytes > 1024 * 1024) throw new Error('MD-DISPLAY: packet exceeds bounded egress');
+    this.timing('packet_serialize', at); at = timestamp();
     // No burst credit: account base64+metadata, including bootstrap and repairs.
-    const at = Math.max(this.now(), this.nextSend) + bytes * 8000 / this.bitrate;
-    await this.wait(Math.max(0, at - this.now())); this.nextSend = at;
+    const sendAt = Math.max(this.now(), this.nextSend) + bytes * 8000 / this.bitrate;
+    await this.wait(Math.max(0, sendAt - this.now())); this.nextSend = sendAt;
+    this.timing('pacing', at);
     this.document_id = documentId; this.previous = current; this.exact = payload.kind !== 'video'; this.sequence++;
     return packet;
   }

@@ -12,9 +12,10 @@ export async function supportedCodecs() {
   return codecs;
 }
 export class BrowserDisplayPresenter {
-  constructor(canvas, binding) {
+  constructor(canvas, binding, onTiming = () => {}) {
     this.canvas = canvas; this.binding = binding; this.sequence = 0; this.documentId = null;
     this.busy = false; this.closed = false;
+    this.onTiming = onTiming;
   }
   async present(frame) {
     if (this.closed) return false;
@@ -23,6 +24,7 @@ export class BrowserDisplayPresenter {
     if (!Number.isSafeInteger(frame.sequence) || ![1, 2].includes(frame.device_scale_factor) || frame.width !== 1280 * frame.device_scale_factor || frame.height !== 800 * frame.device_scale_factor || frame.css_width !== 1280 || frame.css_height !== 800 || typeof frame.document_id !== 'string' || !frame.document_id || frame.document_id.length > 256) throw new Error('MD-DISPLAY: invalid geometry/binding');
     if (frame.kind === 'tiles' && (frame.base_sequence !== this.sequence || frame.document_id !== this.documentId)) throw new Error('MD-DISPLAY: repair base lost; subscribe afresh');
     this.busy = true;
+    const at = performance.timeOrigin + performance.now();
     const back = new OffscreenCanvas(frame.width, frame.height), context = back.getContext('2d');
     const bitmaps = [];
     try {
@@ -52,9 +54,12 @@ export class BrowserDisplayPresenter {
         } finally { output?.close(); if (decoder.state !== 'closed') decoder.close(); }
       } else throw new Error('MD-DISPLAY: unsupported frame');
       if (this.closed) return false;
+      this.onTiming('client_decode', at);
+      const presented = performance.timeOrigin + performance.now();
       this.canvas.width = frame.width; this.canvas.height = frame.height;
       this.canvas.getContext('2d').drawImage(back, 0, 0);
       this.sequence = frame.sequence; this.documentId = frame.document_id;
+      this.onTiming('client_present', presented);
       return true;
     } finally { for (const bitmap of bitmaps) bitmap.close(); this.busy = false; }
   }
@@ -71,7 +76,8 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     return reply.KernelBrowser.result;
   };
   const binding = { ...await request({ op: 'display_subscribe', ...tab, codecs: await supportedCodecs(), bitrate: options.bitrate ?? 2_000_000, device_scale_factor: options.deviceScaleFactor ?? 2 }), ...tab };
-  const presenter = new BrowserDisplayPresenter(canvas, binding);
+  const onTiming = options.onTiming ?? (() => {});
+  const presenter = new BrowserDisplayPresenter(canvas, binding, onTiming);
   let pending = null, stopped = false, creditOutstanding = false;
   const off = transport.onEvent(event => {
     if (event.event !== 'kernel_browser_frame' || event.subscription_id !== binding.subscription_id) return;
@@ -94,11 +100,15 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     // Attach rejection immediately even when request fails first.
     event.catch(() => {});
     try {
+      const at = performance.timeOrigin + performance.now();
       const receipt = await request({ op: 'display_next', subscription_id: binding.subscription_id, generation: binding.generation, after_sequence: presenter.sequence });
+      onTiming('frame_credit_round_trip', at);
       // No changed pixels is represented by no event; result stays null.
       // Request receipts identify whether a frame was sent.
       if (!receipt.frame_sent) { pending?.resolve(null); return null; }
+      const waitAt = performance.timeOrigin + performance.now();
       const frame = await event;
+      onTiming('client_event_wait', waitAt);
       await presenter.present(frame); return frame;
     } finally { clearTimeout(timer); pending = null; creditOutstanding = false; }
   };
