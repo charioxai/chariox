@@ -3154,7 +3154,11 @@ exit 0
 fn mp11_relay_config_has_no_host_file_even_under_foreign_paths() {
     use std::os::unix::fs::{symlink, PermissionsExt};
     for layout in ["absent", "loose-file", "leaf-symlink", "ancestor-symlink"] {
-        let root = std::env::temp_dir().join(format!("mp11-relay-input-{layout}-{}-{}", std::process::id(), rand::random::<u64>()));
+        let root = std::env::temp_dir().join(format!(
+            "mp11-relay-input-{layout}-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
         std::fs::create_dir(&root).unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut options = test_options();
@@ -3173,20 +3177,33 @@ fn mp11_relay_config_has_no_host_file_even_under_foreign_paths() {
                 symlink(foreign.join("user-file"), &destination).unwrap();
             } else {
                 std::fs::write(&destination, b"user data").unwrap();
-                std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o644)).unwrap();
+                std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o644))
+                    .unwrap();
             }
         }
         let relay = LocalDockerSliceRelay {
-            relay_url: "wss://relay.example.test".into(), container_relay_url: None,
-            relay_token: "synthetic".into(), owner_public_key: None,
-            cloud_relay_config_json: Some("synthetic non-secret config".into()), worker_machine_id: None,
+            relay_url: "wss://relay.example.test".into(),
+            container_relay_url: None,
+            relay_token: "synthetic".into(),
+            owner_public_key: None,
+            cloud_relay_config_json: Some("synthetic non-secret config".into()),
+            worker_machine_id: None,
         };
         let mut command = Command::new("slice-provisioner");
-        configure_local_docker_slice_command(&mut command, &record, Some(relay), &options, true).unwrap();
-        assert!(!command.get_envs().any(|(key, _)| key == "CHARIOX_SLICE_CLOUD_RELAY_CONFIG_HOST_PATH"));
-        if layout == "absent" { assert!(!runtime.exists()); }
-        if layout == "ancestor-symlink" { assert_eq!(std::fs::read_dir(&foreign).unwrap().count(), 0); }
-        if layout == "loose-file" || layout == "leaf-symlink" { assert_eq!(std::fs::read(&destination).unwrap(), b"user data"); }
+        configure_local_docker_slice_command(&mut command, &record, Some(relay), &options, true)
+            .unwrap();
+        assert!(!command
+            .get_envs()
+            .any(|(key, _)| key == "CHARIOX_SLICE_CLOUD_RELAY_CONFIG_HOST_PATH"));
+        if layout == "absent" {
+            assert!(!runtime.exists());
+        }
+        if layout == "ancestor-symlink" {
+            assert_eq!(std::fs::read_dir(&foreign).unwrap().count(), 0);
+        }
+        if layout == "loose-file" || layout == "leaf-symlink" {
+            assert_eq!(std::fs::read(&destination).unwrap(), b"user data");
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 }
