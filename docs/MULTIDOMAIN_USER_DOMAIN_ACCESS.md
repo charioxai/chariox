@@ -6,12 +6,14 @@ The kernel owns it equally on ordinary and managed placements.
 
 Focus grants access. Changing focus keeps the previous agent's grant and gives
 the new agent its own grant. Browser and notes loading remain independent.
-Each grant retains only stable resources the agent used while focused. A
-retained agent can observe its claimed resources and scroll; opening a tab,
-starting/stopping the user browser, loading another capability or claiming a
-new tab/note requires focus. Generation, document, owner and provider-run
-checks still apply. Listing metadata does not claim every resource listed.
-Retained browser/notes inventories show only claimed resources.
+Each grant retains stable resources the agent touched. A retained agent has the
+same operations as a focused agent on its granted resources: text entry, keys,
+Tab, clicks, activations, navigation, closure and note edits. Loading another
+capability or claiming an unrelated existing tab/note still requires focus.
+The 16:35 owner decision permits explicit start/open while retained; an explicit
+open grants only the newly created tab. Generation, document, owner and
+provider-run checks still apply. Listing metadata does not claim resources;
+retained browser/notes inventories show only granted resources.
 
 The kernel reads its existing active turns, prompt ownership/backlog, scheduled
 agent prompts, interactions and pending MCP/provider continuations. A provider
@@ -36,46 +38,33 @@ contents, credential values or another owner's grants.
 Revocation cancels the admission epoch first, retires actor presence and
 refuses in-flight results/commits at the next authority check. The same epoch
 fences idle subscriptions; an internal controller cleanup closes their streams.
-It cannot undo physical input already delivered. Vault fills always require
-focus. MP-11 (PR #880 round 4): retained access allows only observation
-(state, snapshots, text, notes reads) and scrolling through the scroll/wheel
-input path. Every key event, including Tab/Shift+Tab, printable characters,
-editable-field Backspace/Delete, shortcuts and paired releases, requires live
-focus. Text insertion and every click/activation also require live focus,
-including Search controls and ordinary page areas. No page labels or script
-handlers can grant retained input authority. Refused input dispatches neither
-keydown nor its paired keyup and produces no page handler effects. Tab
-navigation is available only while focused. Other mutations, including tab
-navigation and closure and note edits, require focus. Focused input retains
-its document, cancellation and secret-field/Vault safety checks.
+It cannot undo physical input already delivered. Vault fills still require
+focus or the existing human approval path. Protected fields/regions,
+observation masking, sensitive-action approvals and App validation/passkeys
+apply equally to focused and retained agents. Browser input cannot impersonate
+a human App frontend or answer approvals.
 
-Retained observations never start/recover a controller or Chromium. A stopped
-or unavailable browser returns `not_focused_agent` with a request to focus the
-agent before restarting. This applies after human stop, controller loss and
-Chromium loss with a live controller; saved profiles do not confer startup
-authority. Focused/human observations may intentionally recover it. The kernel
-checks focus before controller startup and live authority after the handshake,
-without holding the grant mutex across I/O, then rechecks focus at dispatch;
-focused asynchronous requests carry a live focus cancellation guard through
-Chromium startup. Focus changes preserve grants, so cancelled operations may
-retry through retained authority.
+MP-11: the 16:35 owner decision supersedes review rounds 2–4. There is no
+retained-input classifier, listener inspection or keyboard allow-list based on
+focus. Every physical event checks its document and grant/run cancellation.
+A focus change preserves in-flight ordinary input; explicit revoke, idle lapse
+and human takeover still cancel it at the next authority check. Vault requests
+retain their additional live-focus authority. Note commits keep an uninterrupted
+grant epoch without requiring focus again.
 
-MP-11: the kernel rejects retained non-scroll input before controller dispatch;
-the controller enforces the same rule without DOM classification or listener
-inspection. Focused physical input carries live focus authority for the whole
-operation, including paired releases onto a sensitive target. Focus loss
-cancels that operation without revoking its resource grant; retained retries
-are limited to observation and scroll. Every physical event checks document
-and cancellation authority.
-Critical App effects continue through kernel-owned human validation/passkeys.
+Observation reads, including state, never start/recover a controller or
+Chromium, for any caller. A stopped/unavailable browser returns
+`browser_unavailable`; explicitly start/open it to recover. This applies after
+human stop, controller loss and Chromium loss with a live controller. Explicit
+start/open uses the same grant authority while focused or retained, with no
+grant mutex held across startup I/O. Profiles do not restore expired grants.
 
-MP-08 / MP-11: refusal reasons use the #882 vocabulary: `not_focused_agent`
-for operations that require focus/new resource claims, `sensitive_requires_focus`
-for every key/text/click input or Vault fills, and `not_granted` for absent, expired
-or revoked authority. The host controller preserves `sensitive_requires_focus`
-in its existing error-code field. Kernel String/MCP errors carry those reason
-markers in their existing error text; their outer transport envelopes stay the
-same. Protocol remains 432/78 with no serialized shape change in this correction.
+MP-08 / MP-11: #882 refusal mapping stays `not_focused_agent` for capability
+loading/unrelated new-resource claims, `sensitive_requires_focus` for Vault or
+other focus-required protected operations, and `not_granted` for absent,
+expired or revoked grants. Browser unavailability is a lifecycle error, not a
+focus refusal. String/MCP errors keep the existing transport envelopes.
+Protocol remains 432/78; this correction changes no public serialized shape.
 
 There is no cross-kernel control. Browser windows expose `kernel_id`,
 `kernel_name`, `focused_agent_kernel_id` and `reachable_by_focused_agent`; App
@@ -98,13 +87,11 @@ execution, official-provider subagent waits, clients, and fresh-machine parity.
 None alone closes an MP item.
 
 MP-08 / MP-10 / MP-11 PR #880 regressions: the opt-in
-`kernel-browser-input.browser-test.mjs` exercises real native form submission,
-paired focused navigation and activation/keyboard matrices through the
-production controller. Retained clicks, text and every key kind dispatch zero
-native input and zero element/document/window/React-root handler effects,
-including editable-field Delete and Tab. Focused controls/typing still work;
-retained wheel scroll, state and snapshot remain available. The opt-in Rust
-`runtime::kernel_browser_host::native_input_tests` additionally exercises the
-kernel's live focus and grant boundary, retained no-restart fences and idle
-stream preservation. These credential-free native checks do not establish
-official-provider, client, hosted, or fresh-machine acceptance.
+`kernel-browser-input.browser-test.mjs` compares retained and focused native
+keys, typing and activation through element/document/window/root handlers.
+It also exercises wheel scrolling, paired cancellation and state reads after
+human stop. Opt-in Rust `runtime::kernel_browser_host::native_input_tests`
+covers kernel grant boundaries, explicit recovery and immediate revoke/idle
+lapse. The two-agent held-turn drill covers task/wake retention, resource scope,
+notices and idle subscription revocation. These credential-free checks do not
+establish official-provider, client, hosted or fresh-machine acceptance.

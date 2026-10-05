@@ -17,13 +17,15 @@ session/agent end or explicit revocation. Authenticated owner terminals use
 `KernelBrowser` operations `list_grants`, `subscribe_grants` and `revoke_grants`;
 agent tools cannot invoke these owner controls. Snapshots carry the live cursor,
 holders and non-focused-use notice. Revocation cancels grant epochs and idle
-subscriptions. MP-11: retained non-focused access allows only observation
-(state, snapshots, text, notes reads) and scrolling through the scroll/wheel
-input path. Every key event, text insertion and click/activation requires live
-focus and refuses with `sensitive_requires_focus`; other mutations require focus
-(`not_focused_agent`). Retained observations never start/restart the browser or
-controller; stopped/unavailable reads return `not_focused_agent`. Focused input
-keeps live-focus, document, cancellation and Vault safety checks.
+subscriptions. MP-11: retained holders have the same input and mutations as
+focused agents on granted resources, including typing, keys, Tab and clicks.
+Explicit start/open is allowed; open grants its newly created tab. Claiming an
+unrelated existing resource or loading a capability requires focus. Vault,
+protected regions, sensitive approvals and App/passkey validation keep their
+shared protections. Ordinary input has no retained/focused classification;
+revoke and idle lapse still cancel authority immediately. Observation reads,
+including state, never start/restart Chromium or its controller for any caller;
+stopped/unavailable reads require explicit start/open (`browser_unavailable`).
 Browser/App window projections identify the owning kernel and focused-agent
 reachability; cross-kernel control is refused. Consumers of these new fields and
 commands require local 432. Existing multidomain feature minima remain 427.

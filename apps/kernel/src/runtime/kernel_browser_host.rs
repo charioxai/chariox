@@ -268,23 +268,6 @@ impl KernelBrowserHost {
         admission: Option<&KernelBrowserAdmission>,
         call: impl FnOnce() -> Result<T, String>,
     ) -> Result<T, String> {
-        self.checked_note_operation(user, admission, false, call)
-    }
-    pub(crate) fn note_mutation<T>(
-        &self,
-        user: &str,
-        admission: Option<&KernelBrowserAdmission>,
-        call: impl FnOnce() -> Result<T, String>,
-    ) -> Result<T, String> {
-        self.checked_note_operation(user, admission, true, call)
-    }
-    fn checked_note_operation<T>(
-        &self,
-        user: &str,
-        admission: Option<&KernelBrowserAdmission>,
-        mutation: bool,
-        call: impl FnOnce() -> Result<T, String>,
-    ) -> Result<T, String> {
         self.check_admission(admission)?;
         if let Some(admission) = admission {
             if admission.user != user {
@@ -298,9 +281,6 @@ impl KernelBrowserHost {
                 require_loaded(&state, user, agent, admission.capability)?;
                 if !Arc::ptr_eq(&state.access.grant(user, agent)?.epoch, &admission.epoch) {
                     return Err("MD-N4: note grant changed".into());
-                }
-                if mutation {
-                    require_focus(&state, user, agent)?;
                 }
                 call()
             } else {
@@ -363,17 +343,27 @@ impl KernelBrowserHost {
         } else {
             if !matches!(backend.health(), Ok(health) if health.state == BrowserControllerProcessState::Ready)
             {
-                // MP-11: retained observations cannot recover the controller.
-                // Never hold the grant lock across startup I/O: revoke must be
-                // immediate. Chromium has a separate live-focus/no-start gate.
+                // MP-11: state/observation reads cannot start or recover a
+                // controller. Startup is explicit and uses the same grant for
+                // focused and retained agents, without holding its lock over I/O.
+                if method == "host.browser"
+                    && matches!(
+                        params["op"].as_str(),
+                        Some(
+                            "state"
+                                | "snapshot"
+                                | "screenshot"
+                                | "subscribe"
+                                | "poll"
+                                | "unsubscribe"
+                                | "display_subscribe"
+                                | "display_attach"
+                                | "note_selection"
+                                | "note_reanchor"
+                        )
+                    )
                 {
-                    let state = self
-                        .inner
-                        .lock()
-                        .map_err(|_| "MP-11: grant lock unavailable")?;
-                    if let Some(agent) = admission.and_then(|a| a.agent.as_deref()) {
-                        require_focus(&state, user, agent).map_err(|_| "MP-11: not_focused_agent: user browser controller is stopped or unavailable; focus this agent to restart it")?;
-                    }
+                    return Err("MP-11: browser_unavailable: user browser controller is stopped or unavailable; explicitly start/open the browser".into());
                 }
                 self.check_admission(admission)?;
                 backend.start()?;
@@ -385,8 +375,6 @@ impl KernelBrowserHost {
             params["_agent_input"] = true.into();
             params["observed_by"] =
                 format!("agent:{}", admission.unwrap().agent.as_deref().unwrap()).into();
-            params["_retained_agent"] =
-                (!self.is_focused(user, admission.unwrap().agent.as_deref().unwrap())).into();
             params["_subscription_owner"] = self
                 .inner
                 .lock()
@@ -410,13 +398,11 @@ impl KernelBrowserHost {
         let action = if mutation {
             // Reconcile the SAME supervised browser before ledger admission. Takeover
             // uses only the model lock, so it can cancel while CDP holds the backend.
-            let mut observation = serde_json::json!({"op":"state"});
-            let authority = self.browser_request_authority(
-                admission,
-                &mut observation,
+            let state = backend.host_request_cancellable(
+                "host.browser",
+                serde_json::json!({"op":if params["op"] == "open" { "start" } else { "state" }}),
                 admission.map(|a| a.cancellation.clone()),
-            );
-            let state = backend.host_request_cancellable("host.browser", observation, authority)?;
+            )?;
             model
                 .lock()
                 .map_err(|_| "MD-3: actor lock poisoned")?
@@ -440,7 +426,7 @@ impl KernelBrowserHost {
         } else {
             None
         };
-        let mut cancellation = match (&action, admission) {
+        let cancellation = match (&action, admission) {
             (Some(action), Some(admission)) => {
                 let authority = admission.cancellation.clone();
                 Some(Arc::new(BrowserCancellation::for_authority(
@@ -452,9 +438,8 @@ impl KernelBrowserHost {
             (None, Some(admission)) => Some(admission.cancellation.clone()),
             (None, None) => None,
         };
-        // MP-11: re-read live focus after policy RPCs. Retained authority allows
-        // observation and wheel only; focused dispatch carries a live focus guard.
-        cancellation = self.browser_request_authority(admission, &mut params, cancellation);
+        // MP-11: focused and retained input share grant/run cancellation.
+        // Vault requests also carry their live focus authority from admission.
         let request_params = params.clone();
         let mut result = backend.host_request_cancellable(method, params, cancellation.clone());
         if let Some(action) = action {
@@ -488,12 +473,7 @@ impl KernelBrowserHost {
                     .map_err(|_| "MP-11: grant lock unavailable")?;
                 if let Some(id) = payload.get("tab_id").and_then(Value::as_str) {
                     if request_params["op"] == "open" {
-                        state.access.claim(
-                            user,
-                            agent,
-                            UserDomainResource::BrowserTab { tab_id: id.into() },
-                            false,
-                        )?;
+                        state.access.opened_tab(user, agent, id)?;
                     }
                 }
                 if let (Some(id), Some(tab)) = (

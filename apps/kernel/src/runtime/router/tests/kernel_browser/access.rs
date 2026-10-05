@@ -301,16 +301,14 @@ async fn check(native: bool) {
         std::fs::remove_file(root.join("input")).unwrap();
     }
     let sensitive_click = json!({"document_id":state["tabs"][0]["document_id"],"command":{"op":"input","tab_id":tab,"generation":generation,"input":{"kind":"click","x":30,"y":30}}});
-    let denied = tool(
+    tool(
         &router,
         token,
         "chariox.kernel_browser",
         sensitive_click.clone(),
     )
     .await
-    .unwrap_err()
-    .to_string();
-    assert!(denied.contains("sensitive") && denied.contains("focus"));
+    .unwrap();
     assert!(tool(
         &router,
         token,
@@ -323,24 +321,22 @@ async fn check(native: bool) {
     .contains("Vault fill requires focus"));
     if !native {
         assert!(
-            !root.join("input").exists(),
-            "MP-11: retained sensitive input must not dispatch"
+            root.join("input").exists(),
+            "MP-11: retained input did not dispatch"
         );
-        focus(&router, session.id(), first.id()).await;
-        tool(&router, token, "chariox.kernel_browser", sensitive_click)
-            .await
-            .unwrap();
-        assert!(root.join("input").exists());
-        focus(&router, session.id(), second.id()).await;
     }
-    assert!(tool(
+    let new_tab = tool(
         &router,
         token,
         "chariox.kernel_browser",
-        json!({"command":{"op":"open","url":"about:blank"}})
+        json!({"command":{"op":"open","url":"about:blank"}}),
     )
     .await
-    .is_err());
+    .unwrap();
+    assert!(
+        new_tab.payload["tab_id"].is_string(),
+        "MP-11: explicit retained open must grant its new tab"
+    );
     assert!(tool(
         &router,
         token,

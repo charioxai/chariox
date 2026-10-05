@@ -215,34 +215,6 @@ impl KernelBrowserHost {
             }
         }
     }
-    // MP-11: focused requests can start/recover the user browser. Their focus
-    // authority must remain live across the controller's asynchronous startup.
-    // Retained requests get the no-start flag and keep their grant authority.
-    pub(super) fn browser_request_authority(
-        &self,
-        admission: Option<&KernelBrowserAdmission>,
-        params: &mut Value,
-        cancellation: Option<Arc<BrowserCancellation>>,
-    ) -> Option<Arc<BrowserCancellation>> {
-        let Some(admission) = admission else {
-            return cancellation;
-        };
-        let Some(agent) = admission.agent.as_deref() else {
-            return cancellation;
-        };
-        let focused = self.is_focused(&admission.user, agent);
-        params["_retained_agent"] = (!focused).into();
-        if !focused {
-            return cancellation;
-        }
-        let host = self.clone();
-        let owner = admission.user.clone();
-        let agent = agent.to_string();
-        Some(Arc::new(BrowserCancellation::for_authority(
-            cancellation.unwrap_or_else(|| admission.cancellation.clone()),
-            move || host.is_focused(&owner, &agent),
-        )))
-    }
     pub(super) fn scope_browser_request(
         &self,
         admission: Option<&KernelBrowserAdmission>,
@@ -262,28 +234,10 @@ impl KernelBrowserHost {
         state
             .access
             .prune_subscriptions(&admission.user, agent, Instant::now());
-        if method == "host.browser" && state.access.focused(&admission.user) != Some(agent) {
-            if params["op"] == "input" && params["input"]["kind"] != "scroll" {
-                return Err("MP-11: sensitive_requires_focus: user-domain keyboard, text and click input requires focus".into());
-            }
-            if !matches!(
-                params["op"].as_str(),
-                Some(
-                    "state"
-                        | "snapshot"
-                        | "screenshot"
-                        | "subscribe"
-                        | "poll"
-                        | "unsubscribe"
-                        | "display_subscribe"
-                        | "display_attach"
-                        | "note_selection"
-                        | "note_reanchor"
-                        | "input"
-                )
-            ) {
-                return Err("MP-11: not_focused_agent: user-domain mutations require focus; retained access allows only observation and scroll".into());
-            }
+        if params["op"] == "open"
+            && state.access.grant(&admission.user, agent)?.resources.len() >= 1024
+        {
+            return Err("MP-08: user-domain resource limit reached; revoke unused grants".into());
         }
         if params["op"] == "subscribe"
             && state

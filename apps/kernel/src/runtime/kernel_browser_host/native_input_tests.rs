@@ -125,17 +125,17 @@ impl Drop for NativeInput {
 
 #[test]
 #[ignore = "MP-10: sandbox-capable native Chromium and disposable CHARIOX_MDACCESS_DRILL_ROOT required"]
-fn mdaccess_native_retained_enter_cannot_submit_payment() {
+fn mdaccess_native_retained_enter_dispatches_like_focused() {
     let fixture = NativeInput::new(
         r#"<form><input id="field" type="text" style="height:30px"><button id="pay" type="submit">Pay</button></form>"#,
     );
     fixture.host.set_focus("owner", Some("second"));
     let result = fixture.input(json!({"kind":"key","key":"Enter"}));
     assert!(
-        fixture.status().starts_with("submitted=0 "),
-        "MP-11: retained Enter dispatched a native payment submit"
+        fixture.status().starts_with("submitted=1 "),
+        "MP-11: retained Enter failed to dispatch the same native form activation"
     );
-    assert!(result.unwrap_err().contains("sensitive_requires_focus"));
+    result.unwrap();
 }
 
 #[test]
@@ -180,14 +180,14 @@ fn mdaccess_native_retained_state_cannot_restart_after_human_stop() {
     let backend = fixture.host.backend("owner").unwrap();
     for _ in 0..2 {
         let error = fixture.request(json!({"op":"state"})).unwrap_err();
-        assert!(error.contains("not_focused_agent"), "MP-11: {error}");
+        assert!(error.contains("browser_unavailable"), "MP-11: {error}");
         assert_eq!(
             backend.lock().unwrap().health().unwrap().state,
             BrowserControllerProcessState::Stopped
         );
     }
     fixture.host.set_focus("owner", Some("first"));
-    let restarted = fixture.request(json!({"op":"state"})).unwrap();
+    let restarted = fixture.request(json!({"op":"start"})).unwrap();
     assert_eq!(
         restarted["generation"].as_u64().unwrap(),
         fixture.tab["generation"].as_u64().unwrap() + 1
@@ -202,9 +202,9 @@ fn mdaccess_native_retained_state_cannot_restart_after_human_stop() {
         .unwrap();
     fixture.host.set_focus("owner", Some("second"));
     let error = fixture.request(json!({"op":"state"})).unwrap_err();
-    assert!(error.contains("not_focused_agent"), "MP-11: {error}");
+    assert!(error.contains("browser_unavailable"), "MP-11: {error}");
     fixture.host.set_focus("owner", Some("first"));
-    let recovered = fixture.request(json!({"op":"state"})).unwrap();
+    let recovered = fixture.request(json!({"op":"start"})).unwrap();
     assert_eq!(
         recovered["generation"].as_u64().unwrap(),
         restarted["generation"].as_u64().unwrap() + 1
@@ -213,70 +213,33 @@ fn mdaccess_native_retained_state_cannot_restart_after_human_stop() {
 
 #[test]
 #[ignore = "MP-10: sandbox-capable native Chromium and disposable CHARIOX_MDACCESS_DRILL_ROOT required"]
-fn mdaccess_native_retained_keys_clicks_refuse_and_scroll_works() {
+fn mdaccess_native_retained_keys_clicks_and_revoke() {
     let fixture = NativeInput::new(
-        r#"<input id="field" style="height:30px" onkeydown="submitted++;status()" onkeyup="submitted++;status()">
-        <button id="pay" onclick="submitted++;status()">Search</button><div style="height:3000px"></div>"#,
+        r#"<input id="field" style="height:30px" onkeydown="submitted++;status()" onkeyup="submitted++;status()"><button id="pay" onclick="submitted++;status()">Search</button><div style="height:3000px"></div>"#,
     );
     let stream = fixture.request(fixture.bound("subscribe")).unwrap();
     fixture.host.set_focus("owner", Some("second"));
-    for key in [
-        "Tab",
-        "Shift+Tab",
-        "Enter",
-        "Space",
-        "Delete",
-        "Backspace",
-        "ArrowLeft",
-        "ArrowRight",
-        "ArrowUp",
-        "ArrowDown",
-        "Home",
-        "End",
-        "Escape",
-        "a",
-        "F1",
-        "Control+a",
-    ] {
-        let error = fixture.input(json!({"kind":"key","key":key})).unwrap_err();
-        assert!(
-            error.contains("sensitive_requires_focus"),
-            "MP-11: {key}: {error}"
-        );
-    }
-    for input in [
-        json!({"kind":"click","x":30,"y":25}),
-        json!({"kind":"text","text":"denied"}),
-    ] {
-        assert!(fixture
-            .input(input)
-            .unwrap_err()
-            .contains("sensitive_requires_focus"));
-    }
-    assert_eq!(fixture.status(), "submitted=0 releases=0 focus=field");
-    for command in [
-        json!({"op":"navigate","url":"about:blank"}),
-        json!({"op":"close"}),
-    ] {
-        let mut params = fixture.bound(command["op"].as_str().unwrap());
-        params
-            .as_object_mut()
-            .unwrap()
-            .extend(command.as_object().unwrap().clone());
-        assert!(fixture
-            .request(params)
-            .unwrap_err()
-            .contains("not_focused_agent"));
-    }
+    fixture
+        .input(json!({"kind":"text","text":"retained"}))
+        .unwrap();
+    fixture.input(json!({"kind":"key","key":"Delete"})).unwrap();
+    assert!(fixture.status().starts_with("submitted=2 "));
+    fixture.input(json!({"kind":"key","key":"Tab"})).unwrap();
+    assert!(fixture.status().contains("focus=pay"));
+    fixture.input(json!({"kind":"key","key":"Enter"})).unwrap();
+    fixture
+        .input(json!({"kind":"click","x":30,"y":25}))
+        .unwrap();
     fixture
         .input(json!({"kind":"scroll","x":10,"y":10,"delta_x":0,"delta_y":100}))
         .unwrap();
-    assert_eq!(
-        fixture.request(json!({"op":"state"})).unwrap()["generation"],
-        fixture.tab["generation"]
-    );
     fixture.request(json!({"op":"poll","subscription_id":stream["subscription_id"],"generation":stream["generation"]})).unwrap();
-    fixture.host.set_focus("owner", Some("first"));
-    fixture.input(json!({"kind":"key","key":"Delete"})).unwrap();
-    assert_eq!(fixture.status(), "submitted=2 releases=0 focus=field");
+    fixture.host.revoke_agent("first");
+    for input in [
+        json!({"kind":"key","key":"Delete"}),
+        json!({"kind":"text","text":"revoked"}),
+        json!({"kind":"click","x":30,"y":25}),
+    ] {
+        assert!(fixture.input(input).unwrap_err().contains("not_granted"));
+    }
 }

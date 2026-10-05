@@ -35,7 +35,8 @@ Failed mutations are returned, never replayed automatically.
 Only observational reconciliation retries a stale-document navigation race,
 with three bounded reads; it never recreates a tab or repeats input.
 
-A bounded supervisor restarts an exited browser on the next request; profile
+An explicit start/open recovers an exited browser; observation reads never
+start/restart it. Profile
 storage survives. Durable tab records restore URLs under the same Chariox tab
 IDs, with a new browser generation and document references. Old references and
 screen subscriptions fail after restart. An internal blank target keeps headed Chromium alive when no user tabs are open;
@@ -50,9 +51,10 @@ Human requests derive user identity from KernelCaller, not request arguments.
 Only authenticated terminals may call the public host interface. MP-08/MP-11:
 MCP derives user/agent identity from the admitted local provider run. Focus
 claims resources; active tasks and pending wakes retain their exact grant after
-focus changes. MP-11: non-focused retained grants allow only observation and
-wheel scrolling; every key, text insertion, click and other mutation requires
-live focus. Retained reads never start/recover the controller or browser.
+focus changes. MP-11: retained grants allow the same input/mutations on granted
+resources as focus, including text, keys, Tab and clicks. Explicit start/open
+is allowed; unrelated resource claims still need focus. No observation read
+starts/recovers the controller or browser.
 A small loader advertises tools on demand. See the authoritative
 [user-domain access amendment](MULTIDOMAIN_USER_DOMAIN_ACCESS.md) (432/78).
 Remote/leased calls name both kernels and request focus on the window's kernel;
@@ -92,11 +94,11 @@ native targets and truncates oversized legacy registries.
 MP-08/MP-11: each MCP call retains its grant admission through async waits and
 the controller operation. Idle expiry, explicit revoke, agent destruction/session
 end/placement move or loss of provider-run authority cancels pending input.
-MP-11: every non-scroll input and Vault fill requires focus throughout its operation
-through the shared stdio cancellation path. A timed-out cancellation fences the
+MP-11: ordinary input keeps grant/run authority across focus changes. Vault
+fills keep their additional live-focus authority through the shared stdio cancellation path. A timed-out cancellation fences the
 controller before settlement. Input checks cancellation and the observed CDP
 loader before every physical event. If input is interrupted between events, the
-host stops its owned Chromium to clear held keys/buttons; the next request
+host stops its owned Chromium to clear held keys/buttons; an explicit start/open
 recovers with a new generation. This cannot undo input already delivered before
 revocation.
 

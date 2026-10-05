@@ -62,8 +62,9 @@ MD-N4 / MP-08 / MP-11: `chariox.load_notes` loads list/read/reply/resolve on
 demand while focused. Browser and notes loading remain independent. A note read
 claims its stable note ID; changing focus retains that note while the agent has
 an active turn or a pending wake, then for the configured idle window.
-MP-11: retained notes access permits reads/listing only. Creating a selection or
-note, replying, resolving or asking requires live focus at the commit boundary.
+MP-11: retained holders can read, reply, resolve and use the ordinary note
+operations on granted resources, with the same uninterrupted grant epoch at
+the commit boundary as focused agents. New-resource claims still require focus.
 Automatic anchor refresh during a read remains observation housekeeping. A retained
 holder cannot claim another note. Listing metadata does not claim contents; a
 retained list shows only claimed note IDs. Explicit revoke, idle expiry, session

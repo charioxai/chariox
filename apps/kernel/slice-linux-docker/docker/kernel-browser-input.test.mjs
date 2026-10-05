@@ -9,19 +9,21 @@ function fixture() {
     sent.push({ method, params });
     if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "f", loaderId: "doc" } } };
     if (method === "Page.createIsolatedWorld") return { executionContextId: 7 };
+    if (method === "Runtime.evaluate") return { result: { value: false } };
     return {};
   } };
   return { sent, browser: { resolvePageTarget: async () => ({ connection, sessionId: "s" }), inputCapture: { run: async (_c, _s, fn) => fn() } } };
 }
 const tab = { target_id: "t", document_id: "doc" };
-test("MP-11: every retained key, text and click refuses before native dispatch", async () => {
-  const {browser,sent}=fixture(false);
-  for(const input of [{kind:'click',x:1,y:2},{kind:'text',text:'fixture'},
-    ...['Tab','Shift+Tab','Enter','Space','Delete','Backspace','ArrowLeft','Home','a','Escape','F1','Control+a'].map(key=>({kind:'key',key}))]) {
-    sent.length=0;
-    await assert.rejects(inputHostTab(browser,tab,input,{retained:true}),{code:'sensitive_requires_focus'});
-    assert(!sent.some(({method})=>method.startsWith('Input.')));
-    assert(!sent.some(({method})=>method.startsWith('DOMDebugger.')));
+test("MP-11: retained typing, keys and clicks dispatch identically to focused input", async () => {
+  for (const input of [{kind:'click',x:1,y:2},{kind:'text',text:'fixture'},
+    ...['Tab','Shift+Tab','Enter','Space','Delete','Backspace','ArrowLeft','Home','a','Escape'].map(key=>({kind:'key',key}))]) {
+    const focused=fixture(), retained=fixture();
+    await inputHostTab(focused.browser,tab,input);
+    await inputHostTab(retained.browser,tab,input,{retained:true});
+    assert.deepEqual(retained.sent,focused.sent);
+    assert(retained.sent.some(({method})=>method.startsWith('Input.')));
+    assert(!retained.sent.some(({method})=>method.startsWith('DOMDebugger.')));
   }
 });
 test("MP-08: retained wheel and focused clicks proceed",async()=>{

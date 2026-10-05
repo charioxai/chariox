@@ -56,17 +56,15 @@ async function using(callback) {
   try { await callback(context, root); } finally { fixture.secretFocused = false; await context.host.stop(); await rm(root, { recursive: true, force: true }); }
 }
 
-test("MP-11: retained-input refusal keeps its code and leaves Chromium live", () => using(async ({ host, sent }) => {
+test("MP-11: retained input succeeds and leaves Chromium live", () => using(async ({ host, sent }) => {
   const opened = await host.request({ op:'open', url:'https://example.com' });
   const tab = opened.tabs[0];
   const reply = await host.handle({ id:'denied', method:'host.browser', params: {
     op:'input', tab_id:tab.tab_id, generation:opened.generation, document_id:tab.document_id,
     input:{kind:'click',x:1,y:2}, _retained_agent:true,
   } });
-  assert.equal(reply.ok, false);
-  assert.equal(reply.error.code, 'sensitive_requires_focus');
-  assert.match(reply.error.message, /requires focus/);
-  assert(!sent.some(({method}) => method.startsWith('Input.')));
+  assert.equal(reply.ok, true);
+  assert.equal(sent.filter(({method}) => method.startsWith('Input.')).length, 2);
   assert.equal((await host.request({op:'state'})).generation, opened.generation);
 }));
 
@@ -103,7 +101,7 @@ test("MD-4: stable tabs survive browser crash and kernel/controller recreation",
   assert.equal(opened.tabs.length, 1);
   await host.request({ op: "navigate", tab_id, generation, url: "http://127.0.0.1/second" });
   chromium.child.exitCode = 1;
-  const recovered = await host.request({ op: "state" });
+  const recovered = await host.request({ op: "start" });
   assert.equal(recovered.generation, generation + 1);
   assert.equal(recovered.tabs[0].tab_id, tab_id);
   assert.equal(recovered.tabs[0].url, "http://127.0.0.1/second");
@@ -111,7 +109,7 @@ test("MD-4: stable tabs survive browser crash and kernel/controller recreation",
   await host.stop();
   const restarted = fixture(root);
   try {
-    const state = await restarted.host.request({ op: "state" });
+    const state = await restarted.host.request({ op: "start" });
     assert.equal(state.tabs[0].tab_id, tab_id);
     assert.equal(state.generation, generation + 2);
     await restarted.host.request({ op: "close", tab_id, generation: state.generation });
@@ -134,6 +132,8 @@ test("MD-2: latest-frame subscription is bounded and invalidated by recovery", (
   assert.equal(handlers.size, 0);
   assert(sent.some(call => call.method === "Page.stopScreencast"));
   chromium.child.exitCode = 1;
+  await assert.rejects(host.request({ op: "poll", ...subscription }), /unavailable/);
+  await host.request({ op: "start" });
   await assert.rejects(host.request({ op: "poll", ...subscription }), /stale/);
 }));
 test("MD-4: reconciliation retries a navigation race without recreating a tab", () => using(async ({ host, sent }) => {
@@ -214,7 +214,7 @@ test("MD-5: protection flushes old frames and masks new/retired frames across re
   const second = await host.request({ op: "subscribe", tab_id: opened.tab_id, generation: opened.generation });
   assert.equal((await host.request({ op: "poll", ...second })).frame.mime_type, "image/png"); // no repaint required
   chromium.child.exitCode = 1;
-  await host.request({ op: "state" });
+  await host.request({ op: "start" });
   assert(host.browser.protectedValues.has("synthetic-only"));
   await assert.rejects(host.request({ op: "poll", ...subscription }), /stale/);
 }));
@@ -262,7 +262,7 @@ test("MD-4 reviewer R2: native unsupported URLs restore as blank without poisoni
   saved.tabs.find(tab => tab.tab_id === native.tab_id).url = "chrome://settings/";
   await writeFile(path.join(root, "tabs.json"), JSON.stringify(saved));
   chromium.child.exitCode = 1;
-  const recovered = await host.request({ op: "state" });
+  const recovered = await host.request({ op: "start" });
   assert.equal(recovered.tabs.find(tab => tab.tab_id === native.tab_id).url, "about:blank");
   assert.equal(recovered.tabs.find(tab => tab.tab_id === opened.tab_id).url, "https://example.com/kept");
   await host.request({ op: "close", tab_id: native.tab_id, generation: recovered.generation });
@@ -280,7 +280,7 @@ test("MD-4 reviewer R3: discovery and legacy restoration stay within the durable
   saved.tabs.push({ tab_id: "host-tab-legacy-excess", url: "https://example.com/excess" });
   await writeFile(path.join(root, "tabs.json"), JSON.stringify(saved));
   chromium.child.exitCode = 1;
-  const recovered = await host.request({ op: "state" });
+  const recovered = await host.request({ op: "start" });
   assert.equal(recovered.tabs.length, 128);
   assert.equal(recovered.tabs[0].tab_id, opened.tab_id);
   await host.request({ op: "close", tab_id: opened.tab_id, generation: recovered.generation });
@@ -358,7 +358,7 @@ test("MD-3 b220: production stdio cancellation reaches held host input and settl
     assert.equal(settled.error.code, "browser_action_cancelled");
     assert(!sent.some(call => call.method === "Input.insertText"));
     connection.beforeSend = null;
-    const recovered = await host.request({ op: "state" });
+    const recovered = await host.request({ op: "start" });
     assert.equal(recovered.generation, opened.generation + 1);
     assert.equal((await rpc(3, "host.browser", { ...command, generation: recovered.generation, document_id: recovered.tabs[0].document_id })).ok, true);
     assert.equal(sent.filter(call => call.method === "Input.insertText").length, 1);
@@ -481,7 +481,7 @@ for (const kind of ["key", "click"]) {
     assert(sent.some(entry => entry.params?.type === (kind === "key" ? "keyDown" : "mousePressed")));
     assert.equal(chromium.child, null, "MD-3: uncertain held input must end before another actor dispatches");
     connection.beforeSend = null;
-    const recovered = await host.request({ op: "state" });
+    const recovered = await host.request({ op: "start" });
     assert.equal(recovered.generation, opened.generation + 1);
     await host.request({ op: "input", tab_id: opened.tab_id, generation: recovered.generation,
       observed_by: "terminal:next", input: { kind: "key", key: "Tab" } }).catch(async error => {
@@ -565,22 +565,19 @@ test("display subscription captures the current document after navigation", () =
 }));
 
 
-test("MP-11: retained state cannot start or recover Chromium; focused state can", () => using(async ({ host, chromium, sent }) => {
-  await assert.rejects(host.request({op:'state',_retained_agent:true}), {code:'not_focused_agent'});
-  assert.equal(chromium.child,null);
-  assert.deepEqual(sent,[]);
+test("MP-11: state reads never start or recover Chromium; explicit retained start can", () => using(async ({ host, chromium, sent }) => {
+  for (const retained of [true,false]) await assert.rejects(host.request({op:'state',_retained_agent:retained}), {code:'browser_unavailable'});
+  assert.equal(chromium.child,null); assert.deepEqual(sent,[]);
   const opened=await host.request({op:'open',url:'https://example.com'});
   for (const stopped of [false,true]) {
     if (stopped) await host.stop(); else chromium.child.exitCode=1;
-    const generation=host.generation;
-    const requests=sent.length;
-    const reply=await host.handle({id:'retained',method:'host.browser',params:{op:'state',_retained_agent:true}});
-    assert.equal(reply.ok,false);
-    assert.equal(reply.error.code,'not_focused_agent');
-    assert.match(reply.error.message,/stopped or unavailable/);
-    assert.equal(host.generation,generation);
-    assert.equal(sent.length,requests);
-    const recovered=await host.request({op:'state',_retained_agent:false});
+    const generation=host.generation, requests=sent.length;
+    for (const retained of [true,false]) {
+      const reply=await host.handle({id:'read',method:'host.browser',params:{op:'state',_retained_agent:retained}});
+      assert.equal(reply.ok,false); assert.equal(reply.error.code,'browser_unavailable');
+      assert.equal(host.generation,generation); assert.equal(sent.length,requests);
+    }
+    const recovered=await host.request({op:'start',_retained_agent:true});
     assert.equal(recovered.generation,generation+1);
     assert.equal(recovered.tabs[0].tab_id,opened.tab_id);
   }

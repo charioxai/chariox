@@ -73,7 +73,8 @@ while IFS= read -r request; do
   *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
   *'"method":"host.revoke_subscriptions"'*) printf 'revoked\n' > "$1/subscriptions-revoked"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
-  *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document"}]}}\n' "$id" ;;
+  *'"op":"state"'*|*'"op":"start"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document"}]}}\n' "$id" ;;
+  *'"op":"open"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-new","tabs":[{"tab_id":"host-tab-fixture","document_id":"document"},{"tab_id":"host-tab-new","document_id":"new-document"}]}}\n' "$id" ;;
   *'"op":"snapshot"'*) printf '{"id":%s,"ok":true,"result":{"snapshot":{"text":"MD5-sensitive-fixture"}}}\n' "$id" ;;
   *'"op":"subscribe"'*) printf '{"id":%s,"ok":true,"result":{"subscription_id":"fixture-stream"}}\n' "$id" ;;
   *'"op":"poll"'*) printf '{"id":%s,"ok":true,"result":{"frame":null}}\n' "$id" ;;
@@ -86,6 +87,17 @@ done
         self.owned
             .kernel_browser_host
             .install_fixture_backend(user, &script, root);
+        // MP-11: fixture setup explicitly starts; observation reads never do.
+        self.owned
+            .kernel_browser_host
+            .protected_request(
+                user,
+                None,
+                "host.browser",
+                serde_json::json!({"op":"start"}),
+                serde_json::json!({"unknown":false,"values":[],"targets":[]}),
+            )
+            .unwrap();
     }
     #[cfg(test)]
     pub(crate) fn kernel_browser_fixture_actors(&self, user: &str) -> serde_json::Value {

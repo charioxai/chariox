@@ -74,10 +74,10 @@ export class KernelBrowserHost {
     await rename(`${name}.new`, name);
     this.lastSaved = serialized;
   }
-  async start({ signal, retained = false } = {}) {
+  async start({ signal, allowStart = true } = {}) {
     assertNotCancelled(signal);
     if (this.browser && this.chromium.child?.exitCode === null && this.chromium.child?.signalCode === null) return;
-    if (retained) throw new BrowserActionError("not_focused_agent", "MP-11: not_focused_agent: user browser is stopped or unavailable; focus this agent to restart it");
+    if (!allowStart) throw new BrowserActionError("browser_unavailable", "MP-11: user browser is stopped or unavailable; explicitly start/open the browser");
     for (const stream of this.displays.values()) await stream.close();
     this.displays.clear(); this.scales.clear(); this.inputEpochs.clear();
     await this.browser?.close();
@@ -304,18 +304,9 @@ export class KernelBrowserHost {
     const scope = command.observed_by ?? (command.focused_agent ? "focused-agent" : "adapter");
     assertNotCancelled(signal);
     if (command.op.startsWith("display_") && process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
-    // MP-11: retained authority is observation plus wheel only, never activation.
-    if (command._retained_agent === true) {
-      if (command.op === "input" && command.input?.kind !== "scroll") {
-        throw new BrowserActionError("sensitive_requires_focus", "MP-11: user-domain keyboard, text and click input requires focus");
-      }
-      if (!["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe",
-        "display_subscribe", "display_attach", "note_selection", "note_reanchor", "input"].includes(command.op)) {
-        throw new BrowserActionError("not_focused_agent", "MP-11: user-domain mutations require focus; retained access allows only observation and scroll");
-      }
-    }
     if (command.op === "stop") return this.stop();
-    await this.start({ signal, retained: command._retained_agent === true });
+    // MP-11: observation never launches/relaunches the browser.
+    await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "note_selection", "note_reanchor"].includes(command.op) });
     assertNotCancelled(signal);
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
     for (const [id, stream] of this.streams) if (Date.now() > stream.expires) await this.removeStream(id);
@@ -393,7 +384,7 @@ export class KernelBrowserHost {
       if (!observed || observed !== tab.document_id) throw new Error("MD-3: stale input document; observe the tab again");
       const at = timestamp();
       let dispatched = false;
-      try { await inputHostTab(this.browser, tab, command.input, { signal, retained: command._retained_agent === true, onDispatch: () => { dispatched = true; } }); this.timing('cdp_input', at); }
+      try { await inputHostTab(this.browser, tab, command.input, { signal, onDispatch: () => { dispatched = true; } }); this.timing('cdp_input', at); }
       catch (error) {
         if (dispatched || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) {
           // Clear any dispatched key/button state before another actor can use
@@ -431,7 +422,7 @@ export class KernelBrowserHost {
         return { id: request.id, ok: true, result: { revoked: true } };
       }
       if (request.method === "host.secret") {
-        await this.start({ signal, retained: request.params?._retained_agent === true });
+        await this.start({ signal });
         if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
         const tab = await this.target(request.params);
         if (tab.document_id !== request.params.document_id) throw new Error("MD-5: stale secret document");
@@ -458,7 +449,7 @@ export class KernelBrowserHost {
         // browser. Only an explicit Open or ordinary tab request may start it.
         if (generation !== undefined && (!this.browser || this.chromium.child?.exitCode !== null
           || this.chromium.child?.signalCode !== null)) throw new Error("App host is no longer live");
-        await this.start({ signal, retained: request.params?._retained_agent === true });
+        await this.start({ signal });
         if (generation !== undefined && generation !== this.generation) throw new Error("MD integration: stale App host generation");
         const result = await handleBrowserControllerRequest({ ...request, params }, { browser: this.browser, signal });
         if (result.ok) {
@@ -473,7 +464,7 @@ export class KernelBrowserHost {
       throw new Error("MD-2: unsupported host method");
     } catch (error) {
       if (error?.code === "browser_action_cancelled") await this.stop();
-      if (["sensitive_requires_focus", "not_focused_agent"].includes(error?.code)) {
+      if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }
       return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }

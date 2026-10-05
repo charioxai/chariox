@@ -93,6 +93,30 @@ impl UserDomainAccess {
         }
         Ok(())
     }
+    /// MP-08/MP-11: explicit open is an owner-authorized creation. It grants
+    /// only the resulting tab; it cannot claim unrelated existing resources.
+    pub(crate) fn opened_tab(
+        &mut self,
+        user: &str,
+        agent: &str,
+        tab_id: &str,
+    ) -> Result<(), String> {
+        self.grant(user, agent)?;
+        let grant = self.grants.get_mut(&(user.into(), agent.into())).unwrap();
+        let resource = UserDomainResource::BrowserTab {
+            tab_id: tab_id.into(),
+        };
+        if !grant.resources.contains(&resource) {
+            if grant.resources.len() >= 1024 {
+                return Err(
+                    "MP-08: user-domain resource limit reached; revoke unused grants".into(),
+                );
+            }
+            grant.resources.insert(resource);
+            self.changed(user);
+        }
+        Ok(())
+    }
     pub(crate) fn bind(
         &mut self,
         user: &str,
@@ -257,6 +281,26 @@ mod tests {
         assert!(access.claim("owner", "second", tab("b"), false).is_ok());
         assert!(access
             .claim("stranger", "first", tab("a"), false)
+            .unwrap_err()
+            .contains("not_granted"));
+    }
+    #[test]
+    fn mdaccess_explicit_open_grants_only_its_created_tab() {
+        let mut access = UserDomainAccess::default();
+        access.focus("owner", Some("first"));
+        access.focus("owner", Some("second"));
+        access.opened_tab("owner", "first", "created").unwrap();
+        assert!(access
+            .claim("owner", "first", tab("created"), false)
+            .is_ok());
+        assert!(access
+            .claim("owner", "first", tab("unrelated"), false)
+            .unwrap_err()
+            .contains("not_focused_agent"));
+        assert_eq!(access.grant("owner", "first").unwrap().resources.len(), 1);
+        access.revoke("owner", Some("first"));
+        assert!(access
+            .opened_tab("owner", "first", "late")
             .unwrap_err()
             .contains("not_granted"));
     }
