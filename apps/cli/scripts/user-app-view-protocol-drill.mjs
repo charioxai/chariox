@@ -31,16 +31,16 @@ for (const [name, command, args] of checks) {
   let result;
   try {
     result = spawnSync(command, args, { cwd: root, stdio: ["ignore", log, log],
-      env: { ...process.env, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR ?? path.join(root, "target"),
-        RUST_MIN_STACK: "16777216", RUST_TEST_THREADS: "1" } });
+      env: { ...process.env, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR ?? path.join(tmpdir(), "chariox-user-app-cargo-target"),
+        RUST_TEST_THREADS: "1" } });
     if (result.error) writeFileSync(log, String(result.error));
   } finally {
     closeSync(log);
   }
   results.push({ name, command: [command, ...args], exitCode: result.status });
-  writeFileSync(path.join(evidence, "results.json"), JSON.stringify({ protocol: 418,
+  writeFileSync(path.join(evidence, "results.json"), JSON.stringify({ protocol: 424,
     scope: "kernel dispatcher, real fixed App ABI worker, durable approval boundary, synthetic passkey; no native browser/frontend rendering claim", results }, null, 2));
-  console.log(`${name}: ${result.status === 0 ? "PASS" : "FAIL"}`);
+  console.log(`MD-APP ${name}: ${result.status === 0 ? "PASS" : "FAIL"}`);
   if (result.status !== 0) process.exit(1);
 }
 console.log(`Evidence: ${evidence}`);

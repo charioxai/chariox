@@ -26,10 +26,9 @@ impl AppViewHost for RoomAppViewHost<'_> {
             use crate::transport::room_browser_controller::{
                 RoomBrowserControllerCommand as Command, RoomBrowserControllerResult as Response,
             };
-            match self
-                .state
-                .room_browser_controller_command(self.session, Command::AppView { request })
-                .await?
+            match Box::pin(self.state.room_browser_controller_command(
+                self.session, Command::AppView { request },
+            )).await?
             {
                 Response::AppView {
                     result: Some(value),
@@ -52,9 +51,9 @@ impl AppViewHost for KernelBrowserAppViewHost<'_> {
         request: BrowserAppViewRequest,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, DaemonError>> + Send + '_>> {
         Box::pin(async move {
-            self.state
-                .kernel_browser_app_view(self.owner.into(), request, self.generation)
-                .await
+            Box::pin(self.state.kernel_browser_app_view(
+                self.owner.into(), request, self.generation,
+            )).await
                 .map(Some)
         })
     }

@@ -42,7 +42,10 @@ async fn request(
     let mut command = remote_command_for_request(&request, Some(user));
     command.command_id = format!("user-view-{:016x}", rand::random::<u64>());
     command.caller.connection_class = Some(KernelConnectionClass::Terminal);
-    router.dispatch(command, request).await
+    let dispatch = router.dispatch(command, request);
+    assert!(std::mem::size_of_val(&dispatch) < 64 * 1024,
+        "MD-APP/MD-4: App-view admission must fit an ordinary caller stack");
+    Box::pin(dispatch).await
 }
 fn snapshot() -> LocalDaemonRequest {
     LocalDaemonRequest::SubscribeUserAppViews(SubscribeUserAppViewsRequest {
@@ -82,7 +85,6 @@ fn user_app_view_kernel_browser_integration_drill() {
 
 fn run_drill(stall: bool, browser: bool) {
     std::thread::Builder::new()
-        .stack_size(64 * 1024 * 1024)
         .spawn(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
@@ -172,9 +174,9 @@ fn run_drill(stall: bool, browser: bool) {
                 .app_control()
                 .publish_app_worker("alice", handle)
                 .unwrap();
-            let outcome = runtime.block_on(async {
+            let outcome = runtime.block_on(Box::pin(async {
                 use futures_util::FutureExt;
-                let outcome = std::panic::AssertUnwindSafe(async {
+                let outcome = std::panic::AssertUnwindSafe(Box::pin(async {
                 let open = LocalDaemonRequest::OpenUserAppView(OpenUserAppViewRequest {
                     installation_id: "installed".into(),
                     host: browser.then_some(UserAppViewHost::KernelBrowser),
@@ -262,7 +264,7 @@ fn run_drill(stall: bool, browser: bool) {
                     panic!("channel call");
                 };
                 assert_eq!(result, serde_json::json!({"ok":true}));
-                if browser { check_browser_page(&router, &view, &observed, 2).await; }
+                if browser { Box::pin(check_browser_page(&router, &view, &observed, 2)).await; }
                 else { assert!(view.browser.is_none()); }
                 let recorded = observed.tool_requests().unwrap();
                 assert_eq!(recorded.len(), if browser { 2 } else { 1 });
@@ -403,8 +405,8 @@ fn run_drill(stall: bool, browser: bool) {
                     })).await.unwrap() else { panic!("second App open") };
                     assert_ne!(view.view_id, second.view_id);
                     assert_ne!(view.browser.as_ref().unwrap().tab_id, second.browser.as_ref().unwrap().tab_id);
-                    check_browser_page(&router, &second, &observed, 3).await;
-                    check_browser_keyboard(&router, &second, &observed).await;
+                    Box::pin(check_browser_page(&router, &second, &observed, 3)).await;
+                    Box::pin(check_browser_keyboard(&router, &second, &observed)).await;
                     let second_browser = second.browser.as_ref().unwrap();
                     let stream = browser_request(&router, KernelBrowserCommand::Subscribe {
                         tab_id: second_browser.tab_id.clone(), generation: second_browser.generation,
@@ -449,12 +451,12 @@ fn run_drill(stall: bool, browser: bool) {
                 assert!(sessions.list_sessions().is_empty(), "App lifecycle has no sessions");
                 if browser {
                     assert!(browser_request(&router, KernelBrowserCommand::State).await["tabs"].as_array().unwrap().is_empty());
-                    check_focused_browser_tab(&router, &root, view.browser.as_ref().unwrap().generation).await;
+                    Box::pin(check_focused_browser_tab(&router, &root, view.browser.as_ref().unwrap().generation)).await;
                 }
-                }).catch_unwind().await;
-                if browser { router.runtime_state.shutdown_cleanup().await.unwrap(); }
+                })).catch_unwind().await;
+                if browser { Box::pin(router.runtime_state.shutdown_cleanup()).await.unwrap(); }
                 outcome
-            });
+            }));
             worker.shutdown_blocking();
             assert!(observed.was_reaped());
             if let Err(error) = outcome { std::panic::resume_unwind(error); }

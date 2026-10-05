@@ -22,7 +22,10 @@ await mkdir(output,{recursive:true});
 const root = await mkdtemp(path.join(tmpdir(),'chariox-md-display-impl-'));
 let kernel, display, viewer, browser, server, ready;
 let kernelExit;
-const ts=createRequire('/root/work/oss/package.json')('typescript');
+const ts=require('typescript');
+const chrome=process.env.CHARIOX_KERNEL_BROWSER_EXECUTABLE;
+const xvfb=process.env.CHARIOX_DISPLAY_XVFB || '/usr/bin/Xvfb';
+if (!chrome || !path.isAbsolute(chrome) || !path.isAbsolute(xvfb)) throw Error('MD-DISPLAY: configure absolute native Chromium and Xvfb executables');
 const relayCryptoSource=await readFile(path.resolve(here,'../../packages/kernel-client/src/browser-relay-crypto.ts'),'utf8');
 const relayCrypto=ts.transpileModule(relayCryptoSource,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText;
 const groups = [], errors = [], log = [];
@@ -34,7 +37,7 @@ async function resource() {
   try {const text=await readFile(`/proc/${name}/stat`,'utf8'),f=text.slice(text.lastIndexOf(')')+2).split(' ');const command=await readFile(`/proc/${name}/cmdline`,'utf8');if(groups.includes(Number(f[2]))||command.includes(root)||Number(name)===process.pid)sample.processes.push({pid:Number(name),cpu_ticks:Number(f[11])+Number(f[12]),rss_bytes:Number(f[21])*4096});}catch{}
  }
  receipt.samples.push(sample);
- if(sample.mem_available_bytes<16*1024**3||sample.disk_free_bytes<10*1024**3)throw Error('MD-DISPLAY: resource floor');
+ if(sample.mem_available_bytes<16*1024**3||sample.disk_free_bytes<60_000_000_000)throw Error('MD-DISPLAY: resource floor');
  return sample;
 }
 async function until(check,label,timeout=20000) {const end=Date.now()+timeout;while(Date.now()<end){if(errors.length)throw errors[0];const value=await check();if(value)return value;await pause(25);}throw Error('MD-DISPLAY timeout: '+label);}
@@ -48,7 +51,7 @@ try {
  for(const name of ['av','av.libs'])await cp(path.join(pytools,name),path.join(python,name),{recursive:true});
  const pythonWrapper=path.join(root,'encoder-python');
  await writeFile(pythonWrapper,`#!/bin/sh\nPYTHONPATH='${python}' exec /usr/bin/python3 "$@"\n`,{mode:0o755});
- display=await launchOwned('/usr/bin/Xvfb',['-displayfd','3','-screen','0','2560x1600x24','-nolisten','tcp','-ac'],{detached:true,stdio:['ignore','ignore','ignore','pipe']});groups.push(display.pid);
+ display=await launchOwned(xvfb,['-displayfd','3','-screen','0','2560x1600x24','-nolisten','tcp','-ac'],{detached:true,stdio:['ignore','ignore','ignore','pipe']});groups.push(display.pid);
  let screen='';display.stdio[3].on('data',bytes=>screen+=bytes);await until(()=>{checkChild(display,'Xvfb');return screen.includes('\n')},'display');
  const sourceText=await readFile(path.resolve(here,'../../docs/MULTIDOMAIN_KERNEL_BROWSER.md'),'utf8');
  server=createServer(async(req,res)=>{
@@ -65,13 +68,13 @@ try {
  });
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  const origin=`http://127.0.0.1:${server.address().port}`;
- kernel=await launchOwned(path.join(root,'kernel-tests'),['--ignored','--exact','runtime::router::tests::kernel_browser::display::kernel_browser_display_protocol_drill','--nocapture'],{uid:65534,gid:65534,detached:true,cwd:root,env:{PATH:'/usr/bin:/bin',HOME:home,TMPDIR:home,DISPLAY:`:${screen.trim()}`,CHARIOX_HOME:path.join(home,'chariox'),CHARIOX_LOG_DIR:path.join(home,'logs'),CHARIOX_DISPLAY_DRILL_ROOT:home,CHARIOX_DISPLAY_FIXTURE_URL:`${origin}/docs`,CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/usr/bin/google-chrome',CHARIOX_KERNEL_BROWSER_DISPLAY:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_BROWSER_DISPLAY_PYTHON:pythonWrapper},stdio:['ignore','pipe','pipe']});groups.push(kernel.pid);
+ kernel=await launchOwned(path.join(root,'kernel-tests'),['--ignored','--exact','runtime::router::tests::kernel_browser::display::kernel_browser_display_protocol_drill','--nocapture'],{uid:65534,gid:65534,detached:true,cwd:root,env:{PATH:'/usr/bin:/bin',HOME:home,TMPDIR:home,DISPLAY:`:${screen.trim()}`,CHARIOX_HOME:path.join(home,'chariox'),CHARIOX_LOG_DIR:path.join(home,'logs'),CHARIOX_DISPLAY_DRILL_ROOT:home,CHARIOX_DISPLAY_FIXTURE_URL:`${origin}/docs`,CHARIOX_KERNEL_BROWSER_EXECUTABLE:chrome,CHARIOX_KERNEL_BROWSER_DISPLAY:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_BROWSER_DISPLAY_PYTHON:pythonWrapper},stdio:['ignore','pipe','pipe']});groups.push(kernel.pid);
  kernel.stdout.on('data',b=>log.push(b));kernel.stderr.on('data',b=>log.push(b));
  kernelExit=waitChild(kernel);
  ready=await until(async()=>{checkChild(kernel,'kernel');try{return JSON.parse(await readFile(path.join(home,'ready.json'),'utf8'))}catch{return null}},'focused MCP opens user-domain tab',45000);
  receipt.protocol=ready.protocol;receipt.opened_by=ready.opened_by;
  const viewerHome=path.join(root,'viewer');await mkdir(viewerHome,{mode:0o700});await chown(viewerHome,65534,65534);
- viewer=await launchOwned('/usr/bin/google-chrome',['--headless=new','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0',`--user-data-dir=${viewerHome}`,'--no-first-run','--disable-background-networking','--disable-dev-shm-usage','about:blank'],{uid:65534,gid:65534,detached:true,cwd:root,env:{PATH:'/usr/bin:/bin',HOME:viewerHome,TMPDIR:viewerHome},stdio:'ignore'});groups.push(viewer.pid);
+ viewer=await launchOwned(chrome,['--headless=new','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0',`--user-data-dir=${viewerHome}`,'--no-first-run','--disable-background-networking','--disable-dev-shm-usage','about:blank'],{uid:65534,gid:65534,detached:true,cwd:root,env:{PATH:'/usr/bin:/bin',HOME:viewerHome,TMPDIR:viewerHome},stdio:'ignore'});groups.push(viewer.pid);
  const port=await until(async()=>{checkChild(viewer,'viewer');try{return Number((await readFile(path.join(viewerHome,'DevToolsActivePort'),'utf8')).split('\n')[0])}catch{return null}},'viewer');
  browser=await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
  const page=await browser.contexts()[0].newPage();page.on('pageerror',()=>errors.push(Error('MD-DISPLAY browser callback failure')));await page.goto(`${origin}/harness.html`);await page.waitForFunction(()=>window.MDDisplay);

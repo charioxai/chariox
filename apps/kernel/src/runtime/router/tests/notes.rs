@@ -3,14 +3,16 @@ use super::*;
 use crate::local::{NoteAnchor, NoteCommand, NoteResult, NoteTextQuote, NoteWindow, NotesRequest};
 use serde_json::json;
 
+// MD-N5: exercise the Apps 416 authenticated human terminal boundary.
+fn terminal_command(id: &str, request: &LocalDaemonRequest) -> KernelCommand {
+    let mut command = KernelCommand::from_local_request(id, None, None, request);
+    command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
+    command
+}
+
 async fn request(router: &CommandRouter, command: NoteCommand) -> NoteResult {
     let request = LocalDaemonRequest::Notes(NotesRequest { command });
-    let command = KernelCommand::from_local_request(
-        format!("MD-notes-{}", rand::random::<u64>()),
-        None,
-        None,
-        &request,
-    );
+    let command = terminal_command(&format!("MD-notes-{}", rand::random::<u64>()), &request);
     let LocalDaemonResponse::Notes { result } = router.dispatch(command, request).await.unwrap()
     else {
         panic!("note result expected")
@@ -24,12 +26,7 @@ async fn focus(router: &CommandRouter, session: &str, agent: &str) {
     });
     router
         .dispatch(
-            KernelCommand::from_local_request(
-                format!("MD-notes-focus-{agent}"),
-                None,
-                None,
-                &request,
-            ),
+            terminal_command(&format!("MD-notes-focus-{agent}"), &request),
             request,
         )
         .await

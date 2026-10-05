@@ -10,11 +10,12 @@ use crate::{
 };
 
 impl KernelRuntimeState {
-    pub(crate) async fn execute_user_app_view_request(
-        &self,
-        command: &KernelCommand,
-        request: &LocalDaemonRequest,
-    ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+    // MD-APP/MD-4: choose the lane before allocating its browser/approval futures.
+    pub(crate) fn execute_user_app_view_request<'a>(
+        &'a self,
+        command: &'a KernelCommand,
+        request: &'a LocalDaemonRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Result<LocalDaemonResponse, DaemonError>>> + Send + 'a>> {
         if !matches!(
             request,
             LocalDaemonRequest::OpenUserAppView(_)
@@ -25,8 +26,16 @@ impl KernelRuntimeState {
                 | LocalDaemonRequest::SubscribeUserAppViews(_)
                 | LocalDaemonRequest::AnswerUserDomainInteraction(_)
         ) {
-            return None;
+            return Box::pin(async { None });
         }
+        Box::pin(self.execute_user_app_view_request_selected(command, request))
+    }
+
+    async fn execute_user_app_view_request_selected(
+        &self,
+        command: &KernelCommand,
+        request: &LocalDaemonRequest,
+    ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
         // This is a human frontend channel, never an agent/host escalation.
         if !command.is_terminal_caller() {
             return Some(Ok(crate::runtime::app_control::failed(
@@ -37,7 +46,7 @@ impl KernelRuntimeState {
             Ok(owner) => owner,
             Err(code) => return Some(Ok(crate::runtime::app_control::failed(code))),
         };
-        Some(self.user_app_view_request(&owner, command, request).await)
+        Some(Box::pin(self.user_app_view_request(&owner, command, request)).await)
     }
 
     async fn user_app_view_request(
