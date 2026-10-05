@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises"
 
-export async function callRuntimeMcp(serverUrl, authToken, method, params = {}) {
+export async function callRuntimeMcp(serverUrl, authToken, method, params = {}, options = {}) {
+  if (serverUrl?.call) return serverUrl.call(method, params, options)
   const response = await fetch(serverUrl, {
     method: "POST",
     headers: {

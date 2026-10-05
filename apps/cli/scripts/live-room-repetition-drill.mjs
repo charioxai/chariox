@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { bindProviderMcpFixture, PROVIDER_MCP_FIXTURE_MODEL } from './lib/provider-mcp-fixture.mjs'
 // MP-07/MP-08/MP-10/MP-11: owned local repetition evidence; no fresh-machine closure.
 import assert from 'node:assert/strict'
 import {spawn,execFile} from 'node:child_process'
@@ -198,14 +199,13 @@ try{
  assert.equal(environment.lifecycle,'ready')
  const baselineRoom=await roomSnapshot()
  await gate('ocr-tools-list',async()=>{
-  const launched=unwrap(await send(r.launchProviderRunsRequest([{sessionId:session.id,provider:'dev-stub',accountProfile:'default',effort:'low',model:'native-tui-idle',agentId:session.agents[0].id,native:{nativeTui:true}}],1)),'ProviderRunsLaunchAccepted')
+  const launched=unwrap(await send(r.launchProviderRunsRequest([{sessionId:session.id,provider:'dev-stub',accountProfile:'default',effort:'low',model:PROVIDER_MCP_FIXTURE_MODEL,agentId:session.agents[0].id,native:{nativeTui:true}}],1)),'ProviderRunsLaunchAccepted')
   assert.equal(launched.failures.length,0)
-  const providerRun=await wait(async()=>{const p=unwrap(await send(r.getProviderRunRequest(launched.provider_runs[0].provider_run.id)),'ProviderRun').provider_run;return p.runtime_mcp_auth_token&&['Starting','Running'].includes(p.state)?p:false},'active MCP readiness');ocrRun=providerRun
-  const response=await fetch(providerRun.runtime_mcp_server_url,{method:'POST',headers:{Authorization:`Bearer ${providerRun.runtime_mcp_auth_token}`,'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list',params:{}})})
-  const result=await response.json();await write('ocr-tools-list',{providerRunId:providerRun.id,model:providerRun.model,state:providerRun.state,toolNames:result.result?.tools?.map(t=>t.name),error:result.error??null})
+  const providerRun=await wait(async()=>{const p=unwrap(await send(r.getProviderRunRequest(launched.provider_runs[0].provider_run.id)),'ProviderRun').provider_run;return p.state==='Running'?p:false},'active MCP readiness');ocrRun=bindProviderMcpFixture(providerRun,{client:local,requests:r,sessionId:session.id,attachmentId:(unwrap(await send(r.attachToSessionRequest(session.id,`${runId}-ocr-fixture`)),'SessionAttached').attachment.id)})
+  const result={result:await ocrRun.fixtureMcp.call('tools/list')};await write('ocr-tools-list',{providerRunId:providerRun.id,model:providerRun.model,state:providerRun.state,toolNames:result.result?.tools?.map(t=>t.name),error:result.error??null})
   assert.ok(result.result?.tools?.some(t=>t.name==='slice_ocr'),'slice_ocr missing in native dev-stub tools/list')
   await wait(async()=>{const p=unwrap(await send(r.getProviderRunRequest(providerRun.id)),'ProviderRun').provider_run;return p.state==='Running'?p:false},'stub running')
-  const running=await fetch(providerRun.runtime_mcp_server_url,{method:'POST',headers:{Authorization:`Bearer ${providerRun.runtime_mcp_auth_token}`,'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:2,method:'tools/list',params:{}})}).then(x=>x.json())
+  const running={result:await ocrRun.fixtureMcp.call('tools/list')}
   await write('ocr-tools-list-running',{providerRunId:providerRun.id,state:'Running',toolNames:running.result?.tools?.map(t=>t.name)})
   assert.ok(running.result?.tools?.some(t=>t.name==='slice_ocr'),'slice_ocr absent after Running')
  })
@@ -326,10 +326,9 @@ finally{
  if(local&&session)await send(r.endSessionRequest(session.id)).catch(e=>failures.push({stage:'cleanup-session',error:e.message}))
  if(local&&ocrRun){try{
   const ended=unwrap(await send(r.getProviderRunRequest(ocrRun.id)),'ProviderRun').provider_run
-  const discovery=await fetch(ocrRun.runtime_mcp_server_url,{method:'POST',headers:{Authorization:`Bearer ${ocrRun.runtime_mcp_auth_token}`,'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:3,method:'tools/list',params:{}})}).then(x=>x.json())
-  const toolNames=discovery.result?.tools?.map(t=>t.name)
-  await write('ocr-tools-list-ended',{providerRunId:ended.id,state:ended.state,toolNames})
-  assert.equal(ended.state,'Ended');assert.deepEqual(toolNames,[])
+  assert.equal(ended.state,'Ended')
+  await assert.rejects(ocrRun.fixtureMcp.call('tools/list'),/ended|active|not found|stopped|not live|unavailable/i)
+  await write('ocr-tools-list-ended',{providerRunId:ended.id,state:ended.state,inputRefused:true,scope:'provider fixture input refusal; ended MCP HTTP catalog is covered by kernel tests'})
  }catch(error){failures.push({stage:'ocr-ended-discovery',error:error.message})}}
  await local?.close().catch(()=>{})
  for(const child of owned){try{process.kill(-child.pid,'SIGTERM')}catch{}}

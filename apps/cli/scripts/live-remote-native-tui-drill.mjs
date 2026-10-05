@@ -39,7 +39,7 @@ import {
 import {
   cleanupNativeDrillCapabilities,
   installNativeDrillCapabilities,
-  waitForProviderRunMcpGrant,
+  waitForProviderRunMcpAdmission,
 } from "./lib/native-tui-capabilities.mjs"
 import {
   assertHetznerTcpPortAvailable,

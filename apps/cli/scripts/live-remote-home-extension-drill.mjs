@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { bindProviderMcpFixture, PROVIDER_MCP_FIXTURE_MODEL } from './lib/provider-mcp-fixture.mjs'
 import { publicRuntimeDiagnostic, publicProviderRun } from "../../kernel/slice-linux-docker/docker/public-runtime-diagnostics.mjs"
 import { execFile, spawn } from 'node:child_process'
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
@@ -92,6 +93,7 @@ const {
   listAgentsRequest,
   listRemoteMachinesRequest,
   pumpTerminalOutputRequest,
+  sendTerminalInputRequest,
   registerConnectorAdapterRequest,
   registerConnectorRequest,
   registerEnvironmentRequest,
@@ -111,6 +113,7 @@ function log(name, details = null) {
 
 async function waitForRemoteProviderRun(client, sessionId, agentId, {
   excludeProviderRunId = null,
+  attachmentId,
   timeoutMs = 90_000,
 } = {}) {
   const deadline = Date.now() + timeoutMs
@@ -132,10 +135,9 @@ async function waitForRemoteProviderRun(client, sessionId, agentId, {
         : unwrapVariant(response, 'ProviderRun').provider_run
       lastRun = run
       if (
-        run?.runtime_mcp_server_url
-        && run?.runtime_mcp_auth_token
+        run?.state === "Running"
         && run.id !== excludeProviderRunId
-      ) return run
+      ) return bindProviderMcpFixture(run, { client, requests: { sendTerminalInputRequest, pumpTerminalOutputRequest }, sessionId, attachmentId })
     }
     await sleep(250)
   }
@@ -205,8 +207,8 @@ async function exerciseHomeProxyExtensions({
 }) {
   if (collab) {
     const deniedRequest = await callRuntimeMcp(
-      launch.runtime_mcp_server_url,
-      launch.runtime_mcp_auth_token,
+      launch.fixtureMcp,
+      null,
       'tools/call',
       {
         name: 'chariox.request_extension',
@@ -220,14 +222,14 @@ async function exerciseHomeProxyExtensions({
   }
 
   await waitForRuntimeTool(
-    launch.runtime_mcp_server_url,
-    launch.runtime_mcp_auth_token,
+    launch.fixtureMcp,
+    null,
     'home_only_lookup',
     true,
   )
   const scriptCall = await callRuntimeMcp(
-    launch.runtime_mcp_server_url,
-    launch.runtime_mcp_auth_token,
+    launch.fixtureMcp,
+    null,
     'tools/call',
     { name: 'home_only_lookup', arguments: { query: tag } },
   )
@@ -235,10 +237,10 @@ async function exerciseHomeProxyExtensions({
   const scriptMarker = await readFile(homeMarker, 'utf8')
   if (scriptMarker !== `HOME_SCRIPT_EXECUTED:${tag}`) throw new Error(`home marker mismatch: ${JSON.stringify(scriptMarker)}`)
 
-  const proxyUrl = launch.runtime_mcp_server_url.replace(/\/mcp\/?$/, '/mcp/proxy/home_echo_mcp')
-  const mcpTools = await callRuntimeMcp(proxyUrl, launch.runtime_mcp_auth_token, 'tools/list')
+  const proxyUrl = launch.fixtureMcp.proxy("home_echo_mcp")
+  const mcpTools = await callRuntimeMcp(proxyUrl, null, 'tools/list')
   if (!mcpTools.tools.some((tool) => tool.name === 'home_echo')) throw new Error(`home MCP tool not listed: ${JSON.stringify(mcpTools)}`)
-  const mcpCall = await callRuntimeMcp(proxyUrl, launch.runtime_mcp_auth_token, 'tools/call', {
+  const mcpCall = await callRuntimeMcp(proxyUrl, null, 'tools/call', {
     name: 'home_echo',
     arguments: { text: tag },
   })
@@ -247,14 +249,14 @@ async function exerciseHomeProxyExtensions({
   if (mcpMarker !== `HOME_MCP_EXECUTED:${tag}`) throw new Error(`home MCP marker mismatch: ${JSON.stringify(mcpMarker)}`)
 
   await waitForRuntimeTool(
-    launch.runtime_mcp_server_url,
-    launch.runtime_mcp_auth_token,
+    launch.fixtureMcp,
+    null,
     'home_local_api_public_echo',
     true,
   )
   const connectorCall = await callRuntimeMcp(
-    launch.runtime_mcp_server_url,
-    launch.runtime_mcp_auth_token,
+    launch.fixtureMcp,
+    null,
     'tools/call',
     { name: 'home_local_api_public_echo', arguments: { q: tag } },
   )
@@ -568,7 +570,7 @@ async function main() {
       }
     }
 
-    const agent = unwrap(await remoteAgentClient.send(spawnAgentRequest(session.id, 'dev-stub', 'home-proxy-agent', 'native-tui-idle', workerWorktree, 'low', undefined, undefined, workerKernelRef)), 'AgentSpawned').agent
+    const agent = unwrap(await remoteAgentClient.send(spawnAgentRequest(session.id, 'dev-stub', 'home-proxy-agent', PROVIDER_MCP_FIXTURE_MODEL, workerWorktree, 'low', undefined, undefined, workerKernelRef)), 'AgentSpawned').agent
     if (options.collab) {
       await expectReject(
         'collaborator grant home script',
@@ -587,8 +589,8 @@ async function main() {
       'Initialize the home-proxy extension runtime.',
       [],
     ))
-    let launch = await waitForRemoteProviderRun(remoteAgentClient, session.id, agent.id)
-    if (!launch.runtime_mcp_server_url || !launch.runtime_mcp_auth_token) throw new Error(`launched run lacks runtime MCP binding: ${publicRuntimeDiagnostic(launch)}`)
+    let launch = await waitForRemoteProviderRun(remoteAgentClient, session.id, agent.id, { attachmentId: promptAttachment.id })
+    if (!launch.fixtureMcp) throw new Error(`launched run lacks runtime MCP binding: ${publicRuntimeDiagnostic(launch)}`)
     let evidence = await exerciseHomeProxyExtensions({
       launch,
       collab: options.collab,
@@ -696,8 +698,8 @@ async function main() {
       await waitForRelayTarget(LocalIpcClient, relayUrl, probeRelayToken, 'worker', listRemoteMachinesRequest)
       await waitForRemoteMachine(client, workerMachineId, listRemoteMachinesRequest)
       await expectRuntimeMcpReject(
-        previousLaunch.runtime_mcp_server_url,
-        previousLaunch.runtime_mcp_auth_token,
+        previousLaunch.fixtureMcp,
+        null,
         'tools/call',
         { name: 'home_only_lookup', arguments: { query: 'stale-worker-run' } },
       )
@@ -714,6 +716,7 @@ async function main() {
       ))
       launch = await waitForRemoteProviderRun(remoteAgentClient, session.id, agent.id, {
         excludeProviderRunId: previousLaunch.id,
+        attachmentId: promptAttachment.id,
       })
       const repairedAgent = unwrapVariant(
         await remoteAgentClient.send(listAgentsRequest(session.id)),
@@ -743,23 +746,23 @@ async function main() {
         'home extensions for remote-backed agent',
       )
     }
-    await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, 'home_only_lookup', false)
-    await expectRuntimeMcpReject(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, 'tools/call', {
+    await waitForRuntimeTool(launch.fixtureMcp, null, 'home_only_lookup', false)
+    await expectRuntimeMcpReject(launch.fixtureMcp, null, 'tools/call', {
       name: 'home_only_lookup',
       arguments: { query: 'after-revoke' },
     })
     const afterRevokeMarker = await readFile(homeMarker, 'utf8')
     if (afterRevokeMarker !== evidence.scriptMarker) throw new Error('revoked home-proxy script executed after revoke')
     await client.send(revokeAgentExtensionRequest(agent.id, 'mcp', 'home_echo_mcp'))
-    await expectRuntimeMcpReject(evidence.proxyUrl, launch.runtime_mcp_auth_token, 'tools/call', {
+    await expectRuntimeMcpReject(evidence.proxyUrl, null, 'tools/call', {
       name: 'home_echo',
       arguments: { text: 'after-mcp-revoke' },
     })
     const afterMcpRevokeMarker = await readFile(homeMcpMarker, 'utf8')
     if (afterMcpRevokeMarker !== evidence.mcpMarker) throw new Error('revoked home-proxy MCP executed after revoke')
     await client.send(revokeAgentExtensionRequest(agent.id, 'connector', 'home_local_api'))
-    await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, 'home_local_api_public_echo', false)
-    await expectRuntimeMcpReject(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, 'tools/call', {
+    await waitForRuntimeTool(launch.fixtureMcp, null, 'home_local_api_public_echo', false)
+    await expectRuntimeMcpReject(launch.fixtureMcp, null, 'tools/call', {
       name: 'home_local_api_public_echo',
       arguments: { q: 'after-connector-revoke' },
     })

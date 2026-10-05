@@ -292,11 +292,7 @@ export async function makeWorkerResumePorts() {
 }
 
 export function providerThreadId(run) {
-  return run?.provider_session_id
-    ?? run?.resume_state?.opencode_session_id
-    ?? run?.resume_state?.codex_thread_id
-    ?? run?.resume_state?.claude_session_id
-    ?? null
+  return run?.provider_session_id ?? null
 }
 
 export function providerRunSnapshot(run) {
@@ -307,8 +303,6 @@ export function providerRunSnapshot(run) {
     account_profile: run?.account_profile ?? null,
     state: run?.state ?? null,
     provider_session_id: run?.provider_session_id ?? null,
-    resume_state: run?.resume_state ?? null,
-    mcp_servers: (run?.mcp_servers ?? []).map((server) => server.name ?? server),
     execution_mode: run?.execution_mode ?? null,
     permission_level: run?.permission_level ?? null,
     write_access_mode: run?.write_access_mode ?? null,
