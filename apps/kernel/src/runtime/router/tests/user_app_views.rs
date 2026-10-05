@@ -38,16 +38,20 @@ fn request<'a>(
     router: &'a CommandRouter,
     user: &'a str,
     request: LocalDaemonRequest,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<LocalDaemonResponse, DaemonError>> + Send + 'a>> {
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<LocalDaemonResponse, DaemonError>> + Send + 'a>,
+> {
     // MD-APP: allocate each dispatch at construction, before composing the drill.
     Box::pin(async move {
-    let mut command = remote_command_for_request(&request, Some(user));
-    command.command_id = format!("user-view-{:016x}", rand::random::<u64>());
-    command.caller.connection_class = Some(KernelConnectionClass::Terminal);
-    let dispatch = router.dispatch(command, request);
-    assert!(std::mem::size_of_val(&dispatch) < 64 * 1024,
-        "MD-APP/MD-4: App-view admission must fit an ordinary caller stack");
-    Box::pin(dispatch).await
+        let mut command = remote_command_for_request(&request, Some(user));
+        command.command_id = format!("user-view-{:016x}", rand::random::<u64>());
+        command.caller.connection_class = Some(KernelConnectionClass::Terminal);
+        let dispatch = router.dispatch(command, request);
+        assert!(
+            std::mem::size_of_val(&dispatch) < 64 * 1024,
+            "MD-APP/MD-4: App-view admission must fit an ordinary caller stack"
+        );
+        Box::pin(dispatch).await
     })
 }
 fn snapshot() -> LocalDaemonRequest {
@@ -549,16 +553,16 @@ fn browser_request(
     command: KernelBrowserCommand,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
     Box::pin(async move {
-    let LocalDaemonResponse::KernelBrowser { result } = request(
-        router,
-        "alice",
-        LocalDaemonRequest::KernelBrowser(KernelBrowserRequest { command }),
-    )
-    .await
-    .unwrap() else {
-        panic!("browser response")
-    };
-    result
+        let LocalDaemonResponse::KernelBrowser { result } = request(
+            router,
+            "alice",
+            LocalDaemonRequest::KernelBrowser(KernelBrowserRequest { command }),
+        )
+        .await
+        .unwrap() else {
+            panic!("browser response")
+        };
+        result
     })
 }
 
@@ -697,24 +701,49 @@ async fn check_browser_keyboard(
     let browser = view.browser.as_ref().unwrap();
     for input in [
         KernelBrowserInput::Key { key: "Tab".into() },
-        KernelBrowserInput::Text { text: "TUI keyboard fixture".into() },
-        KernelBrowserInput::Key { key: "Enter".into() },
+        KernelBrowserInput::Text {
+            text: "TUI keyboard fixture".into(),
+        },
+        KernelBrowserInput::Key {
+            key: "Enter".into(),
+        },
     ] {
-        browser_request(router, KernelBrowserCommand::Input {
-            tab_id: browser.tab_id.clone(), generation: browser.generation, input,
-        }).await;
+        browser_request(
+            router,
+            KernelBrowserCommand::Input {
+                tab_id: browser.tab_id.clone(),
+                generation: browser.generation,
+                input,
+            },
+        )
+        .await;
     }
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
-            let page = browser_request(router, KernelBrowserCommand::Snapshot {
-                tab_id: browser.tab_id.clone(), generation: browser.generation,
-            }).await;
-            if page.to_string().contains("Keyboard App channel {\\\"ok\\\":true}") { break; }
+            let page = browser_request(
+                router,
+                KernelBrowserCommand::Snapshot {
+                    tab_id: browser.tab_id.clone(),
+                    generation: browser.generation,
+                },
+            )
+            .await;
+            if page
+                .to_string()
+                .contains("Keyboard App channel {\\\"ok\\\":true}")
+            {
+                break;
+            }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-    }).await.expect("human keyboard App channel reply in accessibility projection");
+    })
+    .await
+    .expect("human keyboard App channel reply in accessibility projection");
     assert_eq!(observed.tool_invocations(), 4);
     let last = observed.tool_requests().unwrap().last().unwrap().clone();
     assert_eq!(last["params"]["input"]["text"], "TUI keyboard fixture");
-    assert_eq!(last["context"]["actor"], serde_json::json!({"kind":"human","id":"alice"}));
+    assert_eq!(
+        last["context"]["actor"],
+        serde_json::json!({"kind":"human","id":"alice"})
+    );
 }

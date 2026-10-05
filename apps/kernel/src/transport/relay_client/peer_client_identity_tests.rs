@@ -143,6 +143,7 @@ async fn rejects_mismatched_identity(wrong_key: bool) {
         let response = RelayPeerResponse::Pong {
             value: "reply".into(),
             daemon_id: "worker".into(),
+            relay_peer_protocol_version: None,
         };
         send(
             &mut socket,

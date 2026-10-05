@@ -390,7 +390,11 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
-        RelayPeerRequest::Ping { value } => RelayPeerResponse::Pong { value, daemon_id },
+        RelayPeerRequest::Ping { value } => RelayPeerResponse::Pong {
+            value,
+            daemon_id,
+            relay_peer_protocol_version: Some(RELAY_PEER_PROTOCOL_VERSION),
+        },
         RelayPeerRequest::InstallManagedSliceRelayToken {
             slice_id,
             owner_kernel_id,
