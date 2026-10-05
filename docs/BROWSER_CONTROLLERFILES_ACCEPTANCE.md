@@ -66,8 +66,10 @@ again when the attachment is captured.
 Web/local/remote TUI clients, with membership and attachment-owner checks. The
 shared TypeScript builder declares minimum local protocol 420. Runtime provider
 calls use normal authenticated home admission and leased-worker routing. New
-peer variants require matching kernels; relay-version coordination remains a
-merge responsibility, not a lane-allocated number.
+peer variants require the coordinator-allocated relay peer protocol 71. A v70
+worker cannot decode Artifact commands/results or opaque upload objects. Existing
+lease admission/rebind and hosted token installation/confirmation gates reject
+v70; image preflight requires peer71 with matching runtime source lineage.
 
 ## MP-08/MP-10/MP-11 focused validation
 
@@ -105,3 +107,24 @@ TUI conjunction, real transferred-file UX, installed PDF extraction, fresh
 Path-1 comparison and outside-slice browser integration remain acceptance gates.
 The coordinator schedules the live client/provider conjunction. None of the
 source or fixture checks closes MP-08/MP-10/MP-11.
+
+## MP-08/MP-10/MP-11 peer71 compatibility review drill
+
+```sh
+cargo test --manifest-path apps/kernel/Cargo.toml --lib mp08_mp10_mp11_browser_artifact -- --test-threads=1
+cargo test --manifest-path apps/kernel/Cargo.toml --lib restored_stale_or_unversioned_binding_is_rejected_until_rebound
+node --test scripts/browser-artifact-peer-version.test.mjs scripts/slice-relay-identity-contract.test.mjs
+```
+
+On shared builders wrap every Cargo invocation in the allocated compile-slot
+lock and respect the lane resource floors. The focused encrypted lease drill
+registers a live loopback worker using the production dispatcher, changes only
+its lease-version advertisement, and checks the home admission behavior. v70
+must cause lease cleanup without a spawn request; v71 must bind and clean up.
+The artifact integration separately exercises v71 image bytes and opaque upload
+through the real encrypted home/worker/controller path with synthetic CDP.
+The hosted token cases decrypt actual encrypted install/confirmation receipts
+and exercise the production version/slice/nonce predicates. The image case runs
+the production preflight predicate with synthetic Docker labels. These fixtures
+are neither an old-v70 binary deployment nor a live Cloud token-refresh run.
+No provider account credentials or provider profile files are fixture inputs.
