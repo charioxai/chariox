@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { fixture } from './drill-fixtures.mjs';
 import { compare, distribution } from './drill-metrics.mjs';
+import { summarizeStages } from './drill-stages.mjs';
 import { launchOwned, waitChild, stopGroup, checkChild } from './drill-owned-process.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const [binary, output, tools, pytools] = process.argv.slice(2);
@@ -187,6 +188,7 @@ finally {
  async function collectTiming(directory){for(const entry of await readdir(directory,{withFileTypes:true}).catch(()=>[])){const p=path.join(directory,entry.name);if(entry.isDirectory()&&entry.name!=='profile')await collectTiming(p);else if(entry.name==='display-timing.jsonl'){const lines=(await readFile(p,'utf8')).trim().split('\n');for(const line of lines)if(line)traces.push(JSON.parse(line));}}}
  await collectTiming(path.join(root,'home','chariox'));
  receipt.host_timings=traces;receipt.kernel_timings=Buffer.concat(log).toString().split('\n').filter(line=>line.startsWith('MD-DISPLAY-TIMING ')).map(line=>JSON.parse(line.slice('MD-DISPLAY-TIMING '.length)));
+ receipt.stage_breakdown=summarizeStages(receipt);
  if(server)await new Promise(resolve=>server.close(resolve));
  // Delete only the exact freshly-created disposable root, after owned teardown.
  if(!process.exitCode || receipt.cleanup.some(value=>value.includes('inventory empty'))){await rm(root,{recursive:true,force:true});receipt.cleanup.push('exact disposable state removed');}else receipt.cleanup.push('uncertain teardown state retained at '+root);
