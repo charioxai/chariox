@@ -25,6 +25,7 @@ if(process.argv[2]!=='child') {
   try {
     await cp(path.join(here,'browser-mirror-drill.mjs'),path.join(root,'run.mjs'));
     await cp(path.join(here,'browser-mirror-metrics.mjs'),path.join(root,'browser-mirror-metrics.mjs'));
+    await cp(path.join(here,'browser-mirror-renderer-review.mjs'),path.join(root,'browser-mirror-renderer-review.mjs'));
     await mkdir(path.join(root,'controller'));for(const name of await readdir(path.join(here,'../../apps/kernel/slice-linux-docker/docker')))if(name.endsWith('.mjs')&&!name.includes('.test.'))await cp(path.join(here,'../../apps/kernel/slice-linux-docker/docker',name),path.join(root,'controller',name));
     await cp(compiled,path.join(root,'client'),{recursive:true});
     for(const name of ['playwright-core','ws','pngjs'])await cp(path.join(tools,'node_modules',name),path.join(root,'node_modules',name),{recursive:true});
@@ -40,13 +41,13 @@ if(process.argv[2]!=='child') {
     await writeFile(path.join(root,'fonts.conf'),`<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd"><fontconfig><dir>${root}/sysroot/usr/share/fonts</dir><cachedir>${root}/home/font-cache</cachedir></fontconfig>`);
     await writeFile(path.join(root,'chromium-launcher'),`#!/bin/sh\nexport LD_LIBRARY_PATH='${root}/sysroot/usr/lib/x86_64-linux-gnu'\nexport FONTCONFIG_FILE='${root}/fonts.conf'\nexec '${chromeDir}/chrome' "$@" 2>>'${root}/evidence/chromium.log'\n`,{mode:0o755});
     for(const name of ['home','evidence']){await mkdir(path.join(root,name),{mode:0o700});await chown(path.join(root,name),65534,65534);}
-    const child=spawn(process.execPath,[path.join(root,'run.mjs'),'child',root],{uid:65534,gid:65534,cwd:root,env:{PATH:'/usr/bin:/bin',HOME:path.join(root,'home'),TMPDIR:path.join(root,'home'),CHARIOX_KERNEL_BROWSER_HEADLESS:'1',CHARIOX_KERNEL_BROWSER_MIRROR:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_MIRROR_DRILL_REVIEW_ONLY:process.env.CHARIOX_MIRROR_DRILL_REVIEW_ONLY??''},stdio:['ignore','pipe','pipe']});
+    const child=spawn(process.execPath,[path.join(root,'run.mjs'),'child',root],{uid:65534,gid:65534,cwd:root,env:{PATH:'/usr/bin:/bin',HOME:path.join(root,'home'),TMPDIR:path.join(root,'home'),CHARIOX_KERNEL_BROWSER_HEADLESS:'1',CHARIOX_KERNEL_BROWSER_MIRROR:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_MIRROR_DRILL_REVIEW_ONLY:process.env.CHARIOX_MIRROR_DRILL_REVIEW_ONLY??'',CHARIOX_MIRROR_DRILL_RENDERER_REVIEW:process.env.CHARIOX_MIRROR_DRILL_RENDERER_REVIEW??''},stdio:['ignore','pipe','pipe']});
     let logs='';for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{logs+=chunk.toString();if(logs.length>65536)logs=logs.slice(-65536)});
     code=await new Promise(resolve=>child.once('exit',exit=>resolve(exit??1)));
     await cp(path.join(root,'evidence'),output,{recursive:true});
     await writeFile(path.join(output,'run.log'),logs);
     const codeHashes={};for(const dir of ['controller','client'])for(const name of await readdir(path.join(root,dir)))if(name.endsWith('.mjs')||name.endsWith('.js'))codeHashes[`${dir}/${name}`]=createHash('sha256').update(await readFile(path.join(root,dir,name))).digest('hex');
-    for(const name of ['run.mjs','browser-mirror-metrics.mjs'])codeHashes[name]=createHash('sha256').update(await readFile(path.join(root,name))).digest('hex');
+    for(const name of ['run.mjs','browser-mirror-metrics.mjs','browser-mirror-renderer-review.mjs'])codeHashes[name]=createHash('sha256').update(await readFile(path.join(root,name))).digest('hex');
     await writeFile(path.join(output,'execution-hashes.json'),JSON.stringify(codeHashes,null,2));
     await writeFile(path.join(output,'provenance.json'),JSON.stringify({items:['MP-08','MP-10','MP-11'],source,dirty:Boolean(dirty),tracked_dirty:Boolean(trackedDirty),command:process.argv.slice(1),exit_code:code,topology:'isolated Node host controller + real Chromium + shared renderer, no Rust or relay',cleanup:'host-owned Chromium stopped; exact disposable state removed'},null,2));
   }finally{if(sandboxProfile)execFileSync('/usr/sbin/apparmor_parser',['-R',sandboxProfile]);await rm(root,{recursive:true,force:true});}
@@ -84,7 +85,9 @@ if(process.argv[2]!=='child') {
     // Playwright's recursive JS-object serializer is not a product transport.
     let observedPacket;const nextPacket=async()=>observedPacket=JSON.parse(await viewer.evaluate(async()=>JSON.stringify(await window.mirror.next())));
     receipt.environment={node:process.version,chromium:browser.version(),bridge:'bounded same-origin loopback HTTP with recursively sorted JSON maps; no Playwright RPC bridge, Rust or relay'};
-    for(const dpr of process.env.CHARIOX_MIRROR_DRILL_REVIEW_ONLY?[]:[1,2])for(const kind of ['docs','forms','spa','shadow','frames','media','long']){
+    const rendererReviewMode=process.env.CHARIOX_MIRROR_DRILL_RENDERER_REVIEW;
+    if(rendererReviewMode){const {rendererReview}=await import('./browser-mirror-renderer-review.mjs');await rendererReview({source,viewer,originUrl,viewerUrl,receipt,mode:rendererReviewMode,resource});}
+    for(const dpr of process.env.CHARIOX_MIRROR_DRILL_REVIEW_ONLY||rendererReviewMode?[]:[1,2])for(const kind of ['docs','forms','spa','shadow','frames','media','long']){
       const opened=await source.request({op:'open',url:`${originUrl}/${kind}`,observed_by:'drill'}),generation=opened.generation,tab_id=opened.tab_id;
       const prepared=await source.request({op:'mirror_subscribe',tab_id,generation,device_scale_factor:dpr,observed_by:'drill'});
       await source.request({op:'navigate',tab_id,generation,url:`${originUrl}/${kind}`,observed_by:'drill'});
@@ -181,6 +184,7 @@ if(process.argv[2]!=='child') {
       latencies.sort((a,b)=>a-b);receipt.rows.push({fixture:kind,dpr,bootstrap_ms:bootstrapMs,first_meaningful_paint_ms:firstMeaningfulPaintMs,bootstrap_bytes:bootstrapBytes,pixel_mse:mse,pixel_mismatch_fraction:mismatch,source_size:[sourcePixels.width,sourcePixels.height],client_size:[clientPixels.width,clientPixels.height],input_effect_p50_ms:latencies[4],input_effect_p95_ms:latencies[9],mutation_paint_ms:mutationMs,mutation_p50_ms:mutationLatencies[4],mutation_p95_ms:mutationLatencies[9],patch_bytes_mean:patchBytes.reduce((a,b)=>a+b,0)/patchBytes.length,client_stages:stages,trials,settled_non_dom:nonDom,raster,mutation_raster:mutationRaster,mutation_layout:mutationLayout,mutation_batch_nodes:kind==='spa'?60:1,layout,settled_layout:settledLayout,hydration_ms:hydrationMs,hydration_bytes:hydrationBytes,fidelity_status:nonDom.every(region=>region.mse===0)&&raster.outside_edge_mismatch_fraction<=0.001&&mutationRaster.outside_edge_mismatch_fraction<=0.001&&mutationLayout.max_error_css_px<=0.5&&mutationLayout.text_mismatches===0&&mutationLayout.color_mismatches===0&&settledLayout.max_error_css_px<=0.5&&textRunMaxError<=0.5&&settledLayout.text_mismatches===0&&settledLayout.color_mismatches===0?'PASS_GATE':'RED_FIDELITY',latency_status:latencies[4]<=80&&latencies[9]<=120&&mutationLatencies[4]<=80&&firstMeaningfulPaintMs<=500?'PASS_GATE':'RED_LATENCY',effects:10});
       await viewer.evaluate(()=>window.mirror.close());await source.request({op:'close',tab_id,generation,observed_by:'drill'});await resource();
     }
+    if(!rendererReviewMode){
     // MP-11: trusted same-origin geometry must mask pixels inside another tile.
     {
       const opened=await source.request({op:'open',url:`${originUrl}/frames`,observed_by:'drill'}),tab=source.tabs.get(opened.tab_id),connection=await source.browser.ensureConnection(),sessionId=await source.browser.ensureTargetSession(connection,tab.target_id);
@@ -252,6 +256,7 @@ if(process.argv[2]!=='child') {
     assert(!JSON.stringify(masked).includes('SYNTHETIC-')&&!JSON.stringify(masked).includes('VAULT-')&&!JSON.stringify(masked).includes('MARKER'));assert(masked.nodes.some(n=>n.kind==='mask'));
     await source.protect({values:[],targets:[],unknown:true});await assert.rejects(source.request({op:'mirror_next',subscription_id:subscribed.subscription_id,generation:opened.generation,after_sequence:1,drift_nodes:[],observed_by:'drill'}),/registry unavailable/);
     receipt.security.push({check:'synthetic Vault split-text/attribute echoes absent; unknown observation registry fences DOM packets',passed:true});await source.protect({values:[],targets:[],unknown:false});await source.request({op:'close',tab_id:tab.tab_id,generation:opened.generation,observed_by:'drill'});
+    }
     assert.equal(forbiddenRequests,0);receipt.security.push({check:'no viewer origin requests; page world cannot forge isolated observer',passed:true});receipt.status=receipt.rows.every(r=>r.fidelity_status==='PASS_GATE'&&r.latency_status==='PASS_GATE')?'PASS_LOCAL_COMPONENT':'RED_GATE';process.exitCode=receipt.status==='PASS_LOCAL_COMPONENT'?0:1;
   }catch(error){receipt.failure={name:error.name,message:error.message,stack:error.stack};process.exitCode=1;}
   finally{

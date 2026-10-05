@@ -210,3 +210,30 @@ hash refers to round1 renderer bytes plus that patch; round2 already changed the
 renderer. Cloud must import the current complete file and repin its actual
 SHA-256. The evidence manifest records both base and final renderer hashes; no
 claim of byte identity with the older Cloud pin is made.
+
+## MP-08/MP-10/MP-11 round4 renderer review fixes
+
+Local focus and input progress are fenced by the observed source document and
+sequence. While local input is pending, and through the one credit that can
+already be captured before its acknowledgement, a delayed packet cannot restore
+older source focus or selection over the user's newer target. The following
+credit may restore authoritative focus, including keyboard focus changes. Reset
+(including protection reset), navigation, removed/replaced or masked targets
+discard local intent. Tracking runs after asynchronous hash/resource validation
+so input during that await is included. The one-outstanding-credit contract and
+kernel epoch/actor admission remain unchanged; no new wire fields or minima.
+
+Listener removers belong to a per-Document binding map. Reconciliation releases
+retired nested Documents; resets release previous nested bindings before rebuilding
+and close releases every binding. Surviving Documents still bind once, independent
+of CSP metadata. Retired trees are absent from both bindings and the node map.
+
+Run the existing external-tools drill with
+`CHARIOX_MIRROR_DRILL_RENDERER_REVIEW=all` for the focused real-Chromium checks:
+400ms delayed pre-click credit, immediate B typing and typing after apply (A stays
+unchanged), input during hash validation, settled source focus, reset/navigation
+fences and twelve iframe replacement/removal cycles including resets before close.
+`focus` or `documents` selects either regression for fail-first evidence. This is
+a component/loopback fixture, not production Cloud/relay or MP acceptance. Cloud
+must copy the complete shared renderer and repin its new SHA-256; public renderer
+API, packet shapes and all other shared renderer source files are unchanged.

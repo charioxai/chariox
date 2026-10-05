@@ -31,9 +31,10 @@ export class BrowserMirrorRenderer {
   private loaded:Promise<void>
   private disposed=false
   private applying=false
-  private boundDocuments=new WeakSet<Document>()
+  private documentBindings=new Map<Document,Array<()=>void>>()
+  private localFocus:{node_id:string;document_id:string;through_sequence:number}|null=null
+  private pendingInputs=0
   private inputChain:Promise<void>=Promise.resolve()
-  private removers:Array<()=>void>=[]
   constructor(private container:HTMLElement,private input:(action:KernelBrowserMirrorAction,epoch?:{sequence:number;document_id:string})=>Promise<unknown>,private failure:(error:unknown)=>void) {
     this.frame=container.ownerDocument.createElement('iframe')
     this.frame.setAttribute('sandbox','allow-same-origin') // scripts NEVER enabled
@@ -50,19 +51,34 @@ export class BrowserMirrorRenderer {
     if(!this.doc)throw Error('MP-11: mirror sandbox unavailable')
     this.bindEvents(this.doc)
   }
+  private rememberFocus(node:Node|null):void {
+    const node_id=node?this.ids.get(node):undefined
+    if(node_id&&this.documentId&&this.records.has(node_id)&&this.records.get(node_id)!.kind!=='mask')this.localFocus={node_id,document_id:this.documentId,through_sequence:this.sequence+1}
+  }
   private enqueue(action:KernelBrowserMirrorAction):void {
     if(this.applying||this.disposed)return
+    let focused=this.doc?.activeElement??null
+    while(focused){const nested=focused.tagName==='IFRAME'?(focused as HTMLIFrameElement).contentDocument?.activeElement:focused.shadowRoot?.activeElement;if(!nested)break;focused=nested}
+    this.rememberFocus(focused)
     const epoch={sequence:this.sequence,document_id:this.documentId}
-    this.inputChain=this.inputChain.then(async()=>{if(!this.disposed)await this.input(action,epoch)}).catch(this.failure)
+    this.pendingInputs++
+    this.inputChain=this.inputChain.then(async()=>{try{if(!this.disposed)await this.input(action,epoch)}finally{
+      this.pendingInputs--
+      // MP-08/MP-11: one credit can already be captured before this input
+      // settles. Its successor is the first observation that may restore focus.
+      if(this.localFocus?.document_id===epoch.document_id)this.localFocus.through_sequence=Math.max(this.localFocus.through_sequence,this.sequence+1)
+    }}).catch(this.failure)
   }
   private bindEvents(doc:Document):void {
-    if(this.boundDocuments.has(doc))return
-    this.boundDocuments.add(doc)
+    if(this.documentBindings.has(doc))return
+    const removers:Array<()=>void>=[]
+    this.documentBindings.set(doc,removers)
     let lastComposition:string|null=null
     const target=(event:Event):Node=>event.composedPath()[0] as Node
     const point=(event:MouseEvent):{x:number;y:number}=>{let x=event.clientX,y=event.clientY;for(let view:Window|null=doc.defaultView;view&&view!==this.frame.contentWindow;view=view.parent){const frame=view.frameElement as HTMLElement|null;if(!frame)throw Error('MP-11: detached mirror frame');const box=frame.getBoundingClientRect();const style=view.parent.getComputedStyle(frame);x+=box.x+frame.clientLeft+(parseFloat(style.paddingLeft)||0);y+=box.y+frame.clientTop+(parseFloat(style.paddingTop)||0)}return {x:Math.floor(x),y:Math.floor(y)}}
     const id=(node:Node|null):string|undefined=>node ? this.ids.get(node) : undefined
-    const on=(kind:string,fn:EventListener):void=>{doc.addEventListener(kind,fn,true);this.removers.push(()=>doc.removeEventListener(kind,fn,true))}
+    const on=(kind:string,fn:EventListener):void=>{doc.addEventListener(kind,fn,true);removers.push(()=>doc.removeEventListener(kind,fn,true))}
+    on('focusin',event=>{if(!this.applying&&!this.disposed)this.rememberFocus(target(event))})
     on('click',event=>{event.preventDefault();const node=id(target(event));if(node){const record=this.records.get(node);if(record?.kind==='mask')return;if(record?.kind==='tile'){const mouse=event as MouseEvent;this.enqueue({kind:'coordinate',input:{kind:'click',...point(mouse)}})}else this.enqueue({kind:'click',node_id:node})}})
     on('wheel',event=>{event.preventDefault();const wheel=event as WheelEvent,node=id(target(event));if(!node)return;const record=this.records.get(node);if(record?.kind==='mask')return;const delta_x=Math.trunc(wheel.deltaX),delta_y=Math.trunc(wheel.deltaY);if(record?.kind==='tile')this.enqueue({kind:'coordinate',input:{kind:'scroll',...point(wheel),delta_x,delta_y}});else this.enqueue({kind:'scroll',node_id:node,delta_x,delta_y})})
     on('keydown',event=>{const key=(event as KeyboardEvent).key;if(['Tab','Enter','Escape','Backspace','Delete','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(key)){event.preventDefault();this.enqueue({kind:'key',key})}})
@@ -70,6 +86,9 @@ export class BrowserMirrorRenderer {
     on('compositionupdate',event=>{event.preventDefault();const e=event as CompositionEvent,node=id(target(event));if(node)this.enqueue({kind:'composition',node_id:node,text:e.data,selection_start:e.data.length,selection_end:e.data.length})})
     on('compositionend',event=>{event.preventDefault();const e=event as CompositionEvent,node=id(target(event));if(node){lastComposition=e.data;setTimeout(()=>{lastComposition=null},0);this.enqueue({kind:'text',node_id:node,text:e.data})}})
     on('selectionchange',()=>{if(this.applying)return;const selection=doc.getSelection();if(!selection||selection.isCollapsed)return;const a=id(selection.anchorNode),b=id(selection.focusNode);if(a&&b)this.enqueue({kind:'selection',anchor_id:a,anchor_offset:selection.anchorOffset,focus_id:b,focus_offset:selection.focusOffset})})
+  }
+  private releaseDocuments(live:Set<Document>):void {
+    for(const [doc,removers]of this.documentBindings)if(!live.has(doc)){for(const remove of removers)remove();this.documentBindings.delete(doc)}
   }
   private style(element:HTMLElement,style:Record<string,string>,previous?:Record<string,string>):void {
     // MP-10: a scalar paint delta need not reset every layout property.
@@ -95,7 +114,7 @@ export class BrowserMirrorRenderer {
     else node=doc.createElement(record.tag??'div')
     this.dom.set(record.id,node);this.ids.set(node,record.id);return node
   }
-  private update(record:MirrorNode,node:Node,previous?:MirrorNode):void {
+  private update(record:MirrorNode,node:Node,previous?:MirrorNode,preserveSelection=false):void {
     if(record.kind==='text'){if(node.textContent!==(record.text??''))node.textContent=record.text??'';return}
     if(node.nodeType!==1)return
     const element=node as HTMLElement
@@ -114,7 +133,7 @@ export class BrowserMirrorRenderer {
       const field=element as HTMLInputElement;field.value=record.form.value
       if('checked'in field)field.checked=record.form.checked
       if('selectedIndex'in field)(field as unknown as HTMLSelectElement).selectedIndex=record.form.selected_index
-      if(record.form.selection_start!==null&&record.form.selection_end!==null)try{field.setSelectionRange(record.form.selection_start,record.form.selection_end)}catch{}
+      if(!preserveSelection&&record.form.selection_start!==null&&record.form.selection_end!==null)try{field.setSelectionRange(record.form.selection_start,record.form.selection_end)}catch{}
     }
   }
   async apply(packet:MirrorPacket):Promise<void> {
@@ -129,12 +148,21 @@ export class BrowserMirrorRenderer {
     this.timed('validate_hash',at);at=performance.now()
     if(packet.reset)this.clearResources()
     for(const resource of packet.resources)await this.addResource(resource)
+    if(this.disposed||!this.doc)throw Error('MP-08: mirror closed during validation')
     const newTiles=packet.tiles.map<TileRaster>(tile=>{const cached=packet.reset?undefined:this.tileCache.get(tile.node_id);return cached&&JSON.stringify(cached.tile)===JSON.stringify(tile)?cached:{tile,url:blobUrl(tile.data_base64,'image/png')}})
     this.timed('resource_decode',at);at=performance.now()
     this.dpr=packet.device_scale_factor
+    // MP-11: local progress never crosses reset/protection or document fences,
+    // nor targets a removed/replaced/protected node. With one in-flight credit,
+    // sequence+1 can precede the last input acknowledgement even on a fast LAN.
+    const local=this.localFocus,record=local?next.get(local.node_id):undefined,previous=local?this.records.get(local.node_id):undefined
+    const preserve=local&&!packet.reset&&local.document_id===packet.document_id&&record&&previous&&record.kind===previous.kind&&record.tag===previous.tag&&record.kind!=='mask'&&(this.pendingInputs>0||packet.sequence<=local.through_sequence)
+    const localNode=preserve?this.dom.get(local.node_id) as HTMLElement|undefined:undefined
+    if(!preserve)this.localFocus=null
+    const liveDocuments=new Set([this.doc])
     this.applying=true
     try {
-      if(packet.reset){this.dom.clear();this.ids=new WeakMap();this.doc.body.replaceChildren();this.doc.head.querySelectorAll('style[data-mirror-fonts],style[data-mirror-pseudo]').forEach(n=>n.remove())}
+      if(packet.reset){this.releaseDocuments(liveDocuments);this.dom.clear();this.ids=new WeakMap();this.doc.body.replaceChildren();this.doc.head.querySelectorAll('style[data-mirror-fonts],style[data-mirror-pseudo]').forEach(n=>n.remove())}
       for(const id of packet.removed){const node=this.dom.get(id);if(node?.parentNode&&node.parentNode.nodeType!==9)node.parentNode.removeChild(node);this.dom.delete(id)}
       const changed=new Set(packet.nodes.map(n=>n.id))
       const frames:Array<{record:MirrorNode;frame:HTMLIFrameElement}>=[]
@@ -144,7 +172,7 @@ export class BrowserMirrorRenderer {
         const old=this.records.get(id)
         const create=!node||node.ownerDocument!==doc||old?.kind!==record.kind||old?.tag!==record.tag
         if(create){const created=this.create(record,doc);node?.parentNode?.replaceChild(created,node);node=created}
-        if(create||changed.has(id))this.update(record,node!,create?undefined:old)
+        if(create||changed.has(id))this.update(record,node!,create?undefined:old,record.id===local?.node_id&&Boolean(preserve))
         node=node!
         if(record.kind==='frame') {
           const frame=node as HTMLIFrameElement;frame.setAttribute('sandbox','allow-same-origin');frame.setAttribute('referrerpolicy','no-referrer');
@@ -175,6 +203,7 @@ export class BrowserMirrorRenderer {
       // about:blank document. Nested documents inherit the inert parent CSP.
       for(let i=0;i<frames.length;i++) {
         const {record,frame}=frames[i]!;const nested=frame.contentDocument;if(!nested)throw Error('MP-11: nested mirror unavailable')
+        liveDocuments.add(nested)
         const documentRecord=next.get(record.children[0]!)!;build(documentRecord.id,nested);const html=build(documentRecord.children[0]!,nested)
         if(html && html!==nested.documentElement){if(nested.documentElement)nested.documentElement.replaceWith(html);else nested.appendChild(html)}
         if(!nested.head.querySelector('meta[http-equiv]')){const meta=nested.createElement('meta');meta.httpEquiv='Content-Security-Policy';meta.content=mirrorSandboxCsp;nested.head.prepend(meta)}
@@ -222,9 +251,12 @@ export class BrowserMirrorRenderer {
       const usedResources=new Set(packet.fonts.map(f=>f.resource));for(const record of next.values()){if(record.resource)usedResources.add(record.resource);for(const value of Object.values(record.style??{}))if(value.startsWith('resource:'))usedResources.add(value.slice(9))}
       for(const [id,url]of this.resources)if(!usedResources.has(id)){URL.revokeObjectURL(url);this.resources.delete(id)}
       this.records=next;this.sequence=packet.sequence;this.documentId=packet.document_id
-      if(packet.selection){const selected=packet.selection,anchor=this.dom.get(selected.anchor_id)!,focus=this.dom.get(selected.focus_id)!,selection=anchor.ownerDocument!.getSelection()!;if(selection.anchorNode!==anchor||selection.anchorOffset!==selected.anchor_offset||selection.focusNode!==focus||selection.focusOffset!==selected.focus_offset)selection.setBaseAndExtent(anchor,selected.anchor_offset,focus,selected.focus_offset)}else for(const doc of new Set([...this.dom.values()].map(n=>n.ownerDocument).filter((d):d is Document=>d!==null))){const selection=doc.getSelection();if(selection&&!selection.isCollapsed)selection.removeAllRanges()}
-      const focused=this.dom.get(packet.focused??'') as HTMLElement|undefined;focused?.focus?.({preventScroll:true})
-    } finally {this.applying=false}
+      if(!preserve){
+        if(packet.selection){const selected=packet.selection,anchor=this.dom.get(selected.anchor_id)!,focus=this.dom.get(selected.focus_id)!,selection=anchor.ownerDocument!.getSelection()!;if(selection.anchorNode!==anchor||selection.anchorOffset!==selected.anchor_offset||selection.focusNode!==focus||selection.focusOffset!==selected.focus_offset)selection.setBaseAndExtent(anchor,selected.anchor_offset,focus,selected.focus_offset)}else for(const doc of new Set([...this.dom.values()].map(n=>n.ownerDocument).filter((d):d is Document=>d!==null))){const selection=doc.getSelection();if(selection&&!selection.isCollapsed)selection.removeAllRanges()}
+        const focused=this.dom.get(packet.focused??'') as HTMLElement|undefined;focused?.focus?.({preventScroll:true})
+      }else if(localNode?.isConnected&&this.dom.get(local!.node_id)===localNode)localNode.focus?.({preventScroll:true})
+      else this.localFocus=null
+    } finally {this.releaseDocuments(liveDocuments);this.applying=false}
     this.timed('dom_apply',at);at=performance.now()
     await this.doc.fonts.ready
     const images=[...this.dom.values(),...this.overlays].filter((node):node is HTMLImageElement=>node.nodeType===1&&(node as Element).tagName==='IMG')
@@ -265,7 +297,7 @@ export class BrowserMirrorRenderer {
     this.timed('drift_scan',started);return [...drift]
   }
   private clearResources():void {for(const url of this.resources.values())URL.revokeObjectURL(url);this.resources.clear();for(const url of this.tileUrls)URL.revokeObjectURL(url);this.tileUrls=[];this.tileCache.clear()}
-  close():void {this.disposed=true;for(const remove of this.removers)remove();this.removers=[];this.clearResources();this.dom.clear();this.records.clear();this.overlays=[];this.frame.remove()}
+  close():void {this.disposed=true;this.releaseDocuments(new Set());this.localFocus=null;this.doc=null;this.clearResources();this.dom.clear();this.records.clear();this.overlays=[];this.frame.remove()}
 }
 export async function attachBrowserMirror(transport:MirrorTransport,container:HTMLElement,binding:Binding,onFailure:(error:unknown)=>void):Promise<{next():Promise<MirrorPacket>;input(action:KernelBrowserMirrorAction):Promise<unknown>;takeover():Promise<unknown>;release():Promise<unknown>;actors():Promise<unknown>;close():Promise<void>;renderer:BrowserMirrorRenderer}> {
   if(!Number.isInteger(transport.protocolVersion)||transport.protocolVersion<browserMirrorMinimumProtocolVersion)throw Error('MP-08: DOM mirroring requires protocol 433')

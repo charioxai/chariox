@@ -58,11 +58,11 @@ test('MP-08/MP-11: sorted Rust style maps cannot reset vendor paint properties a
 test('MP-08/MP-11: nested event listeners bind once per Document independent of CSP reconciliation',async()=>{
  const listeners=new Map<string,Set<EventListener>>(),doc={addEventListener(kind:string,fn:EventListener){if(!listeners.has(kind))listeners.set(kind,new Set());listeners.get(kind)!.add(fn)},removeEventListener(kind:string,fn:EventListener){listeners.get(kind)?.delete(fn)},dispatchEvent(event:Event){for(const fn of listeners.get(event.type)??[])fn(event)}},node={} as Node,actions:unknown[]=[];
  const renderer=Object.create(BrowserMirrorRenderer.prototype) as any;
- Object.assign(renderer,{boundDocuments:new WeakSet(),disposed:false,applying:false,sequence:8,documentId:'d',inputChain:Promise.resolve(),removers:[],ids:new WeakMap([[node,'n1']]),records:new Map([['n1',{id:'n1',kind:'element'}]]),input:async(action:unknown)=>{actions.push(action)},failure:(error:unknown)=>{throw error}});
+ Object.assign(renderer,{documentBindings:new Map(),disposed:false,applying:false,sequence:8,documentId:'d',inputChain:Promise.resolve(),pendingInputs:0,localFocus:null,doc:null,ids:new WeakMap([[node,'n1']]),records:new Map([['n1',{id:'n1',kind:'element'}]]),input:async(action:unknown)=>{actions.push(action)},failure:(error:unknown)=>{throw error}});
  for(let packet=0;packet<8;packet++)renderer.bindEvents(doc);
  for(const [kind,extra]of [['click',{}],['beforeinput',{inputType:'insertText',data:'Q',isComposing:false}],['keydown',{key:'Enter'}],['wheel',{deltaX:0,deltaY:20}] ] as const){const event=new Event(kind);Object.assign(event,extra);Object.defineProperty(event,'composedPath',{value:()=>[node]});doc.dispatchEvent(event)}
- await renderer.inputChain;assert.equal(actions.length,4);assert.equal(renderer.removers.length,7);
- for(const remove of renderer.removers)remove();const event=new Event('click');Object.defineProperty(event,'composedPath',{value:()=>[node]});doc.dispatchEvent(event);await renderer.inputChain;assert.equal(actions.length,4);
+ await renderer.inputChain;assert.equal(actions.length,4);assert.equal(renderer.documentBindings.size,1);assert.equal(renderer.documentBindings.get(doc).length,8);
+ renderer.releaseDocuments(new Set());assert.equal(renderer.documentBindings.size,0);const event=new Event('click');Object.defineProperty(event,'composedPath',{value:()=>[node]});doc.dispatchEvent(event);await renderer.inputChain;assert.equal(actions.length,4);
 });
 
 test('MP-08/MP-10: scalar paint patches preserve layout and removed keys force a clean reset',()=>{
