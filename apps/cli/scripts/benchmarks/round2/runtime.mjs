@@ -49,14 +49,17 @@ export async function startOwnedRuntime({ lane, evidence, release, repo, clientR
     if (interrupted) throw new Error('MP-10 runtime interruption/resource floor')
     return sample
   }
-  async function close() {
+  async function close({ preserveState = false } = {}) {
     if (closing) return report.cleanup
     closing = true; clearInterval(monitor)
-    const cleanup = { processes: [], stateRemoved: false, workspaceRemoved: false, unresolvedRooms: [] }
+    const cleanup = { processes: [], stateRemoved: false, workspaceRemoved: false, unresolvedRooms: [], unresolvedSlices: [] }
+    if (preserveState) cleanup.externalOwnershipUnsettled = true
     if (client) {
       try {
         const sessions = one(await client.send({ ListSessions: null }), 'SessionsListed').sessions
         cleanup.unresolvedRooms = sessions.map(session => session.id)
+        const slices = one(await client.send({ ListSlices: null }), 'SlicesListed').slices
+        cleanup.unresolvedSlices = slices.map(slice => slice.id)
       } catch { cleanup.inventoryUnavailable = true }
       await client.close()
     }
@@ -65,7 +68,7 @@ export async function startOwnedRuntime({ lane, evidence, release, repo, clientR
       catch (error) { cleanup.processes.push({ pid: child.pid, stopped: false, errorClass: error.name }) }
     }
     // Preserve unsettled state for recovery; never erase a live Room's authority.
-    if (!cleanup.inventoryUnavailable && !cleanup.unresolvedRooms.length && cleanup.processes.every(row => row.stopped)) {
+    if (!preserveState && !cleanup.inventoryUnavailable && !cleanup.unresolvedRooms.length && !cleanup.unresolvedSlices.length && cleanup.processes.every(row => row.stopped)) {
       assert(root.startsWith(`${lane}/runtime-`) && workspace.startsWith('/root/work/agent-r2next-runtime-workspace-'))
       await rm(root, { recursive: true }); cleanup.stateRemoved = true
       await rm(workspace, { recursive: true }); cleanup.workspaceRemoved = true

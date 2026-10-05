@@ -60,7 +60,7 @@ export async function recover(options, originalEvidence, taskId) {
     try {
       if (child) assert(await stopOwnedProcess(child, { detached: true }), 'MP-11 recovery child did not settle')
     } catch (error) { report.childCleanupFailure = { errorClass: error.name } }
-    if (runtime) report.cleanup = await runtime.close()
+    if (runtime) report.cleanup = await runtime.close({ preserveState: !!report.childCleanupFailure })
     report.finishedAt = new Date().toISOString()
     await writeFile(`${options.runtime.evidence}/RECOVERY.json`, JSON.stringify(report, null, 2) + '\n')
   }

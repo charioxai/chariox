@@ -162,7 +162,7 @@ export async function runWebVoyagerTask({ task, runtime, options }) {
     row.cleanup = await room.cleanup()
     row.containerGone = container ? await docker(['inspect', container]).then(() => false, () => true) : true
     row.volumesGone = (await Promise.all(volumes.map(volume => docker(['volume', 'inspect', volume]).then(() => false, () => true)))).every(Boolean)
-    row.cleanupValid = row.cleanup.complete && row.containerGone && row.volumesGone && !row.cancelFailed
+    row.cleanupValid = row.cleanup.complete && row.containerGone && row.volumesGone && !row.cancelFailed && !row.judgeFailure?.cleanupFailed
     if (!row.cleanupValid) row.harnessValid = false
     row.finishedAt = new Date().toISOString(); row.elapsedMs = Date.now() - started
     await checkpoint(); await client.close()

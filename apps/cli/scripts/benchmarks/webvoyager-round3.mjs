@@ -65,7 +65,7 @@ try {
   report.failureClass = error.name; process.exitCode = 1
   console.log('MP-08/MP-10 WebVoyager campaign RED; original attempt receipts retained')
 } finally {
-  if (runtime) report.cleanup = await runtime.close()
+  if (runtime) report.cleanup = await runtime.close({ preserveState: rows.some(row => !row.excluded && (!row.cleanupValid || row.judgeFailure?.cleanupFailed)) })
   report.finishedAt = new Date().toISOString(); await save()
   process.off('SIGTERM', interrupt); process.off('SIGINT', interrupt)
 }

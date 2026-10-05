@@ -7,6 +7,7 @@ import path from 'node:path'
 export function assertRuntimeClosed(cleanup) {
   assert(cleanup?.stateRemoved && cleanup.workspaceRemoved && Array.isArray(cleanup.unresolvedRooms)
     && !cleanup.unresolvedRooms.length && Array.isArray(cleanup.processes) && cleanup.processes.length
+    && (!('unresolvedSlices' in cleanup) || (Array.isArray(cleanup.unresolvedSlices) && !cleanup.unresolvedSlices.length))
     && cleanup.processes.every(p => p.stopped), 'MP-11 prior runtime cleanup incomplete')
 }
 

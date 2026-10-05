@@ -56,8 +56,12 @@ export async function judgeWebVoyager({ task, directory, screenshots, upstream, 
     clearTimeout(timer)
     try { assert(await stopOwnedProcess(child, { detached: true }), 'MP-11 judge exit acknowledgement missing') }
     catch (error) {
-      if (firstError) { firstError.judgeFailure.cleanupFailed = true; throw firstError }
-      throw error
+      const original = firstError ?? error
+      original.judgeFailure ??= nativeFailureEvidence({ output, exitCode, abort })
+      Object.assign(original.judgeFailure, { cleanupFailed: true, ownedPid: child.pid, cleanupFailureClass: error.name })
+      try { await writeFile(`${directory}/judge-failure.json`, JSON.stringify(original.judgeFailure, null, 2) + '\n', { mode: 0o600 }) }
+      catch { original.judgeFailure.evidenceWriteFailed = true }
+      throw original
     }
   }
 }

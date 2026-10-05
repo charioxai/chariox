@@ -55,9 +55,17 @@ async function fixture(kind) {
     }
     const coordinator = new vm.SourceTextModule(await readFile(new URL('./webvoyager-round3.mjs', import.meta.url), 'utf8'), { context })
     await coordinator.link(async specifier => {
-      if (specifier === './round2/runtime.mjs') return synthetic(specifier, { startOwnedRuntime: async () => ({ source: kind === 'controller-change' ? { ...source, image: `sha256:${'3'.repeat(64)}` } : source, guard: async () => {}, close: async () => cleanup }) })
+      if (specifier === './round2/runtime.mjs') return synthetic(specifier, { startOwnedRuntime: async () => ({ source: kind === 'controller-change' ? { ...source, image: `sha256:${'3'.repeat(64)}` } : source, guard: async () => {}, close: async options => {
+        if (['native-cleanup-failure', 'slice-cleanup-failure'].includes(kind)) {
+          assert.equal(options?.preserveState, true, 'MP-11 native or slice ownership remains unsettled')
+          return { ...cleanup, stateRemoved: false, workspaceRemoved: false }
+        }
+        return cleanup
+      } }) })
       if (specifier === './webvoyager-task.mjs') return synthetic(specifier, { runWebVoyagerTask: async ({ task }) => {
         calls.push(task.id)
+        if (kind === 'native-cleanup-failure') return { taskId: task.id, turnLifecycle: 'completed', cleanupValid: false, judgeFailure: { cleanupFailed: true } }
+        if (kind === 'slice-cleanup-failure') return { taskId: task.id, turnLifecycle: 'completed', cleanupValid: false }
         if (kind === 'parallel-pause' && calls.length === 2) return { taskId: task.id, cleanupValid: true, harnessValid: true, judgeValid: true, judgeVerdict: 'NOT SUCCESS', turnLifecycle: 'completed' }
         if (calls.length > 1) throw Error('MP-10 fixture prevents repeated provider-failure storm')
         return { taskId: task.id, providerError: true, turnLifecycle: 'failed', cleanupValid: true, harnessValid: false, judgeValid: false }
@@ -71,15 +79,15 @@ async function fixture(kind) {
       return
     }
     await coordinator.evaluate()
-    assert.deepEqual(calls, kind === 'controller-change' ? [] : kind === 'parallel-pause' ? ['fixture--0', 'fixture--1'] : [kind === 'continuation' ? 'fixture--2' : 'fixture--0'])
+    assert.deepEqual(calls, kind === 'controller-change' ? [] : kind === 'parallel-pause' ? ['fixture--0', 'fixture--1'] : [kind !== 'pause' ? 'fixture--2' : 'fixture--0'])
     assert.equal(await readFile(`${prior}/RESULTS.json`, 'utf8'), priorBefore)
     const report = JSON.parse(await readFile(`${evidence}/CAMPAIGN.json`, 'utf8'))
     assert.equal(report.completed, false)
-    assert.equal(report.cleanup.stateRemoved, true)
+    assert.equal(report.cleanup.stateRemoved, !['native-cleanup-failure', 'slice-cleanup-failure'].includes(kind))
   } finally { await rm(root, { recursive: true }) }
 }
 
 if (process.argv[2] === '--fixture') await fixture(process.argv[3])
-else for (const kind of ['pause', 'parallel-pause', 'continuation', 'ghost-admission', 'unsettled-prior', 'controller-change']) test(`MP-08/MP-10/MP-11 actual campaign ${kind} prevents admitted-task replay`, async () => {
+else for (const kind of ['pause', 'parallel-pause', 'continuation', 'ghost-admission', 'unsettled-prior', 'controller-change', 'native-cleanup-failure', 'slice-cleanup-failure']) test(`MP-08/MP-10/MP-11 actual campaign ${kind} prevents admitted-task replay`, async () => {
   await exec(process.execPath, ['--experimental-vm-modules', fileURLToPath(import.meta.url), '--fixture', kind], { maxBuffer: 65536 })
 })
