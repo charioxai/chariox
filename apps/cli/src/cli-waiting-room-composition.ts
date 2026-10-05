@@ -225,6 +225,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   })
   const waitingRoomWorkspaceController = createWaitingRoomWorkspaceController({
     getWorkspace: deps.pendingWorkspaceTarget,
+    getWorktree: deps.pendingWorktreeTarget,
     setWorkspace: deps.setPendingWorkspaceTarget,
     setWorktree: deps.setPendingWorktreeTarget,
     resetSelection: () => deps.setWaitingRoomState({ ...deps.waitingRoomState(), worktreeSelectionId: "", projectSelectionId: "default" }),

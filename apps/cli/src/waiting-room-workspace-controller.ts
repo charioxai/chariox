@@ -40,6 +40,7 @@ export function waitingRoomWorkspaceSelection(
 
 export function createWaitingRoomWorkspaceController(deps: {
   getWorkspace(): string
+  getWorktree(): string
   setWorkspace(path: string): void
   setWorktree(path: string): void
   resetSelection(): void
@@ -129,7 +130,7 @@ export function createWaitingRoomWorkspaceController(deps: {
       }
       const { worktrees, disabledHint } = await loadWaitingRoomKernelWorktrees(send, workspace)
       if (!isCurrent(token)) return
-      setWaitingRoomKernelWorktrees(workspace, workspace, worktrees, disabledHint)
+      setWaitingRoomKernelWorktrees(workspace, deps.getWorktree(), worktrees, disabledHint)
       deps.render()
     }
     try {
@@ -161,7 +162,7 @@ export function createWaitingRoomWorkspaceController(deps: {
     if (machineChanged || workspace !== deps.getWorkspace()) {
       clearWaitingRoomWorktreeInventory()
       deps.setWorkspace(workspace)
-      deps.setWorktree(workspace)
+      deps.setWorktree(workspace === defaultWorkspace ? inventory.launchTarget?.worktreeId || workspace : workspace)
       deps.resetSelection()
     }
     remember()

@@ -198,6 +198,9 @@ export function setWaitingRoomKernelWorktrees(
   worktrees: readonly { path: string; branch?: string | null; label?: string | null; current: boolean }[],
   disabledHint: string | null,
 ) {
+  // Kernel current reflects its launch directory, which may differ from this CLI's target.
+  const hasPendingWorktree = Boolean(currentWorktreePath.trim())
+    && worktrees.some(worktree => samePath(worktree.path, currentWorktreePath))
   activeInventory = {
     workspacePath,
     currentWorktreePath,
@@ -209,7 +212,7 @@ export function setWaitingRoomKernelWorktrees(
         label: worktree.label || formatWorktreeLabel({ path: worktree.path, branch: worktree.branch ?? null }, workspacePath),
         path: worktree.path,
         branch: worktree.branch ?? null,
-        isCurrent: worktree.current,
+        isCurrent: hasPendingWorktree ? samePath(worktree.path, currentWorktreePath) : worktree.current,
       })),
       { id: CREATE_WORKTREE_OPTION_ID, kind: "create" as const, label: DEFAULT_CREATE_WORKTREE_LABEL },
     ],
