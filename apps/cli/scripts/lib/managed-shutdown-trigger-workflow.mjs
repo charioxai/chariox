@@ -35,31 +35,32 @@ export async function runManagedShutdownScenario({ options, product, context, ac
     return idle
   }
 
-  const awaitAutomaticStop = async (baselineIds, baselineRevision, deadlineAt, idleActivityAt) => poll(({ summary, operations }) => {
-    requireValue(summary.runningAgentCount === 0 && summary.lastActivityChangedAt === idleActivityAt,
-      "automatic stop no longer matches the idle activity transition")
-    if (!Array.isArray(operations)) return false
-    const matches = operations.filter((operation) => !baselineIds.has(operation.operationId)
-      && operation.kind === "stop" && operation.environmentId === target().environmentId
-      && operation.desiredRevision > baselineRevision)
-    if (matches.length > 1) throw new Error("automatic stop operation is ambiguous")
-    if (matches.length !== 1) return false
-    const operation = matches[0]
-    if (operation.status === "pending" || operation.status === "running") return false
-    exactOperation([operation], {
-      operationId: operation.operationId,
-      kind: "stop",
-      desiredRevision: operation.desiredRevision,
-    }, target().environmentId)
-    requireValue(operation.status === "succeeded" && typeof operation.completedAt === "string"
-      && Date.parse(operation.createdAt) >= Date.parse(deadlineAt),
-    "automatic stop operation is incomplete or out of order")
-    requireValue(summary.desiredState === "stopped" && summary.observedState === "stopped"
-      && summary.desiredRevision === operation.desiredRevision
-      && summary.observedRevision === operation.desiredRevision,
-    "automatic stop state is not reconciled")
-    return true
-  }, actionDeadline)
+  const awaitAutomaticStop = async (baselineIds, baselineRevision, deadlineAt, idleActivityAt) => {
+    let expected = null
+    return poll(({ summary, operations }) => {
+      requireValue(summary.runningAgentCount === 0 && summary.lastActivityChangedAt === idleActivityAt,
+        "automatic stop no longer matches the idle activity transition")
+      if (!Array.isArray(operations)) return false
+      const matches = operations.filter((operation) => !baselineIds.has(operation.operationId)
+        && operation.kind === "stop" && operation.environmentId === target().environmentId
+        && operation.desiredRevision > baselineRevision)
+      if (matches.length > 1) throw new Error("automatic stop operation is ambiguous")
+      if (matches.length !== 1) return false
+      const operation = matches[0]
+      requireValue(Date.parse(operation.createdAt) >= Date.parse(deadlineAt),
+        "automatic stop operation is incomplete or out of order")
+      expected ??= { operationId: operation.operationId, kind: "stop", desiredRevision: operation.desiredRevision }
+      exactOperation([operation], expected, target().environmentId, { waitThroughFailedAttempts: true })
+      if (operation.status !== "succeeded") return false
+      requireValue(typeof operation.completedAt === "string",
+        "automatic stop operation is incomplete or out of order")
+      requireValue(summary.desiredState === "stopped" && summary.observedState === "stopped"
+        && summary.desiredRevision === operation.desiredRevision
+        && summary.observedRevision === operation.desiredRevision,
+        "automatic stop state is not reconciled")
+      return true
+    }, actionDeadline)
+  }
 
   switch (options.descriptor.mode) {
     case "manual": {
@@ -67,6 +68,7 @@ export async function runManagedShutdownScenario({ options, product, context, ac
       const manualBaseline = new Set(requireOperationHistory(before).map((operation) => operation.operationId))
       await askForAction("manual_stop_via_cloud_ui",
         "Stop this disposable environment through the normal owner-authorized Cloud control UI.")
+      let expected = null
       const stopped = await poll(({ summary, operations }) => {
         requireValue(Array.isArray(operations), "managed operation history is unavailable")
         const matches = operations.filter((operation) => !manualBaseline.has(operation.operationId)
@@ -74,8 +76,12 @@ export async function runManagedShutdownScenario({ options, product, context, ac
         if (matches.length > 1) throw new Error("manual stop operation is ambiguous")
         if (matches.length !== 1) return false
         const operation = matches[0]
-        if (operation.status === "pending" || operation.status === "running") return false
-        requireValue(operation.status === "succeeded", "manual stop operation failed")
+        requireValue(operation.desiredRevision > before.summary.desiredRevision
+          && Date.parse(operation.createdAt) >= Date.parse(before.summary.updatedAt),
+        "manual stop operation is incomplete")
+        expected ??= { operationId: operation.operationId, kind: "stop", desiredRevision: operation.desiredRevision }
+        exactOperation([operation], expected, target().environmentId, { waitThroughFailedAttempts: true })
+        if (operation.status !== "succeeded") return false
         requireValue(typeof operation.completedAt === "string"
           && Date.parse(operation.createdAt) >= Date.parse(before.summary.updatedAt)
           && Date.parse(operation.completedAt) >= Date.parse(operation.createdAt)
@@ -165,6 +171,7 @@ export async function runManagedShutdownScenario({ options, product, context, ac
     }
     case "keep_running": {
       const idle = await finishOneAgent()
+      const stopBaseline = new Set(requireOperationHistory(idle).map((operation) => operation.operationId))
       await askForAction("keep_running_via_cloud_ui",
         "Use the normal owner-authorized Cloud UI Keep running action before this deadline expires.")
       const kept = await poll(({ summary }) => summary.autoStopDeadlineAt === null
@@ -172,8 +179,13 @@ export async function runManagedShutdownScenario({ options, product, context, ac
       actionDeadline)
       requireValue(kept.summary.lastActivityChangedAt === idle.summary.lastActivityChangedAt,
         "keep-running changed last-agent-finished identity")
-      const stopBaseline = new Set(requireOperationHistory(kept).map((operation) => operation.operationId))
-      const observeUntil = Math.min(actionDeadline, monotonic() + 120_000)
+      requireValue(!requireOperationHistory(kept).some(operation => !stopBaseline.has(operation.operationId)
+        && operation.kind === "stop"), "a stop operation appeared after Keep running")
+      // Keep sampling past the cancelled deadline, even if the user clicked early.
+      const observationMs = Math.max(120_000, Date.parse(idle.summary.autoStopDeadlineAt) - now().getTime() + 120_000)
+      requireValue(remaining(actionDeadline) > observationMs,
+        "managed shutdown time bound cannot cover the cancelled deadline")
+      const observeUntil = monotonic() + observationMs
       await poll(({ summary, operations }) => {
         requireValue(Array.isArray(operations), "managed operation history is unavailable")
         requireValue(!operations.some((operation) => !stopBaseline.has(operation.operationId)

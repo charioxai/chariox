@@ -191,6 +191,42 @@ VM/Cloud/provider/cleanup evidence remain open. The detailed scope and owner-sid
 prerequisites are in
 [`MANAGED_PATH1_UPGRADE_RECOVERY_VALIDATION.md`](MANAGED_PATH1_UPGRADE_RECOVERY_VALIDATION.md).
 No MP item is closed by this source qualification.
+## MP-07 / MP-09 / MP-10 / MP-11 b214 shutdown observations (2026-10-05)
+
+OSS base is merged G2 `358491d662330aff538bbd6d6450391332f62ac2`.
+This lane changes the Node shutdown capture, not Cloud shutdown policy, kernel
+runtime behavior or a serialized client/relay contract. The twelve existing
+scenario policies are retained. Keep-running observation now extends through
+the cancelled deadline plus 120 seconds; its minimum driver budget is 1800s.
+Automatic and manual STOP observations retain the initially observed operation
+and revision through manager retries. Even a pending STOP created before its
+idle deadline fails the automatic observation. Safe projected operation changes,
+operator acknowledgement times and workflow/cleanup read coverage survive state
+deduplication; neither operator Enter nor a successful projection read proves
+a real UI action, kernel heartbeat or admission fence.
+
+The exported driver provides an optional bounded `observeBeforeCleanup` barrier
+for a reviewed coordinator bridge to collect independent power/storage/context
+receipts and exercise normal STOP/start persistence before DELETE. Callback
+results are discarded; timeout/failure leaves the workflow incomplete and
+preserves the existing cleanup reserve. This is drill wiring, not another
+lifecycle authority or a new managed-runtime exception.
+
+Six regression cases fail against the unchanged G2 capture. The expanded Node
+shutdown suite passes 41/41 without skips using virtual clocks and owner-IPC
+fixtures only. The unchanged activation/recovery/upgrade/service-policy Node
+fixtures pass 130/130 without skips using synthetic releases and mocked host
+services. No VM or staging was contacted. Available builder2 Cloud
+`f6cfd0066d75844dbab795cdf715789ec5fa37d6` is stale/unpaired; no paired Cloud
+result is claimed. The complete trigger/cost/deletion ledger and coordinator
+commands are in `docs/MANAGED_SHUTDOWN_ACCEPTANCE_RUNBOOK.md`. Public command,
+source, resource and cleanup receipts remain external under
+`/root/.codex/evidence/browser-resume-20260930/b214/`.
+
+MP-07 signed deployment/rollback, MP-09 real timers/fences/no-ACK/UI triggers,
+MP-10 ordinary-versus-managed/fresh-machine comparison and independent provider,
+Cloud/relay absence, and MP-11 final-source semantic review remain OPEN.
+Historical signed F observations are not relabelled as G2 evidence.
 
 ## MP-07 / MP-02 / MP-10 / MP-11 managedfix recovery scope (2026-10-03)
 
