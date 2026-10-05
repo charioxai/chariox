@@ -80,7 +80,7 @@ async fn check_artifacts() {
             "operation":{"action":"read","artifact_id":artifact_id,"max_bytes":1}}})).await.is_err());
         // MP-08/MP-10/MP-11: a permitted transfer record crosses the real
         // encrypted worker route and private stager without filesystem paths.
-        let config = fixture.home.runtime_state.owned.config_projection.snapshot();
+        let config = fixture.home.app.lock().await.config_projection_store().snapshot();
         let store = crate::artifacts::OperationalArtifactStore::open(
             config.operational_artifact_root(), config.operational_artifact_index_path()).unwrap();
         let source = fixture.home_state.root.join("transfer-fixture.txt");
