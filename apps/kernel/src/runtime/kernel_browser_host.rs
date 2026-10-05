@@ -381,6 +381,10 @@ impl KernelBrowserHost {
         } else {
             Self::ensure_ready(&mut backend)?;
         }
+        let mut params = params;
+        if admission.is_some_and(|admission| admission.agent.is_some()) {
+            params["_agent_input"] = true.into();
+        }
         self.check_admission(admission)?;
         backend.host_request("host.protect", policy)?;
         self.check_admission(admission)?;

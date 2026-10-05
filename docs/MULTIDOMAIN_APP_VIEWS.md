@@ -171,3 +171,15 @@ allowlist already admits reads only; native/App bridge calls use no timeout
 retry option. Host offers retain a dedicated one-use terminal acceptance path
 for both Room and detached decisions; generic interaction answers may decline
 but cannot accept host payloads.
+
+### Reviewed kernel-browser lane integration
+
+The integrated host includes lane kbrowser's reviewed follow-ups through
+`2b7268fd9`: mixed native/internal tabs restore to safe URLs, browser operations
+use the shared Vault observation barrier, and focused-agent and terminal actors
+retain their cancellation, document-binding, takeover and disconnect fences.
+App-view generation binding and explicit-close ephemeral restoration remain in
+this adapter. Browser input from an agent cannot impersonate the human App
+channel. The local protocol remains 418; these internal host APIs do not allocate
+another serialized request version. Screenshot capture remains on its separately
+allocated 425 branch and must reuse this protected host path.
