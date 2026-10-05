@@ -45,9 +45,9 @@ test("MP-08/MP-10/MP-11 actual extra-info headers stay aligned across redirects 
   const event = (method, params) => capture.record({ method, sessionId: "session-a", params: { requestId: "req-a", ...params } }, context);
   event("Network.requestWillBeSentExtraInfo", { headers: { Accept: "text/html", Cookie: "secret-cookie", Authorization: "secret-auth" } });
   event("Network.requestWillBeSent", { loaderId: "doc-a", request: { method: "GET", url: "https://user:pass@example.test/one?secret-query#private", postData: "secret-body" } });
-  event("Network.requestWillBeSent", { loaderId: "doc-a", request: { method: "GET", url: "https://example.test/two" }, redirectResponse: { status: 302, headers: { "Set-Cookie": "secret-response" } } });
+  event("Network.requestWillBeSent", { loaderId: "doc-a", request: { method: "GET", url: "https://example.test/two" }, redirectHasExtraInfo: true, redirectResponse: { status: 302, headers: { "Set-Cookie": "secret-response" } } });
   event("Network.requestWillBeSentExtraInfo", { headers: { Accept: "application/json", Cookie: "private-cookie" } });
-  event("Network.responseReceived", { response: { status: 200, mimeType: "text/html", headers: { "Content-Type": "text/html", "Set-Cookie": "secret" } } });
+  event("Network.responseReceived", { hasExtraInfo: true, response: { status: 200, mimeType: "text/html", headers: { "Content-Type": "text/html", "Set-Cookie": "secret" } } });
   const artifact = capture.capture("tab-a", "doc-a");
   const text = Buffer.from(artifact.data_base64, "base64").toString();
   const entries = JSON.parse(text).log.entries;
@@ -58,6 +58,21 @@ test("MP-08/MP-10/MP-11 actual extra-info headers stay aligned across redirects 
   assert.doesNotMatch(text, /secret|private-cookie|Authorization|Set-Cookie|postData|user:pass/i);
   assert.equal(JSON.parse(Buffer.from(capture.capture("tab-b", "doc-a").data_base64, "base64")).log.entries.length, 0);
   capture.clear(); assert.equal(capture.entries.length, 0);
+});
+
+test("MP-08/MP-10/MP-11 a redirect without extra info never steals later actual headers", () => {
+  const capture = new BrowserPassiveCapture();
+  const event = (method, params) => capture.record({ method, sessionId: "session-a", params: { requestId: "req-a", ...params } }, { targetId: "tab-a", documentId: "doc-a" });
+  event("Network.requestWillBeSent", { loaderId: "doc-a", request: { method: "GET", url: "https://example.test/one" } });
+  event("Network.requestWillBeSent", { loaderId: "doc-a", redirectHasExtraInfo: false,
+    redirectResponse: { status: 302 }, request: { method: "GET", url: "https://example.test/two" } });
+  event("Network.requestWillBeSentExtraInfo", { headers: { Accept: "application/json" } });
+  assert.deepEqual(capture.entries[0].request.headers, []);
+  assert.deepEqual(capture.entries[1].request.headers, []);
+  event("Network.responseReceived", { hasExtraInfo: true, response: { status: 200 } });
+  assert.deepEqual(capture.entries[0].request.headers, []);
+  assert.deepEqual(capture.entries[1].request.headers, [{ name: "accept", value: "application/json" }]);
+  assert.equal(capture.entries[1].request.extra_info_observed, true);
 });
 
 test("MP-08/MP-10/MP-11 protected frames contain only black pixels and bounded PNG geometry", () => {
