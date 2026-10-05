@@ -232,6 +232,18 @@ export type RoomEnvironmentHumanAction =
       readonly repeat: number
     }
   | {
+      readonly kind: "keyboard_hold"
+      readonly key: string
+      readonly duration_ms: number
+    }
+  | {
+      readonly kind: "pointer_hold"
+      readonly x: number
+      readonly y: number
+      readonly button: "left" | "middle" | "right"
+      readonly duration_ms: number
+    }
+  | {
       readonly kind: "clipboard_write"
       readonly text: string
     }

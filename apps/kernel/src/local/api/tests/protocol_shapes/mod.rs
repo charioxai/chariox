@@ -14,6 +14,7 @@ mod apps;
 mod browser_artifact;
 mod browser_import;
 mod cloud_relay;
+mod computer_hold;
 mod core;
 mod credential_enrollment;
 mod disposable_worker;

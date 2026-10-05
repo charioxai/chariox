@@ -20,6 +20,7 @@ pub(crate) struct BrowserImportDomainResult {
     pub(crate) cookie_count: u16,
 }
 
+pub(crate) const ROOM_COMPUTER_HOLD_MAX_DURATION_MS: u32 = 10_000;
 pub(crate) const ROOM_COMPUTER_SCROLL_MAX_STEPS: u16 = 120;
 pub(crate) const ROOM_COMPUTER_KEYBOARD_TEXT_MAX_UTF8_BYTES: usize = 64 * 1024;
 pub(crate) const ROOM_COMPUTER_KEYBOARD_KEY_MAX_UTF8_BYTES: usize = 128;
@@ -183,6 +184,16 @@ pub(crate) enum RoomComputerInputAction {
     KeyboardKey {
         input: RoomComputerKeyboardInput,
         repeat: u16,
+    },
+    KeyboardHold {
+        input: RoomComputerKeyboardInput,
+        duration_ms: u32,
+    },
+    PointerHold {
+        x: u32,
+        y: u32,
+        button: RoomComputerPointerButton,
+        duration_ms: u32,
     },
     ClipboardWrite {
         text: RoomComputerClipboardText,

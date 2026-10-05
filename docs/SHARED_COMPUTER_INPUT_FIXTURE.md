@@ -63,6 +63,13 @@ Join those observations to the same Room/host-browser surface and attributed
 input action seen in Web, local TUI and remote TUI. A captured file or one correct
 guess does not prove this gate. Human clipboard transport, Vault secret policy,
 IME preedit/composition, stream-loss takeover and physical viewer replay remain
-separate rows. G2 exposes only whole text and key-chord actions; public separate
-hold/release/cancel semantics require a coordinator-allocated protocol before
-implementation. Native reset tests do not imply those actions exist.
+separate rows. Allocated local protocol421 adds bounded `keyboard_hold` and `pointer_hold`.
+The physical fixture now records trusted initial press/release timestamps,
+modifier chords, interrupt finalization, kernel-style SIGKILL/reset, invalid
+bounds, pre-existing foreign-hold preservation, and Mousepad selection/focus.
+One hold owns the Room desktop through release, including cancellation through
+`CancelRoomEnvironmentAction`; separate persistent down/up calls are not added.
+Kernel tests cover Room/Tab identity, agent membership, human takeover, stale
+generation and redacted idempotency through the actual shared dispatch with a
+synthetic native helper. They are source evidence, not live host-browser,
+provider, transport or Web/TUI observations.

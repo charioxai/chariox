@@ -301,6 +301,16 @@ pub enum RoomEnvironmentHumanAction {
         key: RoomEnvironmentKeyboardInput,
         repeat: u16,
     },
+    KeyboardHold {
+        key: RoomEnvironmentKeyboardInput,
+        duration_ms: u32,
+    },
+    PointerHold {
+        x: u32,
+        y: u32,
+        button: RoomEnvironmentPointerButton,
+        duration_ms: u32,
+    },
     ClipboardWrite {
         text: RoomEnvironmentClipboardText,
     },

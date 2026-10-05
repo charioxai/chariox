@@ -176,6 +176,8 @@ pub struct SliceFindTextArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliceMouseArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u32>,
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub x: Option<i64>,
@@ -195,6 +197,8 @@ pub struct SliceMouseArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliceKeyboardArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u32>,
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,

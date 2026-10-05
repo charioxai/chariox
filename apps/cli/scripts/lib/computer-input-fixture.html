@@ -23,7 +23,7 @@
                       "mousedown", "mouseup", "mousemove", "click", "dblclick", "contextmenu", "wheel"]) {
     document.addEventListener(kind, event => {
       if (events.length < 4096) events.push({ kind, target: event.target.id || event.target.tagName,
-        key: event.key, code: event.code, button: event.button, buttons: event.buttons,
+        at: event.timeStamp, repeat: event.repeat, key: event.key, code: event.code, button: event.button, buttons: event.buttons,
         x: event.clientX, y: event.clientY, trusted: event.isTrusted })
       if (kind === "contextmenu") event.preventDefault()
     })

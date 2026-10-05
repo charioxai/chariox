@@ -7,6 +7,7 @@ type ExecutionKey = (String, String);
 #[derive(Default)]
 struct ComputerInputExecutionState {
     cancellation_requested: AtomicBool,
+    process_group_terminated: AtomicBool,
     process_group: Mutex<Option<u32>>,
     // Retained by the blocking helper's cancellation handle even if its
     // async caller is dropped. Capture resumes only after physical input settles.
@@ -39,6 +40,10 @@ impl ComputerInputCancellation {
         self.state.cancellation_requested.load(Ordering::Acquire)
     }
 
+    pub(crate) fn process_group_was_terminated(&self) -> bool {
+        self.state.process_group_terminated.load(Ordering::Acquire)
+    }
+
     pub(crate) fn register_process_group(&self, process_group: u32) {
         let mut registered = self
             .state
@@ -58,6 +63,9 @@ impl ComputerInputCancellation {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
         {
+            self.state
+                .process_group_terminated
+                .store(true, Ordering::Release);
             kill_process_group(process_group);
         }
     }
