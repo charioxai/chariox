@@ -42,9 +42,10 @@ export async function runWebVoyagerTask({ task, runtime, options }) {
     checkpoint: async owned => { row.owned = structuredClone(owned); await checkpoint() } })
   async function capture({ admission = false } = {}) {
     const name = admission ? 'admission.png' : `screenshot${row.screenshots.length + 1}.png`
+    const remoteName = admission ? 'screenshot0.png' : name
     try {
-      const metadata = JSON.parse((await docker(['exec', container, 'node', '/tmp/benchwv-screenshot.mjs', `/tmp/benchwv-${name}`])).stdout)
-      await docker(['cp', `${container}:/tmp/benchwv-${name}`, `${directory}/${name}`])
+      const metadata = JSON.parse((await docker(['exec', container, 'node', '/tmp/benchwv-screenshot.mjs', `/tmp/benchwv-${remoteName}`])).stdout)
+      await docker(['cp', `${container}:/tmp/benchwv-${remoteName}`, `${directory}/${name}`])
       if (admission) row.admissionScreenshot = { name, metadata }
       else { row.screenshots.push(name); row.screenshotMetadata.push(metadata) }
     } catch (error) {
