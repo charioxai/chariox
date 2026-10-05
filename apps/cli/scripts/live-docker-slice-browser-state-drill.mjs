@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict"
-import { spawn } from "node:child_process"
+import { spawnOwned, signalOwnedProcess } from "../../kernel/slice-linux-docker/owned-process-signals.mjs"
 import { createHash, randomUUID } from "node:crypto"
 import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import net from "node:net"
@@ -924,7 +924,7 @@ async function verifyBrowserStateDockerEngineAccess(target, { writable }) {
 }
 
 function start(label, command, args, options = {}) {
-  const child = spawn(command, args, {
+  const child = spawnOwned(command, args, {
     cwd: options.cwd ?? repoRoot,
     env: options.env ?? process.env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -996,7 +996,7 @@ async function runCommand(command, args, options = {}) {
   interruption.check()
   return await new Promise((resolve, reject) => {
     let settled = false
-    const child = spawn(command, args, {
+    const child = spawnOwned(command, args, {
       cwd: options.cwd ?? repoRoot,
       env: options.env ?? process.env,
       stdio: ["pipe", "pipe", "pipe"],
@@ -1008,9 +1008,9 @@ async function runCommand(command, args, options = {}) {
       timeout = setTimeout(() => {
         if (settled) return
         stderr += `\n[timed out after ${options.timeoutMs}ms: ${command} ${args.join(" ")}]\n`
-        child.kill("SIGTERM")
+        signalOwnedProcess(child, "SIGTERM")
         setTimeout(() => {
-          if (!settled) child.kill("SIGKILL")
+          if (!settled) signalOwnedProcess(child, "SIGKILL")
         }, 2_000).unref()
       }, options.timeoutMs)
       timeout.unref()
@@ -1193,9 +1193,9 @@ async function closeFixtureServer() {
 
 async function terminateChild(child) {
   if (!child || child.exitCode != null) return
-  child.kill("SIGTERM")
+  signalOwnedProcess(child, "SIGTERM")
   if (await waitForChildExit(child, 5_000)) return
-  child.kill("SIGKILL")
+  signalOwnedProcess(child, "SIGKILL")
   await waitForChildExit(child, 1_000)
 }
 

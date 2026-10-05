@@ -1758,8 +1758,6 @@ stop_container() {
       screen -S chariox-slice-relay -X quit >/dev/null 2>&1 || true
       screen -S chariox-slice-kernel -X quit >/dev/null 2>&1 || true
       /opt/chariox-slice/slice-screen.sh stop >/dev/null 2>&1 || true
-      pkill -f 'codex app-server' >/dev/null 2>&1 || true
-      pkill -f 'opencode serve' >/dev/null 2>&1 || true
     " || true
     docker stop "$SLICE_NAME" >/dev/null
   else

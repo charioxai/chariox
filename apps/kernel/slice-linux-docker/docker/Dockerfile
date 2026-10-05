@@ -176,6 +176,7 @@ ENV CHARIOX_SLICE_SELKIES_BIN=/opt/chariox-selkies/bin/selkies
 RUN --mount=type=bind,source=apps/kernel/slice-linux-docker/docker,target=/tmp/chariox-slice-runtime-tests \
     PYTHONDONTWRITEBYTECODE=1 /opt/chariox-selkies/bin/python -m unittest discover \
       -s /tmp/chariox-slice-runtime-tests -p 'test_*.py'
+COPY apps/kernel/slice-linux-docker/owned_process_signals.py /opt/chariox-slice/owned_process_signals.py
 COPY apps/kernel/slice-linux-docker/docker/slice-selkies.py \
      apps/kernel/slice-linux-docker/docker/slice-selkies-stream.py \
      apps/kernel/slice-linux-docker/docker/selkies_viewers.py /opt/chariox-slice/

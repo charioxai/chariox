@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawnOwned, signalOwnedProcessGroup, signalOwnedProcess } from "../../kernel/slice-linux-docker/owned-process-signals.mjs"
 
 import assert from "node:assert/strict"
 import { createRoomWebFaultControl } from "./lib/room-web-fault-control.mjs"
@@ -7,7 +8,6 @@ import { assertRoomDrillCompletedActionNotice } from "./lib/room-drill-action-no
 import { validatePrebuiltSliceImage } from "./lib/prebuilt-slice-image.mjs"
 import { roomTuiPtyInvocation } from "./lib/room-tui-pty.mjs"
 import { createRetainedRoomRuntime, stopOrDeleteRoomSlice, roomCleanupComplete, verifyRetainedRoomArchive, roomDrillLeakScanRoots } from "./lib/room-provider-retention.mjs"
-import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { createWriteStream } from "node:fs"
 import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
@@ -317,7 +317,7 @@ async function run() {
   const startRelayGeneration = async () => {
     const logName = relayGeneration === 0 ? "relay.log" : `relay-reconnect-${relayGeneration}.log`
     const relayLog = createWriteStream(path.join(evidenceRoot, logName), { flags: "a" })
-    const child = spawn(relayBinary, [], {
+    const child = spawnOwned(relayBinary, [], {
       cwd: repoRoot,
       env: {
         ...process.env,
@@ -373,7 +373,7 @@ async function run() {
     XDG_STATE_HOME: path.join(tempRoot, "xdg-state"),
     XDG_CACHE_HOME: path.join(tempRoot, "xdg-cache"),
   }
-  let kernel = spawn(kernelBinary, [], {
+  let kernel = spawnOwned(kernelBinary, [], {
     cwd: repoRoot,
     env: kernelEnv,
     stdio: ["ignore", "pipe", "pipe"],
@@ -403,7 +403,7 @@ async function run() {
         restartKernel: async () => {
           assert.ok(kernel.exitCode !== null || kernel.signalCode !== null, "fault kernel is already running")
           const nextLog = createWriteStream(path.join(evidenceRoot, "kernel-restarted.log"), { flags: "a" })
-          kernel = spawn(kernelBinary, [], { cwd: repoRoot, env: kernelEnv, stdio: ["ignore", "pipe", "pipe"] })
+          kernel = spawnOwned(kernelBinary, [], { cwd: repoRoot, env: kernelEnv, stdio: ["ignore", "pipe", "pipe"] })
           kernel.stdout.pipe(nextLog); kernel.stderr.pipe(nextLog); kernel.once("exit", () => nextLog.end()); children.push(kernel)
           await waitForTcpPort("127.0.0.1", kernelPort, 60_000, "restarted kernel unavailable")
           client.close(); observerClient.close()
@@ -2544,7 +2544,7 @@ async function startTui({ kind, tempRoot, env, connectionArgs }) {
     "--model", `room-activity-${kind}-tui-drill`,
     "--client-id", `${runId}-${kind}-tui`,
   ])
-  const tui = spawn(invocation.command, invocation.args, {
+  const tui = spawnOwned(invocation.command, invocation.args, {
     cwd: repoRoot,
     env,
     detached: true,
@@ -3501,9 +3501,9 @@ async function terminateChild(child) {
     return
   }
   if (child.exitCode != null) return
-  child.kill("SIGTERM")
+  signalOwnedProcess(child, "SIGTERM")
   if (await waitForChildExit(child, 5_000)) return
-  child.kill("SIGKILL")
+  signalOwnedProcess(child, "SIGKILL")
   await waitForChildExit(child, 1_000)
 }
 
@@ -3535,8 +3535,7 @@ async function waitForProcessGroupExit(processGroupId, timeoutMs) {
 
 function processGroupExists(processGroupId) {
   try {
-    process.kill(-processGroupId, 0)
-    return true
+    return signalOwnedProcessGroup(processGroupId, 0)
   } catch (error) {
     if (error?.code === "ESRCH") return false
     throw error
@@ -3545,7 +3544,7 @@ function processGroupExists(processGroupId) {
 
 function signalProcessGroup(processGroupId, signal) {
   try {
-    process.kill(-processGroupId, signal)
+    signalOwnedProcessGroup(processGroupId, signal)
   } catch (error) {
     if (error?.code !== "ESRCH") throw error
   }
@@ -3571,10 +3570,10 @@ async function waitFor(operation, timeoutMs, message) {
 function runCommand(command, args, timeoutMs) {
   interruption.check()
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: repoRoot, env: process.env, stdio: ["ignore", "pipe", "pipe"] })
+    const child = spawnOwned(command, args, { cwd: repoRoot, env: process.env, stdio: ["ignore", "pipe", "pipe"] })
     const stdout = []
     const stderr = []
-    const timeout = setTimeout(() => child.kill("SIGTERM"), timeoutMs)
+    const timeout = setTimeout(() => signalOwnedProcess(child, "SIGTERM"), timeoutMs)
     child.stdout.on("data", (chunk) => { stdout.push(chunk) })
     child.stderr.on("data", (chunk) => { stderr.push(chunk) })
     child.once("error", reject)
@@ -3593,10 +3592,10 @@ function runCommand(command, args, timeoutMs) {
 function runCommandWithStdin(command, args, stdin, timeoutMs) {
   interruption.check()
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: repoRoot, env: process.env, stdio: ["pipe", "pipe", "pipe"] })
+    const child = spawnOwned(command, args, { cwd: repoRoot, env: process.env, stdio: ["pipe", "pipe", "pipe"] })
     const stdout = []
     const stderr = []
-    const timeout = setTimeout(() => child.kill("SIGTERM"), timeoutMs)
+    const timeout = setTimeout(() => signalOwnedProcess(child, "SIGTERM"), timeoutMs)
     child.stdout.on("data", (chunk) => { stdout.push(chunk) })
     child.stderr.on("data", (chunk) => { stderr.push(chunk) })
     child.once("error", reject)
