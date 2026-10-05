@@ -250,7 +250,10 @@ impl KernelRuntimeState {
             return Ok(VaultUnlockGuard::not_required());
         }
         let vault_path = expand_vault_path(&user_config.credential_vault.path);
-        if crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
+        if user_config.credential_vault.unlock_policy
+            != crate::config::CredentialVaultUnlockPolicy::Always
+            && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked
+        {
             return Ok(VaultUnlockGuard::unlocked_until_expiry());
         }
         let session_id = session_id
@@ -368,7 +371,11 @@ impl KernelRuntimeState {
             unlock_lease_for_choice(&choice_id, &vault_config, force_prompt);
         let status =
             crate::secret::unlock_chariox_encrypted_vault(&vault_path, passphrase.as_str(), lease)?;
-        self.pin_critical_approval_verifier_after_unlock(&vault_path);
+        if let Err(error) = self.pin_critical_approval_verifier_after_unlock(&vault_path) {
+            crate::secret::lock_chariox_encrypted_vault(&vault_path)?;
+            crate::secret::clear_vault_secret_process_cache()?;
+            return Err(error);
+        }
         crate::logging::info_with_fields(
             "credential_vault",
             "Chariox vault unlocked",
@@ -1066,5 +1073,186 @@ mod tests {
                 if message.contains("requires an agent in the session")
         ));
         let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod mp11_always_tests {
+    use super::*;
+    use crate::DaemonApp;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+    async fn runtime(config: crate::config::DaemonConfig) -> KernelRuntimeState {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed"),
+        ));
+        let (
+            config_projection,
+            session_store,
+            agent_store,
+            attachment_store,
+            provider_store,
+            provider_process_tracking,
+            slice_store,
+            session_projection,
+            provider_run_projection,
+            operational_history_store,
+            durable_state_store,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            metaagent_events,
+            workspace_coordinator,
+        ) = {
+            let app_locked = app.lock().await;
+            (
+                app_locked.config_projection_store(),
+                app_locked.session_state_store(),
+                app_locked.agents().clone(),
+                app_locked.attachments().clone(),
+                app_locked.providers().clone(),
+                app_locked.provider_process_tracking_store(),
+                app_locked.slices(),
+                app_locked.session_state_projection_store(),
+                app_locked.provider_run_projection_store(),
+                app_locked.operational_history_store(),
+                app_locked.durable_state_store(),
+                app_locked.prompt_state_owner(),
+                app_locked.active_turn_store(),
+                app_locked.prompt_activity_store(),
+                app_locked.prompt_workspace_claim_store(),
+                app_locked.structured_output_record_store(),
+                app_locked.terminal_stream_store(),
+                app_locked.workflow_design_event_store(),
+                app_locked.metaagent_event_store(),
+                app_locked.workspace_coordinator(),
+            )
+        };
+        KernelRuntimeState::new_with_owned_state(
+            Arc::clone(&app),
+            config_projection,
+            session_store,
+            agent_store,
+            attachment_store,
+            provider_store,
+            provider_process_tracking,
+            slice_store,
+            session_projection,
+            provider_run_projection,
+            operational_history_store,
+            durable_state_store,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            metaagent_events,
+            workspace_coordinator,
+        )
+    }
+    #[tokio::test]
+    async fn mp11_always_policy_cannot_use_a_live_lease_in_any_credential_command() {
+        crate::test_support::isolated_env_test!();
+        let _environment = crate::env_lock::lock();
+        for initial_policy in [
+            crate::config::CredentialVaultUnlockPolicy::Ttl,
+            crate::config::CredentialVaultUnlockPolicy::KernelInit,
+            crate::config::CredentialVaultUnlockPolicy::Always,
+        ] {
+            let root =
+                std::env::temp_dir().join(format!("mp11-always-{:016x}", rand::random::<u64>()));
+            std::fs::create_dir_all(&root).unwrap();
+            let vault = root.join("vault.json");
+            crate::secret::create_chariox_encrypted_vault_for_test(&vault, "synthetic-passphrase")
+                .unwrap();
+            crate::secret::unlock_chariox_encrypted_vault(
+                &vault,
+                "synthetic-passphrase",
+                if initial_policy == crate::config::CredentialVaultUnlockPolicy::Always {
+                    crate::secret::VaultUnlockLease::Operation
+                } else {
+                    crate::secret::VaultUnlockLease::KernelShutdown
+                },
+            )
+            .unwrap();
+            let mut config = crate::config::DaemonConfig::for_tests();
+            config.user_config_path = root.join("config.toml");
+            config = config.with_session_history_root(root.join("history"));
+            config.user_config.history.operational.path =
+                Some(root.join("operational.db").display().to_string());
+            config.user_config.artifacts.operational.root =
+                Some(root.join("artifacts").display().to_string());
+            config.user_config.artifacts.operational.index_path =
+                Some(root.join("artifacts.db").display().to_string());
+            config.user_config.state.path = Some(root.join("state.db").display().to_string());
+            config.user_config.credential_vault.backend =
+                crate::config::CredentialVaultBackend::CharioxEncrypted;
+            config.user_config.credential_vault.path = vault.display().to_string();
+            config.user_config.credential_vault.unlock_policy = initial_policy;
+            let state = runtime(config).await;
+            let command = crate::runtime::command::KernelCommand::from_local_request(
+                "synthetic",
+                None,
+                None,
+                &crate::local::LocalDaemonRequest::GetCredentialVaultStatus(
+                    crate::local::GetCredentialVaultStatusRequest,
+                ),
+            );
+            let owner = state.provider_account_authority_owner_user_id(
+                &crate::runtime::command::command_caller_user_id(&command),
+            );
+            let profile = state
+                .provider_account_profile_registry()
+                .create_managed(&owner, "claude", "Synthetic")
+                .unwrap();
+            state
+                .set_user_config_value("credential_vault.unlock_policy".into(), "always".into())
+                .await
+                .unwrap();
+            let projection = &state.owned.config_projection;
+            let set = crate::runtime::user_config_executor::execute_set_credential_secret_request(
+                projection,
+                &state,
+                &command,
+                crate::local::SetCredentialSecretRequest {
+                    session_id: None,
+                    agent_id: None,
+                    key: "synthetic-key".into(),
+                    value: "synthetic".into(),
+                },
+            )
+            .await;
+            let delete =
+                crate::runtime::user_config_executor::execute_delete_credential_secret_request(
+                    projection,
+                    &state,
+                    &command,
+                    crate::local::DeleteCredentialSecretRequest {
+                        session_id: None,
+                        agent_id: None,
+                        key: "synthetic-key".into(),
+                    },
+                )
+                .await;
+            let provider = crate::runtime::user_config_executor::execute_set_provider_account_credential_request(projection, &state, &command,
+                crate::local::SetProviderAccountCredentialRequest { session_id: None, agent_id: None, provider: "claude".into(), account_profile: profile.profile_id,
+                    value: "synthetic-value".into(), run: false, overwrite: true }).await;
+            let refused = [set, delete, provider].into_iter().all(|result| {
+                result.is_err_and(|error| error.to_string().contains("requires a session_id"))
+            });
+            crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
+            drop(state);
+            std::fs::remove_dir_all(root).unwrap();
+            assert!(
+                refused,
+                "Always policy reused an existing lease through a command caller"
+            );
+        }
     }
 }

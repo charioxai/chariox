@@ -328,7 +328,7 @@ pub(super) fn ensure_claude_headless_onboarding_state_at(
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        state_options.custom_flags(libc::O_NOFOLLOW);
+        state_options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
     }
     #[cfg(windows)]
     {
@@ -367,12 +367,26 @@ pub(super) fn ensure_claude_headless_onboarding_state_at(
                     });
                 }
             }
-            let mut bytes = Vec::with_capacity(metadata.len() as usize);
-            file.read_to_end(&mut bytes)
-                .map_err(|error| DaemonError::LocalTransport {
+            const MAX_ONBOARDING_BYTES: u64 = 1024 * 1024;
+            if metadata.len() > MAX_ONBOARDING_BYTES {
+                return Err(DaemonError::LocalTransport {
                     operation: "initialize Claude headless onboarding state",
-                    message: error.to_string(),
+                    message: "Claude onboarding state exceeds its size limit".into(),
+                });
+            }
+            let mut bytes = Vec::new();
+            file.take(MAX_ONBOARDING_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "initialize Claude headless onboarding state",
+                    message: "Claude onboarding state could not be read".into(),
                 })?;
+            if bytes.len() as u64 > MAX_ONBOARDING_BYTES {
+                return Err(DaemonError::LocalTransport {
+                    operation: "initialize Claude headless onboarding state",
+                    message: "Claude onboarding state exceeds its size limit".into(),
+                });
+            }
             let mut state = if bytes.iter().all(|byte| byte.is_ascii_whitespace()) {
                 serde_json::Value::Object(serde_json::Map::new())
             } else {
@@ -1282,4 +1296,12 @@ mod tests {
             .any(|pair| pair == ["--allowedTools", "mcp__chariox__*"]));
         std::fs::remove_dir_all(config_root).expect("test config root should clean up");
     }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_claude_onboarding_fifo_is_rejected_without_waiting() {
+    crate::test_support::assert_fifo_rejected(|path| {
+        ensure_claude_headless_onboarding_state_at(&path).is_err()
+    });
 }

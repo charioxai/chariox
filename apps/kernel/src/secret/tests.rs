@@ -14,6 +14,15 @@ struct MemoryVaultStore {
 }
 
 impl CredentialVaultStore for MemoryVaultStore {
+    fn find_secret(&self, service: &str, key: &str) -> Result<Option<String>, DaemonError> {
+        Ok(self
+            .secrets
+            .lock()
+            .unwrap()
+            .get(&(service.to_string(), key.to_string()))
+            .cloned())
+    }
+
     fn get_secret(&self, service: &str, key: &str) -> Result<String, DaemonError> {
         self.secrets
             .lock()
@@ -630,7 +639,10 @@ fn upsert_vault_backed_credential_restores_previous_secret_on_metadata_write_fai
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("registry root should exist");
     let registry = CharioxCredentialRegistry::new(root.clone());
-    let vault = Arc::new(MemoryVaultStore::default());
+    let vault = Arc::new(RegistryFailVault {
+        memory: MemoryVaultStore::default(),
+        fail_destination: Mutex::new(None),
+    });
     let service = RuntimeSecretService::with_vault_store(
         vec![UserCredentialConfig {
             id: "browser-password".to_string(),
@@ -644,7 +656,7 @@ fn upsert_vault_backed_credential_restores_previous_secret_on_metadata_write_fai
             metadata: None,
         }],
         "chariox-test",
-        vault,
+        vault.clone(),
     );
     let credential = UserCredentialConfig {
         id: "browser-password".to_string(),
@@ -663,10 +675,7 @@ fn upsert_vault_backed_credential_restores_previous_secret_on_metadata_write_fai
     service
         .set_vault_secret("browser-password", "old-secret")
         .expect("old secret should write");
-    let temp_metadata_path =
-        root.join(format!(".browser-password.yaml.{}.tmp", std::process::id()));
-    std::fs::create_dir(&temp_metadata_path)
-        .expect("registry temp metadata path should be blocked by a directory");
+    *vault.fail_destination.lock().unwrap() = Some(registry.path_for("browser-password").unwrap());
 
     let error = service
         .upsert_vault_backed_credential_with_secret(
@@ -844,4 +853,314 @@ fn process_memory_backend_requires_explicit_volatile_context() {
     assert!(error
         .to_string()
         .contains("only allowed inside Chariox slices"));
+}
+
+// MP-11-RA-F3: echo services are hostile, including successful JSON responses.
+#[test]
+fn http_credential_echo_scrubs_every_injection_and_encoding() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    let secret = "synthetic +/private&value";
+    for injection in [
+        UserCredentialInjectionConfig::Header {
+            name: "x-auth".into(),
+            value: "Bearer ${secret}".into(),
+        },
+        UserCredentialInjectionConfig::Query {
+            name: "auth".into(),
+        },
+        UserCredentialInjectionConfig::Basic {
+            username: "synthetic-user".into(),
+        },
+        UserCredentialInjectionConfig::Hmac {
+            timestamp_header: "x-time".into(),
+            signature_header: "x-signature".into(),
+        },
+    ] {
+        for status in [200, 403] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let secret_copy = secret.to_string();
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                    .unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                let request = String::from_utf8(request).unwrap();
+                let body = serde_json::json!({"echo": request,
+                    "raw": secret_copy,
+                    "base64": base64::engine::general_purpose::STANDARD.encode(secret_copy.as_bytes()),
+                    "hex": hex_bytes(secret_copy.as_bytes()),
+                    "url": url::form_urlencoded::byte_serialize(secret_copy.as_bytes()).collect::<String>()}).to_string();
+                let response = format!("HTTP/1.1 {status} Echo\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                stream.write_all(response.as_bytes()).unwrap();
+                request
+            });
+            let store = Arc::new(MemoryVaultStore::default());
+            store.set_secret("test", "echo", secret).unwrap();
+            let service = RuntimeSecretService::with_vault_store(
+                vec![UserCredentialConfig {
+                    id: "echo".into(),
+                    description: None,
+                    source: UserCredentialSourceConfig::Vault { key: "echo".into() },
+                    allowed_hosts: vec![format!("127.0.0.1:{port}")],
+                    allowed_uses: vec![UserCredentialUse::Http],
+                    injection: injection.clone(),
+                    metadata: None,
+                }],
+                "test",
+                store,
+            );
+            let result = service.http_request_with_credential(CredentialHttpRequest {
+                credential_id: "echo".into(),
+                method: "GET".into(),
+                url: format!("http://127.0.0.1:{port}/echo"),
+                headers: BTreeMap::new(),
+                body_text: None,
+                body_json: None,
+                timeout_ms: 2000,
+                max_response_bytes: 8192,
+            });
+            let request = server.join().unwrap();
+            let output = match result {
+                Ok(response) => serde_json::to_string(&response).unwrap(),
+                Err(error) => error.to_string(),
+            };
+            assert!(!output.contains(secret), "raw secret escaped");
+            assert!(
+                !output.contains(&base64::engine::general_purpose::STANDARD.encode(secret)),
+                "base64 secret escaped"
+            );
+            assert!(
+                !output.contains(&hex_bytes(secret.as_bytes())),
+                "hex secret escaped"
+            );
+            for header in ["authorization", "x-auth", "x-signature"] {
+                if let Some(value) = request.lines().find_map(|line| {
+                    line.split_once(':')
+                        .filter(|(name, _)| name.eq_ignore_ascii_case(header))
+                        .map(|(_, value)| value.trim())
+                }) {
+                    assert!(!output.contains(value), "derived injection escaped");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn http_credential_error_body_is_bounded() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    let response = ureq::Response::new(403, "Forbidden", &"x".repeat(2048)).unwrap();
+    // Exercise the same decoder used by status errors; overflow must not return a prefix.
+    let error = http_error(
+        ureq::Error::Status(403, response),
+        16,
+        &HttpSecretBoundary::new("synthetic"),
+    );
+    assert!(
+        !error.to_string().contains(&"x".repeat(1024)),
+        "unbounded status body escaped"
+    );
+}
+
+#[derive(Debug)]
+struct RegistryFailVault {
+    memory: MemoryVaultStore,
+    fail_destination: Mutex<Option<PathBuf>>,
+}
+impl CredentialVaultStore for RegistryFailVault {
+    fn get_secret(&self, service: &str, key: &str) -> Result<String, DaemonError> {
+        self.memory.get_secret(service, key)
+    }
+    fn find_secret(&self, service: &str, key: &str) -> Result<Option<String>, DaemonError> {
+        self.memory.find_secret(service, key)
+    }
+    fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError> {
+        self.memory.set_secret(service, key, value)?;
+        if let Some(path) = self.fail_destination.lock().unwrap().take() {
+            if path.is_file() {
+                std::fs::remove_file(&path).unwrap();
+            }
+            std::fs::create_dir_all(path).unwrap();
+        }
+        Ok(())
+    }
+    fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError> {
+        self.memory.delete_secret(service, key)
+    }
+}
+
+#[test]
+fn mp11_vault_rollback_restores_target_key_for_new_and_changed_handles() {
+    for existing_handle in [false, true] {
+        let root = std::env::temp_dir().join(format!(
+            "mp11-vault-rollback-{:016x}",
+            rand::random::<u64>()
+        ));
+        let registry = CharioxCredentialRegistry::new(root.clone());
+        let credential = UserCredentialConfig {
+            id: "handle".into(),
+            description: None,
+            source: UserCredentialSourceConfig::Vault {
+                key: "target".into(),
+            },
+            allowed_hosts: Vec::new(),
+            allowed_uses: vec![UserCredentialUse::Browser],
+            injection: UserCredentialInjectionConfig::Browser,
+            metadata: None,
+        };
+        if existing_handle {
+            registry
+                .upsert(UserCredentialConfig {
+                    source: UserCredentialSourceConfig::Vault {
+                        key: "previous-handle-key".into(),
+                    },
+                    ..credential.clone()
+                })
+                .unwrap();
+        }
+        let store = Arc::new(RegistryFailVault {
+            memory: MemoryVaultStore::default(),
+            fail_destination: Mutex::new(Some(registry.path_for("handle").unwrap())),
+        });
+        store
+            .memory
+            .set_secret("test", "target", "synthetic-prior-target")
+            .unwrap();
+        let service = RuntimeSecretService::with_vault_store(Vec::new(), "test", store.clone());
+        let result = service.upsert_vault_backed_credential_with_secret(
+            &registry,
+            credential,
+            "synthetic-replacement",
+            true,
+        );
+        assert!(result.is_err());
+        let restored = store.get_secret("test", "target").ok();
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            restored.as_deref(),
+            Some("synthetic-prior-target"),
+            "target Vault key was not restored"
+        );
+    }
+}
+
+#[test]
+fn mp11_vault_snapshot_read_failure_does_not_authorize_a_write() {
+    let root = std::env::temp_dir().join(format!(
+        "mp11-vault-read-failure-{:016x}",
+        rand::random::<u64>()
+    ));
+    let registry = CharioxCredentialRegistry::new(root.clone());
+    let store = Arc::new(WriteOnlyVaultStore::default());
+    let service = RuntimeSecretService::with_vault_store(Vec::new(), "test", store.clone());
+    let result = service.upsert_vault_backed_credential_with_secret(
+        &registry,
+        UserCredentialConfig {
+            id: "handle".into(),
+            description: None,
+            source: UserCredentialSourceConfig::Vault {
+                key: "target".into(),
+            },
+            allowed_hosts: Vec::new(),
+            allowed_uses: vec![UserCredentialUse::Browser],
+            injection: UserCredentialInjectionConfig::Browser,
+            metadata: None,
+        },
+        "synthetic",
+        true,
+    );
+    let unchanged = store.secrets.lock().unwrap().is_empty();
+    if root.exists() {
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    assert!(
+        result.is_err(),
+        "snapshot read failure was treated as absence"
+    );
+    assert!(unchanged, "read failure still wrote a Vault key");
+}
+
+#[derive(Debug)]
+struct Mp11RollbackRefusingVault {
+    memory: MemoryVaultStore,
+    destination: PathBuf,
+    writes: std::sync::atomic::AtomicUsize,
+}
+impl CredentialVaultStore for Mp11RollbackRefusingVault {
+    fn get_secret(&self, service: &str, key: &str) -> Result<String, DaemonError> {
+        self.memory.get_secret(service, key)
+    }
+    fn find_secret(&self, service: &str, key: &str) -> Result<Option<String>, DaemonError> {
+        self.memory.find_secret(service, key)
+    }
+    fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError> {
+        if self
+            .writes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            > 0
+        {
+            return Err(secret_error("synthetic", "restore refused"));
+        }
+        self.memory.set_secret(service, key, value)?;
+        std::fs::create_dir_all(&self.destination).unwrap();
+        Ok(())
+    }
+    fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError> {
+        self.memory.delete_secret(service, key)
+    }
+}
+#[test]
+fn mp11_vault_rollback_failure_is_explicit_and_does_not_keep_replacement_cached() {
+    let root = std::env::temp_dir().join(format!(
+        "mp11-rollback-refused-{:016x}",
+        rand::random::<u64>()
+    ));
+    let registry = CharioxCredentialRegistry::new(root.clone());
+    let store = Arc::new(Mp11RollbackRefusingVault {
+        memory: MemoryVaultStore::default(),
+        destination: registry.path_for("handle").unwrap(),
+        writes: Default::default(),
+    });
+    store
+        .memory
+        .set_secret("test", "target", "synthetic-before")
+        .unwrap();
+    let service = RuntimeSecretService::with_vault_store(Vec::new(), "test", store);
+    let error = service
+        .upsert_vault_backed_credential_with_secret(
+            &registry,
+            UserCredentialConfig {
+                id: "handle".into(),
+                description: None,
+                source: UserCredentialSourceConfig::Vault {
+                    key: "target".into(),
+                },
+                allowed_hosts: Vec::new(),
+                allowed_uses: vec![UserCredentialUse::Browser],
+                injection: UserCredentialInjectionConfig::Browser,
+                metadata: None,
+            },
+            "synthetic-after",
+            true,
+        )
+        .unwrap_err();
+    let cache_key = service.vault_cache_key("target").unwrap();
+    let cached = cached_vault_secret(cache_key).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(error
+        .to_string()
+        .contains("Vault rollback failed; recovery required"));
+    assert!(
+        cached.is_none(),
+        "failed rollback kept a replacement credential cached"
+    );
 }

@@ -17,6 +17,8 @@ use crate::config::{
 use crate::credential::CharioxCredentialRegistry;
 use crate::error::DaemonError;
 
+mod http_boundary;
+use http_boundary::{decode_http_response, http_error, HttpSecretBoundary};
 mod vault;
 pub(crate) use vault::remove_installed_transferred_vault;
 use vault::vault_store_for_config;
@@ -223,6 +225,7 @@ impl RuntimeSecretService {
         self.ensure_host_allowed(credential, &target)?;
         let secret = self.resolve_secret(credential)?;
 
+        let mut boundary = HttpSecretBoundary::new(&secret);
         let method = request.method.trim().to_ascii_uppercase();
         let mut headers = request.headers;
         let body = request_body(request.body_text, request.body_json)?;
@@ -230,14 +233,18 @@ impl RuntimeSecretService {
 
         match &credential.injection {
             UserCredentialInjectionConfig::Header { name, value } => {
-                headers.insert(name.clone(), value.replace("${secret}", &secret));
+                let value = value.replace("${secret}", &secret);
+                boundary.add(&value);
+                headers.insert(name.clone(), value);
             }
             UserCredentialInjectionConfig::Query { name } => {
                 target.query_pairs_mut().append_pair(name, &secret);
             }
             UserCredentialInjectionConfig::Basic { username } => {
-                let value = base64::engine::general_purpose::STANDARD
-                    .encode(format!("{username}:{secret}"));
+                let basic = Zeroizing::new(format!("{username}:{secret}"));
+                boundary.add(&basic);
+                let value = base64::engine::general_purpose::STANDARD.encode(basic.as_bytes());
+                boundary.add(&value);
                 headers.insert("authorization".to_string(), format!("Basic {value}"));
             }
             UserCredentialInjectionConfig::Hmac {
@@ -256,10 +263,9 @@ impl RuntimeSecretService {
                 })?;
                 mac.update(canonical.as_bytes());
                 headers.insert(timestamp_header.clone(), timestamp.to_string());
-                headers.insert(
-                    signature_header.clone(),
-                    hex_bytes(&mac.finalize().into_bytes()),
-                );
+                let signature = hex_bytes(&mac.finalize().into_bytes());
+                boundary.add(&signature);
+                headers.insert(signature_header.clone(), signature);
             }
             UserCredentialInjectionConfig::Pty => {
                 return Err(secret_error(
@@ -333,9 +339,9 @@ impl RuntimeSecretService {
         } else {
             http_request.call()
         }
-        .map_err(|error| http_error("http_request_with_credential", error))?;
+        .map_err(|error| http_error(error, request.max_response_bytes, &boundary))?;
 
-        decode_http_response(response, request.max_response_bytes)
+        decode_http_response(response, request.max_response_bytes, &boundary)
     }
 
     pub fn terminal_secret_input(&self, credential_id: &str) -> Result<String, DaemonError> {
@@ -523,20 +529,7 @@ impl RuntimeSecretService {
         }
         let service = self.vault_service_name()?;
         let cache_key = self.vault_cache_key(&vault_key)?;
-        let previous_credential = registry.get(&credential.id)?;
-        let previous_vault_key =
-            previous_credential
-                .as_ref()
-                .and_then(|credential| match &credential.source {
-                    UserCredentialSourceConfig::Vault { key } => Some(key.trim().to_string()),
-                    UserCredentialSourceConfig::Env { .. }
-                    | UserCredentialSourceConfig::File { .. } => None,
-                });
-        let previous_secret = previous_vault_key
-            .as_deref()
-            .filter(|previous_key| *previous_key == vault_key)
-            .and_then(|previous_key| self.vault_store.get_secret(service, previous_key).ok())
-            .map(Zeroizing::new);
+        let previous_secret = self.vault_store.find_secret(service, &vault_key)?.map(Zeroizing::new);
 
         crate::config::validate_credentials(std::slice::from_ref(&credential))?;
         let _ = registry.path_for(&credential.id)?;
@@ -557,17 +550,15 @@ impl RuntimeSecretService {
                 metadata_path: path,
             }),
             Err(error) => {
-                if let Some(previous_secret) = previous_secret {
-                    let _ =
-                        self.vault_store
-                            .set_secret(service, &vault_key, previous_secret.as_str());
-                    let _ = cache_vault_secret(cache_key, previous_secret.as_str());
-                } else if previous_credential.is_none()
-                    || previous_vault_key.as_deref() != Some(vault_key.as_str())
-                {
-                    let _ = self.delete_vault_secret(&vault_key);
+                let rollback = if let Some(previous_secret) = previous_secret {
+                    self.vault_store.set_secret(service, &vault_key, previous_secret.as_str())
+                        .and_then(|_| cache_vault_secret(cache_key, previous_secret.as_str()))
                 } else {
-                    let _ = forget_cached_vault_secret(cache_key);
+                    self.delete_vault_secret(&vault_key)
+                };
+                if rollback.is_err() {
+                    let _ = forget_cached_vault_secret(self.vault_cache_key(&vault_key)?);
+                    return Err(secret_error("credential_vault_upsert", format!("{error}; Vault rollback failed; recovery required")));
                 }
                 Err(error)
             }
@@ -785,47 +776,6 @@ fn request_body(
             "http_request_with_credential",
             "body_text and body_json are mutually exclusive".to_string(),
         )),
-    }
-}
-
-fn decode_http_response(
-    response: ureq::Response,
-    max_response_bytes: u64,
-) -> Result<CredentialHttpResponse, DaemonError> {
-    let status = response.status();
-    let mut body_text = String::new();
-    let mut reader = response
-        .into_reader()
-        .take(max_response_bytes.saturating_add(1));
-    reader.read_to_string(&mut body_text).map_err(|error| {
-        secret_error(
-            "http_request_with_credential",
-            format!("failed to read response body: {error}"),
-        )
-    })?;
-    if body_text.len() as u64 > max_response_bytes {
-        return Err(secret_error(
-            "http_request_with_credential",
-            format!("response exceeded max_response_bytes ({max_response_bytes})"),
-        ));
-    }
-    let body_json = serde_json::from_str::<serde_json::Value>(&body_text).ok();
-    Ok(CredentialHttpResponse {
-        status,
-        body_text: body_json.is_none().then_some(body_text),
-        body_json,
-    })
-}
-
-fn http_error(operation: &'static str, error: ureq::Error) -> DaemonError {
-    match error {
-        ureq::Error::Status(code, response) => {
-            let body = response
-                .into_string()
-                .unwrap_or_else(|error| format!("failed to read error response: {error}"));
-            secret_error(operation, format!("HTTP {code}: {body}"))
-        }
-        ureq::Error::Transport(error) => secret_error(operation, error.to_string()),
     }
 }
 
