@@ -10,7 +10,7 @@ for (const file of [
 ]) {
   test(`MP-11 F7 public provider-run boundary: ${file}`, () => {
     const source = readFileSync(new URL(`../${file}`, import.meta.url), "utf8")
-    assert.doesNotMatch(source, /(?:provider_run\s*:\s*[^,;\n]*|use[^;]*?)\bRuntimeProviderRun\b/)
+    assert.doesNotMatch(source, /\bRuntimeProviderRun\b/)
     assert.match(source, /PublicProviderRun/)
   })
 }
