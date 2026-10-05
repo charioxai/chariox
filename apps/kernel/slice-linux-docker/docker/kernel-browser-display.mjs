@@ -90,10 +90,10 @@ export class DisplayStream {
     this.expires = Date.now() + 60_000;
     this.timing = timing;
   }
-  invalidate() { this.previous = null; this.exact = false; }
+  invalidate() { this.previous = null; this.exact = false; this.capture?.invalidate(); }
   async frame(source, documentId, afterSequence) {
     let at = timestamp();
-    const current = decodePng(source.data_base64, this.device_scale_factor);
+    const current = source.pixels ?? decodePng(source.data_base64, this.device_scale_factor);
     this.timing('png_decode', at); at = timestamp();
     const bound = documentId === this.document_id && afterSequence === this.sequence;
     if (!bound) this.invalidate();
@@ -101,12 +101,14 @@ export class DisplayStream {
     if (same && this.exact) return null;
     const tiles = this.exact ? dirtyTiles(this.previous, current) : [];
     this.timing('compare_tiles', at); at = timestamp();
-    const full = { kind: 'png', data_base64: source.data_base64 };
+    const png = () => typeof source.data_base64 === 'function' ? source.data_base64() : source.data_base64;
+    const full = () => ({ kind: 'png', data_base64: png() });
     const patch = { kind: 'tiles', base_sequence: this.sequence, tiles };
     let payload;
-    if (same || this.codec === 'png') payload = full;
-    else if (tiles.length && JSON.stringify(patch).length < Math.min(48_000, JSON.stringify(full).length)) payload = patch;
-    else payload = { kind: 'video', codec: 'vp09.00.10.08', key: true, data_base64: await this.encoder.encode(source.data_base64, this.bitrate) };
+    if (same) payload = full();
+    else if (tiles.length && JSON.stringify(patch).length < Math.min(48_000, source.full_size_hint ?? JSON.stringify(full()).length)) payload = patch;
+    else if (this.codec === 'png') payload = full();
+    else payload = { kind: 'video', codec: 'vp09.00.10.08', key: true, data_base64: await this.encoder.encode(png(), this.bitrate) };
     this.timing('select_encode', at); at = timestamp();
     const packet = { ...payload, subscription_id: this.subscription_id, tab_id: this.tab_id,
       generation: source.generation, document_id: documentId, sequence: this.sequence + 1,
