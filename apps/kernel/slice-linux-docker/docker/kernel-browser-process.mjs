@@ -88,7 +88,10 @@ export class HostChromium {
   async stop(connection) {
     const child = this.child;
     this.child = null;
-    if (!child?.pid) return;
+    if (!Number.isSafeInteger(child?.pid) || child.pid <= 1) {
+      if (child?.pid !== undefined) throw new Error("MD-2: refusing unsafe browser process ID");
+      return;
+    }
     if (connection?.isOpen()) await connection.send("Browser.close").catch(() => {});
     const exited = () => child.exitCode !== null || child.signalCode !== null;
     for (let count = 0; count < 40 && !exited(); count++) await delay(50);

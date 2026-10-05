@@ -278,7 +278,7 @@ export class BrowserControllerStdioServer {
         continue;
       }
       let stopAction;
-      const controller = ["browser.action", "browser.upload", "browser.downloads.configure", "browser.permission", "browser.tab", "browser.navigate", "browser.history", "browser.dialog", "browser.cookies.import"].includes(request.method) ? new AbortController() : null;
+      const controller = ["browser.action", "browser.upload", "browser.downloads.configure", "browser.permission", "browser.tab", "browser.navigate", "browser.history", "browser.dialog", "browser.cookies.import", "host.browser", "host.secret"].includes(request.method) ? new AbortController() : null;
       const action = controller ? {controller,method:request.method,response:null,
         stopped:new Promise(resolve => { stopAction = resolve; })} : null;
       if (action) actions.set(request.id, action);

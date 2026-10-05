@@ -374,13 +374,25 @@ async fn live_check() {
             )
             .await
             .unwrap();
+        let observed = router
+            .dispatch_authenticated_runtime_tool_call(
+                &token,
+                "chariox.kernel_browser",
+                json!({"command":{"op":"screenshot","tab_id":id,"generation":generation}}),
+            )
+            .await
+            .unwrap();
+        let document = observed.payload["document_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         for input in [
             KernelBrowserInput::Click { x: 80, y: 40 },
             KernelBrowserInput::Text {
                 text: "MD-4 MCP typed".into(),
             },
         ] {
-            router.dispatch_authenticated_runtime_tool_call(&token, "chariox.kernel_browser", json!({"command":KernelBrowserCommand::Input { tab_id:id.clone(),generation,input }})).await.unwrap();
+            router.dispatch_authenticated_runtime_tool_call(&token, "chariox.kernel_browser", json!({"document_id":document,"command":KernelBrowserCommand::Input { tab_id:id.clone(),generation,input }})).await.unwrap();
         }
         let snapshot = human(
             &router,
@@ -589,6 +601,18 @@ async fn live_check() {
             .unwrap()
             .parse::<i32>()
             .unwrap();
+        assert!(pid > 1, "MD-4: reject unsafe browser PID");
+        #[cfg(target_os = "linux")]
+        {
+            let arguments = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap();
+            let owned_profile = format!("--user-data-dir={}", profile.join("profile").display());
+            assert!(
+                arguments
+                    .split(|byte| *byte == 0)
+                    .any(|argument| argument == owned_profile.as_bytes()),
+                "MD-4: browser PID must own this disposable profile"
+            );
+        }
         assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
         tokio::time::sleep(Duration::from_millis(300)).await;
         let recovered = human(&router, KernelBrowserCommand::State).await;
