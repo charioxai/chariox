@@ -364,3 +364,10 @@ test("managed environment details preserve observed activity and operation histo
   assert.equal(legacy.operations, undefined)
   assert.equal(legacy.environment.lastActivityChangedAt, "2026-09-26T04:59:00.000Z")
 })
+
+test("MP-08 / MP-11 protocol 439 provider portability sends selection only", async () => {
+  const {preflightProviderAccountPortabilityRequest, providerAccountPortabilityPreflightMinimumProtocolVersion} = await import("./ipc-managed-environment-requests.js")
+  assert.equal(providerAccountPortabilityPreflightMinimumProtocolVersion, 439)
+  const providerAccounts = {kind: "selected" as const, accounts: [{provider: "codex", accountProfile: "synthetic-profile"}]}
+  assert.deepEqual(preflightProviderAccountPortabilityRequest(providerAccounts), {PreflightProviderAccountPortability: {providerAccounts}})
+})

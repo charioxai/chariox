@@ -3,7 +3,7 @@ import type { ManagedContextTransferTicket, ManagedEnvironmentCatalog, ManagedEn
 import type { CloudControlProfile } from "./cloud-control-auth.js"
 import type { LocalIpcClient } from "./ipc.js"
 import type { createManagedEnvironmentRequest, requestManagedEnvironmentLifecycleRequest, requestManagedEnvironmentReimageRequest } from "./ipc-requests.js"
-import { getManagedContextLaunchTargetRequest, getManagedContextTransferStatusRequest, observeManagedEnvironmentPreReimageRequest, startManagedContextTransferRequest } from "./ipc-requests.js"
+import { getManagedContextLaunchTargetRequest, getManagedContextTransferStatusRequest, observeManagedEnvironmentPreReimageRequest, preflightProviderAccountPortabilityRequest, providerAccountPortabilityPreflightMinimumProtocolVersion, startManagedContextTransferRequest } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 import { sendWithProtocolMinimum } from "./protocol-minimum-diagnostic.js"
 import { managedEnvironmentJson } from "./managed-environment-cloud-http.js"
@@ -28,8 +28,8 @@ export async function getManagedEnvironmentReimagePreflight(profile: CloudContro
   if (preflight.environmentId !== environmentId) throw new Error("Cloud returned reimage preflight for a different managed environment")
   return preflight
 }
-export async function createManagedEnvironment(profile: CloudControlProfile, input: Parameters<typeof createManagedEnvironmentRequest>[0]): Promise<ManagedEnvironmentResult> {
-  requireCredentialPortabilityPreflight(input.contextPlan)
+export async function createManagedEnvironment(profile: CloudControlProfile, input: Parameters<typeof createManagedEnvironmentRequest>[0], client?: LocalIpcClient): Promise<ManagedEnvironmentResult> {
+  await preflightProviderAccountPortability(client, input.contextPlan)
   const result = await managedEnvironmentJson<ManagedEnvironmentResult>(profile, "/managed-environments", input)
   validateManagedEnvironmentResult(result)
   if (result.environment.accountId !== profile.accountId) throw new Error("Cloud returned a different managed account")
@@ -42,8 +42,8 @@ export async function requestManagedEnvironmentLifecycle(profile: CloudControlPr
   if (result.environment.accountId !== profile.accountId) throw new Error("Cloud returned a different managed account")
   return result
 }
-export async function requestManagedEnvironmentReimage(profile: CloudControlProfile, input: Parameters<typeof requestManagedEnvironmentReimageRequest>[0]): Promise<ManagedEnvironmentReimageResult> {
-  requireCredentialPortabilityPreflight(input.contextPlan)
+export async function requestManagedEnvironmentReimage(profile: CloudControlProfile, input: Parameters<typeof requestManagedEnvironmentReimageRequest>[0], client?: LocalIpcClient): Promise<ManagedEnvironmentReimageResult> {
+  await preflightProviderAccountPortability(client, input.contextPlan)
   await prepareManagedEnvironmentReimageStop(profile, input)
   const {environmentId, ...body} = input
   const result = await managedEnvironmentJson<ManagedEnvironmentReimageResult>(profile, `/managed-environments/${encodeURIComponent(environmentId)}/reimage`, body)
@@ -59,12 +59,19 @@ export async function prepareManagedEnvironmentContextTransfer(profile: CloudCon
   return ticket
 }
 
-function requireCredentialPortabilityPreflight(plan: ManagedEnvironmentContextPlanInput): void {
-  // MP-08 / MP-11: the old human-authenticated kernel mutation also checked
-  // credential portability before provisioning. Do not bypass that protection
-  // while its separate kernel capability awaits coordinator protocol allocation.
-  if (plan.providerAccounts.kind === "selected" && plan.providerAccounts.accounts.length) {
-    throw new Error("Selected provider accounts require a kernel credential portability preflight capability before provisioning")
+export async function preflightProviderAccountPortability(client: LocalIpcClient | undefined, plan: ManagedEnvironmentContextPlanInput): Promise<void> {
+  if (plan.providerAccounts.kind === "none") return
+  if (!client) throw new Error("Selected provider accounts require a kernel credential portability preflight before provisioning")
+  const response = await sendWithProtocolMinimum<Record<string, unknown>>(
+    client.send.bind(client), preflightProviderAccountPortabilityRequest(plan.providerAccounts), {
+      capability: "MP-08 / MP-11 provider account portability preflight",
+      requestVariant: "PreflightProviderAccountPortability",
+      minimumProtocolVersion: providerAccountPortabilityPreflightMinimumProtocolVersion,
+    },
+  )
+  const acknowledgement = expectVariant<Record<string, never>>(response, "ProviderAccountPortabilityPreflightPassed")
+  if (!acknowledgement || typeof acknowledgement !== "object" || Array.isArray(acknowledgement) || Object.keys(acknowledgement).length !== 0) {
+    throw new Error("kernel returned an invalid provider portability acknowledgement")
   }
 }
 

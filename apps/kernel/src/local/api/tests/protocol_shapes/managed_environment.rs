@@ -817,3 +817,30 @@ fn managed_release_update_shapes_are_versioned() {
         );
     }
 }
+
+#[test]
+fn provider_account_portability_preflight_protocol_439_is_acknowledgement_only() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 439);
+    let request_json = serde_json::json!({"PreflightProviderAccountPortability": {
+        "providerAccounts": {"kind": "selected", "accounts": [{"provider": "codex", "accountProfile": "synthetic-profile"}]}
+    }});
+    let request: LocalDaemonRequest =
+        serde_json::from_value(request_json.clone()).expect("selection-only kernel preflight");
+    assert_eq!(serde_json::to_value(request).unwrap(), request_json);
+    let response_json = serde_json::json!({"ProviderAccountPortabilityPreflightPassed": {}});
+    let response: LocalDaemonResponse =
+        serde_json::from_value(response_json.clone()).expect("acknowledgement-only response");
+    assert_eq!(serde_json::to_value(response).unwrap(), response_json);
+    let snapshot = serde_json::json!([request_json, response_json]);
+    let serialized = serde_json::to_string(&snapshot).unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serialized.as_bytes())),
+        "0fdaa3cbf78bfba9b1e58d2164fdcf5471ff8e989d064e2614be8e8fbcd27115"
+    );
+    assert!(serde_json::from_value::<LocalDaemonRequest>(
+        serde_json::json!({"PreflightProviderAccountPortability": {
+            "providerAccounts": {"kind": "none"}, "credential": "forbidden"
+        }})
+    )
+    .is_err());
+}

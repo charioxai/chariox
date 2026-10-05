@@ -315,28 +315,12 @@ pub(super) fn preflight_provider_account_exports(
     provider_account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
     selection: &ManagedEnvironmentProviderAccounts,
 ) -> Result<(), DaemonError> {
-    let ManagedEnvironmentProviderAccounts::Selected { accounts } = selection else {
-        return Ok(());
-    };
-    let owner_user_id = crate::account_profile::provider_account_authority_owner_user_id(
+    crate::runtime::provider_account_portability::preflight_selection(
         config,
-        cloud.user_id.as_str(),
-    );
-    for account in accounts {
-        provider_account_profiles
-            .export_managed_context_materialization(
-                &owner_user_id,
-                &account.provider,
-                &account.account_profile,
-            )
-            .map_err(|_| {
-                control_error(format!(
-                    "selected {} provider account `{}` has no transferable credentials",
-                    account.provider, account.account_profile
-                ))
-            })?;
-    }
-    Ok(())
+        provider_account_profiles,
+        &cloud.user_id,
+        selection,
+    )
 }
 
 pub(super) fn authorized_cloud_profile<'a>(

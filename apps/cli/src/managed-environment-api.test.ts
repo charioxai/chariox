@@ -27,6 +27,45 @@ for (const action of ["create", "reimage"] as const) test(`MP-08 / MP-11 ${actio
   assert.equal(requests, 0, "reject before STOP or provisioning authority is spent")
 })
 
+// MP-08 / MP-11: selection is checked by the connected kernel before any
+// human Cloud authority is spent, with no credential bytes in either transport.
+for (const action of ["create", "reimage"] as const) for (const rejected of [false, true]) test(`MP-08 / MP-11 selected-provider ${action} ${rejected ? "rejects before mutation" : "preflights then mutates"}`, async () => {
+  const calls: string[] = []
+  const providerAccounts = {kind: "selected" as const, accounts: [{provider: "codex", accountProfile: "synthetic-profile"}]}
+  const selected = {...contextPlan, providerAccounts}
+  const client = {send: async (request: unknown) => {
+    calls.push("kernel-preflight")
+    assert.deepEqual(request, {PreflightProviderAccountPortability: {providerAccounts}})
+    if (rejected) throw new Error("selected provider account has no transferable credentials")
+    return {ProviderAccountPortabilityPreflightPassed: {}}
+  }} as unknown as LocalIpcClient
+  const profile = authority((url, body) => {
+    calls.push(url.pathname.endsWith("/stop") ? "stop" : "mutation")
+    assert.deepEqual(body.contextPlan, selected)
+    if (url.pathname.endsWith("/stop")) return {environment: {environmentId: "environment-1", accountId: metadata.accountId, runtimeGeneration: 4}, operation: {environmentId: "environment-1", requestedByUserId: metadata.userId, operationId: "reimage-operation", kind: "reimage", idempotencyKey: "reimage-1", requestDigest: `sha256:${"a".repeat(64)}`}}
+    const result = reimageResult()
+    return {...result, environment: {...result.environment, accountId: metadata.accountId}}
+  })
+  const request = action === "create"
+    ? createManagedEnvironment(profile, {clientRequestId: "create-1", name: "fixture", region: "hel1", computeClass: "agent-small", autoStopPolicy: {minimumRuntimeSeconds: 0, idleDelaySeconds: 900}, contextPlan: selected}, client)
+    : requestManagedEnvironmentReimage(profile, {...reimageInput, contextPlan: selected}, client)
+  if (rejected) await assert.rejects(request, /no transferable credentials/)
+  else await request
+  assert.deepEqual(calls, rejected ? ["kernel-preflight"] : action === "create" ? ["kernel-preflight", "mutation"] : ["kernel-preflight", "stop", "mutation"])
+})
+
+for (const response of [undefined, {ProviderAccountPortabilityPreflightPassed: {credential: "must-not-cross"}}, {Other: {}}]) test("MP-08 / MP-11 unexpected portability acknowledgement fails before Cloud", async () => {
+  const profile = authority(() => {throw new Error("must not spend Cloud authority")})
+  const client = {send: async () => response} as unknown as LocalIpcClient
+  await assert.rejects(createManagedEnvironment(profile, {clientRequestId: "create-1", name: "fixture", region: "hel1", computeClass: "agent-small", autoStopPolicy: {minimumRuntimeSeconds: 0, idleDelaySeconds: 900}, contextPlan: {...contextPlan, providerAccounts: {kind: "selected", accounts: [{provider: "codex", accountProfile: "fixture"}]}}}, client), /acknowledgement|ProviderAccountPortabilityPreflightPassed/)
+})
+
+test("MP-08 / MP-11 selected-provider older kernel gives protocol 439 diagnostic", async () => {
+  const profile = authority(() => {throw new Error("must not spend Cloud authority")})
+  const client = {send: async () => {throw new Error("unknown variant `PreflightProviderAccountPortability`")}} as unknown as LocalIpcClient
+  await assert.rejects(createManagedEnvironment(profile, {clientRequestId: "create-1", name: "fixture", region: "hel1", computeClass: "agent-small", autoStopPolicy: {minimumRuntimeSeconds: 0, idleDelaySeconds: 900}, contextPlan: {...contextPlan, providerAccounts: {kind: "selected", accounts: [{provider: "codex", accountProfile: "fixture"}]}}}, client), /requires kernel protocol 439/)
+})
+
 // MP-08 / MP-11: human control transport has no kernel credentials, with local
 // coordination covered separately on the ordinary LocalDaemon variants.
 test("managed catalog and mutations use bound human HTTP metadata", async () => {

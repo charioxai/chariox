@@ -373,6 +373,30 @@ reimageTest("MP-08 / MP-11 signed-in catalog and creation use human HTTP with ke
   } finally {harness.cleanup()}
 })
 
+// MP-08 / MP-11: exercise the production callbacks with enrollment-only status
+// and terminal-private human authority, including rejection before STOP.
+for (const action of ["create", "reimage"] as const) for (const denied of [false, true]) reimageTest(`MP-08 / MP-11 selected-provider ${action} ${denied ? "fails before Cloud mutation" : "preflights on the source kernel"}`, async router => {
+  const plan = {...emptyPlan(), providerAccounts: {kind: "selected" as const, accounts: [{provider: "codex", accountProfile: "fixture"}]}}
+  const harness = createHarness(router, {contextPlan: plan, ...(denied ? {portabilityFailure: new Error("no transferable credentials")} : {})})
+  try {
+    await harness.initialize()
+    if (action === "reimage") await harness.composition.reimageManagedEnvironment("environment-1", "prepare")
+    const before = harness.cloudPaths.length
+    const request = action === "reimage"
+      ? harness.composition.reimageManagedEnvironment("environment-1", "confirm")
+      : harness.composition.startSessionFromWaitingRoomDefaults({kind: "new", region: "hel1", computeClass: "agent-small", managedRepositoryRoot: "/home/chariox", autoStopPolicy: {minimumRuntimeSeconds: 0, idleDelaySeconds: 900}, contextPlan: {sourceTargetId: null, kernelContext: plan.kernelContext, developmentSetup: plan.developmentSetup, providerAccounts: plan.providerAccounts, gitCredentials: plan.gitCredentials}})
+    if (denied) await assert.rejects(request, /no transferable credentials/)
+    else await request
+    assert.equal(requestCount(harness.local, "PreflightProviderAccountPortability"), 1)
+    const preflightRequest = harness.local.requests.find(request => requestKind(request) === "PreflightProviderAccountPortability")
+    assert.deepEqual(preflightRequest, {PreflightProviderAccountPortability: {providerAccounts: plan.providerAccounts}})
+    assert.equal(requestCount(harness.old, "PreflightProviderAccountPortability"), 0)
+    assert.equal(requestCount(harness.replacement, "PreflightProviderAccountPortability"), 0)
+    if (denied) assert.equal(harness.cloudPaths.length, before, "no STOP/provisioning after failed preflight")
+    else assert.ok(harness.cloudPaths.slice(before).some(path => action === "reimage" ? path.endsWith("/reimage") : path === "/managed-environments"))
+  } finally {harness.cleanup()}
+})
+
 type TestEndpoint = {
   readonly client: LocalIpcClient
   readonly requests: unknown[]
@@ -524,6 +548,7 @@ function createHarness(router: TestRouter, options: {
   contextPlan?: ManagedEnvironmentContextPlan
   setupFailure?: Error
   attachFailure?: Error
+  portabilityFailure?: Error
   stoppedEnrolled?: boolean
   interactivePlacement?: boolean
   managedWorktrees?: Promise<unknown>
@@ -560,6 +585,9 @@ function createHarness(router: TestRouter, options: {
     if (/^(ListManagedEnvironmentCatalog|GetManagedEnvironment|CreateManagedEnvironment|RequestManagedEnvironment|PrepareManagedEnvironment)/.test(requestKind(request))) throw new Error("Cloud session is unavailable: kernel has enrollment authority only")
     if (requestKind(request) === "CloudRelayStatus") return {CloudRelayStatus: {profile: {api_url: "http://127.0.0.1:44123", account_id: "account-1", user_id: "user-1", kernel_id: "kernel-local", kernel_enrolled: true}}}
     switch (requestKind(request)) {
+      case "PreflightProviderAccountPortability":
+        if (options.portabilityFailure) throw options.portabilityFailure
+        return {ProviderAccountPortabilityPreflightPassed: {}}
       case "GetWaitingRoomPublicSnapshot":
         if (options.localLaunchTarget) {
           const response = snapshotResponse("kernel-local", "machine-local", contextPlan)

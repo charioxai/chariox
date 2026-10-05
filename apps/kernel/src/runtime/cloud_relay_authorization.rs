@@ -13,7 +13,8 @@ pub(crate) fn authorize_kernel_cloud_request(
 ) -> Result<(), DaemonError> {
     let cloud_control = matches!(
         request,
-        LocalDaemonRequest::CloudRelayStatus(_)
+        LocalDaemonRequest::PreflightProviderAccountPortability(_)
+            | LocalDaemonRequest::CloudRelayStatus(_)
             | LocalDaemonRequest::StartCloudRelayLogin(_)
             | LocalDaemonRequest::PollCloudRelayLogin(_)
             | LocalDaemonRequest::LogoutCloudRelay(_)
@@ -77,6 +78,30 @@ pub(crate) fn cloud_relay_caller_owner(config: &DaemonConfig, caller: &KernelCal
 mod tests {
     use super::*;
     use crate::local::ResolveKernelClientConnectionRequest;
+    #[test]
+    fn provider_portability_is_owner_scoped_before_session_membership() {
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "owner".into(),
+            realm_id: "realm-a".into(),
+            ..Default::default()
+        });
+        let request = LocalDaemonRequest::PreflightProviderAccountPortability(
+            crate::local::PreflightProviderAccountPortabilityRequest {
+                provider_accounts: crate::local::ManagedEnvironmentProviderAccounts::None,
+            },
+        );
+        let mut command = KernelCommand::from_local_request("preflight", None, None, &request);
+        assert!(authorize_kernel_cloud_request(&config, &command, &request).is_ok());
+        command.source = KernelCommandSource::RelayClient;
+        command.caller.caller_kind = KernelCallerKind::RemoteClient;
+        command.caller.user_id = Some("collaborator".into());
+        command.caller.realm_id = Some("realm-a".into());
+        command.session_id = Some("shared-session".into());
+        assert!(authorize_kernel_cloud_request(&config, &command, &request).is_err());
+        command.caller.user_id = Some("owner".into());
+        assert!(authorize_kernel_cloud_request(&config, &command, &request).is_ok());
+    }
     #[test]
     fn cloud_pairing_redemption_rejects_shared_session_callers() {
         let mut config = DaemonConfig::for_tests();
