@@ -326,3 +326,27 @@ function publicationEntrypointEnvironment({ root, home, bindings }) {
     CHARIOX_WORKSPACE_DIR: join(root, "workspace"),
   }
 }
+
+test('MP-11 F5 bootstrap capability reader refuses FIFOs before a writer arrives', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mp11-bootstrap-fifo-'))
+  try {
+    const input = join(root, 'input')
+    await execFileAsync('mkfifo', ['-m', '600', input])
+    const fn = entrypoint.match(/^read_bootstrap_capability_file\(\) \{[^]*?^\}/m)[0]
+    await assert.rejects(execFileAsync('bash', ['-c', `${fn}\nread_bootstrap_capability_file "$1" "$2"`, 'fixture', input, 'audit URL'],
+      { timeout: 2000, maxBuffer: 256 * 1024 }), error => error.killed === false && /private regular file/.test(error.stderr))
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('MP-11 F5 bootstrap capability reader bounds audit URLs and caller claims', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mp11-bootstrap-limit-'))
+  try {
+    const input = join(root, 'input')
+    const fn = entrypoint.match(/^read_bootstrap_capability_file\(\) \{[^]*?^\}/m)[0]
+    for (const [label, maximum] of [['audit URL', 8192], ['caller claims configuration', 65536]]) {
+      await writeFile(input, 'x'.repeat(maximum + 1), { mode: 0o600 })
+      await assert.rejects(execFileAsync('bash', ['-c', `${fn}\nread_bootstrap_capability_file "$1" "$2"`, 'fixture', input, label],
+        { timeout: 2000, maxBuffer: 256 * 1024 }), error => /size limit/.test(error.stderr) && error.stdout === '')
+    }
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
