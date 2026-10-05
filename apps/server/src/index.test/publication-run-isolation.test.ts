@@ -173,3 +173,41 @@ test("MP-11 authenticated status admission also applies without an HTTP ingress 
     }
   }
 })
+
+for (const [workflow_ref, endpoint_ref] of [["published", "entry"], ["workflow-", "endpoint-"]]) {
+  test(`MP-11 invocation with ${workflow_ref}/${endpoint_ref} retains result and SSE access`, async (t) => {
+    configurePublicationCallerClaimsRuntimeForTests(null)
+    t.after(() => configurePublicationCallerClaimsRuntimeForTests(undefined))
+    const publication = { ...config, workflow_ref: workflow_ref!, endpoint_ref: endpoint_ref! }
+    let run: WorkflowRun | null = null
+    t.mock.method(LocalIpcClient.prototype, "send", async (request: Record<string, unknown>) => {
+      if ("ResolveWorkflow" in request) return { WorkflowResolved: { workflow: {
+        id: "workflow-1", alias: "published", endpoints: [{ id: "endpoint-1", alias: "entry" }],
+      } } }
+      if ("InvokeWorkflowEndpoint" in request) {
+        const invocation = (request.InvokeWorkflowEndpoint as { publication_invocation: WorkflowRun["publication_invocation"] }).publication_invocation!
+        run = { ...privateRun(), publication_invocation: { ...invocation, endpoint_id: "endpoint-1" } }
+        return { WorkflowRunInvoked: { workflow_run: run } }
+      }
+      if ("ListWorkflowRuns" in request) return { WorkflowRunsListed: { workflow_runs: run ? [run] : [] } }
+      if ("GetWorkflowRun" in request) return { WorkflowRun: { workflow_run: run } }
+      return {}
+    })
+    const { app } = buildServer(publication, { getProviderReadiness: async () => [] })
+    t.after(() => app.close())
+    const invoked = await app.inject({ method: "POST", url: "/.well-known/chariox/publication/human-http/invoke",
+      payload: { prompt: "alias invocation" } })
+    assert.equal(invoked.statusCode, 200)
+    assert.ok(run)
+    const invocationId = (run as WorkflowRun).publication_invocation!.invocation_id
+    for (const url of [paths[0]!, `${paths[1]!.slice(0, paths[1]!.lastIndexOf('/') + 1)}${invocationId}`,
+      paths[2]!, `/.well-known/chariox/publication/invocations/${invocationId}/events`]) {
+      const response = await app.inject({ method: "GET", url })
+      assert.match(response.body, /private-A-output/, url)
+      assert.doesNotMatch(response.body, /workflow run not found|event: timeout/, url)
+    }
+    run = { ...(run as WorkflowRun), endpoint_id: "foreign-endpoint" }
+    const foreign = await app.inject({ method: "GET", url: paths[2]! })
+    assert.doesNotMatch(foreign.body, /private-A-output/)
+  })
+}
