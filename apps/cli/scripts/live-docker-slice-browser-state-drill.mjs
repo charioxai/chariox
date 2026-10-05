@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { browserStateCleanupFailure, cleanupBrowserStateImages } from "./lib/browser-state-drill-cleanup.mjs"
+import { browserStateCleanupFailure, cleanupBrowserStateImages, assertBrowserStateDockerNamesAvailable, captureBrowserStateDockerOwnership, cleanupBrowserStateDockerResources } from "./lib/browser-state-drill-cleanup.mjs"
 import { browserStateDrillImageConfig } from "./lib/browser-state-drill-image.mjs"
 import { resolveBrowserStateDrillPaths } from "./lib/browser-state-drill-paths.mjs"
 import { startBrowserComputerFixture } from "./lib/browser-computer-fixture.mjs"
@@ -38,7 +38,7 @@ if (usePrebuilt) {
 }
 const startedAt = new Date().toISOString()
 const stamp = startedAt.replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z")
-const runId = `m20-docker-state-${process.pid}-${stamp}`
+const runId = `m20-docker-state-${randomUUID()}`
 const { artifactDir, tempRoot } = resolveBrowserStateDrillPaths({
   homeDir: os.homedir(),
   runId,
@@ -60,7 +60,7 @@ function parseFixturePort(args = process.argv.slice(2)) {
 }
 
 const fixturePort = parseFixturePort()
-const sliceName = `m20-${process.pid}`
+const sliceName = runId
 const containerName = `chariox-slice-${sliceName}`
 const homeVolume = `${containerName}-home`
 const email = "agent@chariox.test"
@@ -89,6 +89,7 @@ let savedState = null
 let namedBackup = null
 let corruptBackup = null
 let cleanupResult = null
+let dockerOwnership = null
 let sourceIdentity = null
 let stateImagesBefore = new Set()
 let rollbackImagesBefore = new Set()
@@ -140,6 +141,7 @@ if (failure) {
 }
 
 async function run() {
+  await assertBrowserStateDockerNamesAvailable({ containerName, homeVolume, inspect: inspectDrillDockerObject })
   workspaceFixture = await prepareBrowserStateDrillWorkspace({
     env: process.env,
     repositoryRoot: repoRoot,
@@ -215,6 +217,7 @@ async function run() {
   log("starting slice")
   await client.send(requests.startSliceRequest(slice.id))
   slice = await waitForSliceRunning(slice.id)
+  dockerOwnership = await captureBrowserStateDockerOwnership({ runId, containerName, homeVolume, slice, inspect: inspectDrillDockerObject })
   workspaceFixture = await finalizeBrowserStateDrillWorkspace({
     fixture: workspaceFixture,
     slice,
@@ -270,6 +273,7 @@ async function run() {
   log("starting restored slice")
   await client.send(requests.startSliceRequest(slice.id))
   slice = await waitForSliceRunning(slice.id)
+  dockerOwnership = await captureBrowserStateDockerOwnership({ runId, containerName, homeVolume, slice, inspect: inspectDrillDockerObject })
   assert.deepEqual(
     slice.local_docker_ports,
     initialSlicePorts,
@@ -382,6 +386,7 @@ async function run() {
   assert.equal(firstBackupRestore.slice.status, "stopped")
   await client.send(requests.startSliceRequest(slice.id))
   slice = await waitForSliceRunning(slice.id)
+  dockerOwnership = await captureBrowserStateDockerOwnership({ runId, containerName, homeVolume, slice, inspect: inspectDrillDockerObject })
   await verifyUserPersistenceMarkers()
   await verifyLocalBrowserStateAfterRestore()
   await screenshot("04-after-named-backup-restore")
@@ -398,6 +403,7 @@ async function run() {
   assert.equal(secondBackupRestore.slice.status, "stopped")
   await client.send(requests.startSliceRequest(slice.id))
   slice = await waitForSliceRunning(slice.id)
+  dockerOwnership = await captureBrowserStateDockerOwnership({ runId, containerName, homeVolume, slice, inspect: inspectDrillDockerObject })
   await verifyUserPersistenceMarkers()
   await verifyLocalBrowserStateAfterRestore()
   await screenshot("05-after-repeated-backup-restore")
@@ -778,16 +784,19 @@ async function assertFixtureAlive() {
   await fixture.health()
 }
 
-async function removeContainerAndHomeVolume() {
-  let removalError = null
-  for (const args of [["rm", "-f", containerName], ["volume", "rm", "-f", homeVolume]]) {
-    try {
-      await docker(args)
-    } catch (error) {
-      removalError ??= error
-    }
+async function inspectDrillDockerObject(kind, name) {
+  const result = await runCommand("docker", [kind, "inspect", name], { timeoutMs: 20_000 })
+  if (result.code === 0) {
+    const records = JSON.parse(result.stdout)
+    if (!Array.isArray(records) || records.length !== 1) throw new Error(`ambiguous Docker ${kind} identity`)
+    return records[0]
   }
-  if (removalError) throw removalError
+  if (result.code === 1 && /(?:No such|not found)/i.test(result.stderr)) return null
+  throw new Error(`Docker ${kind} inspection failed`)
+}
+
+async function removeContainerAndHomeVolume() {
+  await cleanupBrowserStateDockerResources({ containerName, homeVolume, ownership: dockerOwnership, inspect: inspectDrillDockerObject, remove: docker })
 }
 
 async function buildKernel() {

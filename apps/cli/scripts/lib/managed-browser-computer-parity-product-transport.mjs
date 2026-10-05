@@ -1064,6 +1064,7 @@ async function inspectMeasuredKernelResidue({
   if (!postDelete || postDelete.bindingPresent !== false) {
     throw new Error("managed parity cleanup.inspect requires an observed unbound Room after slice deletion")
   }
+  const ownedAttachmentIds = new Set(cleanupEvidence?.attachmentIds ?? [])
   const residualAttachmentIds = residualOwnedAttachmentIds(afterInventory.sessions, cleanupEvidence)
   const roomSessions = afterInventory.sessions.filter((session) => session?.id === roomId)
   const ownedSlices = afterInventory.slices.filter((slice) => slice?.id === sliceId)
@@ -1079,10 +1080,10 @@ async function inspectMeasuredKernelResidue({
   }
   const managedMachines = ownedSlices.filter((slice) =>
     slice?.worker_machine_id === targetMachineRef || slice?.worker_kernel_ref === targetKernelRef).length
-  const rooms = roomSessions.length
+  const rooms = cleanupEvidence?.roomOwnership === "borrowed" ? 0 : roomSessions.length
   const environments = activeEnvironment
   const processes = activeProcesses
-  const listeners = residualAttachmentIds.size + afterInventory.roomMemberAttachmentIds.length
+  const listeners = residualAttachmentIds.size + afterInventory.roomMemberAttachmentIds.filter((id) => ownedAttachmentIds.has(id)).length
   const containers = ownedSlices.length
   const profiles = ownedSlices.length > 0 ? postDelete.profileCount : 0
   const activeTargets = ownedSlices.length > 0 ? postDelete.browserCount : 0
@@ -1820,9 +1821,9 @@ async function runKernelVault({ client, requestApi, request, signal }) {
   return {
     ...binding,
     displayBackend: "selkies",
-    syntheticValueInserted: true,
-    valueObservedOnlyAtTarget: true,
-    leakScan: { arguments: 0, logs: 0, evidence: 0, prompts: 0, fixtures: 0 },
+    clipboardParity: { status: "passed", markerWrittenAndRead: true, cleared: true },
+    vaultValidation: { status: "not_run", reason: "clipboard_only" },
+    leakValidation: { status: "not_run", reason: "credential_path_not_exercised" },
   }
 }
 
@@ -2894,8 +2895,8 @@ async function inspectCleanupResidue({
   if (!evidence?.cleaned) {
     throw new Error("managed parity cleanup.inspect requires a completed cleanup.perform")
   }
-  if (evidence.roomDeleted !== true) {
-    throw new Error("managed parity cleanup.inspect requires an observed deleted drill Room")
+  if (evidence.roomOwnership !== "borrowed") {
+    throw new Error("managed parity cleanup.inspect requires explicit Room ownership evidence")
   }
   if (!hasText(evidence.sliceId)) {
     throw new Error("managed parity cleanup.inspect requires a stable owned slice identity")
@@ -2968,7 +2969,7 @@ async function inspectOwnedResidue({ displayClient, requestApi, ownedResources, 
   )
   const roomId = evidence.identity?.roomId ?? evidence.identity?.sessionId
   const roomSessions = sessions.filter((session) => session?.id === roomId)
-  if (roomSessions.length > 0) {
+  if (evidence.roomOwnership !== "borrowed" && roomSessions.length > 0) {
     throw new Error("managed parity cleanup.inspect found the owned Room still present")
   }
   const attachmentIds = new Set(evidence.attachmentIds ?? [])
@@ -3028,7 +3029,7 @@ async function inspectOwnedResidue({ displayClient, requestApi, ownedResources, 
     },
     ownedSliceCount: ownedSlices.length,
     ownedAttachmentResidueCount: attachmentResidueCount,
-    sessionCount: sessions.filter((session) => session?.id === roomId).length,
+    sessionCount: evidence.roomOwnership === "borrowed" ? 0 : roomSessions.length,
     memberInspection,
     unsupportedChecks: [],
   }
@@ -3674,16 +3675,9 @@ async function runCleanup({
     if (ownedResources.cleanupMeasurements) ownedResources.cleanupMeasurements.postDelete = postDelete
   }
   const previousEvidence = ownedResources.cleanupEvidence
-  const roomId = previousEvidence?.identity?.roomId
-    ?? ownedResources.identity?.roomId
-    ?? ownedResources.expectedRoomId
-  const roomDeleted = await deleteOwnedRoom({
-    displayClient,
-    requestApi,
-    roomId,
-    signal,
-    step: "cleanup.perform",
-  })
+  // Every current create path borrows the caller's Room. No creation or
+  // exclusive adoption receipt grants this transport authority to delete it.
+  const roomDeleted = false
   rememberCleanupEvidence(ownedResources, {
     sliceId: sliceId ?? previousEvidence?.sliceId,
     attachmentIds: attachmentIds.length > 0 ? attachmentIds : previousEvidence?.attachmentIds,
@@ -4016,44 +4010,6 @@ async function readAuthoritativeSliceRecord({ client, requestApi, sliceId, signa
   return { slice, agentIds }
 }
 
-async function deleteOwnedRoom({ displayClient, requestApi, roomId, signal, step }) {
-  if (!hasText(roomId)) return false
-  const listSessions = requireRequestConstructor(requestApi, "listSessionsRequest")
-  let sessions = await readSessionRecords({ displayClient, requestApi, signal, step: `${step} Room inventory` })
-  let room = sessions.find((session) => session?.id === roomId)
-  if (room) {
-    if (room.status !== "ended") {
-      const endResponse = await sendWithAbortSignal(
-        displayClient,
-        requireRequestConstructor(requestApi, "endSessionRequest")(roomId),
-        signal,
-        `${step} Room end`,
-      )
-      const ended = responseVariant(endResponse, "SessionEnded", `${step} Room end`).session
-      if (ended?.id !== roomId) throw new Error(`${step} Room end returned a foreign Room identity`)
-    }
-    const deleteResponse = await sendWithAbortSignal(
-      displayClient,
-      requireRequestConstructor(requestApi, "deleteSessionRequest")(roomId),
-      signal,
-      `${step} Room delete`,
-    )
-    const deleted = responseVariant(deleteResponse, "SessionDeleted", `${step} Room delete`).session
-    if (deleted?.id !== roomId) throw new Error(`${step} Room delete returned a foreign Room identity`)
-  }
-  await waitForKernelProbe(
-    async () => {
-      sessions = await readSessionRecords({ displayClient, requestApi, signal, step: `${step} Room deletion observation` })
-      room = sessions.find((session) => session?.id === roomId)
-      return !room
-    },
-    5_000,
-    `${step} Room deletion`,
-    signal,
-  )
-  return true
-}
-
 async function readSessionRecords({ displayClient, client = displayClient, requestApi, signal, step }) {
   const response = await sendWithAbortSignal(
     client,
@@ -4352,7 +4308,8 @@ function rememberCleanupEvidence(ownedResources, evidence) {
     agentIds: [...new Set(evidence.agentIds ?? previous?.agentIds ?? [...ownedResources.agentIds])],
     identity: evidence.identity ?? previous?.identity ?? ownedResources.stableIdentity ?? null,
     deleted: evidence.deleted === true,
-    roomDeleted: evidence.roomDeleted === true || previous?.roomDeleted === true,
+    roomDeleted: false,
+    roomOwnership: "borrowed",
     postDelete: evidence.postDelete ?? previous?.postDelete ?? ownedResources.cleanupMeasurements?.postDelete ?? null,
     measurements: evidence.measurements ?? previous?.measurements ?? ownedResources.cleanupMeasurements ?? null,
     reason: evidence.reason ?? "cleanup",
