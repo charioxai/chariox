@@ -13,7 +13,43 @@ use crate::{
 use chariox_app_runtime::app_outbox::{AutomationConfiguration, AutomationStatus};
 
 impl KernelRuntimeState {
-    pub(crate) async fn execute_app_control_request(
+    /// MD-4: choose the App lane before allocating its unrelated operation futures.
+    pub(crate) fn execute_app_control_request<'a>(
+        &'a self,
+        command: &'a KernelCommand,
+        request: &'a LocalDaemonRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<LocalDaemonResponse>> + Send + 'a>>
+    {
+        match request {
+            LocalDaemonRequest::AcceptAppHostAction(_)
+            | LocalDaemonRequest::RestoreAppDataSnapshot(_)
+            | LocalDaemonRequest::GrantAppFile(_)
+            | LocalDaemonRequest::PreviewDeploymentApps(_)
+            | LocalDaemonRequest::PrepareDeploymentApps(_)
+            | LocalDaemonRequest::GetAppSet(_)
+            | LocalDaemonRequest::SaveAppFileExport(_)
+            | LocalDaemonRequest::GetAppWorker(_)
+            | LocalDaemonRequest::ControlAppWorker(_)
+            | LocalDaemonRequest::ListAppAutomations(_)
+            | LocalDaemonRequest::ConfigureAppAutomation(_)
+            | LocalDaemonRequest::DisableAppAutomation(_)
+            | LocalDaemonRequest::UninstallApp(_)
+            | LocalDaemonRequest::GetAppLogs(_)
+            | LocalDaemonRequest::CreateAppInboxRoute(_)
+            | LocalDaemonRequest::RemoveAppInboxRoute(_)
+            | LocalDaemonRequest::ListAppInboxRoutes(_)
+            | LocalDaemonRequest::TestAppInboxRoute(_)
+            | LocalDaemonRequest::GrantAppConnection(_)
+            | LocalDaemonRequest::RevokeAppConnection(_)
+            | LocalDaemonRequest::ListAppConnections(_)
+            | LocalDaemonRequest::RevokeAppFileGrants(_) => {
+                Box::pin(self.execute_app_control_request_selected(command, request))
+            }
+            _ => Box::pin(async { None }),
+        }
+    }
+
+    async fn execute_app_control_request_selected(
         &self,
         command: &KernelCommand,
         request: &LocalDaemonRequest,
@@ -32,7 +68,7 @@ impl KernelRuntimeState {
                 return Some(failed(AppRequestErrorCode::Unauthorized));
             }
             return Some(match crate::runtime::app_control::owner(command) {
-                Ok(owner) => self.accept_app_host_action(owner, request.clone()).await,
+                Ok(owner) => Box::pin(self.accept_app_host_action(owner, request.clone())).await,
                 Err(code) => failed(code),
             });
         }
@@ -62,15 +98,15 @@ impl KernelRuntimeState {
         }
         if let LocalDaemonRequest::GrantAppFile(request) = request {
             return Some(match crate::runtime::app_control::owner(command) {
-                Ok(owner) => self.grant_app_file(owner, request.clone()).await,
+                Ok(owner) => Box::pin(self.grant_app_file(owner, request.clone())).await,
                 Err(code) => failed(code),
             });
         }
         if let LocalDaemonRequest::PreviewDeploymentApps(request) = request {
-            return Some(self.preview_deployment_apps(command, request).await);
+            return Some(Box::pin(self.preview_deployment_apps(command, request)).await);
         }
         if let LocalDaemonRequest::PrepareDeploymentApps(request) = request {
-            return Some(self.prepare_deployment_apps(command, request).await);
+            return Some(Box::pin(self.prepare_deployment_apps(command, request)).await);
         }
         if let LocalDaemonRequest::GetAppSet(_) = request {
             // Boxed: the App set is read through this same dispatch.
@@ -78,7 +114,7 @@ impl KernelRuntimeState {
         }
         if let LocalDaemonRequest::SaveAppFileExport(request) = request {
             return Some(match crate::runtime::app_control::owner(command) {
-                Ok(owner) => self.save_app_file_export(owner, request.clone()).await,
+                Ok(owner) => Box::pin(self.save_app_file_export(owner, request.clone())).await,
                 Err(code) => failed(code),
             });
         }
@@ -128,8 +164,7 @@ impl KernelRuntimeState {
             return Some(
                 self.app_control()
                     .execute_once(&owner, command, request, move || async move {
-                        state
-                            .app_control_response(execute_owner, installation, input)
+                        Box::pin(state.app_control_response(execute_owner, installation, input))
                             .await
                             .unwrap_or_else(failed)
                     })
@@ -137,7 +172,7 @@ impl KernelRuntimeState {
             );
         }
         Some(
-            self.app_control_response(owner, installation, request.clone())
+            Box::pin(self.app_control_response(owner, installation, request.clone()))
                 .await
                 .unwrap_or_else(failed),
         )
