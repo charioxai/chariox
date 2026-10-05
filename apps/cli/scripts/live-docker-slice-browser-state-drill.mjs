@@ -361,7 +361,7 @@ async function run() {
   await archiveFixture.corrupt(corruptBackup)
   await assert.rejects(
     client.send(requests.restoreSliceBackupRequest(slice.id, corruptBackup.id)),
-    /archive integrity check failed.*quarantined/,
+    archiveFixture.corruptionRejection,
   )
   slice = await waitForSliceStatus(slice.id, "stopped")
   assert.equal(
@@ -369,7 +369,7 @@ async function run() {
     containerBeforeRejectedRestore,
     "corrupt backup rejection must happen before container replacement",
   )
-  await archiveFixture.verifyQuarantine(corruptBackup)
+  await archiveFixture.verifyRejectedArchive(corruptBackup)
 
   log("restoring the named backup by its human-readable name")
   const firstBackupRestore = unwrap(
@@ -1170,7 +1170,9 @@ async function writeManifest(ok, error = null) {
       "message before save and message after restore were each submitted exactly once",
       "external service invalidation showed the exact login prompt while persisted browser state remained intact",
       "reauthentication restored service use and submitted its message exactly once",
-      "named backup integrity metadata was recorded, a corrupt archive was quarantined before container replacement, and the named backup remained restorable",
+      workspaceFixture?.localDev
+        ? "named backup integrity metadata was recorded, broker-owned corruption was refused without moving its archive or replacing the container, and the named backup remained restorable"
+        : "named backup integrity metadata was recorded, a corrupt archive was quarantined before container replacement, and the named backup remained restorable",
       "the same immutable named backup restored browser and application state twice, once by name and once by id",
     ],
     cleanup: cleanupResult,
