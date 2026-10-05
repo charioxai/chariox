@@ -12,18 +12,26 @@ fn run_test(test: fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>
         .block_on(test());
 }
 
+// MD-3/MD-4: match the authenticated local terminal admission from Apps 416.
+fn terminal_command(id: &str, request: &LocalDaemonRequest) -> KernelCommand {
+    let mut command = KernelCommand::from_local_request(id, None, None, request);
+    command.caller = command
+        .caller
+        .with_connection_class(crate::local::KernelConnectionClass::Terminal);
+    command
+}
+
 async fn focus(router: &CommandRouter, session: &str, agent: &str) {
     let request = LocalDaemonRequest::FocusAgent(FocusAgentRequest {
         session_id: session.into(),
         agent_id: agent.into(),
     });
-    router
-        .dispatch(
-            KernelCommand::from_local_request("MD-3-focus", None, None, &request),
-            request,
-        )
-        .await
-        .unwrap();
+    let dispatch = router.dispatch(terminal_command("MD-3-focus", &request), request);
+    assert!(
+        std::mem::size_of_val(&dispatch) < 64 * 1024,
+        "MD-4: shared router admission must fit ordinary caller stacks"
+    );
+    dispatch.await.unwrap();
 }
 
 #[test]
@@ -188,6 +196,39 @@ async fn restart_check() {
             .any(|tab| tab["tab_id"] == id && tab["url"] == restored["url"]));
         let generation = state["generation"].as_u64().unwrap();
         assert!(generation > restored["generation"].as_u64().unwrap());
+        // MD-3: full-kernel restart releases deliberate takeover; it is live authority.
+        use crate::runtime::state::KernelBrowserDisplayRequest as Display;
+        let caller_request = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
+            command: KernelBrowserCommand::State,
+        });
+        let caller = terminal_command("MD-3-restarted-display", &caller_request);
+        let runtime = router.runtime_state();
+        let actors = runtime
+            .kernel_browser_display_request(&caller, Display::Actors)
+            .await
+            .unwrap();
+        assert!(actors["input_ownership"].as_array().unwrap().is_empty());
+        let takeover = runtime
+            .kernel_browser_display_request(
+                &caller,
+                Display::Takeover {
+                    tab_id: id.into(),
+                    generation,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(takeover["state"], "granted");
+        runtime
+            .kernel_browser_display_request(
+                &caller,
+                Display::Release {
+                    tab_id: id.into(),
+                    generation,
+                },
+            )
+            .await
+            .unwrap();
         human(
             &router,
             KernelBrowserCommand::Screenshot {
@@ -219,12 +260,9 @@ async fn restart_check() {
 
 async fn human(router: &CommandRouter, command: KernelBrowserCommand) -> Value {
     let request = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest { command });
-    let response = Box::pin(router.dispatch(
-        KernelCommand::from_local_request("MD-4-browser", None, None, &request),
-        request,
-    ))
-    .await
-    .expect("MD-4 host browser request");
+    let response = Box::pin(router.dispatch(terminal_command("MD-4-browser", &request), request))
+        .await
+        .expect("MD-4 host browser request");
     let LocalDaemonResponse::KernelBrowser { result } = response else {
         panic!("MD-4 response variant");
     };
@@ -327,6 +365,17 @@ async fn two_local_terminal_check(router: &CommandRouter, tab: &str, generation:
             Display::Release {
                 tab_id: tab.into(),
                 generation,
+            },
+        )
+        .await
+        .unwrap();
+    runtime
+        .kernel_browser_terminal_request(
+            &b,
+            KernelBrowserCommand::Navigate {
+                tab_id: tab.into(),
+                generation,
+                url: url.into(),
             },
         )
         .await
@@ -513,7 +562,7 @@ async fn live_check() {
         let caller_request = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
             command: KernelBrowserCommand::State,
         });
-        let caller = KernelCommand::from_local_request("MD-3-display", None, None, &caller_request);
+        let caller = terminal_command("MD-3-display", &caller_request);
         let runtime = router.runtime_state();
         let bound_frame = runtime
             .kernel_browser_display_request(
@@ -880,10 +929,7 @@ async fn live_check() {
             },
         });
         assert!(router
-            .dispatch(
-                KernelCommand::from_local_request("MD-4-stale", None, None, &stale),
-                stale
-            )
+            .dispatch(terminal_command("MD-4-stale", &stale), stale)
             .await
             .is_err());
         let stale_stream = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
@@ -894,11 +940,28 @@ async fn live_check() {
         });
         assert!(router
             .dispatch(
-                KernelCommand::from_local_request("MD-4-stale-stream", None, None, &stale_stream),
+                terminal_command("MD-4-stale-stream", &stale_stream),
                 stale_stream
             )
             .await
             .is_err());
+        // MD-3: leave takeover held across actual kernel exit, then require release on restart.
+        let takeover = runtime
+            .kernel_browser_display_request(
+                &caller,
+                Display::Takeover {
+                    tab_id: id.clone(),
+                    generation: recovered["generation"].as_u64().unwrap(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(takeover["state"], "granted");
+        let actors = runtime
+            .kernel_browser_display_request(&caller, Display::Actors)
+            .await
+            .unwrap();
+        assert_eq!(actors["input_ownership"][0]["target"]["id"], id);
         std::fs::write(root.join("MD4-RESTART.json"), serde_json::to_vec(&json!({"tab_id": id, "generation": recovered["generation"], "url":format!("http://{address}/fixture")})).unwrap()).unwrap();
     });
     use futures_util::FutureExt;
