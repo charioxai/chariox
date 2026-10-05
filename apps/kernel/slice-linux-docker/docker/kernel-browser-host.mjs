@@ -42,6 +42,7 @@ export class KernelBrowserHost {
     this.streams = new Map();
     this.displays = new Map();
     this.scales = new Map();
+    this.inputEpochs = new Map();
     this.restoring = false;
     this.keepaliveTarget = null;
     this.observedDocuments = new Map();
@@ -75,7 +76,7 @@ export class KernelBrowserHost {
   async start() {
     if (this.browser && this.chromium.child?.exitCode === null && this.chromium.child?.signalCode === null) return;
     for (const stream of this.displays.values()) await stream.close();
-    this.displays.clear(); this.scales.clear();
+    this.displays.clear(); this.scales.clear(); this.inputEpochs.clear();
     await this.browser?.close();
     this.browser = null;
     for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
@@ -310,7 +311,7 @@ export class KernelBrowserHost {
       if (command.op === "display_attach") return { attached: true, generation: this.generation };
       const tab = await this.displayTarget({ tab_id: stream.tab_id, generation: command.generation });
       stream.capture ??= new DisplayCapture((clip) => this.screenshot(tab, clip), stream.device_scale_factor, this.timing);
-      const source = await stream.capture.next(tab, this.protection, stream.previous && command.after_sequence === stream.sequence);
+      const source = await stream.capture.next({ ...tab, input_epoch: this.inputEpochs.get(tab.tab_id) ?? 0 }, this.protection, stream.previous && command.after_sequence === stream.sequence, !stream.exact);
       const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
       try { await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id); }
       catch (error) { stream.invalidate(); throw error; }
@@ -348,6 +349,7 @@ export class KernelBrowserHost {
     if (command.op === "close") {
       for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id) { await stream.close(); this.displays.delete(id); }
       this.scales.delete(tab.tab_id);
+      this.inputEpochs.delete(tab.tab_id);
       for (const [id, stream] of this.streams) {
         if (stream.tabId === tab.tab_id) await this.removeStream(id);
       }
@@ -374,6 +376,7 @@ export class KernelBrowserHost {
         throw error;
       }
       const post = timestamp();
+      this.inputEpochs.set(tab.tab_id, (this.inputEpochs.get(tab.tab_id) ?? 0) + 1);
       const result = this.observe(await this.reconcile(), null, scope);
       this.timing('input_post_reconcile', post);
       return result;

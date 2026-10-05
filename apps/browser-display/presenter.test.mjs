@@ -21,8 +21,8 @@ test('MD-DISPLAY credit stays occupied through event-before-receipt and presenta
   try {
     listener({ event: 'kernel_browser_frame', subscription_id: 's', frame: { sequence: 1 } });
     await assert.rejects(stream.next(), /credit outstanding/);
+    await Promise.race([presenting,new Promise((_,reject)=>setTimeout(()=>reject(Error('MD-DISPLAY: receipt stalls presentation')),100))]);
     finishRequest({ frame_sent: true });
-    await presenting;
     await assert.rejects(stream.next(), /credit outstanding/);
   } finally {
     finishRequest({ frame_sent: true }); finishPresentation();

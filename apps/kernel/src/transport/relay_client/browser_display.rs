@@ -99,3 +99,71 @@ pub(super) async fn browser_display_delivery_id(
     task.handle = tokio::spawn(sleep(Duration::from_secs(60)));
     Some(task.relay_subscription_id.clone())
 }
+
+pub(super) async fn refresh_idle_display_response(
+    tasks: &RelaySubscriptionTasks,
+    response: &mut super::daemon_requests::RelayRequestOutcome,
+    public_key: &str,
+) {
+    if response.display_event.is_some() {
+        return;
+    }
+    if let Some(id) = response.display_activity.as_deref() {
+        if browser_display_delivery_id(tasks, id, public_key)
+            .await
+            .is_none()
+        {
+            response.encrypted_response = None;
+            response.error = Some(super::request_errors::relay_error(
+                "display_subscription_required",
+                "MD-DISPLAY: register a fresh display subscription with the same sender identity",
+                false,
+            ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test(start_paused = true)]
+    async fn md_display_static_polling_renews_delivery_beyond_sixty_seconds() {
+        let tasks = Arc::new(Mutex::new(std::collections::BTreeMap::from([(
+            "display".into(),
+            RelaySubscriptionTask {
+                display_id: Some("d".into()),
+                relay_subscription_id: "relay".into(),
+                client_public_key: "key".into(),
+                handle: tokio::spawn(sleep(Duration::from_secs(60))),
+            },
+        )])));
+        tokio::task::yield_now().await;
+        for _ in 0..4 {
+            tokio::time::advance(Duration::from_secs(20)).await;
+            let mut response = super::super::daemon_requests::RelayRequestOutcome {
+                display_activity: Some("d".into()),
+                display_event: None,
+                encrypted_response: None,
+                error: None,
+            };
+            refresh_idle_display_response(&tasks, &mut response, "key").await;
+            assert!(response.error.is_none());
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            browser_display_delivery_id(&tasks, "d", "key")
+                .await
+                .as_deref(),
+            Some("relay")
+        );
+        assert!(browser_display_delivery_id(&tasks, "d", "foreign")
+            .await
+            .is_none());
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(61)).await;
+        tokio::task::yield_now().await;
+        assert!(browser_display_delivery_id(&tasks, "d", "key")
+            .await
+            .is_none());
+    }
+}
