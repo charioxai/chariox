@@ -475,6 +475,7 @@ pub(super) fn write_workflow_runtime_transition(
         write.hot_entities,
         true,
     )?;
+    super::workflow_notifications::capture_in(transaction, write.owner_id, write.workflow_runs)?;
     write_workflow_runs(
         transaction,
         write.owner_id,

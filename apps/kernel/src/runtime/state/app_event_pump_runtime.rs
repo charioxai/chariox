@@ -91,7 +91,8 @@ impl KernelRuntimeOwnedState {
             more: false,
             dispatches: WorkflowPromptDispatches::default(),
         };
-        let mut sessions = BTreeSet::new();
+        let (mut sessions, notification_more) = self.route_workflow_notifications();
+        output.more |= notification_more;
         // Housekeeping remains available after publisher revoke/uninstall. It
         // cannot accept new events or grant an automation; only actual already
         // queued workflow records can produce recovery dispatch candidates.

@@ -332,6 +332,16 @@ impl WorkflowQueuedPrompt {
     pub fn prompt(&self) -> Option<&str> {
         self.prompt.as_deref()
     }
+    pub(crate) fn notification_expired_at(&self, now: u64) -> bool {
+        self.publication_invocation.as_ref().is_some_and(|i| {
+            i.transport == "workflow_notification"
+                && i.input
+                    .get("deadline_ms")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_none_or(|deadline| deadline <= now)
+        })
+    }
+
     pub fn publication_invocation(&self) -> Option<&WorkflowPublicationInvocationEnvelope> {
         self.publication_invocation.as_ref()
     }

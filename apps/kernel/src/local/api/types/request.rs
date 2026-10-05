@@ -2,6 +2,9 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
+    RegisterWorkflowNotificationSource(RegisterWorkflowNotificationSourceRequest),
+    AttachWorkflowNotification(AttachWorkflowNotificationRequest),
+    ListWorkflowNotifications(ListWorkflowNotificationsRequest),
     RequestKernelAccess(RequestKernelAccessRequest),
     RequestKernelSudo(RequestKernelSudoRequest),
     ListKernelAccessGrants(ListKernelAccessGrantsRequest),

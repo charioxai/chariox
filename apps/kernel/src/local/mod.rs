@@ -1,3 +1,9 @@
+pub use api::{
+    AttachWorkflowNotificationRequest, ListWorkflowNotificationsRequest,
+    RegisterWorkflowNotificationSourceRequest, WorkflowNotificationAck,
+    WorkflowNotificationDiagnostic, WorkflowNotificationEnvelope, WorkflowNotificationSource,
+    WorkflowNotificationSubscription,
+};
 mod api;
 mod client;
 mod harness;

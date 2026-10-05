@@ -879,6 +879,11 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::SyncRemoteExtensionManifest(_) => "agent.extension.manifest_sync",
         LocalDaemonRequest::ListHomeExtensionAudit(_) => "agent.extension.audit",
         LocalDaemonRequest::ListAgents(_) => "agent.list",
+        LocalDaemonRequest::RegisterWorkflowNotificationSource(_) => {
+            "workflow.notifications.register"
+        }
+        LocalDaemonRequest::AttachWorkflowNotification(_) => "workflow.notifications.attach",
+        LocalDaemonRequest::ListWorkflowNotifications(_) => "workflow.notifications.list",
         LocalDaemonRequest::CreateWorkflow(_) => "workflow.create",
         LocalDaemonRequest::CreateAgentWorkflow(_) => "workflow.create_from_agent",
         LocalDaemonRequest::ValidateWorkflowCode(_) => "workflow_code.validate",

@@ -2184,8 +2184,8 @@ Workflow trigger and deployment direction:
   `event_action` refuses it for bindings persisted before 364. Older peers,
   persisted bindings and publication `event-bindings` documents that still
   carry the removed fields are read with them ignored.
-- protocol 365: direct workflow event bindings are retired. Events reach
-  workflows only through Apps: an App inbox route (protocol 358) receives the
+- protocol 365: direct workflow event bindings are retired. Initially events reached
+  workflows only through Apps (protocol 437 adds private workflow sources): an App inbox route (protocol 358) receives the
   generator's events, and an App automation sends the App's outgoing event to
   an `event_based` publication. `CreateWorkflowEventBinding`,
   `ListWorkflowEventBindings`, `SetWorkflowEventBindingStatus`,
@@ -3120,3 +3120,18 @@ Protocol 416 adds `AppRequestFailed {code: "receipt_expired"}` for an
   preserved through compaction. Legacy kernels fail closed on that journal
   rather than redispatch an expired identity after rollback; their App control
   requests report storage unavailable until a supporting kernel is restored.
+
+### Workflow completion notifications — local protocol 437 (MP-08 / MP-10)
+
+Private same-user workflows are a second notification source kind beside Apps.
+The kernel emits successful final output once per run, commits the pending outbox
+with completion, routes same-kernel deliveries into a deduplicated durable inbox,
+and admits ordinary workflow prompts through source-neutral target ownership checks.
+App-specific signing/capability checks remain in the App adapter. No direct AEGS
+bindings, emitter tools, AEDS producer registration, Cloud runtime proxy or peer
+transport are added. ACK means durable inbox acceptance, not execution completion.
+Seven-day default / 1–30-day subscription TTL and kernel-derived ancestry apply;
+repeated workflow identities drop with a visible loop diagnostic. Deleted/transferred
+sources become unavailable locally and pending records expire naturally. See
+`EVENT_TRIGGER_PROTOCOL.md` for the requests, bounded output template, deadlines,
+restart behavior and next-round relay adapter seam. Relay peer stays unchanged.
