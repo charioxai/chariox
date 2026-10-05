@@ -16,7 +16,8 @@ for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{interrupted=true
 try{
  for(const entry of cases){
   if(interrupted)break;
-  const [profile,workload]=entry.split(':');if(!profiles[profile]||!['docs','canvas','video','scroll'].includes(workload))throw Error('MD-DISPLAY: unknown case');
+  const [profile,workload,caseBudget]=entry.split(':');
+  if(caseBudget&&(!Number.isSafeInteger(Number(caseBudget))||Number(caseBudget)<500000||Number(caseBudget)>8000000))throw Error('MD-DISPLAY: invalid case budget');if(!profiles[profile]||!['docs','canvas','video','scroll'].includes(workload))throw Error('MD-DISPLAY: unknown case');
   const namespace='md-display-'+randomBytes(6).toString('hex'),record={profile,workload,namespace};manifest.cases.push(record);
   let created=false;
   const ip=(...args)=>execFileSync('/usr/sbin/ip',args,{encoding:'utf8'});
@@ -24,9 +25,9 @@ try{
    ip('netns','add',namespace);created=true;ip('netns','exec',namespace,'ip','link','set','lo','mtu','1500','up');
    // Disable segmentation/coalescing only inside the freshly-owned namespace.
    execFileSync('/usr/sbin/ip',['netns','exec',namespace,'ethtool','-K','lo','tso','off','gso','off','gro','off'],{stdio:'ignore'});record.mtu=1500;record.offloads='tso/gso/gro off';
-   const budget=process.env.MD_ADAPT_BUDGET==='1'&&profiles[profile].mbps?Math.max(500000,Math.min(Number(process.env.MD_BITRATE||2000000),profiles[profile].mbps*500000)):Number(process.env.MD_BITRATE||2000000);record.bitrate=budget;
+   const budget=caseBudget?Number(caseBudget):process.env.MD_ADAPT_BUDGET==='1'&&profiles[profile].mbps?Math.max(500000,Math.min(Number(process.env.MD_BITRATE||2000000),profiles[profile].mbps*500000)):Number(process.env.MD_BITRATE||2000000);record.bitrate=budget;
    const env={...process.env,MD_BITRATE:String(budget),MD_WORKLOAD:workload,MD_NETEM_PROFILE:profile,MD_HOST_NETNS:await readlink('/proc/self/ns/net')};
-   active=await launchOwned('/usr/sbin/ip',['netns','exec',namespace,process.execPath,fileURLToPath(new URL('./drill.mjs',import.meta.url)),binary,path.join(output,entry.replace(':','-')),tools,pytools],{detached:true,stdio:'inherit',env});
+   active=await launchOwned('/usr/sbin/ip',['netns','exec',namespace,process.execPath,fileURLToPath(new URL('./drill.mjs',import.meta.url)),binary,path.join(output,entry.replaceAll(':','-')),tools,pytools],{detached:true,stdio:'inherit',env});
    const exit=await waitChild(active);Object.assign(record,exit);
    if(exit.code!==0||exit.signal)process.exitCode=1;
   }catch(error){record.error=error.message;process.exitCode=1}

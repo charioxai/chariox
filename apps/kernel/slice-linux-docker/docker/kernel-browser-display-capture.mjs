@@ -20,20 +20,8 @@ export function changedClip(before, after, scale) {
   return width * height <= 1280 * 800 * .15 ? { x,y,width,height,scale:1 } : null;
 }
 export class DisplayCapture {
-  constructor(capture, scale, timing = () => {}, now = () => performance.now()) { this.capture = capture; this.scale = scale; this.timing = timing; this.now=now; this.tasks=new Set(); this.invalidate(); }
-  invalidate() { this.prefetched=null; this.epoch=(this.epoch??0)+1; this.previous = null; this.preview = null; this.document = null; this.policy = null; this.needsVerification = false; this.inputEpoch = null; this.verifiedAt = -Infinity; this.source = null; this.motion=false; this.motionData=null; this.stableAt=null; }
-  // One private full-viewport capture can overlap the serial codec operation.
-  // It has no egress authority and is reusable only under the next admitted
-  // read with the same policy, document, input epoch and short age bound.
-  prefetch(tab,policy,clip) {
-    if(!this.motion || !clip || this.tasks.size) return;
-    const epoch=this.epoch,at=this.now();
-    const task=this.capture(clip).then(source=> {
-      if(this.epoch===epoch) this.prefetched={source,policy,document:tab.document_id,input:tab.input_epoch,at};
-    }).catch(()=>{}).finally(()=>this.tasks.delete(task));
-    this.tasks.add(task);
-  }
-  async close() { this.invalidate(); await Promise.allSettled([...this.tasks]); }
+  constructor(capture, scale, timing = () => {}, now = () => performance.now()) { this.capture = capture; this.scale = scale; this.timing = timing; this.now=now; this.invalidate(); }
+  invalidate() { this.previous = null; this.preview = null; this.document = null; this.policy = null; this.needsVerification = false; this.inputEpoch = null; this.verifiedAt = -Infinity; this.source = null; this.motion=false; this.motionData=null; this.stableAt=null; }
   async next(tab, policy, reusable, forceFull = false, motionClip = null) {
     if (!reusable || this.document !== tab.document_id || this.policy !== policy) this.invalidate();
     const capture = async clip => {
@@ -42,10 +30,7 @@ export class DisplayCapture {
       return source;
     };
     if (motionClip && this.motion) {
-      const saved=this.prefetched;this.prefetched=null;
-      const source=saved && saved.policy===policy && saved.document===tab.document_id &&
-        saved.input===tab.input_epoch && this.now()-saved.at<100 ? saved.source : await capture(motionClip);
-      if(source.document_id !== tab.document_id || source.tab_id !== tab.tab_id) {this.invalidate();throw Error('MD-DISPLAY: prefetch binding changed');}
+      const source=await capture(motionClip);
       if(source.data_base64 !== this.motionData) this.stableAt=this.now();
       this.motionData=source.data_base64;
       if(this.now()-(this.stableAt??this.now()) < 150) return {...source,motion:true};

@@ -312,13 +312,11 @@ export class KernelBrowserHost {
       const tab = await this.displayTarget({ tab_id: stream.tab_id, generation: command.generation });
       // Recreate the closure when navigation changes the loader binding. Pixels
       // and pending repairs are then invalidated by the new document as usual.
-      if (!stream.capture || stream.capture.document !== tab.document_id) {
-        await stream.capture?.close();
+      if (!stream.capture || stream.capture.document !== tab.document_id)
         stream.capture = new DisplayCapture((clip) => {
           if(clip?.display_motion) { const {display_motion,...nativeClip}=clip; return this.screenshot(tab,nativeClip,'jpeg'); }
           return this.screenshot(tab,clip);
         }, stream.device_scale_factor, this.timing);
-      }
       const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
       const layoutAt = timestamp();
       const { cssVisualViewport: viewport } = await connection.send("Page.getLayoutMetrics", {}, sessionId);
@@ -327,14 +325,12 @@ export class KernelBrowserHost {
       // viewport rectangles; use full protected capture for scroll/zoom/unknown
       // origins until that coordinate transform has separate mask/race proof.
       const nativeCropSafe = viewport?.pageX === 0 && viewport?.pageY === 0 && viewport?.scale === 1;
-      const boundTab={...tab,input_epoch:this.inputEpochs.get(tab.tab_id)??0};
-      const motionClip=stream.codec !== 'png' && this.protection.values.length === 0 && viewport?.scale === 1 &&
+      const source = await stream.capture.next({ ...tab, input_epoch: this.inputEpochs.get(tab.tab_id) ?? 0 }, this.protection, stream.previous && stream.acceptsCredit(command.after_sequence), !stream.exact || !nativeCropSafe,
+        stream.codec !== 'png' && this.protection.values.length === 0 && viewport?.scale === 1 &&
           Number.isFinite(viewport.pageX) && Number.isFinite(viewport.pageY)
-          ? {x:viewport.pageX,y:viewport.pageY,width:1280,height:800,scale:1/stream.device_scale_factor,display_motion:true} : null;
-      const source=await stream.capture.next(boundTab,this.protection,stream.previous && stream.acceptsCredit(command.after_sequence),!stream.exact || !nativeCropSafe,motionClip);
+          ? {x:viewport.pageX,y:viewport.pageY,width:1280,height:800,scale:1/stream.device_scale_factor,display_motion:true} : null);
       try { await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id); }
       catch (error) { stream.invalidate(); throw error; }
-      stream.capture.prefetch(boundTab,this.protection,motionClip);
       const frame = await stream.frame(source, source.document_id, command.after_sequence);
       return { generation: this.generation, frame_sent: frame !== null, display_frame: frame };
     }

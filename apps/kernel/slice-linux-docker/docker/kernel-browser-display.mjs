@@ -162,5 +162,5 @@ export class DisplayStream {
     this.exact = payload.kind !== 'video' && !this.repair; this.sequence++;
     return packet;
   }
-  async close() { clearTimeout(this.timer); this.invalidate(); await this.capture?.close(); await this.encoder.close(); }
+  async close() { clearTimeout(this.timer); this.invalidate(); await this.encoder.close(); }
 }
