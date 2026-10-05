@@ -947,10 +947,10 @@ impl AegsStore {
         expires_at_ms: Option<u64>,
         now_ms: u64,
     ) -> Result<ConnectionRecord, String> {
-        let _generation_guard = self
-            .delivery_gate
-            .try_write()
-            .map_err(|_| "connection has an in-flight delivery; retry authorization".to_string())?;
+        // MP-11 review: completion only admits the current pending authorization
+        // inside the database transaction below. Pending connections cannot deliver
+        // events, and entering pending already fences their old generation. An
+        // unrelated active delivery must not discard a successfully exchanged code.
         let metadata_json = serde_json::to_string(metadata).map_err(|error| error.to_string())?;
         let mut connection = self
             .connection
@@ -1979,6 +1979,70 @@ mod mp11_delivery_tests {
 #[cfg(test)]
 mod mp11_delivery_gate_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn mp11_review_oauth_completion_survives_another_connections_delivery() {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .upsert_ready_connection("publishing", "owner", "github", &Value::Null, 1)
+            .unwrap();
+        store
+            .create_authorization(CreateAuthorizationRequest {
+                state_digest: "pending-state",
+                connection_id: "pending",
+                owner_id: "owner",
+                provider: "github",
+                return_url: None,
+                expires_at_ms: 1000,
+                now_ms: 1,
+            })
+            .unwrap();
+        let claim = SubscriptionClaim {
+            binding_id: "binding".into(),
+            generator_id: "dev.chariox.github".into(),
+            connection_id: "publishing".into(),
+            connection_scope: "scope".into(),
+            event_interest_key: "interest".into(),
+            event_type: "event".into(),
+            event_type_version: 1,
+            filter: Value::Null,
+            revision: 1,
+            active: true,
+        };
+        store
+            .reconcile("owner", "dev.chariox.github", &[claim.clone()])
+            .unwrap();
+        let generation = store.connection_generation("publishing").unwrap();
+        // This is the same guard held across a blocked publisher.publish(...).await.
+        let delivery = store.delivery_guard(&claim, generation).await.unwrap();
+        let completing = store.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            completing.complete_authorization(
+                "pending-state",
+                b"synthetic-encrypted-exchange",
+                &Value::Null,
+                None,
+                2,
+            )
+        });
+        let ready = tokio::time::timeout(std::time::Duration::from_secs(2), result)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(ready.status, "ready");
+        assert_eq!(
+            ready.encrypted_credential.as_deref(),
+            Some(b"synthetic-encrypted-exchange".as_slice())
+        );
+        assert!(store.authorization("pending-state", 2).unwrap().is_none());
+        assert_eq!(
+            store.connection_generation("publishing").unwrap(),
+            generation
+        );
+        drop(delivery);
+        assert!(store.delivery_guard(&claim, generation).await.is_ok());
+    }
     #[tokio::test]
     async fn mp11_selected_delivery_is_fenced_against_revocation() {
         let store = AegsStore::open(":memory:").unwrap();

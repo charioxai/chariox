@@ -2060,10 +2060,14 @@ mod mp11_delivery_http_tests {
         url: String,
         calls: Arc<AtomicUsize>,
         stop: Arc<AtomicBool>,
+        hold: Arc<AtomicBool>,
         thread: Option<std::thread::JoinHandle<()>>,
     }
     impl PublisherFixture {
         fn new() -> Self {
+            Self::with_blocked_publication(false)
+        }
+        fn with_blocked_publication(blocked: bool) -> Self {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let url = format!("http://{}/events", listener.local_addr().unwrap());
             listener.set_nonblocking(true).unwrap();
@@ -2071,6 +2075,8 @@ mod mp11_delivery_http_tests {
             let stop = Arc::new(AtomicBool::new(false));
             let count = calls.clone();
             let done = stop.clone();
+            let hold = Arc::new(AtomicBool::new(blocked));
+            let held = hold.clone();
             let thread = std::thread::spawn(move || {
                 while !done.load(Ordering::SeqCst) {
                     match listener.accept() {
@@ -2099,6 +2105,12 @@ mod mp11_delivery_http_tests {
                             assert!(length < 8192);
                             stream.read_exact(&mut vec![0; length]).unwrap();
                             count.fetch_add(1, Ordering::SeqCst);
+                            while held.load(Ordering::SeqCst) && !done.load(Ordering::SeqCst) {
+                                std::thread::sleep(Duration::from_millis(2));
+                            }
+                            if done.load(Ordering::SeqCst) {
+                                break;
+                            }
                             let body = r#"{"occurrence_id":"occurrence","accepted_route_count":1,"delivery_ids":[],"duplicate":false}"#;
                             write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
                         }
@@ -2113,6 +2125,7 @@ mod mp11_delivery_http_tests {
                 url,
                 calls,
                 stop,
+                hold,
                 thread: Some(thread),
             }
         }
@@ -2171,6 +2184,83 @@ mod mp11_delivery_http_tests {
         serving.await.unwrap();
         response
     }
+    #[tokio::test]
+    async fn mp11_review_oauth_completion_survives_blocked_webhook_publisher() {
+        let publisher = PublisherFixture::with_blocked_publication(true);
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .upsert_ready_connection("connection", "owner", "github", &serde_json::Value::Null, 1)
+            .unwrap();
+        let claim = crate::SubscriptionClaim {
+            binding_id: "binding".into(),
+            generator_id: "dev.chariox.github".into(),
+            connection_id: "connection".into(),
+            connection_scope: "scope".into(),
+            event_interest_key: "interest".into(),
+            event_type: "event".into(),
+            event_type_version: 1,
+            filter: serde_json::Value::Null,
+            revision: 1,
+            active: true,
+        };
+        store
+            .reconcile("owner", &claim.generator_id, &[claim.clone()])
+            .unwrap();
+        store
+            .create_authorization(crate::store::CreateAuthorizationRequest {
+                state_digest: "pending-state",
+                connection_id: "pending",
+                owner_id: "owner",
+                provider: "github",
+                return_url: None,
+                expires_at_ms: 1000,
+                now_ms: 1,
+            })
+            .unwrap();
+        let server = Arc::new(AegsServer {
+            producer_id: claim.generator_id.clone(),
+            management_token: None,
+            management_public_key: None,
+            management_issuer: "fixture".into(),
+            management_url: None,
+            manifest_digest: None,
+            publisher: AedsPublisher::new(&claim.generator_id, None, &publisher.url),
+            store: store.clone(),
+            provider: Arc::new(SignedProvider),
+            action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        });
+
+        let publishing = tokio::spawn(signed_webhook(server));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while publisher.calls.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!publishing.is_finished());
+        let completion_store = store.clone();
+        let completion = tokio::task::spawn_blocking(move || {
+            completion_store.complete_authorization(
+                "pending-state",
+                b"synthetic-encrypted-exchange",
+                &serde_json::Value::Null,
+                None,
+                2,
+            )
+        });
+        let result = tokio::time::timeout(Duration::from_secs(2), completion).await;
+        // Release the real publisher even when the assertion below fails.
+        publisher.hold.store(false, Ordering::SeqCst);
+        let ready = result.unwrap().unwrap().unwrap();
+        assert_eq!(ready.status, "ready");
+        assert_eq!(
+            ready.encrypted_credential.as_deref(),
+            Some(b"synthetic-encrypted-exchange".as_slice())
+        );
+        assert_eq!(publishing.await.unwrap()["matched_interest_count"], 1);
+    }
+
     #[tokio::test]
     async fn mp11_signed_late_webhook_and_selected_test_event_do_not_publish_after_revoke() {
         let publisher = PublisherFixture::new();
