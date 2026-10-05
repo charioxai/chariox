@@ -2,7 +2,7 @@
 use std::{
     io::{Read, Write},
     os::unix::{io::AsRawFd, net::UnixStream, process::CommandExt},
-    process::{Command, ExitStatus},
+    process::{Command, ExitStatus, Stdio},
     thread::JoinHandle,
     time::Duration,
 };
@@ -32,9 +32,14 @@ impl PreExecChild {
         child
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
+        let executable = std::env::current_exe().expect("current test executable");
         let spawning = std::thread::spawn(move || {
             let fd = child.as_raw_fd();
-            let mut command = Command::new("/bin/true");
+            let mut command = Command::new(executable);
+            command
+                .arg("--list")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
             // Only async-signal-safe syscalls in the forked child.
             unsafe {
                 command.pre_exec(move || {
@@ -83,4 +88,10 @@ impl Drop for PreExecChild {
             let _ = spawning.join();
         }
     }
+}
+
+#[test]
+fn paused_child_executes_the_current_test_binary_after_release() {
+    // Exercises the inherited-descriptor barrier and executable lookup together.
+    PreExecChild::pause().resume_and_wait();
 }
