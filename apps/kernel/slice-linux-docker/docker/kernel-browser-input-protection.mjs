@@ -1,9 +1,9 @@
-// MP-11: retained input needs positive, value-free activation classification.
+// MP-11: retained input uses a native allow-list and value-free activation classification.
 import { randomUUID } from "node:crypto";
 import { assertCurrentDocument } from "./browser-controller-actions.mjs";
 import { protectedHostRegions } from "./kernel-browser-region-protection.mjs";
 
-// Both functions execute in a CDP isolated world, using native DOM prototypes.
+// DOM classification functions execute in a CDP isolated world, using native DOM prototypes.
 // A label is only routine when it names one of these bounded navigation/search
 // actions. Unknown, icon-only and mixed labels require live focus.
 function routineAction(node) {
@@ -22,8 +22,16 @@ function inputTargets(input, routine) {
   const protectedSelector = '[data-chariox-sensitive],[data-chariox-observation-protected],input[type="password"],[autocomplete="one-time-code"],[autocomplete^="cc-"],iframe,frame';
   const form = e.form || e.closest('form');
   if (e.matches(protectedSelector) || e.closest(protectedSelector) || e.shadowRoot || form?.querySelector(protectedSelector)) return null;
+  const editable = !e.disabled && !e.readOnly && (e.tagName === 'TEXTAREA' || e.isContentEditable ||
+    (e.tagName === 'INPUT' && ['text', 'search', 'email', 'url', 'tel', 'number'].includes(e.type)));
+  // MP-11: retained authority permits native editing, not arbitrary keyboard
+  // shortcuts. Do not try to infer the effects of page/delegated scripts.
+  if (input.kind === 'text') return editable ? [] : null;
+  if (input.kind === 'key' && editable &&
+    (['Space', 'Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(input.key) ||
+      (typeof input.key === 'string' && /^[^\p{C}]$/u.test(input.key)))) return [];
   const activation = input.kind === 'click' || (input.kind === 'key' && ['Enter', 'Space'].includes(input.key));
-  if (!activation) return [];
+  if (!activation) return null;
   const targets = new Set();
   const addPath = node => {
     for (; node; node = node.parentNode) {
@@ -55,7 +63,7 @@ function inputTargets(input, routine) {
 }
 
 export async function sensitiveHostInput(browser, tab, input) {
-  if (input.kind === 'scroll') return false;
+  if (input.kind === 'scroll' || (input.kind === 'key' && ['Tab', 'Shift+Tab'].includes(input.key))) return false;
   const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
   await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
   const group = `chariox-input-protection-${randomUUID()}`;

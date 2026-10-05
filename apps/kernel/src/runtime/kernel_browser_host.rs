@@ -178,13 +178,6 @@ impl KernelBrowserHost {
             .browsers
             .insert(user.into(), Arc::new(Mutex::new(backend)));
     }
-    fn ensure_ready(backend: &mut BrowserControllerProcessStdioBackend) -> Result<(), String> {
-        if !matches!(backend.health(), Ok(health) if health.state == BrowserControllerProcessState::Ready)
-        {
-            backend.start()?;
-        }
-        Ok(())
-    }
     fn require_running(&self) -> Result<(), String> {
         if self
             .inner
@@ -348,7 +341,19 @@ impl KernelBrowserHost {
                 return Err("MD-APP: App host is no longer live".into());
             }
         } else {
-            Self::ensure_ready(&mut backend)?;
+            if !matches!(backend.health(), Ok(health) if health.state == BrowserControllerProcessState::Ready)
+            {
+                // MP-11: observation cannot recover a stopped controller under
+                // retained authority. Keep focus stable across actual startup.
+                let state = self
+                    .inner
+                    .lock()
+                    .map_err(|_| "MP-11: grant lock unavailable")?;
+                if let Some(agent) = admission.and_then(|a| a.agent.as_deref()) {
+                    require_focus(&state, user, agent).map_err(|_| "MP-11: not_focused_agent: user browser controller is stopped or unavailable; focus this agent to restart it")?;
+                }
+                backend.start()?;
+            }
         }
         let mut params = params;
         if admission.is_some_and(|admission| admission.agent.is_some()) {
@@ -380,7 +385,13 @@ impl KernelBrowserHost {
         let action = if mutation {
             // Reconcile the SAME supervised browser before ledger admission. Takeover
             // uses only the model lock, so it can cancel while CDP holds the backend.
-            let state = backend.host_request("host.browser", serde_json::json!({"op":"state"}))?;
+            let mut observation = serde_json::json!({"op":"state"});
+            let authority = self.browser_request_authority(
+                admission,
+                &mut observation,
+                admission.map(|a| a.cancellation.clone()),
+            );
+            let state = backend.host_request_cancellable("host.browser", observation, authority)?;
             model
                 .lock()
                 .map_err(|_| "MD-3: actor lock poisoned")?
@@ -430,20 +441,15 @@ impl KernelBrowserHost {
             if sensitive && !focused {
                 return Err("MP-11: sensitive_requires_focus: sensitive user-domain action requires focus or human approval; focus this agent".into());
             }
-            if focused {
-                let host = self.clone();
-                let owner = user.to_string();
-                cancellation = Some(Arc::new(BrowserCancellation::for_authority(
-                    cancellation.unwrap(),
-                    move || host.is_focused(&owner, &agent),
-                )));
-            }
             // Focused input may change sensitivity between paired events (Tab
             // onto an approval button, for example). The live focus guard
             // authorizes that transition; losing focus cancels this operation
             // without revoking the grant. Retained input rechecks protection.
             params["_retained_agent"] = (!focused).into();
         }
+        // Re-read live focus after policy/classification RPCs; a previously
+        // focused observation must not start Chromium after focus has moved.
+        cancellation = self.browser_request_authority(admission, &mut params, cancellation);
         let request_params = params.clone();
         let mut result = backend.host_request_cancellable(method, params, cancellation.clone());
         if let Some(action) = action {

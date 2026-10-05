@@ -215,6 +215,34 @@ impl KernelBrowserHost {
             }
         }
     }
+    // MP-11: focused requests can start/recover the user browser. Their focus
+    // authority must remain live across the controller's asynchronous startup.
+    // Retained requests get the no-start flag and keep their grant authority.
+    pub(super) fn browser_request_authority(
+        &self,
+        admission: Option<&KernelBrowserAdmission>,
+        params: &mut Value,
+        cancellation: Option<Arc<BrowserCancellation>>,
+    ) -> Option<Arc<BrowserCancellation>> {
+        let Some(admission) = admission else {
+            return cancellation;
+        };
+        let Some(agent) = admission.agent.as_deref() else {
+            return cancellation;
+        };
+        let focused = self.is_focused(&admission.user, agent);
+        params["_retained_agent"] = (!focused).into();
+        if !focused {
+            return cancellation;
+        }
+        let host = self.clone();
+        let owner = admission.user.clone();
+        let agent = agent.to_string();
+        Some(Arc::new(BrowserCancellation::for_authority(
+            cancellation.unwrap_or_else(|| admission.cancellation.clone()),
+            move || host.is_focused(&owner, &agent),
+        )))
+    }
     pub(super) fn scope_browser_request(
         &self,
         admission: Option<&KernelBrowserAdmission>,

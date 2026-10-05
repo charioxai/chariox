@@ -9,7 +9,7 @@ import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./
 import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab, sensitiveHostInput } from "./kernel-browser-input.mjs";
-import { assertNotCancelled, assertCurrentDocument } from "./browser-controller-actions.mjs";
+import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from "./browser-controller-actions.mjs";
 import { captureRegionMasks } from "./kernel-browser-region-protection.mjs";
 import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
 
@@ -74,8 +74,10 @@ export class KernelBrowserHost {
     await rename(`${name}.new`, name);
     this.lastSaved = serialized;
   }
-  async start() {
+  async start({ signal, retained = false } = {}) {
+    assertNotCancelled(signal);
     if (this.browser && this.chromium.child?.exitCode === null && this.chromium.child?.signalCode === null) return;
+    if (retained) throw new BrowserActionError("not_focused_agent", "MP-11: not_focused_agent: user browser is stopped or unavailable; focus this agent to restart it");
     for (const stream of this.displays.values()) await stream.close();
     this.displays.clear(); this.scales.clear(); this.inputEpochs.clear();
     await this.browser?.close();
@@ -91,7 +93,9 @@ export class KernelBrowserHost {
     if (!Number.isSafeInteger(saved.generation) || saved.generation < 0 || !Array.isArray(saved.tabs)) {
       throw new Error("MD-2: invalid browser tab registry");
     }
+    assertNotCancelled(signal);
     const endpoint = await this.chromium.start();
+    assertNotCancelled(signal);
     this.browser = this.browserFactory(endpoint);
     this.browser.protectedValues = new Set(this.protection.values);
     this.generation = saved.generation + 1;
@@ -112,7 +116,8 @@ export class KernelBrowserHost {
       }
       for (const tab of saved.tabs.slice(0, TAB_LIMIT)) {
         if (typeof tab.tab_id !== "string" || !tab.tab_id.startsWith("host-tab-")) throw new Error("MD-2: invalid saved tab identity");
-        await this.open(restorationUrl(tab.url), tab.tab_id);
+        assertNotCancelled(signal);
+        await this.open(restorationUrl(tab.url), tab.tab_id, { signal });
       }
       await this.save();
     } catch (error) { await this.stop(); throw error; }
@@ -300,7 +305,7 @@ export class KernelBrowserHost {
     assertNotCancelled(signal);
     if (command.op.startsWith("display_") && process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
     if (command.op === "stop") return this.stop();
-    await this.start();
+    await this.start({ signal, retained: command._retained_agent === true });
     assertNotCancelled(signal);
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
     for (const [id, stream] of this.streams) if (Date.now() > stream.expires) await this.removeStream(id);
@@ -421,7 +426,7 @@ export class KernelBrowserHost {
         return { id: request.id, ok: true, result: { sensitive: await sensitiveHostInput(this.browser, tab, request.params.input) } };
       }
       if (request.method === "host.secret") {
-        await this.start();
+        await this.start({ signal, retained: request.params?._retained_agent === true });
         if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
         const tab = await this.target(request.params);
         if (tab.document_id !== request.params.document_id) throw new Error("MD-5: stale secret document");
@@ -448,7 +453,7 @@ export class KernelBrowserHost {
         // browser. Only an explicit Open or ordinary tab request may start it.
         if (generation !== undefined && (!this.browser || this.chromium.child?.exitCode !== null
           || this.chromium.child?.signalCode !== null)) throw new Error("App host is no longer live");
-        await this.start();
+        await this.start({ signal, retained: request.params?._retained_agent === true });
         if (generation !== undefined && generation !== this.generation) throw new Error("MD integration: stale App host generation");
         const result = await handleBrowserControllerRequest({ ...request, params }, { browser: this.browser, signal });
         if (result.ok) {
@@ -463,8 +468,8 @@ export class KernelBrowserHost {
       throw new Error("MD-2: unsupported host method");
     } catch (error) {
       if (error?.code === "browser_action_cancelled") await this.stop();
-      if (error?.code === "sensitive_requires_focus") {
-        return { id: request.id, ok: false, error: { code: "sensitive_requires_focus", message: "MP-11: sensitive user-domain action requires focus or human approval" } };
+      if (["sensitive_requires_focus", "not_focused_agent"].includes(error?.code)) {
+        return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }
       return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }
   }

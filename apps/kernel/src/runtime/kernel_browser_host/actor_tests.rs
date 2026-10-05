@@ -355,3 +355,40 @@ done
     host.shutdown().unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn mdaccess_startup_authority_rechecks_focus_without_revoking_retained_grants() {
+    let host = KernelBrowserHost::new(std::env::temp_dir().join("mdaccess-startup-authority"));
+    host.set_focus("owner", Some("first"));
+    host.load("owner", "first").unwrap();
+    let admission = host.admit("owner", "first").unwrap();
+    let mut params = json!({"op":"state"});
+    let focused = host
+        .browser_request_authority(Some(&admission), &mut params, None)
+        .unwrap();
+    assert_eq!(params["_retained_agent"], false);
+    assert!(!focused.requested());
+    host.set_focus("owner", Some("second"));
+    assert!(
+        focused.requested(),
+        "MP-11: startup focus guard stayed live after focus change"
+    );
+    assert!(
+        !admission.cancellation.requested(),
+        "MP-08: focus change revoked retained authority"
+    );
+    let retained = host
+        .browser_request_authority(
+            Some(&admission),
+            &mut params,
+            Some(admission.cancellation.clone()),
+        )
+        .unwrap();
+    assert_eq!(params["_retained_agent"], true);
+    assert!(!retained.requested());
+    host.revoke_agent("first");
+    assert!(
+        retained.requested(),
+        "MP-11: retained startup observation ignored revocation"
+    );
+}

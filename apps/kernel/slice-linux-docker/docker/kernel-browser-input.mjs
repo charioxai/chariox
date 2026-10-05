@@ -6,16 +6,16 @@ const viewport = { css_width: 1280, css_height: 800 };
 export async function inputHostTab(browser, tab, input, { signal, onDispatch, requireRoutine = false } = {}) {
     assertNotCancelled(signal);
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
-    const check = async (navigationRelease = false) => {
+    const check = async () => {
       assertNotCancelled(signal);
       await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-      if (requireRoutine && !navigationRelease && await sensitiveHostInput(browser, tab, input)) {
+      if (requireRoutine && await sensitiveHostInput(browser, tab, input)) {
         throw new BrowserActionError("sensitive_requires_focus", "MP-11: sensitive user-domain action requires focus or human approval");
       }
       assertNotCancelled(signal);
     };
-    const sendInput = async (method, params, navigationRelease = false) => {
-      await check(navigationRelease);
+    const sendInput = async (method, params) => {
+      await check();
       onDispatch?.();
       const result = await connection.send(method, params, sessionId);
       assertNotCancelled(signal);
@@ -37,14 +37,17 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
         if (result?.value !== false) throw new Error("MD-2: secret field input requires the Vault path");
         await sendInput("Input.insertText", { text: input.text });
       } else if (input.kind === "key") {
-        if (!["Tab", "Enter", "Space", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
-        const key = { key: input.key === "Space" ? " " : input.key, code: input.key,
-          ...(["Enter", "Space"].includes(input.key) ? { windowsVirtualKeyCode: input.key === "Enter" ? 13 : 32 } : {}) };
+        const printable = typeof input.key === "string" && /^[^\p{C}]$/u.test(input.key);
+        if (!printable && !["Tab", "Shift+Tab", "Enter", "Space", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
+        const name = input.key === "Shift+Tab" ? "Tab" : input.key;
+        const key = { key: name === "Space" ? " " : name, code: name,
+          ...(input.key === "Shift+Tab" ? { modifiers: 8 } : {}),
+          windowsVirtualKeyCode: { Tab:9, Enter:13, Space:32, Escape:27, Backspace:8, Delete:46, ArrowLeft:37, ArrowUp:38, ArrowRight:39, ArrowDown:40, Home:36, End:35 }[name] };
         await sendInput("Input.dispatchKeyEvent", { type: "keyDown", ...key,
-          ...(["Enter", "Space"].includes(input.key) ? { text: input.key === "Enter" ? "\r" : " ", unmodifiedText: input.key === "Enter" ? "\r" : " " } : {}) });
-        // Tab's paired release cannot natively activate the newly focused
-        // button. Still check document, cancellation and grant authority.
-        await sendInput("Input.dispatchKeyEvent", { type: "keyUp", ...key }, input.key === "Tab");
+          ...(["Enter", "Space"].includes(input.key) || printable ? { text: printable ? input.key : input.key === "Enter" ? "\r" : " ", unmodifiedText: printable ? input.key : input.key === "Enter" ? "\r" : " " } : {}) });
+        // Both events use the same allow-list. Tab navigation remains routine
+        // on its release target; document and cancellation checks still apply.
+        await sendInput("Input.dispatchKeyEvent", { type: "keyUp", ...key });
       } else {
         if (!Number.isInteger(input.x) || input.x < 0 || input.x >= viewport.css_width || !Number.isInteger(input.y) || input.y < 0 || input.y >= viewport.css_height) throw new Error("MD-2: pointer outside viewport");
         if (input.kind === "click") {

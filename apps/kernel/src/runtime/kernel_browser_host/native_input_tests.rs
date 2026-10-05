@@ -161,3 +161,84 @@ fn mdaccess_native_focused_tab_releases_without_stopping_browser() {
     assert_eq!(state["tabs"][0]["document_id"], fixture.tab["document_id"]);
     fixture.request(json!({"op":"poll","subscription_id":stream["subscription_id"],"generation":stream["generation"]})).expect("MP-08: idle stream must remain valid");
 }
+
+#[test]
+#[ignore = "MP-10: sandbox-capable native Chromium and disposable CHARIOX_MDACCESS_DRILL_ROOT required"]
+fn mdaccess_native_retained_state_cannot_restart_after_human_stop() {
+    let fixture = NativeInput::new(r#"<input id="field" style="height:30px">"#);
+    fixture.host.set_focus("owner", Some("second"));
+    fixture
+        .host
+        .protected_request(
+            "owner",
+            None,
+            "host.browser",
+            json!({"op":"stop"}),
+            json!({"values":[],"targets":[],"unknown":false}),
+        )
+        .unwrap();
+    let backend = fixture.host.backend("owner").unwrap();
+    for _ in 0..2 {
+        let error = fixture.request(json!({"op":"state"})).unwrap_err();
+        assert!(error.contains("not_focused_agent"), "MP-11: {error}");
+        assert_eq!(
+            backend.lock().unwrap().health().unwrap().state,
+            BrowserControllerProcessState::Stopped
+        );
+    }
+    fixture.host.set_focus("owner", Some("first"));
+    let restarted = fixture.request(json!({"op":"state"})).unwrap();
+    assert_eq!(
+        restarted["generation"].as_u64().unwrap(),
+        fixture.tab["generation"].as_u64().unwrap() + 1
+    );
+    assert_eq!(restarted["tabs"][0]["tab_id"], fixture.tab["tab_id"]);
+    // Chromium can stop while its controller remains live (e.g. native human
+    // close). Retained state must also refuse at the controller's startup seam.
+    backend
+        .lock()
+        .unwrap()
+        .host_request("host.browser", json!({"op":"stop"}))
+        .unwrap();
+    fixture.host.set_focus("owner", Some("second"));
+    let error = fixture.request(json!({"op":"state"})).unwrap_err();
+    assert!(error.contains("not_focused_agent"), "MP-11: {error}");
+    fixture.host.set_focus("owner", Some("first"));
+    let recovered = fixture.request(json!({"op":"state"})).unwrap();
+    assert_eq!(
+        recovered["generation"].as_u64().unwrap(),
+        restarted["generation"].as_u64().unwrap() + 1
+    );
+}
+
+#[test]
+#[ignore = "MP-10: sandbox-capable native Chromium and disposable CHARIOX_MDACCESS_DRILL_ROOT required"]
+fn mdaccess_native_retained_shortcut_refuses_and_editing_navigation_work() {
+    let fixture = NativeInput::new(
+        r#"<input id="field" style="height:30px"><button id="pay"
+      onkeydown="if(event.key==='Delete'){submitted++;status()}" onkeyup="if(event.key==='Delete'){submitted++;status()}">Approve payment</button>"#,
+    );
+    fixture.input(json!({"kind":"key","key":"Tab"})).unwrap();
+    fixture.host.set_focus("owner", Some("second"));
+    let error = fixture
+        .input(json!({"kind":"key","key":"Delete"}))
+        .unwrap_err();
+    assert!(error.contains("sensitive_requires_focus"), "MP-11: {error}");
+    assert!(fixture.status().starts_with("submitted=0 "));
+    fixture
+        .input(json!({"kind":"key","key":"Shift+Tab"}))
+        .unwrap();
+    fixture
+        .input(json!({"kind":"text","text":"routine"}))
+        .unwrap();
+    fixture
+        .input(json!({"kind":"key","key":"Backspace"}))
+        .unwrap();
+    fixture
+        .input(json!({"kind":"scroll","x":10,"y":10,"delta_x":0,"delta_y":100}))
+        .unwrap();
+    assert_eq!(
+        fixture.request(json!({"op":"state"})).unwrap()["generation"],
+        fixture.tab["generation"]
+    );
+}

@@ -563,3 +563,25 @@ test("display subscription captures the current document after navigation", () =
     else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;
   }
 }));
+
+
+test("MP-11: retained state cannot start or recover Chromium; focused state can", () => using(async ({ host, chromium, sent }) => {
+  await assert.rejects(host.request({op:'state',_retained_agent:true}), {code:'not_focused_agent'});
+  assert.equal(chromium.child,null);
+  assert.deepEqual(sent,[]);
+  const opened=await host.request({op:'open',url:'https://example.com'});
+  for (const stopped of [false,true]) {
+    if (stopped) await host.stop(); else chromium.child.exitCode=1;
+    const generation=host.generation;
+    const requests=sent.length;
+    const reply=await host.handle({id:'retained',method:'host.browser',params:{op:'state',_retained_agent:true}});
+    assert.equal(reply.ok,false);
+    assert.equal(reply.error.code,'not_focused_agent');
+    assert.match(reply.error.message,/stopped or unavailable/);
+    assert.equal(host.generation,generation);
+    assert.equal(sent.length,requests);
+    const recovered=await host.request({op:'state',_retained_agent:false});
+    assert.equal(recovered.generation,generation+1);
+    assert.equal(recovered.tabs[0].tab_id,opened.tab_id);
+  }
+}));
