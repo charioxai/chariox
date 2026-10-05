@@ -18,6 +18,7 @@ import { writeEvidence, settlementRecord } from './round2/export.mjs'
 import { observeKernelRpcErrors } from './round2/rpc-errors.mjs'
 import { auditTimeWarpHistory } from './timewarp-history.mjs'
 import { permittedBrowserTool } from './round2/browser-track.mjs'
+import { verifyTimeWarpContinuation } from './timewarp-continuation.mjs'
 import { sanitizeDrillMetadata } from '../lib/drill-secrets.mjs'
 
 const options = JSON.parse(await readFile(process.argv[2], 'utf8'))
@@ -155,6 +156,8 @@ try {
   report.controllerCommit='fda30571d';report.upstreamCommit='dc0e0885e5018b7b120e24d2f80e7f57b64046ac'
   for(const pin of options.pins)assert.equal(await hash(pin.path),pin.sha256,`MP-10 frozen bytes differ: ${path.basename(pin.path)}`)
   report.pins=options.pins;await checkpoint()
+  const continuation=options.priorEvidence?await verifyTimeWarpContinuation(options.priorEvidence):null
+  if(continuation){report.continuation=continuation.receipt;await checkpoint()}
   stage='runtime_startup';runtime=await startOwnedRuntime(options.runtime)
   report.runtime=runtime.source;await checkpoint()
   api=await openKernelClient({clientRoot:options.runtime.clientRoot,kernelUrl:runtime.kernelUrl})
@@ -196,8 +199,15 @@ try {
     stage='preflight_fixture_readiness';await startSites(1,false)
     const setup=await graderCall({op:'setup',taskId:expected[0].taskId,seed:42,urls:siteUrls})
     report.preflight={zeroSolverSubmissions:true,setup:{url:setup.url,viewport:setup.viewport,evalTypes:setup.evalTypes}}
+    const attachment=unwrap(await api.client.send(api.requests.attachToSessionRequest(room.owned.sessionId,runId)),'SessionAttached').attachment
+    room.owned.attachmentId=attachment.id;await room.checkpoint(room.owned)
+    await api.client.subscribeToKernelEvents(room.owned.sessionId,attachment.id)
+    // Real passive time beyond the 60-second sweep; no provider prompt.
+    for(let i=0;i<13;i++){await pause(5000);await guard()}
+    await api.client.send({PumpTerminalOutput:{session_id:room.owned.sessionId,attachment_id:attachment.id}})
+    report.preflight.attachmentSurvived65Seconds=true
   } else await room.spawn({provider:'codex',model:report.model,effort:'high',accountProfile:runtime.profileId})
-  const episodes=options.preflight?[]:expected
+  const episodes=options.preflight?[]:expected.filter(e=>!continuation?.skip.has(`${e.taskId}:${e.era}`))
   for(const episode of episodes) {
     await guard();stage='fixture_readiness'
     const row={mpItems:report.mpItems,...episode,seed:42,runId,effort:'high',harnessValid:false,startedAt:new Date().toISOString()}
@@ -210,13 +220,18 @@ try {
       stage='official_task_setup'
       const setup=await graderCall({op:'setup',taskId:episode.taskId,seed:42,urls:siteUrls})
       row.goal=setup.goal;row.setup={url:setup.url,viewport:setup.viewport,evalTypes:setup.evalTypes}
+      stage='attachment_refresh'
+      const attachment=unwrap(await api.client.send(api.requests.attachToSessionRequest(room.owned.sessionId,runId)),'SessionAttached').attachment
+      room.owned.attachmentId=attachment.id;await room.checkpoint(room.owned)
+      await api.client.subscribeToKernelEvents(room.owned.sessionId,attachment.id)
       const prompt=`MP-08 / MP-10 benchmark smoke. Solve this task in the Room browser already open: ${setup.goal}\nUse ONLY Chariox first-party slice_browser_* tools. Observe the page and use returned opaque field IDs for actions. Do not use shell, scripts, file edits, Computer tools, provider-native browser tools, or another browser. Do not inspect benchmark code or reward globals. Stop when the task is complete or unsupported. Maximum 60 mutating Browser actions; wall timeout 180 seconds. Return only your final answer to the task. Do not restate the task or narrate actions.`
       row.promptSha256=createHash('sha256').update(prompt).digest('hex')
       stage='prompt_submit';row.admission='reserved';await checkpoint()
       const started=Date.now(),identity=await room.submit(prompt)
       Object.assign(row,identity,{admission:'submitted',providerStartedAt:new Date(started).toISOString()});await checkpoint()
       stage='provider_settlement'
-      const settled=await waitForSettlement(api,identity,{maxMs:180000,cancel:()=>room.cancel(),guard:async()=>{
+      const settled=await waitForSettlement(api,identity,{maxMs:180000,cancel:()=>room.cancel(),
+        observe:()=>api.client.send({PumpTerminalOutput:{session_id:identity.sessionId,attachment_id:room.owned.attachmentId}}),guard:async()=>{
         try{await guard();return null}catch{return {cause:'resource_floor_or_interruption'}}
       }})
       row.turnLifecycle=settled.turn?.lifecycle??null;row.timedOut=Boolean(settled.cancellation);row.settlementMs=settled.elapsedMs
@@ -242,7 +257,7 @@ try {
       await docker(['cp',`${container}:/tmp/benchtw/screenshots/${episode.taskId}-v${episode.era}.png`,`${evidence}/${episode.taskId}-v${episode.era}.png`])
       row.harnessValid=true
     } catch(error) {
-      row.firstFailingSeam=stage;row.error={errorClass:error.name,message:sanitizeDrillMetadata(error.message)}
+      row.firstFailingSeam=stage;row.error={errorClass:error.name,code:error.code??null,message:sanitizeDrillMetadata(error.message)}
       // No retry of reserved or submitted prompts, even when an RPC outcome is unknown.
       if(row.admission) {
         await room.cancel().catch(()=>{})
@@ -255,7 +270,7 @@ try {
         }
         assert(settled,'MP-11 provider ownership did not settle')
       }
-      if(!row.admission||stage==='official_scoring'||stage==='evidence_capture')interrupted=true
+      if(!row.admission||stage==='prompt_submit'||stage==='official_scoring'||stage==='evidence_capture')interrupted=true
     }
     row.finishedAt=new Date().toISOString();await checkpoint()
     console.log(JSON.stringify({mpItems:report.mpItems,taskId:episode.taskId,era:episode.era,settled:report.attempts.length,
