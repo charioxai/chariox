@@ -46,10 +46,10 @@ test("unknown versions and unrelated requests retain existing transport behavior
 })
 
 
-test("user App display uses allocated 418, browser surface 417; old kernels fail before input", () => {
+test("MD-stack user App and browser surfaces require union protocol 427", () => {
   for (const name of ["OpenUserAppView", "ListUserAppViews", "CloseUserAppView", "GetUserAppViewFrontend", "CallUserAppView", "SubscribeUserAppViews", "AnswerUserDomainInteraction"]) {
-    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 417), /418/)
-    assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 418))
+    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 417), /427/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 427))
   }
-  assert.throws(() => requireKernelFeatureProtocol({KernelBrowser: {command:{op:"input"}}},416), /417/)
+  assert.throws(() => requireKernelFeatureProtocol({KernelBrowser: {command:{op:"input"}}},416), /427/)
 })
