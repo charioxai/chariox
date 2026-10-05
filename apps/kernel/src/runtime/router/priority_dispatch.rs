@@ -84,8 +84,7 @@ impl CommandRouter {
                 if !command.is_terminal_caller() {
                     return Err(DaemonError::LocalTransport { operation: "kernel_browser", message: "MD-2: authenticated terminal required".into() });
                 }
-                let user = command_caller_user_id(&command);
-                let result = self.runtime_state.kernel_browser_request(user, request.command).await?;
+                let result = self.runtime_state.kernel_browser_terminal_request(&command, request.command).await?;
                 Ok(LocalDaemonResponse::KernelBrowser { result })
             }),
             LocalDaemonRequest::GetTerminalCommandCatalog(_) => {
