@@ -108,7 +108,7 @@ export async function captureProtectedPage(browser, tab, values, targets, captur
   const fallback = () => scale === 1 ? wholeFrameMask() : opaqueFrame(1280 * scale, 800 * scale);
   if (!values.length) return capture();
   try {
-    const locate = () => locateBrowserRegions(targets.filter(target => target.target_id === tab.target_id), browser, values, { contentTarget: tab.target_id });
+    const locate = () => locateBrowserRegions(targets.filter(target => target.target_id === tab.target_id), browser, values, { contentTarget: tab.target_id, contentScale: scale });
     const before = await locate(), data = await capture(), after = await locate();
     // Moving/navigating content cannot be bound to this exact frame.
     if (JSON.stringify(before) !== JSON.stringify(after)) return fallback();
