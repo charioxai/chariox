@@ -101,10 +101,11 @@ test("MP-07/MP-08/MP-11 source-kernel add/remove, stdin redemption, replay refus
   const apiUrl = await serve(cloud)
   const sourceHome = join(h.scratch, "source-home"), sourceState = join(h.scratch, "source-state")
   await mkdir(sourceHome); await mkdir(sourceState)
-  const sourceEnv = { ...process.env, HOME: sourceHome, CHARIOX_HOME: sourceState, CHARIOX_KERNEL_HOST: "127.0.0.1", CHARIOX_KERNEL_PORT: String(await availablePort()), CHARIOX_MCP_HOST:"127.0.0.1", CHARIOX_MCP_PORT:String(await availablePort()) }
+  const sourceEnv = { PATH:process.env.PATH, LANG:"C.UTF-8", HOME: sourceHome, CHARIOX_HOME: sourceState, CHARIOX_KERNEL_HOST: "127.0.0.1", CHARIOX_KERNEL_PORT: String(await availablePort()), CHARIOX_MCP_HOST:"127.0.0.1", CHARIOX_MCP_PORT:String(await availablePort()) }
   Object.assign(sourceEnv, { CODEX_HOME:join(sourceHome,".codex"), CLAUDE_CONFIG_DIR:join(sourceHome,".claude"), OPENCODE_CONFIG_DIR:join(sourceHome,".config/opencode"), XDG_CONFIG_HOME:join(sourceHome,".config"), XDG_DATA_HOME:join(sourceHome,".local/share"), XDG_STATE_HOME:join(sourceHome,".local/state") })
   for (const key of Object.keys(sourceEnv)) if (key.startsWith("CHARIOX_") && !["CHARIOX_HOME", "CHARIOX_KERNEL_HOST", "CHARIOX_KERNEL_PORT", "CHARIOX_MCP_HOST", "CHARIOX_MCP_PORT"].includes(key)) delete sourceEnv[key]
   const sourceTicket = randomBytes(24).toString("hex"); tickets.set(sourceTicket, "source")
+  assert.equal(Object.keys(sourceEnv).some(key => /API_KEY|TOKEN|CREDENTIAL|SSH_AUTH_SOCK/.test(key)),false,"drill must not inherit provider or owner credentials")
   const boot = await bootCommand(sourceEnv, { ticket: sourceTicket, apiUrl, userId: "owner" })
   t.diagnostic("MP-08 / MP-11 source bootstrap completed")
   assert.equal(boot.code, 0, "source enrolls through product identity generation")
