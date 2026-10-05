@@ -2,5 +2,11 @@
 
 
 def fresh_existing_pages(context):
-    """Keep the historical sampling order until the external-CDP regression."""
+    """Pump external page events before consulting cached URL/context state.
+
+    Read only. The caller retains official evaluation and first-done freezing.
+    A failed observation propagates instead of certifying a stale final grade.
+    """
+    for page in context.pages:
+        page.title()
     return [page for page in context.pages if not page.url.startswith("chrome-extension:")]
