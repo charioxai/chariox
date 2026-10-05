@@ -17,7 +17,7 @@ const r = await import(`${clientModuleRoot}/ipc-requests.js`)
 import { sanitizeDrillMetadata } from '../lib/drill-secrets.mjs'
 import { roomProviderToolName, roomProviderToolOutput } from '../lib/room-provider-tool-record.mjs'
 import { observeKernelRpcErrors, rpcErrorRecord } from './round2/rpc-errors.mjs'
-import { signalOwnedProcess } from './round2/owned-processes.mjs'
+import { signalOwnedProcess, stopOwnedProcess } from './round2/owned-processes.mjs'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..')
 const lane = process.env.MINIWOB_LANE_ROOT
@@ -378,10 +378,7 @@ try {
   }
   await client?.close()
   for (const child of ownedChildren.toReversed()) {
-    await signalOwnedProcess(child, 'SIGTERM', { detached: true })
-    for (let n = 0; n < 20 && child.exitCode === null; n++) await sleep(250)
-    await signalOwnedProcess(child, 'SIGKILL', { detached: true })
-    cleanup.processes.push({ pid: child.pid, stopped: child.exitCode !== null || child.signalCode !== null })
+    cleanup.processes.push({ pid: child.pid, stopped: await stopOwnedProcess(child, { detached: true }) })
   }
   await rm(root, { recursive: true }); cleanup.stateRemoved = true
   await rm(workspace, { recursive: true }); cleanup.workspaceRemoved = true

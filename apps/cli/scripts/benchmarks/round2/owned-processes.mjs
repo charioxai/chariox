@@ -57,3 +57,18 @@ export function createOwnedProcessSignaler({ ownerPid = process.pid, readProcess
 }
 
 export const signalOwnedProcess = createOwnedProcessSignaler()
+
+// Wait for Node's child exit acknowledgement before recording cleanup success.
+export async function stopOwnedProcess(child, { detached = false, graceMs = 5000, killMs = 5000 } = {}) {
+  const exited = () => child.exitCode !== null || child.signalCode !== null
+  const wait = async timeout => {
+    const deadline = performance.now() + timeout
+    while (!exited() && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25))
+    return exited()
+  }
+  await signalOwnedProcess(child, 'SIGTERM', { detached })
+  await wait(graceMs)
+  // Escalate verified orphan descendants even when the leader already exited.
+  await signalOwnedProcess(child, 'SIGKILL', { detached })
+  return await wait(killMs)
+}

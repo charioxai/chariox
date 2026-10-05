@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { createOwnedProcessSignaler } from './owned-processes.mjs'
+import { createOwnedProcessSignaler, stopOwnedProcess } from './owned-processes.mjs'
 
 const member = (pid, parent, group = 20, start = '100') => ({ pid, parent, group, session: group, start })
 function fixture(rows) {
@@ -72,5 +72,18 @@ test('MP-08/MP-10/MP-11 live detached child cleanup uses its owned tree', async 
     await signal(child, 'SIGKILL', { detached: true })
   } finally {
     await signal(child, 'SIGKILL', { detached: true })
+  }
+})
+
+test('MP-08/MP-10/MP-11 cleanup awaits SIGKILL acknowledgement after a resisted SIGTERM', async () => {
+  const child = spawn(process.execPath, ['-e', 'process.on("SIGTERM",()=>{}); console.log("ready"); setInterval(()=>{},1000)'], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] })
+  const exit = once(child, 'exit')
+  await once(child.stdout, 'data')
+  try {
+    assert.equal(await stopOwnedProcess(child, { detached: true, graceMs: 50 }), true)
+    assert.equal(child.signalCode, 'SIGKILL')
+    assert.deepEqual(await exit, [null, 'SIGKILL'])
+  } finally {
+    await stopOwnedProcess(child, { detached: true, graceMs: 50 })
   }
 })
