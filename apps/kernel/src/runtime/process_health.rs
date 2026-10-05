@@ -62,7 +62,9 @@ fn signal_pid(pid: u32) -> Option<i32> {
 
 #[cfg(unix)]
 pub fn process_running(pid: u32) -> bool {
-    let Some(pid) = signal_pid(pid) else { return false; };
+    let Some(pid) = signal_pid(pid) else {
+        return false;
+    };
     let result = unsafe { libc::kill(pid, 0) };
     result == 0
 }
@@ -76,7 +78,9 @@ pub fn process_running(pid: u32) -> bool {
 pub(crate) fn terminate_process_tree(pid: u32) -> bool {
     // Reject special PIDs before ancestry traversal; pid 0 would collect the
     // host's unrelated process trees, and an overflowing cast could signal a group.
-    if signal_pid(pid).is_none() { return false; }
+    if signal_pid(pid).is_none() {
+        return false;
+    }
     let mut pids = descendant_process_ids(pid);
     pids.push(pid);
     pids.dedup();
@@ -88,7 +92,9 @@ pub(crate) fn terminate_process_tree(pid: u32) -> bool {
     let mut killed = false;
     for child_pid in pids.iter().rev() {
         if process_running(*child_pid) {
-            let Some(child_pid) = signal_pid(*child_pid) else { continue; };
+            let Some(child_pid) = signal_pid(*child_pid) else {
+                continue;
+            };
             let result = unsafe { libc::kill(child_pid, libc::SIGKILL) };
             killed |= result == 0;
         } else {
@@ -134,8 +140,11 @@ fn descendant_process_ids(root_pid: u32) -> Vec<u32> {
     let mut frontier = vec![root_pid];
     while let Some(parent_pid) = frontier.pop() {
         for (pid, ppid) in &rows {
-            if *ppid == parent_pid && *pid != root_pid && signal_pid(*pid).is_some()
-                && !descendants.contains(pid) {
+            if *ppid == parent_pid
+                && *pid != root_pid
+                && signal_pid(*pid).is_some()
+                && !descendants.contains(pid)
+            {
                 descendants.push(*pid);
                 frontier.push(*pid);
             }

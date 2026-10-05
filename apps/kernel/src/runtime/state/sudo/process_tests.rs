@@ -10,7 +10,9 @@ use tokio_tungstenite::tungstenite::Message;
 struct ShellDrillShutdown(Option<tokio::sync::oneshot::Sender<()>>);
 impl Drop for ShellDrillShutdown {
     fn drop(&mut self) {
-        if let Some(stop) = self.0.take() { let _ = stop.send(()); }
+        if let Some(stop) = self.0.take() {
+            let _ = stop.send(());
+        }
     }
 }
 
@@ -201,7 +203,11 @@ fn sudo_shell_cleanup_rejects_special_and_overflow_pids() {
 struct SiblingCleanup(Vec<ProcessIdentity>);
 impl SiblingCleanup {
     fn new(pids: Vec<u32>) -> Self {
-        Self(pids.into_iter().filter_map(|pid| inspect(pid).ok().map(|p| p.0)).collect())
+        Self(
+            pids.into_iter()
+                .filter_map(|pid| inspect(pid).ok().map(|p| p.0))
+                .collect(),
+        )
     }
 }
 impl Drop for SiblingCleanup {
@@ -210,7 +216,9 @@ impl Drop for SiblingCleanup {
             // No process groups or special PIDs; recheck birth identity before
             // signaling only the exact descendants this fixture started.
             if let Some(pid) = cleanup_pid(identity.pid).filter(|_| identity.alive()) {
-                unsafe { libc::kill(pid, libc::SIGKILL); }
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
             }
         }
     }
@@ -423,9 +431,15 @@ done
         .get_session(&f.request.session_id)
         .unwrap();
     // Settle through the actual completion seam, rather than cancellation.
-    f.state.owned.complete_local_prompt_without_advance(
-        session.id(), f.request.target_agent_id.as_deref().unwrap(), Some(f.run.id()),
-    ).unwrap().expect("completed sudo prompt");
+    f.state
+        .owned
+        .complete_local_prompt_without_advance(
+            session.id(),
+            f.request.target_agent_id.as_deref().unwrap(),
+            Some(f.run.id()),
+        )
+        .unwrap()
+        .expect("completed sudo prompt");
     std::fs::remove_file(scratch_root.join("result")).unwrap();
     std::fs::write(scratch_root.join("probe"), "probe").unwrap();
     let denied: serde_json::Value =
@@ -517,7 +531,6 @@ idle()
     );
 }
 
-
 #[tokio::test]
 async fn sudo_shell_interrupt_and_rotation_drop_process_authority() {
     for rotate in [false, true] {
@@ -527,19 +540,40 @@ async fn sudo_shell_interrupt_and_rotation_drop_process_authority() {
         assert_eq!(f.state.sudo_for_peer(&identity).unwrap(), turn);
         if rotate {
             // The verifier uses the fixture's product-created encrypted Vault.
-            let vault = f.state.owned.config_projection.snapshot().user_config.credential_vault.path;
-            f.state.change_vault_passphrase(
-                "local", Path::new(&vault),
-                zeroize::Zeroizing::new(PASSKEY.into()),
-                zeroize::Zeroizing::new("rotated shell fixture".into()),
-            ).await.unwrap();
+            let vault = f
+                .state
+                .owned
+                .config_projection
+                .snapshot()
+                .user_config
+                .credential_vault
+                .path;
+            f.state
+                .change_vault_passphrase(
+                    "local",
+                    Path::new(&vault),
+                    zeroize::Zeroizing::new(PASSKEY.into()),
+                    zeroize::Zeroizing::new("rotated shell fixture".into()),
+                )
+                .await
+                .unwrap();
         } else {
-            let session = f.state.owned.session_store.get_session(&turn.session_id).unwrap();
-            f.state.owned.prompt_state_owner.begin_cancelling_active_prompt(
-                &session, &turn.agent_id,
-            ).unwrap();
+            let session = f
+                .state
+                .owned
+                .session_store
+                .get_session(&turn.session_id)
+                .unwrap();
+            f.state
+                .owned
+                .prompt_state_owner
+                .begin_cancelling_active_prompt(&session, &turn.agent_id)
+                .unwrap();
         }
-        assert!(identity.alive(), "test must leave the provider process alive");
+        assert!(
+            identity.alive(),
+            "test must leave the provider process alive"
+        );
         assert!(f.state.sudo_for_peer(&identity).is_err());
         assert!(!f.state.sudo_peer_live(&turn.entry_id, &identity));
     }

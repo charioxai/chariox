@@ -1600,12 +1600,11 @@ mod tests {
 
         // MP-08/MP-10: an abrupt native harness exit must not leave its children alive.
         let leader = manager.process_id(provider_run_id).unwrap().unwrap();
-        let leader = i32::try_from(leader).ok().filter(|pid| *pid > 1)
+        let leader = i32::try_from(leader)
+            .ok()
+            .filter(|pid| *pid > 1)
             .expect("fixture PTY leader must be a positive process PID");
-        assert_eq!(
-            unsafe { libc::kill(leader, libc::SIGKILL) },
-            0
-        );
+        assert_eq!(unsafe { libc::kill(leader, libc::SIGKILL) }, 0);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !manager
             .poll_process_state(provider_run_id)
