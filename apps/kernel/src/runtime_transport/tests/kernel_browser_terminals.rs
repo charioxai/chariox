@@ -1,0 +1,261 @@
+//! MD-N5 / MP-08/MP-10/MP-11: two actual local transport connections, the
+//! production Rust authority and JS host adapter; synthetic CDP, no native acceptance.
+use super::*;
+use crate::local::{KernelBrowserCommand as Browser, KernelBrowserInput, KernelBrowserRequest};
+use crate::runtime::state::KernelBrowserDisplayRequest as Display;
+
+type Socket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn request(socket: &mut Socket, id: &str, command: Browser) -> KernelOutgoingFrame {
+    let frame = KernelIncomingFrame::Request {
+        request_id: id.into(),
+        command_id: Some(id.into()),
+        causation_id: None,
+        correlation_id: None,
+        request: LocalDaemonRequest::KernelBrowser(KernelBrowserRequest { command }),
+    };
+    socket
+        .send(Message::Text(serde_json::to_string(&frame).unwrap().into()))
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if let Message::Text(text) = socket.next().await.unwrap().unwrap() {
+                let frame: KernelOutgoingFrame = serde_json::from_str(&text).unwrap();
+                if matches!(&frame, KernelOutgoingFrame::Response { request_id, .. } if request_id == id) { return frame; }
+            }
+        }
+    }).await.expect("MD-N5: bounded local response")
+}
+fn success(frame: KernelOutgoingFrame) -> serde_json::Value {
+    let KernelOutgoingFrame::Response {
+        response, error, ..
+    } = frame
+    else {
+        panic!("MD-N5: response required")
+    };
+    assert!(error.is_none(), "MD-N5: fixture request failed: {error:?}");
+    let crate::local::LocalDaemonResponse::KernelBrowser { result } =
+        serde_json::from_value(response.unwrap()).expect("MD-N5: typed browser response")
+    else {
+        panic!("MD-N5: browser result required")
+    };
+    result
+}
+
+#[test]
+fn mdnotes_two_local_connections_keep_observation_and_takeover_private() {
+    let root = RuntimeTransportTempDir::new("mdnotes-two-terminals");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("slice-linux-docker/docker/kernel-browser-terminal-fixture.mjs");
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "runtime_transport::tests::kernel_browser_terminals::mdnotes_two_local_connections_child", "--ignored", "--nocapture"])
+        .env("TMPDIR", root.path())
+        .env("CHARIOX_HOME", root.path().join("state"))
+        .env("CHARIOX_KERNEL_BROWSER_SCRIPT", fixture)
+        .env("CHARIOX_BROWSER_CONTROLLER_NODE", "node")
+        .output().expect("MD-N5: isolated child starts");
+    assert!(
+        output.status.success(),
+        "MD-N5: transport child failed: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+#[ignore = "isolated child sets only its own browser fixture environment"]
+async fn mdnotes_two_local_connections_child() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let listener = Arc::new(listener);
+    let mcp = StdTcpListener::bind("127.0.0.1:0").unwrap();
+    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        Arc::new(Mutex::new(
+            DaemonApp::bootstrap(daemon_config_for_runtime_mcp_listener(&mcp)).unwrap(),
+        )),
+        4,
+    ));
+    let runtime = Arc::new(KernelTransportRuntime::new(router.transport_health_store()));
+    let check_router = router.clone();
+    let checked = tokio::spawn(Box::pin(async move {
+        let (mut a, mut b) = {
+            let connect = |router: Arc<CommandRouter>, runtime: Arc<KernelTransportRuntime>| {
+                let listener = listener.clone();
+                async move {
+                    let client = connect_async(format!("ws://{address}"));
+                    let accepted = async {
+                        let (stream, _) = listener.accept().await.unwrap();
+                        tokio::spawn(handle_kernel_connection(
+                            runtime,
+                            router,
+                            InboundRequestAdmission::new(process_inbound_request_limit()),
+                            None,
+                            stream,
+                        ))
+                    };
+                    let (client, server) = tokio::join!(client, accepted);
+                    (client.unwrap().0, server)
+                }
+            };
+            (
+                connect(check_router.clone(), runtime.clone()).await,
+                connect(check_router.clone(), runtime.clone()).await,
+            )
+        };
+        let state = check_router.runtime_state();
+        let opened = success(
+            request(
+                &mut a.0,
+                "MD-N5-a-open",
+                Browser::Open {
+                    url: "https://fixture.test/d1".into(),
+                },
+            )
+            .await,
+        );
+        let tab = opened["tab_id"].as_str().unwrap().to_string();
+        let generation = opened["generation"].as_u64().unwrap();
+        let first_doc = opened["tabs"][0]["document_id"].clone();
+        success(request(&mut a.0, "MD-N5-a-state", Browser::State).await);
+        success(
+            request(
+                &mut b.0,
+                "MD-N5-b-navigate",
+                Browser::Navigate {
+                    tab_id: tab.clone(),
+                    generation,
+                    url: "https://fixture.test/d2".into(),
+                },
+            )
+            .await,
+        );
+        let next = success(request(&mut b.0, "MD-N5-b-state", Browser::State).await);
+        assert_ne!(first_doc, next["tabs"][0]["document_id"]);
+        let stale = request(
+            &mut a.0,
+            "MD-N5-a-stale",
+            Browser::Input {
+                tab_id: tab.clone(),
+                generation,
+                input: KernelBrowserInput::Text {
+                    text: "MD-N5-stale-must-not-type".into(),
+                },
+            },
+        )
+        .await;
+        // The host deliberately returns a fixed safe failure message. A fresh
+        // A observation/input below proves this is the stale binding refusal.
+        assert!(
+            matches!(stale, KernelOutgoingFrame::Response { error: Some(_), .. }),
+            "MD-N5: B must not overwrite A's document receipt"
+        );
+
+        let caller = |identity| {
+            KernelCommand::from_local_request_with_caller(
+                "MD-N5-display",
+                KernelCommandSource::LocalCli,
+                identity,
+                None,
+                None,
+                &LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
+                    command: Browser::State,
+                }),
+            )
+        };
+        let caller_a = caller(
+            runtime
+                .command_result_cache
+                .completed_browser_caller("MD-N5-a-open")
+                .await
+                .unwrap(),
+        );
+        let caller_b = caller(
+            runtime
+                .command_result_cache
+                .completed_browser_caller("MD-N5-b-state")
+                .await
+                .unwrap(),
+        );
+        assert_ne!(
+            caller_a.caller, caller_b.caller,
+            "MD-N5: actual transport owns distinct callers"
+        );
+        assert_eq!(
+            caller_a.caller,
+            runtime
+                .command_result_cache
+                .completed_browser_caller("MD-N5-a-state")
+                .await
+                .unwrap(),
+            "MD-N5: caller stable within a connection"
+        );
+        let take = state
+            .kernel_browser_display_request(
+                &caller_a,
+                Display::Takeover {
+                    tab_id: tab.clone(),
+                    generation,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(take["state"], "granted");
+        assert!(
+            state
+                .kernel_browser_display_request(
+                    &caller_b,
+                    Display::Release {
+                        tab_id: tab.clone(),
+                        generation
+                    }
+                )
+                .await
+                .is_err(),
+            "MD-N5: B cannot release A takeover"
+        );
+        state
+            .kernel_browser_display_request(
+                &caller_a,
+                Display::Release {
+                    tab_id: tab.clone(),
+                    generation,
+                },
+            )
+            .await
+            .unwrap();
+        // A can act again after refreshing its own receipt; failed stale input
+        // must not be repaired by B's state refresh or a cached response.
+        success(request(&mut a.0, "MD-N5-a-refresh", Browser::State).await);
+        success(
+            request(
+                &mut a.0,
+                "MD-N5-a-fresh",
+                Browser::Input {
+                    tab_id: tab,
+                    generation,
+                    input: KernelBrowserInput::Text {
+                        text: "MD-N5-fresh".into(),
+                    },
+                },
+            )
+            .await,
+        );
+        a.0.close(None).await.unwrap();
+        b.0.close(None).await.unwrap();
+        timeout(Duration::from_secs(3), a.1)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        timeout(Duration::from_secs(3), b.1)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }))
+    .await;
+    router.shutdown_cleanup().await.unwrap();
+    checked.expect("MD-N5: transport regression must pass");
+}
