@@ -4,11 +4,14 @@ Status: implementation contract, version 1.
 
 ## Boundaries
 
-Event-based notification is a workflow trigger. A workflow endpoint owns zero or more
-event bindings; agents never own subscriptions. AEGS implementations
-authorize and normalize source events. AEDS stores routes and pending deliveries but
-does not inspect workflow execution state. The kernel owns the durable inbox, queue,
-dispatch policy, and runtime decisions.
+MP-08 / MP-10 / MP-11: Since local protocol 365, incoming service events route
+through an App inbox. Direct workflow event bindings are retired. An App handler
+explicitly emits an outgoing occurrence to a configured App automation, which
+admits a prompt to an ordinary workflow endpoint queue; agents never own
+subscriptions. AEGS implementations authorize and normalize source events. AEDS
+stores routes and pending deliveries but does not inspect App or workflow execution
+state. The kernel owns the durable inbox, automation outbox, queue, dispatch policy,
+and runtime decisions.
 
 The registry is a paginated control plane. Catalog pages never participate in event
 delivery and a client must never download the complete catalog.
@@ -43,8 +46,8 @@ Provider context alone never grants a mutation.
   upstream provider, operator, and verification level.
 - `connection_id` is an AEGS-issued opaque authorization handle for one provider
   account or tenant. Provider credentials remain at the AEGS.
-- `binding_id` is owned by a workflow notification trigger. A destination deployment
-  materializes an independent trigger binding from its immutable workflow revision.
+- `binding_id` identifies an App inbox route and is derived from its owner,
+  installation and route IDs. Independent routes have independent binding IDs.
 - `event_interest_key` is the SHA-256 digest of generator ID, event type and version,
   connection scope, and canonical filter.
 - `environment_id` identifies one execution environment. A kernel defaults this to
@@ -67,15 +70,24 @@ optional provider-owned `reply_context` through `PublishEventRequest` and
 than silently dropping reply capability.
 
 The kernel maintains one authenticated outbound WebSocket connection to AEDS. It
-sends its stable kernel/environment identity, route claims, and last accepted cursor
-on connect and reconciliation. AEDS durably stores pending delivery before sending
+sends its stable kernel/environment identity, route claims, and an optional resume
+cursor on connect and reconciliation. App routes currently rely on durable inbox
+receipts for deduplication and send no last-accepted cursor. AEDS durably stores pending delivery before sending
 and retries until the kernel acknowledges or the delivery expires.
 
-The kernel validates the envelope and binding, then atomically persists a delivery
-receipt with the queued workflow prompt. It acknowledges immediately after that
-transaction succeeds. A lost acknowledgement can cause network redelivery, but the
-receipt prevents a second queued prompt. After insertion the prompt follows ordinary
-workflow queue ordering and idle dispatch behavior.
+The kernel validates the envelope, binding and signed incoming App schema, then
+atomically persists the App inbox occurrence and receipt. It acknowledges after
+that durable acceptance, before the App handler or workflow runs. Inbox deduplication
+is scoped to the route and source occurrence, so a lost acknowledgement or a new
+network delivery ID cannot create another inbox occurrence on that route.
+
+The App handler must explicitly emit to a named automation; incoming delivery does
+not implicitly trigger every automation. Outbox deduplication is per automation.
+The kernel subsequently commits the outgoing receipt and queued workflow prompt
+atomically through ordinary workflow admission. The prompt follows ordinary queue
+ordering and idle dispatch behavior. Transport expiry, inbox retention and outbox
+retention are separate bounds; an ACK does not establish successful App handling
+or workflow completion.
 
 Payloads use the workflow endpoint model: a required prompt plus optional artifact
 references. Version 1 permits a prompt up to 1 MiB and at most 32 artifacts. AEDS may
@@ -102,7 +114,7 @@ Chariox Cloud public key, so provider credentials and publisher private keys nev
 enter the kernel, AEDS, or catalog. Self-hosted deployments may continue using a
 static operator token. `PUT /v1/subscriptions/reconcile` is
 authoritative for one `owner_id` and `generator_id` pair and carries
-trigger-owned binding identity, opaque connection handle, provider scope,
+App-route binding identity, opaque connection handle, provider scope,
 canonical interest key, event type/version, filter, revision, and active state.
 An omitted binding becomes inactive only when it is still owned by that owner.
 A higher revision transfers a logical binding to a new owner; equal or older
