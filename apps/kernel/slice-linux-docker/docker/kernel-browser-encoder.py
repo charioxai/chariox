@@ -34,6 +34,8 @@ for line in sys.stdin:
                              'overshoot-pct': '5', 'bufsize': str(int(request['bitrate'] * .1))}
             configuration, sequence = config, 0
         frame = frame.reformat(format='yuv420p')
+        # PNG decoders mark every input as I; clear that hint for inter prediction.
+        frame.pict_type = av.video.frame.PictureType.NONE
         frame.pts = sequence
         packets = list(codec.encode(frame))
         if len(packets) != 1:
