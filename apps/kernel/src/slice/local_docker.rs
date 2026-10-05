@@ -43,7 +43,7 @@ mod snapshot_pause;
 mod state;
 #[cfg(test)]
 mod tests;
-use log_output::{LogCommandOutput, MAX_LOG_BYTES};
+use log_output::MAX_LOG_BYTES;
 mod tuning;
 
 use broker::docker_command;

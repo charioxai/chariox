@@ -2095,4 +2095,62 @@ mod mp11_delivery_gate_tests {
             .await
             .is_ok());
     }
+    #[test]
+    fn mp11_ready_connection_reauthorization_requires_explicit_reconcile() {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .upsert_ready_connection("connection", "owner", "github", &Value::Null, 1)
+            .unwrap();
+        let claim = SubscriptionClaim {
+            binding_id: "binding".into(),
+            generator_id: "dev.chariox.github".into(),
+            connection_id: "connection".into(),
+            connection_scope: "scope".into(),
+            event_interest_key: "interest".into(),
+            event_type: "event".into(),
+            event_type_version: 1,
+            filter: Value::Null,
+            revision: 1,
+            active: true,
+        };
+        store
+            .reconcile("owner", &claim.generator_id, &[claim.clone()])
+            .unwrap();
+        assert_eq!(
+            store
+                .matching(
+                    &claim.generator_id,
+                    &claim.event_type,
+                    &claim.connection_scope
+                )
+                .unwrap()
+                .len(),
+            1
+        );
+        store
+            .upsert_ready_connection("connection", "owner", "github", &Value::Null, 1)
+            .unwrap();
+        assert!(store
+            .matching(
+                &claim.generator_id,
+                &claim.event_type,
+                &claim.connection_scope
+            )
+            .unwrap()
+            .is_empty());
+        store
+            .reconcile("owner", &claim.generator_id, &[claim.clone()])
+            .unwrap();
+        assert_eq!(
+            store
+                .matching(
+                    &claim.generator_id,
+                    &claim.event_type,
+                    &claim.connection_scope
+                )
+                .unwrap()
+                .len(),
+            1
+        );
+    }
 }
