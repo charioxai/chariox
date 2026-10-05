@@ -45,10 +45,22 @@ pub(crate) struct KernelBrowserAdmission {
     agent: Option<String>,
     epoch: Arc<BrowserCancellation>,
     cancellation: Arc<BrowserCancellation>,
+    terminal_lifetime: Option<crate::runtime::command::TerminalLifetime>,
     capability: KernelBrowserCapability,
 }
 
 impl KernelBrowserAdmission {
+    /// Focus epochs have no authority callback. While holding the actor model,
+    /// check only atomic revocation: callbacks may acquire the host lock, whose
+    /// retirement path takes host then model. Full authority is checked outside.
+    fn revoked_in_actor_lock(&self) -> bool {
+        self.epoch.requested()
+            || self
+                .terminal_lifetime
+                .as_ref()
+                .is_some_and(|lifetime| !lifetime.is_live())
+    }
+
     pub(crate) fn with_authority(
         mut self,
         authority: impl Fn() -> bool + Send + Sync + 'static,
@@ -290,6 +302,7 @@ impl KernelBrowserHost {
             capability,
             epoch: state.focus[user].epoch.clone(),
             cancellation: state.focus[user].epoch.clone(),
+            terminal_lifetime: None,
         })
     }
     pub(crate) fn admit_terminal(
@@ -303,6 +316,7 @@ impl KernelBrowserHost {
             agent: None,
             epoch: epoch.clone(),
             capability: KernelBrowserCapability::Browser,
+            terminal_lifetime: Some(lifetime.clone()),
             cancellation: Arc::new(BrowserCancellation::for_authority(epoch, move || {
                 lifetime.is_live()
             })),
@@ -378,7 +392,7 @@ impl KernelBrowserHost {
             let model = self.actor_model(user)?;
             let (id, cancellation) = {
                 let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
-                if admission.is_some_and(|admission| admission.cancellation.requested()) {
+                if admission.is_some_and(|admission| admission.revoked_in_actor_lock()) {
                     return Err("MD-3: browser authority revoked".into());
                 }
                 ledger.begin(browser_actor(admission, &params), &params)?
@@ -435,7 +449,7 @@ impl KernelBrowserHost {
                 // Disconnect/focus retirement takes the same model lock. Either
                 // it removes a registered actor or this check prevents late registration.
                 let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
-                if admission.is_some_and(|admission| admission.cancellation.requested()) {
+                if admission.is_some_and(|admission| admission.revoked_in_actor_lock()) {
                     return Err("MD-3: browser authority revoked".into());
                 }
                 ledger.begin(actor, &params)?
@@ -516,9 +530,10 @@ impl KernelBrowserHost {
         generation: u64,
         admission: Option<&KernelBrowserAdmission>,
     ) -> Result<TakeoverOutcome, String> {
+        self.check_admission(admission)?;
         let model = self.actor_model(user)?;
         let mut model = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
-        if admission.is_some_and(|admission| admission.cancellation.requested()) {
+        if admission.is_some_and(|admission| admission.revoked_in_actor_lock()) {
             return Err("MD-3: browser authority revoked".into());
         }
         model.takeover(actor, tab, generation)
