@@ -135,7 +135,12 @@ try {
  receipt.bootstrap.fidelity=await pair('bootstrap-video');
  const settled=await page.evaluate(()=>mdStream.next());receipt.settled={kind:settled?.kind??'unchanged-exact',sequence:settled?.sequence??first.sequence,fidelity:await pair('settled')};
  if(!receipt.settled.fidelity.lossless)throw Error('MD-DISPLAY: settled pixels differ');
- if(await page.evaluate(()=>mdStream.next())!==null)throw Error('MD-DISPLAY: idle pixels resent');
+ // A source compositor may finish painting after its first protected snapshot.
+ // Permit bounded distinct refinements, then require an unchanged exact poll.
+ receipt.idle_refinements=0;
+ while(await page.evaluate(()=>mdStream.next())!==null){
+  if(++receipt.idle_refinements>5)throw Error('MD-DISPLAY: source did not settle');
+ }
  const idleMs=Number(process.env.MD_IDLE_MS||0);
  if(idleMs){
   const idleStarted=performance.now();let polls=0;
