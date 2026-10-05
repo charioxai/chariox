@@ -1538,11 +1538,9 @@ esac
         let receipt =
             receipt_for_materialization("context-github", &"a".repeat(64), &materializations[0])
                 .expect("build GitHub receipt");
-        write_binding(
-            &target,
-            &binding_for_receipt(&receipt, GitCredentialBindingPhase::Installing),
-        )
-        .expect("write interrupted install binding");
+        let mut binding = binding_for_receipt(&receipt, GitCredentialBindingPhase::Installing);
+        binding.previous_git_helpers = snapshot_git_helpers(&target).unwrap();
+        write_binding(&target, &binding).expect("write interrupted install binding");
         let receipts = materialize_git_credentials(
             &target,
             "context-github",
@@ -1629,11 +1627,9 @@ esac
         let receipt =
             receipt_for_materialization("context-github", &"a".repeat(64), &materializations[0])
                 .expect("build GitHub receipt");
-        write_binding(
-            &target,
-            &binding_for_receipt(&receipt, GitCredentialBindingPhase::Installing),
-        )
-        .expect("write interrupted install binding");
+        let mut binding = binding_for_receipt(&receipt, GitCredentialBindingPhase::Installing);
+        binding.previous_git_helpers = snapshot_git_helpers(&target).unwrap();
+        write_binding(&target, &binding).expect("write interrupted install binding");
         fs::create_dir_all(
             github_hosts_path(&target)
                 .parent()
