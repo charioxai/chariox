@@ -590,7 +590,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       if (human && deps.kernelConnected?.() === false) return human
       const kernel = await getKernelCloudRelayProfile(client)
       if (human && kernel && human.accountId !== kernel.accountId) throw new Error("Cloud account conflict; use a separate CHARIOX_HOME profile")
-      return human ?? kernel
+      return kernel ?? human ?? null
     },
     connectCloudRelay: () => connectKernelCloudRelay(client),
     saveCloudRelayProfile: async (profile) => {

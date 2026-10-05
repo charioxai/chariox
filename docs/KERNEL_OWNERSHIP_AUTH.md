@@ -1,4 +1,4 @@
-# Kernel Cloud ownership (daemon protocol 438)
+# Kernel Cloud ownership and terminal auth (daemon protocol 439)
 
 One Chariox account represents one user. My kernels lists every kernel of the account, grouped by machine; collaboration exposes invited sessions only. Each ordinary kernel enrolls independently. `/cloud link` and attached waiting-room Login ask the kernel to start device authorization with its actual kernel ID, machine ID and relay-key thumbprint. Approval returns a kernel credential, without a human session or machine credential. Kernels group under their machine in Cloud; sharing a root does not enroll another kernel.
 
@@ -31,12 +31,19 @@ The CLI client store is separate from public preferences and kernel state, under
 
 An enrolled kernel's terminal pairing link carries the noncredential marker
 `cloud-client-token-required`, never its KERNEL transport token. The receiving
-CLI bootstraps with its own signed-in CLIENT profile and persistent relay key,
+CLI bootstraps with the kernel owner's signed-in CLIENT profile and its persistent
+relay key,
 or an explicitly supplied CLIENT transport token via `--relay-token-env`.
-Creation does not request an unkeyed grant. Redemption supplies the receiving
+Creation does not request an unkeyed grant. Cloud creation and redemption require
+the authenticated kernel owner; shared-session membership and a pairing link
+never grant enrollment authority. Redemption supplies the receiving
 key and the kernel issues a short CLIENT grant bound to that key and exact
-kernel target using its enrollment credential. Generic client and machine
-invites reject scoped transport credentials in both Cloud and self-hosted
+kernel target using its enrollment credential. The final paired client renews
+through the kernel before the signed grant expires, preserving the same subject,
+key and target while reauthenticating command and event connections in place.
+The CLI reads kernel enrollment metadata for unlink even when the terminal is
+also signed in; failed Cloud acknowledgement preserves the enrollment.
+Generic client and machine invites reject scoped transport credentials in both Cloud and self-hosted
 configurations. Self-hosted scoped relays retain
 `operator-client-token-required` and their operator-provided CLIENT transport.
 
@@ -46,13 +53,15 @@ pending operation before starting another rotation; that next operation is
 persisted before its network request as well. A second lost reply therefore
 resumes from the successor rather than replaying the predecessor forever.
 
-Cloud token publication and kernel unlink hold common destination Machine and
-target locks. Cross-machine delegation acquires issuer and destination locks
+Cloud token publication, kernel unlink and machine revocation hold common
+destination Machine and target locks. Cross-machine delegation acquires issuer and destination locks
 in sorted order, before credential locks, and rechecks identity/status after
 acquisition. An unlink that follows publication sweeps the exact token; an
 unlink that wins makes publication fail. Re-enrolling the same kernel ID does
-not revive old token IDs. The separate Settings React root uses the shared
-query provider for its Kernels and Security account controls.
+not revive old token IDs. Machine revocation and machine logout also sweep
+all incoming CLIENT grants to every kernel of that machine, independently of
+the issuing kernel or client/browser session. The separate Settings React root
+uses the shared query provider for its Kernels and Security account controls.
 
 These focused source and local PostgreSQL/relay/browser regressions address
 review findings. They do not establish fresh-machine MP-10 acceptance or close

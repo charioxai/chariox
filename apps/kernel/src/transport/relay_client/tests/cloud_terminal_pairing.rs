@@ -267,6 +267,88 @@ fn cloud_enrolled_kernel_pairing_creates_safe_links_and_redeems_over_scoped_rela
             secret,
         )
         .unwrap();
+        // MP-08 / MP-11: a session collaborator's key/target pins do not
+        // authorize spending the owner's enrollment credential, for forged
+        // links or for links that have been revoked.
+        let revoked_create = LocalDaemonRequest::CreateTerminalPairingLink(
+            crate::local::CreateTerminalPairingLinkRequest {
+                terminal_type: None,
+                alias: None,
+                expires_in_ms: Some(60_000),
+            },
+        );
+        let revoked_response = router
+            .dispatch(
+                KernelCommand::from_local_request("create-revoked", None, None, &revoked_create),
+                revoked_create,
+            )
+            .await
+            .unwrap();
+        let LocalDaemonResponse::TerminalPairingLinkCreated { pairing: revoked } = revoked_response
+        else {
+            panic!("expected link")
+        };
+        crate::config::DaemonConfig::revoke_paired_client(&revoked.terminal_id).unwrap();
+        let mut forged = token.clone();
+        forged.invite_id = "fabricated".into();
+        let forged_link =
+            crate::runtime::invite_tokens::encode_terminal_pairing_link(&forged).unwrap();
+        for link in [forged_link, revoked.pairing_link] {
+            let mut viewer_claims =
+                claims("shared-viewer", RelaySubjectKind::Client, &target, &pin);
+            viewer_claims.user_id = Some("collaborator".into());
+            viewer_claims.session_id = Some("shared-session".into());
+            let (mut viewer, _) = connect_async(&url).await.unwrap();
+            send_client_envelope(
+                &mut viewer,
+                &RelayEnvelope::ClientConnect {
+                    auth_token: encode_scoped_hmac_token(&viewer_claims, secret).unwrap(),
+                    target: ClientTarget {
+                        daemon_id: Some(target.clone()),
+                        daemon_alias: None,
+                    },
+                },
+            )
+            .await;
+            let public = expect_client_connected(&mut viewer).await;
+            let request = LocalDaemonRequest::JoinTerminalPairingLink(
+                crate::local::JoinTerminalPairingLinkRequest {
+                    pairing_link: link,
+                    terminal_id: Some("viewer-terminal".into()),
+                    terminal_type: None,
+                    alias: None,
+                    public_key_thumbprint: Some(pin.clone()),
+                },
+            );
+            send_client_envelope(
+                &mut viewer,
+                &RelayEnvelope::ClientRequest {
+                    request_id: "deny-owner-grant".into(),
+                    target: ClientTarget {
+                        daemon_id: Some(target.clone()),
+                        daemon_alias: None,
+                    },
+                    encrypted_request: relay_crypto::encrypt_payload_for_peer(
+                        &terminal_private,
+                        &public,
+                        &serde_json::to_vec(&request).unwrap(),
+                    )
+                    .unwrap(),
+                },
+            )
+            .await;
+            let error = tokio::time::timeout(
+                Duration::from_secs(5),
+                expect_client_response_error(&mut viewer, "deny-owner-grant"),
+            )
+            .await
+            .unwrap();
+            assert!(
+                error.message.contains("only this kernel's owner"),
+                "owner gate is the first failing seam"
+            );
+            viewer.close(None).await.unwrap();
+        }
         let (mut client, _) = connect_async(&url).await.unwrap();
         let client_target = ClientTarget {
             daemon_id: Some(target.clone()),
