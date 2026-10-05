@@ -56,10 +56,12 @@ export async function executeBrowserInteraction({connection, sessionId, objectId
     await inspect(connection, sessionId, objectId, action.expected_value, true);
     const key = action.key === 'Space' ? ' ' : action.key;
     const params = {key,code:action.key,windowsVirtualKeyCode:BROWSER_KEYS[action.key],nativeVirtualKeyCode:BROWSER_KEYS[action.key]};
+    const text = action.key === 'Enter' ? '\r' : action.key === 'Space' ? ' ' : null;
     let down = false;
     try {
       cancelled(signal); down = true;
-      await connection.send('Input.dispatchKeyEvent',{...params,type:'keyDown'},sessionId);
+      await connection.send('Input.dispatchKeyEvent',{...params,type:'keyDown',
+        ...(text === null ? {} : {text,unmodifiedText:text})},sessionId);
     } finally {
       if (down) await connection.send('Input.dispatchKeyEvent',{...params,type:'keyUp'},sessionId);
     }

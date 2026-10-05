@@ -60,6 +60,29 @@ test('MP-08/MP-10/MP-11 overlapping controls retain narrow native click edges', 
   });
 });
 
+test('MP-08/MP-10/MP-11 focused native keys activate moving controls without pointer delivery', async () => {
+  await withController(async ({page,request}) => {
+    await page.setContent(`<style>@keyframes travel {from {transform:translateX(0)} to {transform:translateX(800px)}}</style>
+      <button id="moving" style="position:absolute;left:40px;top:80px;width:100px;height:40px;animation:travel 10s linear infinite"
+      onclick="this.dataset.clicks=Number(this.dataset.clicks||0)+1;this.dataset.trusted=event.isTrusted">Continue</button>`);
+    const target=(await request('browser.reconcile',{viewport})).result.tabs[0];
+    const snapshot=(await request('browser.snapshot',target)).result;
+    const node=snapshot.dom_nodes.find(n=>n.attributes.id==='moving');
+    const pressed=await request('browser.action',{...target,node_ref:node.node_ref,action:{kind:'press',key:'Enter'},timeout_ms:300});
+    assert.equal(pressed.ok,true,JSON.stringify(pressed.error));
+    assert.equal(await page.locator('#moving').getAttribute('data-clicks'),'1');
+    assert.equal(await page.locator('#moving').getAttribute('data-trusted'),'true');
+    const space=await request('browser.action',{...target,node_ref:node.node_ref,action:{kind:'press',key:'Space'},timeout_ms:300});
+    assert.equal(space.ok,true,JSON.stringify(space.error));
+    assert.equal(await page.locator('#moving').getAttribute('data-clicks'),'2');
+    assert.equal(await page.locator('#moving').getAttribute('data-trusted'),'true');
+    const pointer=await request('browser.action',{...target,node_ref:node.node_ref,action:{kind:'click'},timeout_ms:250});
+    assert.equal(pointer.error?.code,'browser_action_timeout');
+    assert.match(pointer.error.message,/unstable_geometry.*no input was delivered/);
+    assert.equal(await page.locator('#moving').getAttribute('data-clicks'),'2');
+  });
+});
+
 test('MP-08/MP-10/MP-11 observed keys and drags verify sliders and rendered geometry', async () => {
   await withController(async ({page,request}) => {
     await page.setContent(`<label>Level<input id="native-level" type="range" min="3" max="19" step="2" value="11"></label>
