@@ -184,7 +184,9 @@ fn default_credential_vault_service() -> String {
 }
 
 fn default_credential_vault_path() -> String {
-    "~/.chariox/vault/vault.json".to_string()
+    super::paths::chariox_home_dir()
+        .map(|home| home.join("vault/vault.json").display().to_string())
+        .unwrap_or_else(|| "~/.chariox/vault/vault.json".to_string())
 }
 
 fn default_credential_vault_default_ttl_minutes() -> u64 {

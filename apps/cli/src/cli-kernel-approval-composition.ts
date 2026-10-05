@@ -33,6 +33,7 @@ export function createCliKernelApprovalComposition(deps: {
 }) {
   let savedFocus: CliDialogFocusTarget | null = null
   let dialogs = 0
+  let terminalFocused = true
   const opened = () => {
     if (dialogs++ === 0) {
       deps.closeOtherDialog()
@@ -57,6 +58,7 @@ export function createCliKernelApprovalComposition(deps: {
     respond: (prompt, choiceId, proof) =>
       respondToInteraction(deps.client, prompt.session_id, prompt.interaction_id, choiceId, null, proof),
     notify: deps.notify,
+    attentionAllowed: () => terminalFocused,
   })
   const surface = createKernelApprovalRenderer(deps.renderer, {
     show: () => controller.show(),
@@ -73,6 +75,7 @@ export function createCliKernelApprovalComposition(deps: {
       respondToInteraction(deps.client, sessionId, interactionId, choiceId, null),
     applySession: deps.applySession,
     showPasskeyPrompt: (sessionId, interactionId) => popup.show(sessionId, interactionId),
+    getPasskeyPrompts: popup.prompts,
   })
   createEffect(() => {
     deps.themeRevision()
@@ -81,8 +84,16 @@ export function createCliKernelApprovalComposition(deps: {
     popupSurface.render(popup.view(), deps.dimensions())
   })
   onCleanup(deps.client.onKernelEvent((event) => {
-    if (event.event === "passkey_prompts_changed") popup.apply(passkeyPromptsFromEvent(event.prompts))
+    if (event.event === "passkey_prompts_changed") {
+      popup.apply(passkeyPromptsFromEvent(event.prompts))
+      controller.sync()
+    }
   }))
+  const focused = () => { terminalFocused = true; popup.cue() }
+  const blurred = () => { terminalFocused = false }
+  deps.renderer.on("focus", focused)
+  deps.renderer.on("blur", blurred)
+  onCleanup(() => { deps.renderer.off("focus", focused); deps.renderer.off("blur", blurred) })
   // A paste while the popup or the panel is open never reaches the prompt;
   // in the popup it belongs to the passkey.
   onCleanup(routeRawPastes(deps.renderer.keyInput,

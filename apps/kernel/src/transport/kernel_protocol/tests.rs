@@ -11,6 +11,19 @@ use crate::session::{
 use crate::terminal::TerminalOutputKind;
 
 #[test]
+fn mp11_kafix_owner_outcomes_preserve_structured_codes_without_retry() {
+    for (code, error) in [
+        ("sudo_refused", DaemonError::KernelSudoRefused),
+        ("kernel_access_refused", DaemonError::KernelAccessRefused),
+        ("owner_request_expired", DaemonError::OwnerRequestExpired),
+    ] {
+        let mapped = map_kernel_error(&error);
+        assert_eq!(mapped.code, code);
+        assert!(!mapped.retryable);
+    }
+}
+
+#[test]
 fn credential_vault_locked_uses_a_stable_transport_error_code() {
     let error = DaemonError::LocalTransport {
         operation: "credential_vault_locked",

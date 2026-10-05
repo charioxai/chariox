@@ -184,6 +184,43 @@ service = "chariox-test"
 }
 
 #[test]
+fn mp11_kafix_vault_default_uses_explicit_home_without_overriding_explicit_paths() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    let previous = env::var_os("CHARIOX_HOME");
+    let fixture = crate::test_support::TestWorktree::new("kafix-vault-default");
+    unsafe {
+        env::set_var("CHARIOX_HOME", fixture.path());
+    }
+    let expected = fixture
+        .path()
+        .join("vault/vault.json")
+        .display()
+        .to_string();
+    assert_eq!(CharioxUserConfig::default().credential_vault.path, expected);
+    for input in ["", "[credential_vault]\nservice = 'test'"] {
+        let config = toml::from_str::<CharioxUserConfig>(input).unwrap();
+        assert_eq!(config.credential_vault.path, expected);
+    }
+    let config =
+        toml::from_str::<CharioxUserConfig>("[credential_vault]\npath = '~/chosen-vault.json'")
+            .unwrap();
+    assert_eq!(config.credential_vault.path, "~/chosen-vault.json");
+    unsafe {
+        env::remove_var("CHARIOX_HOME");
+    }
+    let legacy = CharioxUserConfig::default().credential_vault;
+    assert_eq!(legacy.path, "~/.chariox/vault/vault.json");
+    assert_eq!(
+        crate::secret::resolve_chariox_vault_path(legacy.path),
+        std::path::PathBuf::from(env::var_os("HOME").unwrap()).join(".chariox/vault/vault.json")
+    );
+    unsafe {
+        restore_env_var("CHARIOX_HOME", previous);
+    }
+}
+
+#[test]
 fn user_config_parses_credential_vault_backend() {
     let payload = r#"
 version = 1

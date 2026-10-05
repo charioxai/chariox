@@ -46,8 +46,10 @@ export type PasskeyPopupPaste = {
 }
 
 export type PasskeyPopupView = {
-  /** The popup is shown; otherwise pending prompts only show an indicator. */
+  /** Only deliberate focus opens the passkey entry. */
   open: boolean
+  /** Arrival preview is visible but does not own composer input. */
+  attention?: boolean
   count: number
   index: number
   prompt: PasskeyPrompt | null
@@ -97,11 +99,14 @@ export function createPasskeyPopupController(deps: {
   scroll(direction: -1 | 1): void
   respond(prompt: PasskeyPrompt, choiceId: string, proof?: InteractionPasskeyProof): Promise<unknown>
   notify(message: string): void
+  attentionAllowed?(): boolean
 }) {
   let prompts: PasskeyPrompt[] = []
   let index = 0
   let hidden = true
   let open = false
+  let attention = false
+  const announced = new Set<string>()
   // The passkey lives only here until it is sent, then it is dropped.
   let value = ""
   let remember = 0
@@ -119,7 +124,7 @@ export function createPasskeyPopupController(deps: {
 
   const current = () => prompts[index] ?? null
   const view = (): PasskeyPopupView => ({
-    open, count: prompts.length, index, prompt: current(),
+    open, attention, count: prompts.length, index, prompt: current(),
     passkey: { length: Array.from(value).length, rememberMinutes: remember, ...(current()?.kind !== "critical_approval" && current()?.lifetime_minutes ? { accessLifetimeMinutes: accessLifetime ?? current()?.lifetime_minutes ?? null } : {}) },
     pending: pending !== null, connected: deps.connected(), error,
   })
@@ -144,7 +149,7 @@ export function createPasskeyPopupController(deps: {
     const at = shown ? prompts.findIndex((item) => promptKey(item) === promptKey(shown)) : -1
     // A different request needs deliberate focus, including when a remembered
     // approval closes and another pending request takes its place.
-    if (at < 0) hidden = true
+    if (at < 0) { hidden = true; attention = false }
     select(at >= 0 ? at : 0, shown)
   }
   const settle = (prompt: PasskeyPrompt) => {
@@ -154,6 +159,7 @@ export function createPasskeyPopupController(deps: {
     prompts = prompts.filter((item) => promptKey(item) !== key)
     reselect(shown)
     syncOpen()
+    cue()
   }
   const send = async (prompt: PasskeyPrompt, choiceId: string, proof?: InteractionPasskeyProof) => {
     const token = {}
@@ -217,22 +223,32 @@ export function createPasskeyPopupController(deps: {
   }
   const hide = () => {
     hidden = true
+    attention = false
     syncOpen()
     render()
+  }
+  const cue = () => {
+    if (deps.attentionAllowed?.() === false) return
+    const at = prompts.findIndex(prompt => !announced.has(promptKey(prompt)))
+    if (at >= 0 && !open) { select(at); attention = true }
+    if ((attention || open) && current()) announced.add(promptKey(current()!))
   }
   return {
     view, approve, refuse, cycleRemember, hide,
     isOpen: () => open,
     ownsInput: () => open || claimedInputTurn,
-    /** The kernel's current set, from `passkey_prompts_changed`. A prompt
-     * that arrives shows an indicator; F8 or a click explicitly opens it. */
+    prompts: () => prompts,
+    cue() { cue(); render() },
+    /** Arrival previews need explicit F8/click focus before any passkey entry. */
     apply(next: PasskeyPrompt[]) {
       const shown = current()
       const listed = new Set(next.map(promptKey))
       for (const key of answered) if (!listed.has(key)) answered.delete(key)
+      for (const key of announced) if (!listed.has(key)) announced.delete(key)
       prompts = next.filter((prompt) => !answered.has(promptKey(prompt)))
       reselect(shown)
       syncOpen()
+      cue()
       render()
     },
     /** Shows the popup on this prompt; false when this terminal has none. */
@@ -241,7 +257,9 @@ export function createPasskeyPopupController(deps: {
         : prompts.findIndex((prompt) => prompt.session_id === sessionId && prompt.interaction_id === interactionId)
       if (at < 0 || !prompts.length) return false
       select(at)
+      announced.add(promptKey(current()!))
       hidden = false
+      attention = false
       syncOpen()
       render()
       return true
@@ -266,12 +284,20 @@ export function createPasskeyPopupController(deps: {
     handleKey(event: PasskeyPopupKey): boolean {
       if (event.defaultPrevented) return true
       if (!open) {
+        if (attention && event.name === "escape") {
+          event.preventDefault()
+          event.stopPropagation()
+          hide()
+          return true
+        }
         // F8 brings a hidden popup back before the approval panel.
         if (event.name !== "f8" || !prompts.length) return false
         event.preventDefault()
         event.stopPropagation()
         if (event.eventType !== "release" && event.eventType !== "repeat") {
           hidden = false
+          attention = false
+          announced.add(promptKey(current()!))
           syncOpen()
           render()
         }
@@ -306,6 +332,7 @@ export function createPasskeyPopupController(deps: {
       if (event.name === "left" || event.name === "right") {
         if (prompts.length > 1) {
           select((index + (event.name === "left" ? -1 : 1) + prompts.length) % prompts.length)
+          announced.add(promptKey(current()!))
           render()
         }
         return true

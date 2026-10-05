@@ -336,11 +336,12 @@ impl KernelRuntimeState {
         } else {
             format!("External agent access expires in {remaining} minutes. Extend?")
         };
+        let session = self.access_session(&grant.session_id)?;
         let interaction = RuntimeInteraction::for_kernel_operation(
             format!("{}-{action}", grant.grant_id), format!("access-{action}:{}", grant.grant_id),
             title,
             format!("OS-verified external agent {} (pid {}) requests {} access to session {} for {} minutes. Only this process and its OS descendants will have access. Chariox agents it spawns receive no grant.",
-                grant.holder_executable.escape_debug(), grant.holder_pid, action, grant.session_id, grant.lifetime_minutes),
+                grant.holder_executable.escape_debug(), grant.holder_pid, action, session.alias().unwrap_or(session.id()).escape_debug(), grant.lifetime_minutes),
             vec![RuntimeInteractionChoice::new("refuse", "Refuse", "refuse", None),
                 RuntimeInteractionChoice::new("approve", "Approve", "approve", None).requiring_passkey()])
             .with_timeout_sec(timeout_sec);
@@ -388,11 +389,13 @@ impl KernelRuntimeState {
                 }
                 Ok(minutes)
             }
+            Ok(Ok(answer)) if answer.status != "timed_out" => {
+                self.audit_access(grant, "refused", Some("refused"))?;
+                Err(DaemonError::KernelAccessRefused)
+            }
             _ => {
-                self.audit_access(grant, "refused", Some("refused_or_timeout"))?;
-                Err(error(
-                    "access request refused or expired; answer the popup in a Chariox terminal",
-                ))
+                self.audit_access(grant, "refused", Some("expired_or_cancelled"))?;
+                Err(DaemonError::OwnerRequestExpired)
             }
         }
     }

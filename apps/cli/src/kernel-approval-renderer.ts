@@ -1,4 +1,4 @@
-import { BoxRenderable, ScrollBoxRenderable, TextRenderable, MouseButton, TextAttributes, type CliRenderer } from "@opentui/core"
+import { BoxRenderable, ScrollBoxRenderable, StyledText, TextRenderable, MouseButton, TextAttributes, type CliRenderer } from "@opentui/core"
 import type { KernelApprovalView } from "./kernel-approval-controller.js"
 import { approvalShortcutLabel } from "./approval-shortcuts.js"
 import { theme } from "./theme.js"
@@ -21,12 +21,13 @@ export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
       const frame = JSON.stringify([view, dimensions, theme.text, theme.primary, theme.backgroundPanel, theme.backgroundElement])
       if (lastFrame === frame) return
       lastFrame = frame
+      const indicatorCount = view.indicatorCount ?? view.count
       if (banner) {
         for (const child of [...banner.getChildren()]) {
           banner.remove(String(child.id))
           child.destroyRecursively()
         }
-        banner.visible = view.count > 0
+        banner.visible = indicatorCount > 0
         banner.backgroundColor = theme.backgroundElement
         banner.paddingLeft = 1
         banner.paddingRight = 1
@@ -34,11 +35,11 @@ export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
           event.stopPropagation()
           if (event.button === MouseButton.LEFT) actions.show()
         }
-        if (view.count) {
+        if (indicatorCount) {
           const fullTitle = (view.interaction?.title || "Kernel approval").replace(/[\x00-\x1f\x7f]/g, " ")
           const title = Array.from(fullTitle).length > 120 ? `${Array.from(fullTitle).slice(0, 120).join("")}…` : fullTitle
           banner.add(new TextRenderable(renderer, {
-            content: `Action needed · ${view.count} approval${view.count === 1 ? "" : "s"} waiting: ${title}`,
+            content: `Action needed · ${indicatorCount} approval${indicatorCount === 1 ? "" : "s"} waiting: ${title}`,
             wrapMode: "word", flexShrink: 0, fg: theme.warning, attributes: TextAttributes.BOLD,
           }))
           if (view.criticalCount) banner.add(new TextRenderable(renderer, {
@@ -62,7 +63,7 @@ export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
       if (!view.count) return
       box.width = dimensions.width
       box.height = view.open ? dimensions.height : 1
-      const text = (parent: BoxRenderable, content: string, accent = false) => {
+      const text = (parent: BoxRenderable, content: string | StyledText, accent = false) => {
         const node = new TextRenderable(renderer, {
           content, wrapMode: "word", fg: accent ? theme.primary : theme.text,
           flexShrink: 0,
@@ -74,12 +75,13 @@ export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
         position: "absolute", right: 0, top: 0, height: 1,
         backgroundColor: theme.backgroundElement, paddingLeft: 1, paddingRight: 1,
       })
-      text(indicator, `Chariox · ${view.count} approval${view.count === 1 ? "" : "s"} · ${shortcutLabel}`, true)
+      text(indicator, `Chariox · ${indicatorCount} approval${indicatorCount === 1 ? "" : "s"} · ${shortcutLabel}`, true)
       indicator.onMouseUp = (event) => {
         event.stopPropagation()
         if (event.button === MouseButton.LEFT) actions.show()
       }
-      box.add(indicator)
+      if (indicatorCount) box.add(indicator)
+      else indicator.destroyRecursively()
       if (!view.open || !view.interaction) return
       const panel = new BoxRenderable(renderer, {
         position: "absolute", top: Math.min(2, Math.max(0, dimensions.height - 5)),
@@ -95,6 +97,10 @@ export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
       })
       panel.add(body)
       text(body, view.interaction.title || "Kernel approval")
+      if (view.sessionId) text(body, new StyledText([
+        { __isChunk: true, text: `Session: ${view.sessionAlias || view.sessionId}`, fg: theme.text },
+        { __isChunk: true, text: view.sessionAlias ? ` (${view.sessionId})` : "", fg: theme.textMuted },
+      ]))
       text(body, view.interaction.message)
       if (view.interaction.choices.some(choice => choice.requires_passkey)) {
         text(body, "Critical — passkey needed. Select an approval choice to enter your passkey.", true)
@@ -117,7 +123,7 @@ export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
       }
       text(panel, view.pending ? "Waiting for kernel confirmation…"
         : !view.connected ? "Disconnected · reconnect to respond"
-        : "↑/↓ select · Enter confirm · ←/→ approvals · PgUp/PgDn scroll")
+        : "↑/↓ select · Enter confirm · Ctrl+R refuses · ←/→ approvals · PgUp/PgDn scroll")
       box.add(panel)
       box.requestRender()
     },

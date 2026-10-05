@@ -62,6 +62,39 @@ test("zero-agent kernel approvals require explicit opening and selection before 
   assert.deepEqual(h.focus, ["blur", "restore"])
 })
 
+test("MP-11 kafix Ctrl+R refuses access grant and extension panels without a selection or passkey", () => {
+  for (const action of ["grant", "extension"]) {
+    const interaction = { ...approvalFixture, kernel_operation_id: `access-${action}:fixture`,
+      choices: [{ id: "refuse", label: "Refuse", reply: "refuse" },
+        { id: "approve", label: "Approve", reply: "approve", requires_passkey: true }] }
+    const h = harness(session("session-1", [interaction]))
+    h.controller.show()
+    h.controller.handleKey(key("r", { ctrl: true, eventType: "repeat" }))
+    assert.deepEqual(h.requests, [])
+    h.controller.handleKey(key("r", { ctrl: true }))
+    assert.deepEqual(h.requests, [["session-1", "approval-1", "refuse"]])
+    assert.deepEqual(h.popups, [])
+    h.controller.handleKey(key("r", { ctrl: true }))
+    assert.equal(h.requests.length, 1)
+  }
+})
+
+test("MP-11 kafix owner popup deduplicates only its exact session and interaction indicator", () => {
+  const current = session("session-1", [approvalFixture, { ...approvalFixture, id: "routine" }])
+  let prompts = [{ session_id: "other-session", interaction_id: "approval-1" }]
+  const controller = createKernelApprovalController({
+    getSession: () => current, connected: () => true, onView() {}, onOpen() {}, onClose() {}, scroll() {},
+    respond: async () => current, applySession() {}, showPasskeyPrompt: () => true,
+    getPasskeyPrompts: () => prompts,
+  })
+  assert.equal(controller.view().indicatorCount, 2)
+  prompts = [{ session_id: "session-1", interaction_id: "approval-1" }]
+  assert.equal(controller.view().indicatorCount, 1)
+  assert.equal(controller.view().count, 2, "both requests remain reviewable")
+  prompts = []
+  assert.equal(controller.view().indicatorCount, 2)
+})
+
 test("dismissal, disconnect and switching pending approvals never reuse a selected choice", async () => {
   const h = harness()
   h.setSession(session("session-1", [approvalFixture, { ...approvalFixture, id: "approval-2" }]))

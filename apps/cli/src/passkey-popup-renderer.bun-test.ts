@@ -6,6 +6,7 @@ import type { PasskeyPrompt } from "@chariox/kernel-client/kernel-types"
 import { createPasskeyPopupController, type PasskeyPopupView } from "./passkey-popup-controller.js"
 import { createPasskeyPopupRenderer } from "./passkey-popup-renderer.js"
 import { routeRawPastes } from "./raw-paste-routing.js"
+import { theme } from "./theme.js"
 
 const prompt: PasskeyPrompt = {
   kind: "critical_approval", session_id: "session-1", session_alias: "Payments", interaction_id: "app_validation_op-1",
@@ -35,6 +36,9 @@ test("the passkey popup is shaped like the hot-keys popup and shows only the ker
     assert.match(frame, /Approve App action/)
     assert.match(frame, /Action: pay/)
     assert.match(frame, /Session: Payments \(session-1\) · expires/)
+    const spans = harness.captureSpans().lines.flatMap(line => line.spans)
+    assert.ok(spans.find(span => span.text.includes("Session: Payments"))?.fg.equals(theme.text))
+    assert.ok(spans.find(span => span.text.includes("(session-1)"))?.fg.equals(theme.textMuted))
     assert.match(frame, /Passkey: ••••••▏/)
     assert.match(frame, /Remember for: off/)
     assert.match(frame, /\[ Approve \] +\[ Refuse \]/)
@@ -192,4 +196,20 @@ test("sudo popup describes a fresh one-turn decision without grant lifetime cont
     assert.match(frame, /fresh passkey/i)
     assert.doesNotMatch(frame, /External agent access|undefined|Tab lifetime|Tab remember|Remember for/)
   } finally { harness.renderer.destroy() }
+})
+
+test("MP-11 kafix arrival preview shows the waiting request and requires deliberate focus", async () => {
+  const h = await createTestRenderer({ width: 90, height: 30, useThread: false })
+  const box = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
+  h.renderer.root.add(box)
+  const surface = createPasskeyPopupRenderer(h.renderer, noActions)
+  surface.assign(box)
+  try {
+    surface.render({ ...view, open: false, attention: true, prompt: { ...prompt, kind: "access_extension", title: "Access expires. Extend?" } }, { width: 90, height: 30 })
+    await h.renderOnce()
+    const frame = h.captureCharFrame()
+    assert.match(frame, /Access expires. Extend\?/)
+    assert.match(frame, /F8 reviews.*Esc hides/)
+    assert.doesNotMatch(frame, /Passkey:|Enter approves/)
+  } finally { h.renderer.destroy() }
 })
