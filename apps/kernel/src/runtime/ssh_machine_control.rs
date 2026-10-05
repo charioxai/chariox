@@ -230,6 +230,11 @@ async fn deploy(state: &Path, input: Value) -> Result<Value, DaemonError> {
     serde_json::from_slice(&output.stdout).map_err(|_| error("invalid SSH install result"))
 }
 
+// MP-08 / MP-11: reconcile only a positively absent target. Unknown SSH failures retain selection.
+async fn target_absent(state: &Path, install: &Install) -> bool {
+    deploy(state, json!({"host":install.host,"request":{"action":"inspect","installId":install.install_id,"port":install.port,"releaseDigest":install.release.release_digest}})).await
+        .is_ok_and(|result| result["installId"] == install.install_id && result["status"] == "absent")
+}
 pub(crate) async fn execute(
     config: DaemonConfig,
     command: &KernelCommand,
@@ -298,22 +303,21 @@ pub(crate) async fn execute(
                 release,
             };
             validate(&install)?;
-            if installs.iter().any(|old| {
-                old.install_id == install.install_id
-                    && (old.host != install.host
-                        || old.port != install.port
-                        || old.release.release_digest != install.release.release_digest)
-            }) {
-                return Err(error(
-                    "existing install differs; explicit upgrade is required",
-                ));
-            }
-            if !installs
+            if let Some(old) = installs
                 .iter()
-                .any(|old| old.install_id == install.install_id)
+                .find(|old| old.install_id == install.install_id)
+                .cloned()
             {
-                installs.push(install.clone());
-                store(&registry, &installs)?;
+                if old.host != install.host
+                    || old.port != install.port
+                    || old.release.release_digest != install.release.release_digest
+                {
+                    if !target_absent(&state, &old).await {
+                        return Err(error("existing install differs; reconcile SSH ownership before an explicit upgrade"));
+                    }
+                    installs.retain(|item| item.install_id != old.install_id);
+                    store(&registry, &installs)?;
+                }
             }
             (install, "install")
         }
@@ -328,12 +332,35 @@ pub(crate) async fn execute(
         _ => return Err(error("unsupported SSH machine operation")),
     };
     validate(&install)?;
+    if action == "remove" && target_absent(&state, &install).await {
+        installs.retain(|item| item.install_id != install.install_id);
+        store(&registry, &installs)?;
+        return Ok(LocalDaemonResponse::SshMachine {
+            machine: SshMachineResult {
+                install_id: install.install_id,
+                status: "removed".into(),
+                kernel_id: None,
+                machine_id: None,
+                release_digest: install.release.release_digest,
+                state_retained: true,
+            },
+        });
+    }
     let mut input = json!({"host":install.host,"request":{"action":action,"installId":install.install_id,"port":install.port,"releaseDigest":install.release.release_digest},"release":install.release});
     let ticket = if action == "install" {
         Some(ticket_request(profile, &install.install_id).await?)
     } else {
         None
     };
+    // Ticket issue failure cannot publish anything remotely; do not reserve beforehand.
+    if action == "install"
+        && !installs
+            .iter()
+            .any(|old| old.install_id == install.install_id)
+    {
+        installs.push(install.clone());
+        store(&registry, &installs)?;
+    }
     if let Some(ticket) = &ticket {
         input["enrollment"] =
             json!({"ticket":ticket.ticket,"apiUrl":profile.api_url,"userId":profile.user_id});
@@ -348,6 +375,10 @@ pub(crate) async fn execute(
         if let Some(ticket) = &ticket {
             revoke(profile, &ticket.ticket_id).await?;
         }
+    }
+    if result.is_err() && action == "install" && target_absent(&state, &install).await {
+        installs.retain(|item| item.install_id != install.install_id);
+        store(&registry, &installs)?;
     }
     let result = result?;
     let status = if action == "install" {

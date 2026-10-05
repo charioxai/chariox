@@ -12,7 +12,7 @@ const digestOf = bytes => `sha256:${createHash("sha256").update(bytes).digest("h
 const fail = message => { throw new Error(message) }
 export function validateRequest(r) {
   if (!r || typeof r !== "object" || Array.isArray(r) || Object.keys(r).some(k => !["action", "installId", "port", "releaseDigest"].includes(k))) fail("invalid SSH install request")
-  if (!["install", "start", "stop", "remove"].includes(r.action)) fail("invalid SSH install action")
+  if (!["install", "start", "stop", "remove", "inspect"].includes(r.action)) fail("invalid SSH install action")
   if (!/^[a-z][a-z0-9-]{0,47}$/.test(r.installId ?? "")) fail("install ID must be 1-48 lowercase letters, digits or hyphens")
   if (!Number.isInteger(r.port) || r.port < 1024 || r.port > 65534 || [43118, 43119, 43120].includes(r.port)) fail("choose a distinct unprivileged loopback port, other than the ordinary 43118 default")
   if (!/^sha256:[a-f0-9]{64}$/.test(r.releaseDigest ?? "")) fail("a pinned signed release digest is required")
@@ -99,6 +99,28 @@ async function portFree(port) {
   })
   await new Promise((yes, no) => server.close(e => e ? no(e) : yes()))
 }
+// MP-08 / MP-11: absence is a read-only target fact, never inferred from an SSH failure.
+async function inspectMachine(r, home, stage, serviceManager) {
+  const parent = await existingTree(home, ".local/share/chariox/ssh-machines")
+  if (parent && await metadata(join(parent, `.${r.installId}.lock`))) fail("another install operation owns this install ID")
+  const unitDir = await existingTree(home, ".config/systemd/user")
+  const root = parent ? join(parent, r.installId) : null
+  const service = `chariox-ssh-${r.installId}.service`, unit = unitDir ? join(unitDir, service) : null
+  const info = await serviceManager(["show",service,"--property=LoadState","--property=FragmentPath","--property=DropInPaths"],true)
+  const fields = Object.fromEntries(info.trim().split("\n").map(line => line.split(/=(.*)/s).slice(0,2)))
+  if (!Object.hasOwn(fields,"DropInPaths") || !Object.hasOwn(fields,"FragmentPath") || fields.DropInPaths) fail("cannot prove install ownership")
+  if (!root || !await metadata(root)) {
+    if (fields.LoadState !== "not-found" || fields.FragmentPath || (unit && await metadata(unit))) fail("unit exists without an owned release root")
+    return { installId:r.installId,status:"absent" }
+  }
+  await directory(root,false)
+  const marker = JSON.parse(await regular(join(root,"install.json")))
+  if (marker.format !== FORMAT || marker.installId !== r.installId || marker.port !== r.port || marker.service !== service || marker.releaseDigest !== r.releaseDigest || !unit || (fields.FragmentPath && fields.FragmentPath !== unit)) fail("existing install differs")
+  if (digestOf(await regular(unit)) !== marker.unitDigest || await readlink(join(root,"current")) !== `releases/${r.releaseDigest.slice(7)}`) fail("existing install was changed")
+  await directory(join(root,"releases"),false); await directory(join(root,"releases",r.releaseDigest.slice(7)),false)
+  await verifyImage(join(root,"releases",r.releaseDigest.slice(7)),r.releaseDigest,root,stage)
+  return { installId:r.installId,status:"installed",releaseDigest:r.releaseDigest,enrolled:false }
+}
 // serviceManager is a test seam, never supplied by serialized requests or environment flags.
 export async function runMachine(r, { home = process.env.HOME, stage = here, enrollment, kernelCommand, serviceManager = (args, capture) => command("systemctl", ["--user", ...args], capture) } = {}) {
   validateRequest(r)
@@ -106,6 +128,7 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
 
   if (!home || !home.startsWith("/") || home === "/" || resolve(home) !== home || await realpath(home) !== home) fail("user HOME must be an absolute canonical non-root directory")
   await directory(home, false)
+  if (r.action === "inspect") return inspectMachine(r,home,stage,serviceManager)
   const service = `chariox-ssh-${r.installId}.service`
   const installParent = await tree(home, ".local/share/chariox/ssh-machines", r.action === "install")
   const root = join(installParent, r.installId)

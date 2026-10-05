@@ -13,6 +13,8 @@ import { sshTarget, availablePort, stopOwned } from "./ssh-target-fixture.mjs"
 
 const kernel = process.env.CHARIOX_BYOM_DRILL_KERNEL
 if (!kernel?.startsWith("/")) throw new Error("MP-07/MP-08/MP-11: CHARIOX_BYOM_DRILL_KERNEL must select the exact built binary")
+const sourceKernel = process.env.CHARIOX_BYOM_DRILL_SOURCE_KERNEL ?? kernel
+if (!sourceKernel.startsWith("/")) throw new Error("MP-07/MP-08/MP-11: source kernel must be absolute")
 const pause = () => new Promise(r => setTimeout(r, 150))
 async function serve(server) { await new Promise(r => server.listen(0, "127.0.0.1", r)); return `http://127.0.0.1:${server.address().port}` }
 async function bootCommand(env, input) {
@@ -48,6 +50,7 @@ test("MP-07/MP-08/MP-11 source-kernel add/remove, stdin redemption, replay refus
   const childOperations = []
   const children = new Set(), serviceChildren = new Map(), tickets = new Map(), credentials = new Map(), registrations = new Map()
   const calls = [], issued = [], errors = []
+  let refuseIssue = false
   const h = await sshTarget(t, { beforeCleanup: async () => {
     t.diagnostic(`MP-07/MP-08/MP-11 cleanup: own kernel exits=${[...children].map(c => c.exitCode ?? "running").join(",")}; Cloud seams=${calls.join(",")}; fixtureErrors=${errors.length}; childOperations=${childOperations.join(",")}`)
     for (const child of children) await stopOwned(child)
@@ -69,24 +72,26 @@ test("MP-07/MP-08/MP-11 source-kernel add/remove, stdin redemption, replay refus
       const send = (status, value) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value)) }
       if (req.url === "/v1/kernel-enrollment-tickets" && req.method === "POST") {
         assert.ok(credentials.has(req.headers["x-chariox-kernel-credential"]))
+        if (refuseIssue) { refuseIssue=false; calls.push("issue-refused"); send(503,{}); return }
         assert.deepEqual(body, { purpose: "owner_managed_machine", machine_label: "byom-one", ttl_seconds: 600 })
         const ticket = randomBytes(24).toString("hex"), id = `fixture-${issued.length}`
         issued.push(ticket); tickets.set(ticket, id); calls.push("issue")
-        send(200, { ticket, ticket_id: id, expires_at: new Date(Date.now() + 590_000).toISOString() }); return
+        send(201, { ticket, ticket_id: id, expires_at: new Date(Date.now() + 590_000).toISOString() }); return
       }
       if (req.url.startsWith("/v1/kernel-enrollment-tickets/") && req.method === "DELETE") {
         assert.ok(credentials.has(req.headers["x-chariox-kernel-credential"]))
         for (const [ticket,id] of tickets) if (req.url.endsWith(id)) tickets.delete(ticket)
-        calls.push("revoke"); send(200, {}); return
+        calls.push("revoke"); res.writeHead(204); res.end(); return
       }
       if (req.url === "/auth/device/poll") {
         if (!tickets.has(body.ticket)) { calls.push("replay-refused"); send(401, {}); return }
+        const allowed = ["ticket", "kernelId", "machineId", "publicKeyThumbprint", "kernelAlias"]
+        if (Object.keys(body).some(key => !allowed.includes(key)) || (Object.hasOwn(body,"kernelAlias") && typeof body.kernelAlias !== "string")) { calls.push("schema-refused"); send(400,{}); return }
+        assert.match(body.publicKeyThumbprint, /^[a-f0-9]{64}$/)
         tickets.delete(body.ticket)
-        const rawKey = Buffer.from(body.publicKey, "utf8")
-        assert.equal(body.publicKeyThumbprint, createHash("sha256").update(rawKey).digest("hex"))
         const credential = randomBytes(32).toString("hex"); credentials.set(credential, body.kernelId)
         calls.push("redeem")
-        send(200, { status: "approved", kernelCredential: credential, profile: { email: "fixture@example.test", accountId: "owner", userId: "owner", accountSlug: "owner", realmId: "owner", relayUrl, issuerId: "fixture", kernelId: body.kernelId, machineId: body.machineId, publicKeyThumbprint: body.publicKeyThumbprint } }); return
+        send(200, { status: "approved", kernelCredential: credential, profile: { email: "fixture@example.test", accountId: "account-owner", userId: "owner", accountSlug: "owner", realmId: "owner", relayUrl, issuerId: "fixture", kernelId: body.kernelId, machineId: body.machineId, publicKeyThumbprint: body.publicKeyThumbprint } }); return
       }
       if (req.url === "/relay/token") {
         assert.equal(credentials.get(body.kernelCredential), body.subject)
@@ -142,13 +147,21 @@ test("MP-07/MP-08/MP-11 source-kernel add/remove, stdin redemption, replay refus
   })
   const controlUrl = await serve(serviceControl)
   await writeFile(join(h.bin, "systemctl"), `#!/usr/bin/env node\nconst args=process.argv.slice(2);if(args.shift()!=="--user")process.exit(2);fetch(${JSON.stringify(controlUrl)},{method:"POST",body:JSON.stringify(args)}).then(async r=>{if(!r.ok)process.exitCode=1;else process.stdout.write(await r.text())}).catch(()=>{process.exitCode=1})\n`, { mode: 0o700 })
-  const source = spawn(kernel, [], { env:sourceEnv, stdio:["ignore", "ignore", "pipe"] }); children.add(source)
+  const source = spawn(sourceKernel, [], { env:sourceEnv, stdio:["ignore", "ignore", "pipe"] }); children.add(source)
   source.stderr.on("data", chunk => {
     const match = chunk.toString().match(/operation: "([a-zA-Z0-9 _.-]{1,80})"/)
     if (match) childOperations.push(match[1])
     for (const category of ["panicked", "public key", "token", "required", "credential"]) if (chunk.toString().includes(category)) childOperations.push(`contains-${category.replaceAll(" ", "-")}`)
   })
   const url = `ws://127.0.0.1:${sourceEnv.CHARIOX_KERNEL_PORT}`
+  // MP-08 review P2: a known pre-publication port failure must not poison corrected retry.
+  const { createServer: netServer } = await import("node:net")
+  const occupied = netServer(); await new Promise(r => occupied.listen(0,"127.0.0.1",r)); t.after(() => occupied.listening ? new Promise(r => occupied.close(r)) : undefined)
+  const occupiedPort = occupied.address().port
+  refuseIssue = true
+  await assert.rejects(request(url, sourceEnv, { AddSshMachine:{host:"byom-local", install_id:"byom-one", port:await availablePort(), release:"fixture"} }))
+  await assert.rejects(request(url, sourceEnv, { AddSshMachine:{host:"byom-local", install_id:"byom-one", port:occupiedPort, release:"fixture"} }))
+  await new Promise(r => occupied.close(r))
   const command = { AddSshMachine:{ host:"byom-local", install_id:"byom-one", port:targetPort, release:"fixture" } }
   t.diagnostic("MP-07 / MP-08 source request starting")
   const result = (await request(url, sourceEnv, command)).SshMachine.machine
@@ -157,6 +170,7 @@ test("MP-07/MP-08/MP-11 source-kernel add/remove, stdin redemption, replay refus
   for (let i=0;i<20 && !registrations.has(result.kernel_id);i++) await pause()
   assert.ok(registrations.has(result.kernel_id), "ordinary relay path sends registration")
   assert.ok(calls.indexOf("issue") < calls.lastIndexOf("redeem") && calls.lastIndexOf("redeem") < calls.indexOf("start"))
+  await assert.rejects(request(url, sourceEnv, { AddSshMachine: { ...command.AddSshMachine, port:await availablePort() } }), /kernel request failed/)
   const repeat = (await request(url, sourceEnv, command)).SshMachine.machine
   assert.equal(repeat.kernel_id, result.kernel_id)
   assert.ok(calls.includes("revoke"))

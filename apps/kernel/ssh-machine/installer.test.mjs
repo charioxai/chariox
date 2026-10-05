@@ -145,3 +145,10 @@ test("MP-07/MP-08 a signed pre-BYOM kernel release cannot publish an install", a
   await assert.rejects(runMachine(h.request,h.options), /bootstrap protocol 444/)
   assert.deepEqual(await readdir(join(h.home,".config/systemd/user")),[])
 })
+
+test("MP-08/MP-11 inspection recognizes published signed installs and refuses changed service ownership", async t => {
+  const h = await harness(t); await runMachine(h.request, h.options)
+  assert.equal((await runMachine({ ...h.request, action:"inspect" }, h.options)).status,"installed")
+  await writeFile(join(h.home,".config/systemd/user/chariox-ssh-byom-test.service"),"foreign edited service")
+  await assert.rejects(runMachine({ ...h.request, action:"inspect" }, h.options), /changed/)
+})
