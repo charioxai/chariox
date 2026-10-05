@@ -14,6 +14,7 @@ import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from ".
 import { captureRegionMasks } from "./kernel-browser-region-protection.mjs";
 import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
 
+import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
 import { DisplayStream } from "./kernel-browser-display.mjs";
 import { DisplayCapture } from './kernel-browser-display-capture.mjs';
 
@@ -48,12 +49,14 @@ export class KernelBrowserHost {
     this.restoring = false;
     this.keepaliveTarget = null;
     this.observedDocuments = new Map();
+    this.mirror = new MirrorService(this);
     this.protection = { values: [], targets: [], unknown: false };
   }
   async protect(policy) {
     if (!Array.isArray(policy.values) || policy.values.length > 256 || policy.values.some(value => typeof value !== "string" || !value) || !Array.isArray(policy.targets)) throw new Error("MD-5: invalid protection policy");
     if (JSON.stringify(policy) === JSON.stringify(this.protection)) return {};
     this.protection = policy;
+    this.mirror.invalidate();
     for (const stream of this.displays.values()) stream.invalidate();
     if (this.browser) this.browser.protectedValues = new Set(policy.values);
     // No frame captured before insertion/retirement can be returned afterward.
@@ -80,6 +83,7 @@ export class KernelBrowserHost {
     if (this.browser && this.chromium.child?.exitCode === null && this.chromium.child?.signalCode === null) return;
     if (!allowStart) throw new BrowserActionError("browser_unavailable", "MP-11: user browser is stopped or unavailable; explicitly start/open the browser");
     for (const stream of this.displays.values()) await stream.close();
+    this.mirror.clear();
     this.displays.clear(); this.scales.clear(); this.inputEpochs.clear();
     await this.browser?.close();
     this.browser = null;
@@ -127,6 +131,7 @@ export class KernelBrowserHost {
   async stop() {
     await this.chromium.stop(this.browser?.connection);
     for (const stream of this.displays.values()) await stream.close();
+    this.mirror.clear();
     this.displays.clear(); this.scales.clear();
     await this.browser?.close();
     this.browser = null;
@@ -304,6 +309,7 @@ export class KernelBrowserHost {
   async request(command, { signal } = {}) {
     const scope = command.observed_by ?? (command.focused_agent ? "focused-agent" : "adapter");
     assertNotCancelled(signal);
+    if (command.op.startsWith("mirror_") && process.env.CHARIOX_KERNEL_BROWSER_MIRROR !== "1") throw new Error("MP-08: DOM mirror disabled");
     if (command.op.startsWith("display_") && process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
     if (command.op === "stop") return this.stop();
     // MP-11: observation never launches/relaunches the browser.
@@ -314,6 +320,9 @@ export class KernelBrowserHost {
     if (["start", "state"].includes(command.op)) return this.observe(await this.reconcile(), null, scope);
     if (command.op === "open") return this.observe(await this.open(command.url, undefined, { signal }), null, scope);
     for (const [id, stream] of this.displays) if (Date.now() > stream.expires) { await stream.close(); this.displays.delete(id); }
+    if(command.op==='mirror_subscribe') return this.mirror.subscribe(command,scope);
+    if(command.op==='mirror_next') return this.mirror.next(command,scope,{signal});
+    if(command.op==='mirror_close') {this.mirror.require(command.subscription_id,scope,command.generation);this.mirror.streams.delete(command.subscription_id);return {closed:true};}
     const encodedCapture = command.op === "screenshot" && typeof command.display_subscription_id === "string";
     if (encodedCapture || command.op === "display_attach" || (command.op === "unsubscribe" && this.displays.has(command.subscription_id))) {
       const stream = this.displays.get(command.display_subscription_id ?? command.subscription_id);
@@ -364,6 +373,7 @@ export class KernelBrowserHost {
       return { generation: this.generation, subscription_id: id, codec, bitrate: command.bitrate, device_scale_factor: command.device_scale_factor };
     }
     if (command.op === "close") {
+      this.mirror.removeTab(tab.tab_id);
       for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id) { await stream.close(); this.displays.delete(id); }
       this.scales.delete(tab.tab_id);
       this.inputEpochs.delete(tab.tab_id);
@@ -385,7 +395,7 @@ export class KernelBrowserHost {
       if (!observed || observed !== tab.document_id) throw new UserDomainRefusal("stale_reference");
       const at = timestamp();
       let dispatched = false;
-      try { await inputHostTab(this.browser, tab, command.input, { signal, onDispatch: () => { dispatched = true; } }); this.timing('cdp_input', at); }
+      try { await inputHostTab(this.browser, tab, command.input, { signal, onDispatch: () => { dispatched = true; }, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }); this.timing('cdp_input', at); }
       catch (error) {
         if (dispatched || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) {
           // Clear any dispatched key/button state before another actor can use
@@ -438,7 +448,7 @@ export class KernelBrowserHost {
         this.timing(request.params.op === 'input' ? 'host_input' : 'host_capture_or_control', at);
         // Structured controller observations scrub before compaction; metadata
         // and other host replies receive the same protection at this boundary.
-        if (!["screenshot", "poll"].includes(request.params?.op)) {
+        if (!["screenshot", "poll", "mirror_next"].includes(request.params?.op)) {
           return { id: request.id, ok: true, result: redactObservation(result, this.protection.values) };
         }
         return { id: request.id, ok: true, result };
@@ -470,7 +480,7 @@ export class KernelBrowserHost {
       if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }
-      return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }
+        return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: error instanceof MirrorInputEpochRefusal ? "MP-11: stale mirror input epoch" : "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }
   }
 }
 

@@ -276,7 +276,9 @@ pub use api::{
     KernelAccessGrant, KernelSudoTurn, ListKernelAccessGrantsRequest, RequestKernelAccessRequest,
     RequestKernelSudoRequest, RevokeKernelAccessGrantRequest,
 };
-pub use api::{KernelBrowserCommand, KernelBrowserInput, KernelBrowserRequest};
+pub use api::{
+    KernelBrowserCommand, KernelBrowserInput, KernelBrowserMirrorAction, KernelBrowserRequest,
+};
 pub use api::{KernelConnectionClass, PasskeyPrompt, PasskeyPromptKind};
 pub use api::{
     NoteAnchor, NoteBox, NoteCommand, NoteRecord, NoteReply, NoteResult, NoteSelection,

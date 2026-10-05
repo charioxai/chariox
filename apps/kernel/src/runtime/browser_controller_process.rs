@@ -302,6 +302,7 @@ impl BrowserControllerProcessStdioBackend {
                 "CHARIOX_KERNEL_BROWSER_EXECUTABLE",
                 "CHARIOX_KERNEL_BROWSER_HEADLESS",
                 "CHARIOX_KERNEL_BROWSER_DISPLAY",
+                "CHARIOX_KERNEL_BROWSER_MIRROR",
                 "CHARIOX_BROWSER_DISPLAY_PYTHON",
                 "CHARIOX_BROWSER_DISPLAY_TIMING",
             ] {

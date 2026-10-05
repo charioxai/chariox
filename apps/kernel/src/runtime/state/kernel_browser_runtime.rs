@@ -70,6 +70,10 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
         KernelBrowserCommand::ListGrants
             | KernelBrowserCommand::SubscribeGrants { .. }
             | KernelBrowserCommand::RevokeGrants { .. }
+            | KernelBrowserCommand::MirrorSubscribe { .. }
+            | KernelBrowserCommand::MirrorNext { .. }
+            | KernelBrowserCommand::MirrorClose { .. }
+            | KernelBrowserCommand::MirrorInput { .. }
             | KernelBrowserCommand::DisplayCapture { .. }
             | KernelBrowserCommand::DisplaySubscribe { .. }
             | KernelBrowserCommand::DisplayNext { .. }
@@ -113,6 +117,15 @@ impl KernelRuntimeState {
         caller: &crate::runtime::command::KernelCommand,
         command: KernelBrowserCommand,
     ) -> Result<serde_json::Value, DaemonError> {
+        if matches!(
+            &command,
+            KernelBrowserCommand::MirrorSubscribe { .. }
+                | KernelBrowserCommand::MirrorNext { .. }
+                | KernelBrowserCommand::MirrorClose { .. }
+                | KernelBrowserCommand::MirrorInput { .. }
+        ) {
+            return self.kernel_browser_mirror_request(caller, command).await;
+        }
         let request = match command {
             KernelBrowserCommand::DisplayCapture { tab_id, generation } => {
                 KernelBrowserDisplayRequest::Capture { tab_id, generation }
@@ -234,7 +247,15 @@ impl KernelRuntimeState {
                 return Ok(result);
             }
         };
-        if std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() != Ok("1") {
+        if std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() != Ok("1")
+            && !(std::env::var("CHARIOX_KERNEL_BROWSER_MIRROR").as_deref() == Ok("1")
+                && matches!(
+                    &request,
+                    KernelBrowserDisplayRequest::Takeover { .. }
+                        | KernelBrowserDisplayRequest::Release { .. }
+                        | KernelBrowserDisplayRequest::Actors
+                ))
+        {
             return Err(host_error(
                 "MD-DISPLAY: experimental display disabled".into(),
             ));
