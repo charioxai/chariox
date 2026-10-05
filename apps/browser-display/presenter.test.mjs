@@ -53,7 +53,7 @@ test('MD-DISPLAY persistent decoder accepts key/delta and CSS motion pixels; rej
  const {BrowserDisplayPresenter}=await import('./presenter.mjs');
  const oldDecoder=globalThis.VideoDecoder,oldChunk=globalThis.EncodedVideoChunk,oldCanvas=globalThis.OffscreenCanvas;
  let created=0,closed=0;const decoded=[];
- const context={drawImage:()=>{}};
+ let draws=0;const context={drawImage:()=>{draws++}};
  globalThis.OffscreenCanvas=class{getContext(){return context}};
  globalThis.EncodedVideoChunk=class{constructor(value){Object.assign(this,value)}};
  globalThis.VideoDecoder=class{
@@ -66,12 +66,14 @@ test('MD-DISPLAY persistent decoder accepts key/delta and CSS motion pixels; rej
  const frame={...binding,document_id:'d',kind:'video',codec:'vp09.00.10.08',width:2560,height:1600,css_width:1280,css_height:800,device_scale_factor:2,data_base64:'YWJj'};
  try{
    assert.equal(await presenter.present({...frame,key:true,sequence:1}),true);
+   assert.equal(draws,1,'a validated full video frame commits atomically with one canvas draw');
    assert.equal(await presenter.present({...frame,key:false,sequence:2}),true);
    assert.equal(created,1);assert.deepEqual(decoded,['key','delta']);
    await assert.rejects(presenter.present({...frame,key:false,sequence:4}),/base lost/);
    assert.equal(await presenter.present({...frame,key:true,sequence:5}),true);
    assert.equal(created,2);assert.equal(canvas.width,2560);
    assert.equal(await presenter.present({...frame,key:false,sequence:6},()=>false),true);
+   assert.equal(draws,3,'stale dependent frames decode without drawing');
    assert.equal(presenter.didDraw,false);assert.equal(presenter.sequence,6);
    assert.equal(await presenter.present({...frame,key:false,sequence:7}),true);
    assert.equal(presenter.didDraw,true);assert.equal(created,2);

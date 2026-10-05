@@ -41,10 +41,11 @@ export class BrowserDisplayPresenter {
     const at = performance.timeOrigin + performance.now();
     const patch = frame.kind === 'tiles';
     if (patch && (this.canvas.width !== frame.width || this.canvas.height !== frame.height)) { this.busy = false; throw new Error('MD-DISPLAY: repair canvas changed'); }
-    if(!patch && (!this.back || this.back.width !== frame.width || this.back.height !== frame.height))
+    if(frame.kind === 'png' && (!this.back || this.back.width !== frame.width || this.back.height !== frame.height))
       this.back=new OffscreenCanvas(frame.width,frame.height);
     const back=patch?null:this.back,context=back?.getContext('2d');
     const bitmaps = [];
+    let videoFrame;
     try {
       if (frame.kind === 'tiles') {
         if (!Array.isArray(frame.tiles) || frame.tiles.length > 260) throw new Error('MD-DISPLAY: tile count');
@@ -72,7 +73,7 @@ export class BrowserDisplayPresenter {
             this.decoder.decode(new EncodedVideoChunk({type:frame.key?'key':'delta',timestamp:frame.sequence*33333,data:bytes(frame.data_base64)}));
           });
           if (!((output.displayWidth === frame.width && output.displayHeight === frame.height) || (output.displayWidth === 1280 && output.displayHeight === 800))) throw Error('MD-DISPLAY: decoded geometry');
-          context.drawImage(output,0,0,frame.width,frame.height); this.videoSequence=frame.sequence;
+          videoFrame=output;output=null;this.videoSequence=frame.sequence;
         } finally { clearTimeout(timer); this.decoded=null; output?.close(); }
       } else throw new Error('MD-DISPLAY: unsupported frame');
       if (this.closed) return false;
@@ -91,12 +92,13 @@ export class BrowserDisplayPresenter {
       } else {
         if(this.canvas.width !== frame.width)this.canvas.width=frame.width;
         if(this.canvas.height !== frame.height)this.canvas.height=frame.height;
-        this.canvas.getContext('2d').drawImage(back, 0, 0);
+        if(videoFrame)this.canvas.getContext('2d').drawImage(videoFrame,0,0,frame.width,frame.height);
+        else this.canvas.getContext('2d').drawImage(back, 0, 0);
       }
       this.sequence = frame.sequence; this.documentId = frame.document_id;
       this.onTiming('client_present', presented);
       return true;
-    } finally { for (const bitmap of bitmaps) bitmap.close(); this.busy = false; }
+    } finally { videoFrame?.close();for (const bitmap of bitmaps) bitmap.close(); this.busy = false; }
   }
   input(input) {
     if (this.closed || !this.documentId) throw new Error('MD-DISPLAY: no displayed document');
