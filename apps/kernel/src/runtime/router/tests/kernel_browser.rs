@@ -4,20 +4,12 @@ use crate::local::{KernelBrowserCommand, KernelBrowserInput, KernelBrowserReques
 use serde_json::{json, Value};
 
 fn run_test(test: fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>) {
-    std::thread::Builder::new()
-        .stack_size(64 * 1024 * 1024)
-        .spawn(move || {
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .thread_stack_size(64 * 1024 * 1024)
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(test());
-        })
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
         .unwrap()
-        .join()
-        .unwrap();
+        .block_on(test());
 }
 
 async fn focus(router: &CommandRouter, session: &str, agent: &str) {
@@ -74,14 +66,16 @@ async fn focus_check() {
     };
     assert!(names(first_token).contains(&"chariox.load_kernel_browser".into()));
     assert!(!names(first_token).contains(&"chariox.kernel_browser".into()));
-    router
-        .dispatch_authenticated_runtime_tool_call(
-            first_token,
-            "chariox.load_kernel_browser",
-            json!({}),
-        )
-        .await
-        .unwrap();
+    let loader = router.dispatch_authenticated_runtime_tool_call(
+        first_token,
+        "chariox.load_kernel_browser",
+        json!({}),
+    );
+    assert!(
+        std::mem::size_of_val(&loader) < 64 * 1024,
+        "MD-4: MCP dispatch future must fit ordinary callers"
+    );
+    loader.await.unwrap();
     assert!(names(first_token).contains(&"chariox.kernel_browser".into()));
     assert!(names(first_token).contains(&"chariox.kernel_browser_paste_secret".into()));
     focus(&router, session.id(), second.id()).await;
@@ -225,13 +219,12 @@ async fn restart_check() {
 
 async fn human(router: &CommandRouter, command: KernelBrowserCommand) -> Value {
     let request = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest { command });
-    let response = router
-        .dispatch(
-            terminal_command("MD-4-browser", &request),
-            request,
-        )
-        .await
-        .expect("MD-4 host browser request");
+    let response = Box::pin(router.dispatch(
+        terminal_command("MD-4-browser", &request),
+        request,
+    ))
+    .await
+    .expect("MD-4 host browser request");
     let LocalDaemonResponse::KernelBrowser { result } = response else {
         panic!("MD-4 response variant");
     };
