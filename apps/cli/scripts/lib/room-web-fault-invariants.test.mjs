@@ -1,7 +1,7 @@
 // MP-08 / MP-10: reject superficially connected recovery with lost state.
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { assertWebFaultRecovery, controllerFaultAttributed } from './room-web-fault-invariants.mjs'
+import { assertTuiFaultRecovery, assertWebFaultRecovery, controllerFaultAttributed } from './room-web-fault-invariants.mjs'
 const before = { environment: { session_id: 'room', environment_id: 'env', runtime_generation: 1, tabs: [{ tab_id: 'tab' }] }, page: { actions: [{ action_id: 'a', state: 'completed', sequence: 1 }] } }
 test('recovery requires same Room, Tabs and completed Action ledger', () => {
   assertWebFaultRecovery(before, structuredClone(before))
@@ -22,4 +22,12 @@ test('MP-08 / MP-10 unrelated process loss cannot attribute a controller fault',
   assert.equal(controllerFaultAttributed(healthy, null, action({ status: 'failed', code: 'process_lost' })), false)
   assert.equal(controllerFaultAttributed(healthy, null, action({ status: 'failed', code: 'controller_failure' })), true)
   assert.equal(controllerFaultAttributed(healthy, null, action({ code: 'browser_action_failed', message: 'controller appears healthy' })), false)
+})
+test('MP-08 / MP-10 connected TUIs must retain distinct live kernel attachments', () => {
+  const local = { side: 'local', sessionId: 'room', attachmentId: 'local-id', daemonDisconnected: false }
+  const remote = { ...local, side: 'remote', attachmentId: 'remote-id' }
+  assertTuiFaultRecovery([local, remote], 'room', ['local-id', 'remote-id'])
+  assert.throws(() => assertTuiFaultRecovery([local, { ...remote, attachmentId: 'local-id' }], 'room', ['local-id']), /share/)
+  assert.throws(() => assertTuiFaultRecovery([local, remote], 'room', ['local-id']), /absent/)
+  assert.throws(() => assertTuiFaultRecovery([local, { ...remote, daemonDisconnected: true }], 'room', ['local-id', 'remote-id']), /disconnected/)
 })

@@ -15,8 +15,9 @@ test('MP-08 / MP-10 operation boundary ignores unrelated work and rejects duplic
 
 function fixture(phase = 'beginning') {
   return { phase, agentId: 'agent', activePromptId: 'active', queuedPromptId: 'queued', queuedOutcome: 'Queued',
-    snapshot: { session: { agents: [{ id: 'agent', active_provider_run_id: 'run' }],
-      prompt_states: { agent: { active_prompt: { id: 'active' }, queued_prompts: [{ id: 'queued' }] } } } },
+    snapshot: { session: {
+      prompt_states: { agent: { active_prompt: { id: 'active' }, queued_prompts: [{ id: 'queued' }] } } },
+      agent_activity: { agent: { active_turn: { prompt_id: 'active', provider_run_id: 'run' } } } },
     progressObserved: true, completedPromptId: 'committed', turns: [{ prompt_id: 'committed', lifecycle: 'completed' }] }
 }
 test('MP-08 / MP-10 beginning, middle and commit require the same active/backlog authority', () => {
@@ -27,7 +28,8 @@ test('MP-08 / MP-10 beginning, middle and commit require the same active/backlog
       value => value.snapshot.session.prompt_states.agent.active_prompt.id = 'queued',
       value => value.snapshot.session.prompt_states.agent.queued_prompts = [],
       value => value.snapshot.session.prompt_states.agent.queued_prompts.push({ id: 'queued' }),
-      value => value.snapshot.session.agents[0].active_provider_run_id = null,
+      value => value.snapshot.agent_activity.agent.active_turn.provider_run_id = null,
+      value => value.snapshot.agent_activity.agent.active_turn.prompt_id = 'foreign',
     ]) {
       const value = fixture(phase); mutate(value)
       assert.throws(() => assertProviderFaultBacklog(value))

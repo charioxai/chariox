@@ -21,3 +21,13 @@ export function assertWebFaultRecovery(before, after) {
     assert.equal(retained.sequence, action.sequence, 'Action sequence changed')
   }
 }
+
+export function assertTuiFaultRecovery(clients, sessionId, attachmentIds) {
+  assert.equal(new Set(clients.map(client => client.side)).size, clients.length, 'duplicate TUI observer')
+  assert.equal(new Set(clients.map(client => client.attachmentId)).size, clients.length, 'distinct TUIs share an attachment identity')
+  for (const client of clients) {
+    assert.equal(client.sessionId, sessionId, 'TUI changed Room')
+    assert.equal(client.daemonDisconnected, false, 'TUI remains disconnected')
+    assert.ok(client.attachmentId && attachmentIds.includes(client.attachmentId), 'TUI attachment is absent from kernel state')
+  }
+}

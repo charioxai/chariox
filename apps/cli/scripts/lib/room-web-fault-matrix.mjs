@@ -6,7 +6,7 @@ import { readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { startRoomQueuePressure } from './room-web-fault-queue.mjs'
-import { assertWebFaultRecovery, controllerFaultAttributed } from './room-web-fault-invariants.mjs'
+import { assertTuiFaultRecovery, assertWebFaultRecovery, controllerFaultAttributed } from './room-web-fault-invariants.mjs'
 import { findRoomFaultAction } from './room-fault-boundary.mjs'
 
 export function faultRelayCredential(token, ready, mode) {
@@ -244,6 +244,12 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
         check(row.clientsRecovery[kind].sessionId === ready.sessionId, `${kind} TUI retained Room`)
         check(row.clientsRecovery[kind].daemonDisconnected === false, `${kind} TUI recovered`)
       }
+      try {
+        assertTuiFaultRecovery(['local', 'remote'].map(side => ({ side,
+          ...row.clientsRecovery[side], attachmentId: row.clientsRecovery[side].attachmentId ?? row.clientsRecovery[side].attachment_id,
+        })), ready.sessionId, after.attachmentIds)
+        row.assertions.push('TUIs have distinct live kernel attachments')
+      } catch (error) { row.errors.push(error.message) }
       if (row.operation) {
         const actions = after.page.actions.filter(item => item.action_id === row.operation.action_id)
         row.operationAfter = actions

@@ -22,8 +22,9 @@ export function assertProviderFaultBacklog({ phase, snapshot, agentId, activePro
   const pendingIds = (state?.queued_prompts ?? []).map(prompt => prompt.id)
   assert.equal(pendingIds.filter(id => id === queuedPromptId).length, 1, 'accepted backlog is missing or duplicated')
   assert.ok(!pendingIds.includes(activePromptId), 'active prompt also appears in backlog')
-  const agent = snapshot.session.agents.find(item => item.id === agentId)
-  assert.ok(agent?.active_provider_run_id, 'active provider authority missing')
+  const turn = snapshot.agent_activity?.[agentId]?.active_turn
+  assert.equal(turn?.prompt_id, activePromptId, 'active turn differs from the prompt queue')
+  assert.ok(turn.provider_run_id, 'active provider authority missing')
   if (phase === 'middle') assert.equal(progressObserved, true, 'middle boundary lacks observed operation progress')
   if (phase === 'commit') {
     assert.ok(completedPromptId && completedPromptId !== activePromptId && completedPromptId !== queuedPromptId,
@@ -32,6 +33,6 @@ export function assertProviderFaultBacklog({ phase, snapshot, agentId, activePro
       'committed predecessor missing or duplicated')
   }
   // Keep the receipt value-free: prompts, provider payloads and auth stay private.
-  return { phase, activePromptId, queuedPromptId, pendingIds, providerRunId: agent.active_provider_run_id,
+  return { phase, activePromptId, queuedPromptId, pendingIds, providerRunId: turn.provider_run_id,
     completedPromptId, progressObserved }
 }
