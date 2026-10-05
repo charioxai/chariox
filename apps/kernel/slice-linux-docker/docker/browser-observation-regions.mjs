@@ -34,7 +34,7 @@ export async function locateBrowserRegions(targets, browser, values = [], { cont
     const { executionContextId } = await connection.send('Page.createIsolatedWorld', { frameId: top.frameTree.frame.id, worldName: 'chariox-observation-mask' }, sessionId);
     const { result: visibility } = await connection.send('Runtime.evaluate', { contextId: executionContextId, expression: '[document.visibilityState, window.devicePixelRatio, window.innerHeight]', returnByValue: true }, sessionId);
     if (!contentTarget && visibility.value?.[0] === 'hidden') continue; // Confirmed absent from desktop pixels.
-    if ((!contentTarget && visibility.value?.[0] !== 'visible') || visibility.value?.[1] !== 1) throw new Error('unbound desktop frame');
+    if ((!contentTarget && visibility.value?.[0] !== 'visible') || (contentTarget ? ![1, 2].includes(visibility.value?.[1]) : visibility.value?.[1] !== 1)) throw new Error('unbound desktop frame');
     await withBrowserFrames(connection, sessionId, target.target_id, target.document_id ?? top.frameTree.frame.loaderId, async frames => {
       let entry = target.node_ref?.startsWith('frame:')
         ? frames.find(frame => frame.prefix && target.node_ref.startsWith(frame.prefix)) : frames[0];

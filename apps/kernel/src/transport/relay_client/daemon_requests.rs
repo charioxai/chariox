@@ -40,6 +40,7 @@ impl Drop for BrowserImportDeliveryGuard {
 
 #[derive(Debug, Clone)]
 pub(super) struct RelayRequestOutcome {
+    pub(super) display_event: Option<(String, u64, EncryptedRelayPayload)>,
     pub(super) encrypted_response: Option<EncryptedRelayPayload>,
     pub(super) error: Option<RelayError>,
 }
@@ -58,6 +59,7 @@ pub(super) async fn handle_daemon_request(
     .is_err()
     {
         return RelayRequestOutcome {
+            display_event: None,
             encrypted_response: None,
             error: Some(relay_error(
                 "invalid_request",
@@ -69,6 +71,7 @@ pub(super) async fn handle_daemon_request(
     if let Err(error) = validate_bound_service_sender(caller_identity.as_ref(), &encrypted_request)
     {
         return RelayRequestOutcome {
+            display_event: None,
             encrypted_response: None,
             error: Some(error),
         };
@@ -82,6 +85,7 @@ pub(super) async fn handle_daemon_request(
             Ok(payload) => payload,
             Err(error) => {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
                         "invalid_request",
@@ -95,6 +99,7 @@ pub(super) async fn handle_daemon_request(
             Ok(request) => request,
             Err(error) => {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
                         "invalid_request",
@@ -114,6 +119,7 @@ pub(super) async fn handle_daemon_request(
             if let Err(error) = validate_cli_relay_sender_key(&request.request, &client_public_key)
             {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(error),
                 };
@@ -124,6 +130,7 @@ pub(super) async fn handle_daemon_request(
                 &encrypted_request,
             ) {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(error),
                 };
@@ -154,6 +161,7 @@ pub(super) async fn handle_daemon_request(
                 .is_err()
             {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
                         "browser_import_busy",
@@ -168,6 +176,7 @@ pub(super) async fn handle_daemon_request(
                     Ok(identity) => identity.clone(),
                     Err(error) => {
                         return RelayRequestOutcome {
+                            display_event: None,
                             encrypted_response: None,
                             error: Some(error),
                         }
@@ -225,7 +234,13 @@ pub(super) async fn handle_daemon_request(
         );
     }
     match result {
-        RelayDispatchOutcome::Response(response) => {
+        RelayDispatchOutcome::Response(mut response) => {
+            let display_event = if let Some((id, sequence, event)) = crate::transport::kernel_browser_display::take_display_event(&mut response) {
+                match serde_json::to_vec(&event).ok().and_then(|bytes| relay_crypto::encrypt_payload_for_peer(&daemon_private_key, &client_public_key, &bytes).ok()) {
+                    Some(payload) => Some((id, sequence, payload)),
+                    None => return RelayRequestOutcome { display_event: None, encrypted_response: None, error: Some(relay_error("display_encode_failed", "MD-DISPLAY: frame encryption failed", false)) },
+                }
+            } else { None };
             if !quiet_success_request {
                 crate::logging::info_with_fields(
                     "daemon.relay_client",
@@ -247,6 +262,7 @@ pub(super) async fn handle_daemon_request(
                 Ok(bytes) => bytes,
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(relay_error(
                             "relay_request_failed",
@@ -283,11 +299,13 @@ pub(super) async fn handle_daemon_request(
                         );
                     }
                     RelayRequestOutcome {
+                        display_event,
                         encrypted_response: Some(encrypted_response),
                         error: None,
                     }
                 }
                 Err(error) => RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
                         "relay_request_failed",
@@ -298,6 +316,7 @@ pub(super) async fn handle_daemon_request(
             }
         }
         RelayDispatchOutcome::RelayError(error) => RelayRequestOutcome {
+            display_event: None,
             encrypted_response: None,
             error: Some(error),
         },
