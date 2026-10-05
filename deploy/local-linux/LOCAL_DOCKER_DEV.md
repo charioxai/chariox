@@ -177,6 +177,10 @@ about stopping every kernel before removing an unsafe inode.
 
 ## MP-02/MP-03/MP-08/MP-10/MP-11 isolated storage qualification
 
+For the fresh-VM replay of normal Start after saved-home removal, including
+the exact enrollment, operator fixture and Save/Backup commands, follow
+[MP-03/MP-08/MP-10/MP-11 storage restore replay](STORAGE_RESTORE_REPLAY.md).
+
 Use a disposable Linux VM for this rootful DEV grant. Keep source, public
 binaries, runtime state, and evidence in separate directories. Install the
 public worker through the standard Dockerfile and pin its actual kernel hash,
