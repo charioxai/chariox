@@ -37,6 +37,26 @@ impl<'a> ProviderLaunchProcessRuntime<'a> {
         run: &RuntimeProviderRun,
         credentials: &crate::provider::ProviderCredentialEnvironment,
     ) -> Result<(), DaemonError> {
+        let store = self.app.providers.clone();
+        store
+            .with_current_live_launch(run, |current| {
+                self.spawn_authorized_launch(current, credentials)
+            })?
+            .ok_or_else(|| DaemonError::InvalidProviderRunState {
+                provider_run_id: run.id().into(),
+                state: store
+                    .get_run(run.id())
+                    .map(|run| run.state())
+                    .unwrap_or(ProviderRunState::Ended),
+                operation: "spawn current provider launch",
+            })
+    }
+
+    fn spawn_authorized_launch(
+        &mut self,
+        run: &RuntimeProviderRun,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+    ) -> Result<(), DaemonError> {
         #[cfg(test)]
         if crate::provider::take_provider_lifecycle_failure_for_test(
             run.id(),

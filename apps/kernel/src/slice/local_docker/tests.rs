@@ -3148,3 +3148,72 @@ exit 0
     std::env::remove_var("PARENT_DEPTH");
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[cfg(unix)]
+#[test]
+fn mp11_slice_relay_config_is_private_and_replaces_a_symlink_without_following_it() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let record = SliceStore::default()
+        .create(
+            "kernel-1",
+            "machine-1",
+            CreateSliceInput {
+                source_slice_ref: None,
+                name: "project-dev-invalid".to_string(),
+                backend: SliceBackendKind::SshDocker,
+                os: "linux".to_string(),
+                display_mode: SliceDisplayMode::Headless,
+                display_backend: crate::slice::SliceDisplayBackend::default(),
+                workspace_id: Some("/source/primary".to_string()),
+                worktree_id: Some("/source/primary-worktree".to_string()),
+                workspace_mount: Some("/source/primary-worktree".to_string()),
+                development: None,
+                worker_kernel_ref: None,
+                display_url: None,
+                provider_auth: Vec::new(),
+                from_saved_state: None,
+                now_ms: 42,
+            },
+        )
+        .expect("slice should create");
+    let root = test_root("mp11-config");
+    let mut options = test_options();
+    options.root = root.clone();
+    let config = root
+        .join("runtime")
+        .join(&record.id)
+        .join("cloud-relay-config.json");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    let unrelated = root.join("unrelated");
+    std::fs::write(&unrelated, "unchanged").unwrap();
+    symlink(&unrelated, &config).unwrap();
+    write_cloud_relay_config_file(&record, &options, "synthetic-private").unwrap();
+    let intact = std::fs::read_to_string(&unrelated).unwrap() == "unchanged";
+    let mode = std::fs::metadata(&config).unwrap().permissions().mode() & 0o777;
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o644)).unwrap();
+    write_cloud_relay_config_file(&record, &options, "synthetic-replacement").unwrap();
+    let replacement_mode = std::fs::metadata(&config).unwrap().permissions().mode() & 0o777;
+    std::fs::remove_dir_all(root).unwrap();
+    assert_eq!(replacement_mode, 0o600);
+    assert!(intact, "relay config write followed a final symlink");
+    assert_eq!(mode, 0o600);
+}
+
+#[test]
+fn mp11_log_tail_is_bounded_and_survives_split_utf8() {
+    let root = test_root("mp11-log");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("run.log");
+    // A 4000-byte tail starts inside this multibyte scalar on the old code.
+    std::fs::write(&path, format!("{}x", "€".repeat(2000))).unwrap();
+    let result = std::panic::catch_unwind(|| command_log_preview(&path));
+    std::fs::write(&path, "a".repeat(2 * 1024 * 1024)).unwrap();
+    let projected = read_slice_log_file_entry("fixture", &path, 1);
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(result.is_ok(), "log slicing panicked inside a UTF-8 scalar");
+    assert!(
+        projected.text.len() <= 65536,
+        "single-line log projection is unbounded"
+    );
+    assert!(projected.truncated);
+}

@@ -37,11 +37,13 @@ mod local_authority;
 mod memory_admission;
 mod observation_environment;
 pub(crate) use observation_environment::fresh_local_docker_observation_environment;
+mod log_output;
 mod provider_inputs;
 mod snapshot_pause;
 mod state;
 #[cfg(test)]
 mod tests;
+use log_output::{LogCommandOutput, MAX_LOG_BYTES};
 mod tuning;
 
 use broker::docker_command;
@@ -997,9 +999,10 @@ fn relay_endpoint_from_persisted_daemon_relay_url(
 }
 
 fn read_slice_log_file_entry(source: &str, path: &Path, tail_lines: usize) -> SliceLogEntry {
-    match std::fs::read_to_string(path) {
-        Ok(text) => {
-            let (text, truncated) = tail_text_lines(&text, tail_lines);
+    match log_output::tail_file(path, MAX_LOG_BYTES) {
+        Ok((text, byte_truncated)) => {
+            let (text, line_truncated) = tail_text_lines(&text, tail_lines);
+            let truncated = byte_truncated || line_truncated;
             SliceLogEntry {
                 source: source.to_string(),
                 path: Some(path.display().to_string()),
@@ -1021,12 +1024,10 @@ fn local_docker_container_log_entry(record: &SliceRecord, tail_lines: u32) -> Sl
     let tail_lines_arg = tail_lines.to_string();
     let output = docker_command()
         .args(["logs", "--tail", &tail_lines_arg, &container])
-        .output();
+        .bounded_log_output();
     match output {
         Ok(output) => {
-            let mut text = String::new();
-            text.push_str(&String::from_utf8_lossy(&output.stdout));
-            text.push_str(&String::from_utf8_lossy(&output.stderr));
+            let mut text = output.text();
             if !output.status.success() && text.trim().is_empty() {
                 text = format!("docker logs failed with status {}", output.status);
             }
@@ -1034,7 +1035,7 @@ fn local_docker_container_log_entry(record: &SliceRecord, tail_lines: u32) -> Sl
                 source: "container".to_string(),
                 path: None,
                 text: text.trim().to_string(),
-                truncated: false,
+                truncated: output.truncated,
             }
         }
         Err(error) => SliceLogEntry {
@@ -1092,12 +1093,10 @@ fi
             &tail_lines_arg,
             layout,
         ])
-        .output();
+        .bounded_log_output();
     match output {
         Ok(output) => {
-            let mut text = String::new();
-            text.push_str(&String::from_utf8_lossy(&output.stdout));
-            text.push_str(&String::from_utf8_lossy(&output.stderr));
+            let mut text = output.text();
             if !output.status.success() && text.trim().is_empty() {
                 text = format!("slice runtime logs failed with status {}", output.status);
             }
@@ -1105,7 +1104,7 @@ fi
                 source: "runtime".to_string(),
                 path: None,
                 text: text.trim().to_string(),
-                truncated: false,
+                truncated: output.truncated,
             }
         }
         Err(error) => SliceLogEntry {
@@ -1361,12 +1360,14 @@ fn write_cloud_relay_config_file(
         ),
     })?;
     let path = dir.join("cloud-relay-config.json");
-    std::fs::write(&path, config_json).map_err(|error| DaemonError::LocalTransport {
-        operation: "slice.local_docker",
-        message: format!(
-            "failed to write slice cloud relay config {}: {error}",
-            path.display()
-        ),
+    crate::config::write_private_file(&path, config_json.as_bytes()).map_err(|error| {
+        DaemonError::LocalTransport {
+            operation: "slice.local_docker",
+            message: format!(
+                "failed to write slice cloud relay config {}: {error}",
+                path.display()
+            ),
+        }
     })?;
     Ok(path)
 }
@@ -1813,16 +1814,12 @@ fn command_exists(command: &str) -> bool {
 }
 
 fn command_log_preview(path: &Path) -> String {
-    let mut text = std::fs::read_to_string(path).unwrap_or_default();
-    if text.len() > 4_000 {
-        let start = text.len().saturating_sub(4_000);
-        text = text[start..].to_string();
-        text.push_str("...");
-    }
-    let text = text.trim();
-    if text.is_empty() {
+    let (text, truncated) = log_output::tail_file(path, 3997).unwrap_or_default();
+    if text.trim().is_empty() {
         "<no output>".to_string()
+    } else if truncated {
+        format!("...{}", text.trim())
     } else {
-        text.to_string()
+        text.trim().to_string()
     }
 }
