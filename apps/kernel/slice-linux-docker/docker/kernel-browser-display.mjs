@@ -12,6 +12,7 @@ export function safeChildPid(child) {
 export class PortableEncoder {
   constructor() { this.child = null; this.pending = null; this.failure = null; }
   async encode(png, bitrate) {
+    if (this.failure) throw this.failure;
     if (!this.child) {
       const child = spawn(process.env.CHARIOX_BROWSER_DISPLAY_PYTHON || 'python3',
         ['-u', fileURLToPath(new URL('./kernel-browser-encoder.py', import.meta.url))],
@@ -33,7 +34,6 @@ export class PortableEncoder {
         } catch { fail(); }
       });
     }
-    if (this.failure) throw this.failure;
     if (this.pending) throw new Error('MD-DISPLAY: encoder busy');
     try {
       return await new Promise((resolve, reject) => {
