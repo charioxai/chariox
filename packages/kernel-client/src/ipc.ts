@@ -546,7 +546,7 @@ export class LocalIpcClient {
 
   private async sendWebSocket<TResponse>(request: unknown, lane: KernelSocketLane = "control", admittedSocket?: WebSocket): Promise<TResponse> {
     const lifetime = this.requestLifetime.capture()
-    const requestId = randomUUID()
+    let requestId = randomUUID()
     const waitsForAuthorization = waitsForKernelAuthorization(request)
     const retryUntilMs = lane === "control" && !waitsForAuthorization
       ? Date.now() + this.controlRequestRetryDeadlineMs
@@ -620,6 +620,9 @@ export class LocalIpcClient {
         if (admittedSocket || !this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
           throw error
         }
+        // MD-3: a reconnected terminal has another caller-bound receipt scope.
+        // Safe browser reads are new observations; uncertain mutations never replay.
+        if (isBrowserObservation(request)) requestId = randomUUID()
         this.destroyWebSocket(lane)
         retryDelayMs = await this.waitBeforeWebSocketRequestReplay(retryDelayMs, retryUntilMs, lifetime)
       }
@@ -1365,8 +1368,14 @@ function runsAgainOnReplay(request: unknown): boolean {
   // MD-3: reconnect creates another browser actor. Never repeat an uncertain
   // mutation on that connection; observations can be fetched again safely.
   const browser = (request as { KernelBrowser?: { command?: { op?: string } } }).KernelBrowser
+  return browser !== undefined && !isBrowserObservation(request)
+}
+
+function isBrowserObservation(request: unknown): boolean {
+  if (request === null || typeof request !== "object") return false
+  const browser = (request as { KernelBrowser?: { command?: { op?: string } } }).KernelBrowser
   return browser !== undefined
-    && !["state", "snapshot", "screenshot", "frames"].includes(browser.command?.op ?? "")
+    && ["state", "snapshot", "screenshot", "frames"].includes(browser.command?.op ?? "")
 }
 
 function kernelEventFromValue(value: unknown): KernelEvent {
