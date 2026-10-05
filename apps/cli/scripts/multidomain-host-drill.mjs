@@ -31,14 +31,14 @@ try {
         env: { ...process.env, HOME: path.join(root, 'home'), TMPDIR: path.join(root, 'tmp'),
           CHARIOX_HOME: path.join(root, 'home/chariox'), CHARIOX_LOG_DIR: path.join(root, 'logs'),
           CHARIOX_MD4_DRILL_ROOT: root, CHARIOX_MDINT_DRILL_ROOT: root,
-          CHARIOX_KERNEL_BROWSER_HEADLESS: '1', RUST_MIN_STACK: '16777216', RUST_TEST_THREADS: '1' },
+          CHARIOX_KERNEL_BROWSER_HEADLESS: '1', RUST_TEST_THREADS: '1' },
       });
     } finally { closeSync(fd); }
     for (const artifact of artifacts) if (existsSync(path.join(root, artifact))) copyFileSync(path.join(root, artifact), path.join(evidence, name + '-' + artifact));
     results.push({ name, test, exitCode: result.status, error: result.error?.code ?? null });
-    writeFileSync(path.join(evidence, 'results.json'), JSON.stringify({ protocol: 418, relay: 70,
+    writeFileSync(path.join(evidence, 'results.json'), JSON.stringify({ protocol: 424, relay: 70,
       scope: 'Real production kernel router/controller/sandboxed host Chromium, signed fixture/frontend, fixed ABI worker and synthetic passkey; dev-stub provider MCP admission. No model, live provider/Vault, client/relay projection or Mac claim.', results }, null, 2));
-    console.log(`${name}: ${result.status === 0 ? 'PASS' : 'FAIL'}`);
+    console.log(`MD-4 ${name}: ${result.status === 0 ? 'PASS' : 'FAIL'}`);
     if (result.status !== 0) process.exitCode = 1;
   }
 } finally {

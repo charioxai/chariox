@@ -22,8 +22,6 @@ pub(crate) fn request_session_scope(
     request: &LocalDaemonRequest,
 ) -> Option<SessionMembershipScope> {
     match request {
-        // MD-2: user-domain tabs have no session; browser admission binds the caller.
-        LocalDaemonRequest::KernelBrowser(_) => None,
         LocalDaemonRequest::PrepareBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.selection.session_id.clone()),
         ),
@@ -543,7 +541,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::ClearWorkflowPromptQueue(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
-        LocalDaemonRequest::KernelBrowser(_)
+        // MD-stack: user-domain admission lives in each authenticated service.
+        LocalDaemonRequest::Notes(_)
+        | LocalDaemonRequest::KernelBrowser(_)
         | LocalDaemonRequest::OpenUserAppView(_)
         | LocalDaemonRequest::ListUserAppViews(_)
         | LocalDaemonRequest::CloseUserAppView(_)
