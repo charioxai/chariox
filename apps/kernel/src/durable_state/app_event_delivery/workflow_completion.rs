@@ -48,12 +48,13 @@ impl PreparedNotification {
             .ok_or_else(|| error("notification queue gone"))?;
         // ACK already exists. Busy/paused/full targets retain accepted inbox until deadline.
         if !queue.enabled()
-            || session
-                .workflow_runs()
-                .iter()
-                .filter(|r| r.workflow_id() == sub.workflow_id && !r.status().is_terminal())
-                .count()
-                >= workflow.max_concurrent() as usize
+            || (sub.delivery_mode == crate::local::NotificationDeliveryMode::Queue
+                && session
+                    .workflow_runs()
+                    .iter()
+                    .filter(|r| r.workflow_id() == sub.workflow_id && !r.status().is_terminal())
+                    .count()
+                    >= workflow.max_concurrent() as usize)
         {
             return Err(error("notification target busy or paused"));
         }
@@ -81,7 +82,7 @@ impl PreparedNotification {
             input: serde_json::json!({"source_id":env.source_id,"occurrence_id":env.occurrence_id,"output":env.output,"status":env.status,"subject":env.subject,"payload":env.fields,"ancestry":env.ancestry,"deadline_ms":env.deadline_ms}),
             artifacts: vec![],
             mode: None,
-            caller: serde_json::json!({"kind":"workflow_completion","owner_id":sub.owner_user_id,"installation_id":env.source_id}),
+            caller: serde_json::json!({"kind":"workflow_completion","owner_id":sub.owner_user_id,"installation_id":env.source_id,"delivery_mode":sub.delivery_mode}),
         };
         let queued = sessions.prepare_workflow_prompt_with_publication_invocation(
             session.id(),

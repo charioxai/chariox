@@ -23,6 +23,7 @@ pub(crate) enum AppAutomationMutation {
         event_name: String,
         target: WorkflowAutomationTarget,
         scheduled: bool,
+        delivery_mode: crate::local::NotificationDeliveryMode,
     },
     Deactivate {
         automation_id: String,
@@ -122,10 +123,11 @@ fn apply(
             event_name,
             target,
             scheduled,
+            delivery_mode,
         } => {
             target.require_current(&tx, owner)?;
             budget.check()?;
-            AppAutomationOutcome::Configured(AppOutbox::configure_in(
+            AppOutbox::configure_in(
                 &tx,
                 catalog,
                 owner,
@@ -134,6 +136,13 @@ fn apply(
                 &event_name,
                 target.target(),
                 scheduled,
+            )?;
+            tx.execute("UPDATE app_automations SET delivery_mode=?4 WHERE owner_id=?1 AND installation_id=?2 AND automation_id=?3",rusqlite::params![owner,catalog.installation_id(),automation_id,delivery_mode.name()])?;
+            AppAutomationOutcome::Configured(AppOutbox::configuration_in(
+                &tx,
+                catalog,
+                owner,
+                &automation_id,
             )?)
         }
         AppAutomationMutation::Deactivate {

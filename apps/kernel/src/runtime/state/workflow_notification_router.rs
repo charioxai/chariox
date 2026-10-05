@@ -33,9 +33,7 @@ pub(super) fn source_available(
         .is_ok()
 }
 pub(super) fn summary(source: &WorkflowNotificationSource) -> WorkflowNotificationSourceSummary {
-    let mut fields = ["subject", "status", "repo", "pr", "head_sha", "event_type"]
-        .map(str::to_owned)
-        .to_vec();
+    let mut fields = ["subject", "status"].map(str::to_owned).to_vec();
     fields.extend(source.output_fields.clone());
     WorkflowNotificationSourceSummary {
         source_id: source.source_id.clone(),
@@ -139,15 +137,6 @@ impl KernelRuntimeState {
                                     })
                             })
                             .ok_or_else(|| store::error("source not available"))?;
-                        if request.filters.as_object().is_some_and(|filter| {
-                            filter
-                                .keys()
-                                .any(|key| !summary(&source).fields.contains(key))
-                        }) && source.kernel_id
-                            == self.owned.config_projection.snapshot().daemon_id
-                        {
-                            return Err(store::error("notification unknown filter field"));
-                        }
                         let session = sessions.get_session(&request.session_id)?;
                         if session.owner_user_id() != owner {
                             return Err(store::error("notification target not owner"));
@@ -166,6 +155,7 @@ impl KernelRuntimeState {
                         )?;
                         let t = target.target();
                         let subscription = WorkflowNotificationSubscription {
+                            delivery_mode: request.delivery_mode,
                             subscription_id: format!(
                                 "wf_subscription_{:032x}",
                                 rand::random::<u128>()
@@ -396,6 +386,9 @@ mod tests {
             CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1).runtime_state();
         f.store = runtime.owned.durable_state_store.clone();
         for session in f.sessions.list_sessions() {
+            for agent in session.agents() {
+                runtime.owned.agent_store.restore_agent(agent.clone());
+            }
             runtime
                 .owned
                 .session_store
@@ -432,6 +425,7 @@ mod tests {
         };
         let attach =
             LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
+                delivery_mode: crate::local::NotificationDeliveryMode::Queue,
                 session_id: f.session.clone(),
                 source_id: source.source_id,
                 publication_ref: bp,
@@ -475,6 +469,42 @@ mod tests {
             crate::session::WorkflowQueuedPromptSource::Event
         );
         assert!(matches!(route("one", "two"), NotificationRoute::Peer));
+        // Simulate restart at the queue-commit boundary: only durable hot state
+        // is used for the next pump, without a source receipt to re-admit.
+        let hot = f
+            .store
+            .load_workflow_hot_states(session.host_daemon_id())
+            .unwrap();
+        let (_, state) = hot.into_iter().find(|(id, _)| id == &f.session).unwrap();
+        assert_eq!(state.workflow_queued_prompts.len(), 1);
+        let recovered = runtime
+            .owned
+            .durable_state_store
+            .pending_workflow_dispatch_sessions(session.host_daemon_id(), None, 8)
+            .unwrap();
+        assert!(
+            recovered.contains(&f.session),
+            "MP-08 / MP-10: committed receipt must recover its queue handoff"
+        );
+        // The actual bounded App pump must discover the persisted queue after
+        // the source adapter's one-pass dispatch set has disappeared.
+        let _blocker = runtime
+            .owned
+            .workspace_coordinator
+            .acquire_worktree_write_claim(
+                session.workspace_id(),
+                session.worktree_id(),
+                &f.session,
+                None,
+                "notification_handoff_restart",
+            )
+            .unwrap();
+        runtime.fixture_app_event_pass();
+        let recovered_session = runtime.owned.session_store.get_session(&f.session).unwrap();
+        assert!(recovered_session
+            .workflow_runs()
+            .iter()
+            .any(|run| run.workflow_id() == b));
         let mut transferred = runtime
             .owned
             .session_store

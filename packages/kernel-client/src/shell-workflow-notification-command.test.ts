@@ -13,16 +13,19 @@ test("MP-08 / MP-10: attach uses discovered source and ordinary event trigger wi
     if ("ListWorkflowPublications" in request) return { WorkflowPublicationsListed: { publications: [{ id: "publication", workflow_id: "consumer", enabled: true, kind: "event_based" }] } }
     return { WorkflowNotificationAttached: { subscription: {} } }
   } } }
-  const result = await executeWorkflowNotificationTrigger(["attach", "Reviewer", "success", "--filter", "repo=fixture/repo", "--filter", "pr=[873,874]", "--ttl", "30"], context, deps)
+  const result = await executeWorkflowNotificationTrigger(["attach", "Reviewer", "success", "--filter", "repo=fixture/repo", "--filter", "pr=[873,874]", "--ttl", "30", "--delivery", "inject"], context, deps)
   assert.equal(result.ok, true)
-  assert.deepEqual(calls[2], { AttachWorkflowNotification: { session_id: "target", source_id: "source", publication_ref: "publication", queue_ref: null, ttl_days: 30, events: "success", filters: { repo: "fixture/repo", pr: [873, 874] } } })
+  assert.deepEqual(calls[2], { AttachWorkflowNotification: { session_id: "target", source_id: "source", publication_ref: "publication", queue_ref: null, ttl_days: 30, events: "success", filters: { repo: "fixture/repo", pr: [873, 874] }, delivery_mode: "inject" } })
 })
-test("MP-08 / MP-10: offline source cannot attach and unknown fields fail before mutation", async () => {
+test("MP-08 / MP-10: opaque dotted fields are allowed, offline attach is refused", async () => {
   for (const available of [false, true]) {
     let mutations = 0
-    const deps = { client: { async send(request: Record<string, unknown>) { if ("AttachWorkflowNotification" in request) mutations++; return { WorkflowNotifications: { sources: [{ ...source, available }], subscriptions: [], diagnostics: [] } } } } }
-    const result = await executeWorkflowNotificationTrigger(["attach", "source", "--publication", "p", "--filter", "invented=value"], context, deps)
-    assert.equal(result.ok, false); assert.equal(mutations, 0)
+    const deps = { client: { async send(request: Record<string, unknown>) {
+      if ("AttachWorkflowNotification" in request) { mutations++; return { WorkflowNotificationAttached: { subscription: {} } } }
+      return { WorkflowNotifications: { sources: [{ ...source, available }], subscriptions: [], diagnostics: [] } }
+    } } }
+    const result = await executeWorkflowNotificationTrigger(["attach", "source", "--publication", "p", "--filter", "opaque.value=42"], context, deps)
+    assert.equal(result.ok, available); assert.equal(mutations, available ? 1 : 0)
   }
 })
 test("MP-08 / MP-10: settings switch registers output projection, never emits", async () => {

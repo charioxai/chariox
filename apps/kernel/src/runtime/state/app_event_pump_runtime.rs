@@ -61,6 +61,7 @@ impl KernelRuntimeState {
         let runtime = self.clone();
         tokio::spawn(async move {
             runtime.route_remote_workflow_notifications().await;
+            runtime.deliver_pending_notification_injections().await;
             let owned = runtime.owned.clone();
             let result = tokio::task::spawn_blocking(move || {
                 let output = owned.pump_app_event_pass(&pass, leases);
@@ -92,6 +93,11 @@ impl KernelRuntimeOwnedState {
             more: false,
             dispatches: WorkflowPromptDispatches::default(),
         };
+        output.more |= self.session_store.read().list_sessions().iter().any(|s| {
+            s.workflow_queued_prompts()
+                .iter()
+                .any(|q| q.notification_injection_pending())
+        });
         let (mut sessions, notification_more) = self.route_workflow_notifications();
         output.more |= notification_more;
         // Housekeeping remains available after publisher revoke/uninstall. It
@@ -149,6 +155,7 @@ impl KernelRuntimeOwnedState {
                         pending.extend(wrapped);
                     }
                 }
+                output.more |= pending.len() == PAGE;
                 sessions.extend(pending);
             }
             let full = leases.len() == PAGE;
@@ -243,6 +250,11 @@ impl KernelRuntimeOwnedState {
                 }
             }
         }
+        output.more |= self.session_store.read().list_sessions().iter().any(|s| {
+            s.workflow_queued_prompts()
+                .iter()
+                .any(|q| q.notification_injection_pending())
+        });
         output
     }
     fn classify_app_event(

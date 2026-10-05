@@ -181,6 +181,7 @@ fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
             installation_id: "todo".into(),
         }),
         LocalDaemonRequest::ConfigureAppAutomation(ConfigureAppAutomationRequest {
+            delivery_mode: crate::local::NotificationDeliveryMode::Queue,
             installation_id: "todo".into(),
             automation_id: "reminders".into(),
             expected_revision: 0,
@@ -197,6 +198,7 @@ fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
         }),
     ];
     let automation = AppAutomationSummary {
+        delivery_mode: crate::local::NotificationDeliveryMode::Queue,
         automation_id: "reminders".into(),
         revision: 1,
         event_name: "todo_due".into(),
@@ -261,7 +263,7 @@ fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
     );
     assert_eq!(
         digest,
-        "2a549079483ac43adc5202e10ae046b563047e7c499e21e645308ca2de3c4827"
+        "d6ef051ad7e4cda125c1ac1f3db9fd2e082056a697e0de681b777eec0ce81a06"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(
         serde_json::json!({"ControlAppWorker": {"installation_id": "todo", "action": "start", "owner_id": "other"}})

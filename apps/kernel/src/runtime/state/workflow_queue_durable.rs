@@ -38,6 +38,57 @@ impl Drop for WorkflowEntryClaim {
 }
 
 impl KernelRuntimeOwnedState {
+    /// Expire only an unsubmitted entry. Submitted prompts belong to normal
+    /// prompt recovery, even if their original notification deadline has passed.
+    pub(super) fn workflow_expire_pending_entry(
+        &self,
+        session: &str,
+        run: &str,
+    ) -> Result<bool, DaemonError> {
+        self.durable_state_store
+            .with_workflow_runtime_transition_lock(|| {
+                let Some(intent) = self.workflow_entry_intent(session, run)? else {
+                    return Ok(false);
+                };
+                if intent.submitted
+                    || !intent
+                        .queued_prompt
+                        .notification_expired_at(crate::session::unix_epoch_ms())
+                {
+                    return Ok(false);
+                }
+                let mut sessions = self.session_store.write();
+                let before = sessions.get_session(session)?;
+                if sessions
+                    .resolve_workflow_run_ref(session, run)?
+                    .status()
+                    .is_terminal()
+                {
+                    return Ok(true);
+                }
+                sessions.cancel_workflow_run(session, run)?;
+                let after = sessions.get_session(session)?;
+                if let Err(error) = self
+                    .durable_state_store
+                    .persist_workflow_runtime_transition(&after, "notification_ready_entry_expired")
+                {
+                    sessions.restore_session(before);
+                    return Err(error);
+                }
+                drop(sessions);
+                self.release_workflow_node_workspace_claim(session, run, &intent.node_id);
+                self.record_notice(
+                    session,
+                    None,
+                    self.attachment_store.list_session_attachment_ids(session),
+                    format!(
+                        "Notification for workflow run `{run}` expired before entry submission."
+                    ),
+                );
+                Ok(true)
+            })
+    }
+
     /// Workspace release retries use the identical claimed entry path. None
     /// means this is a downstream node (or legacy run) without an entry intent.
     pub(super) fn workflow_retry_durable_entry(
@@ -51,6 +102,9 @@ impl KernelRuntimeOwnedState {
         };
         if intent.node_id != node_id {
             return Ok(None);
+        }
+        if self.workflow_expire_pending_entry(session, run_id)? {
+            return Ok(Some(WorkflowPromptDispatches::default()));
         }
         if intent.submitted {
             return Ok(Some(WorkflowPromptDispatches::default()));
@@ -116,6 +170,9 @@ impl KernelRuntimeOwnedState {
         let Some(intent) = self.workflow_pending_entry(session)? else {
             return Ok(None);
         };
+        if self.workflow_expire_pending_entry(session, &intent.run_id)? {
+            return Ok(None);
+        }
         let sessions = self.session_store.read();
         let run = sessions.resolve_workflow_run_ref(session, &intent.run_id)?;
         let node = run.node_runs().first().ok_or_else(entry_conflict)?;

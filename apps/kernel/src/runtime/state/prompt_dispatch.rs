@@ -365,6 +365,16 @@ impl KernelRuntimeState {
         session_id: &str,
         prompt: &crate::session::PromptQueueItem,
     ) -> Result<Option<String>, DaemonError> {
+        self.steer_remote_agent_message_for_turn(session_id, prompt, None)
+            .await
+    }
+
+    pub(in crate::runtime::state) async fn steer_remote_agent_message_for_turn(
+        &self,
+        session_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+        expected_active_prompt: Option<&str>,
+    ) -> Result<Option<String>, DaemonError> {
         let owned = &self.owned;
         let agent_id = prompt.target_agent_id();
         let agent = owned.agent_store.get_agent(agent_id)?;
@@ -378,6 +388,9 @@ impl KernelRuntimeState {
         else {
             return Ok(None);
         };
+        if expected_active_prompt.is_some_and(|expected| expected != active_prompt.id()) {
+            return Ok(None);
+        }
         if active_prompt.status() != crate::session::PromptStatus::Running {
             return Err(DaemonError::LocalTransport {
                 operation: "steer agent message",
@@ -536,6 +549,19 @@ impl KernelRuntimeState {
             &remote_execution.leased_agent_id,
             &provider_run_id,
         );
+        if expected_active_prompt.is_some() {
+            owned.append_steering_prompt_history(
+                session_id,
+                &provider_run_id,
+                &payload.target_home_prompt_id,
+                prompt.source_attachment_id(),
+                agent_id,
+                prompt.id(),
+                prompt.prompt(),
+                prompt.attachments(),
+            )?;
+            return Ok(Some(projected_provider_run_id));
+        }
         self.with_app_side_effect(|_app| {
             let current_agent = owned.agent_store.get_agent(agent_id)?;
             if !remote_steer_binding_identity_matches(

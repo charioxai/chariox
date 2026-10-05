@@ -47,7 +47,38 @@ pub(in crate::durable_state) fn record_workflow_transition_in(
         }
         let queued: WorkflowQueuedPrompt = serde_json::from_str(&encoded.payload_json)
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        if queued.status() != WorkflowQueuedPromptStatus::Cancelled {
+        let injected = queued.publication_invocation().is_some_and(|i| {
+            i.caller
+                .get("delivery_mode")
+                .and_then(serde_json::Value::as_str)
+                == Some("inject")
+        });
+        if !injected
+            && queued
+                .publication_invocation()
+                .is_some_and(|i| i.caller.get("notification_steer").is_some())
+        {
+            // A confirmed fallback did not steer this run. Keep its original
+            // lineage; the queued retry will obtain its own normal run lineage.
+            tx.execute("UPDATE app_outbox SET invocation_json=json_remove(invocation_json,'$.injected_run_id') WHERE queued_session_id=?1 AND queued_prompt_id=?2 AND source_kind='workflow_completion'",
+                params![session_id,queued.id()])?;
+        }
+        if injected
+            && matches!(
+                queued.status(),
+                WorkflowQueuedPromptStatus::Running | WorkflowQueuedPromptStatus::Completed
+            )
+        {
+            // Record causal lineage before provider I/O; retain it independently
+            // of receipt payload expiry and queue reclamation.
+            if let Some(run) = queued.workflow_run_id() {
+                tx.execute("UPDATE app_outbox SET invocation_json=json_set(coalesce(invocation_json,'{}'),'$.injected_run_id',?1) WHERE queued_session_id=?2 AND queued_prompt_id=?3 AND source_kind='workflow_completion'",
+                    params![run,session_id,queued.id()])?;
+            }
+        }
+        if queued.status() != WorkflowQueuedPromptStatus::Cancelled
+            && !(injected && queued.status() == WorkflowQueuedPromptStatus::Completed)
+        {
             continue;
         }
         let Some(envelope) = queued
@@ -63,7 +94,17 @@ pub(in crate::durable_state) fn record_workflow_transition_in(
         if actual.as_deref() != Some(encoded.payload_json.as_str()) {
             return Err(rusqlite::Error::InvalidQuery);
         }
-        settle(tx, session_id, queued.id(), envelope, "failed")?;
+        settle(
+            tx,
+            session_id,
+            queued.id(),
+            envelope,
+            if queued.status() == WorkflowQueuedPromptStatus::Completed {
+                "delivered"
+            } else {
+                "failed"
+            },
+        )?;
     }
     Ok(())
 }

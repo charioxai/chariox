@@ -139,6 +139,7 @@ impl Fixture {
                 .unwrap();
         let t = target.target();
         let subscription = WorkflowNotificationSubscription {
+            delivery_mode: crate::local::NotificationDeliveryMode::Queue,
             subscription_id: format!("sub-{}-{w}", source.source_id),
             source_id: source.source_id.clone(),
             owner_user_id: "local".into(),
@@ -323,6 +324,7 @@ fn runtime_ancestry_drops_two_and_three_workflow_cycles_visibly() {
         let t = WorkflowNotificationTarget::resolve(&f.sessions, "local", &f.session, &ap, None)
             .unwrap();
         let sub = WorkflowNotificationSubscription {
+            delivery_mode: crate::local::NotificationDeliveryMode::Queue,
             subscription_id: "cycle-tail".into(),
             source_id: src.source_id.clone(),
             owner_user_id: "local".into(),
@@ -701,7 +703,12 @@ fn enabled_source_emits_failure_bare_status() {
 }
 
 #[test]
-fn d1_d2_github_fixture_subject_fields_filters_and_bare_failure() {
+fn d1_d2_opaque_fixture_subject_fields_filters_and_bare_failure() {
+    for generator in ["github", "inventory"] {
+        opaque_fixture_drill(generator);
+    }
+}
+fn opaque_fixture_drill(generator: &str) {
     use crate::session::WorkflowPublicationInvocationEnvelope;
     let mut f = Fixture::new();
     let (reviewer, _, _) = f.workflow("reviewer");
@@ -756,7 +763,7 @@ fn d1_d2_github_fixture_subject_fields_filters_and_bare_failure() {
             transport: "app_event".into(),
             endpoint_id: "endpoint".into(),
             queue_ref: None,
-            input: serde_json::json!({"event_type":"github.pull_request","payload":{"metadata":{"repo":"fixture/repo","pr":pr,"head_sha":format!("sha-{pr}"),"subject":"agent-cannot-change-canonical-key"}}}),
+            input: serde_json::json!({"event_type":format!("{generator}.changed"),"payload":{"metadata":{"repo":"fixture/repo","pr":pr,"head_sha":format!("sha-{pr}"),"subject":format!("{generator}:opaque/{pr}"),"nested":{"category":["one","two"]}}}}),
             artifacts: vec![],
             mode: None,
             caller: serde_json::json!({"kind":"app_event","owner_id":"local"}),
@@ -793,8 +800,12 @@ fn d1_d2_github_fixture_subject_fields_filters_and_bare_failure() {
     );
     for (sub, env) in candidates {
         let pr = env.fields["pr"].as_u64().unwrap();
-        assert_eq!(env.subject, Some(format!("github:fixture/repo/pull/{pr}")));
+        assert_eq!(env.subject, Some(format!("{generator}:opaque/{pr}")));
         assert_eq!(env.fields["repo"], "fixture/repo");
+        assert_eq!(
+            env.fields["nested"],
+            serde_json::json!({"category":["one","two"]})
+        );
         assert_eq!(env.fields["head_sha"], format!("sha-{pr}"));
         if pr == 875 {
             assert!(env.output.is_none());

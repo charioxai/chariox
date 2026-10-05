@@ -33,6 +33,7 @@ fn setup(fixture: &Fixture) -> (DurableKernelStateStore, SessionService, String,
             "local",
             fixture.catalog.clone(),
             AppAutomationMutation::Configure {
+                delivery_mode: crate::local::NotificationDeliveryMode::Queue,
                 automation_id: "automation".into(),
                 expected_revision: 0,
                 event_name: "changed".into(),
@@ -590,15 +591,21 @@ fn a_full_outbox_refuses_new_events_as_backpressure_and_warns_the_owner_once_per
 
 #[test]
 fn mp08_mp10_d1_app_fixture_occurrence_to_reviewer_queue_completion_notification() {
+    for generator in ["github", "inventory"] {
+        d1_opaque_app_fixture(generator);
+    }
+}
+fn d1_opaque_app_fixture(generator: &str) {
     use crate::durable_state::workflow_notifications::{
         self as notification, NotificationOperation, NotificationOutcome, SourceAdmission,
     };
     use crate::local::WorkflowNotificationSource;
     use crate::session::{WorkflowOutputPayload, WorkflowRunStatus};
-    let event = "pull_request";
+    let event_name = format!("{generator}_changed");
+    let event = event_name.as_str();
     let fixture = Fixture::with_event(
         event,
-        serde_json::json!({"type":"object","additionalProperties":false,"properties":{"repo":{"type":"string"},"pr":{"type":"integer"},"head_sha":{"type":"string"}},"required":["repo","pr","head_sha"]}),
+        serde_json::json!({"type":"object","additionalProperties":false,"properties":{"repo":{"type":"string"},"pr":{"type":"integer"},"head_sha":{"type":"string"},"subject":{"type":"string"},"event_type":{"type":"string"}},"required":["repo","pr","head_sha"]}),
     );
     let store = fixture.open();
     let (mut sessions, session, publication) = workflow();
@@ -673,6 +680,7 @@ fn mp08_mp10_d1_app_fixture_occurrence_to_reviewer_queue_completion_notification
     )
     .unwrap();
     let subscription = crate::local::WorkflowNotificationSubscription {
+        delivery_mode: crate::local::NotificationDeliveryMode::Queue,
         subscription_id: "fixture-consumer-sub".into(),
         source_id: source.source_id.clone(),
         owner_user_id: "local".into(),
@@ -703,6 +711,7 @@ fn mp08_mp10_d1_app_fixture_occurrence_to_reviewer_queue_completion_notification
             "local",
             fixture.catalog.clone(),
             AppAutomationMutation::Configure {
+                delivery_mode: crate::local::NotificationDeliveryMode::Queue,
                 automation_id: "github-fixture".into(),
                 expected_revision: 0,
                 event_name: event.into(),
@@ -719,7 +728,7 @@ fn mp08_mp10_d1_app_fixture_occurrence_to_reviewer_queue_completion_notification
         event_version: 1,
         occurred_at_ms: now,
         schedule_revision: None,
-        payload: serde_json::json!({"repo":"fixture/repo","pr":873,"head_sha":"fixture-sha"}),
+        payload: serde_json::json!({"repo":"fixture/repo","pr":873,"head_sha":"fixture-sha","subject":format!("{generator}:opaque/873"),"event_type":event}),
         invocation: Invocation {
             prompt: "Review PR 873".into(),
             artifacts: vec![],
@@ -782,7 +791,7 @@ fn mp08_mp10_d1_app_fixture_occurrence_to_reviewer_queue_completion_notification
         .unwrap();
     assert_eq!(candidates.len(), 1);
     let (sub, env) = candidates.into_iter().next().unwrap();
-    assert_eq!(env.subject.as_deref(), Some("github:fixture/repo/pull/873"));
+    assert_eq!(env.subject, Some(format!("{generator}:opaque/873")));
     assert_eq!(env.fields["verdict"], "approved");
     assert_eq!(env.fields["event_type"], event);
     assert!(matches!(

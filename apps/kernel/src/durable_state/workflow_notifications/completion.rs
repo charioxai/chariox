@@ -64,11 +64,29 @@ pub(crate) fn capture_in(
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default()
         };
+        // A workflow-level injection contributes lineage to that same run,
+        // including when its original trigger was an App or manual invocation.
+        let injected: Vec<String> = {
+            let mut q = tx.prepare("SELECT json_extract(invocation_json,'$.ancestry') FROM app_outbox WHERE source_kind='workflow_completion' AND queued_session_id=?1 AND json_extract(invocation_json,'$.injected_run_id')=?2")?;
+            let rows = q.query_map(params![encoded.session_id, run.id()], |r| {
+                r.get::<_, String>(0)
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for value in injected {
+            for identity in parse::<Vec<String>>(&value)? {
+                if !ancestry.contains(&identity) {
+                    ancestry.push(identity);
+                }
+            }
+        }
         let identity = workflow_identity(kernel, &encoded.session_id, run.workflow_id());
         let diagnostic = if ancestry.contains(&identity) {
             Some("workflow_notification_loop_dropped")
         } else if ancestry.len() >= 256 {
             Some("workflow_notification_ancestry_limit")
+        } else if subject.as_ref().is_some_and(|subject| subject.len() > 512) {
+            Some("workflow_notification_subject_limit")
         } else if output.as_ref().is_some_and(|output| {
             output.artifacts().len() > 32
                 || !crate::durable_state::notification_target::encode(output)
@@ -158,52 +176,14 @@ fn provenance(
             "app_event" | "event" | "workflow_notification"
         )
     }) {
-        let input = &inv.input;
-        let payload = input.get("payload").unwrap_or(input);
+        let payload = inv.input.get("payload").unwrap_or(&inv.input);
+        // App/generator metadata is opaque. Workflow completions already carry
+        // the projected fields as payload; copy nested values without interpretation.
         let metadata = payload.get("metadata").unwrap_or(payload);
-        for key in ["repo", "pr", "head_sha", "event_type", "subject"] {
-            if let Some(value) = metadata.get(key).filter(|v| small_scalar(v)) {
-                fields.insert(key.into(), value.clone());
+        if let Some(metadata) = metadata.as_object() {
+            for (key, value) in metadata {
+                fields.insert(key.clone(), value.clone());
             }
-        }
-        if !fields.contains_key("repo") {
-            if let Some(repo) = payload
-                .pointer("/repository/full_name")
-                .filter(|v| small_scalar(v))
-            {
-                fields.insert("repo".into(), repo.clone());
-            }
-        }
-        if !fields.contains_key("pr") {
-            if let Some(pr) = payload
-                .pointer("/pull_request/number")
-                .or_else(|| payload.get("number"))
-                .filter(|v| v.is_u64())
-            {
-                fields.insert("pr".into(), pr.clone());
-            }
-        }
-        if !fields.contains_key("head_sha") {
-            if let Some(sha) = payload
-                .pointer("/pull_request/head/sha")
-                .filter(|v| small_scalar(v))
-            {
-                fields.insert("head_sha".into(), sha.clone());
-            }
-        }
-        if !fields.contains_key("event_type") {
-            if let Some(event) = input.get("event_type").filter(|v| small_scalar(v)) {
-                fields.insert("event_type".into(), event.clone());
-            }
-        }
-    }
-    if let (Some(repo), Some(pr)) = (
-        fields.get("repo").and_then(Value::as_str),
-        fields.get("pr").and_then(Value::as_u64),
-    ) {
-        let canonical = format!("github:{repo}/pull/{pr}");
-        if canonical.len() <= 512 {
-            fields.insert("subject".into(), json!(canonical));
         }
     }
     if let Some(output) = output {
@@ -211,7 +191,7 @@ fn provenance(
             for key in &source.output_fields {
                 // Provenance/status are reserved and cannot be replaced by agent text.
                 if let Some(value) = structured.get(key).filter(|v| small_scalar(v)) {
-                    fields.insert(key.clone(), value.clone());
+                    fields.entry(key.clone()).or_insert_with(|| value.clone());
                 }
             }
         }

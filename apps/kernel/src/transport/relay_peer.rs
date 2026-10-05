@@ -2077,6 +2077,7 @@ mod workflow_notification_82_shapes {
     fn mp08_mp10_completion_peer_82_snapshot() {
         assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 82);
         let sub = WorkflowNotificationSubscription {
+            delivery_mode: crate::local::NotificationDeliveryMode::Queue,
             subscription_id: "sub".into(),
             source_id: "source".into(),
             owner_user_id: "owner".into(),
@@ -2145,7 +2146,7 @@ mod workflow_notification_82_shapes {
         let wire = serde_json::json!({"requests":requests,"responses":responses});
         assert_eq!(
             format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-            "f649d0144c6848d22e8559a2f0ecd6b2a10b2f45a8b3bbbae32b50be8aa237a9"
+            "9851f534c590df1a98d61e1cd5090eab2f167e08da41ad42f37f14efd09a54ec"
         );
     }
 }

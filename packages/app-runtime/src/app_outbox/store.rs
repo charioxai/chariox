@@ -124,6 +124,11 @@ pub(super) fn initialize(connection: &Connection) -> Result<()> {
         ),
         ("app_automations", "notification_json", "TEXT"),
         (
+            "app_automations",
+            "delivery_mode",
+            "TEXT NOT NULL DEFAULT 'queue' CHECK(delivery_mode IN ('queue','inject'))",
+        ),
+        (
             "app_outbox",
             "source_kind",
             "TEXT NOT NULL DEFAULT 'app_event'",

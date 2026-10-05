@@ -1064,6 +1064,14 @@ impl RuntimeSession {
         queued_prompt
     }
 
+    pub(crate) fn notification_prompt_mut(
+        &mut self,
+        id: &str,
+    ) -> Option<&mut WorkflowQueuedPrompt> {
+        self.workflow_queued_prompts
+            .iter_mut()
+            .find(|item| item.id() == id)
+    }
     pub fn update_queued_workflow_prompt(
         &mut self,
         queue_item_id: &str,
@@ -1148,6 +1156,7 @@ impl RuntimeSession {
             .enumerate()
             .filter(|(_, item)| {
                 item.status() == WorkflowQueuedPromptStatus::Queued
+                    && !item.notification_injection_pending()
                     && !item.notification_expired_at(super::super::types::unix_epoch_ms())
             })
             .filter_map(|(index, item)| {
@@ -1177,6 +1186,7 @@ impl RuntimeSession {
             .enumerate()
             .filter(|(_, item)| {
                 item.status() == WorkflowQueuedPromptStatus::Queued
+                    && !item.notification_injection_pending()
                     && !item.notification_expired_at(super::super::types::unix_epoch_ms())
             })
             .filter_map(|(index, item)| {
@@ -1216,6 +1226,7 @@ impl RuntimeSession {
             .iter()
             .filter(|item| {
                 item.status() == WorkflowQueuedPromptStatus::Queued
+                    && !item.notification_injection_pending()
                     && !item.notification_expired_at(super::super::types::unix_epoch_ms())
             })
             .filter_map(|item| {
@@ -1239,6 +1250,7 @@ impl RuntimeSession {
             .iter()
             .filter(|item| {
                 item.status() == WorkflowQueuedPromptStatus::Queued
+                    && !item.notification_injection_pending()
                     && !item.notification_expired_at(super::super::types::unix_epoch_ms())
             })
             .filter_map(|item| {

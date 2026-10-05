@@ -106,9 +106,9 @@ fields. Intermediate outputs and cancelled runs do not emit. There is no emit to
 Completion and source receipts commit in the normal workflow transaction.
 
 `AttachWorkflowNotification {session_id, source_id, publication_ref, queue_ref?,
-ttl_days?, events?, filters?}` is same-user only. Target session, publication and
+ttl_days?, events?, filters?, delivery_mode?}` is same-user only. Target session, publication and
 endpoint must belong to the owner; the publication is enabled and `event_based`.
-Events are `success`, `failure`, or `both` (default). TTL defaults to seven days and
+Events are `success` (default), `failure`, or `both`. TTL defaults to seven days and
 must be 1–30 days. Reattach reuses the binding; TTL changes affect new occurrences.
 Attach rejects cycles visible in the local graph. `DetachWorkflowNotification
 {session_id, subscription_id}` disables local admission and sends a peer unsubscribe
@@ -116,19 +116,24 @@ when remote. If the peer is offline, its outstanding sends get refused by the ta
 and expire; no additional unsubscribe scheduler is introduced.
 
 The envelope carries `source_id`, `occurrence_id` (run ID), `status`, optional final
-`output`, optional canonical `subject`, bounded `fields`, kernel-derived `ancestry`
-and immutable `deadline_ms`. Recorded App-event invocation provenance supplies
-`repo`, `pr`, `head_sha`, `event_type` and subject. GitHub repository/PR provenance
-produces `github:<repo>/pull/<number>`. Up to eight declared output fields (names at
-most 64 ASCII letters/digits/underscores) are projected from the structured JSON
-final-output message. Values are small scalars, with strings at most 512 bytes.
-Provenance/status names are reserved. Failure notifications contain only provenance
-and status. Omitted/null `output_fields` preserves the declaration on a switch.
+`output`, optional opaque `subject`, opaque `fields`, kernel-derived `ancestry`
+and immutable `deadline_ms`. The kernel copies the triggering App/generator metadata
+exactly from recorded invocation provenance, including nested values. Subject is
+passed through only when supplied as a string by that generator; the kernel never
+constructs or parses it. Up to eight declared output fields (names at most 64 ASCII
+letters/digits/underscores) are projected from the structured final-output message.
+Output values are small scalars, with strings at most 512 bytes. Existing trigger
+fields cannot be overwritten by agent output. Failure carries recorded provenance
+and bare status, without output fields, errors, trace or node details. Omitted/null
+`output_fields` preserves the declaration on a switch. All domain semantics belong
+to generators/Apps; fixture-specific field names are not kernel policy.
 
 Filters use the shared AEGS/SDK semantics: AND across dotted fields, scalar equality,
 metadata-array membership and expected any-of arrays. The source evaluates filters
 before persisting a delivery; the target checks the current binding again before
-acceptance. Source metadata lists the available filter fields. Attach configuration
+acceptance. Source metadata lists declared output fields and generic subject/status fields.
+Opaque trigger metadata may be filtered by arbitrary dotted paths; the picker must
+allow entering a field path instead of treating its suggestions as an allowlist. Attach configuration
 never accepts caller-supplied owner, output, subject or ancestry.
 
 An ancestry entry is `[kernel_id, session_id, workflow_id]` encoded as a JSON tuple.
@@ -166,6 +171,19 @@ repeated queue insertion; conflicting occurrence content is refused. An uncertai
 writer commit fences further transitions until restart. Ordinary dispatch checks
 notification deadlines and visibly cancels expired queued work.
 
+Every App automation and workflow-notification binding has `delivery_mode:queue|inject`
+(default `queue`). Both adapters admit to the same durable receipt and workflow queue.
+`inject` selects the endpoint entry agent only when its workflow has exactly one
+active run and that endpoint's entry turn is active. It persists the exact run/turn
+before using ordinary provider steering. The item stays durably accepted until
+provider acceptance; restart rechecks the same turn. Idle/ended turns fall back to
+an ordinary queued run. Several active workflow runs fall back with
+`notification_inject_multiple_runs_queued`. An ended turn during dispatch falls back
+with `notification_inject_turn_ended_queued`. Provider errors retain the pending
+item rather than assert acceptance. Incoming ancestry is linked to the target run
+before steering, so that run's completion keeps the no-loop fence. No agent owns
+any subscription. Run-scoped subscription creation remains design only below.
+
 New payloads and prompts use the reused App path's **64 KiB** ceilings (not the AEDS
 1 MiB transport ceiling). Final output reserves 8 KiB for envelope fields; the entire
 envelope is checked separately. At most 32 artifacts remain metadata only: no fetch,
@@ -191,23 +209,22 @@ Shared shell/TUI commands:
 - `/workflow notifications on|off [workflow] [--fields verdict,review_url]`
 - `/workflow trigger notification list`
 - `/workflow trigger notification attach <source> [success|failure|both]
-  [--publication <ref>] [--ttl <1..30>] [--filter repo=fixture/repo] [--filter pr=873]`
+  [--publication <ref>] [--ttl <1..30>] [--filter opaque.field=value] [--delivery queue|inject]`
 - `/workflow trigger notification detach <subscription-id>`
 
 Attach resolves the selected workflow's unique enabled notification trigger, or the
 explicit publication. Web uses these same requests; its **My workflows** picker next
-to Apps and settings switch are implemented in Cloud, not a second runtime authority.
+to Apps and settings switch belong in Cloud, using the kernel as runtime authority.
 
-### Per-agent watches — design seam only (MP-08 / MP-10 / MP-11)
+### Run-scoped subscriptions — design only (MP-08 / MP-10 / MP-11)
 
-Delivery target kinds are `workflow_endpoint` and reserved `agent_session`; current
-admission rejects the latter. A future watch binds the same authenticated owner,
-agent/session, canonical subject, filters and deadline to this router/receipt path.
-It accepts into that session's ordinary queue. A kernel tool may create a watch, or
-the kernel may derive one from the authenticated result of an agent's GitHub action
-opening a PR. Model text cannot create provenance or infer ownership. Watch removal
-follows a recorded PR close/merge event, session end, or TTL. Neither watches nor
-GitHub action observation are implemented in this round.
+Subscribers always belong to workflow endpoints. A future run-scoped subscription
+is owned by that workflow and created by one of its running runs, using the same
+generic opaque subject/field filters. Delivery resumes that same waiting run.
+It ends with the run, TTL, or an incoming generator occurrence carrying the generic
+`subject_closed:true` marker. A signed action manifest may declare that its result
+opens a subject; the kernel does not interpret domain-specific lifecycle events.
+This round adds neither run-scoped creation nor agent-owned subscriptions/tools.
 
 ## AEGS subscription reconciliation
 

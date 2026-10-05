@@ -135,7 +135,7 @@ impl KernelRuntimeOwnedState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::runtime::state) mod tests {
     use super::*;
     use crate::agent::CreateAgentRequest;
     use crate::app::KernelSessionService;
@@ -1257,7 +1257,7 @@ mod tests {
         );
     }
 
-    async fn runtime_with_active_prompt() -> (
+    pub(in crate::runtime::state) async fn runtime_with_active_prompt() -> (
         crate::test_support::TestWorktree,
         KernelRuntimeState,
         String,

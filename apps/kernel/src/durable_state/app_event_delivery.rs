@@ -75,6 +75,22 @@ impl std::fmt::Debug for AppEventQueueRequest {
     }
 }
 impl DurableKernelStateStore {
+    /// Corroborate the source-neutral durable admission before steering. Client
+    /// publication envelopes alone never authorize notification injection.
+    pub(crate) fn notification_queue_is_owned(
+        &self,
+        session: &crate::session::RuntimeSession,
+        queued: &crate::session::WorkflowQueuedPrompt,
+    ) -> std::result::Result<bool, DaemonError> {
+        let Some(inv) = queued.publication_invocation() else {
+            return Ok(false);
+        };
+        let connection = self.lock_connection("notification.delivery.authority")?;
+        connection.query_row("SELECT EXISTS(SELECT 1 FROM app_outbox WHERE receipt_id=?1 AND owner_id=?2 AND queued_session_id=?3 AND queued_prompt_id=?4 AND state='queued' AND source_kind IN ('app_event','workflow_completion'))",
+            rusqlite::params![inv.invocation_id,inv.caller.get("owner_id").and_then(serde_json::Value::as_str).unwrap_or(""),session.id(),queued.id()], |r| r.get(0))
+            .map_err(|e| super::workflow_notifications::error(e.to_string()))
+    }
+
     /// Scoped, provisional discovery on the existing query connection. Queueing
     /// repeats every receipt, automation, target and signer check on the writer.
     pub(crate) fn app_event_candidate(

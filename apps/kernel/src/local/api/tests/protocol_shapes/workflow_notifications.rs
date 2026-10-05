@@ -14,6 +14,7 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
     );
     let attach =
         LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
+            delivery_mode: crate::local::NotificationDeliveryMode::Queue,
             session_id: "t".into(),
             source_id: "src".into(),
             publication_ref: "p".into(),
@@ -37,6 +38,7 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
         output_fields: vec![],
     };
     let sub = WorkflowNotificationSubscription {
+        delivery_mode: crate::local::NotificationDeliveryMode::Queue,
         subscription_id: "sub".into(),
         source_id: "src".into(),
         owner_user_id: "u".into(),
@@ -95,7 +97,7 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
     let wire = serde_json::json!({"requests":[register,attach,list,LocalDaemonRequest::DetachWorkflowNotification(DetachWorkflowNotificationRequest {session_id:"t".into(),subscription_id:"sub".into()})],"responses":responses,"envelope":env,"acks":[WorkflowNotificationAck::Accepted,WorkflowNotificationAck::Duplicate,WorkflowNotificationAck::Expired,WorkflowNotificationAck::Filtered,WorkflowNotificationAck::LoopDropped]});
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-        "9a2cf8b7476f129a2922df89a1e9bd8d081e0b84606ad0ed7c2903a3988a8204"
+        "fc9a63afb17e25eb759afa6ab4872d6cb55a21bca7dc3a8bfa4d9e9fc3cf466d"
     );
     for field in ["owner_user_id", "ancestry", "output"] {
         let mut request =
@@ -106,6 +108,21 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
         )
         .is_err());
     }
+    let injection: LocalDaemonRequest = serde_json::from_value(serde_json::json!({"AttachWorkflowNotification":{"session_id":"t","source_id":"src","publication_ref":"p","delivery_mode":"inject"}})).unwrap();
+    assert!(matches!(
+        injection,
+        LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
+            delivery_mode: NotificationDeliveryMode::Inject,
+            events: WorkflowNotificationEvents::Success,
+            ..
+        })
+    ));
+    assert!(
+        serde_json::from_value::<WorkflowNotificationTargetKind>(serde_json::json!(
+            "agent_session"
+        ))
+        .is_err()
+    );
     let decoded:LocalDaemonRequest=serde_json::from_value(serde_json::json!({"AttachWorkflowNotification":{"session_id":"t","source_id":"src","publication_ref":"p"}})).unwrap();
     assert!(matches!(
         decoded,

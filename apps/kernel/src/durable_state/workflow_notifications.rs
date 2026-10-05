@@ -265,8 +265,7 @@ fn apply(
                     key.is_empty()
                         || key.len() > 64
                         || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                        || ["subject", "status", "repo", "pr", "head_sha", "event_type"]
-                            .contains(&key.as_str())
+                        || ["subject", "status"].contains(&key.as_str())
                 })
             {
                 return Err(error("notification output field invalid"));
@@ -306,7 +305,6 @@ fn apply(
                 return Err(error("source not available"));
             }
             require_source_workflow(tx, &source, None)?;
-            validate_filter_fields(&subscription, &source.output_fields)?;
             target
                 .require_current(tx, &subscription.owner_user_id)
                 .map_err(|e| error(e.to_string()))?;
@@ -343,7 +341,6 @@ fn apply(
                     return Err(error("source not available"));
                 }
                 require_source_workflow(tx, &source, None)?;
-                validate_filter_fields(&subscription, &source.output_fields)?;
             }
             save_subscription(tx, &mut subscription)?;
             Ok(NotificationOutcome::Subscription(subscription))
@@ -384,7 +381,7 @@ fn apply(
         }
         NotificationOperation::Sweep { now } => {
             tx.execute("UPDATE app_outbox SET state=CASE WHEN state IN ('accepted','retryable') THEN 'expired' ELSE state END,payload_json=NULL WHERE source_kind='workflow_completion' AND expires_at_ms<=?1",[now as i64]).map_err(sql)?;
-            tx.execute("DELETE FROM app_outbox WHERE sequence IN (SELECT sequence FROM app_outbox WHERE source_kind='workflow_completion' AND expires_at_ms<=?1 AND state NOT IN ('accepted','retryable') AND NOT EXISTS(SELECT 1 FROM durable_workflow_runs r WHERE json_extract(r.payload_json,'$.queue_item_id')=app_outbox.queued_prompt_id AND r.status NOT IN ('Completed','Failed','Cancelled')) ORDER BY sequence LIMIT 256)",[now.saturating_sub(30*86_400_000) as i64]).map_err(sql)?;
+            tx.execute("DELETE FROM app_outbox WHERE sequence IN (SELECT sequence FROM app_outbox WHERE source_kind='workflow_completion' AND expires_at_ms<=?1 AND state NOT IN ('accepted','retryable') AND NOT EXISTS(SELECT 1 FROM durable_workflow_runs r WHERE r.status NOT IN ('Completed','Failed','Stopped') AND (json_extract(r.payload_json,'$.queue_item_id')=app_outbox.queued_prompt_id OR (r.session_id=app_outbox.queued_session_id AND r.run_id=json_extract(app_outbox.invocation_json,'$.injected_run_id')))) ORDER BY sequence LIMIT 256)",[now.saturating_sub(30*86_400_000) as i64]).map_err(sql)?;
             Ok(NotificationOutcome::Swept)
         }
     }
@@ -419,9 +416,6 @@ fn require_source_workflow(
     Ok(())
 }
 fn validate_subscription(sub: &WorkflowNotificationSubscription) -> Result<(), DaemonError> {
-    if sub.target_kind != crate::local::WorkflowNotificationTargetKind::WorkflowEndpoint {
-        return Err(error("agent session watches are not available"));
-    }
     if !(1..=30).contains(&sub.ttl_days) {
         return Err(error("TTL must be 1–30 days"));
     }
@@ -472,6 +466,7 @@ fn save_subscription(
         return Err(error("notification fanout limit"));
     }
     tx.execute("INSERT INTO app_automations(owner_id,installation_id,automation_id,revision,event_name,event_version,schema_digest,session_id,publication_id,endpoint_id,queue_id,status,source_kind,notification_json) VALUES(?1,?2,?3,1,'workflow_completion',1,'kernel',?4,?5,?6,?7,'active','workflow_completion',?8) ON CONFLICT(owner_id,installation_id,automation_id) DO UPDATE SET notification_json=excluded.notification_json,status='active'",params![sub.owner_user_id,sub.source_id,sub.subscription_id,sub.session_id,sub.publication_id,sub.endpoint_id,sub.queue_id,encode(sub)?]).map_err(sql)?;
+    tx.execute("UPDATE app_automations SET delivery_mode=?4 WHERE owner_id=?1 AND installation_id=?2 AND automation_id=?3",params![sub.owner_user_id,sub.source_id,sub.subscription_id,sub.delivery_mode.name()]).map_err(sql)?;
     Ok(())
 }
 /// Source and target both evaluate the same AEGS equality/any-of semantics.
@@ -535,7 +530,6 @@ fn accept(
     if encode(env)?.len() > chariox_app_runtime::app_outbox::MAX_PAYLOAD_BYTES
         || env.subject.as_ref().is_some_and(|s| s.len() > 512)
         || !env.fields.is_object()
-        || env.fields.as_object().is_some_and(|f| f.len() > 14)
         || (env.status == crate::local::WorkflowNotificationStatus::Failure && env.output.is_some())
         || (env.status == crate::local::WorkflowNotificationStatus::Success && env.output.is_none())
     {
@@ -584,21 +578,6 @@ fn accept(
     } else {
         WorkflowNotificationAck::Accepted
     }))
-}
-
-fn validate_filter_fields(
-    sub: &WorkflowNotificationSubscription,
-    output_fields: &[String],
-) -> Result<(), DaemonError> {
-    if sub.filters.as_object().is_some_and(|filters| {
-        filters.keys().any(|key| {
-            !["subject", "status", "repo", "pr", "head_sha", "event_type"].contains(&key.as_str())
-                && !output_fields.contains(key)
-        })
-    }) {
-        return Err(error("notification unknown filter field"));
-    }
-    Ok(())
 }
 
 pub(crate) fn receipt_id(

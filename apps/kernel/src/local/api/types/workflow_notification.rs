@@ -1,5 +1,6 @@
 //! Protocol 437: workflow notifications are private kernel completion notifications.
 use super::*;
+pub use chariox_app_runtime::app_outbox::NotificationDeliveryMode;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegisterWorkflowNotificationSourceRequest {
@@ -23,6 +24,8 @@ pub struct AttachWorkflowNotificationRequest {
     pub events: WorkflowNotificationEvents,
     #[serde(default)]
     pub filters: serde_json::Value,
+    #[serde(default)]
+    pub delivery_mode: NotificationDeliveryMode,
 }
 fn default_ttl_days() -> u32 {
     7
@@ -67,6 +70,8 @@ pub struct WorkflowNotificationSubscription {
     pub events: WorkflowNotificationEvents,
     #[serde(default)]
     pub filters: serde_json::Value,
+    #[serde(default)]
+    pub delivery_mode: NotificationDeliveryMode,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowNotificationEnvelope {
@@ -100,9 +105,9 @@ pub struct WorkflowNotificationDiagnostic {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowNotificationEvents {
+    #[default]
     Success,
     Failure,
-    #[default]
     Both,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,11 +147,10 @@ pub struct DetachWorkflowNotificationRequest {
     pub subscription_id: String,
 }
 
-/// Agent-session watches are a design seam; current admission rejects that kind.
+/// Subscribers belong to workflow endpoints. Run-scoped admission is deferred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowNotificationTargetKind {
     #[default]
     WorkflowEndpoint,
-    AgentSession,
 }

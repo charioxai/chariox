@@ -27,7 +27,8 @@ export async function executeWorkflowNotificationTrigger(args: string[], context
     return { ok: true, message: `detached ${sourceRef}` }
   }
   if (action !== "list" && action !== "attach") return { ok: false, message: "usage: workflow trigger notification list|attach|detach" }
-  let events: WorkflowNotificationEvents = "both"
+  let events: WorkflowNotificationEvents = "success"
+  let deliveryMode: "queue" | "inject" = "queue"
   let publication: string | undefined
   let ttl = 7
   const filters: Record<string, unknown> = {}
@@ -40,6 +41,9 @@ export async function executeWorkflowNotificationTrigger(args: string[], context
     else if (option === "--ttl") {
       ttl = Number(value)
       if (!Number.isInteger(ttl) || ttl < 1 || ttl > 30) return { ok: false, message: "TTL must be 1–30 days" }
+    } else if (option === "--delivery") {
+      if (value !== "queue" && value !== "inject") return { ok: false, message: "delivery must be queue or inject" }
+      deliveryMode = value
     } else if (option === "--filter") {
       const eq = value.indexOf("=")
       if (eq <= 0) return { ok: false, message: "filter must be field=value (JSON arrays select any-of)" }
@@ -55,14 +59,13 @@ export async function executeWorkflowNotificationTrigger(args: string[], context
   if (sources.length !== 1) return { ok: false, message: "source missing or ambiguous; use an id from notification list" }
   const source = sources[0]!
   if (!source.available) return { ok: false, message: "source not available: kernel offline" }
-  if (Object.keys(filters).some(key => !source.fields.includes(key))) return { ok: false, message: `available filter fields: ${source.fields.join(", ")}` }
   if (!publication) {
     const publicationsResponse = await deps.client.send(listWorkflowPublicationsRequest(context.sessionId))
     const publications = (publicationsResponse.WorkflowPublicationsListed as { publications: WorkflowPublicationDefinition[] }).publications.filter(p => p.enabled && p.kind === "event_based" && p.workflow_id === context.workflowId)
     if (publications.length !== 1) return { ok: false, message: "select a workflow with one enabled notification trigger, or pass --publication <ref>" }
     publication = publications[0]!.id
   }
-  const attached = await deps.client.send(attachWorkflowNotificationRequest(context.sessionId, source.source_id, publication, null, ttl, events, filters)) as WorkflowNotificationAttachedResponse
+  const attached = await deps.client.send(attachWorkflowNotificationRequest(context.sessionId, source.source_id, publication, null, ttl, events, filters, deliveryMode)) as WorkflowNotificationAttachedResponse
   if (!attached.WorkflowNotificationAttached) throw new Error("unexpected notification attach response")
-  return { ok: true, message: `attached ${source.name} (${events})`, data: attached.WorkflowNotificationAttached }
+  return { ok: true, message: `attached ${source.name} (${events}, ${deliveryMode})`, data: attached.WorkflowNotificationAttached }
 }

@@ -3139,4 +3139,11 @@ ACK means durable target acceptance, not run completion. Seven-day default / 1â€
 TTL and kernel-derived ancestry apply. Repeated target workflow identities drop
 with a diagnostic. Deletion/transfer leaves pending records to expire. See
 `EVENT_TRIGGER_PROTOCOL.md` for shared commands, bounded payloads, migration,
-source availability and the deferred agent-session watch design.
+source availability and the deferred workflow-owned run-scoped subscription design.
+
+MP-08 / MP-10: triggering metadata and optional subject pass through as opaque
+generator values; the kernel does not construct domain-specific subjects. Every
+App automation and workflow binding has `delivery_mode:queue|inject` (default queue).
+Injection retains the original durable admission until steering acceptance, joins
+ancestry to the selected run, and falls back to ordinary queue on idle/ended turns
+or multiple active workflow runs. Subscribers always belong to workflows.

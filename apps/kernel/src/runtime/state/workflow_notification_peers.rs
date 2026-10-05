@@ -300,14 +300,6 @@ impl KernelRuntimeState {
                         {
                             return Err(store::error("notification owner mismatch"));
                         }
-                        let allowed = summary(&source).fields;
-                        if target_ref
-                            .filters
-                            .as_object()
-                            .is_some_and(|f| f.keys().any(|key| !allowed.contains(key)))
-                        {
-                            return Err(store::error("notification unknown filter field"));
-                        }
                         match self.owned.durable_state_store.notify(
                             NotificationOperation::RemoteAttach {
                                 subscription: target_ref,
@@ -712,6 +704,7 @@ mod tests {
         let LocalDaemonResponse::WorkflowNotificationAttached { subscription } = target_runtime
             .execute_workflow_notification_command(
                 LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
+                    delivery_mode: crate::local::NotificationDeliveryMode::Queue,
                     session_id: target.session.clone(),
                     source_id: source_record.source_id.clone(),
                     publication_ref: bp.clone(),

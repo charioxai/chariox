@@ -1,4 +1,5 @@
 /** MP-08 / MP-10: local 437 and encrypted peer 82 completion notifications. */
+export type NotificationDeliveryMode = "queue" | "inject"
 export type WorkflowNotificationEvents = "success" | "failure" | "both"
 export interface WorkflowNotificationSource {
   source_id: string; owner_user_id: string; kernel_id: string;
@@ -11,10 +12,10 @@ export interface WorkflowNotificationSourceSummary {
 }
 export interface WorkflowNotificationSubscription {
   subscription_id: string; source_id: string; owner_user_id: string;
-  target_kind: "workflow_endpoint" | "agent_session"; target_kernel_id: string; source_kernel_id: string; session_id: string; workflow_id: string;
+  target_kind: "workflow_endpoint"; target_kernel_id: string; source_kernel_id: string; session_id: string; workflow_id: string;
   publication_id: string; endpoint_id: string; queue_id: string;
   ttl_days: number; source_available: boolean; events: WorkflowNotificationEvents;
-  filters: Record<string, unknown> | null
+  delivery_mode: NotificationDeliveryMode; filters: Record<string, unknown> | null
 }
 export interface WorkflowNotificationEnvelope {
   source_id: string; occurrence_id: string;
