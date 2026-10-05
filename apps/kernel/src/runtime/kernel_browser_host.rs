@@ -1,6 +1,6 @@
 //! MD-2: kernel authority for Chromium running directly on the host.
 use super::browser_controller_process::{
-    BrowserControllerProcessBackend, BrowserControllerProcessState,
+    BrowserCancellation, BrowserControllerProcessBackend, BrowserControllerProcessState,
     BrowserControllerProcessStdioBackend,
 };
 use serde_json::Value;
@@ -23,13 +23,28 @@ struct HostState {
 }
 struct FocusedAgent {
     agent_id: String,
-    epoch: Arc<()>,
+    epoch: Arc<BrowserCancellation>,
 }
 /// Internal admission bound to one user, agent and uninterrupted focus interval.
+#[derive(Clone)]
 pub(crate) struct KernelBrowserAdmission {
     user: String,
     agent: String,
-    epoch: Arc<()>,
+    epoch: Arc<BrowserCancellation>,
+    cancellation: Arc<BrowserCancellation>,
+}
+
+impl KernelBrowserAdmission {
+    pub(crate) fn with_authority(
+        mut self,
+        authority: impl Fn() -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.cancellation = Arc::new(BrowserCancellation::for_authority(
+            self.epoch.clone(),
+            authority,
+        ));
+        self
+    }
 }
 
 impl KernelBrowserHost {
@@ -64,19 +79,39 @@ impl KernelBrowserHost {
     pub(crate) fn set_focus(&self, user: &str, agent: Option<&str>) {
         let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         if state.focus.get(user).map(|focus| focus.agent_id.as_str()) != agent {
+            if let Some(previous) = state.focus.get(user) {
+                previous.epoch.request_cancel();
+            }
             state.loaded.retain(|(owner, _)| owner != user);
             if let Some(agent) = agent {
                 state.focus.insert(
                     user.into(),
                     FocusedAgent {
                         agent_id: agent.into(),
-                        epoch: Arc::new(()),
+                        epoch: Arc::new(BrowserCancellation::default()),
                     },
                 );
             } else {
                 state.focus.remove(user);
             }
         }
+        crate::transport::mcp_server::catalog_changed();
+    }
+    pub(crate) fn revoke_agent(&self, agent: &str) {
+        let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        let users: Vec<_> = state
+            .focus
+            .iter()
+            .filter(|(_, focus)| focus.agent_id == agent)
+            .map(|(user, _)| user.clone())
+            .collect();
+        for user in users {
+            if let Some(previous) = state.focus.remove(&user) {
+                previous.epoch.request_cancel();
+            }
+            state.loaded.retain(|(owner, _)| owner != &user);
+        }
+        drop(state);
         crate::transport::mcp_server::catalog_changed();
     }
     pub(crate) fn is_focused(&self, user: &str, agent: &str) -> bool {
@@ -166,6 +201,7 @@ impl KernelBrowserHost {
             user: user.into(),
             agent: agent.into(),
             epoch: state.focus[user].epoch.clone(),
+            cancellation: state.focus[user].epoch.clone(),
         })
     }
     pub(crate) fn check_admission(
@@ -173,6 +209,9 @@ impl KernelBrowserHost {
         admission: Option<&KernelBrowserAdmission>,
     ) -> Result<(), String> {
         if let Some(admission) = admission {
+            if admission.cancellation.requested() {
+                return Err("MD-3: browser authority revoked".into());
+            }
             let state = self.inner.lock().map_err(|_| "MD-3: focus lock poisoned")?;
             require_loaded(&state, &admission.user, &admission.agent)?;
             if !Arc::ptr_eq(&state.focus[&admission.user].epoch, &admission.epoch) {
@@ -207,7 +246,11 @@ impl KernelBrowserHost {
         self.check_admission(admission)?;
         backend.host_request("host.protect", policy)?;
         self.check_admission(admission)?;
-        let result = backend.host_request(method, params);
+        let result = backend.host_request_cancellable(
+            method,
+            params,
+            admission.map(|admission| admission.cancellation.clone()),
+        );
         self.check_admission(admission)?;
         result
     }
@@ -326,5 +369,38 @@ mod tests {
         assert!(host.check_admission(Some(&admission)).is_ok());
         assert!(host.admit("b", "agent1").is_err());
         assert!(host.admit("b", "agent2").is_err());
+    }
+    #[test]
+    fn revocation_requests_cancellation_and_is_scoped_to_the_agent() {
+        let host = KernelBrowserHost::new(PathBuf::from("/unused/md3-cancellation"));
+        host.set_focus("a", Some("agent1"));
+        host.load("a", "agent1").unwrap();
+        host.set_focus("b", Some("agent2"));
+        host.load("b", "agent2").unwrap();
+        let first = host.admit("a", "agent1").unwrap();
+        let second = host.admit("b", "agent2").unwrap();
+        host.revoke_agent("agent1");
+        assert!(first.cancellation.requested());
+        assert!(!second.cancellation.requested());
+        assert!(host.check_admission(Some(&second)).is_ok());
+        host.set_focus("b", None);
+        assert!(second.cancellation.requested());
+    }
+    #[test]
+    fn authority_revocation_cancels_without_a_focus_change() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let host = KernelBrowserHost::new(PathBuf::from("/unused/md3-authority"));
+        host.set_focus("a", Some("agent1"));
+        host.load("a", "agent1").unwrap();
+        let valid = Arc::new(AtomicBool::new(true));
+        let check = valid.clone();
+        let admission = host
+            .admit("a", "agent1")
+            .unwrap()
+            .with_authority(move || check.load(Ordering::Acquire));
+        assert!(host.check_admission(Some(&admission)).is_ok());
+        valid.store(false, Ordering::Release);
+        assert!(admission.cancellation.requested());
+        assert!(host.check_admission(Some(&admission)).is_err());
     }
 }

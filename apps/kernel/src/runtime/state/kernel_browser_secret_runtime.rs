@@ -2,7 +2,7 @@
 use super::kernel_browser_runtime::{host_error, PASTE};
 use super::*;
 use crate::runtime::browser_controller_action::BrowserLocatorAction;
-use crate::runtime::kernel_browser_host::KernelBrowserHost;
+use crate::runtime::kernel_browser_host::{KernelBrowserAdmission, KernelBrowserHost};
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -39,16 +39,30 @@ impl KernelRuntimeState {
                 "MD-2: the home kernel owns the user-domain browser".into(),
             ));
         }
+        let admission = agent
+            .map(|agent| self.owned.kernel_browser_host.admit(user, agent))
+            .transpose()
+            .map_err(host_error)?;
+        self.kernel_browser_operation_admitted(user, admission, method, params)
+            .await
+    }
+    pub(super) async fn kernel_browser_operation_admitted(
+        &self,
+        user: &str,
+        admission: Option<KernelBrowserAdmission>,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, DaemonError> {
         // Stop must remain available even when observation storage is fenced.
         if method == "host.browser" && params["op"] == "stop" {
             return self
-                .kernel_browser_bound_operation(user, agent, method, params, false)
+                .kernel_browser_bound_operation(user, admission.as_ref(), method, params, false)
                 .await;
         }
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(user);
         let _barrier = protection.barrier(&scope)?.read_owned().await;
-        self.kernel_browser_bound_operation(user, agent, method, params, true)
+        self.kernel_browser_bound_operation(user, admission.as_ref(), method, params, true)
             .await
     }
 
@@ -56,7 +70,7 @@ impl KernelRuntimeState {
     async fn kernel_browser_bound_operation(
         &self,
         user: &str,
-        agent: Option<&str>,
+        admission: Option<&KernelBrowserAdmission>,
         method: &str,
         params: Value,
         protect: bool,
@@ -71,10 +85,7 @@ impl KernelRuntimeState {
             Value::Null
         };
         let host = self.owned.kernel_browser_host.clone();
-        let admission = agent
-            .map(|agent| host.admit(user, agent))
-            .transpose()
-            .map_err(host_error)?;
+        let admission = admission.cloned();
         let (user, method) = (user.to_string(), method.to_string());
         let pixels =
             method == "host.browser" && (params["op"] == "screenshot" || params["op"] == "poll");
@@ -134,21 +145,21 @@ impl KernelRuntimeState {
         session: &str,
         agent: &crate::agent::AgentInstance,
         arguments: Value,
+        admission: KernelBrowserAdmission,
     ) -> Result<RuntimeToolResult, DaemonError> {
         let args: PasteArgs = serde_json::from_value(arguments)
             .map_err(|_| host_error("MD-5: invalid Vault input arguments".into()))?;
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
         let user = user.as_str();
         require_vault_owner(user)?;
-        if !self.owned.kernel_browser_host.is_loaded(user, agent.id()) {
-            return Err(host_error(
-                "MD-3: load browser tools with current focus first".into(),
-            ));
-        }
+        self.owned
+            .kernel_browser_host
+            .check_admission(Some(&admission))
+            .map_err(host_error)?;
         // Validate the observed document before prompting for unlock. Recheck
         // metadata, focus and target afterward, under the actual input barrier.
         let url = self
-            .kernel_browser_secret_target_url(user, agent.id(), &args)
+            .kernel_browser_secret_target_url(user, &admission, &args)
             .await?;
         self.home_runtime_secret_service()?
             .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?;
@@ -174,7 +185,7 @@ impl KernelRuntimeState {
             &self.provider_account_authority_owner_user_id(current.owner_user_id()),
         )?;
         let url = self
-            .kernel_browser_secret_target_url_bound(user, agent.id(), &args)
+            .kernel_browser_secret_target_url_bound(user, &admission, &args)
             .await?;
         let secret = zeroize::Zeroizing::new(
             service.browser_secret_input_for_target_url(&args.credential_id, &url)?,
@@ -183,7 +194,7 @@ impl KernelRuntimeState {
         let snapshot = self
             .kernel_browser_bound_operation(
                 user,
-                Some(agent.id()),
+                Some(&admission),
                 "host.browser",
                 json!({"op":"snapshot","tab_id":args.tab_id,"generation":args.generation}),
                 true,
@@ -208,7 +219,7 @@ impl KernelRuntimeState {
                 timeout_ms: 10_000,
             };
         protection.register_command(&scope, &command)?;
-        self.kernel_browser_bound_operation(user, Some(agent.id()), "host.secret", json!({"tab_id":args.tab_id,"generation":args.generation,"document_id":args.document_id,"node_ref":args.node_ref,"action":action}), true).await?;
+        self.kernel_browser_bound_operation(user, Some(&admission), "host.secret", json!({"tab_id":args.tab_id,"generation":args.generation,"document_id":args.document_id,"node_ref":args.node_ref,"action":action}), true).await?;
         Ok(RuntimeToolResult {
             ok: true,
             payload: json!({"inserted":true}),
@@ -218,7 +229,7 @@ impl KernelRuntimeState {
     async fn kernel_browser_secret_target_url(
         &self,
         user: &str,
-        agent: &str,
+        admission: &KernelBrowserAdmission,
         args: &PasteArgs,
     ) -> Result<String, DaemonError> {
         let scope = KernelBrowserHost::profile_key(user);
@@ -228,19 +239,19 @@ impl KernelRuntimeState {
             .barrier(&scope)?
             .read_owned()
             .await;
-        self.kernel_browser_secret_target_url_bound(user, agent, args)
+        self.kernel_browser_secret_target_url_bound(user, admission, args)
             .await
     }
     async fn kernel_browser_secret_target_url_bound(
         &self,
         user: &str,
-        agent: &str,
+        admission: &KernelBrowserAdmission,
         args: &PasteArgs,
     ) -> Result<String, DaemonError> {
         let result = self
             .kernel_browser_bound_operation(
                 user,
-                Some(agent),
+                Some(admission),
                 "host.browser",
                 json!({"op":"snapshot","tab_id":args.tab_id,"generation":args.generation}),
                 true,
