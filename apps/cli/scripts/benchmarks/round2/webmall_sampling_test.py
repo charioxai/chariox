@@ -122,6 +122,23 @@ with sync_playwright() as p:
                          (0, ["https://shop.example/product/other"], [False, False]))
 
 
+class TransientObservation(unittest.TestCase):
+    def test_sample_omits_unobserved_page_and_retains_error_class(self):
+        class ClosingPage:
+            url = "https://fixture.example/stale"
+
+            def title(self):
+                raise RuntimeError("MP-10 synthetic closing tab")
+
+        page = ClosingPage()
+        errors = []
+        context = types.SimpleNamespace(pages=[page])
+        self.assertEqual(fresh_existing_pages(context, strict=False, on_error=errors.append), [])
+        self.assertEqual(errors, [{"phase": "passive_observation", "pageOrdinal": 0, "errorClass": "RuntimeError"}])
+        with self.assertRaisesRegex(RuntimeError, "closing tab"):
+            fresh_existing_pages(context)
+
+
 if __name__ == "__main__":
     print("MP-08/MP-10 H6 official evaluator sha256=" + hashlib.sha256(Path(evaluator.__file__).read_bytes()).hexdigest())
     unittest.main()

@@ -42,9 +42,10 @@ with sync_playwright() as pw:
                 result = {"setup": True}
             elif op in ["sample", "finish"]:
                 assert task is not None
-                wrong, sample_infos = list(final_wrong), []
+                wrong, sample_infos, observation_errors = list(final_wrong), [], []
                 # Read every existing page; never navigate or create a page.
-                for page in ([] if finished else fresh_existing_pages(context)):
+                for page in ([] if finished else fresh_existing_pages(
+                        context, strict=op == "finish", on_error=observation_errors.append)):
                     if page.url.startswith("chrome-extension:"): continue
                     try:
                         with contextlib.redirect_stdout(io.StringIO()):
@@ -63,7 +64,8 @@ with sync_playwright() as pw:
                         if op == "finish": raise
                 if sample_infos: samples += 1
                 if op == "sample":
-                    result = {"sampled": True, "pages": len(sample_infos)}
+                    result = {"sampled": True, "pages": len(sample_infos),
+                              "observationErrors": observation_errors}
                 else:
                     checklist = task.checklist.get_checklist_dict()
                     answer = [c for c in checklist if c["id"].startswith("answer")]
