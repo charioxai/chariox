@@ -1,3 +1,4 @@
+import { validatePublicDiagnosticValue } from "./drill-matrix-report-shared.mjs"
 import {
   countDrillAggregateEntriesBy,
   countDrillAggregateNextAction,
@@ -157,6 +158,7 @@ export function formatDrillMatrixAggregateSummary(aggregate) {
 }
 
 export function validateDrillMatrixAggregate(aggregate) {
+  validatePublicDiagnosticValue(aggregate)
   if (!aggregate || typeof aggregate !== "object") {
     throw new Error("aggregate is not an object")
   }
