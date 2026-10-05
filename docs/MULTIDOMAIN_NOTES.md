@@ -20,7 +20,9 @@ MD-N2: both kernel-browser and Room-browser windows use the shared controller's
 controller isolated world. Capture immediately reads the current selection,
 then watches selection and DOM changes. Frame traversal uses the existing
 controller frame ownership channel. Quote matching spans text nodes, open
-shadow roots and owned frames. Ambiguous matches do not silently pick one.
+shadow roots and owned frames. Contextual matches take priority across every
+owned frame and root; exact-only fallback runs only when no contextual match
+exists anywhere. Ambiguous matches do not silently pick one.
 Closed shadow roots and selections spanning separate DOM roots return no
 selection. Quote size, frame/root count and text indexing are bounded. Context truncation
 uses Unicode code points so an emoji cannot break the serialized quote. A changed
