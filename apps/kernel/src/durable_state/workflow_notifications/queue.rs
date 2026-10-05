@@ -131,6 +131,7 @@ pub(super) fn commit_in(tx: &Transaction<'_>, p: &PreparedNotification) -> Resul
             timestamp_ms: now,
             payload_json: &metadata,
             owner_id: p.after.host_daemon_id(),
+            source_owner_id: p.after.owner_user_id(),
             session_id: p.after.id(),
             hot_entities: &p.encoded.hot_entities,
             workflow_runs: &p.encoded.workflow_runs,

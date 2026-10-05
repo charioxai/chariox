@@ -98,7 +98,9 @@ access.
 `RegisterWorkflowNotificationSource {session_id, workflow_ref, enabled}` registers
 one stable source for a workflow. Workflows currently have no independent owner
 field; their session owner is the source owner. A source ID survives enable/disable.
-Registration has no historical replay. Only successful `Completed` runs with a
+Registration has no historical replay. An explicit registration after ownership
+transfer creates a new owner-scoped source ID; old subscriptions and pending rows
+are left alone. Completion selects only the current session owner’s source. Only successful `Completed` runs with a
 valid final output emit, once per source/run occurrence. Completion and pending
 outbox records commit in the same normal workflow transaction, so a restart between
 completion and routing recovers the original occurrence. Failed and intermediate

@@ -49,7 +49,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS workflow_notification_sources (
       source_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, kernel_id TEXT NOT NULL,
       session_id TEXT NOT NULL, workflow_id TEXT NOT NULL, enabled INTEGER NOT NULL,
-      payload_json TEXT NOT NULL, UNIQUE(kernel_id,session_id,workflow_id));
+      payload_json TEXT NOT NULL, UNIQUE(kernel_id,session_id,workflow_id,owner_id));
     CREATE TABLE IF NOT EXISTS workflow_notification_subscriptions (
       subscription_id TEXT PRIMARY KEY, source_id TEXT NOT NULL, owner_id TEXT NOT NULL,
       target_identity TEXT NOT NULL, payload_json TEXT NOT NULL,
@@ -239,7 +239,7 @@ fn apply(
             let mut source = admission.source;
             require_source_workflow(tx, &source, Some(&admission.workflow_json))?;
             // The durable workflow identity owns its original source ID and owner.
-            let existing: Option<(String,String)> = tx.query_row("SELECT source_id,owner_id FROM workflow_notification_sources WHERE kernel_id=?1 AND session_id=?2 AND workflow_id=?3",params![source.kernel_id,source.session_id,source.workflow_id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql)?;
+            let existing: Option<(String,String)> = tx.query_row("SELECT source_id,owner_id FROM workflow_notification_sources WHERE kernel_id=?1 AND session_id=?2 AND workflow_id=?3 AND owner_id=?4",params![source.kernel_id,source.session_id,source.workflow_id,source.owner_user_id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql)?;
             if let Some((id, owner)) = existing {
                 if owner != source.owner_user_id {
                     return Err(error("source not available"));
@@ -283,7 +283,7 @@ fn apply(
                 &subscription.workflow_id,
             );
             // Recursive reachability is UX; runtime ancestry below is authoritative.
-            let cycle: bool = tx.query_row("WITH RECURSIVE reachable(identity) AS (VALUES (?1) UNION SELECT s.target_identity FROM reachable r JOIN workflow_notification_sources src ON json_array(src.kernel_id,src.session_id,src.workflow_id)=r.identity JOIN workflow_notification_subscriptions s ON s.source_id=src.source_id WHERE src.enabled=1) SELECT EXISTS(SELECT 1 FROM reachable WHERE identity=?2)", params![to,from], |r|r.get(0)).map_err(sql)?;
+            let cycle: bool = tx.query_row("WITH RECURSIVE reachable(identity) AS (VALUES (?1) UNION SELECT s.target_identity FROM reachable r JOIN workflow_notification_sources src ON json_array(src.kernel_id,src.session_id,src.workflow_id)=r.identity JOIN workflow_notification_subscriptions s ON s.source_id=src.source_id WHERE src.enabled=1 AND s.owner_id=?3) SELECT EXISTS(SELECT 1 FROM reachable WHERE identity=?2)", params![to,from,subscription.owner_user_id], |r|r.get(0)).map_err(sql)?;
             if cycle {
                 return Err(error("workflow notification cycle"));
             }

@@ -203,6 +203,7 @@ fn write(tx: &Transaction<'_>, prepared: &PreparedAppEvent, recovery: bool) -> R
             timestamp_ms: now,
             payload_json: &metadata,
             owner_id: prepared.after.host_daemon_id(),
+            source_owner_id: prepared.after.owner_user_id(),
             session_id: prepared.after.id(),
             hot_entities: &prepared.encoded.hot_entities,
             workflow_runs: &prepared.encoded.workflow_runs,

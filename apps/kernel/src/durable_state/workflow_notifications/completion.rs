@@ -6,6 +6,7 @@ use crate::session::{WorkflowRun, WorkflowRunStatus};
 pub(crate) fn capture_in(
     tx: &Transaction<'_>,
     kernel: &str,
+    current_owner: &str,
     runs: &[DurableWorkflowRunWrite],
 ) -> rusqlite::Result<()> {
     for encoded in runs {
@@ -16,7 +17,7 @@ pub(crate) fn capture_in(
         if previous.as_deref() == Some("Completed") {
             continue;
         }
-        let source_json: Option<String> = tx.query_row("SELECT payload_json FROM workflow_notification_sources WHERE kernel_id=?1 AND session_id=?2 AND workflow_id=?3 AND enabled=1",params![kernel,encoded.session_id,encoded.workflow_id],|r|r.get(0)).optional()?;
+        let source_json: Option<String> = tx.query_row("SELECT payload_json FROM workflow_notification_sources WHERE kernel_id=?1 AND session_id=?2 AND workflow_id=?3 AND owner_id=?4 AND enabled=1",params![kernel,encoded.session_id,encoded.workflow_id,current_owner],|r|r.get(0)).optional()?;
         let Some(source_json) = source_json else {
             continue;
         };

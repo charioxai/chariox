@@ -567,3 +567,71 @@ fn expired_ordinary_notification_queue_never_dispatches_after_recovery() {
         .any(|q| q.status() == crate::session::WorkflowQueuedPromptStatus::Cancelled)));
     cleanup(f);
 }
+
+#[test]
+fn ownership_transfer_does_not_capture_output_for_former_owner_or_touch_pending() {
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("a");
+    let (b, _, bp) = f.workflow("b");
+    let old = f.source(&a);
+    f.attach(&old, &b, &bp);
+    f.complete(
+        &a,
+        "old-owner",
+        None,
+        WorkflowRunStatus::Completed,
+        "old output",
+    );
+    let mut session = f.sessions.get_session(&f.session).unwrap();
+    session.set_owner_user_id("another-user");
+    f.sessions.restore_session(session);
+    f.persist();
+    f.complete(
+        &a,
+        "new-owner-unregistered",
+        None,
+        WorkflowRunStatus::Completed,
+        "private new output",
+    );
+    assert_eq!(
+        f.candidates(false).len(),
+        1,
+        "former owner must capture no new output"
+    );
+    let mut source = old.clone();
+    source.source_id = "new-owner-source".into();
+    source.owner_user_id = "another-user".into();
+    let workflow = f.sessions.resolve_workflow_ref(&f.session, &a).unwrap();
+    let NotificationOutcome::Source(new) = f
+        .store
+        .notify(NotificationOperation::Register(SourceAdmission {
+            source,
+            workflow_json: encode(&workflow).unwrap(),
+        }))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_ne!(new.source_id, old.source_id);
+    f.complete(
+        &a,
+        "new-owner-registered",
+        None,
+        WorkflowRunStatus::Completed,
+        "new output",
+    );
+    assert_eq!(
+        f.candidates(false).len(),
+        1,
+        "old pending is untouched; no historical or new replay to old subscription"
+    );
+    assert_eq!(
+        f.store
+            .notification_inventory("another-user")
+            .unwrap()
+            .0
+            .len(),
+        1
+    );
+    cleanup(f);
+}
