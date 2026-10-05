@@ -44,7 +44,7 @@ except Exception:
 
 export function privateClientEnvironment(environment) {
   return Object.fromEntries(Object.entries(environment).filter(([name]) =>
-    ["PATH", "HOME", "USER", "SHELL", "LANG", "TERM", "TMPDIR", "TEMP", "TMP", "RUST_MIN_STACK"].includes(name)
+    ["PATH", "HOME", "USER", "SHELL", "LANG", "TERM", "TMPDIR", "TEMP", "TMP", "RUST_MIN_STACK", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_DATA_HOME"].includes(name)
       || name.startsWith("XDG_") || name.startsWith("CHARIOX_") || name.startsWith("LC_")))
 }
 

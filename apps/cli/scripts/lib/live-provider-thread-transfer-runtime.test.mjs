@@ -256,46 +256,9 @@ test("Claude provider aliases request isolated credentials", () => {
   assert.equal(providersNeedClaudeCredentials(["claude-headless"]), true)
 })
 
-test("Claude provider state uses the selected provider home", () => {
-  const specs = providerStateCopySpecs("claude-headless", { HOME: "/isolated/provider-home" })
-  assert.deepEqual(
-    specs.map((spec) => spec.source),
-    ["/isolated/provider-home/.claude", "/isolated/provider-home/.claude.json"],
-  )
-})
-
-test("provider state transfer copies into an isolated worker home", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-provider-state-test-"))
-  try {
-    const sourceHome = path.join(root, "source")
-    const destinationHome = path.join(root, "destination")
-    await writeClaudeCredentialsPayload(
-      path.join(sourceHome, ".claude", "projects", "session.json"),
-      Buffer.from('{"session":"one"}\n'),
-    )
-    await writeClaudeCredentialsPayload(
-      path.join(sourceHome, ".claude.json"),
-      Buffer.from('{"hasCompletedOnboarding":true}\n'),
-    )
-
-    const evidence = await transferProviderStateToWorker({
-      provider: "claude-headless",
-      sourceProviderEnv: { HOME: sourceHome },
-      destinationProviderEnv: { HOME: destinationHome },
-    })
-
-    assert.equal(evidence.copied.length, 2)
-    assert.equal(
-      await readFile(path.join(destinationHome, ".claude", "projects", "session.json"), "utf8"),
-      '{"session":"one"}\n',
-    )
-    assert.equal(
-      await readFile(path.join(destinationHome, ".claude.json"), "utf8"),
-      '{"hasCompletedOnboarding":true}\n',
-    )
-  } finally {
-    await rm(root, { recursive: true, force: true })
-  }
+test("whole-profile state copies require product accounts and selected native threads",async()=>{
+  assert.throws(()=>providerStateCopySpecs("claude-headless",{CLAUDE_CONFIG_DIR:"/synthetic"}),/retired/)
+  await assert.rejects(transferProviderStateToWorker({provider:"claude-headless",sourceProviderEnv:{},destinationProviderEnv:{}}),/retired/)
 })
 
 test("Codex thread transfer copies only the requested rollout into the materialized worker profile", async () => {
