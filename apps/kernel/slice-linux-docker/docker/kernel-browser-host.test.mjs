@@ -504,3 +504,33 @@ for (const change of ["stable", "layout", "metadata"]) {
     }
   }));
 }
+
+test("display subscription captures the current document after navigation", () => using(async ({host,connection,pages}) => {
+  const original = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
+  process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = "1";
+  const send = connection.send;
+  connection.send = async (method,params,session) => {
+    if(method === "Page.captureScreenshot") {
+      const width=Math.round((params.clip?.width??1280)*(params.clip?.scale??1));
+      const height=Math.round((params.clip?.height??800)*(params.clip?.scale??1));
+      return {data:encodePng(width,height,Buffer.alloc(width*height*4,255))};
+    }
+    if(method === "Target.getTargetInfo") return {targetInfo:pages.get(params.targetId)};
+    return send(method,params,session);
+  };
+  try {
+    const opened=await host.request({op:"open",url:"about:blank"});
+    const binding={tab_id:opened.tab_id,generation:opened.generation};
+    const stream=await host.request({op:"display_subscribe",...binding,codecs:["png"],bitrate:8_000_000,device_scale_factor:1});
+    const poll={op:"screenshot",generation:opened.generation,display_subscription_id:stream.subscription_id,after_sequence:0};
+    const first=await host.request(poll);
+    assert.equal(first.display_frame.document_id,opened.tabs[0].document_id);
+    pages.get(host.tabs.get(opened.tab_id).target_id).document_id="next-document";
+    const next=await host.request({...poll,after_sequence:first.display_frame.sequence});
+    assert.equal(next.display_frame.document_id,"next-document");
+    assert.ok(next.display_frame.sequence>first.display_frame.sequence);
+  } finally {
+    if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
+    else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;
+  }
+}));

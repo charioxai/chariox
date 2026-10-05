@@ -25,7 +25,7 @@ export class DisplayCapture {
   async next(tab, policy, reusable, forceFull = false) {
     if (!reusable || this.document !== tab.document_id || this.policy !== policy) this.invalidate();
     const capture = async clip => {
-      const source = await this.capture(clip);
+      const source = await this.capture(clip, tab);
       if (source.document_id !== tab.document_id || source.tab_id !== tab.tab_id) { this.invalidate(); throw Error('MD-DISPLAY: capture binding changed'); }
       return source;
     };

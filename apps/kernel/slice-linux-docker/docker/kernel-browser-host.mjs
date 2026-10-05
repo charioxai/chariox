@@ -316,7 +316,7 @@ export class KernelBrowserHost {
       this.armDisplayExpiry(stream);
       if (command.op === "display_attach") return { attached: true, generation: this.generation };
       const tab = await this.displayTarget({ tab_id: stream.tab_id, generation: command.generation });
-      stream.capture ??= new DisplayCapture((clip) => this.screenshot(tab, clip), stream.device_scale_factor, this.timing);
+      stream.capture ??= new DisplayCapture((clip, currentTab) => this.screenshot(currentTab, clip), stream.device_scale_factor, this.timing);
       const source = await stream.capture.next({ ...tab, input_epoch: this.inputEpochs.get(tab.tab_id) ?? 0 }, this.protection, stream.previous && command.after_sequence === stream.sequence, !stream.exact);
       const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
       try { await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id); }
