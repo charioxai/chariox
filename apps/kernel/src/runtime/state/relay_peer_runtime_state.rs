@@ -1365,6 +1365,7 @@ impl KernelRuntimeState {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn project_relay_remote_runtime_projection(
         &self,
+        authority: crate::runtime::relay_peer_authority::RemoteProjectionAuthority,
         session_id: &str,
         agent_id: &str,
         provider_run_id: &str,
@@ -1390,6 +1391,7 @@ impl KernelRuntimeState {
         let outcome = self
             .with_app_side_effect(move |app| {
                 RemoteLeaseRuntime::new(app).project_remote_runtime_projection(
+                    authority,
                     &projection_session_id,
                     &projection_agent_id,
                     &projection_provider_run_id,

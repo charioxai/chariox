@@ -100,6 +100,13 @@ pub(super) async fn handle_daemon_peer_event(
         relay_crypto::decrypt_payload_for_private_key(&daemon_private_key, &encrypted_event)?;
     let sender_public_key = decrypted.sender_public_key.clone();
     let stable_sender_id = stable_peer_daemon_id(from_daemon_id);
+    let verified_sender = authenticated_sender
+        || state
+            .read()
+            .await
+            .pinned_peer_public_key(stable_sender_id)
+            .as_deref()
+            == Some(sender_public_key.as_str());
     if authenticated_sender && !stable_sender_id.trim().is_empty() {
         let already_pinned = state
             .read()
@@ -143,6 +150,15 @@ pub(super) async fn handle_daemon_peer_event(
         } => {
             router
                 .relay_project_remote_runtime_projection(
+                    crate::runtime::relay_peer_authority::RemoteProjectionAuthority {
+                        peer: crate::runtime::relay_peer_authority::RelayPeerAuthority {
+                            kernel_id: stable_sender_id.into(),
+                            public_key: sender_public_key,
+                            sender_bound: verified_sender,
+                        },
+                        expected_binding: None,
+                        expected_prompt_id: None,
+                    },
                     &home_session_id,
                     &home_agent_id,
                     &provider_run_id,

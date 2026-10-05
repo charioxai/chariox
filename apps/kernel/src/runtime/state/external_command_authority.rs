@@ -63,6 +63,7 @@ impl KernelRuntimeState {
     }
 
     pub(crate) fn authorize_current_external_command(&self) -> Result<(), DaemonError> {
+        self.authorize_current_forwarded_binding()?;
         self.authorize_prompt_command(
             self.external_command_authority
                 .as_ref()

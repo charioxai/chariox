@@ -450,9 +450,29 @@ async fn remote_runtime_projection_records_metaagent_turn_completion_event() {
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
 
+    app.lock()
+        .await
+        .agents()
+        .bind_remote_execution(
+            worker.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-1".into(),
+                worker_machine_id: "worker-machine".into(),
+                execution_lease_id: "projection-lease".into(),
+                leased_agent_id: worker.id().into(),
+                active_worker_provider_run_id: Some("remote:worker:provider-run-1".into()),
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
     router
         .runtime_state
         .project_relay_remote_runtime_projection(
+            crate::runtime::relay_peer_authority::test_projection_authority("worker-1"),
             session.id(),
             worker.id(),
             "remote:worker:provider-run-1",

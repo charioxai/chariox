@@ -9,6 +9,7 @@ impl KernelRuntimeState {
         grant: crate::extension::ExtensionGrant,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.authorize_current_forwarded_binding()?;
         let previous_grants = self
             .owned
             .agent_store
@@ -282,6 +283,7 @@ impl KernelRuntimeState {
         name: String,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.authorize_current_forwarded_binding()?;
         let existing = self
             .owned
             .agent_store
@@ -298,6 +300,7 @@ impl KernelRuntimeState {
             self.ensure_remote_mcp_availability_for_agent(&checked)
                 .await?;
         }
+        self.authorize_current_forwarded_binding()?;
         let agent = self
             .owned
             .grant_agent_mcp(agent_ref, name.clone(), caller_user_id)?;
@@ -360,6 +363,7 @@ impl KernelRuntimeState {
         name: String,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.authorize_current_forwarded_binding()?;
         let agent = self
             .owned
             .grant_agent_skill(agent_ref, name.clone(), caller_user_id)?;

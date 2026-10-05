@@ -120,6 +120,10 @@ pub fn import_kernel_context(
     )?;
     validate_import_paths(&request.capability_root, &request.vault_path)?;
 
+    #[cfg(unix)]
+    let ordinary_root = ordinary_user_root()?
+        .map(|home| registry_paths::RegistryDirectory::root(&home))
+        .transpose()?;
     let parent = request
         .capability_root
         .parent()
@@ -149,6 +153,11 @@ pub fn import_kernel_context(
             false,
             &mut budget,
         )?;
+        #[cfg(unix)]
+        if let Some(home) = ordinary_root.as_ref() {
+            record_ordinary_entries_at(&staging, home, &mut budget)?;
+        }
+        #[cfg(not(unix))]
         if let Some(home) = ordinary_user_root()? {
             record_ordinary_entries(&staging, &home, &mut budget)?;
         }
@@ -169,6 +178,11 @@ pub fn import_kernel_context(
             }
             Err(error) => return Err(error),
         }
+        #[cfg(unix)]
+        if let Some(home) = ordinary_root.as_ref() {
+            publish_ordinary_entries_at(&request.capability_root, home)?;
+        }
+        #[cfg(not(unix))]
         if let Some(home) = ordinary_user_root()? {
             publish_ordinary_entries(&request.capability_root, &home)?;
         }
@@ -1139,6 +1153,10 @@ fn final_user_root(final_root: &Path) -> Result<PathBuf, DaemonError> {
 
 /// Registry directories an import may share with the user; only their
 /// children are published, so rollback never removes the directory itself.
+#[cfg(unix)]
+#[path = "registry_paths.rs"]
+mod registry_paths;
+
 const ORDINARY_REGISTRY_DIRECTORIES: &[&str] = &[
     "mcps",
     "skills",
@@ -1158,6 +1176,26 @@ fn record_ordinary_entries(
     home: &Path,
     budget: &mut MaterializationBudget,
 ) -> Result<(), DaemonError> {
+    #[cfg(unix)]
+    {
+        let home = registry_paths::RegistryDirectory::root(home)?;
+        record_ordinary_entries_at(staging, &home, budget)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (staging, home, budget);
+        Err(import_error(
+            "no-follow ordinary registry publication is unsupported",
+        ))
+    }
+}
+
+#[cfg(unix)]
+fn record_ordinary_entries_at(
+    staging: &Path,
+    home: &registry_paths::RegistryDirectory,
+    budget: &mut MaterializationBudget,
+) -> Result<(), DaemonError> {
     let mut entries = Vec::new();
     let staged = staging.join("user");
     if staged.exists() {
@@ -1171,9 +1209,10 @@ fn record_ordinary_entries(
     )
 }
 
+#[cfg(unix)]
 fn collect_ordinary_entries(
     staged: &Path,
-    home: &Path,
+    home: &registry_paths::RegistryDirectory,
     relative: &Path,
     entries: &mut Vec<String>,
 ) -> Result<(), DaemonError> {
@@ -1188,39 +1227,50 @@ fn collect_ordinary_entries(
             .ok_or_else(|| import_error("kernel context entry is not UTF-8"))?
             .to_string();
         if ORDINARY_REGISTRY_DIRECTORIES.contains(&path_text.as_str()) {
+            // Check even an empty registry before Vault installation.
+            home.parent(&format!("{path_text}/registry-check"))?;
             collect_ordinary_entries(staged, home, &path, entries)?;
             continue;
         }
-        match fs::symlink_metadata(home.join(&path)) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => entries.push(path_text),
-            Ok(_) => {
-                return Err(import_error(format!(
-                    "kernel context entry `{path_text}` already exists in the ordinary registry"
-                )))
-            }
-            Err(error) => return Err(import_io_error("inspect ordinary registry", error)),
+        let (parent, name) = home.parent(&path_text)?;
+        if parent.absent(&name)? {
+            entries.push(path_text);
+        } else {
+            return Err(import_error(format!(
+                "kernel context entry `{path_text}` already exists in the ordinary registry"
+            )));
         }
     }
     Ok(())
 }
 
-/// Move the recorded entries into the ordinary registries without replacing
-/// any. A replay finishes the same set; an entry already moved is skipped.
 fn publish_ordinary_entries(root: &Path, home: &Path) -> Result<(), DaemonError> {
+    #[cfg(unix)]
+    {
+        publish_ordinary_entries_at(root, &registry_paths::RegistryDirectory::root(home)?)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (root, home);
+        Err(import_error(
+            "no-follow ordinary registry publication is unsupported",
+        ))
+    }
+}
+
+#[cfg(unix)]
+fn publish_ordinary_entries_at(
+    root: &Path,
+    home: &registry_paths::RegistryDirectory,
+) -> Result<(), DaemonError> {
     let staged = root.join("user");
     for relative in read_published_entries(root)? {
         let source = staged.join(&relative);
         if fs::symlink_metadata(&source).is_err() {
             continue;
         }
-        let destination = home.join(&relative);
-        let parent = destination
-            .parent()
-            .ok_or_else(|| import_error("published kernel context entry has no parent"))?;
-        fs::create_dir_all(parent)
-            .map_err(|error| import_io_error("create ordinary registry directory", error))?;
-        publish_directory_no_clobber(&source, &destination)?;
-        sync_directory(parent)?;
+        let (parent, name) = home.parent(&relative)?;
+        parent.publish(&source, &name)?;
     }
     Ok(())
 }
@@ -1237,21 +1287,25 @@ fn read_published_entries(root: &Path) -> Result<Vec<String>, DaemonError> {
 
 /// Remove only entries this import moved: one still staged was never published.
 fn remove_ordinary_entries(root: &Path, home: &Path) -> Result<(), DaemonError> {
-    let staged = root.join("user");
-    for relative in read_published_entries(root)? {
-        if fs::symlink_metadata(staged.join(&relative)).is_ok() {
-            continue;
+    #[cfg(unix)]
+    {
+        let home = registry_paths::RegistryDirectory::root(home)?;
+        for relative in read_published_entries(root)? {
+            if fs::symlink_metadata(root.join("user").join(&relative)).is_ok() {
+                continue;
+            }
+            let (parent, name) = home.parent(&relative)?;
+            parent.remove(&name)?;
         }
-        let path = home.join(&relative);
-        let removed = match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&path),
-            Ok(_) => fs::remove_file(&path),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
-        };
-        removed.map_err(|error| import_io_error("remove published kernel context entry", error))?;
+        Ok(())
     }
-    Ok(())
+    #[cfg(not(unix))]
+    {
+        let _ = (root, home);
+        Err(import_error(
+            "no-follow ordinary registry removal is unsupported",
+        ))
+    }
 }
 
 fn acquire_import_lock(parent: &Path) -> Result<ImportLock, DaemonError> {
@@ -1683,11 +1737,21 @@ fn wait_for_child(
     maximum_entries: u64,
     allow_python_venv_symlink: bool,
 ) -> Result<ExitStatus, DaemonError> {
+    let mut signals = crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(child)
+        .map_err(|error| import_io_error(operation, error))?;
     let started = std::time::Instant::now();
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                terminate_child_descendants(child.id());
+        signals
+            .refresh()
+            .map_err(|error| import_io_error(operation, error))?;
+        match child_exited_without_reaping(child) {
+            Ok(true) => {
+                signals
+                    .kill_group()
+                    .map_err(|error| import_io_error(operation, error))?;
+                let status = child
+                    .wait()
+                    .map_err(|error| import_io_error(operation, error))?;
                 ensure_tree_within_limits(
                     budget_root,
                     maximum_bytes,
@@ -1696,9 +1760,9 @@ fn wait_for_child(
                 )?;
                 return Ok(status);
             }
-            Ok(None) => {}
+            Ok(false) => {}
             Err(error) => {
-                terminate_child_tree(child);
+                terminate_child_tree(child, &mut signals);
                 return Err(import_io_error(operation, error));
             }
         }
@@ -1708,38 +1772,66 @@ fn wait_for_child(
             maximum_entries,
             allow_python_venv_symlink,
         ) {
-            terminate_child_tree(child);
+            terminate_child_tree(child, &mut signals);
             return Err(error);
         }
         if started.elapsed() >= timeout {
-            terminate_child_tree(child);
+            terminate_child_tree(child, &mut signals);
             return Err(import_error(format!("{operation} timed out")));
         }
         std::thread::sleep(Duration::from_millis(100));
     }
 }
 
+#[cfg(target_os = "linux")]
+fn child_exited_without_reaping(child: &mut Child) -> io::Result<bool> {
+    let mut status: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            child.id(),
+            &mut status,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // Retain the exited session leader until its descendants have been checked and stopped.
+    Ok(unsafe { status.si_pid() } != 0)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn child_exited_without_reaping(child: &mut Child) -> io::Result<bool> {
+    child.try_wait().map(|status| status.is_some())
+}
+
 #[cfg(unix)]
 fn configure_child_process_group(command: &mut Command) {
     use std::os::unix::process::CommandExt;
-    command.process_group(0);
+    // An exclusive session proves fast reparented descendants while the leader is retained.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
 }
 
 #[cfg(not(unix))]
 fn configure_child_process_group(_command: &mut Command) {}
 
-#[cfg(unix)]
-fn terminate_child_descendants(process_group: u32) {
-    let _ = unsafe { libc::kill(-(process_group as i32), libc::SIGKILL) };
-}
-
-#[cfg(not(unix))]
-fn terminate_child_descendants(_process_group: u32) {}
-
-fn terminate_child_tree(child: &mut Child) {
-    terminate_child_descendants(child.id());
-    let _ = child.kill();
-    let _ = child.wait();
+fn terminate_child_tree(
+    child: &mut Child,
+    signals: &mut crate::runtime::owned_process_signals::OwnedProcessSignals,
+) {
+    if signals.kill_group().is_ok() {
+        let _ = signals.kill_child();
+        let _ = child.wait();
+    }
 }
 
 struct TemporaryDirectoryCleanup(PathBuf);
@@ -2150,6 +2242,42 @@ fn import_error(message: impl Into<String>) -> DaemonError {
 mod tests {
     use super::*;
     use crate::secret::{TransferredVaultSourceBinding, VaultUnlockLease};
+
+    #[cfg(unix)]
+    #[test]
+    fn mp11_ordinary_registry_symlink_is_rejected_before_publication_and_rollback() {
+        let root = test_root("registry-parent-symlink");
+        let home = root.join("home/.chariox");
+        let outside = root.join("outside");
+        let staging = root.join("staging");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(staging.join("user/skills/imported")).unwrap();
+        fs::write(outside.join("untouched"), "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, home.join("skills")).unwrap();
+        assert!(
+            record_ordinary_entries(&staging, &home, &mut MaterializationBudget::new()).is_err(),
+            "symlinked registry parent was admitted before Vault publication"
+        );
+        fs::write(
+            staging.join(PUBLISHED_ENTRIES_NAME),
+            b"[\"skills/imported\"]",
+        )
+        .unwrap();
+        fs::create_dir_all(outside.join("imported")).unwrap();
+        fs::write(outside.join("imported/user-entry"), "user").unwrap();
+        fs::remove_dir_all(staging.join("user")).unwrap();
+        assert!(remove_ordinary_entries(&staging, &home).is_err());
+        assert_eq!(
+            fs::read_to_string(outside.join("untouched")).unwrap(),
+            "outside"
+        );
+        assert_eq!(
+            fs::read_to_string(outside.join("imported/user-entry")).unwrap(),
+            "user"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn imports_unified_kernel_context_and_replays_exact_receipt() {

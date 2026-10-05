@@ -522,7 +522,9 @@ impl KernelRuntimeState {
                 provider_run_id,
                 steer_id,
                 ..
-            } if steer_id == payload.steer_id => provider_run_id,
+            } if steer_id == payload.steer_id && provider_run_id == worker_provider_run_id => {
+                provider_run_id
+            }
             other => {
                 return Err(DaemonError::LocalTransport {
                     operation: "steer agent message",
@@ -640,11 +642,13 @@ impl KernelRuntimeState {
                     remote_dispatch: None,
                 });
             }
-            self.refresh_project_prompt_provider(
-                &prepared.session_id,
-                prepared.prompt.target_agent_id(),
-            )
-            .await?;
+            self.with_external_command_authority(authority)
+                .refresh_project_prompt_provider(
+                    &prepared.session_id,
+                    prepared.prompt.target_agent_id(),
+                )
+                .await?;
+            authorize()?;
             if let Some(mut submission) =
                 owned.submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
             {
@@ -652,6 +656,7 @@ impl KernelRuntimeState {
                     .await?;
                 return Ok(submission);
             }
+            authorize()?;
             if let Some(mut submission) =
                 owned.submit_remote_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
             {
@@ -680,6 +685,7 @@ impl KernelRuntimeState {
                     .get_agent(&target_agent_id)?
                     .remote_execution()
                     .is_some();
+                authorize()?;
                 if crate::scheduler::runtime::is_workflow_prompt_attachment(&attachment_id) {
                     let fresh_context = owned.workflow_prompt_requires_fresh_provider_context(
                         &session_id,
@@ -762,6 +768,7 @@ impl KernelRuntimeState {
         &self,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<(), DaemonError> {
+        self.authorize_current_forwarded_binding()?;
         match authority {
             Some((id, request)) => self.authorize_external_request(id, request).map(|_| ()),
             None => Ok(()),
@@ -1121,7 +1128,9 @@ impl KernelRuntimeState {
                 provider_run_id,
                 steer_id,
                 ..
-            } if steer_id == payload.steer_id => provider_run_id,
+            } if steer_id == payload.steer_id && provider_run_id == prepared.provider_run_id => {
+                provider_run_id
+            }
             other => {
                 let error = DaemonError::LocalTransport {
                     operation: "steer remote queued prompt",

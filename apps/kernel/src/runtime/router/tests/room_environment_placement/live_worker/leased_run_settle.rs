@@ -137,6 +137,7 @@ async fn check_cleanup(fixture: &mut LiveWorker, finished: bool) {
     let late = fixture
         .home
         .relay_project_remote_runtime_projection(
+            crate::runtime::relay_peer_authority::test_projection_authority("worker-1"),
             &room,
             agent,
             &worker_run_id,

@@ -1,5 +1,25 @@
 use super::*;
 
+fn bind_projection_test_worker(app: &DaemonApp, agent_id: &str, run: &str) {
+    app.agents()
+        .bind_remote_execution(
+            agent_id,
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-kernel".into(),
+                worker_machine_id: "worker-machine".into(),
+                execution_lease_id: "projection-test-lease".into(),
+                leased_agent_id: agent_id.into(),
+                active_worker_provider_run_id: Some(run.into()),
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
+}
+
 #[test]
 fn stale_worker_snapshot_cannot_restore_profile_after_remote_substitution() {
     assert_stale_worker_snapshot_preserves_selected_profile(Some("current-worker-run"));
@@ -90,6 +110,7 @@ fn assert_stale_worker_snapshot_preserves_selected_profile(active_worker_run: Op
     );
     let outcome = RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
+            crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
             session.id(),
             agent.id(),
             stale_run.id(),
@@ -174,6 +195,7 @@ fn native_worker_snapshot_can_establish_run_binding_without_home_dispatch() {
     );
     let outcome = RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
+            crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
             session.id(),
             agent.id(),
             run.id(),
@@ -272,8 +294,10 @@ fn remote_workflow_completion_preserves_worker_provider_failure_diagnostic() {
     );
     let diagnostic = "You've hit your session limit";
     worker_run.set_terminal_diagnostic(diagnostic);
+    bind_projection_test_worker(&app, agent.id(), "worker-run-1");
     let outcome = RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
+            crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
             session.id(),
             agent.id(),
             "worker-run-1",
@@ -388,8 +412,10 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
         provider_termination: None,
     };
 
+    bind_projection_test_worker(&app, agent.id(), "remote:worker:provider-run-1");
     RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
+            crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
             session.id(),
             agent.id(),
             "remote:worker:provider-run-1",
@@ -535,8 +561,10 @@ fn remote_runtime_projection_preserves_authoritative_provider_termination() {
     };
     let termination = crate::provider::ProviderRunTermination::process_exit(137, 9_999);
 
+    bind_projection_test_worker(&app, agent.id(), "remote:worker:provider-run-exited");
     RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
+            crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
             session.id(),
             agent.id(),
             "remote:worker:provider-run-exited",
@@ -610,8 +638,10 @@ fn stale_remote_completion_replay_does_not_complete_the_next_prompt() {
         home_prompt_id: Some(first.id().to_string()),
         provider_termination: None,
     };
+    bind_projection_test_worker(&app, agent.id(), "remote:worker:provider-run-1");
     RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
+            crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
             session.id(),
             agent.id(),
             "remote:worker:provider-run-1",
@@ -626,6 +656,7 @@ fn stale_remote_completion_replay_does_not_complete_the_next_prompt() {
         .terminal_mut()
         .drain_completion_records(session.id(), attachment.id());
 
+    app.agents().clear_remote_execution(agent.id()).unwrap();
     let second = app
         .submit_prompt(
             session.id(),
@@ -639,8 +670,10 @@ fn stale_remote_completion_replay_does_not_complete_the_next_prompt() {
         panic!("second prompt should be active");
     };
 
+    bind_projection_test_worker(&app, agent.id(), "remote:worker:provider-run-1");
     RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
+            crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
             session.id(),
             agent.id(),
             "remote:worker:provider-run-1",
@@ -693,8 +726,10 @@ fn native_completion_correlation_distinguishes_durable_and_native_prompts() {
     };
     assert_eq!(prompt.durable_operation_id(), Some("operation-1"));
 
+    bind_projection_test_worker(&app, agent.id(), "remote:worker:provider-run-1");
     RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
+            crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
             session.id(),
             agent.id(),
             "remote:worker:provider-run-1",
@@ -721,8 +756,10 @@ fn native_completion_correlation_distinguishes_durable_and_native_prompts() {
         .drain_completion_records(session.id(), attachment.id())
         .is_empty());
 
+    bind_projection_test_worker(&app, agent.id(), "remote:worker:provider-run-1");
     RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
+            crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
             session.id(),
             agent.id(),
             "remote:worker:provider-run-1",
@@ -749,8 +786,10 @@ fn native_completion_correlation_distinguishes_durable_and_native_prompts() {
     assert_eq!(completions.len(), 1);
     assert_eq!(completions[0].message_id, "current-home-completion");
 
+    bind_projection_test_worker(&app, agent.id(), "remote:worker:provider-run-1");
     RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
+            crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
             session.id(),
             agent.id(),
             "remote:worker:provider-run-1",

@@ -1264,6 +1264,13 @@ impl KernelRuntimeOwnedState {
         reservation: u64,
         provider_run_id: &str,
     ) -> Result<crate::app::KernelQueuedPromptSteer, DaemonError> {
+        if provider_run_id != prepared.provider_run_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer remote queued prompt",
+                message: "steer receipt selected another provider run".into(),
+            });
+        }
+
         if !prepared
             .prompt
             .remote_steer_reservation_matches(reservation)

@@ -17,6 +17,16 @@ mod extension_registration_tool;
 mod extension_request_tool;
 mod home_connector_executor;
 mod home_extension_authorizer;
+pub(super) fn authorize_remote_home_context_for_peer(
+    state: &KernelRuntimeState,
+    context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
+) -> Result<crate::agent::AgentInstance, DaemonError> {
+    home_extension_authorizer::authorize_remote_home_context(
+        state,
+        context,
+        "authorize forwarded home context",
+    )
+}
 mod home_extension_execution_policy;
 mod home_mcp_proxy_executor;
 mod home_room_browser_runtime;

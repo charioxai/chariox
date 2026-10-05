@@ -236,6 +236,35 @@ pub(super) async fn handle_daemon_peer_request(
         );
     }
 
+    let router = Arc::new(
+        router.with_relay_peer_authority(
+            crate::runtime::relay_peer_authority::RelayPeerAuthority {
+                kernel_id: stable_peer_daemon_id(from_daemon_id).to_string(),
+                public_key: requester_public_key.clone(),
+                sender_bound: require_bound_daemon_sender(
+                    caller_identity.as_ref(),
+                    &encrypted_request,
+                )
+                .is_ok()
+                    || state
+                        .read()
+                        .await
+                        .pinned_peer_public_key(stable_peer_daemon_id(from_daemon_id))
+                        .as_deref()
+                        == Some(requester_public_key.as_str()),
+            },
+        ),
+    );
+
+    let router = match router.authorize_forwarded_peer_request(&request).await {
+        Ok(router) => Arc::new(router),
+        Err(error) => {
+            return RelayRequestOutcome {
+                encrypted_response: None,
+                error: Some(map_relay_error(&error)),
+            }
+        }
+    };
     let response = match request {
         RelayPeerRequest::RoomBrowserController {
             session_id,
@@ -930,7 +959,7 @@ pub(super) async fn handle_daemon_peer_request(
             match steered {
                 Ok((provider_run_id, replayed)) => {
                     if let Err(error) = emit_leased_projection_event(
-                        router,
+                        &router,
                         state,
                         outgoing_tx,
                         &leased_agent_id,
@@ -1944,7 +1973,19 @@ pub(super) async fn handle_daemon_peer_request(
             }
         }
     };
-    encrypt_peer_response(&daemon_private_key, &requester_public_key, response)
+    match router.with_forwarded_response_authority(|| {
+        Ok(encrypt_peer_response(
+            &daemon_private_key,
+            &requester_public_key,
+            response,
+        ))
+    }) {
+        Ok(outcome) => outcome,
+        Err(error) => RelayRequestOutcome {
+            encrypted_response: None,
+            error: Some(map_relay_error(&error)),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -2378,6 +2419,130 @@ mod tests {
         ManagedContextPackageKernel, ManagedContextPackageProviderAccounts,
     };
 
+    #[tokio::test]
+    async fn mp11_forwarded_capability_rejects_unrelated_verified_peer() {
+        mp11_unrelated_forwarded_peer("capability").await;
+    }
+
+    #[tokio::test]
+    async fn mp11_forwarded_credential_rejects_unrelated_verified_peer() {
+        mp11_unrelated_forwarded_peer("credential").await;
+    }
+
+    #[tokio::test]
+    async fn mp11_forwarded_meta_rejects_unrelated_verified_peer() {
+        mp11_unrelated_forwarded_peer("meta").await;
+    }
+    #[tokio::test]
+    async fn mp11_forwarded_live_sync_rejects_unrelated_verified_peer() {
+        mp11_unrelated_forwarded_peer("live-sync").await;
+    }
+
+    async fn mp11_unrelated_forwarded_peer(kind: &str) {
+        let home = DaemonConfig::for_tests();
+        let attacker = DaemonConfig::for_tests();
+        let mut app = crate::app::DaemonApp::bootstrap(home.clone()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "mp11-forwarded",
+                "mp11-forwarded",
+            ))
+            .unwrap();
+        app.agents()
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "victim-worker".into(),
+                    worker_machine_id: "victim-machine".into(),
+                    execution_lease_id: "victim-lease".into(),
+                    leased_agent_id: "victim-leased-agent".into(),
+                    active_worker_provider_run_id: Some("victim-run".into()),
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(RELAY_PEER_PROTOCOL_VERSION),
+                },
+            )
+            .unwrap();
+        let request = if kind == "credential" {
+            RelayPeerRequest::ResolveHomeCredentialSecret {
+                context: crate::transport::relay_peer::RemoteExtensionInvocationContext {
+                    home_kernel_id: home.daemon_id.clone(),
+                    home_session_id: session.id().into(),
+                    home_agent_id: agent.id().into(),
+                    leased_agent_id: "victim-leased-agent".into(),
+                    worker_kernel_id: Some("victim-worker".into()),
+                    worker_machine_id: Some("victim-machine".into()),
+                    worker_provider_run_id: "victim-run".into(),
+                },
+                credential_id: "mp11-not-registered".into(),
+                injection: crate::transport::relay_peer::RemoteCredentialSecretInjection::Pty,
+            }
+        } else {
+            let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext {
+                home_kernel_id: home.daemon_id.clone(),
+                home_session_id: session.id().into(),
+                home_agent_id: agent.id().into(),
+                home_prompt_id: None,
+                leased_agent_id: "victim-leased-agent".into(),
+                worker_kernel_id: "victim-worker".into(),
+                worker_machine_id: "victim-machine".into(),
+                worker_provider_run_id: "victim-run".into(),
+                worker_worktree_path: "mp11-forwarded".into(),
+                worker_workspace_identity: crate::io::WorkspaceIdentity::local("mp11-forwarded"),
+            };
+            match kind {
+                "meta" => RelayPeerRequest::ForwardMetaRuntimeTool {
+                    context,
+                    tool_name: "meta.list_agents".into(),
+                    arguments: serde_json::json!({}),
+                },
+                "live-sync" => RelayPeerRequest::ForwardWorkspaceLiveSyncRuntimeTool {
+                    context,
+                    metadata:
+                        crate::transport::relay_peer::RemoteWorkspaceLiveSyncInvocationMetadata::new(
+                            "victim-run",
+                            crate::transport::runtime_tools::READ_ARTIFACT_TOOL,
+                            None,
+                        ),
+                    tool_name: crate::transport::runtime_tools::READ_ARTIFACT_TOOL.into(),
+                    arguments: serde_json::json!({"path":"ignored"}),
+                    artifact_states: vec![],
+                },
+                _ => RelayPeerRequest::ForwardCapabilityRuntimeTool {
+                    context,
+                    tool_name: crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL.into(),
+                    arguments: serde_json::json!({}),
+                },
+            }
+        };
+        let router = Arc::new(CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            4,
+        ));
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let (sender, _priority, _events) = RelayOutgoingSender::channel(8);
+        let identity = scoped_machine_identity(
+            "unrelated-attacker",
+            Some(crate::runtime::terminal_pairings::public_key_thumbprint(
+                &attacker.relay_public_key,
+            )),
+        );
+        let response = send_authenticated_peer_request_for_test(
+            &router,
+            &state,
+            &sender,
+            "unrelated-attacker",
+            identity,
+            &attacker.relay_private_key,
+            &home.relay_public_key,
+            request,
+        )
+        .await;
+        assert!(
+            matches!(response, Err(error) if error.code == "unauthorized"),
+            "unrelated peer reached forwarded home dispatch"
+        );
+    }
     #[test]
     fn ordinary_lease_caller_rejects_service_identity() {
         let mut identity = scoped_machine_identity("service-1", None);
