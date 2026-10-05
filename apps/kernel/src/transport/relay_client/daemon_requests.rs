@@ -235,6 +235,7 @@ pub(super) async fn handle_daemon_request(
     }
     match result {
         RelayDispatchOutcome::Response(mut response) => {
+            let display_at = std::time::Instant::now();
             let display_event = if let Some((id, sequence, event)) =
                 crate::transport::kernel_browser_display::take_display_event(&mut response)
             {
@@ -262,6 +263,12 @@ pub(super) async fn handle_daemon_request(
             } else {
                 None
             };
+            if display_event.is_some() {
+                crate::transport::kernel_browser_display::timing(
+                    "event_serialize_encrypt",
+                    display_at,
+                );
+            }
             if !quiet_success_request {
                 crate::logging::info_with_fields(
                     "daemon.relay_client",

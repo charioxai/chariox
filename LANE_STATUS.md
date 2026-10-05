@@ -1,3 +1,11 @@
+# MD-DISPLAY-02/04 — Phase 4 instrumentation in progress
+
+2026-10-05: fixed-label local stage timers added without changing protocol 419
+wire shapes. Measuring viewer-local input to rAF after draw, excluding Playwright
+round trips. 33 focused Node checks pass; instrumented Rust build in slot 2.
+No owned leftover drill resources found (inventory shell false positive retained
+in external receipt). Feature stays off. No MD acceptance closure.
+
 # MD-DISPLAY-02/04 — Phase 3 reviewable, default off
 
 2026-10-05 final: implementation source `836e64630bc53d42e488dc97142416fdb0c92271`,
