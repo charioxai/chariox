@@ -27,6 +27,11 @@ export class RelayAuthRenewal {
   checkAuthorization(): void {
     if (this.terminalError) throw this.terminalError
   }
+  invalidate(error: unknown): void {
+    this.terminalError = error
+    this.stop()
+    this.revoked()
+  }
   refresh(): Promise<void> {
     if (this.stopped) return Promise.resolve()
     if (this.pending) return this.pending
@@ -44,9 +49,7 @@ export class RelayAuthRenewal {
       } catch (error) {
         const code = (error as {code?: string})?.code
         if (["client_revoked", "refresh_reuse_detected", "identity_revoked", "authorization_denied"].includes(code ?? "")) {
-          this.terminalError = error
-          this.stop()
-          this.revoked()
+          this.invalidate(error)
         } else this.schedule(Math.min(5_000, 250 * 2 ** Math.min(this.retries++, 5)))
         throw error
       }

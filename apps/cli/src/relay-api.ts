@@ -277,7 +277,7 @@ export async function joinKernelTerminalPairingLink(
   return joined
 }
 
-function requireRelayTokenKeyBinding(token: string, expectedThumbprint: string, capability: string): void {
+export function requireRelayTokenKeyBinding(token: string, expectedThumbprint: string, capability: string): void {
   const payload = relayTokenPayload(token)
   if (!payload) {
     throw new Error(`${capability} requires a relay token bound to this CLI's public key`)

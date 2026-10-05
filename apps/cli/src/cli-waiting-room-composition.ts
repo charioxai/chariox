@@ -1,4 +1,6 @@
 import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
+import type { CloudClient } from "./cloud-client.js"
+import { createCloudWaitingRoomController } from "./cloud-waiting-room-controller.js"
 import { randomUUID } from "node:crypto"
 import { mergeExternalProviderSessionsSorted } from "@chariox/kernel-client/external-provider-sessions"
 import { updateAgentConfig, updateAgentProfile } from "./agent-api.js"
@@ -102,6 +104,7 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliWaitingRoomCompositionDeps = {
+  cloudClient?: CloudClient
   client: any
   options: any
   appLogger: any
@@ -258,6 +261,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     updateSessionChrome: () => deps.updateSessionChrome(),
     syncCommandCenter: () => deps.syncCommandCenter(),
     refreshProviderCatalogForSelection: (state) => {
+      if (!deps.kernelConnected()) return
       const revision = ++providerCatalogSelectionRevision
       const executionLocation = state.sliceSelectionId && !["none", "new"].includes(state.sliceSelectionId)
         ? { kind: "slice" as const, slice_ref: state.sliceSelectionId }
@@ -341,8 +345,14 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     persistInventory: waitingRoomInventoryCache.persist,
     getLocalKernelPresences: loadLocalKernelPresences,
   })
-  const refreshWaitingRoomDataNow = waitingRoomInventoryRefreshController.refreshNow
-  const refreshWaitingRoomData = waitingRoomInventoryRefreshController.refresh
+  const refreshCloudDirectory = createCloudWaitingRoomController({
+    client: deps.cloudClient, isKernelConnected: deps.kernelConnected,
+    setMachines: deps.setRemoteMachinesState, setKernels: deps.setRemoteKernelsState,
+    setStatus: deps.setWaitingRoomInventoryStatus,
+    reconcile: () => reconcileWaitingRoomProjection(deps.waitingRoomState()),
+  })
+  const refreshWaitingRoomDataNow = () => deps.kernelConnected() ? waitingRoomInventoryRefreshController.refreshNow() : refreshCloudDirectory()
+  const refreshWaitingRoomData = () => deps.kernelConnected() ? waitingRoomInventoryRefreshController.refresh() : refreshCloudDirectory()
   const applyWaitingRoomRowsChanged = waitingRoomInventoryRefreshController.applyRowsChanged
   const applyRelayStatusChanged = waitingRoomInventoryRefreshController.applyRelayStatusChanged
   const applyRemoteMachinesChanged = waitingRoomInventoryRefreshController.applyRemoteMachinesChanged
@@ -367,7 +377,14 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     setDaemonDisconnected: deps.setDaemonDisconnected,
     refreshWaitingRoomData,
   })
-  const connectDetachedKernelFromWaitingRoom = detachedKernelConnectController.connect
+  const connectDetachedKernelFromWaitingRoom = async () => {
+    const selected = deps.waitingRoomState()
+    if (deps.cloudClient && !deps.kernelConnected() && await deps.cloudClient.profile()) {
+      if (!selected.selectedKernelRef || selected.selectedKernelRef === "local") throw new Error("Choose an online kernel from My kernels first")
+      await replaceClientForKernel(selected.selectedKernelRef, selected.selectedMachineRef)
+    }
+    await detachedKernelConnectController.connect()
+  }
 
   const replaceClientForKernel = async (
     kernelRef: string | null | undefined,
@@ -390,7 +407,9 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     const localPresence = loadLocalKernelPresences()
       .find((presence) => presence.kernelId === targetKernelRef)
     const issuingClient = deps.client.currentClient()
-    const connection = localPresence
+    const useCloudClient = !localPresence && deps.cloudClient && !deps.kernelConnected() && await deps.cloudClient.profile()
+    const cloudTargetClient = useCloudClient ? await deps.cloudClient!.connect(targetKernelRef) : null
+    const connection = localPresence || cloudTargetClient
       ? null
       : await resolveKernelClientConnection(issuingClient, {
           kernelRef: targetKernelRef,
@@ -398,16 +417,17 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
           clientId: deps.options.clientId,
         })
     if (!isActive()) {
+      await cloudTargetClient?.close()
       return false
     }
-    const nextClient = localPresence
+    const nextClient = cloudTargetClient ?? (localPresence
       ? new LocalIpcClient(localKernelEndpoint(localPresence))
       : new LocalIpcClient(connection!.relayUrl, {
           relayAuthToken: connection!.relayToken,
           relayIdentity: createCliRelayIdentityStore().getOrCreate(),
           targetDaemonId: connection!.targetDaemonId ?? undefined,
           targetDaemonAlias: connection!.targetDaemonAlias ?? undefined,
-        })
+        }))
     if (connection?.tokenExpiresAtMs) {
       const release = issuingClient.retainForRelayRenewal()
       nextClient.startRelayAuthRenewal(connection.tokenExpiresAtMs, async () => {

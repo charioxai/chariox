@@ -4,6 +4,8 @@ import { constants } from "node:fs"
 import { mkdir, open, rename, rm } from "node:fs/promises"
 import path from "node:path"
 import { preferencesPath, publicRelayCloudProfile, type RelayCloudProfile } from "./preferences.js"
+import { cloudClientRequest, CloudClientAuthError } from "./cloud-client-http.js"
+export { CloudClientAuthError } from "./cloud-client-http.js"
 
 export type CloudClientCredential = {
   profile: RelayCloudProfile
@@ -13,10 +15,6 @@ export type CloudClientCredential = {
   accessToken: string
   expiresAtMs: number
   pendingRotationId?: string
-}
-
-export class CloudClientAuthError extends Error {
-  constructor(readonly code: string) { super(`Cloud client authentication failed (${code})`) }
 }
 
 /** This file contains client authority only; never expose it as kernel status
@@ -43,27 +41,24 @@ export class CloudClientCredentialStore {
       await this.write(value)
     })
   }
-  async session(publicKeyThumbprint: string, force = false): Promise<CloudClientCredential> {
+  async clear(): Promise<void> { await this.lock(() => rm(this.filePath, { force: true })) }
+  async session(publicKeyThumbprint: string, force = false, rejectedAccessToken?: string): Promise<CloudClientCredential> {
     return this.lock(async () => {
       let value = await this.load()
       if (!value) throw new CloudClientAuthError("login_required")
       if (value.publicKeyThumbprint !== publicKeyThumbprint) throw new CloudClientAuthError("profile_conflict")
-      if (!force && !value.pendingRotationId && value.expiresAtMs > Date.now()+60_000) return value
+      if (!force && value.accessToken !== rejectedAccessToken && !value.pendingRotationId && value.expiresAtMs > Date.now()+60_000) return value
       // Persist before the network call: a crash/lost reply retries this same
       // operation, rather than appearing as another use of an old credential.
       value.pendingRotationId ??= randomBytes(32).toString("hex")
       await this.write(value)
-      const url = new URL("/auth/client/refresh", value.profile.apiUrl)
-      if (url.username || url.password || (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))) throw new CloudClientAuthError("insecure_auth_endpoint")
-      const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ accountId: value.profile.accountId, clientId: value.clientId, publicKeyThumbprint, refreshCredential: value.refreshCredential, rotationId: value.pendingRotationId }), signal: AbortSignal.timeout(20_000) })
-      if (!response.ok) {
-        const error = await response.json().catch(() => null) as {error?: {code?: string}} | null
-        const rawCode = error?.error?.code
-        const code = rawCode && /^[a-z_]{1,64}$/.test(rawCode) ? rawCode : `http_${response.status}`
-        if (["client_revoked", "refresh_reuse_detected"].includes(code)) await rm(this.filePath, { force: true })
-        throw new CloudClientAuthError(code)
+      let next: { refreshCredential: string; cloudSessionToken: string; cloudSessionExpiresAt: string }
+      try {
+        next = await cloudClientRequest(value.profile.apiUrl, "/auth/client/refresh", { body: { accountId: value.profile.accountId, clientId: value.clientId, publicKeyThumbprint, refreshCredential: value.refreshCredential, rotationId: value.pendingRotationId } })
+      } catch (error) {
+        if (error instanceof CloudClientAuthError && ["client_revoked", "refresh_reuse_detected"].includes(error.code)) await rm(this.filePath, { force: true })
+        throw error
       }
-      const next = await response.json() as { refreshCredential: string; cloudSessionToken: string; cloudSessionExpiresAt: string }
       const expiresAtMs = Date.parse(next.cloudSessionExpiresAt)
       if (!next.refreshCredential || !next.cloudSessionToken || !Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) throw new CloudClientAuthError("invalid_refresh_response")
       value = { ...value, refreshCredential: next.refreshCredential, accessToken: next.cloudSessionToken, expiresAtMs }

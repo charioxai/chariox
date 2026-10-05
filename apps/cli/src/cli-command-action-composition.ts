@@ -104,6 +104,8 @@ import {
   saveRelayCloudProfile,
   saveUiPreferences,
 } from "./preferences.js"
+import type { CloudClient } from "./cloud-client.js"
+import { createCloudClientCommands } from "./cloud-client-command.js"
 import {
   getProviderAuthStatus,
   getProviderCatalog,
@@ -196,6 +198,8 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliCommandActionCompositionDeps = {
+  cloudClient?: CloudClient
+  kernelConnected?: () => boolean
   appHostTerminal?: AppHostTerminal
   lastViewedAppHostOperationId?: () => string | undefined
   appFileInstaller?: AppFileInstaller
@@ -571,7 +575,23 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     sendCredentialEnrollmentKernelRequest: (request) => client.send(request),
     sendDeploymentSetupKernelRequest: (request) => client.send(request),
     configureRelay: (relayUrl, relayToken) => configureRelay(client, relayUrl, relayToken),
-    getCloudRelayProfile: () => getKernelCloudRelayProfile(client),
+    ...(deps.cloudClient ? { handleClientCloudCommand: createCloudClientCommands({
+      client: deps.cloudClient,
+      isKernelConnected: () => deps.kernelConnected?.() ?? true,
+      apiUrl: () => resolveConfiguredCloudRelayApiUrl(preferencesState()) ?? "https://staging.chariox.com",
+      notice: appendCloudNotice,
+      accountId: async () => deps.kernelConnected?.() ? (await getKernelCloudRelayProfile(client))?.accountId : relayCloudProfile(preferencesState())?.accountId,
+      saveProfile: async profile => { await saveRelayCloudProfile(profile); setPreferencesState((current: any) => mergeRelayCloudProfile(current, profile)) },
+      refresh: refreshWaitingRoomData,
+      openUrl: openExternalUrl,
+    }) } : {}),
+    getCloudRelayProfile: async () => {
+      const human = await deps.cloudClient?.humanProfile()
+      if (human && deps.kernelConnected?.() === false) return human
+      const kernel = await getKernelCloudRelayProfile(client)
+      if (human && kernel && human.accountId !== kernel.accountId) throw new Error("Cloud account conflict; use a separate CHARIOX_HOME profile")
+      return human ?? kernel
+    },
     connectCloudRelay: () => connectKernelCloudRelay(client),
     saveCloudRelayProfile: async (profile) => {
       await saveRelayCloudProfile(profile)

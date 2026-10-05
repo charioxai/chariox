@@ -528,6 +528,11 @@ export class LocalIpcClient {
     }, () => this.destroy(), release)
   }
 
+  invalidateRelayAuthorization(error: unknown): void {
+    this.relayAuthRenewal?.invalidate(error)
+    this.destroy()
+  }
+
   async close(): Promise<void> {
     if (this.renewalRetainers) {
       this.renewalCloseRequested = true
@@ -1018,6 +1023,9 @@ export class LocalIpcClient {
 
     if ("kind" in frame && frame.kind === "close") {
       this.rejectPending(frame.reason, lane)
+      if (frame.reason === "relay token revoked" || frame.reason === "client renewal reduced permissions" || frame.reason === "client renewal changed identity or key") {
+        this.invalidateRelayAuthorization(Object.assign(new Error("Relay authorization revoked"), { code: "authorization_denied" }))
+      }
       return
     }
 
