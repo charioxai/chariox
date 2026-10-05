@@ -177,3 +177,11 @@ test("MP-08/MP-10/MP-11 local DEV uses kernel-owned enrollment without an inject
     repositoryRoot: tree.repositoryRoot, homeRoot: tree.homeRoot,
   }), /cannot be combined/)
 })
+
+test("MP-08/MP-10/MP-11 local DEV finalization rejects a host publication and retains volume mode", async () => {
+  const fixture = { kind: "broker", lease: null, workspace: null, localDev: true }
+  assert.equal(await finalizeBrowserStateDrillWorkspace({ fixture, slice: {}, repositoryRoot: "/unused" }), fixture)
+  for (const slice of [{ workspace_mount: "/host/workspace" }, { development: { kind: "empty" } }]) {
+    await assert.rejects(finalizeBrowserStateDrillWorkspace({ fixture, slice, repositoryRoot: "/unused" }), /local DEV/)
+  }
+})
