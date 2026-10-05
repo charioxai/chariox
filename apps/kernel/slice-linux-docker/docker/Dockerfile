@@ -201,6 +201,8 @@ COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/chariox-ke
 COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/chariox-relay /opt/chariox-slice/bin/chariox-relay
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-cdp.mjs /opt/chariox-slice/browser-cdp.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs /opt/chariox-slice/browser-controller-actions.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-interactions.mjs /opt/chariox-slice/browser-controller-interactions.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-geometry.mjs /opt/chariox-slice/browser-controller-geometry.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-input.mjs /opt/chariox-slice/browser-controller-input.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs /opt/chariox-slice/browser-controller-cdp.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/selkies-capture.py /opt/chariox-slice/selkies-capture.py
@@ -248,6 +250,8 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/validate-screen.s
 
 RUN chmod +x /opt/chariox-slice/browser-cdp.mjs \
     /opt/chariox-slice/browser-controller-actions.mjs \
+    /opt/chariox-slice/browser-controller-interactions.mjs \
+    /opt/chariox-slice/browser-controller-geometry.mjs \
     /opt/chariox-slice/browser-controller-input.mjs \
     /opt/chariox-slice/browser-controller-cdp.mjs \
     /opt/chariox-slice/browser-controller-resources.mjs \
