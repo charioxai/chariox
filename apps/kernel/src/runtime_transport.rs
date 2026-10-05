@@ -391,6 +391,8 @@ impl KernelTransportRuntime {
 
 #[derive(Debug)]
 struct ConnectionState {
+    // MD-3: generated after admission, stable only for this live connection.
+    local_terminal_id: String,
     subscription: Option<KernelSubscription>,
     watch_task: Option<JoinHandle<()>>,
 }
@@ -887,6 +889,7 @@ where
     let connection_inbound_request_permits =
         Arc::new(Semaphore::new(CONNECTION_INBOUND_REQUEST_LIMIT));
     let connection_state = Arc::new(Mutex::new(ConnectionState {
+        local_terminal_id: format!("{:032x}", rand::random::<u128>()),
         subscription: None,
         watch_task: None,
     }));
@@ -1265,6 +1268,12 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
             runtime.transport_health.record_incoming_request();
             let caller = match external_caller {
                 Some(caller) => caller,
+                None if connection_class == KernelConnectionClass::Terminal => {
+                    let connection_id = connection_state.lock().await.local_terminal_id.clone();
+                    router
+                        .local_terminal_caller(KernelCommandSource::LocalCli, &connection_id)
+                        .await
+                }
                 None => {
                     router
                         .local_command_caller(KernelCommandSource::LocalCli, connection_class)
