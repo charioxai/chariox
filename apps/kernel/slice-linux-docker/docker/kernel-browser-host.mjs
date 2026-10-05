@@ -191,7 +191,7 @@ export class KernelBrowserHost {
     }
     return { ...stored, document_id };
   }
-  async screenshot(tab, clip = null) {
+  async screenshot(tab, clip = null, format = "png") {
     const started = timestamp();
     const scale = this.scales.get(tab.tab_id) ?? 1;
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
@@ -199,14 +199,14 @@ export class KernelBrowserHost {
     const data = await captureProtectedPage(this.browser, tab, this.protection.values,
       this.protection.targets.filter(target => target.kind === "browser"), async () => {
         const at = timestamp();
-        const { data } = await connection.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false, optimizeForSpeed: true, ...(clip ? { clip } : {}) }, sessionId);
+        const { data } = await connection.send("Page.captureScreenshot", { format, ...(format === "jpeg" ? {quality:95} : {}), captureBeyondViewport: false, optimizeForSpeed: true, ...(clip ? { clip } : {}) }, sessionId);
         this.timing(clip?.scale < 1 ? 'cdp_preview' : clip ? 'cdp_crop' : 'cdp_capture', at);
         return data;
       }, scale, clip);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
     this.timing('protected_capture', started);
     if (typeof data !== "string" || data.length > 4 * 1024 * 1024) throw new Error("MD-2: frame exceeds limit");
-    return { generation: this.generation, tab_id: tab.tab_id, document_id: tab.document_id, mime_type: "image/png", data_base64: data, width: Math.round((clip?.width ?? 1280) * scale * (clip?.scale ?? 1)), height: Math.round((clip?.height ?? 800) * scale * (clip?.scale ?? 1)) };
+    return { generation: this.generation, tab_id: tab.tab_id, document_id: tab.document_id, mime_type: `image/${format}`, data_base64: data, width: Math.round((clip?.width ?? 1280) * scale * (clip?.scale ?? 1)), height: Math.round((clip?.height ?? 800) * scale * (clip?.scale ?? 1)) };
   }
   async subscribe(tab, boundFrames = false) {
     if (this.streams.size >= 16) throw new Error("MD-2: frame subscription limit reached");
@@ -313,7 +313,10 @@ export class KernelBrowserHost {
       // Recreate the closure when navigation changes the loader binding. Pixels
       // and pending repairs are then invalidated by the new document as usual.
       if (!stream.capture || stream.capture.document !== tab.document_id)
-        stream.capture = new DisplayCapture((clip) => this.screenshot(tab, clip), stream.device_scale_factor, this.timing);
+        stream.capture = new DisplayCapture((clip) => {
+          if(clip?.display_motion) { const {display_motion,...nativeClip}=clip; return this.screenshot(tab,nativeClip,'jpeg'); }
+          return this.screenshot(tab,clip);
+        }, stream.device_scale_factor, this.timing);
       const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
       const layoutAt = timestamp();
       const { cssVisualViewport: viewport } = await connection.send("Page.getLayoutMetrics", {}, sessionId);
@@ -325,7 +328,7 @@ export class KernelBrowserHost {
       const source = await stream.capture.next({ ...tab, input_epoch: this.inputEpochs.get(tab.tab_id) ?? 0 }, this.protection, stream.previous && stream.acceptsCredit(command.after_sequence), !stream.exact || !nativeCropSafe,
         stream.codec !== 'png' && this.protection.values.length === 0 && viewport?.scale === 1 &&
           Number.isFinite(viewport.pageX) && Number.isFinite(viewport.pageY)
-          ? {x:viewport.pageX,y:viewport.pageY,width:1280,height:800,scale:1/stream.device_scale_factor} : null);
+          ? {x:viewport.pageX,y:viewport.pageY,width:1280,height:800,scale:1/stream.device_scale_factor,display_motion:true} : null);
       try { await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id); }
       catch (error) { stream.invalidate(); throw error; }
       const frame = await stream.frame(source, source.document_id, command.after_sequence);
