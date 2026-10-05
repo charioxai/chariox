@@ -1,12 +1,10 @@
 import { execFile } from "node:child_process"
-import { stat } from "node:fs/promises"
-import { basename, dirname, resolve as resolvePath } from "node:path"
+import { basename, resolve as resolvePath } from "node:path"
 import { promisify } from "node:util"
 
 const execFileAsync = promisify(execFile)
 const CREATE_WORKTREE_OPTION_ID = "create-worktree"
 const DEFAULT_CREATE_WORKTREE_LABEL = "Create worktree"
-const DEFAULT_CREATE_WORKTREE_DESCRIPTION = "session"
 
 type WaitingRoomExistingWorktreeOption = {
   id: string
@@ -31,6 +29,7 @@ type WaitingRoomWorktreeInventory = {
   workspacePath: string
   currentWorktreePath: string
   options: WaitingRoomWorktreeOption[]
+  disabledHint?: string | null
 }
 
 type PendingWaitingRoomWorktreeSelection =
@@ -88,6 +87,8 @@ export function describeWaitingRoomWorktreeSelection(
   selectionId: string | null | undefined,
   fallbackPath?: string | null,
 ) {
+  const disabledHint = waitingRoomWorktreeDisabledHint()
+  if (disabledHint) return disabledHint
   const option = resolveWaitingRoomWorktreeOption(selectionId)
   if (option?.kind === "create") {
     return option.label
@@ -116,6 +117,10 @@ export function stageWaitingRoomWorktreeSelection(
   selectionId: string | null | undefined,
   fallbackPath?: string | null,
 ) {
+  if (waitingRoomWorktreeDisabledHint()) {
+    pendingSelection = null
+    return { ok: true as const }
+  }
   const option = resolveWaitingRoomWorktreeOption(selectionId)
   if (option?.kind === "create") {
     pendingSelection = { kind: "create" }
@@ -144,19 +149,21 @@ export async function resolvePendingWaitingRoomWorktreePath(
 ): Promise<string> {
   const selection = pendingSelection
   pendingSelection = null
-  if (!selection) {
+  if (!selection || waitingRoomWorktreeDisabledHint()) {
     return fallbackWorktreePath
   }
   if (selection.kind === "existing") {
     return selection.path
   }
-  return await (deps.createWorktree ?? createWaitingRoomWorktree)(workspacePath)
+  if (!deps.createWorktree) throw new Error("kernel worktree creation is unavailable")
+  return await deps.createWorktree(workspacePath)
 }
 
 export function __setWaitingRoomWorktreeInventoryForTest(options: {
   workspacePath: string
   currentWorktreePath: string
   options: WaitingRoomWorktreeOption[]
+  disabledHint?: string | null
 } | null) {
   activeInventory = options
   pendingSelection = null
@@ -168,6 +175,10 @@ async function discoverWaitingRoomWorktreeInventory(options: {
   currentWorktreePath: string
 }): Promise<WaitingRoomWorktreeInventory> {
   const gitCwd = options.currentWorktreePath || options.workspacePath || options.cwd
+  const repository = await execFileAsync("git", ["rev-parse", "--show-toplevel"], { cwd: gitCwd }).then(() => true).catch(() => false)
+  const hasCommit = repository && await execFileAsync("git", ["rev-parse", "--verify", "HEAD^{commit}"], { cwd: gitCwd }).then(() => true).catch(() => false)
+  const disabledHint = !repository ? NO_REPOSITORY_WORKTREE_HINT : !hasCommit ? UNBORN_WORKTREE_HINT : null
+  if (disabledHint) return { workspacePath: options.workspacePath, currentWorktreePath: options.currentWorktreePath, options: [], disabledHint }
   const discovered = await listGitWorktrees(gitCwd).catch(() => [])
   const existingOptions = discovered.length > 0
     ? discovered.map((entry) => ({
@@ -276,105 +287,6 @@ function resolveWaitingRoomWorktreeOption(selectionId: string | null | undefined
   return waitingRoomWorktreeOptions().find((option) => option.id === normalizedSelectionId) ?? null
 }
 
-async function createWaitingRoomWorktree(workspacePath: string): Promise<string> {
-  const repoRoot = await resolveRepoRoot(workspacePath)
-  const baseRef = await resolvePreferredBaseRef(repoRoot)
-  const description = await resolveWaitingRoomCreateDescription(repoRoot)
-  const branch = await resolveAvailableBranchName(
-    repoRoot,
-    `chariox/${slugifySegment(description)}-${timestampSlug()}`,
-  )
-  const directory = await resolveAvailableWorktreeDirectory(
-    dirname(repoRoot),
-    `${basename(repoRoot)}-${slugifySegment(branch.replaceAll("/", "-"))}`,
-  )
-
-  await execFileAsync("git", ["worktree", "add", "-b", branch, directory, baseRef], {
-    cwd: repoRoot,
-  })
-
-  return directory
-}
-
-async function resolveRepoRoot(workspacePath: string) {
-  const { stdout } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], { cwd: workspacePath })
-  const repoRoot = stdout.trim()
-  if (!repoRoot) {
-    throw new Error(`git did not report a repository root for ${workspacePath}`)
-  }
-  return repoRoot
-}
-
-async function resolvePreferredBaseRef(repoRoot: string) {
-  for (const candidate of ["main", "master"]) {
-    if (await gitRefExists(repoRoot, `refs/heads/${candidate}`)) {
-      return candidate
-    }
-  }
-  const { stdout } = await execFileAsync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repoRoot })
-  const branch = stdout.trim()
-  return branch && branch !== "HEAD" ? branch : "HEAD"
-}
-
-async function resolveWaitingRoomCreateDescription(repoRoot: string) {
-  const configured = process.env.CHARIOX_WAITING_ROOM_WORKTREE_DESCRIPTION?.trim()
-  if (configured) {
-    return configured
-  }
-  return `${basename(repoRoot)}-${DEFAULT_CREATE_WORKTREE_DESCRIPTION}`
-}
-
-async function resolveAvailableBranchName(repoRoot: string, baseName: string) {
-  let attempt = baseName
-  let index = 1
-  while (await gitRefExists(repoRoot, `refs/heads/${attempt}`)) {
-    attempt = `${baseName}-${index}`
-    index += 1
-  }
-  return attempt
-}
-
-async function resolveAvailableWorktreeDirectory(parentDirectory: string, baseName: string) {
-  let attempt = resolvePath(parentDirectory, baseName)
-  let index = 1
-  for (;;) {
-    const exists = await stat(attempt).then(() => true).catch(() => false)
-    if (!exists) {
-      return attempt
-    }
-    attempt = resolvePath(parentDirectory, `${baseName}-${index}`)
-    index += 1
-  }
-}
-
-async function gitRefExists(repoRoot: string, ref: string) {
-  try {
-    await execFileAsync("git", ["rev-parse", "--verify", "--quiet", ref], { cwd: repoRoot })
-    return true
-  } catch {
-    return false
-  }
-}
-
-function slugifySegment(value: string) {
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-  return normalized || DEFAULT_CREATE_WORKTREE_DESCRIPTION
-}
-
-function timestampSlug(date = new Date()) {
-  const year = date.getUTCFullYear()
-  const month = String(date.getUTCMonth() + 1).padStart(2, "0")
-  const day = String(date.getUTCDate()).padStart(2, "0")
-  const hours = String(date.getUTCHours()).padStart(2, "0")
-  const minutes = String(date.getUTCMinutes()).padStart(2, "0")
-  const seconds = String(date.getUTCSeconds()).padStart(2, "0")
-  return `${year}${month}${day}-${hours}${minutes}${seconds}`
-}
-
 function samePath(left: string, right: string) {
   return resolvePath(left) === resolvePath(right)
 }
@@ -384,4 +296,35 @@ function modulo(value: number, size: number) {
     return 0
   }
   return ((value % size) + size) % size
+}
+
+export const NO_REPOSITORY_WORKTREE_HINT = "No git repository in this workspace — run git init to enable worktrees"
+export const UNBORN_WORKTREE_HINT = "This repository has no commits — create a commit to enable worktrees"
+
+export function waitingRoomWorktreeDisabledHint(): string | null {
+  return activeInventory?.disabledHint ?? null
+}
+
+export function setWaitingRoomKernelWorktrees(
+  workspacePath: string,
+  currentWorktreePath: string,
+  worktrees: readonly { path: string; branch?: string | null; label?: string | null; current: boolean }[],
+  disabledHint: string | null,
+) {
+  activeInventory = {
+    workspacePath,
+    currentWorktreePath,
+    disabledHint,
+    options: disabledHint ? [] : [
+      ...worktrees.map(worktree => ({
+        id: `existing:${worktree.path}`,
+        kind: "existing" as const,
+        label: worktree.label || formatWorktreeLabel({ path: worktree.path, branch: worktree.branch ?? null }, workspacePath),
+        path: worktree.path,
+        branch: worktree.branch ?? null,
+        isCurrent: worktree.current,
+      })),
+      { id: CREATE_WORKTREE_OPTION_ID, kind: "create" as const, label: DEFAULT_CREATE_WORKTREE_LABEL },
+    ],
+  }
 }

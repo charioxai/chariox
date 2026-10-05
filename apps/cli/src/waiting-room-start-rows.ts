@@ -14,7 +14,7 @@ import {
   waitingRoomSelectedLaunchKernelRef,
   waitingRoomSelectedLaunchMachineRef,
 } from "@chariox/kernel-client/waiting-room-runtime-placement"
-import { describeWaitingRoomWorktreeSelection } from "./waiting-room-worktrees.js"
+import { describeWaitingRoomWorktreeSelection, waitingRoomWorktreeDisabledHint } from "./waiting-room-worktrees.js"
 import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
 import { describeWaitingRoomProjectSelection } from "./waiting-room-projects.js"
 import {
@@ -235,7 +235,7 @@ export function waitingRoomStartRows(
       titleWidth: options.titleWidth,
       indent: 1,
       focused: state.focus === "worktree",
-      selectable: true,
+      selectable: !waitingRoomWorktreeDisabledHint(),
       scrollbar: "",
     },
     {

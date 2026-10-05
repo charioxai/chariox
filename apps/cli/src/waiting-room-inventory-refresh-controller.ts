@@ -48,6 +48,7 @@ type WaitingRoomInventoryRefreshControllerOptions = {
   setProviderAccounts?: (profiles: ProviderAccountProfile[]) => void
   setManagedEnvironmentCatalog?: (catalog: ManagedEnvironmentCatalog | undefined) => void
   getManagedEnvironmentCatalogScope?: (inventory: WaitingRoomInventory) => string
+  applyWorkspaceInventory?: (inventory: WaitingRoomInventory) => void
   setLaunchTarget?: (target: WaitingRoomInventory["launchTarget"]) => void
   setExternalProviderSessions?: (sessions: ExternalProviderSessionRecord[]) => void
   setExternalProviderSessionsPage?: (page: { hasMore: boolean; nextCursor: string | null }) => void
@@ -199,6 +200,7 @@ export function createWaitingRoomInventoryRefreshController(
       managedEnvironmentCatalogScope = nextManagedEnvironmentCatalogScope
       options.setManagedEnvironmentCatalog?.(undefined)
     }
+    options.applyWorkspaceInventory?.(snapshot)
     options.setLaunchTarget?.(snapshot.launchTarget)
     options.setProjects?.(snapshot.projects ?? [])
     const externalProviderSessionsPage = {
