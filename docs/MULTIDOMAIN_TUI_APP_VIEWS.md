@@ -110,7 +110,26 @@ Room accessibility formatter remains a small pure module.
 - Owner: confirm the text tier and kernel-host fallback before enabling this flag.
 - Owner: choose additional accessibility selection/action conventions and keyboard
   modifier support; this prototype implements basic human keyboard interaction.
-- Coordinator: a full TUI connected to a live kernel/relay and production App
-  sandbox is still needed before rollout. The PTY peer and fixed worker are fixtures.
+- Coordinator: provide a compatible approved signed App runtime for release trust
+  acceptance. Live full-CLI/display checks use a private signed test runtime below.
 - Reconnect grace, restart restoration and focused MCP naming remain deferred
   as documented in MULTIDOMAIN_APP_VIEWS.md; no restoration is claimed here.
+
+## Live full CLI follow-up
+
+With the prototype flag, `/` in the waiting room focuses the existing command
+input; it does not activate a session. The shortcut is listed in waiting-room
+hotkey help. `/app view open INSTALLATION`, `/app views`, and `/app view show VIEW`
+are then available without a Room. Once projected, Tab/type/Enter sends real
+keyboard actions; Ctrl+W closes the view, Escape returns to the command input.
+The flag-off waiting room retains its existing navigation.
+
+The Cloud `user-app-view-browser-drill.mjs` now drives the full standalone CLI
+in an owned tmux pane against the same disposable production kernel used by
+native web and shared Chromium tests. It checks open/list, real accessibility
+text, keyboard App channel execution and rendered backend reply, close, and no
+session creation. The old terminal component drill remains a focused synthetic
+regression. Live display acceptance still uses a temporary signed test runtime
+on this builder until its installed runtime group-mapping ABI is updated; see
+Cloud's USER_APP_VIEWS_PROTOTYPE.md for that trust boundary. Hosted/account
+bootstrap and approved release-artifact acceptance remain separate.

@@ -24,6 +24,7 @@ import { sharedShellCommandForSlashCommand } from "./commands.js"
 import { createSlashCommandSubmitController } from "./slash-command-submit-controller.js"
 import { renderPromptTranscript } from "./transcript-render.js"
 import { createWaitingRoomKeyController } from "./waiting-room-key-controller.js"
+import { userAppViewsPrototypeEnabled } from "./user-app-views-flag.js"
 import { createWaitingRoomPromptBootstrapController } from "./waiting-room-prompt-bootstrap-controller.js"
 import { handleWaitingRoomSlashCommand } from "./waiting-room-slash-command-policy.js"
 import { createWorkspaceShellSubmitController } from "./workspace-shell-controller.js"
@@ -577,6 +578,10 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   })
 
   const waitingRoomKeyController = createWaitingRoomKeyController({
+    ...(userAppViewsPrototypeEnabled() ? { beginCommand: () => {
+      deps.promptTextController.setText("/")
+      deps.promptInputRefController.focus()
+    } } : {}),
     isAttached: deps.isAttached,
     hotkeysOpen: deps.dialogOverlayOpen,
     promptFocused: deps.promptInputRefController.isFocused,
