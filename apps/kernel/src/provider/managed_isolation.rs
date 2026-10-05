@@ -457,17 +457,25 @@ fn validate_preparation_home_directory(
     Ok(())
 }
 
-pub(crate) fn provider_reported_path_on_kernel(
+pub(crate) fn provider_reported_transcript_on_kernel(
     run: &RuntimeProviderRun,
     reported_path: &str,
-) -> Option<PathBuf> {
+) -> Option<super::reported_transcript_file::ProviderReportedTranscript> {
+    let (path, confined) = provider_reported_path_binding(run, reported_path)?;
+    super::reported_transcript_file::ProviderReportedTranscript::open(path, confined)
+}
+
+fn provider_reported_path_binding(
+    run: &RuntimeProviderRun,
+    reported_path: &str,
+) -> Option<(PathBuf, bool)> {
     let reported_path = Path::new(reported_path);
     let managed = run
         .pty_args()
         .windows(3)
         .any(|args| args == ["--setenv", MANAGED_PROVIDER_ISOLATION_MARKER_ENV, "1"]);
     if !managed {
-        return Some(reported_path.to_path_buf());
+        return Some((reported_path.to_path_buf(), false));
     }
 
     let args = run.pty_args();
@@ -504,20 +512,7 @@ pub(crate) fn provider_reported_path_on_kernel(
     }) {
         return None;
     }
-    let source = source.canonicalize().ok()?;
-    let resolved = source.join(relative);
-    let mut existing_ancestor = resolved.as_path();
-    loop {
-        match std::fs::symlink_metadata(existing_ancestor) {
-            Ok(_) => break,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                existing_ancestor = existing_ancestor.parent()?;
-            }
-            Err(_) => return None,
-        }
-    }
-    let canonical_ancestor = existing_ancestor.canonicalize().ok()?;
-    canonical_ancestor.starts_with(&source).then_some(resolved)
+    Some((source.join(relative), true))
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -2312,7 +2307,7 @@ mod tests {
 
     #[test]
     fn managed_provider_reported_path_resolves_through_its_account_bind() {
-        let root = std::env::temp_dir().join(format!(
+        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
             "chariox-managed-reported-path-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms(),
@@ -2364,12 +2359,13 @@ mod tests {
         );
 
         assert_eq!(
-            provider_reported_path_on_kernel(
+            provider_reported_transcript_on_kernel(
                 &run,
                 sandbox_transcript
                     .to_str()
                     .expect("sandbox transcript should be utf8"),
-            ),
+            )
+            .map(|file| file.path),
             Some(
                 host_transcript
                     .canonicalize()
@@ -2377,12 +2373,13 @@ mod tests {
             ),
         );
         assert_eq!(
-            provider_reported_path_on_kernel(
+            provider_reported_transcript_on_kernel(
                 &run,
                 host_transcript
                     .to_str()
                     .expect("host transcript should be utf8"),
-            ),
+            )
+            .map(|file| file.path),
             Some(
                 host_transcript
                     .canonicalize()
@@ -2392,37 +2389,34 @@ mod tests {
         );
         let pending_sandbox_transcript = sandbox_account.join("projects/pending.jsonl");
         assert_eq!(
-            provider_reported_path_on_kernel(
+            provider_reported_transcript_on_kernel(
                 &run,
                 pending_sandbox_transcript
                     .to_str()
                     .expect("pending sandbox transcript should be utf8"),
-            ),
-            Some(
-                host_account
-                    .canonicalize()
-                    .expect("host account should resolve")
-                    .join("projects/pending.jsonl"),
-            ),
-            "a Stop hook may report its account-bound transcript before Claude flushes the file",
+            ).map(|file| file.path),
+            None,
+            "a transcript reported before its first flush remains unavailable without reopening a path",
         );
         assert_eq!(
-            provider_reported_path_on_kernel(
+            provider_reported_transcript_on_kernel(
                 &run,
                 "/home/chariox/.provider-account/root-1/../root-2/session.jsonl",
-            ),
+            )
+            .map(|file| file.path),
             None,
             "provider paths must not escape their kernel-owned bind",
         );
         let outside_bind = root.join("outside-bind.jsonl");
         std::fs::write(&outside_bind, "secret\n").expect("outside fixture should exist");
         assert_eq!(
-            provider_reported_path_on_kernel(
+            provider_reported_transcript_on_kernel(
                 &run,
                 outside_bind
                     .to_str()
                     .expect("outside fixture should be utf8"),
-            ),
+            )
+            .map(|file| file.path),
             None,
             "the Bubblewrap root binding must not authorize arbitrary host paths",
         );
@@ -2434,12 +2428,71 @@ mod tests {
             std::os::unix::fs::symlink(&outside, &escape)
                 .expect("escape symlink should be created");
             assert_eq!(
-                provider_reported_path_on_kernel(
+                provider_reported_transcript_on_kernel(
                     &run,
                     "/home/chariox/.provider-account/root-1/projects/escape.jsonl",
-                ),
+                )
+                .map(|file| file.path),
                 None,
                 "provider transcript symlinks must not escape their account bind",
+            );
+        }
+        #[cfg(unix)]
+        {
+            // MP-11: consume the authorization's opened file, never reopen its path.
+            let mut retained = Vec::new();
+            for replace_parent in [false, true] {
+                let authorized = provider_reported_transcript_on_kernel(
+                    &run,
+                    sandbox_transcript.to_str().unwrap(),
+                )
+                .expect("ordinary bound transcript should be authorized");
+                let outside = root.join("replacement");
+                std::fs::create_dir_all(&outside).unwrap();
+                std::fs::write(outside.join("session.jsonl"), "MP-11 OUTSIDE CANARY\n").unwrap();
+                let original = if replace_parent {
+                    host_account.join("projects")
+                } else {
+                    host_transcript.clone()
+                };
+                let saved = root.join("saved");
+                std::fs::rename(&original, &saved).unwrap();
+                std::os::unix::fs::symlink(
+                    if replace_parent {
+                        outside.clone()
+                    } else {
+                        outside.join("session.jsonl")
+                    },
+                    &original,
+                )
+                .unwrap();
+                let read = authorized.read().unwrap();
+                std::fs::remove_file(&original).unwrap();
+                std::fs::rename(&saved, &original).unwrap();
+                retained.push(read);
+            }
+            let saved_account = root.join("saved-account");
+            let replacement_account = root.join("replacement-account");
+            std::fs::create_dir_all(replacement_account.join("projects")).unwrap();
+            std::fs::write(
+                replacement_account.join("projects/session.jsonl"),
+                "MP-11 OUTSIDE CANARY\n",
+            )
+            .unwrap();
+            std::fs::rename(&host_account, &saved_account).unwrap();
+            std::os::unix::fs::symlink(&replacement_account, &host_account).unwrap();
+            let changed_root_rejected =
+                provider_reported_transcript_on_kernel(&run, sandbox_transcript.to_str().unwrap())
+                    .is_none();
+            std::fs::remove_dir_all(&root).unwrap();
+            assert_eq!(
+                retained,
+                ["{}\n", "{}\n"],
+                "authorization must pin leaf and parent replacements"
+            );
+            assert!(
+                changed_root_rejected,
+                "a replaced bind root must not authorize outside data"
             );
         }
         let _ = std::fs::remove_dir_all(root);
