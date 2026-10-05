@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { attachBrowserDisplay } from './presenter.mjs';
+import { attachBrowserDisplay, IdleCredit } from './presenter.mjs';
+test('MD-DISPLAY idle credits back off independently and input wakes all parked slots',async()=>{
+ const idle=new IdleCredit();const waits=[idle.wait(),idle.wait(),idle.wait(),idle.wait()];
+ assert.equal(idle.delay,100);assert.equal(idle.parked.size,4);
+ idle.wake();await Promise.all(waits);assert.equal(idle.delay,0);assert.equal(idle.parked.size,0);
+});
 
 test('MD-DISPLAY credit stays occupied through event-before-receipt and presentation', async () => {
   let listener, finishRequest, finishPresentation, presentationStarted;

@@ -109,7 +109,7 @@ export class DisplayStream {
     const bound = documentId === this.document_id && this.acceptsCredit(afterSequence);
     if (!bound) this.invalidate();
     const same = current.signature ? this.previous?.signature === current.signature : Boolean(this.previous?.pixels && this.previous.pixels.equals(current.pixels));
-    if (same && this.exact && !source.motion) return null;
+    if (same && (this.exact || source.motion)) return null;
     // Private crop metadata comes only from the protected native capture. The
     // cached frame is cloned unchanged outside it; full verification has no hint.
     const clip = source.dirty_clip;

@@ -47,7 +47,7 @@ test('MD-DISPLAY changing whole viewport uses CSS motion resolution; idle return
  await capture.next(tab,policy,false,true,motion);changing=true;
  const moving=await capture.next(tab,policy,true,true,motion);
  assert.equal(moving.motion,true);assert.equal(moving.width,1280);assert.equal(calls.at(-1),.5);
- time=251;const idle=await capture.next(tab,policy,true,true,motion);assert.equal(idle.motion,undefined);assert.equal(idle.pixels.width,2560);
+ time=351;const idle=await capture.next(tab,policy,true,true,motion);assert.equal(idle.motion,undefined);assert.equal(idle.pixels.width,2560);
 });
 test('MD-DISPLAY forced verification of small input damage never enters motion mode',async()=>{
  let changed=false;

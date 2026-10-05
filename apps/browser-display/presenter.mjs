@@ -2,6 +2,19 @@
 // admitted/encrypted kernel request and event adapter; never a Cloud media proxy.
 export const minimumProtocolVersion = 419;
 const VP9 = 'vp09.00.10.08';
+// Empty credits must not saturate a narrow link with control traffic. Admitted
+// input and changed frames wake every parked slot without waiting for a timer.
+export class IdleCredit {
+  constructor() { this.delay=0; this.parked=new Set(); }
+  wake() { this.delay=0;for(const wake of this.parked)wake(); }
+  wait() {
+    this.delay=Math.min(100,Math.max(32,this.delay*2));
+    return new Promise(resolve=>{
+      const wake=()=>{clearTimeout(timer);this.parked.delete(wake);resolve();};
+      const timer=setTimeout(wake,this.delay);this.parked.add(wake);
+    });
+  }
+}
 function bytes(base64) {
   if (typeof base64 !== 'string' || base64.length > 4 * 1024 * 1024) throw new Error('MD-DISPLAY: payload bound');
   return Uint8Array.from(atob(base64), char => char.charCodeAt(0));
@@ -176,6 +189,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   // operation. Each slot is retained through its receipt AND presentation;
   // source/encoder stay serial, so no unbounded capture queue is introduced.
   let receiptOrder = Promise.resolve();
+  const idle=new IdleCredit();
   const issue = () => {
     const at = performance.timeOrigin + performance.now();
     const response = request({ op:'display_next', subscription_id:binding.subscription_id,
@@ -184,17 +198,20 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     const ordered = receiptOrder.then(async () => {
       const receipt = await response;
       onTiming('frame_credit_round_trip', at);
-      if (!receipt.frame_sent) { await new Promise(resolve => setTimeout(resolve,8)); return; }
+      if (!receipt.frame_sent) return false;
+      idle.wake();
       let timer;
       const item = await Promise.race([receive(), new Promise((_,reject) => {
         timer=setTimeout(() => reject(Error('MD-DISPLAY: window event timeout')),30000);
       })]).finally(() => clearTimeout(timer));
       await item.presented;
+      return true;
     });
     receiptOrder = ordered.catch(() => {});
-    active.add(ordered);
-    ordered.catch(error => { failure=error; running=false; }).finally(() => {
-      active.delete(ordered);
+    const slot=ordered.then(changed=>{if(!changed&&running)return idle.wait();});
+    active.add(slot);
+    slot.catch(error => { failure=error; running=false; }).finally(() => {
+      active.delete(slot);
       if (running && !failure) issue();
     });
   };
@@ -207,10 +224,10 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     const count=Math.min(desired,Math.max(1,Math.floor(1024*1024/(batch*4/3+4096))));
     for(let i=0;i<count;i++) issue();
   };
-  const stop = async () => { running=false; await Promise.allSettled([...active]); if(failure) throw failure; };
+  const stop = async () => { running=false;idle.wake(); await Promise.allSettled([...active]); if(failure) throw failure; };
   return { binding, presenter, next, start, stop,
     get running() { return running; },
-    input: input => request(presenter.input(input)),
+    input: input => {idle.wake();return request(presenter.input(input));},
     takeover: () => request({ op: 'display_takeover', ...tab }),
     release: () => request({ op: 'display_release', ...tab }),
     actors: () => request({ op: 'display_actors' }),

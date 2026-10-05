@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { shapeViewerLeg } from './drill-netem.mjs';
 import {assertIndependentNavigation} from './drill-navigation.mjs';
-import { drainRepairs } from './drill-settle.mjs';
+import { drainRepairs, verifySettled } from './drill-settle.mjs';
 import { measureWorkload } from './drill-workloads.mjs';
 import { fixture } from './drill-fixtures.mjs';
 import { compare, distribution } from './drill-metrics.mjs';
@@ -168,8 +168,8 @@ try {
  }
  receipt.bootstrap.fidelity=await pair('bootstrap-video');
  const settleStarted=performance.now();
- const settled=await drainRepairs(()=>page.evaluate(()=>mdStream.next()));
- receipt.settle_duration_ms=performance.now()-settleStarted;receipt.settled={kind:'verified-unchanged',polls:settled.polls,sequence:await page.evaluate(()=>mdStream.presenter.sequence),fidelity:await pair('settled')};
+ const settled=await verifySettled(()=>page.evaluate(()=>mdStream.next()),attempt=>pair('settled-verification-'+attempt));
+ receipt.settle_duration_ms=performance.now()-settleStarted;receipt.settled={kind:'verified-unchanged',polls:settled.polls,verification_attempts:settled.verification_attempts,sequence:await page.evaluate(()=>mdStream.presenter.sequence),fidelity:settled.fidelity};
  if(!receipt.settled.fidelity.lossless)throw Error('MD-DISPLAY: settled pixels differ');
  // A source compositor may finish painting after its first protected snapshot.
  // Permit bounded distinct refinements, then require an unchanged exact poll.

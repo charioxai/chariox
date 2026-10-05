@@ -100,6 +100,13 @@ test('MD-DISPLAY motion stays video until unchanged protected capture', async()=
  assert.equal((await stream.frame(fixture(3),'d',2)).kind,'video');
  assert.equal((await stream.frame(fixture(3),'d',3)).kind,'png');
 });
+test('MD-DISPLAY unchanged motion pixels consume neither codec work nor credit bytes', async()=>{
+ let encoded=0;
+ const stream=new DisplayStream(binding,{encoder:{encode:async()=>{encoded++;return 'YWJj'},close:async()=>{}},now:()=>0,wait:async()=>{}});
+ const source={generation:1,width:1280,height:800,motion:true,data_base64:'opaque-protected-jpeg'};
+ assert.equal((await stream.frame(source,'d',0)).kind,'video');
+ assert.equal(await stream.frame(source,'d',1),null);assert.equal(encoded,1);assert.equal(stream.exact,false);
+});
 test('MD-DISPLAY large exact repair is bounded, completes and invalidates on motion/lost base',async()=>{
  const pixels=randomBytes(512*512*4);for(let i=3;i<pixels.length;i+=4)pixels[i]=255;
  const source={generation:1,data_base64:encodePng(512,512,pixels)};

@@ -12,3 +12,13 @@ export async function drainRepairs(next, limit=300, wait=ms=>new Promise(resolve
  }
  throw Error('MD-DISPLAY: bounded exact repair did not converge');
 }
+// Native controls can finish a compositor paint after an unchanged poll.
+// Retry a bounded number of complete verification cycles; every accepted
+// result still requires an independently captured source to match exactly.
+export async function verifySettled(next,pair,attempts=3) {
+ for(let attempt=1;attempt<=attempts;attempt++) {
+  const repair=await drainRepairs(next),fidelity=await pair(attempt);
+  if(fidelity.lossless)return {...repair,fidelity,verification_attempts:attempt};
+ }
+ throw Error('MD-DISPLAY: settled pixels differ after bounded verification');
+}

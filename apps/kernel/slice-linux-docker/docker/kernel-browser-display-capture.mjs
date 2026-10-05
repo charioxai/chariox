@@ -33,7 +33,7 @@ export class DisplayCapture {
       const source=await capture(motionClip);
       if(source.data_base64 !== this.motionData) this.stableAt=this.now();
       this.motionData=source.data_base64;
-      if(this.now()-(this.stableAt??this.now()) < 150) return {...source,motion:true};
+      if(this.now()-(this.stableAt??this.now()) < 300) return {...source,motion:true};
       // The entire motion viewport has stopped changing. Verify at native DPR
       // before attempting any exact tile; never upscale a lossless repair.
       motionClip=null; forceFull=true;
