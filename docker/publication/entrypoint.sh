@@ -168,12 +168,22 @@ read_bootstrap_capability_file() {
     const [source, label] = process.argv.slice(1)
     let descriptor
     try {
-      descriptor = fs.openSync(source, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+      descriptor = fs.openSync(source, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK)
       const metadata = fs.fstatSync(descriptor)
       if (!metadata.isFile() || (metadata.mode & 0o077) !== 0) {
         throw new Error(`publication ${label} file must be a private regular file`)
       }
-      process.stdout.write(fs.readFileSync(descriptor, "utf8"))
+      const maximum = label === "audit URL" ? 8192 : 65536
+      if (metadata.size > maximum) throw new Error(`publication ${label} file exceeds its size limit`)
+      const buffer = Buffer.alloc(maximum + 1)
+      let count = 0
+      while (count <= maximum) {
+        const read = fs.readSync(descriptor, buffer, count, maximum + 1 - count, null)
+        if (read === 0) break
+        count += read
+      }
+      if (count > maximum) throw new Error(`publication ${label} file exceeds its size limit`)
+      process.stdout.write(buffer.subarray(0, count).toString("utf8"))
     } finally {
       if (descriptor !== undefined) fs.closeSync(descriptor)
     }
