@@ -75,3 +75,23 @@ test("MP-08 P3 empty documents add no separators to rendered text", () => {
   assert.equal(renderedSnapshotText(populated), "\n  authored\n\n");
   assert.equal(renderedSnapshotText({ strings: [], documents: [empty, empty] }), "");
 });
+
+// MP-08/MP-10/MP-11: embedding opacity suppresses a separate document.
+test("MP-08/MP-10/MP-11 same-renderer iframe owners suppress their child text", () => {
+  for (const ancestorHidden of [false, true]) {
+    const strings = ["DIV", "IFRAME", "#text", "Child frame text", "visible", "0", "1", "block"];
+    const root = {
+      nodes: { nodeType: [1, 1], nodeName: [0, 1], parentIndex: [-1, 0],
+        contentDocumentIndex: { index: [1], value: [1] } },
+      layout: { nodeIndex: [0, 1], text: [-1, -1], styles: [[4, ancestorHidden ? 5 : 6, 7], [4, ancestorHidden ? 6 : 5, 7]] },
+    };
+    const child = {
+      nodes: { nodeType: [3], nodeName: [2], parentIndex: [-1] },
+      layout: { nodeIndex: [0], text: [3], styles: [[4, 6, 7]] },
+    };
+    const snapshot = { strings, documents: [root, child] };
+    assert.equal(renderedSnapshotText(snapshot), "");
+    root.layout.styles = [[4, 6, 7], [4, 6, 7]];
+    assert.equal(renderedSnapshotText(snapshot), "Child frame text");
+  }
+});

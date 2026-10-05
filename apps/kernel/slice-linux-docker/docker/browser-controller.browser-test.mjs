@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { startBrowserComputerFixture } from "../../../cli/scripts/lib/browser-computer-fixture.mjs";
+import { observeBrowserResources } from "./browser-controller-resources.mjs";
 import { browserControllerLaunchOptions } from "./browser-controller-test-launch-options.mjs";
 import { BrowserCdpClient, BrowserControllerError } from "./browser-controller-cdp.mjs";
 import { handleBrowserControllerRequest } from "./browser-controller.mjs";
@@ -1791,8 +1792,16 @@ async function withController(run, clientOptions = {}) {
     browser = new BrowserCdpClient({ ...clientOptions, debuggerEndpoint: `http://127.0.0.1:${port}` });
     const page = context.pages()[0] ?? await context.newPage();
     page.setDefaultTimeout(10_000);
+    // This real browser fixture runs beside other lanes' containers. Inventory
+    // the browser we launched, using actual /proc/profile reads for that PID.
+    const inventorySession = await context.browser().newBrowserCDPSession();
+    const processInfo = await inventorySession.send("SystemInfo.getProcessInfo");
+    await inventorySession.detach();
+    const ownedBrowserPid = processInfo.processInfo.find(entry => entry.type === "browser")?.id;
+    assert.ok(Number.isSafeInteger(ownedBrowserPid) && ownedBrowserPid > 1);
+    const resourceInventory = () => observeBrowserResources({ fileSystem: { readdir: async () => [String(ownedBrowserPid)] } });
     let nextId = 0;
-    const request = (method, params, options = {}) => handleBrowserControllerRequest({ id: ++nextId, method, params }, { browser, ...options });
+    const request = (method, params, options = {}) => handleBrowserControllerRequest({ id: ++nextId, method, params }, { browser, resourceInventory, ...options });
     await run({ page, request, context, browser });
   } finally {
     try {
@@ -1805,4 +1814,29 @@ async function withController(run, clientOptions = {}) {
       }
     }
   }
+}
+
+for (const layout of ["same-site", "isolated", "nested-isolated"]) {
+  test(`MP-08/MP-10/MP-11 ${layout} iframe owner suppression fences rendered text queries`, async () => {
+    await withCrossOriginFixture(async (url) => withController(async ({ page, request }) => {
+      await page.goto(url);
+      const leaf = layout === "nested-isolated" ? page.frameLocator("iframe").frameLocator("iframe") : page.frameLocator("iframe");
+      await leaf.getByText("Frame visibility marker").waitFor();
+      const reconciled = await request("browser.reconcile", { viewport });
+      assert.equal(reconciled.ok, true, JSON.stringify(reconciled.error));
+      const target = reconciled.result.tabs[0];
+      const observe = () => browserTextObservation(request, target, { query: "Frame visibility marker" });
+      assert.ok((await observe()).text.includes("Frame visibility marker"));
+      for (const style of ["opacity:0", "visibility:hidden", "display:none"]) {
+        await page.locator("iframe").evaluate((node, style) => node.style.cssText = style, style);
+        assert.equal((await observe()).text, "", `MP-11 invisible iframe ${style}`);
+        await page.locator("iframe").evaluate(node => node.style.cssText = "");
+        assert.ok((await observe()).text.includes("Frame visibility marker"));
+      }
+      await page.locator("body").evaluate(node => node.style.opacity = "0");
+      assert.equal((await observe()).text, "", "MP-11 embedding ancestor opacity");
+      await page.locator("body").evaluate(node => node.style.opacity = "1");
+      assert.ok((await observe()).text.includes("Frame visibility marker"));
+    }), { sameSite: layout === "same-site", nested: layout === "nested-isolated", fieldMarkup: '<p>Frame visibility marker</p>' });
+  });
 }
