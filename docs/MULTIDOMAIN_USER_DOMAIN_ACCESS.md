@@ -103,3 +103,38 @@ covers kernel grant boundaries, explicit recovery and immediate revoke/idle
 lapse. The two-agent held-turn drill covers task/wake retention, resource scope,
 notices and idle subscription revocation. These credential-free checks do not
 establish official-provider, client, hosted or fresh-machine acceptance.
+
+## Client consumers (mdgrants)
+
+The owner TUI provides `/access` (or `/access list`) and
+`/access revoke <agent-id>|all`, through the ordinary owner-terminal
+`KernelBrowser` path. Its live grant feed prints a compact retained-use notice.
+The web Access view lives inside the existing Browser dialog; no new rail item
+is added. It lists holder, session, kernel, touched resource IDs, observed
+retained-use time and the kernel idle deadline, with per-holder and all-holder
+revocation. Both consumers share the cursor projection and notice formatting.
+Only these grant consumers and cross-kernel badges require 432; existing
+multidomain browser/App/notes/capture minima remain 427.
+
+Protocol 432 does not expose a per-holder last-use timestamp. Clients label the
+latest notice they observed as **last observed retained use**, show **Not
+observed** otherwise, and do not infer use from grant creation, idle transitions
+or focus. The live snapshot carries only the latest owner notice, so this is
+not a complete activity audit. A complete last-use projection requires a future
+coordinator-allocated protocol change and updated wire snapshots.
+
+Reproduce the separate-process client drill after building the shared client
+and the kernel with `slot-run`:
+
+```sh
+CARGO_TARGET_DIR=/w/cx-mdgrants/target CARGO_PROFILE_DEV_DEBUG=0 \
+  slot-run cargo build -p chariox-kernel --bin chariox-kernel
+node apps/cli/scripts/user-domain-access-live-drill.mjs /w/evidence/mdgrants
+```
+
+It creates an explicit disposable `CHARIOX_HOME` under the evidence state
+root, uses owner WebSocket controls and provider-bound MCP calls against the
+production kernel, holds a dev-stub turn across focus change, claims a panel
+note, verifies retained use and revocation, and cleans its owned process group
+and state. It does not claim official-provider, native-browser, hosted relay or
+fresh-machine acceptance.

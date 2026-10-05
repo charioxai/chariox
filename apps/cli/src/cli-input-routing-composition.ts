@@ -1,3 +1,4 @@
+import { createAccessCommandController } from "./access-command-controller.js"
 import { parseKeypress } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { onCleanup } from "solid-js"
@@ -20,7 +21,7 @@ import {
   submitPromptWithRecovery,
 } from "./prompt-runtime-api.js"
 import { getSessionState } from "./session-api.js"
-import { sharedShellCommandForSlashCommand } from "./commands.js"
+import { parseSlashCommand, sharedShellCommandForSlashCommand } from "./commands.js"
 import { createSlashCommandSubmitController } from "./slash-command-submit-controller.js"
 import { renderPromptTranscript } from "./transcript-render.js"
 import { createWaitingRoomKeyController } from "./waiting-room-key-controller.js"
@@ -228,6 +229,12 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
         : {}),
     }
   }
+  const accessCommands = createAccessCommandController({
+    client: deps.client,
+    appendNotice: deps.appendNotice,
+  })
+  accessCommands.start()
+  onCleanup(() => accessCommands.stop())
   let handleSharedShellCommand = async (_rawCommand: string): Promise<boolean> => false
   let pendingProjectRenameId: string | null = null
   const slashCommandSubmitController = createSlashCommandSubmitController({
@@ -318,6 +325,11 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   })
   const submitWorkspaceShellCommand = workspaceShellSubmitController.submit
   handleSharedShellCommand = async (rawCommand) => {
+    const access = parseSlashCommand(rawCommand)
+    if (access?.kind === "access") {
+      await accessCommands.handle(access.args)
+      return true
+    }
     const shellCommand = sharedShellCommandForSlashCommand(rawCommand)
     if (!shellCommand) {
       return false
