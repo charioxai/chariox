@@ -15,6 +15,65 @@ new boot/machine/enrollment/relay identities, reviewed release, absence of old
 runtime residue, and retirement of the prior identity before the parity matrix
 or remaining acceptance gates run.
 
+## MP-11 shipped scanner repair and current review scope (2026-10-04)
+
+Lane b211scan repairs the product scanner against frozen OSS
+`9334141d420f8a32393f206102c5b8b4a1b0b609` (tree
+`f78d25308bd4cc012f129a86df8ff537699712df`) and Cloud
+`50eb909aa70298e16daca533a6b3a4f5b63ffeae` (tree
+`9f9c7c813af08d94da4f2f079cc60ef93b1b89d5`). Tooling source identity is separate
+from these runtime inputs; later runtime heads inherit no semantic approvals.
+
+The first shipped failure was exit 2 on the exact synthetic Claude PTY fixture.
+Native App C++/headers, storage-helper sources, plist/config and the exact
+extensionless macOS installer are now included. Six synthetic/binary fixtures
+are excluded only at their exact non-executable blob identities; future siblings,
+changed fixture contents/modes, binary source and unknown formats fail closed.
+New native/XML formats retain raw lexical candidates where the generic comment
+mask cannot prove syntax. The default HEAD scan reads immutable Git objects,
+including when Git suppresses working-copy dirt.
+
+Unified patch decoding supports standard paired headers, optional tab timestamps,
+multiple sections, additions/deletions and old/new filenames. It preserves physical
+patch offsets and source roles, rejects unsafe/unknown paths and malformed/count-
+mismatched/overlapping hunks, and retains removed controls when the new path is an
+excluded documentation format. Manual ranges use physical patch offsets too.
+Changed fragment consumers retain the existing fail-closed assembly gaps.
+
+Current declaration expectations live separately from historical source rules.
+They bind the 45 b211-reported symbol expectations plus two additional shipped
+prompt-assembly expectations to exact current commit/tree/blob/line/column/hash.
+Both platform implementations of nondumpability are retained. These point ranges
+resolve declaration presence only; neither expanding a range nor locating a
+function grants semantic approval. Historical predicates, rule records and the
+747 shipped historical semantic reviews remain unchanged. External Release F
+review records are neither imported nor repinned.
+
+The repaired exact scans enumerate 7,094 OSS and 2,936 Cloud candidates with zero
+source/fragment/declaration gaps. Counts differ from b211's 9,993 because the
+shipped historical tooling/expectations differ and the new native/XML inventory
+retains conservative raw matches. This is lexical coverage, not a defect count.
+The newly authored current module contains 81 independent runtime-source
+conclusions in 26 bounded responsibility scopes (80 OSS, one Cloud). Its author
+implemented scanner tooling only and did not author the frozen runtime; these
+are source-lane conclusions, not established reviewer-service approval of the
+scanner change. Every record has an exact source/anchor binding and explicit
+responsibility/acceptance limits. No unlisted anchor inherits a disposition.
+
+Both scans remain exit 1: **9,949 current candidates are still independently
+unreviewed**. Retained historical/other-source reviews remain visible but are
+inapplicable; missing same-source reviewed anchors explicitly block the gate.
+Exit 0 requires complete current semantic disposition and source-rule coverage,
+including rejection of removal-required findings. Complete semantic review,
+unavailable historical predicates, independent tooling review and all fresh
+ordinary/managed MP-10 evidence remain open. No MP-01 through MP-11 item closes.
+
+Evidence, exact commands/resources, independent Git-binding checks and a complete
+per-anchor pending review request index live outside the repositories at
+`/root/.codex/evidence/browser-resume-20260930/b211scan/`. No Rust build,
+provider/runtime/container creation, protocol allocation, push, deployment or
+protected-machine contact was performed.
+
 ## MP-07 / MP-02 / MP-10 / MP-11 managedfix recovery scope (2026-10-03)
 
 Based on OSS main `f1c402b82aa0053bb69f0f8fffe04b06e02a5c73` (signed F
