@@ -86,8 +86,18 @@ fn validate(install: &Install) -> Result<(), DaemonError> {
             .install_id
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        || !install
+            .release
+            .release_digest
+            .strip_prefix("sha256:")
+            .is_some_and(|digest| {
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
         || install.port < 1024
-        || [43118, 43119, 43120, 65535].contains(&install.port)
+        || [43117, 43118, 43119, 43120, 65535].contains(&install.port)
     {
         return Err(error(
             "invalid SSH host, install ID or distinct loopback port",
@@ -483,7 +493,7 @@ mod tests {
     }
     #[test]
     fn byom_mp11_catalog_selection_rejects_shell_hosts_default_port_and_foreign_ids() {
-        let release: Release = serde_json::from_value(json!({"id":"approved","releaseDigest":"sha256:pinned","archive":"/fixture","releasePublicKey":"/public","releasePublicKeyFingerprint":"sha256:public","builderPublicKey":"/builder","builderPublicKeyFingerprint":"sha256:builder"})).unwrap();
+        let release: Release = serde_json::from_value(json!({"id":"approved","releaseDigest":format!("sha256:{}", "a".repeat(64)),"archive":"/fixture","releasePublicKey":"/public","releasePublicKeyFingerprint":"sha256:public","builderPublicKey":"/builder","builderPublicKeyFingerprint":"sha256:builder"})).unwrap();
         let mut install = Install {
             host: "linux-lan".into(),
             install_id: "byom-lan".into(),
@@ -494,9 +504,15 @@ mod tests {
         install.host = "-oProxyCommand=evil".into();
         assert!(validate(&install).is_err());
         install.host = "linux-lan".into();
-        install.port = 43118;
-        assert!(validate(&install).is_err());
+        for port in [43117, 43118, 43119, 43120, 65535] {
+            install.port = port;
+            assert!(validate(&install).is_err());
+        }
         install.port = 55129;
+        let digest = install.release.release_digest.clone();
+        install.release.release_digest = "sha256:invalid".into();
+        assert!(validate(&install).is_err());
+        install.release.release_digest = digest;
         install.install_id = "../md-staging".into();
         assert!(validate(&install).is_err());
     }
