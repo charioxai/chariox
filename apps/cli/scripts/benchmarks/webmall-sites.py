@@ -28,7 +28,7 @@ MP = ["MP-08", "MP-10", "MP-11"]
 PREFIX = "r2next-webmall-r3"
 PUBLIC_PREFIX = "benchwm-20261003"
 parser = argparse.ArgumentParser()
-parser.add_argument("operation", choices=["start", "cleanup", "probe"])
+parser.add_argument("operation", choices=["start", "cleanup", "probe", "repair-search"])
 parser.add_argument("--upstream", required=True)
 parser.add_argument("--lane", required=True)
 parser.add_argument("--evidence", required=True)
@@ -160,6 +160,27 @@ def collect_search_readiness():
     (evidence / "search-metadata.json").write_text(json.dumps({"mp_items": MP, "shops": shops}, indent=2) + "\n")
     return probe_search("http://127.0.0.1:" + str(ports["elasticsearch"]), shops)
 
+def sync_search_indexes():
+    # A restored plugin can carry stale documents through --setup. Rebuild each
+    # entire lane-owned product index, never remove a task-selected document.
+    for i in range(1, 5):
+        name = PREFIX + f"-wordpress_shop{i}"
+        obj = inspect("container", name)
+        assert obj and obj["Config"]["Labels"].get("io.chariox.benchmark.lane") == PREFIX, "MP-10 refuse unowned search repair"
+        docker("exec", name, "wp", "eval", r'$host = \ElasticPress\Utils\get_host(); if (rtrim($host, "/") !== "http://elasticsearch:9200") { throw new \RuntimeException("MP-10 unowned search endpoint"); } $index = \ElasticPress\Indexables::factory()->get("post")->get_index_name(); if (!\ElasticPress\Elasticsearch::factory()->delete_index($index)) { throw new \RuntimeException("MP-10 index reset failed"); }', timeout=120)
+        docker("exec", name, "wp", "elasticpress", "sync", "--setup", "--yes", "--stop-on-error", timeout=300)
+
+if args.operation == "repair-search":
+    sync_search_indexes()
+    search = collect_search_readiness()
+    public = {"mp_items": MP, "status": "ready", "urls": json.loads((lane / "site-urls.json").read_text()),
+              "catalog": json.loads((evidence / "catalog-restored.json").read_text()), "search": search,
+              "loopbackPorts": json.loads((root / "ports.json").read_text()), "network": owned["network"],
+              "source": "2697d35cdfcfedcf1ade89b7ad86722db8daa8a7", "repair": "complete lane-owned index rebuild"}
+    (evidence / "sites-readiness.json").write_text(json.dumps(public, indent=2) + "\n")
+    print("MP-08/MP-10 complete search rebuild ready")
+    raise SystemExit(0)
+
 if args.operation == "probe":
     result = collect_search_readiness()
     target = evidence / "search-admission.json"
@@ -263,7 +284,7 @@ try:
         service["image"] = pins[service["image"]]
         service["labels"] = {"io.chariox.benchmark.lane": PREFIX}
         service["cpus"] = 0.5
-        service["mem_limit"] = "2048m" if name == "elasticsearch" else "512m" if name.startswith("wordpress") else "384m" if name.startswith("mariadb") else "128m"
+        service["mem_limit"] = "2048m" if name == "elasticsearch" else "1024m" if name.startswith("wordpress") else "384m" if name.startswith("mariadb") else "128m"
         service["pids_limit"] = 256
         if name == "elasticsearch":
             # Upstream's ARM-only JVM flag is invalid on the reserved x86 builder.
@@ -322,8 +343,7 @@ try:
         time.sleep(2)
     else: raise RuntimeError("MP-10 search service readiness deadline")
     stage = "search_index_sync"
-    for i in range(1, 5):
-        docker("exec", PREFIX + f"-wordpress_shop{i}", "wp", "elasticpress", "sync", "--setup", "--yes", "--stop-on-error", timeout=300)
+    sync_search_indexes()
     stage = "search_admission"
     public["search"] = collect_search_readiness()
     (evidence / "sites-readiness.json").write_text(json.dumps(public, indent=2) + "\n")

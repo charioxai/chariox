@@ -65,7 +65,7 @@ try {
  const networks=JSON.parse((await docker(['inspect',container])).stdout)[0].NetworkSettings.Networks;
  const endpoint='http://'+networks[config.siteNetwork].IPAddress+':19222';
  for(let i=0;i<40;i++){try{const response=await fetch(endpoint+'/json/version');assert(response.ok);break}catch{if(i===39)throw Error('CDP forward readiness failed');await sleep(250)}}
- grader=spawn(config.python,[path.join(import.meta.dirname,'webmall-grader.py'),config.siteUrls,config.upstream,endpoint,path.join(dir,'grade')],{stdio:['pipe','pipe','ignore'],env:{...process.env,PYTHONPYCACHEPREFIX:config.scratch+'/pycache'}});
+ grader=spawn(config.python,[path.join(import.meta.dirname,'webmall-grader.py'),config.siteUrls,config.upstream,endpoint,path.join(dir,'grade')],{detached:true,stdio:['pipe','pipe','ignore'],env:{...process.env,PYTHONPYCACHEPREFIX:config.scratch+'/pycache'}});
  report.graderPid=grader.pid;
  const {createInterface}=await import('node:readline');
  let pending;
@@ -132,7 +132,7 @@ try {
 } catch(error){report.status='RED';report.firstFailingSeam=seam;report.failureCode=error.code??error.name;report.failure=rpcErrorRecord(error)}
 finally{
  if(agentId&&sessionId){try{const state=one(await client.send(requests.getSessionStateRequest(sessionId)),'SessionState');if(state.session.agents.find(a=>a.id===agentId)?.is_processing){attachmentId??=one(await client.send(requests.attachToSessionRequest(sessionId,'benchwm-cleanup')),'SessionAttached').attachment.id;await client.send(requests.cancelActivePromptRequest(sessionId,attachmentId,agentId));for(let i=0;i<40;i++){const s=one(await client.send(requests.getSessionStateRequest(sessionId)),'SessionState');if(!s.session.agents.find(a=>a.id===agentId)?.is_processing)break;await sleep(250)}}}catch{report.cleanup.push('provider_cancel_failed')}}
- if(grader){if(!report.grade)try{report.grade=await grade({op:'finish'})}catch{report.gradingIncomplete=true};grader.stdin.end();try{assert(await stopOwnedProcess(grader),'grader exit acknowledgement missing');report.cleanup.push('grader_stopped')}catch{report.cleanup.push('grader_stop_failed')}}
+ if(grader){if(!report.grade)try{report.grade=await grade({op:'finish'})}catch{report.gradingIncomplete=true};grader.stdin.end();try{assert(await stopOwnedProcess(grader,{detached:true}),'grader exit acknowledgement missing');report.cleanup.push('grader_stopped')}catch{report.cleanup.push('grader_stop_failed')}}
  if(attachmentId)try{await client.send(requests.detachFromSessionRequest(attachmentId));report.cleanup.push('attachment_detached')}catch{report.cleanup.push('attachment_detach_failed')}
  if(sessionId)try{await client.send(requests.deleteSessionRequest(sessionId,config.workspace));report.cleanup.push('owned_room_deleted')}catch{report.cleanup.push('room_delete_failed')}
  if(sliceId)try{await client.send(requests.stopSliceRequest(sliceId));await client.send(requests.deleteSliceRequest(sliceId));report.cleanup.push('owned_slice_deleted')}catch{report.cleanup.push('slice_delete_failed')}

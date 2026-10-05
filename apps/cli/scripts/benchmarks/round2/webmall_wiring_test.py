@@ -4,6 +4,38 @@ from pathlib import Path
 from webmall_readiness import probe_search
 
 class SearchWiring(unittest.TestCase):
+    def reset_function(self):
+        source = Path(os.environ.get("WEBMALL_FIXTURE_SOURCE", str(Path(__file__).resolve().parent.parent / "webmall-sites.py")))
+        tree = ast.parse(source.read_text())
+        found = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "sync_search_indexes"), None)
+        if found: return source, found
+        # Historical adapter's exact setup loop, before the reset was extracted.
+        setup = next(n for n in tree.body if isinstance(n, ast.Try))
+        loop = next(n for n in reversed(setup.body) if isinstance(n, ast.For))
+        return source, ast.FunctionDef(name="sync_search_indexes", args=ast.arguments(posonlyargs=[], args=[], kwonlyargs=[], kw_defaults=[], defaults=[]), body=[loop], decorator_list=[])
+
+    def test_complete_reset_precedes_each_shop_sync(self):
+        source, function = self.reset_function(); calls = []
+        def docker(*args, **kwargs): calls.append(args); return "", 0
+        namespace = dict(PREFIX="r2next-webmall-r3", docker=docker,
+                         inspect=lambda *args: {"Config": {"Labels": {"io.chariox.benchmark.lane": "r2next-webmall-r3"}}})
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])), str(source), "exec"), namespace)
+        namespace["sync_search_indexes"]()
+        self.assertEqual(len(calls), 8)
+        for offset in range(0, 8, 2):
+            self.assertIn("delete_index($index)", calls[offset][-1])
+            self.assertEqual(calls[offset + 1][3:6], ("wp", "elasticpress", "sync"))
+            self.assertEqual(calls[offset][2], calls[offset + 1][2])
+
+    def test_unowned_shop_never_receives_index_reset(self):
+        source, function = self.reset_function(); calls = []
+        namespace = dict(PREFIX="r2next-webmall-r3", docker=lambda *args, **kwargs: calls.append(args),
+                         inspect=lambda *args: {"Config": {"Labels": {"io.chariox.benchmark.lane": "other-lane"}}})
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])), str(source), "exec"), namespace)
+        with self.assertRaisesRegex(AssertionError, "unowned"):
+            namespace["sync_search_indexes"]()
+        self.assertEqual(calls, [])
+
     def test_plugin_effective_host_overrides_stale_stored_option(self):
         source = Path(os.environ.get("WEBMALL_FIXTURE_SOURCE", str(Path(__file__).resolve().parent.parent / "webmall-sites.py")))
         tree = ast.parse(source.read_text())
