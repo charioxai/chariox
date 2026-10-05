@@ -10,6 +10,7 @@ mod controller_browser;
 mod controller_browser_compatibility;
 mod controller_browser_geometry;
 mod controller_browser_projection;
+mod controller_browser_rendered_text;
 mod controller_browser_runtime;
 mod controller_computer;
 mod controller_computer_observation;
