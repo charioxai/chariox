@@ -67,21 +67,15 @@ function installNoteObserver() {
     latest = { quote: { exact, prefix:Array.from(indexed.text.slice(Math.max(0,start-256),start)).slice(-64).join('').toWellFormed(), suffix:Array.from(indexed.text.slice(end,end+256)).slice(0,64).join('').toWellFormed() }, box_css:rect, hint:JSON.stringify({start,end}) };
     return latest;
   };
-  const matchQuote = (quote,root) => {
+  const matchQuote = (quote,root,exactOnly) => {
     const indexed = index(root);
     if (!indexed) throw new Error('MD-N2: page text limit reached');
     const positions=[];
     for (let at=indexed.text.indexOf(quote.exact); at>=0; at=indexed.text.indexOf(quote.exact,at+1)) {
       const end=at+quote.exact.length;
-      if ((!quote.prefix || indexed.text.slice(Math.max(0,at-quote.prefix.length),at)===quote.prefix)
-          && (!quote.suffix || indexed.text.slice(end,end+quote.suffix.length)===quote.suffix)) positions.push(at);
+      if (exactOnly || ((!quote.prefix || indexed.text.slice(Math.max(0,at-quote.prefix.length),at)===quote.prefix)
+          && (!quote.suffix || indexed.text.slice(end,end+quote.suffix.length)===quote.suffix))) positions.push(at);
       if (positions.length>1) break;
-    }
-    // Changed surroundings may still reattach an unambiguous exact quote.
-    if (!positions.length) {
-      const at=indexed.text.indexOf(quote.exact);
-      if (at>=0 && indexed.text.indexOf(quote.exact,at+1)<0) positions.push(at);
-      else if (at>=0) return { anchor_state:'ambiguous', box_css:null };
     }
     if (positions.length!==1) return { anchor_state:positions.length?'ambiguous':'missing', box_css:null };
     const start=positions[0], end=start+quote.exact.length;
@@ -91,8 +85,8 @@ function installNoteObserver() {
     const range=document.createRange(); range.setStart(a.node,start-a.start); range.setEnd(b.node,end-b.start);
     return { anchor_state:'attached', box_css:box(range), hint:JSON.stringify({start,end}) };
   };
-  const reanchor = quote => {
-    const matches=roots().map(root=>matchQuote(quote,root));
+  const reanchor = (quote,exactOnly=false) => {
+    const matches=roots().map(root=>matchQuote(quote,root,exactOnly));
     const attached=matches.filter(result=>result.anchor_state==='attached');
     if (matches.some(result=>result.anchor_state==='ambiguous') || attached.length>1) return {anchor_state:'ambiguous',box_css:null};
     return attached[0]??{anchor_state:'missing',box_css:null};
@@ -124,7 +118,7 @@ export async function observeBrowserNote(browser, request) {
     }
     // OOPIF entries replace a parent's placeholder with the owning session.
     for (const item of frames.values()) if (item.frame.parentId) item.parent=frames.get(item.frame.parentId);
-    const candidates=[];let ambiguous=false;
+    const worlds=[];
     for (const item of frames.values()) {
       if (!item.frame.loaderId) continue;
       const world=item.frame.id===frame.id
@@ -136,15 +130,24 @@ export async function observeBrowserNote(browser, request) {
         if (installed.exceptionDetails || installed.result?.value!==true) throw new Error('MD-N2: isolated observer unavailable');
         world.notesInstalled=true;
       }
-      const expression=request.quote ? `globalThis.__charioxNotes.reanchor(${JSON.stringify(request.quote)})` : 'globalThis.__charioxNotes.capture()';
-      const result=await connection.send('Runtime.evaluate',{expression,contextId:world.contextId,returnByValue:true,awaitPromise:false},item.sessionId);
-      if (result.exceptionDetails || !Object.hasOwn(result.result??{},'value')) throw new Error('MD-N2: selection observation failed');
-      const value=result.result.value;
-      if (value?.anchor_state==='ambiguous') ambiguous=true;
-      if (!value || (request.quote && value.anchor_state!=='attached')) continue;
-      if (value.box_css) value.box_css=await projectFrameBox(connection,item,value.box_css);
-      if (value.hint) value.hint=JSON.stringify({frame_id:item.frame.id,document_id:item.frame.loaderId,range:value.hint});
-      candidates.push({value,url:item.frame.url});
+      worlds.push({item,world});
+    }
+    const candidates=[];let ambiguous=false;
+    // Context has priority across ALL owned frames and shadow roots. Only
+    // after none match may changed surroundings use a unique exact quote.
+    for (const exactOnly of request.quote?[false,true]:[false]) {
+      for (const {item,world} of worlds) {
+        const expression=request.quote ? `globalThis.__charioxNotes.reanchor(${JSON.stringify(request.quote)}${exactOnly?',true':''})` : 'globalThis.__charioxNotes.capture()';
+        const result=await connection.send('Runtime.evaluate',{expression,contextId:world.contextId,returnByValue:true,awaitPromise:false},item.sessionId);
+        if (result.exceptionDetails || !Object.hasOwn(result.result??{},'value')) throw new Error('MD-N2: selection observation failed');
+        const value=result.result.value;
+        if (value?.anchor_state==='ambiguous') ambiguous=true;
+        if (!value || (request.quote && value.anchor_state!=='attached')) continue;
+        if (value.box_css) value.box_css=await projectFrameBox(connection,item,value.box_css);
+        if (value.hint) value.hint=JSON.stringify({frame_id:item.frame.id,document_id:item.frame.loaderId,range:value.hint});
+        candidates.push({value,url:item.frame.url});
+      }
+      if (candidates.length || ambiguous) break;
     }
     // Recheck every owning tree before releasing a selection. A navigation or
     // frame replacement cannot turn a captured box into a new-document anchor.

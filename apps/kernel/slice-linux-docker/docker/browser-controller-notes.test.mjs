@@ -41,7 +41,10 @@ test('MD-N2 / MP-10: serialized quotes cannot inject evaluator code',async()=>{
   const {browser,calls}=fixture();
   const quote={exact:'"); globalThis.forbidden=true; //',prefix:'🙂',suffix:'after'};
   await observeBrowserNote(browser,{target_id:'t',document_id:'d',quote});
-  assert.equal(calls.filter(c=>c.method==='Runtime.evaluate').at(-1).params.expression,`globalThis.__charioxNotes.reanchor(${JSON.stringify(quote)})`);
+  assert.deepEqual(calls.filter(c=>c.method==='Runtime.evaluate').slice(1).map(c=>c.params.expression),[
+    `globalThis.__charioxNotes.reanchor(${JSON.stringify(quote)})`,
+    `globalThis.__charioxNotes.reanchor(${JSON.stringify(quote)},true)`,
+  ]);
   await assert.rejects(()=>observeBrowserNote(browser,{target_id:'t',document_id:'d',quote:{exact:'x'.repeat(16385),prefix:'',suffix:''}}),/invalid quote/);
 });
 
