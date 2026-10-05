@@ -348,6 +348,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::AttachWorkflowNotification(r) => {
             Some(SessionMembershipScope::SessionId(r.session_id.clone()))
         }
+        LocalDaemonRequest::DetachWorkflowNotification(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
         LocalDaemonRequest::ListWorkflowNotifications(r) => {
             Some(SessionMembershipScope::SessionId(r.session_id.clone()))
         }

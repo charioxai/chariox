@@ -1,6 +1,7 @@
 //! MP-08 / MP-10: focused real single-writer SQLite drills; no provider/network.
 use super::*;
 use crate::agent::{AgentInstance, GridPosition};
+use crate::local::WorkflowNotificationEvents;
 use crate::session::{
     CreateSessionRequest, SessionService, WorkflowOutputPayload, WorkflowRun, WorkflowRunStatus,
 };
@@ -12,11 +13,21 @@ pub(crate) struct Fixture {
 }
 impl Fixture {
     pub(crate) fn new() -> Self {
+        Self::for_kernel("daemon-test")
+    }
+    pub(crate) fn for_kernel(kernel: &str) -> Self {
         let root =
             std::env::temp_dir().join(format!("chariox-wfnotify-{:016x}", rand::random::<u64>()));
         std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            root.join("wfnotify-fixture-owner"),
+            "/root/work/agent-wfnotify",
+        )
+        .unwrap();
         let store = DurableKernelStateStore::open_owned(root.join("kernel.sqlite")).unwrap();
-        let mut sessions = SessionService::new(&crate::config::DaemonConfig::for_tests());
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.daemon_id = kernel.into();
+        let mut sessions = SessionService::new(&config);
         let mut session = sessions
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .unwrap();
@@ -102,6 +113,8 @@ impl Fixture {
             workflow_id: w.into(),
             enabled: true,
             available: true,
+            name: String::new(),
+            output_fields: vec![],
         };
         match self
             .store
@@ -130,6 +143,7 @@ impl Fixture {
             source_id: source.source_id.clone(),
             owner_user_id: "local".into(),
             target_kernel_id: source.kernel_id.clone(),
+            target_kind: crate::local::WorkflowNotificationTargetKind::WorkflowEndpoint,
             session_id: self.session.clone(),
             workflow_id: w.into(),
             publication_id: p.into(),
@@ -137,6 +151,9 @@ impl Fixture {
             queue_id: t.queue_id.clone(),
             ttl_days: 7,
             source_available: true,
+            source_kernel_id: source.kernel_id.clone(),
+            events: WorkflowNotificationEvents::Both,
+            filters: serde_json::Value::Null,
         };
         match self
             .store
@@ -210,12 +227,21 @@ pub(crate) fn cleanup(mut f: Fixture) {
     std::fs::remove_dir_all(root).unwrap();
 }
 #[test]
-fn completion_persists_before_router_restart_deduplicates_and_failed_runs_never_emit() {
+fn completion_persists_before_router_restart_deduplicates_and_events_are_selected() {
     let mut f = Fixture::new();
     let (a, _, _) = f.workflow("a");
     let (b, _, bp) = f.workflow("b");
     let source = f.source(&a);
-    f.attach(&source, &b, &bp);
+    let mut sub = f.attach(&source, &b, &bp);
+    sub.events = WorkflowNotificationEvents::Success;
+    let target =
+        WorkflowNotificationTarget::resolve(&f.sessions, "local", &f.session, &bp, None).unwrap();
+    f.store
+        .notify(NotificationOperation::Attach {
+            subscription: sub,
+            target,
+        })
+        .unwrap();
     f.complete(
         &a,
         "success",
@@ -238,7 +264,7 @@ fn completion_persists_before_router_restart_deduplicates_and_failed_runs_never_
     f.persist();
     assert_eq!(f.candidates(false).len(), 1);
     let (sub, env) = f.candidates(false).remove(0);
-    assert_eq!(env.output.message(), "final output");
+    assert_eq!(env.output.as_ref().unwrap().message(), "final output");
     assert!(matches!(
         f.store
             .notify(NotificationOperation::Accept {
@@ -301,6 +327,7 @@ fn runtime_ancestry_drops_two_and_three_workflow_cycles_visibly() {
             source_id: src.source_id.clone(),
             owner_user_id: "local".into(),
             target_kernel_id: src.kernel_id.clone(),
+            target_kind: crate::local::WorkflowNotificationTargetKind::WorkflowEndpoint,
             session_id: f.session.clone(),
             workflow_id: a.clone(),
             publication_id: ap.clone(),
@@ -308,16 +335,19 @@ fn runtime_ancestry_drops_two_and_three_workflow_cycles_visibly() {
             queue_id: t.target().queue_id.clone(),
             ttl_days: 7,
             source_available: true,
+            source_kernel_id: src.kernel_id.clone(),
+            events: WorkflowNotificationEvents::Both,
+            filters: serde_json::Value::Null,
         };
         let db = Connection::open(f.root.join("kernel.sqlite")).unwrap();
         db.execute(
-            "INSERT OR REPLACE INTO workflow_notification_subscriptions VALUES (?1,?2,?3,?4,?5)",
+            "INSERT INTO app_automations(owner_id,installation_id,automation_id,revision,event_name,event_version,schema_digest,session_id,publication_id,endpoint_id,queue_id,status,source_kind,notification_json) VALUES (?3,?2,?1,1,'workflow_completion',1,'kernel',?6,?7,?8,?9,'active','workflow_completion',?5)",
             params![
                 sub.subscription_id,
                 sub.source_id,
                 sub.owner_user_id,
                 workflow_identity(&src.kernel_id, &f.session, &a),
-                encode(&sub).unwrap()
+                encode(&sub).unwrap(),sub.session_id,sub.publication_id,sub.endpoint_id,sub.queue_id
             ],
         )
         .unwrap();
@@ -330,13 +360,25 @@ fn runtime_ancestry_drops_two_and_three_workflow_cycles_visibly() {
         };
         for (i, w) in sequence.iter().enumerate() {
             let (s, e) = f.candidates(false).remove(0);
-            f.store
+            let ack = f
+                .store
                 .notify(NotificationOperation::Accept {
                     subscription: s.clone(),
                     envelope: e.clone(),
                 })
                 .unwrap();
+            if w == &a {
+                assert!(matches!(
+                    ack,
+                    NotificationOutcome::Ack(WorkflowNotificationAck::LoopDropped)
+                ));
+                break;
+            }
+            let deadline = e.deadline_ms;
             let q = f.queue(s, e);
+            f.store
+                .notify(NotificationOperation::Sweep { now: deadline + 1 })
+                .unwrap();
             f.complete(
                 w,
                 &format!("run-{i}"),
@@ -400,7 +442,7 @@ fn accepted_inbox_survives_paused_and_busy_targets_until_original_deadline() {
     let db = f.store.lock_connection("assert expiry").unwrap();
     let (state, body): (String, Option<String>) = db
         .query_row(
-            "SELECT state,envelope_json FROM workflow_notification_inbox",
+            "SELECT state,payload_json FROM app_outbox WHERE source_kind='workflow_completion'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -486,7 +528,7 @@ fn wrong_owner_ttl_static_cycles_and_occurrence_content_conflicts_are_refused() 
         .is_empty());
     f.complete(&a, "one", None, WorkflowRunStatus::Completed, "original");
     let (sub, mut env) = f.candidates(false).remove(0);
-    env.output = WorkflowOutputPayload::new("forged", vec![]);
+    env.output = Some(WorkflowOutputPayload::new("forged", vec![]));
     assert!(f
         .store
         .notify(NotificationOperation::Accept {
@@ -633,5 +675,259 @@ fn ownership_transfer_does_not_capture_output_for_former_owner_or_touch_pending(
             .len(),
         1
     );
+    cleanup(f);
+}
+
+#[test]
+fn enabled_source_emits_failure_bare_status() {
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("reviewer");
+    let (b, _, bp) = f.workflow("subscriber");
+    let source = f.source(&a);
+    f.attach(&source, &b, &bp);
+    f.complete(
+        &a,
+        "failed-review",
+        None,
+        WorkflowRunStatus::Failed,
+        "must not be exported",
+    );
+    assert_eq!(
+        f.candidates(false).len(),
+        1,
+        "MP-08 / MP-10: failure completion must emit"
+    );
+    cleanup(f);
+}
+
+#[test]
+fn d1_d2_github_fixture_subject_fields_filters_and_bare_failure() {
+    use crate::session::WorkflowPublicationInvocationEnvelope;
+    let mut f = Fixture::new();
+    let (reviewer, _, _) = f.workflow("reviewer");
+    let (all, _, allp) = f.workflow("repo-subscriber");
+    let (one, _, onep) = f.workflow("pr-873-subscriber");
+    let mut source = f.source(&reviewer);
+    source.output_fields = vec!["verdict".into(), "review_url".into()];
+    let workflow = f
+        .sessions
+        .resolve_workflow_ref(&f.session, &reviewer)
+        .unwrap();
+    f.store
+        .notify(NotificationOperation::Register(SourceAdmission {
+            source: source.clone(),
+            workflow_json: encode(&workflow).unwrap(),
+        }))
+        .unwrap();
+    for (workflow, publication, filter) in [
+        (&all, &allp, serde_json::json!({"repo":"fixture/repo"})),
+        (
+            &one,
+            &onep,
+            serde_json::json!({"repo":"fixture/repo","pr":[873]}),
+        ),
+    ] {
+        let mut sub = f.attach(&source, workflow, publication);
+        sub.filters = filter;
+        let target = WorkflowNotificationTarget::resolve(
+            &f.sessions,
+            "local",
+            &f.session,
+            publication,
+            None,
+        )
+        .unwrap();
+        f.store
+            .notify(NotificationOperation::Attach {
+                subscription: sub,
+                target,
+            })
+            .unwrap();
+    }
+    for (pr, status) in [
+        (873, WorkflowRunStatus::Completed),
+        (874, WorkflowRunStatus::Completed),
+        (875, WorkflowRunStatus::Failed),
+    ] {
+        let invocation = WorkflowPublicationInvocationEnvelope {
+            publication_id: "fixture-app-publication".into(),
+            hook_id: Some("fixture-automation".into()),
+            invocation_id: format!("pull-{pr}"),
+            transport: "app_event".into(),
+            endpoint_id: "endpoint".into(),
+            queue_ref: None,
+            input: serde_json::json!({"event_type":"github.pull_request","payload":{"metadata":{"repo":"fixture/repo","pr":pr,"head_sha":format!("sha-{pr}"),"subject":"agent-cannot-change-canonical-key"}}}),
+            artifacts: vec![],
+            mode: None,
+            caller: serde_json::json!({"kind":"app_event","owner_id":"local"}),
+        };
+        let mut run = WorkflowRun::new(
+            format!("review-{pr}"),
+            &reviewer,
+            "endpoint",
+            "node",
+            None,
+            Some(invocation),
+            vec![],
+            vec![],
+        );
+        run.set_final_output(Some(WorkflowOutputPayload::new(serde_json::json!({"verdict":"approved","review_url":format!("https://example.test/review/{pr}"),"repo":"forged/repo","pr":999}).to_string(),vec![])),Some(true),None,None);
+        run.set_status(status);
+        let mut session = f.sessions.get_session(&f.session).unwrap();
+        session.create_workflow_run(run);
+        f.sessions.restore_session(session);
+        f.persist();
+    }
+    let candidates = f.candidates(false);
+    assert_eq!(
+        candidates.len(),
+        4,
+        "MP-08 / MP-10 D2: repo gets 3, PR 873 gets 1"
+    );
+    assert_eq!(
+        candidates
+            .iter()
+            .filter(|(s, _)| s.workflow_id == one)
+            .count(),
+        1
+    );
+    for (sub, env) in candidates {
+        let pr = env.fields["pr"].as_u64().unwrap();
+        assert_eq!(env.subject, Some(format!("github:fixture/repo/pull/{pr}")));
+        assert_eq!(env.fields["repo"], "fixture/repo");
+        assert_eq!(env.fields["head_sha"], format!("sha-{pr}"));
+        if pr == 875 {
+            assert!(env.output.is_none());
+            assert!(env.fields.get("verdict").is_none());
+            assert_eq!(env.fields["status"], "failure");
+        } else {
+            assert_eq!(env.fields["verdict"], "approved");
+            assert_eq!(
+                env.fields["review_url"],
+                format!("https://example.test/review/{pr}")
+            );
+        }
+        let mut rejected = env.clone();
+        rejected.fields["repo"] = serde_json::json!("other/repo");
+        assert!(matches!(
+            f.store
+                .notify(NotificationOperation::Accept {
+                    subscription: sub.clone(),
+                    envelope: rejected
+                })
+                .unwrap(),
+            NotificationOutcome::Ack(WorkflowNotificationAck::Filtered)
+        ));
+        assert!(matches!(
+            f.store
+                .notify(NotificationOperation::Accept {
+                    subscription: sub.clone(),
+                    envelope: env.clone()
+                })
+                .unwrap(),
+            NotificationOutcome::Ack(WorkflowNotificationAck::Accepted)
+        ));
+        // Retries preserve the occurrence; target durable acceptance is independent of a run.
+        assert!(matches!(
+            f.store
+                .notify(NotificationOperation::Accept {
+                    subscription: sub.clone(),
+                    envelope: env.clone()
+                })
+                .unwrap(),
+            NotificationOutcome::Ack(WorkflowNotificationAck::Duplicate)
+        ));
+        f.queue(sub, env);
+    }
+    assert_eq!(
+        f.sessions
+            .get_session(&f.session)
+            .unwrap()
+            .workflow_queued_prompts()
+            .len(),
+        4
+    );
+    cleanup(f);
+}
+
+#[test]
+fn round1_migration_preserves_pending_and_inbox_only_queue_lineage() {
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("source");
+    let (b, _, bp) = f.workflow("target");
+    let source = f.source(&a);
+    let sub = f.attach(&source, &b, &bp);
+    f.complete(
+        &a,
+        "legacy-pending",
+        None,
+        WorkflowRunStatus::Completed,
+        "pending",
+    );
+    let (_, pending) = f.candidates(false).remove(0);
+    let mut queued = pending.clone();
+    queued.occurrence_id = "legacy-queued".into();
+    let legacy_envelope = |env: &WorkflowNotificationEnvelope| {
+        let mut value = serde_json::to_value(env).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("status");
+        object.remove("subject");
+        object.remove("fields");
+        serde_json::to_string(&value).unwrap()
+    };
+    let mut legacy_sub = serde_json::to_value(&sub).unwrap();
+    for field in ["source_kernel_id", "events", "filters", "target_kind"] {
+        legacy_sub.as_object_mut().unwrap().remove(field);
+    }
+    drop(f.store);
+    let db = Connection::open(f.root.join("kernel.sqlite")).unwrap();
+    db.execute_batch("DELETE FROM app_outbox WHERE source_kind='workflow_completion';
+        DELETE FROM app_automations WHERE source_kind='workflow_completion';
+        CREATE TABLE workflow_notification_subscriptions(subscription_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL);
+        CREATE TABLE workflow_notification_outbox(subscription_id TEXT, envelope_json TEXT, state TEXT);
+        CREATE TABLE workflow_notification_inbox(subscription_id TEXT, envelope_json TEXT, state TEXT, queued_prompt_id TEXT);").unwrap();
+    db.execute(
+        "INSERT INTO workflow_notification_subscriptions VALUES (?1,?2)",
+        params![sub.subscription_id, legacy_sub.to_string()],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO workflow_notification_outbox VALUES (?1,?2,'pending')",
+        params![sub.subscription_id, legacy_envelope(&pending)],
+    )
+    .unwrap();
+    // Inbox-only migration must retain queue/session ancestry even without an
+    // outgoing half. It also retains the id already embedded in legacy runs.
+    db.execute(
+        "INSERT INTO workflow_notification_inbox VALUES (?1,?2,'queued','legacy-queue')",
+        params![sub.subscription_id, legacy_envelope(&queued)],
+    )
+    .unwrap();
+    drop(db);
+    f.store = DurableKernelStateStore::open_owned(f.root.join("kernel.sqlite")).unwrap();
+    assert_eq!(f.candidates(false).len(), 1);
+    assert_eq!(f.candidates(false)[0].1.deadline_ms, pending.deadline_ms);
+    assert_eq!(
+        f.store.notification_inventory("local").unwrap().1[0].events,
+        WorkflowNotificationEvents::Success
+    );
+    let db = Connection::open(f.root.join("kernel.sqlite")).unwrap();
+    let (session, queue, lineage, receipt): (String,String,String,String) = db.query_row("SELECT queued_session_id,queued_prompt_id,invocation_json,receipt_id FROM app_outbox WHERE occurrence_id='legacy-queued'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+    assert_eq!(session, f.session);
+    assert_eq!(queue, "legacy-queue");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&lineage).unwrap()["ancestry"],
+        serde_json::json!(queued.ancestry)
+    );
+    assert_eq!(
+        receipt,
+        format!(
+            "{}:{}:{}",
+            sub.subscription_id, queued.source_id, queued.occurrence_id
+        )
+    );
+    let old_tables:u32=db.query_row("SELECT count(*) FROM sqlite_master WHERE name IN ('workflow_notification_subscriptions','workflow_notification_outbox','workflow_notification_inbox')",[],|r|r.get(0)).unwrap();
+    assert_eq!(old_tables, 0);
+    drop(db);
     cleanup(f);
 }

@@ -3121,17 +3121,22 @@ Protocol 416 adds `AppRequestFailed {code: "receipt_expired"}` for an
   rather than redispatch an expired identity after rollback; their App control
   requests report storage unavailable until a supporting kernel is restored.
 
-### Workflow completion notifications — local protocol 437 (MP-08 / MP-10)
+### Workflow completion notifications — local 437 / relay peer 82 (MP-08 / MP-10 / MP-11)
 
 Private same-user workflows are a second notification source kind beside Apps.
-The kernel emits successful final output once per run, commits the pending outbox
-with completion, routes same-kernel deliveries into a deduplicated durable inbox,
-and admits ordinary workflow prompts through source-neutral target ownership checks.
-App-specific signing/capability checks remain in the App adapter. No direct AEGS
-bindings, emitter tools, AEDS producer registration, Cloud runtime proxy or peer
-transport are added. ACK means durable inbox acceptance, not execution completion.
-Seven-day default / 1–30-day subscription TTL and kernel-derived ancestry apply;
-repeated workflow identities drop with a visible loop diagnostic. Deleted/transferred
-sources become unavailable locally and pending records expire naturally. See
-`EVENT_TRIGGER_PROTOCOL.md` for the requests, bounded output template, deadlines,
-restart behavior and next-round relay adapter seam. Relay peer stays unchanged.
+The kernel emits successful final output or failure bare status once per run, with
+recorded subject/trigger provenance and optional declared output fields. Subscription
+filters use the shared AEGS equality/any-of semantics at source and target. Bindings
+and receipts generalize `app_automations` / `app_outbox` with source kinds `app_event`
+and `workflow_completion`; both use the existing App pump and ordinary durable queue
+handoff. App-specific signature/capability admission remains in the App adapter.
+
+Peer 82 adds owner-bound `ListWorkflowNotificationSources`,
+`SubscribeWorkflowNotifications`, `UnsubscribeWorkflowNotifications` and
+`DeliverWorkflowNotification` over the existing E2EE channel. Picker discovery reuses
+waiting-room kernel inventory; Cloud stores no workflow directory or event data.
+ACK means durable target acceptance, not run completion. Seven-day default / 1–30-day
+TTL and kernel-derived ancestry apply. Repeated target workflow identities drop
+with a diagnostic. Deletion/transfer leaves pending records to expire. See
+`EVENT_TRIGGER_PROTOCOL.md` for shared commands, bounded payloads, migration,
+source availability and the deferred agent-session watch design.

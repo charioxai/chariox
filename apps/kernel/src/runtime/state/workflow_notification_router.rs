@@ -1,5 +1,5 @@
 //! One kernel notification router. Local delivery uses durable inbox admission;
-//! encrypted peer delivery and route-directory resolution are future adapters.
+//! Both local and authenticated E2EE peer delivery feed the App receipt store.
 use super::{KernelRuntimeOwnedState, KernelRuntimeState};
 use crate::durable_state::{
     notification_target::WorkflowNotificationTarget,
@@ -13,24 +13,43 @@ use std::collections::BTreeSet;
 
 pub(super) enum NotificationRoute {
     Local,
-    PeerDeferred,
+    Peer,
 }
 fn route(home_kernel: &str, target_kernel: &str) -> NotificationRoute {
     if home_kernel == target_kernel {
         NotificationRoute::Local
     } else {
-        NotificationRoute::PeerDeferred
+        NotificationRoute::Peer
     }
 }
-fn source_available(sessions: &SessionService, source: &WorkflowNotificationSource) -> bool {
+pub(super) fn source_available(
+    sessions: &SessionService,
+    source: &WorkflowNotificationSource,
+) -> bool {
     sessions.get_session(&source.session_id).is_ok_and(|s| {
         s.owner_user_id() == source.owner_user_id && s.host_daemon_id() == source.kernel_id
     }) && sessions
         .resolve_workflow_ref(&source.session_id, &source.workflow_id)
         .is_ok()
 }
+pub(super) fn summary(source: &WorkflowNotificationSource) -> WorkflowNotificationSourceSummary {
+    let mut fields = ["subject", "status", "repo", "pr", "head_sha", "event_type"]
+        .map(str::to_owned)
+        .to_vec();
+    fields.extend(source.output_fields.clone());
+    WorkflowNotificationSourceSummary {
+        source_id: source.source_id.clone(),
+        kernel_id: source.kernel_id.clone(),
+        session_id: source.session_id.clone(),
+        workflow_id: source.workflow_id.clone(),
+        name: source.name.clone(),
+        events: WorkflowNotificationEvents::Both,
+        fields,
+        available: source.available,
+    }
+}
 impl KernelRuntimeState {
-    pub(super) fn execute_workflow_notification_request(
+    pub(crate) fn execute_workflow_notification_request(
         &self,
         request: LocalDaemonRequest,
         owner: &str,
@@ -55,6 +74,23 @@ impl KernelRuntimeState {
                             workflow_id: workflow.id().into(),
                             enabled: request.enabled,
                             available: true,
+                            name: workflow.alias().unwrap_or(workflow.id()).into(),
+                            output_fields: request.output_fields.unwrap_or_else(|| {
+                                self.owned
+                                    .durable_state_store
+                                    .notification_inventory(owner)
+                                    .ok()
+                                    .and_then(|(sources, _, _)| {
+                                        sources
+                                            .into_iter()
+                                            .find(|s| {
+                                                s.workflow_id == workflow.id()
+                                                    && s.session_id == session.id()
+                                            })
+                                            .map(|s| s.output_fields)
+                                    })
+                                    .unwrap_or_default()
+                            }),
                         };
                         match self.owned.durable_state_store.notify(
                             NotificationOperation::Register(SourceAdmission {
@@ -83,7 +119,35 @@ impl KernelRuntimeState {
                                     && s.enabled
                                     && source_available(&sessions, s)
                             })
+                            .or_else(|| {
+                                self.owned
+                                    .durable_state_store
+                                    .notification_cached_sources(owner)
+                                    .ok()?
+                                    .into_iter()
+                                    .find(|s| s.source_id == request.source_id && s.available)
+                                    .map(|s| WorkflowNotificationSource {
+                                        source_id: s.source_id,
+                                        owner_user_id: owner.into(),
+                                        kernel_id: s.kernel_id,
+                                        session_id: s.session_id,
+                                        workflow_id: s.workflow_id,
+                                        name: s.name,
+                                        enabled: true,
+                                        available: true,
+                                        output_fields: vec![],
+                                    })
+                            })
                             .ok_or_else(|| store::error("source not available"))?;
+                        if request.filters.as_object().is_some_and(|filter| {
+                            filter
+                                .keys()
+                                .any(|key| !summary(&source).fields.contains(key))
+                        }) && source.kernel_id
+                            == self.owned.config_projection.snapshot().daemon_id
+                        {
+                            return Err(store::error("notification unknown filter field"));
+                        }
                         let session = sessions.get_session(&request.session_id)?;
                         if session.owner_user_id() != owner {
                             return Err(store::error("notification target not owner"));
@@ -106,9 +170,10 @@ impl KernelRuntimeState {
                                 "wf_subscription_{:032x}",
                                 rand::random::<u128>()
                             ),
-                            source_id: source.source_id,
+                            source_id: source.source_id.clone(),
                             owner_user_id: owner.into(),
                             target_kernel_id: session.host_daemon_id().into(),
+                            target_kind: WorkflowNotificationTargetKind::WorkflowEndpoint,
                             session_id: session.id().into(),
                             workflow_id: publication.workflow_id().into(),
                             publication_id: t.publication_id.clone(),
@@ -116,13 +181,19 @@ impl KernelRuntimeState {
                             queue_id: t.queue_id.clone(),
                             ttl_days: request.ttl_days,
                             source_available: true,
+                            source_kernel_id: source.kernel_id.clone(),
+                            events: request.events,
+                            filters: request.filters,
                         };
-                        match self.owned.durable_state_store.notify(
+                        let operation = if source.kernel_id == session.host_daemon_id() {
                             NotificationOperation::Attach {
                                 subscription,
                                 target,
-                            },
-                        )? {
+                            }
+                        } else {
+                            NotificationOperation::RemoteAttach { subscription }
+                        };
+                        match self.owned.durable_state_store.notify(operation)? {
                             NotificationOutcome::Subscription(subscription) => {
                                 Ok(LocalDaemonResponse::WorkflowNotificationAttached {
                                     subscription,
@@ -140,12 +211,29 @@ impl KernelRuntimeState {
                         for source in &mut sources {
                             source.available = source_available(&sessions, source);
                         }
+                        let cached = self
+                            .owned
+                            .durable_state_store
+                            .notification_cached_sources(owner)?;
                         for sub in &mut subscriptions {
                             sub.source_available = sources
                                 .iter()
-                                .any(|s| s.source_id == sub.source_id && s.available);
+                                .any(|s| s.source_id == sub.source_id && s.available && s.enabled)
+                                || cached
+                                    .iter()
+                                    .any(|s| s.source_id == sub.source_id && s.available);
                         }
-                        subscriptions.retain(|s| s.session_id == request.session_id);
+                        subscriptions.retain(|s| {
+                            s.session_id == request.session_id
+                                && s.target_kernel_id
+                                    == self.owned.config_projection.snapshot().daemon_id
+                        });
+                        let mut sources = sources
+                            .iter()
+                            .filter(|s| s.enabled)
+                            .map(summary)
+                            .collect::<Vec<_>>();
+                        sources.extend(cached);
                         Ok(LocalDaemonResponse::WorkflowNotifications {
                             sources,
                             subscriptions,
@@ -217,56 +305,58 @@ impl KernelRuntimeOwnedState {
                 ) {
                     continue;
                 }
-                let operation =
-                    self.durable_state_store
-                        .with_workflow_runtime_transition_lock(|| {
-                            let mut sessions = self.session_store.write();
-                            let (sources, _, _) = self
-                                .durable_state_store
-                                .notification_inventory(&sub.owner_user_id)?;
-                            // Deletion/transfer leave pending rows alone; they naturally expire.
-                            if !sources.iter().any(|s| {
+                let operation = self
+                    .durable_state_store
+                    .with_workflow_runtime_transition_lock(|| {
+                        let mut sessions = self.session_store.write();
+                        let (sources, _, _) = self
+                            .durable_state_store
+                            .notification_inventory(&sub.owner_user_id)?;
+                        // Deletion/transfer leave pending rows alone; they naturally expire.
+                        if !accepted
+                            && !sources.iter().any(|s| {
                                 s.source_id == env.source_id && source_available(&sessions, s)
-                            }) {
-                                return Ok(false);
+                            })
+                        {
+                            return Ok(false);
+                        }
+                        let target = WorkflowNotificationTarget::resolve(
+                            &sessions,
+                            &sub.owner_user_id,
+                            &sub.session_id,
+                            &sub.publication_id,
+                            Some(&sub.queue_id),
+                        )
+                        .map_err(|e| store::error(e.to_string()))?;
+                        if sessions.get_session(&sub.session_id)?.owner_user_id()
+                            != sub.owner_user_id
+                            || target.target().endpoint_id != sub.endpoint_id
+                        {
+                            return Err(store::error("notification target changed"));
+                        }
+                        if accepted {
+                            let prepared = PreparedNotification::prepare(
+                                &mut sessions,
+                                sub.clone(),
+                                env.clone(),
+                            )?;
+                            let after = prepared.after.clone();
+                            self.durable_state_store
+                                .notify(NotificationOperation::Queue(Box::new(prepared)))?;
+                            sessions.restore_session(after);
+                            Ok(true)
+                        } else {
+                            match self.durable_state_store.notify(
+                                NotificationOperation::Accept {
+                                    subscription: sub.clone(),
+                                    envelope: env.clone(),
+                                },
+                            )? {
+                                NotificationOutcome::Ack(_ack) => Ok(false),
+                                _ => Err(store::error("unexpected notification ACK")),
                             }
-                            let target = WorkflowNotificationTarget::resolve(
-                                &sessions,
-                                &sub.owner_user_id,
-                                &sub.session_id,
-                                &sub.publication_id,
-                                Some(&sub.queue_id),
-                            )
-                            .map_err(|e| store::error(e.to_string()))?;
-                            if sessions.get_session(&sub.session_id)?.owner_user_id()
-                                != sub.owner_user_id
-                                || target.target().endpoint_id != sub.endpoint_id
-                            {
-                                return Err(store::error("notification target changed"));
-                            }
-                            if accepted {
-                                let prepared = PreparedNotification::prepare(
-                                    &mut sessions,
-                                    sub.clone(),
-                                    env.clone(),
-                                )?;
-                                let after = prepared.after.clone();
-                                self.durable_state_store
-                                    .notify(NotificationOperation::Queue(Box::new(prepared)))?;
-                                sessions.restore_session(after);
-                                Ok(true)
-                            } else {
-                                match self.durable_state_store.notify(
-                                    NotificationOperation::Accept {
-                                        subscription: sub.clone(),
-                                        envelope: env.clone(),
-                                    },
-                                )? {
-                                    NotificationOutcome::Ack(_ack) => Ok(false),
-                                    _ => Err(store::error("unexpected notification ACK")),
-                                }
-                            }
-                        });
+                        }
+                    });
                 if matches!(operation, Ok(true)) {
                     queued_sessions.insert(sub.session_id.clone());
                     let _ = self.session_snapshot(&sub.session_id);
@@ -328,6 +418,7 @@ mod tests {
                 session_id: f.session.clone(),
                 workflow_ref: a.clone(),
                 enabled: true,
+                output_fields: None,
             },
         );
         assert!(runtime
@@ -346,6 +437,8 @@ mod tests {
                 publication_ref: bp,
                 queue_ref: None,
                 ttl_days: 7,
+                events: WorkflowNotificationEvents::Both,
+                filters: serde_json::Value::Null,
             });
         assert!(runtime
             .execute_workflow_notification_request(attach.clone(), "another-user")
@@ -381,10 +474,7 @@ mod tests {
             queued.source(),
             crate::session::WorkflowQueuedPromptSource::Event
         );
-        assert!(matches!(
-            route("one", "two"),
-            NotificationRoute::PeerDeferred
-        ));
+        assert!(matches!(route("one", "two"), NotificationRoute::Peer));
         let mut transferred = runtime
             .owned
             .session_store

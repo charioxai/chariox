@@ -34,6 +34,7 @@ import {
   executeWorkflowNodeCommand,
 } from "./shell-workflow-graph-command.js"
 import { executeWorkflowCodeCommand } from "./shell-workflow-code-command.js"
+import { executeWorkflowNotificationTrigger, executeWorkflowNotificationSettings } from "./shell-workflow-notification-command.js"
 import { executeWorkflowPublicationCommand } from "./shell-workflow-publication-command.js"
 import {
   executeWorkflowRegistryCommand,
@@ -333,7 +334,10 @@ export async function executeWorkflowCommand(
       return executeWorkflowEdgeCommand(args, context, deps)
     case "endpoint":
       return executeWorkflowEndpointCommand(args, context, deps)
+    case "notifications":
+      return executeWorkflowNotificationSettings(args, context, deps)
     case "trigger":
+      if (args[0] === "notification") return executeWorkflowNotificationTrigger(args.slice(1), context, deps)
       return executeWorkflowPublicationCommand(args, context, deps)
     case "watchdog":
       return executeWorkflowWatchdogCommand(args, context, deps)

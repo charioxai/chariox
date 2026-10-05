@@ -11,6 +11,7 @@ impl KernelRuntimeOwnedState {
         match request {
             LocalDaemonRequest::RegisterWorkflowNotificationSource(_)
             | LocalDaemonRequest::AttachWorkflowNotification(_)
+            | LocalDaemonRequest::DetachWorkflowNotification(_)
             | LocalDaemonRequest::ListWorkflowNotifications(_) => {
                 Err(DaemonError::LocalTransport {
                     operation: "workflow.notifications",

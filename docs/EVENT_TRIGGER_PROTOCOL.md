@@ -93,69 +93,121 @@ App adapter has narrower 64 KiB payload/prompt ceilings; it does not silently
 truncate. Artifact references are metadata and confer no file, URL or credential
 access.
 
-## Private workflow notifications (protocol 437; MP-08 / MP-10)
+## Private workflow notifications (local 437 / peer 82; MP-08 / MP-10 / MP-11)
 
-`RegisterWorkflowNotificationSource {session_id, workflow_ref, enabled}` registers
-one stable source for a workflow. Workflows currently have no independent owner
-field; their session owner is the source owner. A source ID survives enable/disable.
-Registration has no historical replay. An explicit registration after ownership
-transfer creates a new owner-scoped source ID; old subscriptions and pending rows
-are left alone. Completion selects only the current session owner’s source. Only successful `Completed` runs with a
-valid final output emit, once per source/run occurrence. Completion and pending
-outbox records commit in the same normal workflow transaction, so a restart between
-completion and routing recovers the original occurrence. Failed and intermediate
-outputs never emit. No emitter tool or workflow node exists.
+Workflows are a second source kind beside Apps. `RegisterWorkflowNotificationSource
+{session_id, workflow_ref, enabled, output_fields?}` controls **Send notifications
+when runs finish**. The session owner owns the source. Its ID survives switches;
+registration has no historical replay. After transfer, registration creates a new
+owner-scoped ID. Completion selects only the current owner's enabled source.
+Successful `Completed` runs with valid final output emit that output. `Failed` runs
+emit status and recorded provenance, without final output, failure detail or output
+fields. Intermediate outputs and cancelled runs do not emit. There is no emit tool.
+Completion and source receipts commit in the normal workflow transaction.
 
 `AttachWorkflowNotification {session_id, source_id, publication_ref, queue_ref?,
-ttl_days?}` is same-user only. The target session, publication and endpoint must
-belong to that owner, and the publication must be enabled and `event_based`.
-Attach resolves the ordinary workflow queue and rejects a visible local graph
-cycle. Default TTL is seven days, configurable from one to thirty days. Reattaching
-the same target is idempotent; changing TTL affects future occurrences only.
-`ListWorkflowNotifications {session_id}` projects the owner's source inventory,
-target subscriptions and bounded diagnostics. A deleted/transferred source yields
-`available=false` / `source_available=false`: clients show **source not available**.
-No heartbeat, ping, registry registration, AEGS or AEDS call participates.
+ttl_days?, events?, filters?}` is same-user only. Target session, publication and
+endpoint must belong to the owner; the publication is enabled and `event_based`.
+Events are `success`, `failure`, or `both` (default). TTL defaults to seven days and
+must be 1–30 days. Reattach reuses the binding; TTL changes affect new occurrences.
+Attach rejects cycles visible in the local graph. `DetachWorkflowNotification
+{session_id, subscription_id}` disables local admission and sends a peer unsubscribe
+when remote. If the peer is offline, its outstanding sends get refused by the target
+and expire; no additional unsubscribe scheduler is introduced.
 
-The envelope contains `source_id`, `occurrence_id` (kernel run ID), final `output`,
-kernel-derived `ancestry`, and immutable `deadline_ms`. An ancestry entry is a
-JSON tuple `[kernel_id, session_id, workflow_id]`, globally qualified for the future
-peer transport. Client configuration requests reject owner, output and ancestry
-fields. Ancestry is retained in the inbox and linked to the actual queued prompt;
-completion reads that durable link rather than trusting invocation text or caller
-metadata. A completed workflow already present in its inherited ancestry drops
-its outbound emission with `workflow_notification_loop_dropped`. A defensive
-256-entry ceiling drops with a separate diagnostic. A->B->A and A->B->C->A are
-therefore denied even if a graph changed after attach or spans future kernels.
+The envelope carries `source_id`, `occurrence_id` (run ID), `status`, optional final
+`output`, optional canonical `subject`, bounded `fields`, kernel-derived `ancestry`
+and immutable `deadline_ms`. Recorded App-event invocation provenance supplies
+`repo`, `pr`, `head_sha`, `event_type` and subject. GitHub repository/PR provenance
+produces `github:<repo>/pull/<number>`. Up to eight declared output fields (names at
+most 64 ASCII letters/digits/underscores) are projected from the structured JSON
+final-output message. Values are small scalars, with strings at most 512 bytes.
+Provenance/status names are reserved. Failure notifications contain only provenance
+and status. Omitted/null `output_fields` preserves the declaration on a switch.
 
-The named kernel notification router chooses local delivery for a same-kernel
-subscription. The peer route is a deferred adapter; this round adds no relay peer
-shape or Cloud directory. The source persists before send and retries until durable
-inbox ACK or expiry. ACKs are `accepted`, `duplicate`, or `expired`; acceptance does
-not mean the target run has finished or started. Inbox deduplication prevents repeat
-queue admission. Queue/receipt handoff commits on the existing single writer, then
-publishes the session projection. An uncertain commit fences the writer and
-requires authoritative restart before dispatch.
+Filters use the shared AEGS/SDK semantics: AND across dotted fields, scalar equality,
+metadata-array membership and expected any-of arrays. The source evaluates filters
+before persisting a delivery; the target checks the current binding again before
+acceptance. Source metadata lists the available filter fields. Attach configuration
+never accepts caller-supplied owner, output, subject or ancestry.
 
-The local inventory admits at most 1,024 sources and subscriptions per owner,
-with at most 32 targets per source and 1,024 accepted inbox items kernel-wide.
-Busy, paused and full targets retain accepted inbox work until its original deadline.
-Retries rotate bounded batches to avoid head-of-line blocking. A fixed template
-wraps JSON final output as untrusted data in an ordinary workflow prompt. This path
-uses the AEDS 1 MiB prompt ceiling: encoded output is bounded to 1 MiB minus 1 KiB
-for the fixed wrapper, with at most 32 artifact references. Source-neutral target
-admission does not reuse the narrower App payload validator. Oversize output drops
-with `workflow_notification_output_limit`, without failing successful completion.
-No artifact is fetched, opened or promoted into a provider attachment. Ordinary
-queue dispatch checks the deadline too; expired queued work is visibly cancelled.
-Ancestry and dedupe identities remain after payload expiry to prevent replay.
+An ancestry entry is `[kernel_id, session_id, workflow_id]` encoded as a JSON tuple.
+The kernel links ancestry to the durable queue receipt and records it in the run's
+kernel-created invocation context. It survives payload expiry. Admission drops a
+notification whose target is already in its ancestry, with
+`workflow_notification_loop_dropped`; completion also fences repeat identities.
+A 256-entry bound drops with its own diagnostic. These rules apply across kernels
+and arbitrary local graph changes, including A→B→A and A→B→C→A.
 
-Source delete or transfer does not migrate, revoke or delete pending notification
-records. Local routing stops treating the source as available; pending deliveries
-expire at their existing deadlines. Notification records are local kernel state,
-not exported deployment packages. UI picker and cross-kernel route-directory work
-are later rounds; the picker will offer **My workflows** beside Apps on the same
-attach flow.
+The named notification router uses direct delivery locally and the existing E2EE
+relay peer channel remotely. Peer 82 adds `ListWorkflowNotificationSources`,
+`SubscribeWorkflowNotifications {source_workflow_ref, target_ref}`,
+`UnsubscribeWorkflowNotifications` and `DeliverWorkflowNotification`. Each request
+carries `protocol_version:82`; incompatible peers fail before activation. Remote
+requests require an unexpired sender-key-bound kernel or machine identity, matching
+realm and owner. The relay authenticates the registered sender kernel; Kernel claims
+also require an exact canonical sender subject. Existing home-kernel peer requests
+project to Machine identity, as execution leases already do. Shared-token/unbound peers do not authorize private streams.
+The subscriber kernel owns target admission; the source records its authenticated
+remote subscription locally. Relay remains ciphertext transport.
+
+Bindings use `app_automations.source_kind=workflow_completion`; source pending and
+target accepted/queued receipts use `app_outbox`, beside `app_event`. App-specific
+signature, catalog, schema and capability checks remain in the App adapter. The
+existing App pump and atomic queue handoff serve both kinds; no new scheduler,
+provider execution path, Cloud directory, AEGS registration or AEDS call is added.
+Round-1 delivery tables migrate transactionally into these shared tables, preserving
+pending deadlines and queue links, and are removed. Legacy subscribers select success.
+
+Persist-before-send and retry continue until ACK or expiry. ACKs are `accepted`,
+`duplicate`, `expired`, `filtered` or `loop_dropped`; ACK never means run completion.
+The target retains accepted work while busy, paused or full. Deduplication prevents
+repeated queue insertion; conflicting occurrence content is refused. An uncertain
+writer commit fences further transitions until restart. Ordinary dispatch checks
+notification deadlines and visibly cancels expired queued work.
+
+New payloads and prompts use the reused App path's **64 KiB** ceilings (not the AEDS
+1 MiB transport ceiling). Final output reserves 8 KiB for envelope fields; the entire
+envelope is checked separately. At most 32 artifacts remain metadata only: no fetch,
+host-file read or provider attachment promotion. There are at most 1,024 local sources
+and active subscriptions per owner, 32 subscribers per source, 1,024 pending receipts
+and 16 MiB pending payload per kernel. Oversize/backpressure is diagnostic and cannot
+roll back successful workflow completion. Legacy accepted bytes retain their original
+TTL. Settled receipt payloads expire; deduplication tombstones remain for 30 days after
+deadline before bounded reclamation. Causal ancestry remains in recorded runs.
+
+`ListWorkflowNotifications {session_id}` is the shared TUI/web picker request. Local
+sources come from kernel state. Picker open refreshes the existing waiting-room
+kernel inventory, then fans out source-list requests (four concurrent, three-second
+fanout deadline, at most 128 kernels). Responses contain source IDs, names, events
+and filter fields, never outputs or history. Last results persist per owner/kernel.
+Directory changes refresh lists without a new polling loop. Offline/missing sources
+are unavailable and cannot attach; consumers show **source not available**. Source
+delete/transfer does not revoke, migrate or rewrite pending deliveries; they expire.
+No notification-specific heartbeat or ping is introduced.
+
+Shared shell/TUI commands:
+
+- `/workflow notifications on|off [workflow] [--fields verdict,review_url]`
+- `/workflow trigger notification list`
+- `/workflow trigger notification attach <source> [success|failure|both]
+  [--publication <ref>] [--ttl <1..30>] [--filter repo=fixture/repo] [--filter pr=873]`
+- `/workflow trigger notification detach <subscription-id>`
+
+Attach resolves the selected workflow's unique enabled notification trigger, or the
+explicit publication. Web uses these same requests; its **My workflows** picker next
+to Apps and settings switch are implemented in Cloud, not a second runtime authority.
+
+### Per-agent watches — design seam only (MP-08 / MP-10 / MP-11)
+
+Delivery target kinds are `workflow_endpoint` and reserved `agent_session`; current
+admission rejects the latter. A future watch binds the same authenticated owner,
+agent/session, canonical subject, filters and deadline to this router/receipt path.
+It accepts into that session's ordinary queue. A kernel tool may create a watch, or
+the kernel may derive one from the authenticated result of an agent's GitHub action
+opening a PR. Model text cannot create provenance or infer ownership. Watch removal
+follows a recorded PR close/merge event, session end, or TTL. Neither watches nor
+GitHub action observation are implemented in this round.
 
 ## AEGS subscription reconciliation
 

@@ -22,7 +22,7 @@ pub(in crate::durable_state) fn record_workflow_transition_in(
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         let Some(envelope) = run
             .publication_invocation()
-            .filter(|value| value.transport == "app_event")
+            .filter(|value| is_notification_transport(value))
         else {
             continue;
         };
@@ -52,7 +52,7 @@ pub(in crate::durable_state) fn record_workflow_transition_in(
         }
         let Some(envelope) = queued
             .publication_invocation()
-            .filter(|value| value.transport == "app_event")
+            .filter(|value| is_notification_transport(value))
         else {
             continue;
         };
@@ -77,11 +77,7 @@ fn settle(
     let Some(owner) = envelope.caller.get("owner_id").and_then(|v| v.as_str()) else {
         return Err(rusqlite::Error::InvalidQuery);
     };
-    let Some(installation) = envelope
-        .caller
-        .get("installation_id")
-        .and_then(|v| v.as_str())
-    else {
+    let Some(installation) = installation(envelope) else {
         return Err(rusqlite::Error::InvalidQuery);
     };
     // An already terminal/pruned receipt is a normal replay of workflow history.
@@ -89,7 +85,7 @@ fn settle(
     // from acknowledging another run. Current App/publisher activation is not
     // required to record work which was already durably queued under authority.
     tx.execute(
-        "UPDATE app_outbox SET state=?1,payload_json=NULL,invocation_json=NULL,
+        "UPDATE app_outbox SET state=?1,payload_json=NULL,invocation_json=CASE WHEN source_kind='workflow_completion' THEN invocation_json ELSE NULL END,
          revision=CASE WHEN revision<9223372036854775807 THEN revision+1 ELSE revision END
          WHERE owner_id=?2 AND installation_id=?3 AND receipt_id=?4 AND state='queued'
          AND queued_session_id=?5 AND queued_prompt_id=?6",
@@ -184,14 +180,10 @@ fn matches_envelope(
     installation: &str,
     receipt: &str,
 ) -> bool {
-    envelope.transport == "app_event"
+    is_notification_transport(envelope)
         && envelope.invocation_id == receipt
         && envelope.caller.get("owner_id").and_then(|v| v.as_str()) == Some(owner)
-        && envelope
-            .caller
-            .get("installation_id")
-            .and_then(|v| v.as_str())
-            == Some(installation)
+        && self::installation(envelope) == Some(installation)
 }
 
 /// An authoritative normalized replacement can explicitly remove a formerly
@@ -237,10 +229,31 @@ pub(in crate::durable_state) fn record_queue_removals_in(
         }
         if let Some(envelope) = queued
             .publication_invocation()
-            .filter(|value| value.transport == "app_event")
+            .filter(|value| is_notification_transport(value))
         {
             settle(tx, session, &id, envelope, "failed")?;
         }
     }
     Ok(())
+}
+
+fn is_notification_transport(envelope: &WorkflowPublicationInvocationEnvelope) -> bool {
+    matches!(
+        envelope.transport.as_str(),
+        "app_event" | "workflow_notification"
+    )
+}
+
+// Pre-release workflow notifications stored the source in input, before the
+// shared App receipt adapter added installation_id to its kernel-built caller.
+fn installation(envelope: &WorkflowPublicationInvocationEnvelope) -> Option<&str> {
+    envelope
+        .caller
+        .get("installation_id")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            (envelope.transport == "workflow_notification")
+                .then(|| envelope.input.get("source_id").and_then(|v| v.as_str()))
+                .flatten()
+        })
 }

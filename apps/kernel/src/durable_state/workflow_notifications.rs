@@ -1,7 +1,7 @@
 //! Kernel-owned workflow notification store on the existing single durable writer.
 //! Completion/outbox, ACK/inbox and queue/receipt each commit atomically.
 mod completion;
-mod queue;
+mod migration;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -17,12 +17,13 @@ use crate::{
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::sync::mpsc;
 
-pub(crate) const MAX_OUTPUT_BYTES: usize = chariox_event_protocol::MAX_EVENT_PROMPT_BYTES - 1024;
-pub(crate) const MAX_PROMPT_BYTES: usize = chariox_event_protocol::MAX_EVENT_PROMPT_BYTES;
+pub(crate) const MAX_OUTPUT_BYTES: usize =
+    chariox_app_runtime::app_outbox::MAX_PAYLOAD_BYTES - 8192;
+pub(crate) const MAX_PROMPT_BYTES: usize = chariox_app_runtime::app_outbox::MAX_PROMPT_BYTES;
 const MAX_SUBSCRIPTIONS: usize = 32;
-const MAX_PENDING: i64 = 1024;
+pub(crate) const MAX_PENDING: i64 = 1024;
+pub(crate) use super::app_event_delivery::PreparedNotification;
 pub(super) use completion::capture_in;
-pub(crate) use queue::PreparedNotification;
 
 pub(crate) fn error(message: impl Into<String>) -> DaemonError {
     DaemonError::LocalTransport {
@@ -30,11 +31,11 @@ pub(crate) fn error(message: impl Into<String>) -> DaemonError {
         message: message.into(),
     }
 }
-fn sql(error: rusqlite::Error) -> DaemonError {
+pub(super) fn sql(error: rusqlite::Error) -> DaemonError {
     super::storage_full::observe(&error);
     self::error(error.to_string())
 }
-fn encode(value: &impl serde::Serialize) -> Result<String, DaemonError> {
+pub(super) fn encode(value: &impl serde::Serialize) -> Result<String, DaemonError> {
     serde_json::to_string(value).map_err(|_| error("notification encoding failed"))
 }
 fn decode<T: serde::de::DeserializeOwned>(value: &str) -> Result<T, DaemonError> {
@@ -46,30 +47,23 @@ pub(crate) fn workflow_identity(kernel: &str, session: &str, workflow: &str) -> 
 }
 
 pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
-    db.execute_batch("CREATE TABLE IF NOT EXISTS workflow_notification_sources (
+    // Registration and diagnostics are workflow metadata. Delivery state uses
+    // the existing App automation/receipt store, not a second inbox/outbox.
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS workflow_notification_sources (
       source_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, kernel_id TEXT NOT NULL,
       session_id TEXT NOT NULL, workflow_id TEXT NOT NULL, enabled INTEGER NOT NULL,
       payload_json TEXT NOT NULL, UNIQUE(kernel_id,session_id,workflow_id,owner_id));
-    CREATE TABLE IF NOT EXISTS workflow_notification_subscriptions (
-      subscription_id TEXT PRIMARY KEY, source_id TEXT NOT NULL, owner_id TEXT NOT NULL,
-      target_identity TEXT NOT NULL, payload_json TEXT NOT NULL,
-      UNIQUE(source_id,target_identity));
     CREATE TABLE IF NOT EXISTS workflow_notification_occurrences (
       source_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, diagnostic TEXT,
       PRIMARY KEY(source_id,occurrence_id));
-    CREATE TABLE IF NOT EXISTS workflow_notification_outbox (
-      subscription_id TEXT NOT NULL, source_id TEXT NOT NULL, occurrence_id TEXT NOT NULL,
-      deadline_ms INTEGER NOT NULL, state TEXT NOT NULL, envelope_json TEXT, retry_at_ms INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY(subscription_id,source_id,occurrence_id));
-    CREATE INDEX IF NOT EXISTS idx_workflow_notification_outbox_pending
-      ON workflow_notification_outbox(state,deadline_ms);
-    CREATE TABLE IF NOT EXISTS workflow_notification_inbox (
-      subscription_id TEXT NOT NULL, source_id TEXT NOT NULL, occurrence_id TEXT NOT NULL,
-      deadline_ms INTEGER NOT NULL, state TEXT NOT NULL, envelope_json TEXT, ancestry_json TEXT NOT NULL,
-      session_id TEXT NOT NULL, queued_prompt_id TEXT, retry_at_ms INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY(subscription_id,source_id,occurrence_id));
-    CREATE INDEX IF NOT EXISTS idx_workflow_notification_inbox_queue
-      ON workflow_notification_inbox(session_id,queued_prompt_id);") .map_err(sql)
+    CREATE TABLE IF NOT EXISTS workflow_notification_source_cache (
+      owner_id TEXT NOT NULL,kernel_id TEXT NOT NULL,payload_json TEXT NOT NULL,
+      PRIMARY KEY(owner_id,kernel_id));",
+    )
+    .map_err(sql)?;
+    migration::migrate(db)?;
+    Ok(())
 }
 
 pub(crate) struct SourceAdmission {
@@ -87,6 +81,23 @@ pub(crate) enum NotificationOperation {
         envelope: WorkflowNotificationEnvelope,
     },
     Queue(Box<PreparedNotification>),
+    RemoteAttach {
+        subscription: WorkflowNotificationSubscription,
+    },
+    Detach {
+        subscription_id: String,
+        owner: String,
+        kernel: String,
+    },
+    Acknowledge {
+        subscription_id: String,
+        occurrence_id: String,
+    },
+    Cache {
+        owner: String,
+        kernel: String,
+        sources: Vec<crate::local::WorkflowNotificationSourceSummary>,
+    },
     Sweep {
         now: u64,
     },
@@ -151,13 +162,13 @@ impl DurableKernelStateStore {
             .map_err(sql)?
             .map(|r| decode(&r.map_err(sql)?))
             .collect::<Result<Vec<_>, _>>()?;
-        let mut query = db.prepare("SELECT payload_json FROM workflow_notification_subscriptions WHERE owner_id=?1 ORDER BY subscription_id LIMIT 1024").map_err(sql)?;
+        let mut query = db.prepare("SELECT notification_json FROM app_automations WHERE owner_id=?1 AND source_kind='workflow_completion' AND status='active' ORDER BY automation_id LIMIT 1024").map_err(sql)?;
         let subscriptions = query
             .query_map([owner], |r| r.get::<_, String>(0))
             .map_err(sql)?
             .map(|r| decode(&r.map_err(sql)?))
             .collect::<Result<Vec<_>, _>>()?;
-        let mut query = db.prepare("SELECT o.source_id,o.occurrence_id,o.diagnostic FROM workflow_notification_occurrences o JOIN workflow_notification_sources s ON s.source_id=o.source_id WHERE s.owner_id=?1 AND o.diagnostic IS NOT NULL ORDER BY o.rowid DESC LIMIT 64").map_err(sql)?;
+        let mut query = db.prepare("SELECT DISTINCT o.source_id,o.occurrence_id,o.diagnostic FROM workflow_notification_occurrences o LEFT JOIN workflow_notification_sources s ON s.source_id=o.source_id LEFT JOIN app_automations a ON a.installation_id=o.source_id AND a.source_kind='workflow_completion' WHERE (s.owner_id=?1 OR a.owner_id=?1) AND o.diagnostic IS NOT NULL ORDER BY o.rowid DESC LIMIT 64").map_err(sql)?;
         let diagnostics = query
             .query_map([owner], |r| {
                 Ok(WorkflowNotificationDiagnostic {
@@ -173,7 +184,7 @@ impl DurableKernelStateStore {
     }
     pub(crate) fn notification_has_pending(&self) -> Result<bool, DaemonError> {
         let db = self.lock_connection("workflow.notifications.backlog")?;
-        db.query_row("SELECT EXISTS(SELECT 1 FROM workflow_notification_outbox WHERE state='pending') OR EXISTS(SELECT 1 FROM workflow_notification_inbox WHERE state='accepted')",[],|r|r.get(0)).map_err(sql)
+        db.query_row("SELECT EXISTS(SELECT 1 FROM app_outbox WHERE source_kind='workflow_completion' AND state IN ('accepted','retryable'))",[],|r|r.get(0)).map_err(sql)
     }
     pub(crate) fn notification_candidates(
         &self,
@@ -188,13 +199,8 @@ impl DurableKernelStateStore {
         DaemonError,
     > {
         let db = self.lock_connection("workflow.notifications.pending")?;
-        let table = if accepted {
-            "workflow_notification_inbox"
-        } else {
-            "workflow_notification_outbox"
-        };
-        let state = if accepted { "accepted" } else { "pending" };
-        let mut q = db.prepare(&format!("SELECT s.payload_json,d.envelope_json FROM {table} d JOIN workflow_notification_subscriptions s ON s.subscription_id=d.subscription_id WHERE d.state=?1 AND d.deadline_ms>?2 AND d.retry_at_ms<=?2 ORDER BY d.retry_at_ms,d.rowid LIMIT ?3")).map_err(sql)?;
+        let state = if accepted { "accepted" } else { "retryable" };
+        let mut q = db.prepare("SELECT s.notification_json,d.payload_json FROM app_outbox d JOIN app_automations s ON s.owner_id=d.owner_id AND s.installation_id=d.installation_id AND s.automation_id=d.automation_id WHERE d.source_kind='workflow_completion' AND d.state=?1 AND d.expires_at_ms>?2 AND d.next_attempt_at_ms<=?2 AND s.status='active' ORDER BY d.next_attempt_at_ms,d.sequence LIMIT ?3").map_err(sql)?;
         let rows = q
             .query_map(params![state, now as i64, limit as i64], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -205,6 +211,23 @@ impl DurableKernelStateStore {
             Ok((decode(&s)?, decode(&e)?))
         })
         .collect()
+    }
+    pub(crate) fn notification_cached_sources(
+        &self,
+        owner: &str,
+    ) -> Result<Vec<crate::local::WorkflowNotificationSourceSummary>, DaemonError> {
+        let db = self.lock_connection("notification sources")?;
+        let mut q=db.prepare("SELECT payload_json FROM workflow_notification_source_cache WHERE owner_id=?1 LIMIT 128").map_err(sql)?;
+        let rows = q
+            .query_map([owner], |r| r.get::<_, String>(0))
+            .map_err(sql)?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.extend(decode::<
+                Vec<crate::local::WorkflowNotificationSourceSummary>,
+            >(&row.map_err(sql)?)?);
+        }
+        Ok(result)
     }
 }
 
@@ -237,6 +260,17 @@ fn apply(
     match op {
         NotificationOperation::Register(admission) => {
             let mut source = admission.source;
+            if source.output_fields.len() > 8
+                || source.output_fields.iter().any(|key| {
+                    key.is_empty()
+                        || key.len() > 64
+                        || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                        || ["subject", "status", "repo", "pr", "head_sha", "event_type"]
+                            .contains(&key.as_str())
+                })
+            {
+                return Err(error("notification output field invalid"));
+            }
             require_source_workflow(tx, &source, Some(&admission.workflow_json))?;
             // The durable workflow identity owns its original source ID and owner.
             let existing: Option<(String,String)> = tx.query_row("SELECT source_id,owner_id FROM workflow_notification_sources WHERE kernel_id=?1 AND session_id=?2 AND workflow_id=?3 AND owner_id=?4",params![source.kernel_id,source.session_id,source.workflow_id,source.owner_user_id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql)?;
@@ -272,6 +306,7 @@ fn apply(
                 return Err(error("source not available"));
             }
             require_source_workflow(tx, &source, None)?;
+            validate_filter_fields(&subscription, &source.output_fields)?;
             target
                 .require_current(tx, &subscription.owner_user_id)
                 .map_err(|e| error(e.to_string()))?;
@@ -283,40 +318,11 @@ fn apply(
                 &subscription.workflow_id,
             );
             // Recursive reachability is UX; runtime ancestry below is authoritative.
-            let cycle: bool = tx.query_row("WITH RECURSIVE reachable(identity) AS (VALUES (?1) UNION SELECT s.target_identity FROM reachable r JOIN workflow_notification_sources src ON json_array(src.kernel_id,src.session_id,src.workflow_id)=r.identity JOIN workflow_notification_subscriptions s ON s.source_id=src.source_id WHERE src.enabled=1 AND s.owner_id=?3) SELECT EXISTS(SELECT 1 FROM reachable WHERE identity=?2)", params![to,from,subscription.owner_user_id], |r|r.get(0)).map_err(sql)?;
+            let cycle: bool = tx.query_row("WITH RECURSIVE reachable(identity) AS (VALUES (?1) UNION SELECT json_array(json_extract(s.notification_json,'$.target_kernel_id'),s.session_id,json_extract(s.notification_json,'$.workflow_id')) FROM reachable r JOIN workflow_notification_sources src ON json_array(src.kernel_id,src.session_id,src.workflow_id)=r.identity JOIN app_automations s ON s.installation_id=src.source_id WHERE src.enabled=1 AND s.owner_id=?3 AND s.source_kind='workflow_completion' AND s.status='active') SELECT EXISTS(SELECT 1 FROM reachable WHERE identity=?2)", params![to,from,subscription.owner_user_id], |r|r.get(0)).map_err(sql)?;
             if cycle {
                 return Err(error("workflow notification cycle"));
             }
-            let count: i64 = tx
-                .query_row(
-                    "SELECT count(*) FROM workflow_notification_subscriptions WHERE source_id=?1",
-                    [&source.source_id],
-                    |r| r.get(0),
-                )
-                .map_err(sql)?;
-            let existing: Option<String> = tx.query_row("SELECT payload_json FROM workflow_notification_subscriptions WHERE source_id=?1 AND target_identity=?2",params![source.source_id,to],|r|r.get(0)).optional().map_err(sql)?;
-            if let Some(existing) = existing {
-                let current: WorkflowNotificationSubscription = decode(&existing)?;
-                if current.publication_id != subscription.publication_id
-                    || current.queue_id != subscription.queue_id
-                {
-                    return Err(error("workflow already attached; target differs"));
-                }
-                subscription.subscription_id = current.subscription_id;
-            } else if tx
-                .query_row(
-                    "SELECT count(*) FROM workflow_notification_subscriptions WHERE owner_id=?1",
-                    [&subscription.owner_user_id],
-                    |r| r.get::<_, i64>(0),
-                )
-                .map_err(sql)?
-                >= 1024
-            {
-                return Err(error("workflow notification subscription limit"));
-            } else if count >= MAX_SUBSCRIPTIONS as i64 {
-                return Err(error("notification fanout limit"));
-            }
-            tx.execute("INSERT INTO workflow_notification_subscriptions VALUES (?1,?2,?3,?4,?5) ON CONFLICT(subscription_id) DO UPDATE SET payload_json=excluded.payload_json",params![subscription.subscription_id,subscription.source_id,subscription.owner_user_id,to,encode(&subscription)?]).map_err(sql)?;
+            save_subscription(tx, &mut subscription)?;
             Ok(NotificationOutcome::Subscription(subscription))
         }
         NotificationOperation::Accept {
@@ -324,8 +330,46 @@ fn apply(
             envelope,
         } => accept(tx, &subscription, &envelope),
         NotificationOperation::Queue(prepared) => {
-            queue::commit_in(tx, &prepared)?;
+            super::app_event_delivery::workflow_completion::commit_in(tx, &prepared)?;
             Ok(NotificationOutcome::Queued)
+        }
+        NotificationOperation::RemoteAttach { mut subscription } => {
+            validate_subscription(&subscription)?;
+            if let Ok(source) = load_source(tx, &subscription.source_id) {
+                if source.owner_user_id != subscription.owner_user_id
+                    || !source.enabled
+                    || source.kernel_id != subscription.source_kernel_id
+                {
+                    return Err(error("source not available"));
+                }
+                require_source_workflow(tx, &source, None)?;
+                validate_filter_fields(&subscription, &source.output_fields)?;
+            }
+            save_subscription(tx, &mut subscription)?;
+            Ok(NotificationOutcome::Subscription(subscription))
+        }
+        NotificationOperation::Detach {
+            subscription_id,
+            owner,
+            kernel,
+        } => {
+            tx.execute("UPDATE app_automations SET status='disabled' WHERE source_kind='workflow_completion' AND automation_id=?1 AND owner_id=?2 AND json_extract(notification_json,'$.target_kernel_id')=?3",params![subscription_id,owner,kernel]).map_err(sql)?;
+            Ok(NotificationOutcome::Swept)
+        }
+        NotificationOperation::Acknowledge {
+            subscription_id,
+            occurrence_id,
+        } => {
+            tx.execute("UPDATE app_outbox SET state='delivered' WHERE source_kind='workflow_completion' AND automation_id=?1 AND occurrence_id=?2 AND state='retryable'",params![subscription_id,occurrence_id]).map_err(sql)?;
+            Ok(NotificationOutcome::Swept)
+        }
+        NotificationOperation::Cache {
+            owner,
+            kernel,
+            sources,
+        } => {
+            tx.execute("INSERT INTO workflow_notification_source_cache VALUES (?1,?2,?3) ON CONFLICT(owner_id,kernel_id) DO UPDATE SET payload_json=excluded.payload_json",params![owner,kernel,encode(&sources)?]).map_err(sql)?;
+            Ok(NotificationOutcome::Swept)
         }
         NotificationOperation::Retry {
             subscription_id,
@@ -334,23 +378,13 @@ fn apply(
             accepted,
             at,
         } => {
-            let table = if accepted {
-                "workflow_notification_inbox"
-            } else {
-                "workflow_notification_outbox"
-            };
-            tx.execute(&format!("UPDATE {table} SET retry_at_ms=?4 WHERE subscription_id=?1 AND source_id=?2 AND occurrence_id=?3"),params![subscription_id,source_id,occurrence_id,at as i64]).map_err(sql)?;
+            let state = if accepted { "accepted" } else { "retryable" };
+            tx.execute("UPDATE app_outbox SET next_attempt_at_ms=?4 WHERE source_kind='workflow_completion' AND automation_id=?1 AND installation_id=?2 AND occurrence_id=?3 AND state=?5",params![subscription_id,source_id,occurrence_id,at as i64,state]).map_err(sql)?;
             Ok(NotificationOutcome::Swept)
         }
         NotificationOperation::Sweep { now } => {
-            // Dedupe/lineage records survive payload expiry. No active delete/transfer action.
-            tx.execute("UPDATE workflow_notification_outbox SET state=CASE WHEN state='pending' THEN 'expired' ELSE state END,envelope_json=NULL WHERE deadline_ms<=?1 AND envelope_json IS NOT NULL",[now as i64]).map_err(sql)?;
-            tx.execute("UPDATE workflow_notification_inbox SET state='expired' WHERE state='accepted' AND deadline_ms<=?1",[now as i64]).map_err(sql)?;
-            tx.execute(
-                "UPDATE workflow_notification_inbox SET envelope_json=NULL WHERE deadline_ms<=?1",
-                [now as i64],
-            )
-            .map_err(sql)?;
+            tx.execute("UPDATE app_outbox SET state=CASE WHEN state IN ('accepted','retryable') THEN 'expired' ELSE state END,payload_json=NULL WHERE source_kind='workflow_completion' AND expires_at_ms<=?1",[now as i64]).map_err(sql)?;
+            tx.execute("DELETE FROM app_outbox WHERE sequence IN (SELECT sequence FROM app_outbox WHERE source_kind='workflow_completion' AND expires_at_ms<=?1 AND state NOT IN ('accepted','retryable') AND NOT EXISTS(SELECT 1 FROM durable_workflow_runs r WHERE json_extract(r.payload_json,'$.queue_item_id')=app_outbox.queued_prompt_id AND r.status NOT IN ('Completed','Failed','Cancelled')) ORDER BY sequence LIMIT 256)",[now.saturating_sub(30*86_400_000) as i64]).map_err(sql)?;
             Ok(NotificationOutcome::Swept)
         }
     }
@@ -384,50 +418,203 @@ fn require_source_workflow(
     }
     Ok(())
 }
+fn validate_subscription(sub: &WorkflowNotificationSubscription) -> Result<(), DaemonError> {
+    if sub.target_kind != crate::local::WorkflowNotificationTargetKind::WorkflowEndpoint {
+        return Err(error("agent session watches are not available"));
+    }
+    if !(1..=30).contains(&sub.ttl_days) {
+        return Err(error("TTL must be 1–30 days"));
+    }
+    if !sub.filters.is_null()
+        && (!sub.filters.is_object()
+            || encode(&sub.filters)?.len() > 4096
+            || sub.filters.as_object().is_some_and(|f| f.len() > 16))
+    {
+        return Err(error("notification filter limit"));
+    }
+    for id in [
+        &sub.subscription_id,
+        &sub.source_id,
+        &sub.owner_user_id,
+        &sub.source_kernel_id,
+        &sub.target_kernel_id,
+        &sub.session_id,
+        &sub.workflow_id,
+        &sub.publication_id,
+        &sub.endpoint_id,
+        &sub.queue_id,
+    ] {
+        if id.is_empty()
+            || id.len() > 128
+            || id.chars().any(|c| c.is_control() || c.is_whitespace())
+        {
+            return Err(error("notification identifier invalid"));
+        }
+    }
+    Ok(())
+}
+fn save_subscription(
+    tx: &Transaction<'_>,
+    sub: &mut WorkflowNotificationSubscription,
+) -> Result<(), DaemonError> {
+    validate_subscription(sub)?;
+    let existing:Option<String>=tx.query_row("SELECT notification_json FROM app_automations WHERE source_kind='workflow_completion' AND owner_id=?1 AND installation_id=?2 AND json_extract(notification_json,'$.target_kernel_id')=?3 AND session_id=?4 AND publication_id=?5",params![sub.owner_user_id,sub.source_id,sub.target_kernel_id,sub.session_id,sub.publication_id],|r|r.get(0)).optional().map_err(sql)?;
+    if let Some(ref existing) = existing {
+        sub.subscription_id =
+            decode::<WorkflowNotificationSubscription>(&existing)?.subscription_id;
+    }
+    let count:i64=tx.query_row("SELECT count(*) FROM app_automations WHERE source_kind='workflow_completion' AND owner_id=?1 AND installation_id=?2 AND status='active'",params![sub.owner_user_id,sub.source_id],|r|r.get(0)).map_err(sql)?;
+    let total:i64=tx.query_row("SELECT count(*) FROM app_automations WHERE owner_id=?1 AND source_kind='workflow_completion' AND status='active'",[&sub.owner_user_id],|r|r.get(0)).map_err(sql)?;
+    if total >= 1024 && existing.is_none() {
+        return Err(error("workflow notification subscription limit"));
+    }
+    if count >= MAX_SUBSCRIPTIONS as i64 && existing.is_none() {
+        return Err(error("notification fanout limit"));
+    }
+    tx.execute("INSERT INTO app_automations(owner_id,installation_id,automation_id,revision,event_name,event_version,schema_digest,session_id,publication_id,endpoint_id,queue_id,status,source_kind,notification_json) VALUES(?1,?2,?3,1,'workflow_completion',1,'kernel',?4,?5,?6,?7,'active','workflow_completion',?8) ON CONFLICT(owner_id,installation_id,automation_id) DO UPDATE SET notification_json=excluded.notification_json,status='active'",params![sub.owner_user_id,sub.source_id,sub.subscription_id,sub.session_id,sub.publication_id,sub.endpoint_id,sub.queue_id,encode(sub)?]).map_err(sql)?;
+    Ok(())
+}
+/// Source and target both evaluate the same AEGS equality/any-of semantics.
+pub(crate) fn matches(
+    sub: &WorkflowNotificationSubscription,
+    env: &WorkflowNotificationEnvelope,
+) -> bool {
+    sub.events.accepts(env.status)
+        && chariox_event_protocol::metadata_matches_filter(&env.fields, &sub.filters)
+}
+pub(super) fn insert_receipt(
+    tx: &Transaction<'_>,
+    sub: &WorkflowNotificationSubscription,
+    env: &WorkflowNotificationEnvelope,
+    state: &str,
+    now: u64,
+) -> Result<(), DaemonError> {
+    let bytes = encode(env)?;
+    if bytes.len() > chariox_app_runtime::app_outbox::MAX_PAYLOAD_BYTES {
+        return Err(error("notification payload limit"));
+    }
+    let (count,retained):(i64,i64)=tx.query_row("SELECT count(*),coalesce(sum(length(payload_json)),0) FROM app_outbox WHERE source_kind='workflow_completion' AND state IN ('accepted','retryable')",[],|r|Ok((r.get(0)?,r.get(1)?))).map_err(sql)?;
+    if count >= MAX_PENDING
+        || retained + bytes.len() as i64
+            > chariox_app_runtime::app_outbox::MAX_RETAINED_PAYLOAD_BYTES as i64
+    {
+        return Err(error("notification outbox full"));
+    }
+    insert_receipt_row(tx, sub, env, state, now)
+}
+// Round-1 migration preserves already accepted bytes under their original TTL.
+// New admission always calls the bounded wrapper above.
+pub(super) fn insert_receipt_row(
+    tx: &Transaction<'_>,
+    sub: &WorkflowNotificationSubscription,
+    env: &WorkflowNotificationEnvelope,
+    state: &str,
+    now: u64,
+) -> Result<(), DaemonError> {
+    let bytes = encode(env)?;
+    use sha2::{Digest, Sha256};
+    let digest = format!("{:x}", Sha256::digest(bytes.as_bytes()));
+    let receipt_id = receipt_id(sub, env)?;
+    tx.execute("INSERT INTO app_outbox(owner_id,installation_id,receipt_id,automation_id,event_version,occurrence_id,occurred_at_ms,event_name,schema_digest,content_digest,automation_revision,accepted_generation,payload_json,accepted_at_ms,expires_at_ms,state,revision,attempts,next_attempt_at_ms,source_kind) VALUES (?1,?2,?3,?4,1,?5,?6,'workflow_completion','kernel',?7,1,0,?8,?6,?9,?10,1,0,0,'workflow_completion')",params![sub.owner_user_id,env.source_id,receipt_id,sub.subscription_id,env.occurrence_id,now as i64,digest,bytes,env.deadline_ms as i64,state]).map_err(sql)?;
+    Ok(())
+}
 fn accept(
     tx: &Transaction<'_>,
     sub: &WorkflowNotificationSubscription,
     env: &WorkflowNotificationEnvelope,
 ) -> Result<NotificationOutcome, DaemonError> {
-    // This round admits only exact persisted, kernel-derived local outbox bytes.
-    // A future relay adapter must supply authenticated same-owner peer authority.
-    let persisted: Option<String> = tx.query_row("SELECT envelope_json FROM workflow_notification_outbox WHERE subscription_id=?1 AND source_id=?2 AND occurrence_id=?3",params![sub.subscription_id,env.source_id,env.occurrence_id],|r|r.get(0)).optional().map_err(sql)?.flatten();
-    if persisted.as_deref() != Some(encode(env)?.as_str()) {
-        return Err(error("notification occurrence conflict"));
+    let current:Option<String>=tx.query_row("SELECT notification_json FROM app_automations WHERE source_kind='workflow_completion' AND automation_id=?1 AND owner_id=?2 AND installation_id=?3 AND status='active'",params![sub.subscription_id,sub.owner_user_id,env.source_id],|r|r.get(0)).optional().map_err(sql)?;
+    let current: WorkflowNotificationSubscription = decode(
+        current
+            .as_deref()
+            .ok_or_else(|| error("notification not attached"))?,
+    )?;
+    if current != *sub {
+        return Err(error("notification subscription changed"));
     }
-    let current: String = tx
-        .query_row(
-            "SELECT payload_json FROM workflow_notification_subscriptions WHERE subscription_id=?1",
-            [&sub.subscription_id],
-            |r| r.get(0),
-        )
-        .map_err(sql)?;
-    let current: WorkflowNotificationSubscription = decode(&current)?;
-    if current.source_id != env.source_id || current.owner_user_id != sub.owner_user_id {
-        return Err(error("notification owner mismatch"));
+    if encode(env)?.len() > chariox_app_runtime::app_outbox::MAX_PAYLOAD_BYTES
+        || env.subject.as_ref().is_some_and(|s| s.len() > 512)
+        || !env.fields.is_object()
+        || env.fields.as_object().is_some_and(|f| f.len() > 14)
+        || (env.status == crate::local::WorkflowNotificationStatus::Failure && env.output.is_some())
+        || (env.status == crate::local::WorkflowNotificationStatus::Success && env.output.is_none())
+    {
+        return Err(error("notification envelope invalid"));
     }
-    let duplicate:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM workflow_notification_inbox WHERE subscription_id=?1 AND source_id=?2 AND occurrence_id=?3)",params![sub.subscription_id,env.source_id,env.occurrence_id],|r|r.get(0)).map_err(sql)?;
+    if !matches(sub, env) {
+        return Ok(NotificationOutcome::Ack(WorkflowNotificationAck::Filtered));
+    }
     let now = crate::session::unix_epoch_ms();
     if env.deadline_ms <= now {
         return Ok(NotificationOutcome::Ack(WorkflowNotificationAck::Expired));
     }
-    if !duplicate {
-        let count: i64 = tx
-            .query_row(
-                "SELECT count(*) FROM workflow_notification_inbox WHERE state='accepted'",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(sql)?;
-        if count >= MAX_PENDING {
-            return Err(error("notification inbox full"));
-        }
-        tx.execute("INSERT INTO workflow_notification_inbox VALUES (?1,?2,?3,?4,'accepted',?5,?6,?7,NULL,0)",params![sub.subscription_id,env.source_id,env.occurrence_id,env.deadline_ms as i64,encode(env)?,encode(&env.ancestry)?,sub.session_id]).map_err(sql)?;
+    if env.deadline_ms > now.saturating_add(u64::from(sub.ttl_days) * 86_400_000 + 300_000)
+        || env.ancestry.len() > 256
+        || env.ancestry.iter().any(|id| id.len() > 512)
+    {
+        return Err(error("notification envelope invalid"));
     }
-    tx.execute("UPDATE workflow_notification_outbox SET state='accepted' WHERE subscription_id=?1 AND source_id=?2 AND occurrence_id=?3",params![sub.subscription_id,env.source_id,env.occurrence_id]).map_err(sql)?;
+    let identity = workflow_identity(&sub.target_kernel_id, &sub.session_id, &sub.workflow_id);
+    if env.ancestry.contains(&identity) {
+        tx.execute("INSERT INTO workflow_notification_occurrences VALUES (?1,?2,'workflow_notification_loop_dropped') ON CONFLICT(source_id,occurrence_id) DO UPDATE SET diagnostic=excluded.diagnostic",params![env.source_id,env.occurrence_id]).map_err(sql)?;
+        tx.execute("UPDATE app_outbox SET state='failed' WHERE source_kind='workflow_completion' AND automation_id=?1 AND occurrence_id=?2",params![sub.subscription_id,env.occurrence_id]).map_err(sql)?;
+        return Ok(NotificationOutcome::Ack(
+            WorkflowNotificationAck::LoopDropped,
+        ));
+    }
+    use sha2::{Digest, Sha256};
+    let digest = format!("{:x}", Sha256::digest(encode(env)?.as_bytes()));
+    let existing:Option<(String,String)>=tx.query_row("SELECT state,content_digest FROM app_outbox WHERE source_kind='workflow_completion' AND owner_id=?1 AND installation_id=?2 AND automation_id=?3 AND occurrence_id=?4",params![sub.owner_user_id,env.source_id,sub.subscription_id,env.occurrence_id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql)?;
+    let duplicate = if let Some((state, stored)) = existing {
+        if stored != digest {
+            return Err(error("notification occurrence conflict"));
+        }
+        if state == "retryable" {
+            tx.execute("UPDATE app_outbox SET state='accepted',next_attempt_at_ms=0 WHERE source_kind='workflow_completion' AND automation_id=?1 AND occurrence_id=?2",params![sub.subscription_id,env.occurrence_id]).map_err(sql)?;
+            false
+        } else {
+            true
+        }
+    } else {
+        insert_receipt(tx, sub, env, "accepted", now)?;
+        false
+    };
     Ok(NotificationOutcome::Ack(if duplicate {
         WorkflowNotificationAck::Duplicate
     } else {
         WorkflowNotificationAck::Accepted
     }))
+}
+
+fn validate_filter_fields(
+    sub: &WorkflowNotificationSubscription,
+    output_fields: &[String],
+) -> Result<(), DaemonError> {
+    if sub.filters.as_object().is_some_and(|filters| {
+        filters.keys().any(|key| {
+            !["subject", "status", "repo", "pr", "head_sha", "event_type"].contains(&key.as_str())
+                && !output_fields.contains(key)
+        })
+    }) {
+        return Err(error("notification unknown filter field"));
+    }
+    Ok(())
+}
+
+pub(crate) fn receipt_id(
+    sub: &WorkflowNotificationSubscription,
+    env: &WorkflowNotificationEnvelope,
+) -> Result<String, DaemonError> {
+    use sha2::{Digest, Sha256};
+    Ok(format!(
+        "wf_receipt_{:x}",
+        Sha256::digest(
+            encode(&(
+                sub.subscription_id.as_str(),
+                env.source_id.as_str(),
+                env.occurrence_id.as_str()
+            ))?
+            .as_bytes()
+        )
+    ))
 }

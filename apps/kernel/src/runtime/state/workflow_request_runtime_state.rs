@@ -27,8 +27,10 @@ impl KernelRuntimeState {
         let outcome = match request {
             request @ (LocalDaemonRequest::RegisterWorkflowNotificationSource(_)
             | LocalDaemonRequest::AttachWorkflowNotification(_)
+            | LocalDaemonRequest::DetachWorkflowNotification(_)
             | LocalDaemonRequest::ListWorkflowNotifications(_)) => (
-                self.execute_workflow_notification_request(request, &caller_user_id),
+                self.execute_workflow_notification_command(request, &caller_user_id)
+                    .await,
                 None,
             ),
             LocalDaemonRequest::CreateWorkflow(request) => {

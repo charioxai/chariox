@@ -1,8 +1,9 @@
 pub use api::{
-    AttachWorkflowNotificationRequest, ListWorkflowNotificationsRequest,
-    RegisterWorkflowNotificationSourceRequest, WorkflowNotificationAck,
-    WorkflowNotificationDiagnostic, WorkflowNotificationEnvelope, WorkflowNotificationSource,
-    WorkflowNotificationSubscription,
+    AttachWorkflowNotificationRequest, DetachWorkflowNotificationRequest,
+    ListWorkflowNotificationsRequest, RegisterWorkflowNotificationSourceRequest,
+    WorkflowNotificationAck, WorkflowNotificationDiagnostic, WorkflowNotificationEnvelope,
+    WorkflowNotificationEvents, WorkflowNotificationSource, WorkflowNotificationSourceSummary,
+    WorkflowNotificationStatus, WorkflowNotificationSubscription, WorkflowNotificationTargetKind,
 };
 mod api;
 mod client;
