@@ -30,6 +30,7 @@ mod process_info;
 mod prompt_signals;
 mod registry;
 pub(crate) mod renewal_failure;
+mod reported_transcript_file;
 mod run_actor;
 mod runtime_run;
 mod service;
@@ -97,7 +98,7 @@ pub(crate) use managed_isolation::{
     managed_isolated_utility_command, managed_isolated_utility_launch,
     managed_provider_control_env_remove, managed_provider_isolation_env_remove,
     managed_provider_isolation_required, managed_provider_parent_credential_env_remove,
-    provider_reported_path_on_kernel, MANAGED_SLICE_PUBLICATION_ROOT_ENV,
+    provider_reported_transcript_on_kernel, MANAGED_SLICE_PUBLICATION_ROOT_ENV,
     MANAGED_SLICE_SERVICE_ROOT_ENV,
 };
 #[cfg(test)]
