@@ -4,6 +4,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 import WebSocket, { WebSocketServer } from "ws"
 
 import {
+  type AgentRuntimeActivity,
   type RuntimeProviderRun,
   type TerminalOutputRecord,
 } from "../cli-types.js"
@@ -50,6 +51,7 @@ type CodexProxyOptions = {
 
 export type CodexProxyServer = WebSocketServer & {
   projectKernelOutputToTui: (records: TerminalOutputRecord[]) => void
+  projectKernelActivityToTui: (activity: AgentRuntimeActivity | undefined) => void
 }
 
 export function createCodexProjectionThreadTracker(options: {
@@ -326,7 +328,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       if (message.method === "turn/start" && downstream.kind !== "kernel" && !ephemeral) {
         void handleCodexNativeTurnStart(
           message,
-          options,
+          { ...options, onPromptStarted: kernelOutputProjection.startPrompt },
           (response) => sendDownstream(downstream, response),
         )
         return
@@ -382,7 +384,8 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       httpServer.close((httpError?: Error) => callback?.(error ?? httpError))
     })
   }) as WebSocketServer["close"]
-  return Object.assign(server, { projectKernelOutputToTui: kernelOutputProjection.project })
+  return Object.assign(server, { projectKernelOutputToTui: kernelOutputProjection.project,
+    projectKernelActivityToTui: kernelOutputProjection.projectAgentActivity })
 }
 
 function bindObservedThread(options: CodexProxyOptions, threadId: string) {

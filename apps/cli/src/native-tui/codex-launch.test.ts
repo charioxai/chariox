@@ -55,6 +55,7 @@ test("MP-08 MP-10 native Codex discovers and invokes the kernel-granted MCP", as
         launches.push(payload)
         return { ProviderRunLaunched: { provider_run: { ...run, provider_session_id: payload.provider_session_id ?? null } } }
       case "GetProviderRun": return { ProviderRun: { provider_run: { ...run, provider_session_id: "native-thread" } } }
+      case "GetSessionState": return { SessionState: { agent_activity: {} } }
       case "PollRuntimeNotices": return { RuntimeNotices: { notices: [] } }
       case "PumpTerminalOutput": return { TerminalOutput: { records: [] } }
       case "RunShellCommand": {

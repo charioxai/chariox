@@ -24,6 +24,7 @@ export async function handleCodexNativeTurnStart(
     agentId: string
     bindState: CodexNativeBindingState
     inlineLocalAttachments: boolean
+    onPromptStarted?: (promptId: string) => void
     debug: (label: string, payload: unknown) => void
   },
   sendClient: (message: unknown) => void,
@@ -49,6 +50,7 @@ export async function handleCodexNativeTurnStart(
     if (!promptId || typeof threadId !== "string") throw new Error("kernel did not return a native prompt identity")
     const turnId = `chariox-native-${promptId}`
     bindCodexDisplayTurn(options.bindState, threadId, turnId, promptId)
+    if (outcome?.Started) options.onPromptStarted?.(promptId)
     sendClient({
       id: message.id,
       result: {

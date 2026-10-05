@@ -201,3 +201,25 @@ test("MP-08 MP-10 steering echo without an active display turn cannot manufactur
     kind: "prompt_echo", bytes: [...Buffer.from("orphan steering echo")] }])
   assert.deepEqual(broadcasts, [])
 })
+
+test("MP-08 MP-10 kernel settlement is prompt scoped, exact once, and preserves failure status", () => {
+  const broadcasts: unknown[] = []
+  const projection = createCodexKernelOutputProjection({ agentId: "agent-1", broadcast: m => broadcasts.push(m), debug: () => {} })
+  projection.setThreadId("thread-1")
+  projection.startPrompt("A")
+  projection.project([{ agent_id: "agent-1", prompt_id: "A", timestamp_ms: 1000, kind: "provider_output", bytes: [...Buffer.from("progress")] }])
+  const settle = (promptId: string, agentId = "agent-1") => projection.projectAgentActivity({
+    last_completed_turn: { agent_id: agentId, prompt_id: promptId, settlement_status: "failed", completed_at_ms: 2000 },
+  } as never)
+  settle("other-prompt")
+  settle("A", "other-agent")
+  assert.equal(broadcasts.filter(m => messageMethod(m) === "turn/completed").length, 0)
+  settle("A")
+  settle("A")
+  projection.project([{ agent_id: "agent-1", prompt_id: "A", timestamp_ms: 1000, kind: "provider_output", bytes: [...Buffer.from("late duplicate")] }])
+  const completed = broadcasts.filter(m => messageMethod(m) === "turn/completed") as { params: { turn: { id: string, status: string } } }[]
+  assert.equal(completed.length, 1)
+  assert.deepEqual([completed[0]!.params.turn.id, completed[0]!.params.turn.status], ["chariox-native-A", "failed"])
+  assert.equal(broadcasts.filter(m => messageMethod(m) === "turn/started").length, 1)
+  assert.equal(broadcasts.filter(m => messageMethod(m) === "item/completed").length, 1)
+})

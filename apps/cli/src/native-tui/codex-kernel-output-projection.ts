@@ -1,4 +1,4 @@
-import type { TerminalOutputRecord } from "../cli-types.js"
+import type { AgentRuntimeActivity, TerminalOutputRecord } from "../cli-types.js"
 import { isProviderIdleStatus } from "@chariox/kernel-client/provider-status"
 import {
   terminalRecordTranscriptProjection,
@@ -6,13 +6,10 @@ import {
 } from "@chariox/kernel-client/terminal-record-transcript"
 
 type ProjectedItem = {
-  key: string
   turnId: string
   itemId: string
   kind: "agentMessage" | "reasoning"
   text: string
-  completedAtMs: number
-  timer: NodeJS.Timeout | null
 }
 
 export function createCodexKernelOutputProjection(options: {
@@ -25,25 +22,33 @@ export function createCodexKernelOutputProjection(options: {
   const nowMs = options.nowMs ?? Date.now
   let projectedThreadId: string | null = null
   let nextProjectedTurnId = 1
+  let nextProjectedItemId = 1
   const projectedItems = new Map<string, ProjectedItem>()
+  const projectedTurns = new Map<string, { id: string, startedAtMs: number, completed: boolean }>()
+  let activePromptId: string | null = null
 
   const recordTimestampMs = (record: TerminalOutputRecord): number =>
     Number.isFinite(record.timestamp_ms) ? record.timestamp_ms : nowMs()
 
-  const turnPayload = (turnId: string, status: "inProgress" | "completed", timestampMs: number) => ({
+  const turnPayload = (turnId: string, status: "inProgress" | "completed" | "interrupted" | "failed", timestampMs: number, completedAtMs?: number) => ({
     id: turnId,
     items: [],
     itemsView: "notLoaded",
     status,
     error: null,
     startedAt: Math.floor(timestampMs / 1000),
-    completedAt: status === "completed" ? Math.floor(timestampMs / 1000) : null,
+    completedAt: completedAtMs === undefined ? null : Math.floor(completedAtMs / 1000),
     durationMs: null,
   })
 
   const startProjectedTurn = (timestampMs: number, promptId?: string | null) => {
     if (!projectedThreadId) return null
-    const turnId = `chariox-projected-turn-${nextProjectedTurnId++}`
+    const key = promptId ?? ""
+    const existing = projectedTurns.get(key)
+    if (existing) return existing.completed ? null : existing.id
+    const turnId = promptId ? `chariox-native-${promptId}` : `chariox-projected-turn-${nextProjectedTurnId++}`
+    projectedTurns.set(key, { id: turnId, startedAtMs: timestampMs, completed: false })
+    activePromptId = key
     if (promptId) options.onTurnMapped?.(projectedThreadId, turnId, promptId)
     options.broadcast({
       jsonrpc: "2.0",
@@ -64,40 +69,43 @@ export function createCodexKernelOutputProjection(options: {
     return turnId
   }
 
-  const completeProjectedItemSoon = (projection: ProjectedItem) => {
-    if (projection.timer) clearTimeout(projection.timer)
-    projection.timer = setTimeout(() => {
-      if (!projectedThreadId) return
+  // MP-08 / MP-10: Output silence says nothing about tool/approval waits.
+  // Only the kernel's exact prompt settlement can complete its display turn.
+  const projectAgentActivity = (activity: AgentRuntimeActivity | undefined) => {
+    const completion = activity?.last_completed_turn
+    if (!completion || completion.agent_id !== options.agentId || !projectedThreadId) return
+    const turn = projectedTurns.get(completion.prompt_id)
+    if (!turn || turn.completed) return
+    for (const [key, item] of projectedItems) {
+      if (item.turnId !== turn.id) continue
       options.broadcast({
-        jsonrpc: "2.0",
-        method: "item/completed",
+        jsonrpc: "2.0", method: "item/completed",
         params: {
-          item: projection.kind === "reasoning"
-            ? { type: "reasoning", id: projection.itemId, summary: [], content: [] }
-            : { type: "agentMessage", id: projection.itemId, text: projection.text, phase: "final_answer", memoryCitation: null },
-          threadId: projectedThreadId,
-          turnId: projection.turnId,
-          completedAtMs: projection.completedAtMs,
+          item: item.kind === "reasoning"
+            ? { type: "reasoning", id: item.itemId, summary: [], content: [] }
+            : { type: "agentMessage", id: item.itemId, text: item.text, phase: "final_answer", memoryCitation: null },
+          threadId: projectedThreadId, turnId: turn.id, completedAtMs: completion.completed_at_ms,
         },
       })
-      options.broadcast({
-        jsonrpc: "2.0",
-        method: "thread/status/changed",
-        params: {
-          threadId: projectedThreadId,
-          status: { type: "idle" },
-        },
-      })
-      options.broadcast({
-        jsonrpc: "2.0",
-        method: "turn/completed",
-        params: {
-          threadId: projectedThreadId,
-          turn: turnPayload(projection.turnId, "completed", projection.completedAtMs),
-        },
-      })
-      projectedItems.delete(projection.key)
-    }, 750)
+      projectedItems.delete(key)
+    }
+    turn.completed = true
+    if (activePromptId === completion.prompt_id) {
+      activePromptId = null
+      options.broadcast({ jsonrpc: "2.0", method: "thread/status/changed",
+        params: { threadId: projectedThreadId, status: { type: "idle" } } })
+    }
+    const status = completion.settlement_status === "cancelled" ? "interrupted" : completion.settlement_status
+    options.broadcast({ jsonrpc: "2.0", method: "turn/completed", params: {
+      threadId: projectedThreadId, turn: turnPayload(turn.id, status, turn.startedAtMs, completion.completed_at_ms),
+    } })
+    // Retain bounded tombstones so delayed records cannot reopen settled turns.
+    if (projectedTurns.size > 64) {
+      for (const [key, value] of projectedTurns) {
+        if (projectedTurns.size <= 64) break
+        if (value.completed) projectedTurns.delete(key)
+      }
+    }
   }
 
   const project = (records: TerminalOutputRecord[]) => {
@@ -138,9 +146,11 @@ export function createCodexKernelOutputProjection(options: {
       const timestampMs = recordTimestampMs(record)
 
       if (recordProjection.transcriptRole === "user") {
-        const turnId = startProjectedTurn(timestampMs, record.prompt_id)
+        const turnId = recordProjection.steeringPrompt
+          ? (activePromptId === null ? null : projectedTurns.get(activePromptId)?.id)
+          : startProjectedTurn(timestampMs, record.prompt_id)
         if (!turnId) continue
-        const itemId = `chariox-projected-user-${timestampMs}-${nextProjectedTurnId}`
+        const itemId = `chariox-projected-user-${timestampMs}-${nextProjectedItemId++}`
         options.broadcast({
           jsonrpc: "2.0",
           method: "item/started",
@@ -185,8 +195,8 @@ export function createCodexKernelOutputProjection(options: {
       if (!itemProjection) {
         const turnId = startProjectedTurn(timestampMs, record.prompt_id)
         if (!turnId) continue
-        const itemId = `chariox-projected-${itemKind}-${timestampMs}-${nextProjectedTurnId}`
-        itemProjection = { key: itemKey, turnId, itemId, kind: itemKind, text: "", completedAtMs: timestampMs, timer: null }
+        const itemId = `chariox-projected-${itemKind}-${timestampMs}-${nextProjectedItemId++}`
+        itemProjection = { turnId, itemId, kind: itemKind, text: "" }
         projectedItems.set(itemKey, itemProjection)
         options.broadcast({
           jsonrpc: "2.0",
@@ -202,7 +212,6 @@ export function createCodexKernelOutputProjection(options: {
         })
       }
       itemProjection.text += recordProjection.transcriptText
-      itemProjection.completedAtMs = Math.max(itemProjection.completedAtMs, timestampMs)
       options.broadcast({
         jsonrpc: "2.0",
         method: itemKind === "reasoning" ? "item/reasoning/textDelta" : "item/agentMessage/delta",
@@ -213,14 +222,20 @@ export function createCodexKernelOutputProjection(options: {
           delta: recordProjection.transcriptText,
         },
       })
-      completeProjectedItemSoon(itemProjection)
       options.debug("projected_output_to_tui", { agentId: options.agentId, kind: record.kind, byteLength: record.bytes.length })
     }
   }
 
   return {
     project,
+    projectAgentActivity,
+    startPrompt: (promptId: string) => startProjectedTurn(nowMs(), promptId),
     setThreadId: (threadId: string) => {
+      if (projectedThreadId !== threadId) {
+        projectedItems.clear()
+        projectedTurns.clear()
+        activePromptId = null
+      }
       projectedThreadId = threadId
     },
   }

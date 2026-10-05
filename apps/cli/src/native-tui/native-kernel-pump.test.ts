@@ -81,3 +81,54 @@ function installTimerHarness() {
 async function flushPromises(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve))
 }
+
+test("MP-08 MP-10 native pump drains final output after snapshot and before settlement", async () => {
+  const harness = installTimerHarness()
+  const order: string[] = []
+  const client = fakeClient(request => {
+    const kind = requestVariant(request)
+    order.push(kind)
+    return kind === "GetSessionState"
+      ? { SessionState: { agent_activity: { agent: {} } } }
+      : { TerminalOutput: { records: order.filter(k => k === "PumpTerminalOutput").length === 1 ? [{ kind: "provider_output" }] : [] } }
+  })
+  const pump = startNativeKernelPumpLoop(client, "session", "attachment", {
+    onTerminalRecords: () => { order.push("output") },
+    onAgentActivity: () => { order.push("settlement") },
+    pollRuntimeNotices: false,
+  })
+  try {
+    await flushPromises()
+    assert.deepEqual(order, ["GetSessionState", "PumpTerminalOutput", "output", "PumpTerminalOutput", "settlement"])
+  } finally { pump.stop(); harness.restore() }
+})
+
+test("MP-08 MP-10 stopped native pump suppresses an in-flight snapshot callback", async () => {
+  const harness = installTimerHarness()
+  let release!: (value: unknown) => void
+  let calls = 0
+  const client = { send: () => new Promise(resolve => { release = resolve }) } as unknown as LocalIpcClient
+  const pump = startNativeKernelPumpLoop(client, "session", "attachment", {
+    onTerminalRecords: () => { calls++ }, onAgentActivity: () => { calls++ }, pollRuntimeNotices: false,
+  })
+  try {
+    pump.stop()
+    release({ SessionState: { agent_activity: {} } })
+    await flushPromises()
+    assert.equal(calls, 0)
+  } finally { pump.stop(); harness.restore() }
+})
+
+test("MP-08 MP-10 native settlement waits for every bounded terminal output page", async () => {
+  const harness = installTimerHarness()
+  const order: string[] = []
+  let page = 0
+  const client = fakeClient(request => requestVariant(request) === "GetSessionState"
+    ? { SessionState: { agent_activity: { agent: {} } } }
+    : { TerminalOutput: { records: ++page <= 2 ? [{ kind: "provider_output" }] : [] } })
+  const pump = startNativeKernelPumpLoop(client, "session", "attachment", {
+    onTerminalRecords: () => { order.push("output") }, onAgentActivity: () => { order.push("settlement") }, pollRuntimeNotices: false,
+  })
+  try { await flushPromises(); assert.deepEqual(order, ["output", "output", "settlement"]) }
+  finally { pump.stop(); harness.restore() }
+})
