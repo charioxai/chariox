@@ -416,6 +416,21 @@ impl KernelBrowserHost {
         backend.host_request("host.protect", policy)?;
         self.check_admission(admission)?;
         let model = self.actor_model(user)?;
+        if method == "host.browser"
+            && matches!(
+                params["op"].as_str(),
+                Some("mirror_subscribe" | "display_subscribe")
+            )
+        {
+            // MP-08: attach may be the first post-recovery request. Seed the same
+            // tab ledger before takeover, without registering another actor.
+            let state = backend.host_request("host.browser", serde_json::json!({"op":"state"}))?;
+            model
+                .lock()
+                .map_err(|_| "MD-3: actor lock poisoned")?
+                .reconcile(&state)?;
+            self.check_admission(admission)?;
+        }
         let mutation = method == "host.secret"
             || (method == "host.browser"
                 && matches!(

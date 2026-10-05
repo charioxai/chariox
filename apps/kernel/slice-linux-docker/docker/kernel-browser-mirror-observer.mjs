@@ -1,0 +1,159 @@
+// MP-08/MP-10/MP-11: install only in the controller's #607 isolated world.
+// Raw mutation records and page code never cross the mirror boundary.
+export const MIRROR_OBSERVER_EXPRESSION = `(${installMirrorObserver.toString()})()`;
+function installMirrorObserver() {
+  if (globalThis.__charioxMirror) return true;
+  const ids = new WeakMap();let observed = new WeakSet();
+  let serial = 0, live = new Map(), revision = 0, protectedVariants=[], maskedNodes=new WeakSet();
+  const observer = new MutationObserver(() => { revision++; });
+  const watch = root => {
+    if (observed.has(root)) return;
+    observed.add(root); observer.observe(root, { subtree:true, childList:true, attributes:true, characterData:true });
+  };
+  const id = node => { if (!ids.has(node)) ids.set(node, `n${++serial}`); return ids.get(node); };
+  const tags = new Set('html head body div span p a article section main header footer nav aside h1 h2 h3 h4 h5 h6 ul ol li dl dt dd pre code blockquote b strong i em u s small sub sup br hr table thead tbody tfoot tr th td caption colgroup col input textarea button select option optgroup label fieldset legend form details summary dialog img figure figcaption picture source slot'.split(' '));
+  const attributes = new Set('title alt role aria-label aria-hidden aria-expanded aria-checked aria-selected aria-disabled slot dir lang colspan rowspan span type placeholder disabled readonly multiple size rows cols wrap open start reversed value checked selected'.split(' '));
+  const active = new Set('script style link meta base noscript template'.split(' '));
+  const media = new Set('canvas video audio svg object embed applet'.split(' '));
+  const forbiddenCss = /url\s*\(|image-set\s*\(|(?:-webkit-)?image\s*\(|expression\s*\(|@|\\|[<>]|[\u0000-\u0008]/i;
+  const box = node => {
+    const r = node.nodeType === 1 ? node.getBoundingClientRect() : (() => { const range=document.createRange(); range.selectNodeContents(node); return range.getBoundingClientRect(); })();
+    return {x:r.x,y:r.y,width:r.width,height:r.height};
+  };
+  const read = (variants = [], opaqueRegions = []) => {
+    observer.disconnect();observed=new WeakSet();
+    protectedVariants=variants;
+    const records = [], resources = [], fonts = [], nextLive = new Map(), marked = new WeakSet();
+    let wireSize=0;const done=record=>{wireSize+=JSON.stringify(record).length;if(wireSize>3*1024*1024)throw new Error('mirror snapshot bounds');return record.id;};
+    let textSize = 0, textNodes = [], text = '', visited = 0;
+    const tainted = value => typeof value==='string' && variants.some(secret => value.includes(secret));
+    // Match unsplit text BEFORE truncation, including split-node/shadow/frame echoes.
+    const scan = (node,depth=0) => {
+      if (depth>128 || ++visited>24000) throw new Error('mirror bounds');
+      if (node.nodeType===3) { textNodes.push({node,start:text.length}); text+=node.data; if (text.length>2097152) throw new Error('mirror text bounds'); }
+      for (const child of node.childNodes) scan(child,depth+1);
+      if (node.shadowRoot) scan(node.shadowRoot,depth+1);
+      if (node.localName==='iframe') {let nested;try{nested=node.contentDocument;}catch{}if(nested)scan(nested,depth+1);}
+    };
+    scan(document.documentElement);
+    for (const value of variants) for(let at=text.indexOf(value);at>=0;at=text.indexOf(value,at+1)) {
+      for (const item of textNodes) if(item.start<at+value.length && item.start+item.node.length>at) marked.add(item.node);
+    }
+    const secret = node => node.nodeType===1 && (node.matches('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],input[type=password]') || /password|one-time-code|cc-/.test(node.autocomplete??'') || tainted(node.value) || [...node.attributes].some(a=>tainted(a.value)));
+    const safeStyle = (element,pseudo=null,resourcesAllowed=true) => {
+      const computed=getComputedStyle(element,pseudo), out={};
+      for (const property of computed) {
+        if(property.startsWith('--') || property.startsWith('animation') || property.startsWith('transition') || ['content','cursor'].includes(property)) continue;
+        const value=computed.getPropertyValue(property);
+        if(value.length<=2048 && !forbiddenCss.test(value) && !tainted(value)) out[property]=value;
+      }
+      // Inline URLs are never shipped. Computed image URLs become kernel resource refs.
+      if (!pseudo && !variants.length && resourcesAllowed) {
+        const value=computed.backgroundImage, match=/^url\("([^"\n]+)"\)$/.exec(value);
+        if(match && !tainted(match[1])) { const key=`r${resources.length}`; resources.push({key,url:match[1],kind:'image'}); out['background-image']=`resource:${key}`; }
+      }
+      return out;
+    };
+    const visit = (node,parent=null,depth=0) => {
+      if(depth>128 || records.length>=12000) throw new Error('mirror node bounds');
+      if(![1,3,9,11].includes(node.nodeType)) return null;
+      if(node.nodeType===1 && active.has(node.localName)) return null;
+      const record={id:id(node),parent,children:[],kind:'element'};
+      nextLive.set(record.id,node); records.push(record);
+      if(node.nodeType===3) {
+        record.kind=marked.has(node)?'mask':'text'; record.text=marked.has(node)?'':node.data;record.box=box(node);if(record.kind==='mask'){record.box=box(node);record.tag='div';record.style={display:'inline-block',width:`${record.box.width}px`,height:`${record.box.height}px`,background:'black'};}
+        textSize+=record.text.length; if(textSize>2097152) throw new Error('mirror text bounds');
+        return done(record);
+      }
+      if(node.nodeType===9 || node.nodeType===11) { record.kind=node.nodeType===9?'document':'shadow'; watch(node); }
+      else {
+        const tag=node.localName;
+        record.tag=tags.has(tag)?tag:'div'; record.box=box(node);
+        const overlaps=opaqueRegions.some(r=>record.box.width>0 && record.box.height>0 && record.box.x<r[0]+r[2] && record.box.x+record.box.width>r[0] && record.box.y<r[1]+r[3] && record.box.y+record.box.height>r[1]);
+        if(secret(node) || overlaps && !['html','body'].includes(tag)) {
+          record.kind='mask'; record.tag=tags.has(tag)?tag:'div'; record.style={...safeStyle(node,null,false),width:`${record.box.width}px`,height:`${record.box.height}px`,background:'black',color:'transparent','border-color':'black'};
+          return done(record);
+        }
+        record.style=safeStyle(node); record.attributes={};
+        for(const attr of node.attributes) if((attributes.has(attr.name)||tag==='slot'&&attr.name==='name') && attr.value.length<=2048 && !tainted(attr.value)) record.attributes[attr.name]=attr.value;
+        // No name/id/data-* attributes, URLs, event handlers, provider/page secrets.
+        if(tag==='input' && !['text','search','email','url','number','tel','checkbox','radio','range','button','submit','reset','date','time','color','hidden'].includes(record.attributes.type??'text')) record.attributes.type='text';
+        if(['input','textarea','select'].includes(tag)&&typeof node.value==='string'&&node.value.length>16384)throw new Error('mirror form bounds');
+        if(tag==='input' || tag==='textarea' || tag==='select') record.form={value:(node.value??'').slice(0,16384),checked:!!node.checked,selected_index:node.selectedIndex??-1,selection_start:node.selectionStart??null,selection_end:node.selectionEnd??null};
+        record.scroll={x:node.scrollLeft,y:node.scrollTop};
+        if(['button','input','textarea','select'].includes(tag) && getComputedStyle(node).appearance!=='none'){record.kind='tile';record.reason='native_control';return done(record);}
+        if(media.has(tag) || tag.includes('-') && !node.shadowRoot) {record.kind='tile';record.tag='img';record.reason=tag.includes('-')?'opaque_shadow':'opaque_media';return done(record);}
+        if(tag==='iframe') {
+          try {
+            const nested=node.contentDocument;
+            if(!nested?.documentElement) throw new Error('cross origin');
+            // Use a separate inert nested document, never its original src/srcdoc.
+            record.kind='frame';record.tag='iframe';record.children.push(visit(nested,record.id,depth+1));return done(record);
+          } catch {record.kind='tile';record.tag='img';record.reason='cross_origin_frame';return done(record);}
+        }
+        if(tag==='img') {
+          if(variants.length) {record.kind='mask';record.tag='div';return done(record);}
+          if(node.currentSrc) {const key=`r${resources.length}`;resources.push({key,url:node.currentSrc,kind:'image'});record.resource=key;}
+        }
+        // Pseudo text is literal sanitized text, not a CSS program.
+        record.pseudo={};
+        for(const pseudo of ['::before','::after']) {
+          const content=getComputedStyle(node,pseudo).content;
+          if(content && content!=='none' && content!=='normal') {
+            if(tainted(content) || !/^"[^"\\]*"$/.test(content)) {record.kind='tile';record.tag='img';record.reason='unsupported_pseudo';return done(record);}
+            record.pseudo[pseudo]={text:content.slice(1,-1),style:safeStyle(node,pseudo)};
+          }
+        }
+      }
+
+      for(const child of node.childNodes) {const childId=visit(child,record.id,depth+1);if(childId)record.children.push(childId);}
+      if(node.shadowRoot) {const childId=visit(node.shadowRoot,record.id,depth+1);if(childId)record.children.push(childId);}
+      return done(record);
+    };
+    watch(document); const root=visit(document.documentElement);
+    if(!variants.length) {
+      const usedFamilies=new Set(records.filter(n=>n.kind!=='mask').flatMap(n=>(n.style?.['font-family']??'').split(',').map(s=>s.trim().replaceAll('"','').replaceAll("'",'').toLowerCase())));
+      let ruleCount=0;
+      const collect = (rules,base) => {
+        for(const rule of rules) {
+          if(++ruleCount>5000)throw new Error('mirror stylesheet bounds');
+          if(rule.type===CSSRule.FONT_FACE_RULE) {
+            const source=/url\(["']?([^"')]+)["']?\)/.exec(rule.style.getPropertyValue('src'));
+            if(source && fonts.length<32 && usedFamilies.has(rule.style.fontFamily.replaceAll('"','').replaceAll("'",'').trim().toLowerCase())) {
+              const url=new URL(source[1],base).href,key=`r${resources.length}`;
+              resources.push({key,url,kind:'font'});fonts.push({family:rule.style.fontFamily,weight:rule.style.fontWeight,style:rule.style.fontStyle,resource:key});
+            }
+          } else if(rule.cssRules) collect(rule.cssRules,base);
+        }
+      };
+      for(const sheet of document.styleSheets) {try{collect(sheet.cssRules,sheet.href??document.baseURI);}catch{}}
+    }
+    live=nextLive;maskedNodes=new WeakSet(records.filter(n=>n.kind==='mask').map(n=>nextLive.get(n.id)));
+    let focused=document.activeElement;for(let i=0;i<128;i++){let child=focused?.shadowRoot?.activeElement;try{child??=focused?.localName==='iframe'?focused.contentDocument?.activeElement:null;}catch{}if(!child||child===focused)break;focused=child;}
+    let selection=null;for(const owner of new Set([...nextLive.values()].map(n=>n.ownerDocument??document))){const selected=owner.getSelection();if(!selected||selected.isCollapsed)continue;const anchor=ids.get(selected.anchorNode),focus=ids.get(selected.focusNode);if(records.some(n=>n.id===anchor&&n.kind==='text')&&records.some(n=>n.id===focus&&n.kind==='text'))selection={anchor_id:anchor,anchor_offset:selected.anchorOffset,focus_id:focus,focus_offset:selected.focusOffset};}
+    return {root,nodes:records,resources,fonts,scroll:{x:scrollX,y:scrollY},revision,selection,focused:ids.get(focused)??null};
+  };
+  const locate = request => {
+    const node=live.get(request.node_id);
+    if(!node || !node.isConnected || node.nodeType!==1 || node.matches('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],input[type=password]') || /password|one-time-code|cc-/.test(node.autocomplete??'')) throw new Error('mirror stale/protected node');
+    for(let e=node;e;e=e.parentElement??e.getRootNode()?.host)if(e.matches?.('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')||protectedVariants.some(v=>[e.value??'',...Array.from(e.attributes??[],a=>a.value)].some(s=>s.includes(v))))throw new Error('mirror protected ancestor');
+    const r=box(node);let x=r.x+r.width/2,y=r.y+r.height/2;
+    if(!(r.width>0&&r.height>0&&x>=0&&y>=0&&x<innerWidth&&y<innerHeight)) throw new Error('mirror offscreen node');
+    let hit=node.ownerDocument.elementFromPoint(x,y);
+    while(hit?.shadowRoot?.elementFromPoint(x,y)) hit=hit.shadowRoot.elementFromPoint(x,y);
+    if(hit!==node && !node.contains(hit)) throw new Error('mirror occluded node');
+    for(let view=node.ownerDocument.defaultView;view!==window;view=view.parent){const owner=view.frameElement;if(!owner)throw new Error('mirror frame unavailable');if(getComputedStyle(owner).transform!=='none')throw new Error('mirror transformed frame requires coordinates');const b=owner.getBoundingClientRect();x+=b.x+owner.clientLeft;y+=b.y+owner.clientTop;}
+    if(x<0||y<0||x>=innerWidth||y>=innerHeight)throw new Error('mirror offscreen frame');
+    return {x:Math.floor(x),y:Math.floor(y)};
+  };
+  const focus = request => {locate(request);const node=live.get(request.node_id);node.focus({preventScroll:true});locate(request);let active=node.ownerDocument.activeElement;while(active?.shadowRoot?.activeElement)active=active.shadowRoot.activeElement;if(active!==node)throw new Error('mirror focus redirected');return true;};
+  const select = request => {
+    const a=live.get(request.anchor_id),b=live.get(request.focus_id);
+    if(!a?.isConnected||!b?.isConnected||a.nodeType!==3||b.nodeType!==3||a.ownerDocument!==b.ownerDocument||!Number.isInteger(request.anchor_offset)||!Number.isInteger(request.focus_offset)||request.anchor_offset<0||request.anchor_offset>a.length||request.focus_offset<0||request.focus_offset>b.length) throw new Error('mirror invalid selection');
+    const range=a.ownerDocument.createRange(),pa=a.ownerDocument.createRange(),pb=a.ownerDocument.createRange();pa.setStart(a,request.anchor_offset);pa.collapse(true);pb.setStart(b,request.focus_offset);pb.collapse(true);
+    if(pa.compareBoundaryPoints(Range.START_TO_START,pb)>0){range.setStart(b,request.focus_offset);range.setEnd(a,request.anchor_offset);}else{range.setStart(a,request.anchor_offset);range.setEnd(b,request.focus_offset);}
+    for(const node of live.values())if(node.ownerDocument===a.ownerDocument && (maskedNodes.has(node) || node.matches?.('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],input[type=password]') || protectedVariants.some(v=>(node.nodeValue??node.value??'').includes(v))) && range.intersectsNode(node))throw new Error('mirror selection intersects protected content');
+    const selection=a.ownerDocument.getSelection();selection.setBaseAndExtent(a,request.anchor_offset,b,request.focus_offset);return true;
+  };
+  globalThis.__charioxMirror=Object.freeze({read,locate,focus,select});return true;
+}

@@ -37,3 +37,16 @@ test("region capture protects shadow hosts and refuses unavailable initial prote
   state.fail = true;
   await assert.rejects(captureRegionMasks(connection, "session"), /unavailable/);
 });
+
+test('MP-11: structured mirror skips native control shadow trees but checks open roots and masks closed roots',async()=>{
+ const connection={async send(method,params){
+  if(method==='DOM.getDocument')return {root:{nodeId:1,children:[
+   {nodeId:10,shadowRoots:[{nodeId:11,shadowRootType:'user-agent'}]},
+   {nodeId:20,shadowRoots:[{nodeId:21,shadowRootType:'open',children:[{nodeId:22,localName:'input',attributes:['type','password']}]}]},
+   {nodeId:30,shadowRoots:[{nodeId:31,shadowRootType:'closed'}]},
+  ]}};
+  if(method==='DOM.querySelectorAll')return {nodeIds:[]};
+  assert.equal(method,'DOM.getBoxModel');assert([22,30].includes(params.nodeId));return {model:{border:[0,0,10,0,10,10,0,10]}};
+ }};
+ const masks=await captureRegionMasks(connection,'session',{mirrorStructured:true});assert.equal((await masks.afterCapture()).length,2);
+});

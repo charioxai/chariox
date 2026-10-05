@@ -23,7 +23,7 @@ function installNoteObserver() {
     let text = "";
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      if (node.parentElement?.closest('script,style,noscript,input,textarea,[data-chariox-secret]')) continue;
+      if (node.parentElement?.closest('script,style,noscript,input,textarea,[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')) continue;
       const range = document.createRange(); range.selectNodeContents(node);
       if (!range.getClientRects().length) continue;
       if (text.length + node.length > maxText) return null;

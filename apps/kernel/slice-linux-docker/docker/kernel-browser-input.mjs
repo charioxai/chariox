@@ -1,7 +1,7 @@
 // MD-3: document-bound physical input, sharing Room cancellation and document checks.
 import { assertCurrentDocument, assertNotCancelled } from "./browser-controller-actions.mjs";
 const viewport = { css_width: 1280, css_height: 800 };
-export async function inputHostTab(browser, tab, input, { signal, onDispatch } = {}) {
+export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror } = {}) {
     assertNotCancelled(signal);
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
     const check = async () => {
@@ -18,6 +18,12 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch } =
     };
     return browser.inputCapture.run(connection, sessionId, async () => {
       await check();
+      if(input.kind==='mirror') {
+        if(!resolveMirror) throw new Error('MP-11: mirror input resolver unavailable');
+        const resolved=await resolveMirror(input);
+        if(resolved.perform) {await check();onDispatch?.();await resolved.perform(sendInput);await check();return;}
+        input=resolved.input;
+      }
       if (input.kind === "text") {
         if (typeof input.text !== "string" || input.text.length > 16384) throw new Error("MD-2: input text exceeds limit");
         const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);

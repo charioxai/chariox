@@ -1,7 +1,10 @@
 //! MD-N5 / MP-08/MP-10/MP-11: two actual local transport connections, the
 //! production Rust authority and JS host adapter; synthetic CDP, no native acceptance.
 use super::*;
-use crate::local::{KernelBrowserCommand as Browser, KernelBrowserInput, KernelBrowserRequest};
+use crate::local::{
+    KernelBrowserCommand as Browser, KernelBrowserInput, KernelBrowserMirrorAction,
+    KernelBrowserRequest,
+};
 use crate::runtime::state::KernelBrowserDisplayRequest as Display;
 
 type Socket =
@@ -55,6 +58,7 @@ fn mdnotes_two_local_connections_keep_observation_and_takeover_private() {
         .env("CHARIOX_HOME", root.path().join("state"))
         .env("CHARIOX_KERNEL_BROWSER_SCRIPT", fixture)
         .env("CHARIOX_BROWSER_CONTROLLER_NODE", "node")
+        .env("CHARIOX_KERNEL_BROWSER_MIRROR", "1")
         .output().expect("MD-N5: isolated child starts");
     assert!(
         output.status.success(),
@@ -234,6 +238,169 @@ async fn mdnotes_two_local_connections_child() {
             )
             .await
             .unwrap();
+        // MP-08/MP-10/MP-11: the production typed mirror adapter over the
+        // same two authenticated sockets cannot borrow subscription authority.
+        let subscribed = success(
+            request(
+                &mut a.0,
+                "MP-mirror-a-subscribe",
+                Browser::MirrorSubscribe {
+                    tab_id: tab.clone(),
+                    generation,
+                    device_scale_factor: 1,
+                },
+            )
+            .await,
+        );
+        let subscription = subscribed["subscription_id"].as_str().unwrap().to_string();
+        let foreign = request(
+            &mut b.0,
+            "MP-mirror-b-foreign",
+            Browser::MirrorNext {
+                subscription_id: subscription.clone(),
+                generation,
+                after_sequence: 0,
+                drift_nodes: vec![],
+            },
+        )
+        .await;
+        assert!(
+            matches!(
+                foreign,
+                KernelOutgoingFrame::Response { error: Some(_), .. }
+            ),
+            "MP-11: B cannot read A's DOM stream"
+        );
+        let mirrored = success(
+            request(
+                &mut a.0,
+                "MP-mirror-a-next",
+                Browser::MirrorNext {
+                    subscription_id: subscription.clone(),
+                    generation,
+                    after_sequence: 0,
+                    drift_nodes: vec![],
+                },
+            )
+            .await,
+        );
+        assert_eq!(mirrored["reset"], true);
+        assert!(
+            runtime
+                .command_result_cache
+                .completed_browser_caller("MP-mirror-a-next")
+                .await
+                .is_none(),
+            "MP-11: no cached DOM packet"
+        );
+        let b_subscribed = success(
+            request(
+                &mut b.0,
+                "MP-mirror-b-subscribe",
+                Browser::MirrorSubscribe {
+                    tab_id: tab.clone(),
+                    generation,
+                    device_scale_factor: 1,
+                },
+            )
+            .await,
+        );
+        let b_subscription = b_subscribed["subscription_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let b_packet = success(
+            request(
+                &mut b.0,
+                "MP-mirror-b-next",
+                Browser::MirrorNext {
+                    subscription_id: b_subscription.clone(),
+                    generation,
+                    after_sequence: 0,
+                    drift_nodes: vec![],
+                },
+            )
+            .await,
+        );
+        success(
+            request(
+                &mut a.0,
+                "MP-mirror-a-takeover",
+                Browser::DisplayTakeover {
+                    tab_id: tab.clone(),
+                    generation,
+                },
+            )
+            .await,
+        );
+        let blocked = request(
+            &mut b.0,
+            "MP-mirror-b-input",
+            Browser::MirrorInput {
+                tab_id: tab.clone(),
+                generation,
+                document_id: b_packet["document_id"].as_str().unwrap().into(),
+                subscription_id: b_subscription.clone(),
+                sequence: 1,
+                action: KernelBrowserMirrorAction::Key { key: "Tab".into() },
+            },
+        )
+        .await;
+        assert!(
+            matches!(
+                blocked,
+                KernelOutgoingFrame::Response { error: Some(_), .. }
+            ),
+            "MP-11: mirror input uses video takeover ledger"
+        );
+        success(
+            request(
+                &mut a.0,
+                "MP-mirror-a-input",
+                Browser::MirrorInput {
+                    tab_id: tab.clone(),
+                    generation,
+                    document_id: mirrored["document_id"].as_str().unwrap().into(),
+                    subscription_id: subscription.clone(),
+                    sequence: 1,
+                    action: KernelBrowserMirrorAction::Key { key: "Tab".into() },
+                },
+            )
+            .await,
+        );
+        success(
+            request(
+                &mut a.0,
+                "MP-mirror-a-release",
+                Browser::DisplayRelease {
+                    tab_id: tab.clone(),
+                    generation,
+                },
+            )
+            .await,
+        );
+        success(
+            request(
+                &mut a.0,
+                "MP-mirror-a-close",
+                Browser::MirrorClose {
+                    subscription_id: subscription,
+                    generation,
+                },
+            )
+            .await,
+        );
+        success(
+            request(
+                &mut b.0,
+                "MP-mirror-b-close",
+                Browser::MirrorClose {
+                    subscription_id: b_subscription,
+                    generation,
+                },
+            )
+            .await,
+        );
         // A can act again after refreshing its own receipt; failed stale input
         // must not be repaired by B's state refresh or a cached response.
         success(request(&mut a.0, "MD-N5-a-refresh", Browser::State).await);

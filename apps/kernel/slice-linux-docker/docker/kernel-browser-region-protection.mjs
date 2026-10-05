@@ -1,9 +1,9 @@
 // Screenshot-region masks from trusted CDP metadata, never page JavaScript.
-async function regions(connection, sessionId) {
+async function regions(connection, sessionId, mirrorStructured = false) {
   const { root } = await connection.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
   const { nodeIds } = await connection.send("DOM.querySelectorAll", {
     nodeId: root.nodeId,
-    selector: 'input[type="password"], [data-chariox-observation-protected], input[autocomplete="one-time-code"], input[autocomplete="cc-number"], input[autocomplete="cc-csc"], iframe, frame',
+    selector: 'input[type="password"], [data-chariox-secret], [data-chariox-observation-protected], [data-observation-protected], input[autocomplete*="password"], input[autocomplete*="one-time-code"], input[autocomplete*="cc-"], iframe, frame',
   }, sessionId);
   if (!Array.isArray(nodeIds)) throw new Error("Capture protection unavailable");
   const nodes = [...nodeIds], pending = [root];
@@ -11,7 +11,16 @@ async function regions(connection, sessionId) {
   while (pending.length) {
     if (++visited > 100_000) throw new Error("Capture protection tree limit exceeded");
     const node = pending.pop();
-    if (node.shadowRoots?.length) nodes.push(node.nodeId);
+    if (node.shadowRoots?.length) {
+      if(!mirrorStructured || node.shadowRoots.some(root=>root.shadowRootType==='closed'))nodes.push(node.nodeId);
+      if(mirrorStructured)pending.push(...node.shadowRoots.filter(root=>root.shadowRootType==='open'));
+    }
+    if(mirrorStructured) {
+      // Inspect open shadow descendants through trusted CDP metadata, never page
+      // scripts. UA shadow roots of ordinary inputs/media are native controls.
+      const attrs=new Map();for(let i=0;i<(node.attributes?.length??0);i+=2)attrs.set(node.attributes[i],node.attributes[i+1]);
+      if(['data-chariox-secret','data-chariox-observation-protected','data-observation-protected'].some(key=>attrs.has(key)) || node.localName==='input' && (attrs.get('type')==='password'||/password|one-time-code|cc-/.test(attrs.get('autocomplete')??'')))nodes.push(node.nodeId);
+    }
     pending.push(...(node.children ?? []));
   }
   if (nodes.length > 1024) throw new Error("Capture protection limit exceeded");
@@ -28,14 +37,14 @@ async function regions(connection, sessionId) {
   return result;
 }
 
-export async function captureRegionMasks(connection, sessionId) {
+export async function captureRegionMasks(connection, sessionId, { mirrorStructured = false } = {}) {
   // Layout changes or failed metadata checks cannot reveal an unmapped field.
-  const before = await regions(connection, sessionId);
+  const before = await regions(connection, sessionId, mirrorStructured);
   return { async afterCapture({ width = 1280, height = 800 } = {}) {
     if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) throw new Error("Capture geometry unavailable");
     const fullFrame = [{ x: 0, y: 0, width, height }];
     try {
-      const after = await regions(connection, sessionId);
+      const after = await regions(connection, sessionId, mirrorStructured);
       if (JSON.stringify(before) !== JSON.stringify(after)) return fullFrame;
       // CDP bounds are CSS coordinates; the raster crop masks native PNG pixels.
       return after.map(region => ({ x: region.x * width / 1280, y: region.y * height / 800,
