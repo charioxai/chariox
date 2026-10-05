@@ -349,3 +349,32 @@ test("MD-3: one terminal/agent observation cannot rebind another terminal's stal
   await host.request({ ...input, focused_agent: true, document_id: current.tabs[0].document_id });
   assert.equal(sent.filter(call => call.method === "Input.dispatchMouseEvent").length, 2);
 }));
+
+test("MD-3: bound capture carries the captured document and rejects a capture navigation race", () => using(async ({ host, connection, pages }) => {
+  const opened = await host.request({ op: "open", url: "about:blank" });
+  const binding = { tab_id: opened.tab_id, generation: opened.generation, bound_frames: true };
+  const frame = await host.request({ op: "screenshot", ...binding });
+  assert.equal(frame.document_id, opened.tabs[0].document_id);
+  const tab = host.tabs.get(opened.tab_id);
+  connection.beforeSend = async method => {
+    if (method === "Page.captureScreenshot") pages.get(tab.target_id).document_id = "replacement-document";
+  };
+  await assert.rejects(host.request({ op: "screenshot", ...binding }), /moved away/);
+}));
+
+test("MD-3: bound stream captures a document-bound source rather than annotating old CDP pixels", () => using(async ({ host, handlers, sent }) => {
+  const opened = await host.request({ op: "open", url: "about:blank" });
+  const subscription = await host.request({ op: "subscribe", tab_id: opened.tab_id, generation: opened.generation, bound_frames: true });
+  const session = sent.find(call => call.method === "Page.startScreencast").session;
+  for (const handler of handlers) handler({ method: "Page.screencastFrame", sessionId: session, params: { data: "unbound-old-pixels", sessionId: 42 } });
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const { frame } = await host.request({ op: "poll", ...subscription });
+    if (frame?.document_id) {
+      assert.equal(frame.document_id, opened.tabs[0].document_id);
+      assert.notEqual(frame.data_base64, "unbound-old-pixels");
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 2));
+  }
+  assert.fail("bound stream frame never arrived");
+}));
