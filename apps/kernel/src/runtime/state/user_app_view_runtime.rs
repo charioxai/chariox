@@ -15,7 +15,7 @@ impl KernelRuntimeState {
         &'a self,
         command: &'a KernelCommand,
         request: &'a LocalDaemonRequest,
-    ) -> futures::future::BoxFuture<'a, Option<Result<LocalDaemonResponse, DaemonError>>> {
+    ) -> futures_util::future::BoxFuture<'a, Option<Result<LocalDaemonResponse, DaemonError>>> {
         if !matches!(
             request,
             LocalDaemonRequest::OpenUserAppView(_)
