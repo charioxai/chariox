@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { createServer } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -18,7 +19,7 @@ test("Room viewer propagates an advertised-version refusal without parsing its w
   })
 })
 
-test("CLI transport gates fresh WebSocket and Unix advertisements and preserves current, stale and other endpoints", async context => {
+test("CLI transport gates fresh WebSocket advertisements and preserves current, stale and other endpoints", async context => {
   const root = mkdtempSync(join(tmpdir(), "chariox-feature-minimum-"))
   const previous = process.env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR
   process.env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR = root
@@ -39,7 +40,7 @@ test("CLI transport gates fresh WebSocket and Unix advertisements and preserves 
   const requests: unknown[] = []
   context.mock.method(KernelClient.prototype, "send", async (request: unknown) => {
     requests.push(request)
-    if (request && typeof request === "object" && "RelayStatus" in request) return { RelayStatus: { status: { daemon_id: "k" } } }
+    if (request && typeof request === "object" && "RelayStatus" in request) assert.fail("protocol checks must not probe global state")
     return { AppHostActionAccepted: { operation_id: "o", action: { kind: "clipboard_write", text: "copy" } } }
   })
   const publish = (version: number, heartbeat = Date.now()) => writeFileSync(join(root, "kernel.json"), JSON.stringify({
@@ -66,28 +67,6 @@ test("CLI transport gates fresh WebSocket and Unix advertisements and preserves 
   context.after(() => other.close())
   await other.send(request)
   assert.equal(requests.length, 3)
-  const unix = new TestClient(join(root, "kernel.sock"))
-  context.after(() => unix.close())
-  requests.length = 0
-  await assert.rejects(unix.send(request), /App host actions needs protocol ≥409; this kernel is 388/)
-  await assert.rejects(unix.send(request), /this kernel is 388/)
-  assert.deepEqual(requests, [{ RelayStatus: null }])
-  publish(410)
-  await assert.rejects(unix.send(request), /this kernel is 388/)
-  now += 30001
-  publish(410)
-  await Promise.all([unix.send(request), unix.send(request)])
-  assert.deepEqual(requests, [{ RelayStatus: null }, { RelayStatus: null }, request, request])
-  // A fresh but unrelated advertisement must not cause repeated identity probes.
-  unix.destroy()
-  writeFileSync(join(root, "kernel.json"), JSON.stringify({ schema_version: 1, kernel_id: "other",
-    machine_id: "m", host: "127.0.0.1", port: 43121, heartbeat_at_ms: now, local_daemon_protocol_version: 388 }))
-  const unmatched = new TestClient(join(root, "unmatched.sock"))
-  context.after(() => unmatched.close())
-  requests.length = 0
-  await Promise.all([unmatched.send(request), unmatched.send(request)])
-  await unmatched.send(request)
-  assert.deepEqual(requests, [{ RelayStatus: null }, request, request, request])
 })
 
 
@@ -139,4 +118,38 @@ test("a control socket closing invalidates cached advertisements without event c
   await disconnected
   await assert.rejects(client.send(request), /this kernel is 388/)
   assert.equal(changes, 2)
+})
+
+
+test("session-scoped Unix requests never probe global RelayStatus for a protocol advertisement", async context => {
+  const root = mkdtempSync(join(tmpdir(), "chariox-feature-unix-"))
+  const previous = process.env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR
+  process.env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR = root
+  writeFileSync(join(root, "kernel.json"), JSON.stringify({ schema_version: 1, kernel_id: "k",
+    machine_id: "m", host: "127.0.0.1", port: 43121, heartbeat_at_ms: Date.now(), local_daemon_protocol_version: 1 }))
+  const server = createServer()
+  const sockets = new WebSocketServer({ server })
+  const requests: unknown[] = []
+  sockets.on("connection", socket => socket.on("message", data => {
+    const frame = JSON.parse(String(data)) as { request_id: string; request: Record<string, unknown> }
+    requests.push(frame.request)
+    socket.send(JSON.stringify({ type: "response", request_id: frame.request_id,
+      response: "RelayStatus" in frame.request ? null : { ok: true },
+      error: "RelayStatus" in frame.request ? "Unix peer has no live authority for this request" : null }))
+  }))
+  const path = join(root, "kernel.sock")
+  await new Promise<void>(resolve => server.listen(path, resolve))
+  const client = new LocalIpcClient(path)
+  context.after(async () => {
+    client.destroy()
+    for (const socket of sockets.clients) socket.terminate()
+    await new Promise<void>(resolve => sockets.close(() => resolve()))
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    if (previous === undefined) delete process.env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR
+    else process.env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR = previous
+    rmSync(root, { recursive: true, force: true })
+  })
+  const request = { GetRoomEnvironmentState: { session_id: "s" } }
+  assert.deepEqual(await client.send(request), { ok: true })
+  assert.deepEqual(requests, [request])
 })

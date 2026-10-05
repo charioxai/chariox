@@ -412,6 +412,22 @@ impl SessionStateStore {
         )
     }
 
+    pub(crate) fn room_environment_prepare_app_recovery(
+        &self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write()
+            .room_environment_prepare_app_recovery(session_id)
+    }
+
+    pub(crate) fn room_environment_cancel_app_recovery_focus(
+        &self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write()
+            .room_environment_cancel_app_recovery_focus(session_id)
+    }
+
     pub(crate) fn set_room_environment_app_tabs(
         &self,
         session_id: &str,

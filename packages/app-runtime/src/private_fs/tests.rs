@@ -172,3 +172,21 @@ fn existing_child_discovery_requires_publication_sync_and_the_original_parent_po
         0o777
     );
 }
+
+#[test]
+fn system_alias_ancestors_are_rejected_until_the_trusted_root_is_resolved() {
+    let scratch = Scratch::new();
+    let real = scratch.0.join("real");
+    fs::create_dir(&real).unwrap();
+    fs::set_permissions(&real, fs::Permissions::from_mode(0o700)).unwrap();
+    let alias = scratch.0.join("system-alias");
+    symlink(&scratch.0, &alias).unwrap();
+    let aliased_root = alias.join("real");
+    assert!(Dir::open_private(&aliased_root).is_err());
+    let resolved = fs::canonicalize(&aliased_root).unwrap();
+    assert_eq!(resolved, real);
+    let dir = Dir::open_private(&resolved).unwrap();
+    dir.write_new(OsStr::new("payload"), b"private bytes")
+        .unwrap();
+    assert_eq!(fs::read(real.join("payload")).unwrap(), b"private bytes");
+}

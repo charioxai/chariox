@@ -191,6 +191,7 @@ static int fixture_sdk_run(const struct cx_launch_record* record, const char* mo
   }
   const char* report = !strcmp(mode, "sdk_wrong_handlers") ?
       "{\"tools\":[\"undeclared\"],\"events\":[],\"lifecycle\":[]}" :
+      !strcmp(mode, "sdk_lifecycle_inbox") ? "{\"tools\":[],\"events\":[\"received\"],\"lifecycle\":[\"health_check\",\"startup\",\"suspend\",\"resume\",\"prepare_update\",\"configuration_change\",\"shutdown\"]}" :
       !strncmp(mode, "sdk_lifecycle", 13) ? "{\"tools\":[],\"events\":[],\"lifecycle\":[\"health_check\",\"startup\",\"suspend\",\"resume\",\"prepare_update\",\"configuration_change\",\"shutdown\"]}" :
       fixture_health_mode(mode) ? "{\"tools\":[],\"events\":[],\"lifecycle\":[\"health_check\",\"startup\"]}" :
       !strcmp(mode, "sdk_tool") || !strcmp(mode, "sdk_tool_stall") || !strcmp(mode, "sdk_tool_killed") ?

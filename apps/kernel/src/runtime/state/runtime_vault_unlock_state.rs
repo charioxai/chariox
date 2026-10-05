@@ -214,9 +214,7 @@ impl KernelRuntimeState {
     ) -> Result<super::PendingInteractionResolution, DaemonError> {
         let interaction_id = interaction.id().to_string();
         let timeout_sec = interaction.timeout_sec();
-        let resolution_rx = self
-            .create_runtime_interaction(session_id, interaction)
-            .await?;
+        let resolution_rx = self.create_terminal_credential_interaction(session_id, interaction)?;
         if let Some(timeout_sec) = timeout_sec {
             let state = self.clone();
             let timeout_session_id = session_id.to_string();

@@ -77,11 +77,11 @@ export function createUnattachedAgentsTuiParityDrillRuntime({ repoRoot, cliRoot 
     }
   }
 
-  async function waitForKernel(LocalIpcClient, listSessionsRequest, kernelUrl) {
+  async function waitForKernel(LocalIpcClient, listSessionsRequest, kernelUrl, localAuthEnvironment) {
     const deadline = Date.now() + 20_000
     let lastError = null
     while (Date.now() < deadline) {
-      const client = new LocalIpcClient(kernelUrl)
+      const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
       try {
         await client.send(listSessionsRequest())
         await client.close().catch(() => {})

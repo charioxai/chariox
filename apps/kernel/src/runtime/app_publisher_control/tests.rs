@@ -230,6 +230,16 @@ async fn disconnected_request_shutdown(cancelling: bool) {
     let f = Fixture::new();
     if cancelling {
         f.begin("request").await;
+        // The response is sent before the retained request task returns. Drain
+        // setup by its completion event, so the assertion below counts only
+        // the blocked cancel even when the begin task is descheduled after ACK.
+        let mut requests = std::mem::take(&mut f.control().0.state.lock().unwrap().requests);
+        tokio::time::timeout(Duration::from_secs(30), async {
+            requests.join_next().await.unwrap().unwrap();
+            assert!(requests.is_empty());
+        })
+        .await
+        .expect("publisher begin setup did not finish");
     }
     let mut blocked = rusqlite::Connection::open(f.control().0.shared.store.path()).unwrap();
     let transaction = blocked

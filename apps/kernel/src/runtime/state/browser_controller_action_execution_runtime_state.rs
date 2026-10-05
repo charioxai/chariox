@@ -53,6 +53,7 @@ impl KernelRuntimeState {
         input: RoomComputerInputAction,
         approved_generation: Option<u64>,
     ) -> Result<ComputerControllerActionExecution, DaemonError> {
+        self.authorize_current_external_command()?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
@@ -68,6 +69,7 @@ impl KernelRuntimeState {
             .for_room(session_id)
             .read_owned()
             .await;
+        self.authorize_current_external_command()?;
         let environment = self
             .reconcile_room_environment_actors(session_id, None)
             .map_err(action_environment_error)?;
@@ -136,6 +138,7 @@ impl KernelRuntimeState {
             }
         };
 
+        self.authorize_admitted_browser_action(session_id, &action_id)?;
         let current = self
             .room_environment_snapshot(session_id)
             .map_err(action_environment_error)?;
@@ -168,6 +171,8 @@ impl KernelRuntimeState {
                 ),
             )
             .await;
+        // Terminal bookkeeping belongs to the kernel even if the grant was
+        // revoked while input was in flight. It must release the target.
         let terminal = match &execution {
             Ok(RoomBrowserControllerResult::ComputerInputApplied {
                 action_id: returned_action_id,
@@ -187,7 +192,10 @@ impl KernelRuntimeState {
             }) if returned_action_id == action_id => {
                 // Agent Computer input may navigate the physical browser too.
                 // Reconcile after completion so Browser clients share its tab.
-                if self.should_reconcile_browser_controller_after_input(session_id, &environment) {
+                if self.authorize_current_external_command().is_ok()
+                    && self
+                        .should_reconcile_browser_controller_after_input(session_id, &environment)
+                {
                     let _ = self
                         .reconcile_browser_controller_environment(session_id)
                         .await;
@@ -290,12 +298,14 @@ impl KernelRuntimeState {
     where
         F: Future<Output = Result<T, DaemonError>>,
     {
+        self.authorize_current_external_command()?;
         let _execution_guard = self
             .owned
             .environment_execution_gates
             .for_room(session_id)
             .read_owned()
             .await;
+        self.authorize_current_external_command()?;
         let actor_id = request.actor_id.clone();
         let runtime_generation = request.runtime_generation;
         let tab_preconditions = request.tab_preconditions.clone();
@@ -337,6 +347,7 @@ impl KernelRuntimeState {
             }
         };
 
+        self.authorize_admitted_browser_action(session_id, &action_id)?;
         let preconditions = self
             .room_environment_snapshot(session_id)
             .and_then(|current| {
@@ -373,20 +384,14 @@ impl KernelRuntimeState {
             }
             None => execution.await,
         };
+        // Settle the dispatched result before authorizing any new recovery
+        // effects. Revocation cannot leave a Running action reserving input.
         let controller_restart_generation = match &result {
             Err(DaemonError::BrowserControllerRecoveryRequired { runtime_generation }) => {
                 Some(*runtime_generation)
             }
             _ => None,
         };
-        if let Some(runtime_generation) = controller_restart_generation {
-            self.recover_browser_controller_after_restart(session_id, runtime_generation)
-                .await?;
-            return Err(DaemonError::LocalTransport {
-                operation: "browser_controller.route",
-                message: CONTROLLER_RESTARTED_BEFORE_OPERATION.to_string(),
-            });
-        }
         let controller_fenced = matches!(
             &result,
             Err(DaemonError::BrowserControllerActionCancelled {
@@ -403,6 +408,15 @@ impl KernelRuntimeState {
             EnvironmentActionTerminal::Completed
         } else {
             EnvironmentActionTerminal::Failed
+        };
+        // Observing a restart is kernel bookkeeping, not a new controller effect.
+        // Fence the ledger before terminal settlement can promote queued work.
+        // Still attempt settlement if that bookkeeping itself fails.
+        let recovery_fence = match controller_restart_generation {
+            Some(generation) => self
+                .observe_browser_controller_generation(session_id, generation)
+                .map(|_| ()),
+            None => Ok(()),
         };
         match self.finish_room_environment_action(session_id, &action_id, terminal) {
             Ok(_) => {}
@@ -425,7 +439,18 @@ impl KernelRuntimeState {
                     }) => {}
             Err(error) => return Err(action_environment_error(error)),
         }
+        recovery_fence?;
+        if let Some(runtime_generation) = controller_restart_generation {
+            self.authorize_current_external_command()?;
+            self.recover_browser_controller_after_restart(session_id, runtime_generation)
+                .await?;
+            return Err(DaemonError::LocalTransport {
+                operation: "browser_controller.route",
+                message: CONTROLLER_RESTARTED_BEFORE_OPERATION.to_string(),
+            });
+        }
         if controller_fenced {
+            self.authorize_current_external_command()?;
             if let Err(recovery_error) = self
                 .recover_browser_controller_after_fence(session_id)
                 .await
@@ -454,6 +479,7 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let started = Instant::now();
         loop {
+            self.authorize_admitted_browser_action(session_id, action_id)?;
             if let Err(error) = self.ensure_browser_import_execution_allowed(session_id) {
                 let _ = self.cancel_unstarted_import_blocked_action(session_id, action_id);
                 return Err(action_environment_error(error));
@@ -492,6 +518,20 @@ impl KernelRuntimeState {
                 }
             }
         }
+    }
+
+    pub(super) fn authorize_admitted_browser_action(
+        &self,
+        session_id: &str,
+        action_id: &str,
+    ) -> Result<(), DaemonError> {
+        if let Err(error) = self.authorize_current_external_command() {
+            // Retire admitted but unexecuted work so a trusted action cannot
+            // promote a revoked command later. This is cleanup, not execution.
+            let _ = self.cancel_unstarted_import_blocked_action(session_id, action_id);
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn validate_browser_action_precondition(
@@ -1542,3 +1582,9 @@ mod tests {
         )
     }
 }
+
+#[cfg(test)]
+mod grant_revocation_tests;
+
+#[cfg(test)]
+mod recovery_queue_tests;

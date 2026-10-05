@@ -98,7 +98,10 @@ impl KernelRuntimeState {
             );
             let _ = self.transition_room_environment(
                 session_id,
-                super::room_browser_start_failure::lifecycle_after_start_error(&error),
+                self.owned
+                    .room_environment_health_probes
+                    .startup_recovery
+                    .after_start_error(session_id, &error, std::time::Instant::now()),
             );
             return Err(error);
         }
@@ -119,7 +122,15 @@ impl KernelRuntimeState {
                         None,
                     )
                     .map_err(|error| environment_runtime_error(operation, error))?;
-                self.complete_bound_slice_computer_start(session_id, environment, operation)
+                let result =
+                    self.complete_bound_slice_computer_start(session_id, environment, operation);
+                if result.is_ok() {
+                    self.owned
+                        .room_environment_health_probes
+                        .startup_recovery
+                        .reset(session_id);
+                }
+                result
             }
             Err(error) => {
                 let _ = self.update_room_environment_component_health(
@@ -130,7 +141,10 @@ impl KernelRuntimeState {
                 );
                 let _ = self.transition_room_environment(
                     session_id,
-                    super::room_browser_start_failure::lifecycle_after_start_error(&error),
+                    self.owned
+                        .room_environment_health_probes
+                        .startup_recovery
+                        .after_start_error(session_id, &error, std::time::Instant::now()),
                 );
                 Err(error)
             }
@@ -296,6 +310,21 @@ impl KernelRuntimeState {
             session_id,
             reconciliation.process.runtime_generation,
         )?;
+        let room_generation = self
+            .room_environment_snapshot(session_id)
+            .map_err(|error| environment_runtime_error("browser_controller.reconcile", error))?
+            .runtime_generation;
+        self.app_control().views().observe_browser_identity(
+            session_id,
+            room_generation,
+            &reconciliation.browser.resource_inventory.browser_ids,
+            &reconciliation
+                .browser
+                .tabs
+                .iter()
+                .map(|tab| tab.target_id.clone())
+                .collect::<Vec<_>>(),
+        );
         let focused_target_id = reconciliation.browser.focused_target_id.clone();
         let tabs = reconciliation
             .browser
@@ -470,9 +499,43 @@ impl KernelRuntimeState {
         tab_id: &str,
         action: crate::runtime::browser_controller_tab::BrowserTabAction,
     ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
+        self.mutate_browser_environment_tab(session_id, execution_id, tab_id, action, true)
+            .await
+    }
+
+    /// Recovery activation fulfills the retained intent; it is not a new
+    /// user/agent Tab choice. Use the same binding, route and receipt checks.
+    pub(crate) async fn restore_browser_environment_tab_focus(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
+        let execution_id = format!("{:032x}", rand::random::<u128>());
+        self.mutate_browser_environment_tab(
+            session_id,
+            &execution_id,
+            tab_id,
+            crate::runtime::browser_controller_tab::BrowserTabAction::Activate,
+            false,
+        )
+        .await
+    }
+
+    async fn mutate_browser_environment_tab(
+        &self,
+        session_id: &str,
+        execution_id: &str,
+        tab_id: &str,
+        action: crate::runtime::browser_controller_tab::BrowserTabAction,
+        cancel_recovery_focus: bool,
+    ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
         let binding = self
             .room_environment_controller_tab_binding(session_id, tab_id)
             .map_err(|error| environment_runtime_error("browser_controller.tab", error))?;
+        // A new explicit Tab operation wins over pre-stop App focus intent.
+        if cancel_recovery_focus {
+            let _ = self.room_environment_cancel_app_recovery_focus(session_id);
+        }
         let RoomBrowserControllerResult::Tab {
             result: Some(result),
         } = self
@@ -494,6 +557,13 @@ impl KernelRuntimeState {
         result
             .validate(&binding.runtime_target_id, &binding.document_id, action)
             .map_err(|message| controller_route_error(&message))?;
+        if action == crate::runtime::browser_controller_tab::BrowserTabAction::Close {
+            // An acknowledged close is explicit user intent, even if Chromium
+            // restarts before the App poll observes the missing target.
+            self.app_control()
+                .views()
+                .unbind(session_id, &binding.runtime_target_id);
+        }
         self.reconcile_browser_controller_environment(session_id)
             .await
     }
@@ -1167,11 +1237,13 @@ impl KernelRuntimeState {
                 "unexpected controller stop response",
             ));
         };
-        self.owned
+        let mut generations = self
+            .owned
             .browser_controller_generations
             .lock()
-            .map_err(|_| controller_generation_error("generation lock poisoned"))?
-            .remove(session_id);
+            .map_err(|_| controller_generation_error("generation lock poisoned"))?;
+        // Release already completed; retiring its generation is kernel cleanup.
+        generations.remove(session_id);
         Ok(snapshot)
     }
 
@@ -1179,6 +1251,7 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
     ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
+        self.authorize_current_external_command()?;
         self.begin_stop_room_environment(session_id)
             .map_err(|error| environment_runtime_error("environment.stop", error))?;
         match self.stop_browser_controller_process(session_id).await {
@@ -1202,6 +1275,8 @@ impl KernelRuntimeState {
                 return Err(error);
             }
         }
+        // Stop was admitted before release. Always settle its terminal state,
+        // including release failure, after in-flight grant revocation.
         self.update_room_environment_component_health(
             session_id,
             EnvironmentComponent::BrowserController,
@@ -1235,7 +1310,7 @@ impl KernelRuntimeState {
         Ok(snapshot)
     }
 
-    fn observe_browser_controller_generation(
+    pub(super) fn observe_browser_controller_generation(
         &self,
         session_id: &str,
         generation: u64,
@@ -1260,6 +1335,9 @@ impl KernelRuntimeState {
             }
         };
         if began_recovery {
+            self.app_control()
+                .views()
+                .suspend_for_cold_start(session_id);
             self.begin_room_environment_browser_controller_recovery(session_id)
                 .map_err(|error| environment_runtime_error("browser_controller.recover", error))?;
             self.update_room_environment_component_health(
@@ -1312,6 +1390,7 @@ fn transient_started_browser_error(error: &DaemonError) -> bool {
         "browser_debugger_unavailable",
         "browser_cdp_disconnected",
         "browser_cdp_socket_error",
+        "viewport_apply_failed",
     ]
     .iter()
     .any(|code| {
@@ -1337,3 +1416,6 @@ fn environment_runtime_error(operation: &'static str, error: EnvironmentError) -
         },
     }
 }
+
+#[cfg(test)]
+mod stop_revocation_tests;

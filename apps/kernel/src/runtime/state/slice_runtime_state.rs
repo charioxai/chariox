@@ -676,6 +676,9 @@ impl KernelRuntimeState {
                 .environment_slice(&session)
                 .is_some_and(|bound| bound.id == slice.id)
             {
+                // Slice replacement can leave the Room generation unchanged.
+                // Retain logical identities before suspending target authority.
+                let _ = self.room_environment_prepare_app_recovery(&session);
                 self.app_control().views().suspend_for_cold_start(&session);
             }
         }

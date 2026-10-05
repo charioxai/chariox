@@ -33,7 +33,7 @@ import { createWaitingRoomState } from "./waiting-room-state.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import { __setWaitingRoomWorktreeInventoryForTest } from "./waiting-room-worktrees.js"
 
-const LOCAL_ENDPOINT = "memory://local-kernel"
+const LOCAL_ENDPOINT = "ws://local-kernel.test"
 const OLD_ENDPOINT = "ws://old-kernel.test"
 const REPLACEMENT_ENDPOINT = "ws://replacement-kernel.test"
 

@@ -424,6 +424,7 @@ fn open_view(router: &CommandRouter, session: &str, target: &str, owner: &str, a
         session,
         target,
         crate::runtime::app_views::AppViewBinding {
+            logical_tab: None,
             owner: owner.into(),
             installation: app.into(),
             generation: 1,
@@ -855,7 +856,7 @@ async fn uninstall_keeps_missing_binding_visible_without_tools_or_a_reinstall_re
     )
     .await;
     let LocalDaemonResponse::AppPackageUploadStatus { upload } = upload else {
-        panic!("upload")
+        panic!("upload did not begin: {upload:?}")
     };
     let result = dispatch(
         LocalDaemonRequest::PutAppPackageUploadChunk(

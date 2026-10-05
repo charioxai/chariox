@@ -38,6 +38,8 @@ impl AppLifecycleService {
         match self.0.store.app_worker_start_gate(owner, installation)? {
             StartGate::Allowed => self.start(owner, installation, true, runtime),
             StartGate::UserStopped => Err(LifecycleError::Stopped),
+            StartGate::RestartDeferred => Err(LifecycleError::RestartDeferred),
+            StartGate::Quarantined => Err(LifecycleError::Quarantined),
             StartGate::Refused => Err(LifecycleError::Authority),
         }
     }

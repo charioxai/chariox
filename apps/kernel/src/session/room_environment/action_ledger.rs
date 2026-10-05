@@ -56,6 +56,9 @@ pub(crate) struct EnvironmentActionLedger {
     next_sequence: u64,
     terminal_capacity: usize,
     queue_capacity: usize,
+    // Recovery is live kernel state; restart invalidation clears it.
+    #[serde(skip)]
+    controller_recovering: bool,
 }
 
 impl EnvironmentActionLedger {
@@ -74,6 +77,7 @@ impl EnvironmentActionLedger {
             next_sequence: 1,
             terminal_capacity,
             queue_capacity,
+            controller_recovering: false,
         }
     }
 
@@ -579,6 +583,7 @@ impl EnvironmentActionLedger {
     }
 
     pub(crate) fn invalidate_runtime(&mut self) -> Vec<String> {
+        self.controller_recovering = false;
         self.reservations.clear();
         self.input_owners.clear();
         self.pending_takeovers.clear();
@@ -611,6 +616,7 @@ impl EnvironmentActionLedger {
     }
 
     pub(crate) fn begin_controller_recovery(&mut self) -> ActionRecoveryEffect {
+        self.controller_recovering = true;
         let failed_action_ids = self
             .order
             .iter()
@@ -640,6 +646,7 @@ impl EnvironmentActionLedger {
         runtime_generation: u64,
         tabs: &TabRegistry,
     ) -> ActionRecoveryEffect {
+        self.controller_recovering = false;
         let failed_action_ids =
             self.order
                 .iter()
@@ -799,6 +806,9 @@ impl EnvironmentActionLedger {
     }
 
     fn promote_queued_actions(&mut self) -> Vec<String> {
+        if self.controller_recovering {
+            return Vec::new();
+        }
         let mut started_action_ids = Vec::new();
         for action_id in &self.order {
             let Some(action) = self.actions.get(action_id) else {

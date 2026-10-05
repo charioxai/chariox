@@ -630,6 +630,7 @@ async fn run_slice_screen_command_with_capture(
         None,
         false,
         Some(capture_guard),
+        None,
     )
     .await
 }
@@ -669,6 +670,8 @@ pub(in crate::runtime::state) async fn execute_room_computer_observation(
         None,
         false,
         Some(capture_guard),
+        // The worker binding authorizes these home-kernel requests.
+        None,
     )
     .await?;
     prune_native_target_receipts(&output.stderr, prune)?;
@@ -726,6 +729,8 @@ pub(in crate::runtime::state) async fn capture_room_environment_screenshot(
         None,
         false,
         Some(capture_guard),
+        // The worker binding authorizes these home-kernel requests.
+        None,
     )
     .await?;
     prune_native_target_receipts(&output.stderr, prune)?;
@@ -797,20 +802,6 @@ async fn run_slice_screen_command_inner(
         None,
         false,
         None,
-    )
-    .await
-}
-
-async fn run_slice_screen_command_inner_exact_stdout(
-    args: Vec<String>,
-    timeout_override_ms: Option<u64>,
-) -> Result<SliceScreenCommandOutput, DaemonError> {
-    run_slice_screen_command_inner_with_output_policy(
-        args,
-        None,
-        timeout_override_ms,
-        None,
-        true,
         None,
     )
     .await
@@ -829,6 +820,7 @@ async fn run_slice_screen_command_inner_with_cancellation(
         cancellation,
         false,
         None,
+        None,
     )
     .await
 }
@@ -840,12 +832,19 @@ async fn run_slice_screen_command_inner_with_output_policy(
     cancellation: Option<crate::runtime::computer_input_execution::ComputerInputCancellation>,
     preserve_stdout: bool,
     capture_guard: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
+    authorize: Option<std::sync::Arc<dyn Fn() -> Result<(), DaemonError> + Send + Sync>>,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
     let tool_path = std::env::var("CHARIOX_SLICE_SCREEN_TOOL")
         .unwrap_or_else(|_| "/opt/chariox-slice/slice-screen.sh".to_string());
     let sensitive_output = preserve_stdout || stdin.is_some();
     tokio::task::spawn_blocking(move || {
         let _capture_guard = capture_guard;
+        if let Some(cancellation) = cancellation.as_ref() {
+            cancellation.authorize()?;
+        }
+        if let Some(authorize) = authorize.as_ref() {
+            authorize()?;
+        }
         let mut command = std::process::Command::new(&tool_path);
         command
             .args(&args)
@@ -1312,11 +1311,17 @@ async fn run_room_clipboard_write_inner(
     }
 }
 
-pub(crate) async fn run_room_clipboard_read(
+pub(crate) async fn run_room_clipboard_read_authorized(
+    authorize: Option<std::sync::Arc<dyn Fn() -> Result<(), DaemonError> + Send + Sync>>,
 ) -> Result<crate::transport::room_browser_controller::RoomComputerClipboardText, DaemonError> {
-    let mut output = run_slice_screen_command_inner_exact_stdout(
+    let mut output = run_slice_screen_command_inner_with_output_policy(
         vec!["computer-clipboard-read".to_string()],
+        None,
         Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+        None,
+        true,
+        None,
+        authorize,
     )
     .await?;
     if !output.success {

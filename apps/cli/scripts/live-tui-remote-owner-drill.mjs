@@ -408,8 +408,8 @@ async function main() {
     localKernelChild = spawnProcess(kernelBinary, [], { cwd: repoRoot, env: localEnv })
     peerKernelChild = spawnProcess(kernelBinary, [], { cwd: repoRoot, env: peerEnv })
 
-    localClient = new LocalIpcClient(`ws://127.0.0.1:${ports.localKernelPort}`)
-    peerClient = new LocalIpcClient(`ws://127.0.0.1:${ports.peerKernelPort}`)
+    localClient = new LocalIpcClient(`ws://127.0.0.1:${ports.localKernelPort}`, { localAuthEnvironment: localEnv })
+    peerClient = new LocalIpcClient(`ws://127.0.0.1:${ports.peerKernelPort}`, { localAuthEnvironment: peerEnv })
     await waitForKernel(localClient, options.workspace, options.worktree)
     await waitForKernel(peerClient, options.workspace, options.worktree)
     const peerKernels = await waitForRemoteKernel(localClient, peerMachineId)

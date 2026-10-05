@@ -115,9 +115,10 @@ function unwrapVariant(response, variant) {
   return unwrap(response, variant)
 }
 
-async function disableWorkspaceLiveSync(kernelUrl) {
+async function disableWorkspaceLiveSync(kernelUrl, localAuthEnvironment) {
   if (!kernelUrl) return
   const client = new LocalIpcClient(kernelUrl, {
+    localAuthEnvironment,
     kernelPingIntervalMs: 60_000,
     kernelMaxMissedPongs: 10,
   })
@@ -302,8 +303,9 @@ async function syncHetznerWorkerKernelConfig(options, root, remoteRuntimeRoot) {
   ])
 }
 
-async function createHomeManagedLocalDockerSlice({ homeKernelUrl, workspace, providers }) {
+async function createHomeManagedLocalDockerSlice({ homeKernelUrl, workspace, providers, localAuthEnvironment }) {
   const client = new LocalIpcClient(homeKernelUrl, {
+    localAuthEnvironment,
     kernelPingIntervalMs: 60_000,
     kernelMaxMissedPongs: 10,
   })
@@ -331,9 +333,10 @@ async function createHomeManagedLocalDockerSlice({ homeKernelUrl, workspace, pro
   }
 }
 
-async function deleteHomeManagedSlice(homeKernelUrl, sliceRef) {
+async function deleteHomeManagedSlice(homeKernelUrl, sliceRef, localAuthEnvironment) {
   if (!sliceRef) return
   const client = new LocalIpcClient(homeKernelUrl, {
+    localAuthEnvironment,
     kernelPingIntervalMs: 60_000,
     kernelMaxMissedPongs: 10,
   })
@@ -408,6 +411,8 @@ async function main() {
   const homeDir = path.join(root, "home")
   const xdgConfigHome = path.join(root, "xdg-config")
   const xdgStateHome = path.join(root, "xdg-state")
+  const homeLocalAuthEnvironment = { ...process.env, XDG_STATE_HOME: xdgStateHome }
+  const workerLocalAuthEnvironment = { ...process.env, XDG_STATE_HOME: path.join(root, "worker-xdg-state") }
   const xdgDataHome = path.join(root, "xdg-data")
   const xdgCacheHome = path.join(root, "xdg-cache")
   const homeCapabilityRoot = path.join(root, "home-capabilities")
@@ -576,8 +581,8 @@ async function main() {
       },
       stdio: ["ignore", "ignore", "inherit"],
     })
-    await waitForLocalDaemon(homeKernelUrl, workspace, worktree)
-    await disableWorkspaceLiveSync(homeKernelUrl)
+    await waitForLocalDaemon(homeKernelUrl, workspace, worktree, homeLocalAuthEnvironment)
+    await disableWorkspaceLiveSync(homeKernelUrl, homeLocalAuthEnvironment)
     await waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias)
     if (options.standardHomeWorker) {
       if (options.hetznerWorker) {
@@ -638,8 +643,8 @@ async function main() {
           },
           stdio: ["ignore", "ignore", "inherit"],
         })
-        await waitForLocalDaemon(workerKernelUrl, workspace, worktree)
-        await disableWorkspaceLiveSync(workerKernelUrl)
+        await waitForLocalDaemon(workerKernelUrl, workspace, worktree, workerLocalAuthEnvironment)
+        await disableWorkspaceLiveSync(workerKernelUrl, workerLocalAuthEnvironment)
       }
       await waitForRelayTarget(relayUrl, relayToken, workerDaemonAlias)
       await waitForRemoteMachine(relayUrl, relayToken, targetDaemonAlias, workerMachineAlias)
@@ -650,6 +655,7 @@ async function main() {
       let providerSlice = null
       if (options.homeManagedSliceLocalDocker) {
         providerSlice = await createHomeManagedLocalDockerSlice({
+          localAuthEnvironment: homeLocalAuthEnvironment,
           homeKernelUrl,
           workspace,
           providers: [provider],
@@ -668,7 +674,7 @@ async function main() {
         sliceRef: providerSlice ? providerSlice.id : null,
         workspace,
         worktree,
-        options,
+        options: { ...options, workerLocalAuthEnvironment },
         nativeEnv: options.hetznerWorker
           ? {
             HOME: realHomeDir,
@@ -679,7 +685,7 @@ async function main() {
           : {},
       }))
       if (providerSlice) {
-        await deleteHomeManagedSlice(homeKernelUrl, providerSlice.id).catch((error) => {
+        await deleteHomeManagedSlice(homeKernelUrl, providerSlice.id, homeLocalAuthEnvironment).catch((error) => {
           console.error(`home-managed slice cleanup failed: ${error.message}`)
         })
         const index = managedSlices.findIndex((slice) => slice.id === providerSlice.id)
@@ -706,7 +712,7 @@ async function main() {
   } finally {
     const preserveFailedRun = !succeeded && options.keepArtifactsOnFailure
     for (const slice of managedSlices.splice(0)) {
-      await deleteHomeManagedSlice(homeKernelUrl, slice.id).catch((error) => {
+      await deleteHomeManagedSlice(homeKernelUrl, slice.id, homeLocalAuthEnvironment).catch((error) => {
         console.error(`home-managed slice cleanup failed: ${error.message}`)
       })
     }

@@ -107,11 +107,11 @@ async function resolveKernelBinary() {
   }
 }
 
-async function waitForKernel(LocalIpcClient, listSessionsRequest, kernelUrl) {
+async function waitForKernel(LocalIpcClient, listSessionsRequest, kernelUrl, localAuthEnvironment) {
   const deadline = Date.now() + 25_000
   let lastError = null
   while (Date.now() < deadline) {
-    const client = new LocalIpcClient(kernelUrl)
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       await client.send(listSessionsRequest())
       await client.close().catch(() => {})
@@ -367,8 +367,8 @@ async function main() {
       },
       stdio: ['ignore', 'ignore', 'inherit'],
     })
-    await waitForKernel(LocalIpcClient, requests.listSessionsRequest, kernelUrl)
-    client = new LocalIpcClient(kernelUrl)
+    await waitForKernel(LocalIpcClient, requests.listSessionsRequest, kernelUrl, { CHARIOX_HOME: charioxHome })
+    client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: { CHARIOX_HOME: charioxHome } })
     for (const provider of options.providers) {
       log('provider-start', { provider })
       const result = await runProvider(options, { client, requests, rootDir, charioxHome }, provider)

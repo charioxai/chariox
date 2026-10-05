@@ -418,3 +418,35 @@ async fn browser_health_receipts_classify_routes_and_keep_transient_failures_inc
         }
     }
 }
+
+#[tokio::test]
+async fn local_room_keeps_live_app_authority_on_route_loss_and_retains_intent_on_browser_loss() {
+    let (state, room, _tool, slices) = fixture().await;
+    assert!(slices.environment_slice(&room).is_none());
+    let generation = state
+        .room_environment_snapshot(&room)
+        .unwrap()
+        .runtime_generation;
+    let views = state.app_control().views();
+    let binding = crate::runtime::app_views::AppViewBinding {
+        logical_tab: None,
+        owner: "local".into(),
+        installation: "todo".into(),
+        generation: 1,
+        panel: Default::default(),
+    };
+    views.register(&room, "app", binding.clone());
+    let call = views.track_call(&room, "app", Some("live-document".into()));
+    state.observe_room_browser_health(&room, generation, Some("browser_controller_unreachable"));
+    assert_eq!(
+        state.room_environment_snapshot(&room).unwrap().lifecycle,
+        Lifecycle::Degraded
+    );
+    assert!(views.binding_state(&room, "app").is_some());
+    assert!(views.cold_start_views(&room).is_empty());
+    assert!(!call.is_cancelled());
+    state.observe_room_browser_health(&room, generation, Some("browser_cdp_disconnected"));
+    assert!(call.is_cancelled());
+    assert!(views.binding_state(&room, "app").is_none());
+    assert_eq!(views.next_cold_start_attempt(&room), Some(binding));
+}

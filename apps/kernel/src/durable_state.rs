@@ -71,7 +71,7 @@ pub struct DurableKernelStateStore {
     writer: Arc<DurableStateWriter>,
     workflow_runtime_transition_lock: Arc<Mutex<()>>,
     app_wake_changed: Arc<tokio::sync::Notify>,
-    _owner: Option<Arc<fs::File>>,
+    _owner: Option<Arc<owner::OwnerLease>>,
 }
 
 const DURABLE_WRITE_QUEUE_CAPACITY: usize = 4_096;

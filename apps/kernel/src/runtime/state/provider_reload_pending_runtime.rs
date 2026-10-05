@@ -24,12 +24,17 @@ impl KernelRuntimeState {
         reason: ProviderReloadReason,
     ) {
         let mut pending = self.owned.pending_provider_reloads.write();
+        // A failed provisional Meta activation can drop its own reload, but
+        // must preserve any accepted config/catalog work already in the queue.
+        let provisional_meta_activation = !pending.contains_key(agent_id)
+            && matches!(&reason, ProviderReloadReason::LaunchInputs(label) if label == "meta mode activation");
         let reason = pending
             .get(agent_id)
             .map_or(reason.clone(), |previous| reason.merge(&previous.reason));
         pending.insert(
             agent_id.to_string(),
             PendingProviderReload {
+                provisional_meta_activation,
                 session_id: session_id.to_string(),
                 agent_id: agent_id.to_string(),
                 reason,
@@ -63,7 +68,10 @@ impl KernelRuntimeState {
                         pending.remove(&agent_id)
                     };
                     if let Some(pending) = pending {
-                        match state
+                        // The accepted configuration/catalog change already committed.
+                        // Reconcile it under kernel authority even if its grant expired.
+                        let authorized = state.with_external_command_authority(None);
+                        match authorized
                             .reload_agent_provider_if_idle_for_reason(
                                 &pending.session_id,
                                 &pending.agent_id,

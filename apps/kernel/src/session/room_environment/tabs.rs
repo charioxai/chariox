@@ -21,6 +21,14 @@ pub(crate) struct TabRegistry {
     order: Vec<String>,
     focused_tab_id: Option<String>,
     next_sequence: u64,
+    /// Logical App identities retained for the next physical browser generation.
+    /// Only a new kernel-verified App binding may claim one, never a URL.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    restoring_apps: BTreeMap<String, EnvironmentTab>,
+    /// A reclaimed App waits for physical activation. Intermediate or delayed
+    /// startup-blank receipts must not replace its restored focus intent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recovered_app_focus: Option<String>,
 }
 
 impl TabRegistry {
@@ -167,7 +175,24 @@ impl TabRegistry {
 
         let observed_focus = focused_controller_target_id
             .and_then(|target_id| self.tab_id_by_controller_target.get(target_id).cloned());
-        let next_focus = observed_focus
+        let recovery_focus = self
+            .recovered_app_focus
+            .as_ref()
+            .filter(|id| {
+                self.tabs.get(*id).is_some_and(|tab| tab.tab.app.is_some())
+                    && observed_focus.as_ref().is_none_or(|observed| {
+                        observed == *id
+                            || self.tabs.get(observed).is_some_and(|tab| {
+                                tab.tab.url == "about:blank" && tab.tab.app.is_none()
+                            })
+                    })
+            })
+            .cloned();
+        if recovery_focus.is_none() {
+            self.recovered_app_focus = None;
+        }
+        let next_focus = recovery_focus
+            .or(observed_focus)
             .or_else(|| {
                 self.focused_tab_id
                     .as_ref()
@@ -182,6 +207,45 @@ impl TabRegistry {
         changed
     }
 
+    /// Reattach kernel-held App intent after verified assets opened a new
+    /// physical target. Retire the old binding and invalidate its document;
+    /// ordinary user close/open reconciliation never calls this path.
+    pub(crate) fn restore_app_tab(&mut self, saved: &EnvironmentTab, target: &str) -> bool {
+        if self.tab_id_by_controller_target.get(target) == Some(&saved.tab_id) {
+            return false;
+        }
+        if let Some(temporary_id) = self.tab_id_by_controller_target.remove(target) {
+            self.tabs.remove(&temporary_id);
+            self.order.retain(|id| id != &temporary_id);
+            if self.focused_tab_id.as_ref() == Some(&temporary_id) {
+                self.focused_tab_id = Some(saved.tab_id.clone());
+            }
+        }
+        let mut tab = saved.clone();
+        if let Some(old) = self.tabs.remove(&saved.tab_id) {
+            tab.document_revision = tab.document_revision.max(old.tab.document_revision);
+            self.tab_id_by_controller_target
+                .remove(&old.controller_target_id);
+            self.remember_retired_controller_target(old.controller_target_id, saved.tab_id.clone());
+        }
+        tab.document_revision = tab.document_revision.saturating_add(1);
+        self.forget_retired_controller_target(target);
+        self.tab_id_by_controller_target
+            .insert(target.to_owned(), tab.tab_id.clone());
+        if !self.order.contains(&tab.tab_id) {
+            self.order.push(tab.tab_id.clone());
+        }
+        self.tabs.insert(
+            tab.tab_id.clone(),
+            TabState {
+                controller_target_id: target.to_owned(),
+                document_id: None,
+                tab,
+            },
+        );
+        true
+    }
+
     /// Marks App view Tabs by controller target; true when any Tab changed.
     pub(crate) fn set_apps(&mut self, apps: &BTreeMap<String, EnvironmentTabApp>) -> bool {
         let mut changed = false;
@@ -191,6 +255,63 @@ impl TabRegistry {
                 state.tab.app = app;
                 changed = true;
             }
+        }
+        let restored = self
+            .tabs
+            .iter()
+            .filter_map(|(tab_id, state)| {
+                let installation = &state.tab.app.as_ref()?.installation_id;
+                self.restoring_apps
+                    .get(installation)
+                    .filter(|previous| {
+                        previous.tab_id != *tab_id && !self.tabs.contains_key(&previous.tab_id)
+                    })
+                    .map(|_| (tab_id.clone(), installation.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (temporary_id, installation) in restored {
+            let Some(previous) = self.restoring_apps.remove(&installation) else {
+                continue;
+            };
+            let Some(mut state) = self.tabs.remove(&temporary_id) else {
+                continue;
+            };
+            state.tab.tab_id = previous.tab_id.clone();
+            state.tab.document_revision = state
+                .tab
+                .document_revision
+                .max(previous.document_revision.saturating_add(1));
+            self.tab_id_by_controller_target
+                .insert(state.controller_target_id.clone(), previous.tab_id.clone());
+            for tab_id in &mut self.order {
+                if *tab_id == temporary_id {
+                    *tab_id = previous.tab_id.clone();
+                }
+            }
+            if self.focused_tab_id.is_none()
+                || self.focused_tab_id.as_deref() == Some(temporary_id.as_str())
+                || previous.focused
+                    && self
+                        .focused_tab_id
+                        .as_ref()
+                        .and_then(|id| self.tabs.get(id))
+                        .is_some_and(|tab| tab.tab.url == "about:blank" && tab.tab.app.is_none())
+            {
+                self.focused_tab_id = Some(previous.tab_id.clone());
+                if previous.focused {
+                    self.recovered_app_focus = Some(previous.tab_id.clone());
+                }
+            }
+            // Late events from a retired physical target must not be labelled
+            // as events from the live page that reclaimed this logical id.
+            self.retired_tab_id_by_controller_target
+                .retain(|_, id| *id != previous.tab_id);
+            self.retired_controller_targets.retain(|target| {
+                self.retired_tab_id_by_controller_target
+                    .contains_key(target)
+            });
+            self.tabs.insert(previous.tab_id, state);
+            changed = true;
         }
         changed
     }
@@ -259,6 +380,9 @@ impl TabRegistry {
         if self.focused_tab_id.as_deref() == Some(tab_id) {
             self.focused_tab_id = self.order.first().cloned();
         }
+        if self.recovered_app_focus.as_deref() == Some(tab_id) {
+            self.recovered_app_focus = None;
+        }
         Ok(())
     }
 
@@ -317,7 +441,37 @@ impl TabRegistry {
         })
     }
 
+    pub(crate) fn prepare_app_recovery(&mut self) {
+        self.recovered_app_focus = None;
+        self.restoring_apps.clear();
+        for state in self.tabs.values() {
+            if let Some(app) = &state.tab.app {
+                let mut tab = state.tab.clone();
+                tab.focused = self.focused_tab_id.as_deref() == Some(tab.tab_id.as_str());
+                let previous = self
+                    .restoring_apps
+                    .entry(app.installation_id.clone())
+                    .or_insert_with(|| tab.clone());
+                if tab.focused {
+                    *previous = tab;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn cancel_app_recovery_focus(&mut self) {
+        self.recovered_app_focus = None;
+        for tab in self.restoring_apps.values_mut() {
+            tab.focused = false;
+        }
+    }
+
     pub(crate) fn clear(&mut self) {
+        // Recovery belongs to one physical generation. A failed or uninstalled
+        // view must not leave a durable claim over later browser generations.
+        // Retry before a binding returns also starts a new generation and
+        // deliberately drops its old claim; only this recovery can reclaim it.
+        self.prepare_app_recovery();
         self.tabs.clear();
         self.tab_id_by_controller_target.clear();
         self.retired_tab_id_by_controller_target.clear();

@@ -16,12 +16,18 @@ use crate::runtime::command::KernelCommand;
 use crate::transport::kernel_protocol::{KernelOutgoingFrame, KernelTransportError};
 
 mod at_most_once;
-pub(crate) use at_most_once::is_receipt_capacity_error;
+mod receipt_retention;
+pub(crate) use at_most_once::{is_receipt_capacity_error, is_receipt_expired_error};
+use receipt_retention::ReceiptRetention;
 
 pub(crate) const COMMAND_RESULT_CACHE_LIMIT: usize = 512;
 const COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES: u64 = 128 * 1024 * 1024;
 const COMMAND_RESULT_CACHE_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const COMMAND_RESULT_CACHE_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1_000;
+/// App receipts reuse the existing durable command receipt retention window.
+pub(crate) const APP_RECEIPT_RETENTION_MS: u64 = COMMAND_RESULT_CACHE_MAX_AGE_MS;
+// Legacy at-most-once readers reject this record and therefore fail closed.
+const RECEIPT_EXPIRY_FENCE: &str = "chariox.app-receipts.requires-protocol-416";
 const COMMAND_RESULT_COMPACTION_SKIP_LIMIT: u64 = 1_024;
 const COMMAND_RESULT_COMPACTION_FILE_GROWTH_MULTIPLIER: u64 = 2;
 const COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES: u64 = 256 * 1024;
@@ -88,6 +94,7 @@ fn serialized_response(response: &Option<Value>) -> Option<Arc<RawValue>> {
 enum CommandResultEntry {
     Pending {
         fingerprint: CommandFingerprint,
+        accepted_at_ms: u64,
         waiters: Vec<oneshot::Sender<CachedCommandResult>>,
     },
     Completed(CachedCommandResult),
@@ -136,7 +143,11 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
     // which never resends it once written; the tests hold the two lists equal.
     !matches!(
         request,
-        LocalDaemonRequest::ListAppInstallations(_)
+        LocalDaemonRequest::RequestKernelSudo(_)
+            | LocalDaemonRequest::RequestKernelAccess(_)
+            | LocalDaemonRequest::ListKernelAccessGrants(_)
+            | LocalDaemonRequest::RevokeKernelAccessGrant(_)
+            | LocalDaemonRequest::ListAppInstallations(_)
             | LocalDaemonRequest::BeginAppPublisherEnrollment(_)
             | LocalDaemonRequest::GetAppPublisherEnrollment(_)
             | LocalDaemonRequest::CancelAppPublisherEnrollment(_)
@@ -222,6 +233,7 @@ pub(crate) struct CommandResultCache {
     order: Mutex<VecDeque<String>>,
     memory_accounting: Mutex<CommandResultMemoryAccounting>,
     retention: CommandResultRetentionPolicy,
+    receipt_retention: Mutex<ReceiptRetention>,
     persistence: Option<CommandResultPersistence>,
     #[cfg(test)]
     fail_settlement_sync: AtomicBool,
@@ -234,6 +246,7 @@ impl Default for CommandResultCache {
             order: Mutex::new(VecDeque::new()),
             memory_accounting: Mutex::new(CommandResultMemoryAccounting::default()),
             retention: CommandResultRetentionPolicy::memory(),
+            receipt_retention: Mutex::new(ReceiptRetention::default()),
             persistence: None,
             #[cfg(test)]
             fail_settlement_sync: AtomicBool::new(false),
@@ -249,7 +262,8 @@ impl CommandResultCache {
         )
     }
 
-    /// Durable receipts never expire or evict. At capacity, refuse new identities.
+    /// Keep 512 owner-scoped identities; only old completed receipts can be evicted.
+    /// Durable identity markers always refuse an evicted replay.
     pub(crate) fn new_at_most_once(path: impl Into<PathBuf>) -> io::Result<Self> {
         Self::new_with_persistent_path_and_retention(
             path,
@@ -265,12 +279,21 @@ impl CommandResultCache {
         path: impl Into<PathBuf>,
         retention: CommandResultRetentionPolicy,
     ) -> io::Result<Self> {
+        Self::new_with_retention_loader(path, retention, ReceiptRetention::load)
+    }
+
+    fn new_with_retention_loader(
+        path: impl Into<PathBuf>,
+        retention: CommandResultRetentionPolicy,
+        load: impl FnOnce(&std::path::Path) -> io::Result<ReceiptRetention>,
+    ) -> io::Result<Self> {
         let path = path.into();
         let mut cache = Self {
             results: Mutex::new(BTreeMap::new()),
             order: Mutex::new(VecDeque::new()),
             memory_accounting: Mutex::new(CommandResultMemoryAccounting::default()),
             retention,
+            receipt_retention: Mutex::new(ReceiptRetention::default()),
             #[cfg(test)]
             fail_settlement_sync: AtomicBool::new(false),
             persistence: Some(CommandResultPersistence {
@@ -282,7 +305,18 @@ impl CommandResultCache {
                 }),
             }),
         };
-        let retained = read_persistent_results(&path, retention)?;
+        let expired = if retention.at_most_once {
+            load(&path)?
+        } else {
+            ReceiptRetention::default()
+        };
+        let mut retained = read_persistent_results(&path, retention)?;
+        let count = retained.entries.len();
+        retained
+            .entries
+            .retain(|entry| !expired.contains(&entry.entry.command_id));
+        retained.compact_after_load |= retained.entries.len() != count;
+        cache.receipt_retention = Mutex::new(expired);
         if retained.compact_after_load {
             let entries = retained
                 .entries
@@ -334,6 +368,7 @@ impl CommandResultCache {
             Some(CommandResultEntry::Pending {
                 fingerprint: existing,
                 waiters,
+                ..
             }) => {
                 if existing == fingerprint {
                     let (tx, rx) = oneshot::channel();
@@ -348,6 +383,7 @@ impl CommandResultCache {
                     command_id.to_string(),
                     CommandResultEntry::Pending {
                         fingerprint: fingerprint.clone(),
+                        accepted_at_ms: crate::session::unix_epoch_ms(),
                         waiters: Vec::new(),
                     },
                 );
@@ -452,6 +488,17 @@ impl CommandResultCache {
         let _guard = persistence.io_lock.lock().await;
         if let Some(parent) = persistence.path.parent() {
             fs::create_dir_all(parent)?;
+        }
+        if self.retention.at_most_once && persistence.should_compact_now(next_append_bytes)? {
+            // Reloading preserves durable reservations for effects still pending.
+            let loaded = read_persistent_results(&persistence.path, self.retention)?;
+            let entries = loaded
+                .entries
+                .into_iter()
+                .map(|entry| entry.entry)
+                .collect::<Vec<_>>();
+            rewrite_persistent_results(&persistence.path, &entries)?;
+            persistence.skipped_compactions.store(0, Ordering::Release);
         }
         append_persistent_result(&persistence.path, &persisted)?;
         if self.retention.at_most_once {
@@ -723,6 +770,14 @@ fn read_persistent_results(
     path: &PathBuf,
     retention: CommandResultRetentionPolicy,
 ) -> io::Result<LoadedPersistentCommandResults> {
+    read_persistent_results_with_receipt_fence(path, retention, true)
+}
+
+fn read_persistent_results_with_receipt_fence(
+    path: &PathBuf,
+    retention: CommandResultRetentionPolicy,
+    supports_expiry: bool,
+) -> io::Result<LoadedPersistentCommandResults> {
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -756,6 +811,9 @@ fn read_persistent_results(
         if line.trim().is_empty() {
             continue;
         }
+        if retention.at_most_once && supports_expiry && line == RECEIPT_EXPIRY_FENCE {
+            continue;
+        }
         let jsonl_bytes = line.as_bytes().len().saturating_add(1) as u64;
         if jsonl_bytes > COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES {
             if retention.at_most_once {
@@ -778,7 +836,19 @@ fn read_persistent_results(
             compact_after_load = true;
             continue;
         }
-        let completed_at_ms = persistent_result_completed_at_ms(&entry);
+        let mut completed_at_ms = persistent_result_completed_at_ms(&entry);
+        if retention.at_most_once {
+            if let Some(previous) = results.get(&entry.command_id) {
+                let prior = persistent_result_completed_at_ms(&previous.entry);
+                // All receipt timestamps must be outside retention, including
+                // acceptance preceding a wall-clock regression at settlement.
+                completed_at_ms = if prior == 0 || completed_at_ms == 0 {
+                    0
+                } else {
+                    prior.max(completed_at_ms)
+                };
+            }
+        }
         entry.completed_at_ms = completed_at_ms;
         entry.result.completed_at_ms = completed_at_ms;
         if let Some(existing_index) = order
@@ -897,6 +967,14 @@ fn rewrite_persistent_results(
     }
     let tmp_path = path.with_extension("jsonl.tmp");
     let mut file = fs::File::create(&tmp_path)?;
+    // A downgraded kernel must not treat a missing expired identity as new.
+    // Preserve this fail-closed fence through every payload compaction.
+    match fs::metadata(ReceiptRetention::marker_path(path)) {
+        Ok(metadata) if metadata.len() != 0 => writeln!(file, "{RECEIPT_EXPIRY_FENCE}")?,
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
     for entry in entries {
         serde_json::to_writer(&mut file, entry).map_err(io::Error::other)?;
         file.write_all(b"\n")?;

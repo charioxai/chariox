@@ -75,8 +75,8 @@ try {
     )))
   }
 
-  await waitForKernel(ports.homeKernel)
-  for (const worker of ports.workers) await waitForKernel(worker.kernel)
+  await waitForKernel(ports.homeKernel, "home")
+  for (const worker of ports.workers) await waitForKernel(worker.kernel, `worker-${ports.workers.indexOf(worker)}`)
   const relayProbe = new LocalIpcClient(`ws://127.0.0.1:${ports.relay}`, {
     relayAuthToken: relayToken,
     targetDaemonAlias: "home",
@@ -89,9 +89,9 @@ try {
   } finally {
     await relayProbe.close().catch(() => undefined)
   }
-  client = new LocalIpcClient(`ws://127.0.0.1:${ports.homeKernel}`)
+  client = new LocalIpcClient(`ws://127.0.0.1:${ports.homeKernel}`, { localAuthEnvironment: { ...process.env, XDG_STATE_HOME: path.join(root, "home", "state") } })
   for (const worker of ports.workers) {
-    const workerClient = new LocalIpcClient(`ws://127.0.0.1:${worker.kernel}`)
+    const workerClient = new LocalIpcClient(`ws://127.0.0.1:${worker.kernel}`, { localAuthEnvironment: { ...process.env, XDG_STATE_HOME: path.join(root, `worker-${ports.workers.indexOf(worker)}`, "state") } })
     try {
       workerRelayStatuses.push(unwrap(await workerClient.send(requests.relayStatusRequest()), "RelayStatus"))
     } finally {
@@ -298,9 +298,9 @@ function start(command, env) {
   return spawn(command, [], { cwd: repoRoot, env, detached: true, stdio: "ignore" })
 }
 
-async function waitForKernel(port) {
+async function waitForKernel(port, daemonId) {
   await waitFor(async () => {
-    const probe = new LocalIpcClient(`ws://127.0.0.1:${port}`)
+    const probe = new LocalIpcClient(`ws://127.0.0.1:${port}`, { localAuthEnvironment: { ...process.env, XDG_STATE_HOME: path.join(root, daemonId, "state") } })
     try { await probe.send(requests.listSessionsRequest()); return true } catch { return false } finally { await probe.close().catch(() => undefined) }
   }, 30_000, "home kernel readiness")
 }

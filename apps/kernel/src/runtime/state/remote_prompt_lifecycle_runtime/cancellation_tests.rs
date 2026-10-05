@@ -488,7 +488,7 @@ async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
     let cancel_runtime = runtime.clone();
     let cancellation = tokio::spawn(async move {
         cancel_runtime
-            .cancel_remote_agent_prompt_if_remote(&session_id, &agent_id, &attachment_id)
+            .cancel_remote_agent_prompt_if_remote(&session_id, &agent_id, &attachment_id, None)
             .await
     });
     tokio::time::timeout(std::time::Duration::from_secs(2), request_seen_rx)
@@ -641,6 +641,7 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
                 &cancel_session_id,
                 &cancel_agent_id,
                 &cancel_attachment_id,
+                None,
             )
             .await
     });
@@ -1117,6 +1118,7 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
                 &cancel_session_id,
                 &cancel_agent_id,
                 &cancel_attachment_id,
+                None,
             )
             .await
     });

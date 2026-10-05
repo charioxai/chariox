@@ -76,11 +76,19 @@ changed capabilities wait for the owner in the approval panel, like install.
 The loop never opens views: open one with `/app open INSTALLATION`, and reopen it
 after each update because views stay on the generation they were opened on.
 
-The signing key defaults to `~/.chariox/dev/app-publisher/private`, the location
+The signing key defaults to `~/.chariox/keys/app-publisher/private`, the location
 used by the `chariox app keygen` example in `packages/app-package/README.md`;
-`--key` selects another. A missing key fails with the keygen and publisher
-enrollment steps. The publisher must be enrolled in the kernel (`/app publisher
-enroll`) before the first install succeeds.
+`--key` selects another. Keep the key directory at `0700` and the private file at
+`0600`. Existing keys stay at their original location; select them with `--key`
+(including keys created under the former `~/.chariox/dev/app-publisher/private`
+default). Migration requires explicit authorization, the same public fingerprint,
+and preserved backup history. A missing key fails with guidance to select an
+existing key or create a first publisher identity in protected storage; it never
+generates, moves, substitutes or rotates a key. Before first use, verify the
+public fingerprint against the approved inventory and prove restoration from a
+separately protected backup by signing and verifying a synthetic challenge.
+The publisher must be enrolled in the kernel (`/app publisher enroll`) before
+the first install succeeds.
 
 The directory is watched recursively (`fs.watch`), ignoring dotfiles and
 `node_modules`, with a 500 ms debounce. Cycles never overlap: changes during a

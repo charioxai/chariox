@@ -120,3 +120,14 @@ test("standalone App quarantine names the explicit start recovery command", asyn
   assert.deepEqual(recovered.requests, [{ ControlAppWorker: { installation_id: "install-1", action: "start" } }])
   assert.deepEqual(recovered.output, ["install-1 · running\n"])
 })
+
+for (const transport of [[], ["--relay-url", "wss://relay.example.test", "--relay-token", "fixture-token", "--target-daemon-id", "kernel-1"]]) {
+  test(`standalone CLI refuses expired App replay over ${transport.length ? "relay" : "local"} transport`, async () => {
+    const h = harness({ AppRequestFailed: { code: "receipt_expired" } })
+    await assert.rejects(runAppCommand(["app", "restart", "install-1", ...transport], h.deps),
+      /App receipt expired\. This request was not re-executed; check the App state before issuing a new command\./)
+    assert.deepEqual(h.requests, [{ ControlAppWorker: { installation_id: "install-1", action: "restart" } }])
+    assert.equal(h.closed, 1)
+    assert.deepEqual(h.output, [])
+  })
+}

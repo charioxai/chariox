@@ -54,12 +54,14 @@ async function main() {
   let kernelUrl = options.kernel ?? 'ws://127.0.0.1:43284'
   let summary = {}
   let client = null
+  let localAuthEnvironment = process.env
   let installedSkill = false
 
   try {
     if (options.spawnDaemon) {
       const spawned = spawnedKernel('workflow-code-drill', generatedRoot)
       kernelUrl = spawned.kernelUrl
+      localAuthEnvironment = spawned.env
       daemonChild = spawn(buildKernel(), [], {
         cwd: repoRoot,
         env: spawned.env,
@@ -68,6 +70,7 @@ async function main() {
     }
 
     client = new LocalIpcClient(kernelUrl, {
+      localAuthEnvironment,
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
     })

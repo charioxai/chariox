@@ -284,7 +284,7 @@ async function readTransitionPolicy(releaseRoot, expectedProtocol) {
   }
   const validProtocolList = (value) => Array.isArray(value)
     && value.length > 0
-    && value.length <= 16
+    && value.length <= 32
     && value.every((item, index) => Number.isSafeInteger(item) && item > 0
       && (index === 0 || value[index - 1] < item))
   if (!exactKeys(policy, TRANSITION_POLICY_KEYS)

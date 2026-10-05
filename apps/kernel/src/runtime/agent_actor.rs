@@ -147,6 +147,7 @@ impl AgentRuntime {
         self.dispatch_to_agent(
             agent_id,
             command_trace.clone(),
+            command.external_grant_id(),
             AgentCommand::SubmitPrompt {
                 request,
                 trace_id: command_trace.trace_id().to_string(),
@@ -222,6 +223,7 @@ impl AgentRuntime {
                         .dispatch_to_agent(
                             agent_id.clone(),
                             command_trace.clone(),
+                            command.external_grant_id(),
                             AgentCommand::SubmitPrompt {
                                 request: submit_request,
                                 trace_id: command_trace.trace_id().to_string(),
@@ -316,6 +318,7 @@ impl AgentRuntime {
         self.dispatch_to_agent(
             agent_id.clone(),
             CommandTrace::from_command(command),
+            command.external_grant_id(),
             AgentCommand::CancelActivePrompt {
                 request,
                 target_agent_id: agent_id.clone(),
@@ -340,6 +343,7 @@ impl AgentRuntime {
         self.dispatch_to_agent(
             request.target_agent_id.clone(),
             CommandTrace::from_command(command),
+            command.external_grant_id(),
             AgentCommand::SteerQueuedPrompt { request },
         )
         .await
@@ -361,6 +365,7 @@ impl AgentRuntime {
         self.dispatch_to_agent(
             request.target_agent_id.clone(),
             CommandTrace::from_command(command),
+            command.external_grant_id(),
             AgentCommand::CancelQueuedPrompt { request },
         )
         .await
@@ -382,6 +387,7 @@ impl AgentRuntime {
         self.dispatch_to_agent(
             request.target_agent_id.clone(),
             CommandTrace::from_command(command),
+            command.external_grant_id(),
             AgentCommand::UpdateQueuedPrompt { request },
         )
         .await
@@ -413,6 +419,7 @@ impl AgentRuntime {
         self.dispatch_to_agent(
             agent_id.clone(),
             CommandTrace::from_command(command),
+            command.external_grant_id(),
             AgentCommand::CompletePrompt {
                 request,
                 target_agent_id: agent_id.clone(),
@@ -959,6 +966,7 @@ mod tests {
     }
 
     mod agent_resolution;
+    mod kernel_access;
     mod prompt_attachment_materialization;
     mod prompt_command_execution;
     mod request_surface;

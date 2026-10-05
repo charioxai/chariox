@@ -154,14 +154,14 @@ async function stopDaemon(child) {
   }
 }
 
-async function waitForDaemon(kernelUrl, daemon, timeoutMs) {
+async function waitForDaemon(kernelUrl, daemon, timeoutMs, localAuthEnvironment) {
   const deadline = Date.now() + timeoutMs
   let lastError = null
   while (Date.now() < deadline) {
     if (daemon?.exitCode !== null || daemon?.signalCode !== null) {
       throw new Error(`daemon exited before ready code=${daemon.exitCode} signal=${daemon.signalCode}\nstdout:\n${daemon.logs?.stdout ?? ''}\nstderr:\n${daemon.logs?.stderr ?? ''}`)
     }
-    const client = new LocalIpcClient(kernelUrl)
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       await client.send({ GetDaemonHealth: null })
       await client.close().catch(() => {})
@@ -749,8 +749,8 @@ async function main() {
     }
 
     daemon = startDaemon(binaries.kernel, env)
-    await waitForDaemon(kernelUrl, daemon, options.timeoutMs)
-    client = new LocalIpcClient(kernelUrl)
+    await waitForDaemon(kernelUrl, daemon, options.timeoutMs, env)
+    client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: env })
 
     session = variant(await client.send(createSessionRequest(workspace, workspace, 'postgres-archive-drill')), 'SessionCreated').session
     const attachment = variant(await client.send(attachToSessionRequest(session.id, `postgres-archive-drill-${process.pid}`)), 'SessionAttached').attachment

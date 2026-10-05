@@ -10,6 +10,7 @@ use std::{
 #[derive(Default)]
 pub(super) struct RoomEnvironmentHealthProbes {
     rooms: Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<Option<Instant>>>>>,
+    pub(super) startup_recovery: super::room_browser_start_failure::RoomBrowserStartRecovery,
 }
 
 impl KernelRuntimeState {
@@ -84,15 +85,14 @@ impl KernelRuntimeState {
                 *lease = Some(Instant::now());
                 return;
             }
-            if state
-                .ensure_browser_controller_process_started(&room)
-                .await
-                .is_ok()
-                && state
-                    .reconcile_browser_controller_environment(&room)
-                    .await
-                    .is_ok()
-            {
+            let observed = async {
+                state
+                    .ensure_browser_controller_process_started(&room)
+                    .await?;
+                state.reconcile_browser_controller_environment(&room).await
+            }
+            .await;
+            if observed.is_ok() {
                 // Starting and Degraded include restored Rooms. A fresh controller/worker
                 // observation uses the same normal start completion path as initial launch.
                 if let Ok(environment) = state.room_environment_snapshot(&room) {
@@ -122,7 +122,18 @@ impl KernelRuntimeState {
                     EnvironmentComponentHealthState::Unavailable,
                     Some("controller_probe_unavailable"),
                 );
-                let _ = state.transition_room_environment(&room, EnvironmentLifecycle::Degraded);
+                let lifecycle = observed
+                    .as_ref()
+                    .err()
+                    .and_then(|error| {
+                        state
+                            .owned
+                            .room_environment_health_probes
+                            .startup_recovery
+                            .viewport_failure(&room, error, Instant::now())
+                    })
+                    .unwrap_or(EnvironmentLifecycle::Degraded);
+                let _ = state.transition_room_environment(&room, lifecycle);
             }
             *lease = Some(Instant::now());
         });

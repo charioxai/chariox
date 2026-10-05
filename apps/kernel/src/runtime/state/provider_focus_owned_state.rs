@@ -76,7 +76,7 @@ impl KernelRuntimeOwnedState {
             if active_run.agent_instance_id() != Some(agent_id)
                 && active_run.state() == crate::provider::ProviderRunState::Running
                 && active_run.client_interface().is_chariox()
-                && !self.provider_run_has_active_prompt(session_id, &active_run)?
+                && !self.provider_run_has_prompt_work(session_id, &active_run)?
             {
                 let outcome = self
                     .provider_store
@@ -180,7 +180,7 @@ impl KernelRuntimeOwnedState {
                                         == crate::provider::ProviderRunState::Running
                                     && active_run.client_interface().is_chariox()
                                     && !self
-                                        .provider_run_has_active_prompt(session_id, &active_run)?
+                                        .provider_run_has_prompt_work(session_id, &active_run)?
                                 {
                                     match self
                                         .provider_store
@@ -276,6 +276,37 @@ impl KernelRuntimeOwnedState {
         Ok(())
     }
 
+    pub(super) fn provider_run_has_prompt_work(
+        &self,
+        session_id: &str,
+        provider_run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<bool, DaemonError> {
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return Ok(false);
+        };
+        let session = self.session_store.get_session(session_id)?;
+        // Take one snapshot so promotion from queued to active cannot look idle.
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        let is_current_run = self
+            .provider_store
+            .get_run_for_agent(session_id, agent_id)
+            .or_else(|| {
+                self.provider_run_projection
+                    .get_for_agent(session_id, agent_id)
+            })
+            .is_some_and(|current| current.id() == provider_run.id());
+        // Launch completion promotes queued prompts after the run becomes Running.
+        // Focus reconciliation must keep that agent's current provider available.
+        Ok(active_prompt.as_ref().is_some_and(|prompt| {
+            crate::runtime::prompt_state::prompt_claims_provider_run(
+                prompt,
+                provider_run.id(),
+                is_current_run || session.active_provider_run_id() == Some(provider_run.id()),
+            )
+        }) || (is_current_run && !queued_prompts.is_empty()))
+    }
+
     pub(super) fn provider_run_has_active_prompt(
         &self,
         session_id: &str,
@@ -291,10 +322,12 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(false);
         };
-        // MP-08/MP-10: an unbound active turn still owns its agent's run.
-        // A parallel agent can change the session pointer before delivery binds.
-        Ok(prompt
-            .durable_delivery_provider_run_id()
-            .is_none_or(|delivery_run_id| delivery_run_id == provider_run.id()))
+        // Active-only lifecycle selection stays distinct from the parking guard,
+        // which preserves current-agent pending work across parallel focus changes.
+        Ok(crate::runtime::prompt_state::prompt_claims_provider_run(
+            &prompt,
+            provider_run.id(),
+            session.active_provider_run_id() == Some(provider_run.id()),
+        ))
     }
 }

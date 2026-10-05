@@ -31,10 +31,10 @@ mod skill_package_response;
 mod slice;
 pub(super) use slice::{
     capture_computer_secret_target, capture_room_environment_screenshot,
-    execute_room_computer_observation, reset_room_computer_input, run_room_clipboard_read,
-    run_room_clipboard_write, run_room_keyboard_key, run_room_keyboard_text,
-    run_room_pointer_click, run_room_pointer_drag, run_room_pointer_move, run_room_pointer_scroll,
-    run_room_secret_text_input,
+    execute_room_computer_observation, reset_room_computer_input,
+    run_room_clipboard_read_authorized, run_room_clipboard_write, run_room_keyboard_key,
+    run_room_keyboard_text, run_room_pointer_click, run_room_pointer_drag, run_room_pointer_move,
+    run_room_pointer_scroll, run_room_secret_text_input,
 };
 mod worker_home_credential_client;
 mod worker_home_extension_client;
@@ -152,6 +152,13 @@ impl KernelRuntimeState {
             if crate::provider::provider_run_uses_claude_permission_prompt_tool(run))
         {
             specs.push(crate::transport::runtime_tools::permission_prompt_runtime_tool_spec());
+        }
+        if self.sudo_for_auth_token(auth_token).is_ok() {
+            specs.push(crate::transport::runtime_tools::RuntimeToolSpec {
+                name: "chariox_kernel_request".into(),
+                description: "Act as the host on this kernel for this sudo turn. Submit a LocalDaemonRequest in request. Can answer critical approvals across sessions. Cannot grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at yield or revocation.".into(),
+                input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"}},"additionalProperties":false}),
+            });
         }
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
             specs.extend(crate::transport::runtime_tools::meta_runtime_tool_specs());

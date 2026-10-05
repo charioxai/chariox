@@ -88,6 +88,7 @@
     "./slice-screen-viewer": "./dist/slice-screen-viewer.js",
     "./workspace-live-sync-mode": "./dist/workspace-live-sync-mode.js",
     "./project-environment-panel": "./dist/project-environment-panel.js",
+    "./kernel-unix-socket-path": "./dist/kernel-unix-socket-path.js",
     "./hidden-input": "./dist/hidden-input.js"
   },
   "types": "./dist/index.d.ts",

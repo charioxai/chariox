@@ -382,9 +382,12 @@ async fn run_case(recovery: RecoveryCase) {
                     .prompt_state_owner
                     .active_prompt_for_agent(&snapshot, agent.id());
                 if active.as_ref().is_none_or(|p| Some(p.id()) != admitted_id.as_deref())
-                    && runtime.owned.prompt_state_owner
-                        .peek_next_queued_prompt(&snapshot, agent.id()).is_none()
-                    && target_home.join("synthetic-resumed").exists()
+                    && (!relaunch_stall
+                        || stalled_run_id.as_deref().is_some_and(|id| {
+                            runtime.owned.provider_store.get_run(id).is_ok_and(|run| {
+                                run.state() == crate::provider::ProviderRunState::Ended
+                            })
+                        }))
                 {
                     break;
                 }
@@ -397,10 +400,34 @@ async fn run_case(recovery: RecoveryCase) {
             let active = runtime.owned.prompt_state_owner.active_prompt_for_agent(&snapshot, agent.id());
             let queued = runtime.owned.prompt_state_owner.peek_next_queued_prompt(&snapshot, agent.id());
             let current = runtime.owned.provider_store.get_run_for_agent(session.id(), agent.id());
-            panic!("failed relaunch must settle and advance: active={:?}, queued={:?}, run={:?}, native_dispatch={}, original_queue_id={:?}",
+            panic!("failed relaunch must settle and advance: active={:?}, queued={:?}, run={:?}, native_dispatch={}, original_queue_id={:?}, notices={:?}",
                 active.as_ref().map(|p| p.id()), queued.as_ref().map(|p| p.id()),
-                current.as_ref().map(|r| (r.id(), r.state())), target_home.join("synthetic-resumed").exists(), queued_id);
+                current.as_ref().map(|r| (r.id(), r.state())), target_home.join("synthetic-resumed").exists(), queued_id, runtime.owned.terminal_stream.notice_records());
         });
+        // The stalled replacement consumes the 60s recovery deadline. Give
+        // the next provider its own readiness budget instead of sharing the
+        // remaining 10s with process startup and queued dispatch under load.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let snapshot = runtime
+                    .owned
+                    .session_store
+                    .get_session(session.id())
+                    .unwrap();
+                if runtime
+                    .owned
+                    .prompt_state_owner
+                    .peek_next_queued_prompt(&snapshot, agent.id())
+                    .is_none()
+                    && target_home.join("synthetic-resumed").exists()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("queued prompt must dispatch after recovery settles the failed turn");
         let snapshot = runtime
             .owned
             .session_store

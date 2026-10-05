@@ -1,15 +1,25 @@
-//! Reuse the command-result journal for durable, non-evicting reservations.
+//! Reuse the command-result journal for durable reservations and guarded LRU retention.
 use super::*;
 
 #[derive(Debug, thiserror::Error)]
 #[error("at-most-once receipt capacity reached")]
-struct ReceiptCapacityError;
+pub(super) struct ReceiptCapacityError;
 
 /// OS ENOMEM is also OutOfMemory, but must never authorize a control effect.
 pub(crate) fn is_receipt_capacity_error(error: &io::Error) -> bool {
     error
         .get_ref()
         .is_some_and(|error| error.is::<ReceiptCapacityError>())
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("receipt expired")]
+struct ReceiptExpiredError;
+
+pub(crate) fn is_receipt_expired_error(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|error| error.is::<ReceiptExpiredError>())
 }
 
 impl CommandFingerprint {
@@ -29,7 +39,8 @@ impl CommandFingerprint {
 
 impl CommandResultCache {
     pub(crate) async fn has_reserved(&self, command_id: &str) -> bool {
-        self.results.lock().await.contains_key(command_id)
+        let retention = self.receipt_retention.lock().await;
+        retention.contains(command_id) || self.results.lock().await.contains_key(command_id)
     }
 
     /// No result is visible until its final receipt has been appended and synced.
@@ -40,11 +51,18 @@ impl CommandResultCache {
         response: Value,
         interrupted_response: Value,
     ) -> io::Result<()> {
+        let _retention = self.receipt_retention.lock().await;
+        let now = crate::session::unix_epoch_ms();
+        let completed_at_ms = match self.results.lock().await.get(&command_id) {
+            Some(CommandResultEntry::Pending { accepted_at_ms, .. }) => now.max(*accepted_at_ms),
+            Some(CommandResultEntry::Completed(result)) => now.max(result.completed_at_ms),
+            None => now,
+        };
         let mut cached = CachedCommandResult {
             response: serialized_response(&Some(response)),
             error: None,
             fingerprint,
-            completed_at_ms: crate::session::unix_epoch_ms(),
+            completed_at_ms,
         };
         let record = PersistentCommandResult {
             command_id: command_id.clone(),
@@ -83,8 +101,12 @@ impl CommandResultCache {
     ) -> io::Result<CommandReservation> {
         if !self.retention.at_most_once {
             return Err(io::Error::other(
-                "at-most-once reservation requires non-evicting persistence",
+                "at-most-once reservation requires durable persistence",
             ));
+        }
+        let mut retention = self.receipt_retention.lock().await;
+        if retention.contains(command_id) {
+            return Err(io::Error::other(ReceiptExpiredError));
         }
         let mut results = self.results.lock().await;
         match results.get_mut(command_id) {
@@ -92,13 +114,23 @@ impl CommandResultCache {
                 if cached.fingerprint != *fingerprint {
                     return Ok(CommandReservation::Conflict);
                 }
+                let cached = cached.clone();
+                drop(results);
+                // Preserve the completion age but persist the access order for LRU
+                // across restarts. Touching a receipt never extends its age window.
+                self.persist_completed_result(command_id.into(), cached.clone())
+                    .await?;
+                let mut order = self.order.lock().await;
+                order.retain(|id| id != command_id);
+                order.push_back(command_id.into());
                 let (tx, rx) = oneshot::channel();
-                let _ = tx.send(cached.clone());
+                let _ = tx.send(cached);
                 return Ok(CommandReservation::Wait(rx));
             }
             Some(CommandResultEntry::Pending {
                 fingerprint: prior,
                 waiters,
+                ..
             }) => {
                 if prior != fingerprint {
                     return Ok(CommandReservation::Conflict);
@@ -110,10 +142,9 @@ impl CommandResultCache {
             None => {}
         }
         if results.len() >= self.retention.max_entries {
-            return Err(io::Error::new(
-                io::ErrorKind::OutOfMemory,
-                ReceiptCapacityError,
-            ));
+            drop(results);
+            self.evict_expired_receipt(&mut retention).await?;
+            results = self.results.lock().await;
         }
         let persistence = self
             .persistence
@@ -130,6 +161,11 @@ impl CommandResultCache {
             command_id.into(),
             CommandResultEntry::Completed(cached.clone()),
         );
+        {
+            let mut order = self.order.lock().await;
+            order.retain(|id| id != command_id);
+            order.push_back(command_id.into());
+        }
         let _guard = persistence.io_lock.lock().await;
         if let Some(parent) = persistence.path.parent() {
             fs::create_dir_all(parent)?;
@@ -137,7 +173,7 @@ impl CommandResultCache {
         let record = PersistentCommandResult {
             command_id: command_id.into(),
             completed_at_ms: cached.completed_at_ms,
-            result: cached,
+            result: cached.clone(),
         };
         append_persistent_result(&persistence.path, &record)?;
         fs::OpenOptions::new()
@@ -151,6 +187,7 @@ impl CommandResultCache {
             command_id.into(),
             CommandResultEntry::Pending {
                 fingerprint: fingerprint.clone(),
+                accepted_at_ms: cached.completed_at_ms,
                 waiters: Vec::new(),
             },
         );

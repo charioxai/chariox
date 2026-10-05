@@ -7711,6 +7711,9 @@ mod tests {
 
     #[test]
     fn managed_context_replica_is_idempotent_and_restores_the_target_default() {
+        crate::test_support::isolated_env_test!();
+        // Exercise the home-directory fallback independently of the host profile.
+        std::env::remove_var("CODEX_HOME");
         let (source_root, source) = fixture();
         let source_profile = source
             .create_managed("owner-a", "codex", "Source default")
@@ -7811,7 +7814,10 @@ mod tests {
         let restored_environment = target
             .resolve_environment("owner-a", "codex", "default")
             .unwrap();
-        assert!(restored_environment["CODEX_HOME"].contains("home/.codex"));
+        assert_eq!(
+            Path::new(&restored_environment["CODEX_HOME"]),
+            target_home.join(".codex")
+        );
         assert!(!imported_auth.exists());
         let observed = target
             .update_observation(

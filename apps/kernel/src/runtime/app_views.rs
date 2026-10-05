@@ -15,6 +15,9 @@ pub(crate) struct AppViewBinding {
     pub(crate) generation: u64,
     /// The panel its manifest asks for; the page may ask for another.
     pub(crate) panel: PanelRequest,
+    /// Kernel Tab identity retained across browser/controller loss. This is
+    /// recovery intent, never authority received from a browser placeholder.
+    pub(crate) logical_tab: Option<crate::session::EnvironmentTab>,
 }
 
 /// The App's own agent panel choice: `placement` None shows no panel.
@@ -72,6 +75,9 @@ struct SessionViews {
     /// Target → (binding, registration number).
     tabs: HashMap<String, (AppViewBinding, u64)>,
     registrations: u64,
+    /// Physical browser identity from the existing authenticated inventory.
+    /// CDP connection generations alone do not prove a document was lost.
+    browser_identity: Option<(u64, Vec<String>)>,
     /// App Tabs the controller last reported open, bound or not.
     open_tabs: usize,
     pumping: bool,
@@ -107,9 +113,35 @@ struct SessionViews {
 }
 
 impl SessionViews {
+    fn suspend_targets(&mut self, lost: impl Fn(&str) -> bool) {
+        let targets: Vec<_> = self
+            .tabs
+            .keys()
+            .filter(|target| lost(target))
+            .cloned()
+            .collect();
+        for target in targets {
+            let (binding, _) = self.tabs.remove(&target).unwrap();
+            if !self.restoring.iter().any(|(old, _)| {
+                old.owner == binding.owner && old.installation == binding.installation
+            }) {
+                self.restoring.push((binding, 0));
+            }
+            self.called.remove(&target);
+        }
+        // Dropping senders cancels only the documents proved lost.
+        self.in_flight.retain(|_, call| !lost(&call.target));
+    }
+
     /// A (re)opened or reconnected Tab counts as new, and a failed
     /// reconnection's cooldown no longer applies to it.
-    fn bind(&mut self, target: &str, binding: AppViewBinding) {
+    fn bind(&mut self, target: &str, mut binding: AppViewBinding) {
+        if binding.logical_tab.is_none() {
+            binding.logical_tab = self
+                .tabs
+                .get(target)
+                .and_then(|(old, _)| old.logical_tab.clone());
+        }
         self.registrations += 1;
         self.called.remove(target);
         self.panel_requests.remove(target);
@@ -172,15 +204,64 @@ impl AppViews {
     pub(crate) fn suspend_for_cold_start(&self, session: &str) {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(views) = sessions.get_mut(session) {
-            for (_, (binding, _)) in views.tabs.drain() {
-                if !views.restoring.iter().any(|(old, _)| {
-                    old.owner == binding.owner && old.installation == binding.installation
-                }) {
-                    views.restoring.push((binding, 0));
-                }
-            }
+            views.suspend_targets(|_| true);
             views.open_tabs = 0;
             views.called.clear();
+        }
+    }
+
+    pub(crate) fn has_missing_targets(&self, session: &str, open: &[String], up_to: u64) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session)
+            .is_some_and(|views| {
+                views
+                    .tabs
+                    .iter()
+                    .any(|(target, (_, registered))| *registered <= up_to && !open.contains(target))
+            })
+    }
+
+    pub(crate) fn observe_browser_identity(
+        &self,
+        session: &str,
+        room_generation: u64,
+        browser_ids: &[String],
+        open: &[String],
+    ) {
+        // Older controllers without inventory cannot prove a physical restart.
+        if browser_ids.is_empty() {
+            return;
+        }
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(views) = sessions.get_mut(session) else {
+            return;
+        };
+        if views
+            .browser_identity
+            .as_ref()
+            .is_some_and(|(generation, old)| *generation == room_generation && old != browser_ids)
+        {
+            // Targets created after the restart may already be registered.
+            // Preserve them; only the old browser's missing documents ended.
+            views.suspend_targets(|target| !open.iter().any(|id| id == target));
+        }
+        views.browser_identity = Some((room_generation, browser_ids.to_vec()));
+    }
+
+    pub(crate) fn remember_logical_tab(
+        &self,
+        session: &str,
+        target: &str,
+        tab: crate::session::EnvironmentTab,
+    ) {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((binding, _)) = sessions
+            .get_mut(session)
+            .and_then(|views| views.tabs.get_mut(target))
+        {
+            binding.logical_tab = Some(tab);
         }
     }
 
@@ -258,10 +339,12 @@ impl AppViews {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let views = sessions.entry(session.to_owned()).or_default();
         if views.reconnecting.contains(target)
-            || views
-                .tabs
-                .get(target)
-                .is_some_and(|(current, _)| *current == binding)
+            || views.tabs.get(target).is_some_and(|(current, _)| {
+                current.owner == binding.owner
+                    && current.installation == binding.installation
+                    && current.generation == binding.generation
+                    && current.panel == binding.panel
+            })
         {
             return false;
         }
@@ -839,6 +922,7 @@ mod tests {
 
     fn binding(installation: &str) -> AppViewBinding {
         AppViewBinding {
+            logical_tab: None,
             generation: 1,
             owner: "user".into(),
             installation: installation.into(),
@@ -951,6 +1035,7 @@ mod call_cancellation_tests {
             "s",
             "t1",
             AppViewBinding {
+                logical_tab: None,
                 owner: "user".into(),
                 installation: "a".into(),
                 generation: 1,
@@ -1061,6 +1146,7 @@ mod call_cancellation_tests {
             "s",
             "t1",
             AppViewBinding {
+                logical_tab: None,
                 owner: "user".into(),
                 installation: "a".into(),
                 generation: 1,
@@ -1107,6 +1193,7 @@ mod reconnect_tests {
     fn failed_restores_are_bounded_and_other_registered_views_keep_call_authority() {
         let views = AppViews::default();
         let binding = |installation: &str| AppViewBinding {
+            logical_tab: None,
             owner: "owner".into(),
             installation: installation.into(),
             generation: 1,
@@ -1154,6 +1241,7 @@ mod reconnect_tests {
     fn a_cold_slice_stop_keeps_only_open_view_intent_until_reauthorized() {
         let views = AppViews::default();
         let binding = AppViewBinding {
+            logical_tab: None,
             owner: "owner".into(),
             installation: "app".into(),
             generation: 1,
@@ -1270,6 +1358,7 @@ mod reconnect_tests {
         views.set_open_tabs("s", 0);
         assert!(!views.keep_pumping("s"));
         let binding = AppViewBinding {
+            logical_tab: None,
             owner: "user".into(),
             installation: "a".into(),
             generation: 2,
@@ -1294,6 +1383,7 @@ mod reconnect_tests {
 
     fn binding_at(generation: u64) -> AppViewBinding {
         AppViewBinding {
+            logical_tab: None,
             owner: "user".into(),
             installation: "a".into(),
             generation,
@@ -1391,5 +1481,83 @@ mod reconnect_tests {
         // counts its first call.
         views.retain_open("s", &[], views.registrations("s"));
         assert!(views.first_call("s", "t1"));
+    }
+    #[test]
+    fn browser_loss_retains_the_logical_app_tab_and_cancels_old_document_calls() {
+        let views = AppViews::default();
+        let saved = crate::session::EnvironmentTab {
+            tab_id: "tab-7".into(),
+            url: "https://app.todo.invalid/".into(),
+            title: "Todo".into(),
+            document_revision: 4,
+            focused: true,
+            app: None,
+        };
+        views.register("room", "old", binding_at(1));
+        views.remember_logical_tab("room", "old", saved.clone());
+        let call = views.track_call("room", "old", Some("old-document".into()));
+        views.suspend_for_cold_start("room");
+        assert!(call.is_cancelled());
+        assert!(views.binding_state("room", "old").is_none());
+        let intent = views.next_cold_start_attempt("room").unwrap();
+        assert_eq!(intent.logical_tab, Some(saved.clone()));
+        views.register("room", "new", intent.clone());
+        views.finish_cold_start_view("room", &intent);
+        // An ordinary generation reconnect does not overwrite saved identity.
+        assert!(!views.claim_reconnect("room", "new", binding_at(1)));
+        assert_eq!(
+            views.binding_state("room", "new").unwrap().0.logical_tab,
+            Some(saved)
+        );
+        views.retain_open("room", &[], views.registrations("room"));
+        views.suspend_for_cold_start("room");
+        assert!(views.cold_start_views("room").is_empty());
+    }
+    fn recovery_binding(installation: &str) -> AppViewBinding {
+        AppViewBinding {
+            installation: installation.into(),
+            ..binding_at(1)
+        }
+    }
+
+    #[test]
+    fn fast_browser_restart_preserves_missing_views_without_reloading_live_targets() {
+        let views = AppViews::default();
+        views.register("room", "old", recovery_binding("todo"));
+        views.register("room", "closed", recovery_binding("closed"));
+        views.observe_browser_identity(
+            "room",
+            1,
+            &["browser-pid-1".into()],
+            &["old".into(), "closed".into()],
+        );
+        let old_call = views.track_call("room", "old", Some("old-doc".into()));
+        views.unbind("room", "closed"); // an acknowledged close must stay closed
+        let up_to = views.registrations("room");
+        views.register("room", "new", recovery_binding("other"));
+        let live_call = views.track_call("room", "new", Some("new-doc".into()));
+        assert!(views.has_missing_targets("room", &[], up_to));
+        views.observe_browser_identity("room", 1, &["browser-pid-2".into()], &["new".into()]);
+        views.retain_open("room", &[], up_to); // the older poll cannot drop a new registration
+        assert_eq!(
+            views.cold_start_views("room"),
+            vec![recovery_binding("todo")]
+        );
+        assert!(old_call.is_cancelled());
+        assert!(!live_call.is_cancelled());
+        assert!(views.binding_state("room", "new").is_some());
+    }
+
+    #[test]
+    fn same_browser_reconnect_and_ordinary_close_do_not_restore_a_view() {
+        let views = AppViews::default();
+        views.register("room", "old", recovery_binding("todo"));
+        views.observe_browser_identity("room", 1, &["browser-pid-1".into()], &["old".into()]);
+        views.observe_browser_identity("room", 1, &["browser-pid-1".into()], &[]);
+        views.retain_open("room", &[], views.registrations("room"));
+        assert!(views.cold_start_views("room").is_empty());
+        views.register("room", "new", recovery_binding("todo"));
+        views.observe_browser_identity("room", 2, &["browser-pid-2".into()], &[]);
+        assert!(views.cold_start_views("room").is_empty()); // separate Room incarnation
     }
 }

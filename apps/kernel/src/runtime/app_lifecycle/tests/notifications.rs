@@ -286,6 +286,9 @@ fn refused_preparation(mode: Mode, timeout: bool) {
     assert_eq!(installation.generation, 1);
     assert!(!installation.admission_paused);
     assert_eq!(installation.pending_generation, None);
+    // Worker reaping precedes completion of the retained owner's teardown.
+    // A start during that gap correctly returns Existing; wait before requesting a fresh owner.
+    wait(|| !control.lifecycle().has_pending_owner("alice", &id));
     // The old generation can be used again after its normal failed-worker backoff.
     control
         .lifecycle()
@@ -334,6 +337,7 @@ fn suspend_deadline_terminates_worker_without_dormancy_or_shutdown_overlap() {
     wait(|| all_reaped(&observations));
     assert!(!control.is_app_dormant("alice", "installed"));
     assert_eq!(names(&frames(&observations, 0)), ["startup", "suspend"]);
+    wait(|| !control.lifecycle().has_pending_owner("alice", "installed"));
     assert_eq!(
         store
             .app_worker_status("alice", "installed")
@@ -374,19 +378,51 @@ fn resume_deadline_keeps_worker_unpublished_and_never_overlaps_shutdown() {
         count == 2 && contains(&observations, 1, "resume")
     });
     assert!(control.active_app_lease("alice", "installed").is_none());
+    // Hold the final write across native reap to pin the cleanup window: the
+    // process observation precedes the owner's durable Failed transition.
+    let mut writer = rusqlite::Connection::open(store.path()).unwrap();
+    writer.busy_timeout(Duration::from_secs(5)).unwrap();
+    let delayed_failure = writer
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
     wait_long(|| observations.lock().unwrap()[1].was_reaped());
     assert!(
         before.elapsed() >= Duration::from_secs(29) && before.elapsed() < Duration::from_secs(35)
     );
-    assert_eq!(names(&frames(&observations, 1)), ["startup", "resume"]);
+    // The blocked durable write retains the owner; completion cannot precede it.
+    assert!(control.lifecycle().has_pending_owner("alice", "installed"));
     assert_eq!(
         store
             .app_worker_status("alice", "installed")
             .unwrap()
             .unwrap()
             .phase,
-        WorkerPhase::Failed
+        WorkerPhase::Starting
     );
+    // Release the writer before waiting for completion: the owner needs it
+    // to persist Failed before it can publish that it is finished.
+    delayed_failure.rollback().unwrap();
+    wait(|| !control.lifecycle().has_pending_owner("alice", "installed"));
+    wait(|| {
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .is_some_and(|worker| worker.phase == WorkerPhase::Failed)
+    });
+    let failed = store
+        .app_worker_status("alice", "installed")
+        .unwrap()
+        .unwrap();
+    assert_eq!(failed.phase, WorkerPhase::Failed);
+    assert_eq!(
+        failed.failure.as_deref(),
+        Some("app_lifecycle_notification")
+    );
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    control.lifecycle().shutdown_blocking().unwrap();
+    assert_eq!(names(&frames(&observations, 1)), ["startup", "resume"]);
+    assert_eq!(observations.lock().unwrap().len(), 2);
+    assert!(all_reaped(&observations));
 }
 #[test]
 fn configuration_change_carries_effective_grants_and_skips_idempotent_writes() {

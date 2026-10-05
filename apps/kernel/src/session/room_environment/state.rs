@@ -248,6 +248,18 @@ impl RoomEnvironment {
         }
     }
 
+    pub(crate) fn restore_app_tab(&mut self, saved: &super::EnvironmentTab, target: &str) {
+        if self.tabs.restore_app_tab(saved, target) {
+            let input_ownership_changed = self.action_ledger.retain_input_targets(&self.tabs);
+            self.element_references
+                .retain_current(&self.tabs, self.runtime_generation);
+            self.emit(EnvironmentEventKind::TabsChanged);
+            if input_ownership_changed {
+                self.emit(EnvironmentEventKind::InputOwnershipChanged);
+            }
+        }
+    }
+
     pub(crate) fn controller_tab_binding(
         &self,
         tab_id: &str,
@@ -264,6 +276,14 @@ impl RoomEnvironment {
 
     /// The open App views (installation and panel layout by controller target)
     /// and the session's focus agent.
+    pub(crate) fn prepare_app_recovery(&mut self) {
+        self.tabs.prepare_app_recovery();
+    }
+
+    pub(crate) fn cancel_app_recovery_focus(&mut self) {
+        self.tabs.cancel_app_recovery_focus();
+    }
+
     pub(crate) fn set_app_tabs(
         &mut self,
         apps: BTreeMap<String, (String, super::model::AppPanelLayout)>,
@@ -549,20 +569,38 @@ impl RoomEnvironment {
         state: EnvironmentComponentHealthState,
         diagnostic_code: Option<&str>,
     ) {
-        if self.health.get(&component).is_some_and(|health| {
+        let unchanged = self.health.get(&component).is_some_and(|health| {
             health.state == state && health.diagnostic_code.as_deref() == diagnostic_code
-        }) {
-            return;
-        }
-        self.health.insert(
-            component,
-            EnvironmentComponentHealth {
+        });
+        if !unchanged {
+            self.health.insert(
                 component,
-                state,
-                diagnostic_code: diagnostic_code.map(str::to_string),
-            },
-        );
-        self.emit(EnvironmentEventKind::HealthChanged);
+                EnvironmentComponentHealth {
+                    component,
+                    state,
+                    diagnostic_code: diagnostic_code.map(str::to_string),
+                },
+            );
+            self.emit(EnvironmentEventKind::HealthChanged);
+        }
+        self.settle_health_lifecycle();
+    }
+
+    // Component receipts and the aggregate are committed by the same owner.
+    // Initial Start/Retry still needs its explicit completion, and recovery
+    // cannot become Ready before the controller has reconciled its actions.
+    fn settle_health_lifecycle(&mut self) {
+        let healthy = !self.browser_controller_recovering
+            && self
+                .health
+                .values()
+                .all(|health| health.state == EnvironmentComponentHealthState::Ready);
+        let next = match (self.lifecycle, healthy) {
+            (EnvironmentLifecycle::Ready, false) => EnvironmentLifecycle::Degraded,
+            (EnvironmentLifecycle::Degraded, true) => EnvironmentLifecycle::Ready,
+            _ => return,
+        };
+        let _ = self.transition_to(next);
     }
 
     pub fn update_viewport(
@@ -684,9 +722,11 @@ impl RoomEnvironment {
         )?;
         match &admission {
             ActionAdmission::Accepted { action_id } => {
+                self.tabs.cancel_app_recovery_focus();
                 self.emit_action_changed(action_id, EnvironmentActionState::Running);
             }
             ActionAdmission::Queued { action_id, .. } => {
+                self.tabs.cancel_app_recovery_focus();
                 self.emit_action_changed(action_id, EnvironmentActionState::Queued);
             }
             _ => {}
@@ -706,6 +746,7 @@ impl RoomEnvironment {
         self.element_references.clear();
         let effect = self.action_ledger.begin_controller_recovery();
         self.emit_action_recovery_effect(effect);
+        self.settle_health_lifecycle();
     }
 
     pub(crate) fn complete_browser_controller_recovery(&mut self) {
@@ -714,6 +755,7 @@ impl RoomEnvironment {
             .complete_controller_recovery(self.runtime_generation, &self.tabs);
         self.browser_controller_recovering = false;
         self.emit_action_recovery_effect(effect);
+        self.settle_health_lifecycle();
     }
 
     fn input_lifecycle(&self, mode: EnvironmentMode) -> EnvironmentLifecycle {

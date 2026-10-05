@@ -635,7 +635,7 @@ impl SessionRuntimeStore {
     ) {
         let result = match self
             .state
-            .destroy_agent(&request.agent_id, &caller_user_id)
+            .destroy_agent_in_session(&request.session_id, &request.agent_id, &caller_user_id)
             .await
         {
             Ok(agent) => {

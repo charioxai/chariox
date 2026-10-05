@@ -754,10 +754,10 @@ export function waitForProcessExit(child, timeoutMs) {
   })
 }
 
-export async function waitForKernel(kernelUrl) {
+export async function waitForKernel(kernelUrl, localAuthEnvironment) {
   const deadline = Date.now() + 30_000
   while (Date.now() < deadline) {
-    const client = new LocalIpcClient(kernelUrl)
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       await client.send(getDaemonHealthRequest())
       await client.close?.()

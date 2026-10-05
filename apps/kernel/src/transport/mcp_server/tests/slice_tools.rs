@@ -536,6 +536,9 @@ fn mcp_browser_status_uses_the_room_owned_controller_instead_of_one_shot_cdp() {
 
 #[cfg(unix)]
 async fn mcp_browser_status_uses_the_room_owned_controller_instead_of_one_shot_cdp_inner() {
+    use crate::session::{
+        EnvironmentComponent, EnvironmentComponentHealthState, EnvironmentLifecycle,
+    };
     use std::os::unix::fs::PermissionsExt;
 
     let _guard = crate::env_lock::lock();
@@ -1148,12 +1151,89 @@ done
         .status()
         .expect("controller kill should run")
         .success());
-    let recovered_response = handle_json_rpc_value(
+    // This synthetic worker has no desktop/streamer probe. Reconciliation
+    // recovers the browser, but must not invent readiness for those components.
+    let degraded_response = handle_json_rpc_value(
         router.clone(),
         &auth_token,
         serde_json::json!({
             "jsonrpc": "2.0",
             "id": 51,
+            "method": "tools/call",
+            "params": {
+                "name": "slice_browser_status",
+                "arguments": {}
+            }
+        }),
+    )
+    .await
+    .expect("degraded browser status should return an MCP response");
+    let degraded_body = degraded_response
+        .into_body()
+        .collect()
+        .await
+        .expect("degraded browser status body should collect")
+        .to_bytes();
+    let degraded_value: Value =
+        serde_json::from_slice(&degraded_body).expect("degraded browser status body json");
+    assert_eq!(
+        degraded_value["error"]["code"], -32000,
+        "{degraded_value:#}"
+    );
+    assert!(degraded_value["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("EnvironmentNotReady { lifecycle: Degraded }")));
+    let degraded_environment = router
+        .runtime_state()
+        .room_environment_snapshot(&session_id)
+        .expect("degraded Room should remain observable");
+    assert_eq!(
+        degraded_environment.lifecycle,
+        EnvironmentLifecycle::Degraded
+    );
+    for health in &degraded_environment.health {
+        assert_eq!(
+            health.state,
+            match health.component {
+                EnvironmentComponent::BrowserController | EnvironmentComponent::Browser => {
+                    EnvironmentComponentHealthState::Ready
+                }
+                _ => EnvironmentComponentHealthState::Unavailable,
+            },
+            "{health:?}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(&one_shot_log).expect("one-shot log should remain readable"),
+        one_shot_after_computer,
+        "degraded status must not fall back to one-shot CDP"
+    );
+    // Supply the health receipts a real headed worker reports. The final
+    // component settles the aggregate immediately; status can then be retried.
+    for (component, expected_lifecycle) in [
+        (
+            EnvironmentComponent::Desktop,
+            EnvironmentLifecycle::Degraded,
+        ),
+        (EnvironmentComponent::Streamer, EnvironmentLifecycle::Ready),
+    ] {
+        let environment = router
+            .runtime_state()
+            .update_room_environment_component_health(
+                &session_id,
+                component,
+                EnvironmentComponentHealthState::Ready,
+                None,
+            )
+            .expect("worker health receipt should apply");
+        assert_eq!(environment.lifecycle, expected_lifecycle);
+    }
+    let recovered_response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 52,
             "method": "tools/call",
             "params": {
                 "name": "slice_browser_status",
@@ -1685,7 +1765,7 @@ done
     }));
     assert_eq!(
         std::fs::read_to_string(&controller_log).expect("controller log should exist"),
-        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsecret-frame-target\nfill\nreconcile\ndialog-dismiss\nreconcile\ndownloads\nreconcile\nupload\nreconcile\npermission-denied\nreconcile\nevents\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
+        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nreconcile\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsecret-frame-target\nfill\nreconcile\ndialog-dismiss\nreconcile\ndownloads\nreconcile\nupload\nreconcile\npermission-denied\nreconcile\nevents\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
     );
     assert!(
         !std::fs::read_to_string(&controller_log)

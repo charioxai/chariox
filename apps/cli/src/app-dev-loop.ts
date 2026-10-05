@@ -27,7 +27,7 @@ export type AppDevDeps = {
   pollMs?: number
 }
 
-export const defaultAppDevKey = (home: string) => join(home, ".chariox", "dev", "app-publisher", "private")
+export const defaultAppDevKey = (home: string) => join(home, ".chariox", "keys", "app-publisher", "private")
 
 /** One dev loop per terminal; starting another stops the previous one. */
 export class AppDevLoop {
@@ -250,11 +250,13 @@ async function sourceDirectory(selected: string): Promise<string> {
 function missingKey(key: string): string {
   return [
     `No developer signing key at ${key}.`,
-    "Create one once, outside your project, and enroll its publisher:",
-    '  mkdir -p "$HOME/.chariox/dev" && mkdir -m 700 "$HOME/.chariox/dev/app-publisher"',
-    '  chariox app keygen --publisher-id ID --publisher-name NAME --key-out "$HOME/.chariox/dev/app-publisher/private" --trust-out "$HOME/.chariox/dev/app-publisher/publisher.json"',
-    '  /app publisher enroll "$HOME/.chariox/dev/app-publisher/publisher.json"',
-    "Or pass --key PRIVATE to use another key.",
+    "Use --key PRIVATE for an existing key at its original location; do not generate a replacement or move it to satisfy this default.",
+    "If you have no publisher identity, create one once in protected storage (directory 0700, private file 0600):",
+    '  mkdir -p -m 700 "$HOME/.chariox/keys" && mkdir -m 700 "$HOME/.chariox/keys/app-publisher"',
+    '  chariox app keygen --publisher-id ID --publisher-name NAME --key-out "$HOME/.chariox/keys/app-publisher/private" --trust-out "$HOME/.chariox/keys/app-publisher/publisher.json"',
+    "Before first use, verify the public fingerprint against the approved inventory and prove restoration from a separately protected backup by signing and verifying a synthetic challenge.",
+    '  /app publisher enroll "$HOME/.chariox/keys/app-publisher/publisher.json"',
+    "Migration requires explicit authorization, the same public fingerprint, and preserved backup history; key loss does not authorize rotation.",
   ].join("\n")
 }
 

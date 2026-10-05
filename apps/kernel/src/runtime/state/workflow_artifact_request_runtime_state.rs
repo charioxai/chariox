@@ -9,7 +9,7 @@ impl KernelRuntimeState {
         caller_metaagent_id: Option<&str>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let actor = workflow_code_artifact_actor(caller_user_id, caller_metaagent_id);
-        self.with_app_side_effect(move |app| {
+        self.with_authorized_app_side_effect(move |app| {
             let limits = app.config().workflow_code_limits();
             let schema_import_root =
                 workflow_code_schema_import_root_for_session(app, &request.session_id)?;
@@ -26,6 +26,7 @@ impl KernelRuntimeState {
                 &compile.validation,
             )?;
             let registry = workflow_code_registry_for_session(app, &request.session_id)?;
+            self.authorize_current_external_command()?;
             let artifact = registry.save(
                 &request.name,
                 request.language,
@@ -54,7 +55,7 @@ impl KernelRuntimeState {
         caller_metaagent_id: Option<&str>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let actor = workflow_code_artifact_actor(caller_user_id, caller_metaagent_id);
-        self.with_app_side_effect(move |app| {
+        self.with_authorized_app_side_effect(move |app| {
             let limits = app.config().workflow_code_limits();
             let schema_import_root =
                 workflow_code_schema_import_root_for_session(app, &request.session_id)?;
@@ -71,6 +72,7 @@ impl KernelRuntimeState {
                 &compile.validation,
             )?;
             let registry = workflow_code_registry_for_session(app, &request.session_id)?;
+            self.authorize_current_external_command()?;
             let artifact = registry.update(
                 &request.name,
                 request.language,
@@ -96,7 +98,7 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::BindWorkflowCodeSourceRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.with_app_side_effect(move |app| {
+        self.with_authorized_app_side_effect(move |app| {
             let registry = workflow_code_registry_for_session(app, &request.session_id)?;
             let artifact = registry.get(&request.artifact_name)?.ok_or_else(|| {
                 DaemonError::LocalTransport {
@@ -145,7 +147,7 @@ impl KernelRuntimeState {
         let workflow_ref = request.workflow_ref.clone();
         let expected_workflow_revision = request.expected_workflow_revision;
         let (preview, confirmed_rebuild) = self
-            .with_app_side_effect(move |app| {
+            .with_authorized_app_side_effect(move |app| {
                 let workflow = app
                     .sessions()
                     .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
@@ -258,6 +260,7 @@ impl KernelRuntimeState {
         // Compilation, validation, and preview construction above are non-mutating and may run
         // external tooling. Enter the synchronous activity boundary only for the confirmed
         // authoritative rebuild, its durable workflow snapshot, or its in-lock rollback.
+        self.authorize_current_external_command()?;
         let activity_mutation = self.owned.begin_managed_activity_mutation();
         let durable_state_store = self.owned.durable_state_store.clone();
         let rebuilt = durable_state_store.with_workflow_runtime_transition_lock(|| {
@@ -306,7 +309,7 @@ impl KernelRuntimeState {
         caller_metaagent_id: Option<&str>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let actor = workflow_code_artifact_actor(caller_user_id, caller_metaagent_id);
-        self.with_app_side_effect(move |app| {
+        self.with_authorized_app_side_effect(move |app| {
             let workflow = app
                 .sessions()
                 .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
@@ -397,6 +400,7 @@ impl KernelRuntimeState {
                 workflow.id(),
                 &compile.definition,
             )?;
+            self.authorize_current_external_command()?;
             let artifact = registry.update(
                 &artifact_name,
                 export.language,
@@ -438,7 +442,7 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::GetWorkflowCodeArtifactRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.with_app_side_effect(move |app| {
+        self.with_authorized_app_side_effect(move |app| {
             let registry = workflow_code_registry_for_session(app, &request.session_id)?;
             let artifact =
                 registry
@@ -456,7 +460,7 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::ListWorkflowCodeArtifactsRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.with_app_side_effect(move |app| {
+        self.with_authorized_app_side_effect(move |app| {
             let registry = workflow_code_registry_for_session(app, &request.session_id)?;
             let artifacts = registry.list()?;
             Ok(LocalDaemonResponse::WorkflowCodeArtifactsListed { artifacts })
@@ -468,7 +472,7 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::DeleteWorkflowCodeArtifactRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.with_app_side_effect(move |app| {
+        self.with_authorized_app_side_effect(move |app| {
             let registry = workflow_code_registry_for_session(app, &request.session_id)?;
             let path = registry.delete(&request.name)?;
             app.durable_state_store().append_event(
@@ -526,7 +530,7 @@ impl KernelRuntimeState {
         event_kind: &'static str,
         legacy_response: bool,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.with_app_side_effect(move |app| {
+        self.with_authorized_app_side_effect(move |app| {
             let package = match target {
                 None => {
                     let registry = workflow_code_registry_for_session(app, &session_id)?;
@@ -609,7 +613,7 @@ impl KernelRuntimeState {
         legacy_response: bool,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let actor = workflow_code_artifact_actor(caller_user_id, caller_metaagent_id);
-        self.with_app_side_effect(move |app| {
+        self.with_authorized_app_side_effect(move |app| {
             request.package.validate_integrity()?;
             let limits = app.config().workflow_code_limits();
             let validation = request.package.definition.validate_with_limits(&limits);
@@ -648,7 +652,7 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::ExportWorkflowCodeSourceRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.with_app_side_effect(move |app| {
+        self.with_authorized_app_side_effect(move |app| {
             let registry = workflow_code_registry_for_session(app, &request.session_id)?;
             let export = match request.target {
                 crate::local::WorkflowCodeSourceExportTarget::Artifact { name } => {

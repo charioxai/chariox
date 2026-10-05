@@ -12,6 +12,8 @@ pub(super) type OpenCodeRuntimeSlot = Arc<Mutex<Option<OpenCodeRuntimeState>>>;
 #[derive(Clone, Default)]
 pub(super) struct ProviderRunRuntimeRegistry {
     claude_runs: Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
+    claude_processes:
+        Arc<Mutex<BTreeMap<String, crate::runtime::kernel_access::process::ProcessIdentitySlot>>>,
     codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     cleared_runs: Arc<Mutex<BTreeSet<String>>>,
@@ -20,6 +22,10 @@ pub(super) struct ProviderRunRuntimeRegistry {
 impl ProviderRunRuntimeRegistry {
     pub(super) fn insert_claude_runtime(&self, run_id: String, state: ClaudeRuntimeState) {
         self.clear_tombstone(&run_id);
+        self.claude_processes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(run_id.clone(), state.process_identity_slot());
         self.claude_runs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -88,7 +94,30 @@ impl ProviderRunRuntimeRegistry {
         self.clear_runtime_state(run_id, stop_opencode);
     }
 
+    pub(super) fn claude_process_identities(
+        &self,
+    ) -> Vec<(
+        String,
+        crate::runtime::kernel_access::process::ProcessIdentity,
+    )> {
+        self.claude_processes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter_map(|(id, slot)| {
+                slot.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+                    .map(|identity| (id.clone(), identity))
+            })
+            .collect()
+    }
+
     pub(super) fn clear_runtime_state(&self, run_id: &str, stop_opencode: bool) {
+        self.claude_processes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(run_id);
         clear_runtime_state(
             &self.claude_runs,
             &self.codex_runs,
@@ -549,5 +578,85 @@ mod tests {
                 .expect("replacement runtime slot should not be poisoned"),
             Some(42)
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod process_identity_tests {
+    use super::*;
+    use crate::provider::{
+        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+    };
+
+    #[test]
+    fn claude_process_identity_registry_recovers_poisoned_map_and_slot() {
+        let registry = ProviderRunRuntimeRegistry::default();
+        let identity = crate::runtime::kernel_access::process::inspect(std::process::id())
+            .unwrap()
+            .0;
+        let slot = Arc::new(Mutex::new(Some(identity.clone())));
+        registry
+            .claude_processes
+            .lock()
+            .unwrap()
+            .insert("fixture".into(), slot.clone());
+        let map = registry.claude_processes.clone();
+        assert!(std::thread::spawn(move || {
+            let _guard = map.lock().unwrap();
+            panic!("fixture map poison");
+        })
+        .join()
+        .is_err());
+        assert!(std::thread::spawn(move || {
+            let _guard = slot.lock().unwrap();
+            panic!("fixture slot poison");
+        })
+        .join()
+        .is_err());
+        assert_eq!(
+            registry.claude_process_identities(),
+            vec![("fixture".into(), identity)]
+        );
+        registry.clear_runtime_state("fixture", false);
+        assert!(registry.claude_process_identities().is_empty());
+    }
+
+    #[test]
+    fn claude_launch_identity_survives_actor_lease_and_clear_blocks_late_restore() {
+        let run = RuntimeProviderRun::new(
+            "piped-process-identity",
+            &LaunchProviderRequest::new("s", "claude", "claude", "default", "default"),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "fixture-pipe".into(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".into()),
+                pty_args: vec!["-c".into(), "while IFS= read -r line; do :; done".into()],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        let binding = crate::provider::initialize_claude_runtime(&run).unwrap();
+        let registry = ProviderRunRuntimeRegistry::default();
+        registry.insert_claude_runtime(run.id().into(), binding.state);
+        let before = registry.claude_process_identities();
+        assert_eq!(before.len(), 1);
+        let (slot, state) = registry.take_claude_runtime(run.id()).unwrap();
+        assert_eq!(registry.claude_process_identities(), before);
+        // Restart updates the shared identity even while the actor owns state.
+        state
+            .process_identity_slot()
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .start += 1;
+        assert_ne!(registry.claude_process_identities(), before);
+        registry.clear_runtime(run.id(), false);
+        assert!(registry.claude_process_identities().is_empty());
+        registry.restore_claude_runtime_if_live(run.id(), &slot, state);
+        assert!(registry.claude_process_identities().is_empty());
     }
 }

@@ -30,21 +30,38 @@ release inventory; its installer verifies and exposes that exact executable.
 This does not imply that the managed image ships the full TUI. A separate
 native client installer is not implemented here.
 
-Generate a developer identity once, outside your project, then create an App:
+Private signing keys are durable assets. For a first developer identity, use
+the dedicated `~/.chariox/keys/app-publisher/` namespace outside your project,
+development state, task scratch, evidence and build outputs. Keep both the keys
+directory and publisher directory at `0700`, and the private file at `0600`.
+Existing keys stay at their original location; select them with `--key`, including
+keys created under the former `~/.chariox/dev/app-publisher/private` default.
+Migration requires explicit user authorization, the same public fingerprint,
+and preserved backup history. A missing or lost key does not authorize generating
+a replacement or rotating the publisher identity.
+
+Only if you have no publisher identity, generate one once, then create an App:
 
 ```sh
-mkdir -p "$HOME/.chariox/dev"
-mkdir -m 700 "$HOME/.chariox/dev/app-publisher"
+mkdir -p -m 700 "$HOME/.chariox/keys"
+mkdir -m 700 "$HOME/.chariox/keys/app-publisher"
 chariox app keygen --publisher-id com.example --publisher-name Developer \
-  --key-out "$HOME/.chariox/dev/app-publisher/private" \
-  --trust-out "$HOME/.chariox/dev/app-publisher/publisher.json"
+  --key-out "$HOME/.chariox/keys/app-publisher/private" \
+  --trust-out "$HOME/.chariox/keys/app-publisher/publisher.json"
+# Before first use, verify the public fingerprint against the approved inventory,
+# create a separately protected backup, and prove restoration by deriving its
+# public key and signing/verifying a synthetic challenge.
 chariox app create my-app --app-id com.example.greeting \
-  --publisher "$HOME/.chariox/dev/app-publisher/publisher.json"
+  --publisher "$HOME/.chariox/keys/app-publisher/publisher.json"
 chariox app pack --bundle my-app/bundle --manifest my-app/app.json \
-  --key "$HOME/.chariox/dev/app-publisher/private" --output my-app.cxapp
+  --key "$HOME/.chariox/keys/app-publisher/private" --output my-app.cxapp
 chariox app inspect my-app.cxapp
 chariox app validate my-app.cxapp --trust my-app/publisher.json
 ```
+
+Record only public fingerprints, locations, owner, purpose, date and backup
+scope in protected operator-local notes. A same-machine backup does not prove
+recovery from machine loss; that requires an approved off-device restore test.
 
 `create` currently requires an existing public publisher file. It creates
 `app.json`, a public `publisher.json`, an ESM `greet` handler and matching closed

@@ -30,6 +30,7 @@ impl KernelRuntimeState {
         request: SubmitRoomEnvironmentActionRequest,
         actor: EnvironmentActor,
     ) -> Result<(String, RoomEnvironmentSnapshot), DaemonError> {
+        self.authorize_current_external_command()?;
         let execution_guard = self
             .owned
             .environment_execution_gates
@@ -39,6 +40,7 @@ impl KernelRuntimeState {
         // One admission budget covers both the action ledger and controller
         // slot. Moving from one queue to the other must not reset the clock.
         let admission_deadline = Instant::now() + crate::slice::ENVIRONMENT_USE_ADMISSION_TIMEOUT;
+        self.authorize_current_external_command()?;
         let environment = self
             .room_environment_snapshot(&request.session_id)
             .map_err(human_action_environment_error)?;
@@ -136,6 +138,7 @@ impl KernelRuntimeState {
             }
         };
 
+        self.authorize_admitted_browser_action(&request.session_id, &action_id)?;
         let current = self
             .room_environment_snapshot(&request.session_id)
             .map_err(human_action_environment_error)?;
@@ -182,6 +185,7 @@ impl KernelRuntimeState {
                 ),
             )
             .await;
+        self.authorize_current_external_command()?;
         let terminal = match &execution {
             Ok(RoomBrowserControllerResult::ComputerInputApplied {
                 action_id: returned_action_id,
@@ -291,6 +295,7 @@ impl KernelRuntimeState {
         deadline: Instant,
     ) -> Result<(), DaemonError> {
         loop {
+            self.authorize_admitted_browser_action(session_id, action_id)?;
             if let Err(error) = self.ensure_browser_import_execution_allowed(session_id) {
                 let _ = self.cancel_unstarted_import_blocked_action(session_id, action_id);
                 return Err(human_action_environment_error(error));

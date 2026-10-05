@@ -134,6 +134,10 @@ fn runtime_command_paths_do_not_lock_daemon_app() {
 }
 
 fn scan_runtime_command_path(relative: &Path) -> bool {
+    // This subtree is compiled only by kernel_access's cfg(test) module.
+    if relative.starts_with("runtime/state/kernel_access/test_support") {
+        return false;
+    }
     if relative.components().any(|component| {
         let Some(component) = component.as_os_str().to_str() else {
             return false;

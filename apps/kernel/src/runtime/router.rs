@@ -29,6 +29,7 @@ mod cloud_relay_bridge;
 mod composition;
 mod dispatch;
 pub(crate) mod event_connection_lifecycle;
+mod kernel_access;
 mod managed_context_bridge;
 pub(crate) use managed_context_bridge::{
     RelayManagedContextArmRequest, RelayManagedContextChunkRequest,
@@ -183,6 +184,7 @@ mod tests {
                 realm_id: Some("realm-1".to_string()),
                 public_key_thumbprint: Some("thumbprint-remote".to_string()),
                 metaagent_id: None,
+                connection_class: None,
             },
             None,
             None,

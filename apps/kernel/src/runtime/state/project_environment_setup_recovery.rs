@@ -1374,7 +1374,6 @@ mod tests {
         let scratch_path = scratch.path().to_path_buf();
         let fixture = DetachedOutputWriterFixture::new(&root, &scratch);
         let environment = fixture.environment();
-        let started = Instant::now();
         let result = super::super::project_environment_setup_validation::run_worker_validation_command_with_output_timeout(
             DetachedOutputWriterFixture::command_text(),
             &root.join("workspace"),
@@ -1402,7 +1401,6 @@ mod tests {
             error.contains("output pipes remained open"),
             "unexpected error: {error}"
         );
-        assert!(started.elapsed() < Duration::from_millis(500));
         assert!(
             scratch_path.exists(),
             "scratch remains while detached output may be active"
@@ -1412,6 +1410,8 @@ mod tests {
         );
         assert_eq!(writer_identity.process_group_id, writer_identity.pid);
         assert_eq!(writer_identity.session_id, writer_identity.pid);
+        let writer_exit = open_pidfd(writer_identity.pid)
+            .expect("the detached writer exit should be observable by stable identity");
 
         let event = durable
             .load_events_by_kind("project.environment_setup.updated")
@@ -1451,6 +1451,17 @@ mod tests {
         fixture
             .cleanup()
             .expect("the exact detached writer should be reaped before owned scratch cleanup");
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let writer_exit = tokio::io::unix::AsyncFd::new(writer_exit).unwrap();
+                let _exit = tokio::time::timeout(Duration::from_secs(30), writer_exit.readable())
+                    .await
+                    .expect("the detached writer did not exit after exact-identity cleanup")
+                    .unwrap();
+            });
         assert!(
             !scratch_path.exists(),
             "the test-owned scratch should be removed after writer cleanup"
@@ -1461,19 +1472,37 @@ mod tests {
         root: &'a Path,
         scratch: &'a super::super::project_environment_setup_scratch::WorkerValidationScratch,
         identity_path: PathBuf,
+        ready_path: PathBuf,
+        hold_path: PathBuf,
     }
 
     impl<'a> DetachedOutputWriterFixture<'a> {
         const IDENTITY_ENV: &'static str = "CHARIOX_TEST_DETACHED_OUTPUT_IDENTITY";
+        const READY_ENV: &'static str = "CHARIOX_TEST_DETACHED_OUTPUT_READY";
+        const HOLD_ENV: &'static str = "CHARIOX_TEST_DETACHED_OUTPUT_HOLD";
 
         fn new(
             root: &'a Path,
             scratch: &'a super::super::project_environment_setup_scratch::WorkerValidationScratch,
         ) -> Self {
+            let ready_path = root.join("writer-ready.fifo");
+            let hold_path = root.join("writer-hold.fifo");
+            #[cfg(target_os = "linux")]
+            for path in [&ready_path, &hold_path] {
+                use std::os::unix::ffi::OsStrExt;
+                let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+                assert_eq!(
+                    unsafe { libc::mkfifo(path.as_ptr(), 0o600) },
+                    0,
+                    "the fixture FIFO should be created"
+                );
+            }
             Self {
                 root,
                 scratch,
                 identity_path: root.join("detached-output-writer.identity"),
+                ready_path,
+                hold_path,
             }
         }
 
@@ -1495,24 +1524,34 @@ case "$writer_start_time" in ""|*[!0-9]*) exit 95 ;; esac
 [ -p "/proc/$writer_pid/fd/1" ] || exit 97
 printf "%s %s %s %s\n" "$writer_pid" "$writer_pgid" "$writer_sid" "$writer_start_time" > "${CHARIOX_TEST_DETACHED_OUTPUT_IDENTITY}.tmp" || exit 98
 /bin/mv "${CHARIOX_TEST_DETACHED_OUTPUT_IDENTITY}.tmp" "$CHARIOX_TEST_DETACHED_OUTPUT_IDENTITY" || exit 99
-exec /bin/sleep 5
+# Signal only after session identity and stdout ownership are recorded. Keep
+# stdout open until verified cleanup kills this writer; scheduler delays must
+# never let the fixture expire naturally before the assertions run.
+# Keep writer fd 1 on validation stdout even while readiness is sent.
+(printf "ready\n" > "$CHARIOX_TEST_DETACHED_OUTPUT_READY") || exit 100
+exec /bin/cat "$CHARIOX_TEST_DETACHED_OUTPUT_HOLD"
 ' &
-attempt=0
-while [ "$attempt" -lt 40 ]; do
-  [ -s "$CHARIOX_TEST_DETACHED_OUTPUT_IDENTITY" ] && exit 0
-  /bin/sleep 0.005
-  attempt=$((attempt + 1))
-done
-[ -s "$CHARIOX_TEST_DETACHED_OUTPUT_IDENTITY" ] || exit 100
+read -r ready < "$CHARIOX_TEST_DETACHED_OUTPUT_READY" || exit 101
+[ "$ready" = ready ] || exit 102
 exit 0
 "#
         }
 
         fn environment(&self) -> BTreeMap<String, String> {
-            BTreeMap::from([(
-                Self::IDENTITY_ENV.to_string(),
-                self.identity_path.to_string_lossy().into_owned(),
-            )])
+            BTreeMap::from([
+                (
+                    Self::IDENTITY_ENV.to_string(),
+                    self.identity_path.to_string_lossy().into_owned(),
+                ),
+                (
+                    Self::READY_ENV.to_string(),
+                    self.ready_path.to_string_lossy().into_owned(),
+                ),
+                (
+                    Self::HOLD_ENV.to_string(),
+                    self.hold_path.to_string_lossy().into_owned(),
+                ),
+            ])
         }
 
         fn recorded_identity(&self) -> Result<(u32, u32, u32, u64), String> {

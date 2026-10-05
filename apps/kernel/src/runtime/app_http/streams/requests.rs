@@ -8,6 +8,23 @@ use std::sync::atomic::Ordering;
 use tokio::sync::{oneshot, OwnedSemaphorePermit};
 
 pub(crate) struct HttpJob {
+    // Field order also releases request pins before notifying drain on discard.
+    request: HttpRequest,
+    writer: WriterJob,
+}
+struct WriterJob(watch::Sender<usize>);
+impl WriterJob {
+    fn new(jobs: &watch::Sender<usize>) -> Self {
+        jobs.send_modify(|count| *count += 1);
+        Self(jobs.clone())
+    }
+}
+impl Drop for WriterJob {
+    fn drop(&mut self) {
+        self.0.send_modify(|count| *count -= 1);
+    }
+}
+struct HttpRequest {
     group: HttpStreams,
     operation: Operation,
     budget: AppOperationBudget,
@@ -78,6 +95,11 @@ enum PortOperation {
     Read,
 }
 impl std::fmt::Debug for HttpJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.request.fmt(f)
+    }
+}
+impl std::fmt::Debug for HttpRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppHttpJob")
             .field(
@@ -158,13 +180,16 @@ impl HttpStreams {
         let (response, receiver) = oneshot::channel();
         Ok((
             HttpJob {
-                group: self.clone(),
-                operation,
-                budget,
-                deadline,
-                cancellation,
-                permit,
-                response,
+                writer: WriterJob::new(&self.0.writer_jobs),
+                request: HttpRequest {
+                    group: self.clone(),
+                    operation,
+                    budget,
+                    deadline,
+                    cancellation,
+                    permit,
+                    response,
+                },
             },
             receiver,
         ))
@@ -195,6 +220,18 @@ pub(super) fn spend(
     Ok(())
 }
 impl HttpJob {
+    pub(crate) fn reject(self, error: HttpError) {
+        let Self { request, writer } = self;
+        request.reject(error);
+        drop(writer);
+    }
+    pub(crate) fn submit(self, transaction: &rusqlite::Transaction<'_>) {
+        let Self { request, writer } = self;
+        request.submit(transaction);
+        drop(writer);
+    }
+}
+impl HttpRequest {
     pub(crate) fn reject(self, error: HttpError) {
         if let Operation::Port(port, _, _) = &self.operation {
             // A stale grant cannot keep transmitting an already-open stream.

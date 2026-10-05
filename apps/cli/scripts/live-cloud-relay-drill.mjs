@@ -153,8 +153,8 @@ async function main() {
     daemon = spawnProcess(kernelPath, [], { cwd: repoRoot, env: daemonEnv, name: "kernel" })
 
     const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}/kernel`
-    await waitForLocalDaemon(LocalIpcClient, requests, kernelUrl, workspace)
-    localClient = new LocalIpcClient(kernelUrl)
+    await waitForLocalDaemon(LocalIpcClient, requests, kernelUrl, workspace, daemonEnv)
+    localClient = new LocalIpcClient(kernelUrl, { localAuthEnvironment: daemonEnv })
 
     let handlers = commandActions.createCommandActionHandlers(createMinimalCommandDeps({
       apiUrl,
@@ -227,8 +227,8 @@ async function main() {
       const strippedConfigPath = await removePersistedCloudSessionToken(configHome)
       log("cloud-session-token-removed", { configPath: strippedConfigPath })
       daemon = spawnProcess(kernelPath, [], { cwd: repoRoot, env: daemonEnv, name: "kernel" })
-      await waitForLocalDaemon(LocalIpcClient, requests, kernelUrl, workspace)
-      localClient = new LocalIpcClient(kernelUrl)
+      await waitForLocalDaemon(LocalIpcClient, requests, kernelUrl, workspace, daemonEnv)
+      localClient = new LocalIpcClient(kernelUrl, { localAuthEnvironment: daemonEnv })
       log("cloud-target-reonline")
       const reonlineTarget = await waitForCloudRelayTarget(apiUrl, {
         accountId: profileRef.current.accountId,

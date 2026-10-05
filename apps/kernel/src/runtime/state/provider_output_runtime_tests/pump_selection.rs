@@ -404,7 +404,7 @@ async fn provider_switch_does_not_park_runs_with_active_prompts() {
         Some(second_run.id())
     );
     assert!(
-        app.provider_run_has_active_prompt(session.id(), &first_run)
+        app.provider_run_has_prompt_work(session.id(), &first_run)
             .unwrap(),
         "session focus on another run must not make an unbound agent turn idle"
     );
@@ -413,7 +413,7 @@ async fn provider_switch_does_not_park_runs_with_active_prompts() {
     assert!(
         state
             .owned
-            .provider_run_has_active_prompt(session.id(), &first_run)
+            .provider_run_has_prompt_work(session.id(), &first_run)
             .unwrap(),
         "kernel-owned lifecycle guard must protect the same unbound turn"
     );

@@ -217,13 +217,16 @@ fn native_abi_and_process_lifecycle() {
     // reach native main, before the C launcher could filter it itself.
     let ambient = File::open("/dev/null").unwrap();
     let leaked = unsafe { libc::fcntl(ambient.as_raw_fd(), libc::F_DUPFD, 240) };
-    assert_eq!(leaked, 240);
+    assert!(leaked >= 240);
     let _leaked = unsafe { File::from_raw_fd(leaked) };
     let limits = WorkerLimits {
         startup_timeout: Duration::from_secs(2),
         ..Default::default()
     };
-    let (prepared, observed, marker) = fixture.prepare("normal", false, false);
+    let (mut prepared, observed, marker) = fixture.prepare("normal", false, false);
+    prepared
+        .arguments
+        .push(CString::new(leaked.to_string()).unwrap());
     let mut worker = WorkerProcess::spawn_blocking(prepared, limits).unwrap();
     let ending = worker.ending();
     let runtime = tokio::runtime::Builder::new_current_thread()

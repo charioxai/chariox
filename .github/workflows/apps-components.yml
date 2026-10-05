@@ -143,6 +143,7 @@ jobs:
           cargo test --locked -p chariox-kernel --lib --no-run
           app_kernel_failures=0
           for app_kernel_filter in \
+            config::tests::runtime_identity::for_tests_resolves_temporary_aliases_before_opening_private_app_uploads \
             runtime::app_control:: \
             runtime::app_publisher_control:: \
             runtime::app_install_control:: \

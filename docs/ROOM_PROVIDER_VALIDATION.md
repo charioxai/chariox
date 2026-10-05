@@ -185,6 +185,26 @@ provider/Web/TUI recovery drill must also pass before accepting that coverage.
 
 ### Controller reference recovery
 
+The owned Chromium launcher restores its sanitized saved session after an
+unclean exit as well as a graceful close. Saved App URLs remain scriptless
+placeholders until the kernel reopens their verified current assets. Browser or
+controller loss retains open App intent and its logical Room Tab, with a new
+document revision; closed Tabs are not recovery intent. Local-controller Rooms
+use the same restore path. A relay-only outage does not reload live pages; a
+changed physical browser identity also detects restarts between polls without
+confusing a CDP reconnect with a browser crash. Component health and the
+Room aggregate settle under the same state owner: a running Room stays degraded
+while a component is unavailable or controller reconciliation is pending, and
+becomes ready as soon as both conditions clear.
+MCP browser status uses the Room-owned controller and the existing observation
+admission gate. It may reconcile a restarted controller but still return
+`environment_not_ready` with lifecycle `Degraded` while another Room component
+is unavailable. Browser reconciliation does not establish desktop or streamer
+health. Retry after their health receipts arrive; the last ready component
+settles the aggregate immediately, and status returns the same logical Tab with
+fresh element references. Synthetic headed-worker tests must provide those
+component receipts rather than assuming browser recovery proves all health.
+
 Run the real-Chrome controller request tests before the live provider drill:
 
 ```sh

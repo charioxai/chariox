@@ -1028,3 +1028,15 @@ test("executeShellCommand keeps the shell's quoting and variables for app inbox 
     { TestAppInboxRoute: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", payload: { title: "a  b" } } },
   ])
 })
+
+test("shared web shell refuses expired App receipts with visible text and no resend", async () => {
+  const fake = fakeClient(request => {
+    assert.deepEqual(request, { ControlAppWorker: { installation_id: "install-1", action: "restart" } })
+    return { AppRequestFailed: { code: "receipt_expired" } }
+  })
+  const result = await executeShellCommand(parseShellCommand("app restart install-1"), createDefaultShellContext(), { client: fake.client })
+  assert.equal(result.ok, false)
+  assert.equal(result.message, "App receipt expired. This request was not re-executed; check the App state before issuing a new command.")
+  assert.deepEqual(result.data, { code: "receipt_expired" })
+  assert.equal(fake.requests.length, 1)
+})

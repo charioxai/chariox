@@ -21,6 +21,7 @@ pub(super) fn store_transferred_file(
         Some(request.attachment_id.clone()),
         "transfer_store",
     )?;
+    context.authorize()?;
     let artifact_root = context.artifact_root("transfers");
     let result = FileTransferService::new().store_file(StoreTransferredFileRequest::new(
         request.session_id.clone(),

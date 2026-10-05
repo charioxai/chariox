@@ -20,9 +20,14 @@ fn degrade(room: &TestRoom) {
             )
             .unwrap();
     }
-    room.runtime
-        .transition_room_environment(&room.session_id, EnvironmentLifecycle::Degraded)
-        .unwrap();
+    // The queue derives degradation from unavailable component health.
+    assert_eq!(
+        room.runtime
+            .room_environment_snapshot(&room.session_id)
+            .unwrap()
+            .lifecycle,
+        EnvironmentLifecycle::Degraded
+    );
 }
 
 #[tokio::test]

@@ -9,21 +9,23 @@ impl KernelRuntimeState {
         caller_metaagent_id: Option<&str>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let caller_metaagent_id = caller_metaagent_id.map(str::to_string);
-        self.with_app_side_effect(move |app| {
+        self.with_authorized_app_side_effect(move |app| {
             let limits = app.config().workflow_code_limits();
-            let result = crate::app::KernelSessionService::new(app)
-                .compile_and_validate_workflow_code_source_with_rebindings(
-                    &request.session_id,
-                    &request.node_path,
-                    &request.source,
-                    request
-                        .language
-                        .unwrap_or(crate::workflow_code::WorkflowCodeLanguage::JavaScript),
-                    &limits,
-                    &request.provider_rebindings,
-                    &request.agent_rebindings,
-                    caller_metaagent_id.as_deref(),
-                )?;
+            let result = crate::app::KernelSessionService::with_authorization(app, &|| {
+                self.authorize_current_external_command()
+            })
+            .compile_and_validate_workflow_code_source_with_rebindings(
+                &request.session_id,
+                &request.node_path,
+                &request.source,
+                request
+                    .language
+                    .unwrap_or(crate::workflow_code::WorkflowCodeLanguage::JavaScript),
+                &limits,
+                &request.provider_rebindings,
+                &request.agent_rebindings,
+                caller_metaagent_id.as_deref(),
+            )?;
             Ok(LocalDaemonResponse::WorkflowCodeValidated { result })
         })
         .await
@@ -42,12 +44,15 @@ impl KernelRuntimeState {
         let controlled_by_metaagent_id = caller_metaagent_id.map(str::to_string);
         let session_id = request.session_id.clone();
         let result = self
-            .with_app_side_effect(move |app| {
+            .with_authorized_app_side_effect(move |app| {
                 let limits = app.config().workflow_code_limits();
                 let language = request
                     .language
                     .unwrap_or(crate::workflow_code::WorkflowCodeLanguage::JavaScript);
-                let result = app.compile_and_apply_workflow_code_source_with_rebindings(
+                let result = crate::app::KernelSessionService::with_authorization(app, &|| {
+                    self.authorize_current_external_command()
+                })
+                .compile_and_apply_workflow_code_source_with_rebindings(
                     &request.session_id,
                     &request.node_path,
                     &request.source,
@@ -58,6 +63,7 @@ impl KernelRuntimeState {
                     &request.provider_rebindings,
                     &request.agent_rebindings,
                 )?;
+                self.authorize_current_external_command()?;
                 let artifact_name = format!(
                     "workflow-source-{}-{}",
                     request.session_id, result.apply.workflow_id
@@ -122,19 +128,22 @@ impl KernelRuntimeState {
         let controlled_by_metaagent_id = caller_metaagent_id.map(str::to_string);
         let session_id = request.session_id.clone();
         let result = self
-            .with_app_side_effect(move |app| {
+            .with_authorized_app_side_effect(move |app| {
                 let result = workflow_code_artifact_apply_result(
                     app,
-                    &request.session_id,
                     &request.name,
-                    &request.provider_rebindings,
-                    &request.agent_rebindings,
-                    caller_user_id,
-                    controlled_by_metaagent_id,
                     crate::workflow_code::WorkflowCodeArtifactHistoryAction::Applied,
-                    "workflow_code_artifact.apply",
-                    None,
-                    None,
+                    WorkflowApplyContext {
+                        session_id: &request.session_id,
+                        provider_rebindings: &request.provider_rebindings,
+                        agent_rebindings: &request.agent_rebindings,
+                        caller_user_id,
+                        controlled_by_metaagent_id,
+                        operation: "workflow_code_artifact.apply",
+                        run_endpoint: None,
+                        run_queue: None,
+                        authorize: &|| self.authorize_current_external_command(),
+                    },
                 )?;
                 let session =
                     crate::app::KernelSessionReadService::new(app).session_snapshot(&session_id)?;
@@ -158,7 +167,7 @@ impl KernelRuntimeState {
         let controlled_by_metaagent_id = caller_metaagent_id.map(str::to_string);
         let session_id = request.session_id.clone();
         let apply_result = match self
-            .with_app_side_effect({
+            .with_authorized_app_side_effect({
                 let session_id = session_id.clone();
                 let node_path = request.node_path.clone();
                 let source = request.source.clone();
@@ -172,7 +181,10 @@ impl KernelRuntimeState {
                 let caller_user_id = caller_user_id.clone();
                 move |app| {
                     let limits = app.config().workflow_code_limits();
-                    let compile = crate::app::KernelSessionService::new(app)
+                    let compile =
+                        crate::app::KernelSessionService::with_authorization(app, &|| {
+                            self.authorize_current_external_command()
+                        })
                         .compile_and_validate_workflow_code_source_with_rebindings(
                             &session_id,
                             &node_path,
@@ -197,14 +209,16 @@ impl KernelRuntimeState {
                         queue_ref.as_deref(),
                         "workflow_code.run",
                     )?;
-                    let apply = crate::app::KernelSessionService::new(app)
-                        .apply_workflow_code_definition(
-                            &session_id,
-                            &compile.definition,
-                            &limits,
-                            caller_user_id,
-                            controlled_by_metaagent_id,
-                        )?;
+                    let apply = crate::app::KernelSessionService::with_authorization(app, &|| {
+                        self.authorize_current_external_command()
+                    })
+                    .apply_workflow_code_definition(
+                        &session_id,
+                        &compile.definition,
+                        &limits,
+                        caller_user_id,
+                        controlled_by_metaagent_id,
+                    )?;
                     Ok(crate::workflow_code::WorkflowCodeCompileAndApplyResult { compile, apply })
                 }
             })
@@ -303,7 +317,7 @@ impl KernelRuntimeState {
         let controlled_by_metaagent_id = caller_metaagent_id.map(str::to_string);
         let session_id = request.session_id.clone();
         let apply_result = match self
-            .with_app_side_effect({
+            .with_authorized_app_side_effect({
                 let session_id = session_id.clone();
                 let name = request.name.clone();
                 let provider_rebindings = request.provider_rebindings.clone();
@@ -314,16 +328,19 @@ impl KernelRuntimeState {
                 move |app| {
                     workflow_code_artifact_apply_result(
                         app,
-                        &session_id,
                         &name,
-                        &provider_rebindings,
-                        &agent_rebindings,
-                        caller_user_id,
-                        controlled_by_metaagent_id,
                         crate::workflow_code::WorkflowCodeArtifactHistoryAction::Run,
-                        "workflow_code_artifact.run",
-                        Some(endpoint.as_deref()),
-                        queue_ref.as_deref(),
+                        WorkflowApplyContext {
+                            session_id: &session_id,
+                            provider_rebindings: &provider_rebindings,
+                            agent_rebindings: &agent_rebindings,
+                            caller_user_id,
+                            controlled_by_metaagent_id,
+                            operation: "workflow_code_artifact.run",
+                            run_endpoint: Some(endpoint.as_deref()),
+                            run_queue: queue_ref.as_deref(),
+                            authorize: &|| self.authorize_current_external_command(),
+                        },
                     )
                 }
             })

@@ -16,6 +16,9 @@ use chariox_app_runtime::app_inbox::{
 };
 use serde_json::Value;
 
+#[cfg(test)]
+mod tests;
+
 impl KernelRuntimeState {
     pub(super) async fn app_inbox_request(
         &self,

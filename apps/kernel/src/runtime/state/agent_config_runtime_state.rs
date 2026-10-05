@@ -905,6 +905,7 @@ impl KernelRuntimeState {
         workspace_id: Option<Option<String>>,
         worktree_id: Option<Option<String>>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.authorize_current_external_command()?;
         let update = self.owned.update_agent_config(
             session_id,
             agent_id,
@@ -944,17 +945,21 @@ impl KernelRuntimeState {
             };
             let response = match self.connected_relay_state_for_config(&config).await {
                 Some(relay_state) => {
-                    crate::transport::relay_client::send_peer_request_via_connected_relay(
+                    crate::transport::relay_client::send_peer_request_via_connected_relay_authorized(
                         &config,
                         &relay_state,
                         target,
                         request,
+                        Duration::from_millis(config.relay_request_timeout_ms),
+                        || self.authorize_current_external_command(),
                     )
                     .await
                 }
                 None => {
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
                         &config, target, request,
+                        Duration::from_millis(config.relay_request_timeout_ms),
+                        || self.authorize_current_external_command(),
                     )
                     .await
                 }
@@ -969,6 +974,7 @@ impl KernelRuntimeState {
                 }
                 Err(error) => return Err(error),
             }
+            self.authorize_current_external_command()?;
             agent = self.owned.commit_remote_agent_config_update(
                 session_id,
                 agent_id,
