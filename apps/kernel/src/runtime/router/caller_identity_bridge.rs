@@ -32,7 +32,7 @@ impl CommandRouter {
         source: KernelCommandSource,
         connection_id: &str,
     ) -> KernelCaller {
-        let mut caller = self.local_command_caller(source).await;
+        let mut caller = self.local_command_caller(source, KernelConnectionClass::Terminal).await;
         caller.caller_id = format!("local-terminal:{connection_id}");
         caller
     }

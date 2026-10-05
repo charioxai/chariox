@@ -219,12 +219,9 @@ async fn restart_check() {
 
 async fn human(router: &CommandRouter, command: KernelBrowserCommand) -> Value {
     let request = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest { command });
-    let response = Box::pin(router.dispatch(
-        terminal_command("MD-4-browser", &request),
-        request,
-    ))
-    .await
-    .expect("MD-4 host browser request");
+    let response = Box::pin(router.dispatch(terminal_command("MD-4-browser", &request), request))
+        .await
+        .expect("MD-4 host browser request");
     let LocalDaemonResponse::KernelBrowser { result } = response else {
         panic!("MD-4 response variant");
     };
@@ -897,30 +894,23 @@ async fn live_check() {
                 generation,
             },
         });
-        assert!(
-            router
-                .dispatch(
-                    terminal_command("MD-4-stale", &stale),
-                    stale
-                )
-                .await
-                .is_err()
-        );
+        assert!(router
+            .dispatch(terminal_command("MD-4-stale", &stale), stale)
+            .await
+            .is_err());
         let stale_stream = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
             command: KernelBrowserCommand::Poll {
                 subscription_id: stream_id,
                 generation,
             },
         });
-        assert!(
-            router
-                .dispatch(
-                    terminal_command("MD-4-stale-stream", &stale_stream),
-                    stale_stream
-                )
-                .await
-                .is_err()
-        );
+        assert!(router
+            .dispatch(
+                terminal_command("MD-4-stale-stream", &stale_stream),
+                stale_stream
+            )
+            .await
+            .is_err());
         std::fs::write(root.join("MD4-RESTART.json"), serde_json::to_vec(&json!({"tab_id": id, "generation": recovered["generation"], "url":format!("http://{address}/fixture")})).unwrap()).unwrap();
     });
     use futures_util::FutureExt;

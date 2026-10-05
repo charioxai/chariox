@@ -1272,9 +1272,15 @@ async fn handle_incoming_payload(
                 Some(caller) => caller,
                 None if connection_class == KernelConnectionClass::Terminal => {
                     let connection_id = connection_state.lock().await.local_terminal_id.clone();
-                    router.local_terminal_caller(KernelCommandSource::LocalCli, &connection_id).await
+                    router
+                        .local_terminal_caller(KernelCommandSource::LocalCli, &connection_id)
+                        .await
                 }
-                None => router.local_command_caller(KernelCommandSource::LocalCli, connection_class).await,
+                None => {
+                    router
+                        .local_command_caller(KernelCommandSource::LocalCli, connection_class)
+                        .await
+                }
             };
             let command = KernelCommand::from_local_request_with_caller(
                 command_id.unwrap_or_else(|| request_id.clone()),

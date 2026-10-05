@@ -95,6 +95,12 @@ impl KernelRuntimeState {
         command: KernelBrowserCommand,
     ) -> Result<serde_json::Value, DaemonError> {
         let (user, actor) = self.kernel_browser_terminal_context(caller)?;
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        if matches!(command, KernelBrowserCommand::Stop) {
+            for view in self.app_control().user_views().browser_views(&user) {
+                self.forget_user_app_view(&user, &view.view_id);
+            }
+        }
         let mut params = serde_json::to_value(command)
             .map_err(|_| host_error("MD-2: invalid command".into()))?;
         params["observed_by"] = serde_json::json!(actor);

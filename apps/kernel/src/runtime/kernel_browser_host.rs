@@ -285,7 +285,9 @@ impl KernelBrowserHost {
         }
         Self::ensure_ready(&mut backend)?;
         let mut params = params;
-        if admission.is_some() { params["_agent_input"] = true.into(); }
+        if admission.is_some() {
+            params["_agent_input"] = true.into();
+        }
         self.check_admission(admission)?;
         backend.host_request("host.protect", policy)?;
         self.check_admission(admission)?;
@@ -507,7 +509,13 @@ mod tests {
         let retained = host.clone();
         host.shutdown().unwrap();
         assert!(retained
-            .protected_request("alice", None, "host.browser", serde_json::json!({"op":"start"}), Value::Null)
+            .protected_request(
+                "alice",
+                None,
+                "host.browser",
+                serde_json::json!({"op":"start"}),
+                Value::Null
+            )
             .is_err());
     }
     #[test]
