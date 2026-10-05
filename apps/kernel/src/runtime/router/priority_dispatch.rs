@@ -54,6 +54,22 @@ use crate::runtime::workspace_command_executor::execute_workspace_command_reques
 
 use super::CommandRouter;
 
+// Construct only the selected handler future in its own allocation frame.
+// Otherwise a synchronous match reserves stack temporaries for every arm,
+// including large unrelated futures, before it can select a small request.
+#[inline(never)]
+pub(super) fn boxed_handler<'a, F, Fut>(
+    factory: F,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<LocalDaemonResponse, DaemonError>> + Send + 'a>,
+>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<LocalDaemonResponse, DaemonError>> + Send + 'a,
+{
+    Box::pin(factory())
+}
+
 impl CommandRouter {
     pub(super) async fn dispatch_interactive(
         &self,
@@ -80,21 +96,21 @@ impl CommandRouter {
         // Select the handler before polling. A single async match reserves
         // stack space for unrelated arms throughout every nested handler poll.
         match request {
-            LocalDaemonRequest::Notes(request) => Box::pin(async move {
+            LocalDaemonRequest::Notes(request) => boxed_handler(|| async move {
                 let result = self
                     .runtime_state
                     .notes_terminal_request(&command, request.command)
                     .await?;
                 Ok(LocalDaemonResponse::Notes { result })
             }),
-            LocalDaemonRequest::CaptureVisibleRegion(request) => Box::pin(async move {
+            LocalDaemonRequest::CaptureVisibleRegion(request) => boxed_handler(|| async move {
                 let capture = self
                     .runtime_state
                     .capture_visible_region(&command, request)
                     .await?;
                 Ok(LocalDaemonResponse::VisibleRegionCaptured { capture })
             }),
-            LocalDaemonRequest::KernelBrowser(request) => Box::pin(async move {
+            LocalDaemonRequest::KernelBrowser(request) => boxed_handler(|| async move {
                 if !command.is_terminal_caller() {
                     return Err(DaemonError::LocalTransport {
                         operation: "kernel_browser",
@@ -108,9 +124,9 @@ impl CommandRouter {
                 Ok(LocalDaemonResponse::KernelBrowser { result })
             }),
             LocalDaemonRequest::GetTerminalCommandCatalog(_) => {
-                Box::pin(async move { terminal_command_catalog_response() })
+                boxed_handler(|| async move { terminal_command_catalog_response() })
             }
-            LocalDaemonRequest::RespondToInteraction(_) => Box::pin(async move {
+            LocalDaemonRequest::RespondToInteraction(_) => boxed_handler(|| async move {
                 Err(DaemonError::LocalTransport {
                     operation: "dispatch normal or background",
                     message: "interaction responses must be dispatched through the session runtime"
@@ -118,7 +134,7 @@ impl CommandRouter {
                 })
             }),
             LocalDaemonRequest::ArmDeploymentCredentialEnrollment(request) => {
-                Box::pin(async move {
+                boxed_handler(|| async move {
                     execute_arm_credential_enrollment(
                         &self.credential_enrollment_control,
                         &self.runtime_state,
@@ -129,7 +145,7 @@ impl CommandRouter {
                 })
             }
             LocalDaemonRequest::RequestCredentialEnrollmentInteraction(request) => {
-                Box::pin(async move {
+                boxed_handler(|| async move {
                     execute_credential_enrollment_interaction(
                         &self.credential_enrollment_control,
                         &self.runtime_state,
@@ -140,25 +156,27 @@ impl CommandRouter {
                 })
             }
             LocalDaemonRequest::RequestNativeProviderTurnInteraction(request) => {
-                Box::pin(async move {
+                boxed_handler(|| async move {
                     execute_native_provider_interaction_request(&self.runtime_state, request).await
                 })
             }
-            LocalDaemonRequest::LaunchProviderRun(request) => Box::pin(async move {
+            LocalDaemonRequest::LaunchProviderRun(request) => boxed_handler(|| async move {
                 execute_provider_launch_command(&self.runtime_state, &command, request).await
             }),
-            LocalDaemonRequest::LaunchProviderRuns(request) => Box::pin(async move {
+            LocalDaemonRequest::LaunchProviderRuns(request) => boxed_handler(|| async move {
                 execute_provider_batch_launch_command(&self.runtime_state, &command, request).await
             }),
-            LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(request) => Box::pin(async move {
-                let artifact = self
-                    .runtime_state
-                    .capture_room_environment_screenshot(&command.caller, request)
-                    .await?;
-                Ok(LocalDaemonResponse::RoomEnvironmentScreenshotCaptured { artifact })
-            }),
+            LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(request) => {
+                boxed_handler(|| async move {
+                    let artifact = self
+                        .runtime_state
+                        .capture_room_environment_screenshot(&command.caller, request)
+                        .await?;
+                    Ok(LocalDaemonResponse::RoomEnvironmentScreenshotCaptured { artifact })
+                })
+            }
             LocalDaemonRequest::ReadRoomEnvironmentScreenshotChunk(request) => {
-                Box::pin(async move {
+                boxed_handler(|| async move {
                     let chunk = self
                         .runtime_state
                         .read_room_environment_screenshot_chunk(&command.caller, request)
@@ -175,39 +193,37 @@ impl CommandRouter {
             | LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(_)
             | LocalDaemonRequest::GetRoomEnvironmentEvents(_)
             | LocalDaemonRequest::ListRoomEnvironmentActionHistory(_)
-            | LocalDaemonRequest::ListAgents(_)) => {
-                Box::pin(
-                    async move { execute_session_read_request(&self.runtime_state, request).await },
-                )
-            }
+            | LocalDaemonRequest::ListAgents(_)) => boxed_handler(|| async move {
+                execute_session_read_request(&self.runtime_state, request).await
+            }),
             request @ (LocalDaemonRequest::SearchMetaagentCommands(_)
             | LocalDaemonRequest::GetMetaagentTurnOverview(_)
             | LocalDaemonRequest::GetMetaagentTurnBlob(_)
             | LocalDaemonRequest::ListMetaagentEvents(_)
             | LocalDaemonRequest::ReadMetaagentEvent(_)
-            | LocalDaemonRequest::AckMetaagentEvents(_)) => Box::pin(async move {
+            | LocalDaemonRequest::AckMetaagentEvents(_)) => boxed_handler(|| async move {
                 let caller_user_id = command_caller_user_id(&command);
                 execute_metaagent_event_request(&self.runtime_state, request, &caller_user_id).await
             }),
             request @ (LocalDaemonRequest::UpdateMetaagentTask(_)
             | LocalDaemonRequest::PauseMetaagentTask(_)
             | LocalDaemonRequest::ResumeMetaagentTask(_)
-            | LocalDaemonRequest::AbortMetaagentTask(_)) => Box::pin(async move {
+            | LocalDaemonRequest::AbortMetaagentTask(_)) => boxed_handler(|| async move {
                 self.runtime_state
                     .execute_metaagent_task_request(request)
                     .await
             }),
-            request @ LocalDaemonRequest::GetDaemonHealth(_) => Box::pin(async move {
+            request @ LocalDaemonRequest::GetDaemonHealth(_) => boxed_handler(|| async move {
                 execute_daemon_health_request(self.daemon_health_projection_input(0), request).await
             }),
-            LocalDaemonRequest::GetKernelResourceTelemetry(_) => Box::pin(async move {
+            LocalDaemonRequest::GetKernelResourceTelemetry(_) => boxed_handler(|| async move {
                 execute_kernel_resource_telemetry_request(self.config_projection.snapshot())
             }),
             LocalDaemonRequest::ExportDebugBundle(request) => {
-                Box::pin(async move { execute_export_debug_bundle_request(request) })
+                boxed_handler(|| async move { execute_export_debug_bundle_request(request) })
             }
             request @ (LocalDaemonRequest::GetProviderRun(_)
-            | LocalDaemonRequest::UpdateProviderRunSelection(_)) => Box::pin(async move {
+            | LocalDaemonRequest::UpdateProviderRunSelection(_)) => boxed_handler(|| async move {
                 let caller_user_id = command_caller_user_id(&command);
                 execute_provider_run_request(
                     &self.runtime_state,
@@ -218,7 +234,7 @@ impl CommandRouter {
                 .await
             }),
             request @ (LocalDaemonRequest::GetPromptInputHistory(_)
-            | LocalDaemonRequest::RecordPromptInputHistory(_)) => Box::pin(async move {
+            | LocalDaemonRequest::RecordPromptInputHistory(_)) => boxed_handler(|| async move {
                 execute_history_request(
                     self.history_store.clone(),
                     self.operational_history_store.clone(),
@@ -244,7 +260,7 @@ impl CommandRouter {
             | LocalDaemonRequest::GetSliceStateStatus(_)
             | LocalDaemonRequest::ResetSliceState(_)
             | LocalDaemonRequest::CreateSliceBackup(_)
-            | LocalDaemonRequest::RestoreSliceBackup(_)) => Box::pin(async move {
+            | LocalDaemonRequest::RestoreSliceBackup(_)) => boxed_handler(|| async move {
                 execute_slice_request(
                     &self.runtime_state,
                     &self.config_projection,
@@ -256,7 +272,7 @@ impl CommandRouter {
                 .await
             }),
             request @ (LocalDaemonRequest::GetProviderCatalog(_)
-            | LocalDaemonRequest::GetProviderCommandCatalogs(_)) => Box::pin(async move {
+            | LocalDaemonRequest::GetProviderCommandCatalogs(_)) => boxed_handler(|| async move {
                 execute_provider_catalog_request(
                     &self.provider_catalog_projection,
                     &self.config_projection,
@@ -303,7 +319,7 @@ impl CommandRouter {
             | LocalDaemonRequest::UninstallSkill(_)
             | LocalDaemonRequest::ImportSkills(_)
             | LocalDaemonRequest::GetSkill(_)
-            | LocalDaemonRequest::ListSkills(_)) => Box::pin(async move {
+            | LocalDaemonRequest::ListSkills(_)) => boxed_handler(|| async move {
                 let credential_vault = self
                     .config_projection
                     .snapshot()
@@ -312,7 +328,7 @@ impl CommandRouter {
                 execute_capability_registry_request(&self.runtime_state, request, credential_vault)
                     .await
             }),
-            request @ LocalDaemonRequest::RelayStatus(_) => Box::pin(async move {
+            request @ LocalDaemonRequest::RelayStatus(_) => boxed_handler(|| async move {
                 execute_relay_config_request(
                     &self.runtime_state,
                     Arc::clone(&self.relay_state),
@@ -322,7 +338,7 @@ impl CommandRouter {
                 )
                 .await
             }),
-            request @ LocalDaemonRequest::ConfigureRelay(_) => Box::pin(async move {
+            request @ LocalDaemonRequest::ConfigureRelay(_) => boxed_handler(|| async move {
                 execute_relay_config_request(
                     &self.runtime_state,
                     Arc::clone(&self.relay_state),
@@ -346,7 +362,7 @@ impl CommandRouter {
             | LocalDaemonRequest::AcceptCloudSessionInvite(_)
             | LocalDaemonRequest::RevokeCloudSessionInvite(_)
             | LocalDaemonRequest::ListCloudSessionMembers(_)
-            | LocalDaemonRequest::ListCloudCollaborators(_)) => Box::pin(async move {
+            | LocalDaemonRequest::ListCloudCollaborators(_)) => boxed_handler(|| async move {
                 execute_cloud_relay_request(
                     &self.runtime_state,
                     &self.config_projection,
@@ -367,7 +383,7 @@ impl CommandRouter {
             | LocalDaemonRequest::SetProviderAccountCredential(_)
             | LocalDaemonRequest::GetCredentialVaultStatus(_)
             | LocalDaemonRequest::LockCredentialVault(_)
-            | LocalDaemonRequest::ManageCredentialVault(_)) => Box::pin(async move {
+            | LocalDaemonRequest::ManageCredentialVault(_)) => boxed_handler(|| async move {
                 execute_user_config_request(
                     &self.config_projection,
                     &self.runtime_state,
@@ -382,9 +398,11 @@ impl CommandRouter {
             | LocalDaemonRequest::PreviewPromptSetting(_)
             | LocalDaemonRequest::ResetPromptSetting(_)
             | LocalDaemonRequest::ResetAllPromptSettings(_)) => {
-                Box::pin(async move { execute_prompt_settings_request(&command, request).await })
+                boxed_handler(
+                    || async move { execute_prompt_settings_request(&command, request).await },
+                )
             }
-            request @ LocalDaemonRequest::DeleteKernel(_) => Box::pin(async move {
+            request @ LocalDaemonRequest::DeleteKernel(_) => boxed_handler(|| async move {
                 execute_kernel_lifecycle_request(
                     &self.config_projection,
                     &self.runtime_state,
@@ -394,34 +412,38 @@ impl CommandRouter {
             }),
             request @ (LocalDaemonRequest::ListRemoteMachines(_)
             | LocalDaemonRequest::ListRemoteMachineKernels(_)
-            | LocalDaemonRequest::QueryFreshRemoteMachineKernels(_)) => Box::pin(async move {
-                execute_remote_relay_inventory_request(
-                    Arc::clone(&self.relay_state),
-                    self.config_projection.clone(),
-                    self.remote_relay_inventory_projection.clone(),
-                    request,
-                )
-                .await
-            }),
+            | LocalDaemonRequest::QueryFreshRemoteMachineKernels(_)) => {
+                boxed_handler(|| async move {
+                    execute_remote_relay_inventory_request(
+                        Arc::clone(&self.relay_state),
+                        self.config_projection.clone(),
+                        self.remote_relay_inventory_projection.clone(),
+                        request,
+                    )
+                    .await
+                })
+            }
             request @ (LocalDaemonRequest::GetWaitingRoomInventory(_)
-            | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)) => Box::pin(async move {
-                let caller_user_id = command_caller_user_id(&command);
-                execute_waiting_room_request(
-                    &self.runtime_state,
-                    &self.session_projection,
-                    &self.waiting_room_session_summaries,
-                    Arc::clone(&self.relay_state),
-                    self.config_projection.clone(),
-                    self.remote_relay_inventory_projection.clone(),
-                    request,
-                    &caller_user_id,
-                )
-                .await
-            }),
+            | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)) => {
+                boxed_handler(|| async move {
+                    let caller_user_id = command_caller_user_id(&command);
+                    execute_waiting_room_request(
+                        &self.runtime_state,
+                        &self.session_projection,
+                        &self.waiting_room_session_summaries,
+                        Arc::clone(&self.relay_state),
+                        self.config_projection.clone(),
+                        self.remote_relay_inventory_projection.clone(),
+                        request,
+                        &caller_user_id,
+                    )
+                    .await
+                })
+            }
             request @ (LocalDaemonRequest::ListExternalProviderSessions(_)
             | LocalDaemonRequest::RefreshExternalProviderSessions(_)
             | LocalDaemonRequest::ImportExternalProviderSession(_)
-            | LocalDaemonRequest::ImportExternalProviderAgent(_)) => Box::pin(async move {
+            | LocalDaemonRequest::ImportExternalProviderAgent(_)) => boxed_handler(|| async move {
                 let caller_user_id = command_caller_user_id(&command);
                 execute_external_provider_session_request(
                     &self.app,
@@ -432,7 +454,7 @@ impl CommandRouter {
                 .await
             }),
             LocalDaemonRequest::RegisterWorkflowPublicationEndpoint(request) => {
-                Box::pin(async move {
+                boxed_handler(|| async move {
                     let caller_user_id = command_caller_user_id(&command);
                     execute_register_workflow_publication_endpoint_request(
                         &self.runtime_state,
@@ -445,7 +467,7 @@ impl CommandRouter {
                 })
             }
             LocalDaemonRequest::ControlWorkflowPublicationRuntime(request) => {
-                Box::pin(async move {
+                boxed_handler(|| async move {
                     let caller_user_id = command_caller_user_id(&command);
                     execute_control_workflow_publication_runtime_request(
                         &self.runtime_state,
@@ -456,7 +478,7 @@ impl CommandRouter {
                 })
             }
             LocalDaemonRequest::BindWorkflowPublicationDeployment(request) => {
-                Box::pin(async move {
+                boxed_handler(|| async move {
                     let caller_user_id = command_caller_user_id(&command);
                     execute_bind_workflow_publication_deployment_request(
                         &self.runtime_state,
@@ -479,22 +501,30 @@ impl CommandRouter {
             | LocalDaemonRequest::GetWorkspaceFileContent(_)
             | LocalDaemonRequest::CommitWorkspaceChanges(_)
             | LocalDaemonRequest::PushWorkspaceBranch(_)
-            | LocalDaemonRequest::CommitAndPushWorkspaceChanges(_)) => Box::pin(async move {
-                execute_workspace_command_request(
-                    &self.runtime_state,
-                    &self.session_projection,
-                    request,
-                )
-                .await
-            }),
-            request @ (LocalDaemonRequest::RunAgentUtility(_)
-            | LocalDaemonRequest::GenerateWorkspaceCommitMessage(_)) => Box::pin(async move {
-                execute_agent_utility_request(&self.runtime_state, &self.config_projection, request)
+            | LocalDaemonRequest::CommitAndPushWorkspaceChanges(_)) => {
+                boxed_handler(|| async move {
+                    execute_workspace_command_request(
+                        &self.runtime_state,
+                        &self.session_projection,
+                        request,
+                    )
                     .await
-            }),
+                })
+            }
+            request @ (LocalDaemonRequest::RunAgentUtility(_)
+            | LocalDaemonRequest::GenerateWorkspaceCommitMessage(_)) => {
+                boxed_handler(|| async move {
+                    execute_agent_utility_request(
+                        &self.runtime_state,
+                        &self.config_projection,
+                        request,
+                    )
+                    .await
+                })
+            }
             request @ (LocalDaemonRequest::ApproveRemoteMachine(_)
             | LocalDaemonRequest::ForgetRemoteMachine(_)
-            | LocalDaemonRequest::RenameRemoteMachine(_)) => Box::pin(async move {
+            | LocalDaemonRequest::RenameRemoteMachine(_)) => boxed_handler(|| async move {
                 execute_remote_machine_registry_request(
                     &self.app,
                     &self.config_projection,
@@ -513,7 +543,7 @@ impl CommandRouter {
             | LocalDaemonRequest::ShowWorkspaceLink(_)
             | LocalDaemonRequest::AttachWorkspaceLink(_)
             | LocalDaemonRequest::DetachWorkspaceLink(_)
-            | LocalDaemonRequest::GetWorkspaceLiveSyncStatus(_)) => Box::pin(async move {
+            | LocalDaemonRequest::GetWorkspaceLiveSyncStatus(_)) => boxed_handler(|| async move {
                 execute_session_collaboration_request(
                     &self.runtime_state,
                     &self.config_projection,
@@ -529,7 +559,7 @@ impl CommandRouter {
             | LocalDaemonRequest::ListTerminals(_)
             | LocalDaemonRequest::ListPairedClients(_)
             | LocalDaemonRequest::RecordPairedClient(_)
-            | LocalDaemonRequest::RevokePairedClient(_)) => Box::pin(async move {
+            | LocalDaemonRequest::RevokePairedClient(_)) => boxed_handler(|| async move {
                 execute_pairing_request(
                     &self.runtime_state,
                     &self.config_projection,
@@ -542,7 +572,7 @@ impl CommandRouter {
             | LocalDaemonRequest::StartProviderLogin(_)
             | LocalDaemonRequest::GetProviderLoginStatus(_)
             | LocalDaemonRequest::SendProviderLoginInput(_)
-            | LocalDaemonRequest::CancelProviderLogin(_)) => Box::pin(async move {
+            | LocalDaemonRequest::CancelProviderLogin(_)) => boxed_handler(|| async move {
                 let caller_user_id = command_caller_user_id(&command);
                 execute_provider_auth_request(&self.runtime_state, &caller_user_id, request).await
             }),
@@ -555,12 +585,14 @@ impl CommandRouter {
             | LocalDaemonRequest::SetDefaultProviderAccountProfile(_)
             | LocalDaemonRequest::RefreshProviderAccountProfile(_)
             | LocalDaemonRequest::RemoveProviderAccountProfile(_)
-            | LocalDaemonRequest::DeleteProviderAccountProfileData(_)) => Box::pin(async move {
-                let caller_user_id = command_caller_user_id(&command);
-                execute_provider_account_request(&self.runtime_state, &caller_user_id, request)
-                    .await
-            }),
-            request @ LocalDaemonRequest::LogoutProvider(_) => Box::pin(async move {
+            | LocalDaemonRequest::DeleteProviderAccountProfileData(_)) => {
+                boxed_handler(|| async move {
+                    let caller_user_id = command_caller_user_id(&command);
+                    execute_provider_account_request(&self.runtime_state, &caller_user_id, request)
+                        .await
+                })
+            }
+            request @ LocalDaemonRequest::LogoutProvider(_) => boxed_handler(|| async move {
                 let caller_user_id = command_caller_user_id(&command);
                 execute_provider_run_request(
                     &self.runtime_state,
@@ -571,7 +603,7 @@ impl CommandRouter {
                 .await
             }),
             request @ (LocalDaemonRequest::ListProviderProcesses(_)
-            | LocalDaemonRequest::TeardownProviderProcesses(_)) => Box::pin(async move {
+            | LocalDaemonRequest::TeardownProviderProcesses(_)) => boxed_handler(|| async move {
                 let caller_user_id = command_caller_user_id(&command);
                 execute_provider_process_request(
                     &self.runtime_state,
@@ -588,7 +620,7 @@ impl CommandRouter {
             | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
             | LocalDaemonRequest::QueryRecall(_)
             | LocalDaemonRequest::SearchRecall(_)
-            | LocalDaemonRequest::SemanticSearchRecall(_)) => Box::pin(async move {
+            | LocalDaemonRequest::SemanticSearchRecall(_)) => boxed_handler(|| async move {
                 execute_history_request(
                     self.history_store.clone(),
                     self.operational_history_store.clone(),
@@ -599,33 +631,39 @@ impl CommandRouter {
                 .await
             }),
             LocalDaemonRequest::PumpTerminalOutput(request) => {
-                Box::pin(async move { self.terminal_output_executor.execute(request).await })
+                boxed_handler(
+                    || async move { self.terminal_output_executor.execute(request).await },
+                )
             }
-            LocalDaemonRequest::AppendNativeProviderOutput(request) => Box::pin(async move {
-                execute_append_native_provider_output_request(
-                    &self.runtime_state,
-                    &self.session_projection,
-                    &self.agent_runtime_projection,
-                    request,
-                )
-                .await
-            }),
-            LocalDaemonRequest::AppendNativeProviderOutputBatch(request) => Box::pin(async move {
-                execute_append_native_provider_output_batch_request(
-                    &self.runtime_state,
-                    &self.session_projection,
-                    &self.agent_runtime_projection,
-                    request,
-                )
-                .await
-            }),
+            LocalDaemonRequest::AppendNativeProviderOutput(request) => {
+                boxed_handler(|| async move {
+                    execute_append_native_provider_output_request(
+                        &self.runtime_state,
+                        &self.session_projection,
+                        &self.agent_runtime_projection,
+                        request,
+                    )
+                    .await
+                })
+            }
+            LocalDaemonRequest::AppendNativeProviderOutputBatch(request) => {
+                boxed_handler(|| async move {
+                    execute_append_native_provider_output_batch_request(
+                        &self.runtime_state,
+                        &self.session_projection,
+                        &self.agent_runtime_projection,
+                        request,
+                    )
+                    .await
+                })
+            }
             request @ (LocalDaemonRequest::RunShellCommand(_)
             | LocalDaemonRequest::ReadDirectoryTree(_)
             | LocalDaemonRequest::ReadFile(_)
             | LocalDaemonRequest::EditFile(_)
             | LocalDaemonRequest::InspectGit(_)
             | LocalDaemonRequest::CaptureScreenshot(_)
-            | LocalDaemonRequest::StoreTransferredFile(_)) => Box::pin(async move {
+            | LocalDaemonRequest::StoreTransferredFile(_)) => boxed_handler(|| async move {
                 execute_required_capability_request(
                     &self.capability_runtime,
                     self.capability_health.clone(),
@@ -633,42 +671,42 @@ impl CommandRouter {
                 )
                 .await
             }),
-            LocalDaemonRequest::SubmitPrompt(request) => Box::pin(async move {
+            LocalDaemonRequest::SubmitPrompt(request) => boxed_handler(|| async move {
                 self.agent_runtime
                     .dispatch_prompt_submit(&command, request)
                     .await
             }),
-            LocalDaemonRequest::SubmitPrompts(request) => Box::pin(async move {
+            LocalDaemonRequest::SubmitPrompts(request) => boxed_handler(|| async move {
                 self.agent_runtime
                     .dispatch_prompt_submit_batch(&command, request)
                     .await
             }),
-            LocalDaemonRequest::CompletePrompt(request) => Box::pin(async move {
+            LocalDaemonRequest::CompletePrompt(request) => boxed_handler(|| async move {
                 self.agent_runtime
                     .dispatch_prompt_complete(&command, request)
                     .await
             }),
-            LocalDaemonRequest::CancelActivePrompt(request) => Box::pin(async move {
+            LocalDaemonRequest::CancelActivePrompt(request) => boxed_handler(|| async move {
                 self.agent_runtime
                     .dispatch_prompt_cancel(&command, request)
                     .await
             }),
-            LocalDaemonRequest::SteerQueuedPrompt(request) => Box::pin(async move {
+            LocalDaemonRequest::SteerQueuedPrompt(request) => boxed_handler(|| async move {
                 self.agent_runtime
                     .dispatch_prompt_steer_queued(&command, request)
                     .await
             }),
-            LocalDaemonRequest::CancelQueuedPrompt(request) => Box::pin(async move {
+            LocalDaemonRequest::CancelQueuedPrompt(request) => boxed_handler(|| async move {
                 self.agent_runtime
                     .dispatch_prompt_cancel_queued(&command, request)
                     .await
             }),
-            LocalDaemonRequest::UpdateQueuedPrompt(request) => Box::pin(async move {
+            LocalDaemonRequest::UpdateQueuedPrompt(request) => boxed_handler(|| async move {
                 self.agent_runtime
                     .dispatch_prompt_update_queued(&command, request)
                     .await
             }),
-            request => Box::pin(async move {
+            request => boxed_handler(|| async move {
                 if is_workflow_command(&request) {
                     self.workflow_runtime
                         .dispatch_workflow_command(command, request)
