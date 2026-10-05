@@ -21,6 +21,7 @@ import { roomProviderToolName, roomProviderToolOutput } from '../lib/room-provid
 import { observeKernelRpcErrors, rpcErrorRecord } from './round2/rpc-errors.mjs'
 import { permittedBrowserTool, navigationAudit } from './round2/browser-track.mjs'
 import { stopOwnedProcess } from './round2/owned-processes.mjs'
+import { webGamesFinalOutput } from './round2/webgames-answer.mjs'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..')
 const lane = process.env.WEBGAMES_LANE_ROOT
@@ -323,12 +324,9 @@ Use ONLY Chariox first-party slice_open_url and slice_browser_* tools. Observe t
     if (providerRunId) {
       try { row.usageTokensTotal = unwrap(await client.send(r.getProviderRunRequest(providerRunId)), 'ProviderRun').provider_run.usage_tokens_total } catch { /* Explicitly unavailable; no billing guess. */ }
     }
-    const inlineOutput = [...(turn?.entries ?? []), ...(turn?.summary ? [turn.summary] : [])].filter(x => x.entry?.kind === 'provider_output')
-    let finalOutput = [...outputEntries, ...inlineOutput].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0)).at(-1)?.entry.text ?? ''
-    if (turn?.lifecycle === 'completed') {
-      try { finalOutput = assembleSessionHistoryFinalMessage(turn, [...outputEntries, ...inlineOutput]) }
-      catch (error) { row.finalAssemblyError = rpcErrorRecord(error); finalOutput = '' }
-    }
+    let finalOutput = ''
+    try { finalOutput = webGamesFinalOutput(turn, outputEntries, { assembleSessionHistoryFinalMessage }) }
+    catch (error) { row.finalAssemblyError = rpcErrorRecord(error) }
     await writeFile(`${evidence}/${runId}-${encodeURIComponent(template)}-final.txt`, finalOutput, { mode: 0o600 })
     await writeFile(`${evidence}/${runId}-${encodeURIComponent(template)}-transcript.json`, JSON.stringify(sanitizeDrillMetadata({ mpItems, entries: transcriptEntries }), null, 2), { mode: 0o600 })
     row.finalResponseSha256 = createHash('sha256').update(finalOutput).digest('hex')

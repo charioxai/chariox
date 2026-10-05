@@ -24,6 +24,9 @@ const requiredOverlayDestinations = [
   ["Selkies viewer module", "/opt/chariox-slice/selkies_viewers.py"],
   ...[
     "browser-controller-actions.mjs",
+    "browser-controller-actionability.mjs",
+    "browser-controller-interactions.mjs",
+    "browser-controller-geometry.mjs",
     "browser-app-restore.mjs",
     "browser-controller-cdp.mjs",
     "browser-controller-resources.mjs",
@@ -82,6 +85,9 @@ test("each required overlay remains wired to a fail-closed refresh", async () =>
     "slice-selkies-stream.py",
     "selkies_viewers.py",
     "browser-controller-actions.mjs",
+    "browser-controller-actionability.mjs",
+    "browser-controller-interactions.mjs",
+    "browser-controller-geometry.mjs",
     "browser-controller-cdp.mjs",
   ]) {
     assert.ok(refresh.split("\n").some(line => line.includes("copy_required_slice_overlay") && line.includes(filename)),
