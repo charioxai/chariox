@@ -78,20 +78,29 @@ async fn mdnotes_two_local_connections_child() {
         4,
     ));
     let runtime = Arc::new(KernelTransportRuntime::new(router.transport_health_store()));
+    let auth = Arc::new(local_auth::LocalTokenAuth::new(
+        local_auth::generate_kernel_local_auth_token(),
+    ));
     let check_router = router.clone();
     let checked = tokio::spawn(Box::pin(async move {
         let (mut a, mut b) = {
             let connect = |router: Arc<CommandRouter>, runtime: Arc<KernelTransportRuntime>| {
                 let listener = listener.clone();
+                let auth = auth.clone();
                 async move {
-                    let client = connect_async(format!("ws://{address}"));
+                    let mut handshake = format!("ws://{address}").into_client_request().unwrap();
+                    handshake.headers_mut().insert(
+                        AUTHORIZATION,
+                        HeaderValue::from_str(&format!("Bearer {}", auth.token())).unwrap(),
+                    );
+                    let client = connect_async(handshake);
                     let server = tokio::spawn(async move {
                         let (stream, _) = listener.accept().await.unwrap();
                         handle_kernel_connection(
                             runtime,
                             router,
                             InboundRequestAdmission::new(process_inbound_request_limit()),
-                            KernelLocalAuth::Unconfigured,
+                            KernelLocalAuth::LocalToken(auth),
                             stream,
                         )
                         .await
