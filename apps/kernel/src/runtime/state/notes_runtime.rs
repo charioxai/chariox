@@ -23,12 +23,12 @@ impl KernelRuntimeState {
         session_id: &str,
         request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
     ) -> Result<(), DaemonError> {
-        self.room_browser_controller_command(
+        Box::pin(self.room_browser_controller_command(
             session_id,
             crate::transport::room_browser_controller::RoomBrowserControllerCommand::AppView {
                 request,
             },
-        )
+        ))
         .await
         .map(|_| ())
     }

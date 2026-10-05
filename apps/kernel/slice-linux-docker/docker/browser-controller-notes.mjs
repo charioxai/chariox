@@ -26,7 +26,7 @@ function installNoteObserver() {
       const range = document.createRange(); range.selectNodeContents(node);
       if (!range.getClientRects().length) continue;
       if (text.length + node.length > maxText) return null;
-      nodes.push({ node, start: text.length }); text += node.data;
+      nodes.push({ node, start: text.length }); text += node.data.toWellFormed();
     }
     return { nodes, text };
   };
@@ -62,9 +62,9 @@ function installNoteObserver() {
     const start = offset(indexed.nodes, range.startContainer, range.startOffset);
     const end = offset(indexed.nodes, range.endContainer, range.endOffset);
     const exact = indexed.text.slice(start,end);
-    if (!exact.trim() || new TextEncoder().encode(exact).length > 16384) return null;
+    if (!exact.isWellFormed() || !exact.trim() || new TextEncoder().encode(exact).length > 16384) return null;
     const rect = box(range); if (!rect) return null;
-    latest = { quote: { exact, prefix:indexed.text.slice(Math.max(0,start-64),start), suffix:indexed.text.slice(end,end+64) }, box_css:rect, hint:JSON.stringify({start,end}) };
+    latest = { quote: { exact, prefix:Array.from(indexed.text.slice(Math.max(0,start-256),start)).slice(-64).join('').toWellFormed(), suffix:Array.from(indexed.text.slice(end,end+256)).slice(0,64).join('').toWellFormed() }, box_css:rect, hint:JSON.stringify({start,end}) };
     return latest;
   };
   const matchQuote = (quote,root) => {

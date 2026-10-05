@@ -22,7 +22,8 @@ then watches selection and DOM changes. Frame traversal uses the existing
 controller frame ownership channel. Quote matching spans text nodes, open
 shadow roots and owned frames. Ambiguous matches do not silently pick one.
 Closed shadow roots and selections spanning separate DOM roots return no
-selection. Quote size, frame/root count and text indexing are bounded. A changed
+selection. Quote size, frame/root count and text indexing are bounded. Context truncation
+uses Unicode code points so an emoji cannot break the serialized quote. A changed
 or unavailable page retains the original quote, with `missing`, `ambiguous` or
 `unavailable` state. Read refreshes browser anchors. Durable host-tab listing follows stable tab
 identity across browser generations; re-anchoring uses the current observed
@@ -36,7 +37,7 @@ sending. Poll `capture_selection` for the visible streamed window; its
 `selection_changed` result is scoped to the requesting terminal. Clear the
 host icon on a null selection, target/generation change, disconnect, or stale
 reply. Draw the round icon and composer in trusted host UI outside all App/page
-frames. Use `noteOverlayBox` with the **rendered page rectangle**, including
+frames. Render quote, comment and reply strings as plain text nodes. Use `noteOverlayBox` with the **rendered page rectangle**, including
 browser-bar/App-panel offsets and letterboxing, rather than the entire screen.
 Native App frames report selections through the authenticated host bridge;
 never accept page `postMessage` as a streamed selection report.

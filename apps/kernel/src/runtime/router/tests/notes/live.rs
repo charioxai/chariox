@@ -47,7 +47,7 @@ impl Fixture {
                             .unwrap();
                         let mut data = [0; 4096];
                         let _ = socket.read(&mut data);
-                        let body="<!doctype html><title>MD-N5 selected text</title><p id='quote'>MD notes selected quote</p><p>after the quote</p>";
+                        let body=format!("<!doctype html><title>MD-N5 selected text</title><span>🙂{}</span><p id='quote'>MD notes selected quote</p><p>{}🙂</p>","x".repeat(63),"x".repeat(63));
                         let _=write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -187,7 +187,7 @@ async fn check_live() {
         use crate::runtime::browser_controller_app_view::{BrowserAppViewRequest, BrowserAppViewAsset};
         router.runtime_state.notes_drill_app_view(session.id(),BrowserAppViewRequest::Open {
             origin_label:"mdnotes-fixture".into(),installation_id:"mdnotes-fixture".into(),entry:"index.html".into(),page:None,
-            assets:vec![BrowserAppViewAsset {path:"index.html".into(),content_type:"text/html".into(),body_base64:base64::engine::general_purpose::STANDARD.encode("<!doctype html><title>MD-N5 App</title><p id='quote'>MD notes selected quote</p><p>after the quote</p>")}],
+            assets:vec![BrowserAppViewAsset {path:"index.html".into(),content_type:"text/html".into(),body_base64:base64::engine::general_purpose::STANDARD.encode(format!("<!doctype html><title>MD-N5 App</title><span>🙂{}</span><p id='quote'>MD notes selected quote</p><p>{}🙂</p>","x".repeat(63),"x".repeat(63)))}],
         }).await.unwrap();
         let app_url="https://app.mdnotes-fixture.invalid/".to_string();
         let app_state=router.runtime_state.reconcile_browser_controller_environment(session.id()).await.unwrap();
@@ -198,7 +198,7 @@ async fn check_live() {
         for (window,browser_root,url) in [(user_window,user_root,fixture.url.clone()),(room_window,room_root.clone(),fixture.url.clone()),(app_window,room_root.clone(),app_url)] {
             driver(&browser_root,&url,"select");
             let NoteResult::SelectionChanged{selection:Some(selection)}=request(&router,NoteCommand::CaptureSelection{window:window.clone()}).await else{panic!("MD-N5 selection expected")};
-            assert_eq!(selection.anchor.quote.exact,"MD notes selected quote");assert!(selection.box_css.as_ref().unwrap().width>0.);
+            assert_eq!(selection.anchor.quote.exact,"MD notes selected quote");assert_eq!(selection.anchor.quote.prefix,format!("🙂{}","x".repeat(63)));assert_eq!(selection.anchor.quote.suffix,format!("{}🙂","x".repeat(63)));assert!(selection.box_css.as_ref().unwrap().width>0.);
             let NoteResult::NoteChanged{note}=request(&router,NoteCommand::Create{selection_id:selection.selection_id,comment:"Explain the selected quote".into()}).await else{panic!("note expected")};
             let list=router.dispatch_authenticated_runtime_tool_call(a,"chariox.list_notes",json!({"window":window})).await.unwrap();
             assert_eq!(list.payload["notes"][0]["note_id"],note.note_id);
