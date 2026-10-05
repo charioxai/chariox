@@ -1,7 +1,7 @@
 # MD-1: kernel browser outside slices
 
-Protocol introduction: local 417. Integration current: 418/70 on OSS main
-`358491d66` plus Apps-on-main. See MULTIDOMAIN_INTEGRATION.md for merge-order
+Protocol introduction: local 417. Integration current: 424/70 on OSS main
+`358491d66` plus Apps-on-main. See MULTIDOMAIN_STACK.md and MULTIDOMAIN_INTEGRATION.md for merge-order
 renumbering and the bound App host.
 MD-1 is design, MD-2 host/browser and shared protocol, MD-3 focused runtime MCP,
 MD-4 native drill and recovery, MD-5 shared Vault protection. These are not MP acceptance claims.
