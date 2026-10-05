@@ -49,14 +49,20 @@ adapters; neither VideoToolbox nor Media Foundation has been measured here.
 libvpx controls; [WebCodecs](https://www.w3.org/TR/webcodecs/) defines the browser
 decoder/support-query contract. Codec support must be queried per viewer.
 
-A changed large frame first gets VP9. The next full protected capture gets
-an exact full PNG, including when the source changed slightly during refinement.
-Once the viewer acknowledges exact pixels, small changes may
-use 128-pixel PNG tiles against that exact sequence. Compare serialized patch
-size against full PNG; use patches only below 48 KB. Larger moving changes
-return to video. Unchanged exact frames emit no event. Lost acknowledgements,
+A changed large frame first gets VP9. Exact refinement waits for an unchanged
+full protected capture. Small repairs use a full PNG; larger repairs use batches
+of 128-pixel PNG tiles against the last displayed sequence (including a video
+base). All tiles of that protected snapshot must arrive before the server marks
+it exact. New source pixels, a lost base, document or protection changes discard
+pending repair batches. Once exact, small changes use dirty tiles. Tile batches
+use half a second of negotiated budget, allowing outer base64 and 4 KB overhead,
+with a 24 KB minimum / 192 KB maximum JSON allowance; one incompressible tile can
+exceed that allowance but still must fit the 1 MiB event bound. Larger moving
+changes return to independent video. One outstanding credit bounds the queue
+and lowers capture cadence automatically on slow links. No automatic retry or
+bitrate resubscription is introduced. Unchanged exact frames emit no event. Lost acknowledgements,
 new documents or changed protection policy discard the patch base. A fresh
-independent video frame and then full PNG rebuild it. PNG-only mode is exact
+independent video frame and then complete lossless repair rebuild it. PNG-only mode is exact
 on every full emitted frame. Phase 4 adds private, protected thumbnail-guided
 native crops for small changes. A thumbnail never supplies displayed pixels or
 crosses the relay. It locates a padded CSS rectangle (at most 15% of the viewport)
@@ -371,3 +377,55 @@ Owner decisions: acceptable moving and settled fidelity, p95 input latency/WAN
 and total-egress budgets, required client codecs/platforms, initial page scope,
 cursor/IME/file-chooser coverage, and criteria for Room desktop migration. Until
 those decisions and independent review, keep the flag off by default.
+
+## MD-DISPLAY-04: native OS adapter design (not implemented)
+
+`apps/kernel/native-display/adapter.mjs` is an unavailable, unregistered stub.
+It never opens a window, captures pixels or encodes them. Portable VP9/PNG stays
+the only negotiated implementation at protocol 419. These integration points
+are proposed designs, inferred from platform APIs; no native timings are claimed.
+
+On macOS, first retain `KernelBrowserHost.screenshot` and its protected DPR2 PNG
+barrier. Decode into a kernel-owned sRGB `CVPixelBuffer` pool and pass that image
+to a bounded `VTCompressionSession`. Request H.264 low-latency rate control,
+`RealTime`, expected frame rate and the negotiated average bitrate; force a
+keyframe after a lost base/document/policy change. Callback buffers must be tied
+to the admitted source binding and one outstanding credit, and released on
+cancel/close. Query hardware availability rather than promising an encoder.
+[Apple's low-latency sample](https://developer.apple.com/documentation/videotoolbox/encoding-video-for-low-latency-conferencing)
+and [compression-session lifecycle](https://developer.apple.com/documentation/videotoolbox/vtcompressionsession-api-collection)
+support those API choices. H.264 conversion can blur chroma; the existing exact
+PNG/tile refinement remains required for text.
+
+ScreenCaptureKit is a later capture adapter, using a content filter for the
+kernel-owned Chromium window and backing-pixel geometry. It adds screen-recording
+permission and native window/content-rectangle mapping; CDP avoids that new OS
+capture dependency for the first browser-only path. See
+[Apple's window-capture sample](https://developer.apple.com/documentation/screencapturekit/capturing-screen-content-in-macos).
+Neither ScreenCaptureKit nor raw CDP screencast may bypass the kernel's Vault
+barrier: associate the current document and protection epoch, mask before the
+encoder, recheck after capture, and emit opaque pixels on uncertainty. Mask
+updates fence queued images and encoder references before more frames leave.
+Cursor, native file chooser, HDR and occlusion require separate acceptance.
+
+On Windows, keep protected CDP PNG first. Copy protected sRGB BGRA into an NV12
+sample and use an enumerated H.264 Media Foundation `IMFTransform`; negotiate
+output before input and query `ICodecAPI` support. Request mean/max bitrate,
+low latency, no reordering, GOP/keyframe control and bounded async work. Drain
+and release samples on close. The
+[H.264 encoder contract](https://learn.microsoft.com/en-us/windows/win32/medfound/h-264-video-encoder)
+and [low-latency property](https://learn.microsoft.com/en-us/windows/win32/medfound/codecapi-avlowlatencymode)
+document these controls; hardware and optional properties vary. NV12 is lossy
+for colored text, so exact refinement stays separate. Later,
+[Windows.Graphics.Capture](https://learn.microsoft.com/en-us/windows/apps/develop/media-authoring-processing/screen-capture)
+can supply a kernel-window D3D surface through a bounded frame pool after consent.
+Apply the same mask/document barrier before BGRA/NV12 conversion. Handle resize,
+device loss and HDR-to-sRGB explicitly; never capture the whole user desktop as
+a browser fallback.
+
+A native encoder cannot be plugged into the present VP9-only presenter merely
+by changing an executable. Before native activation, the coordinator must
+allocate any required protocol evolution, add AVC decoder-config/framing and
+negotiation coverage, and run native protected-image/slow-viewer/reconnect/Vault
+drills. Persistent inter prediction likewise needs an explicit decoder/base
+recovery contract. The current independent-frame wire shape remains unchanged.

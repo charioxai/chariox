@@ -1,3 +1,22 @@
+# MD-DISPLAY-02/04 — Phase 5 implementation milestone (validation running)
+
+Local commits 740a7ffaa and 2cbfe5618; no publication. Protocol 419, flag off.
+First adds owned namespace WAN/moving harness; second fixes moving/oversized
+repair with fail-first tests and adds unavailable native design stubs.
+41 existing+repair Node tests and 2 native/netem tests pass. Slot-2 rebuild and
+final live receipts pending; do not attribute Phase-4 coverage to these files.
+
+MD-DISPLAY-02 exploratory campaign 740a7ffaa with binary built at 05387e1e4:
+local 78/92 ms, WAN40 172/193, WAN80 285/307, WAN150 457/490; exact settled
+static pixels. MTU/offloads were default in that campaign. Canvas/video under
+1 fps; dense-scroll RED on an oversized full repair. Parent exits 1; all seven
+namespace and process inventories empty after cleanup. Final packet-realism
+rerun uses only owned namespace MTU1500/offloads disabled.
+
+MD-DISPLAY-04 review inbox: no new entries beyond fixed 02:17 findings. Previous
+mapping retained below. Native design and stubs are unmeasured on Mac/Windows.
+Evidence: /root/.codex/evidence/browser-resume-20260930/display/phase5/.
+
 # MD-DISPLAY-02/04 — Phase 4 ready for coordinator review
 
 Local branch agent/display-impl, execution + kernel build 05387e1e4; repeat
