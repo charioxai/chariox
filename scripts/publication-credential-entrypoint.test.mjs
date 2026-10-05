@@ -6,9 +6,28 @@ import { join, resolve } from "node:path"
 import { promisify } from "node:util"
 import { test } from "node:test"
 
-const execFileAsync = promisify(execFile)
+const rawExecFileAsync = promisify(execFile)
 const repositoryRoot = resolve(import.meta.dirname, "..")
 const entrypoint = await readFile(join(repositoryRoot, "docker/publication/entrypoint.sh"), "utf8")
+
+// Host fixtures exercise import/admission only. Container users and /home,/run
+// mounts belong to the image; keep every writable path inside this run's root.
+async function execFileAsync(command, args, options) {
+  if (command !== "bash" || args[0] !== join(repositoryRoot, "docker/publication/entrypoint.sh")) {
+    return rawExecFileAsync(command, args, options)
+  }
+  const root = resolve(options.env.HOME, "..")
+  const script = join(root, "entrypoint-fixture.sh")
+  const fixture = entrypoint
+    .replace("readonly CHARIOX_ACTION_HOME=/home/chariox-action", `readonly CHARIOX_ACTION_HOME=${JSON.stringify(join(root, "action-home"))}`)
+    .replace("readonly CHARIOX_GATEWAY_HOME=/home/chariox-gateway", `readonly CHARIOX_GATEWAY_HOME=${JSON.stringify(join(root, "gateway-home"))}`)
+    .replace("readonly CHARIOX_CAPABILITY_ROOT=/run/chariox-publication-capabilities", `readonly CHARIOX_CAPABILITY_ROOT=${JSON.stringify(join(root, "capabilities"))}`)
+    .replace(/\bchariox(?:-action|-gateway)?:chariox(?:-action|-gateway)?\b/g, "$(id -u):$(id -g)")
+  await writeFile(script, fixture, {mode: 0o600, flag: "wx"})
+  try { return await rawExecFileAsync(command, [script, ...args.slice(1)], options) }
+  finally { await rm(script, {force:true}) }
+}
+
 
 test("publication entrypoint keeps builder actions outside credential and transport environments", () => {
   assert.match(entrypoint, /^umask 077$/m)

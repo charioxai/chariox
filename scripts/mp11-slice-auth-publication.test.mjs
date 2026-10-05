@@ -25,3 +25,14 @@ test('MP-11 F18 auth publication refuses an aliased destination before modifying
  assert.equal(fs.readFileSync(unrelated,'utf8')==='synthetic-unrelated',true);assert.equal(fs.statSync(unrelated).mode&0o777,0o644)
  }finally{fs.rmSync(root,{recursive:true,force:true})}
 })
+test('MP-11 F18 unowned or replaced backup is preserved and reported',()=>{
+ for(const replaced of [false,true]){
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'mp11-slice-auth-'))
+  try{const target=path.join(root,'codex/fixture/codex/auth.json');const backup=`${target}.before-slice-auth`;fs.mkdirSync(path.dirname(target),{recursive:true});fs.writeFileSync(target,'synthetic-prior');fs.writeFileSync(path.join(root,'source'),'synthetic-incoming',{mode:0o600})
+   if(replaced){assert.equal(driver(root,'copy_provider_auth_file "$SOURCE" "$TARGET" fixture').status,0);fs.unlinkSync(backup)}
+   fs.writeFileSync(backup,'synthetic-unrelated-backup',{mode:0o644})
+   const run=driver(root,replaced?'remove_codex_auth':'copy_provider_auth_file "$SOURCE" "$TARGET" fixture');assert.notEqual(run.status,0)
+   assert.equal(fs.readFileSync(backup,'utf8')==='synthetic-unrelated-backup',true);assert.equal(fs.statSync(backup).mode&0o777,0o644)
+  }finally{fs.rmSync(root,{recursive:true,force:true})}
+ }
+})
