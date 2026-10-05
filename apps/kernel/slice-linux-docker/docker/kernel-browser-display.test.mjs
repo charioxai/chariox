@@ -35,7 +35,11 @@ test('MD-DISPLAY async encoder launch failure rejects into cleanup', async () =>
   const original = process.env.CHARIOX_BROWSER_DISPLAY_PYTHON;
   process.env.CHARIOX_BROWSER_DISPLAY_PYTHON = '/nonexistent/md-display-python';
   const encoder = new PortableEncoder();
-  try { await assert.rejects(encoder.encode(fixture().data_base64, 2_000_000)); assert.equal(encoder.child, null); }
+  try {
+    await assert.rejects(encoder.encode(fixture().data_base64, 2_000_000)); assert.equal(encoder.child, null);
+    await assert.rejects(encoder.encode(fixture().data_base64, 2_000_000));
+    assert.equal(encoder.child === null, true, 'failed encoder must not spawn an unawaited replacement');
+  }
   finally { await encoder.close(); if (original === undefined) delete process.env.CHARIOX_BROWSER_DISPLAY_PYTHON; else process.env.CHARIOX_BROWSER_DISPLAY_PYTHON = original; }
 });
 test('MD-DISPLAY disabled commands fail before launching host Chromium', async () => {
