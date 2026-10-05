@@ -51,13 +51,17 @@ export function actionabilityFunction(allowVisiblePoint = false) {
       const right = Math.min(ownerWindow.innerWidth, rect.right);
       const bottom = Math.min(ownerWindow.innerHeight, rect.bottom);
       if (right > left && bottom > top) {
-        const fractions = [
-          [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75],
-          [0.5, 0.25], [0.5, 0.75], [0.25, 0.5], [0.75, 0.5],
+        const insetX = Math.min(2, (right - left) / 4);
+        const insetY = Math.min(2, (bottom - top) / 4);
+        const middleX = (left + right) / 2;
+        const middleY = (top + bottom) / 2;
+        const points = [
+          [left + insetX, top + insetY], [right - insetX, top + insetY],
+          [left + insetX, bottom - insetY], [right - insetX, bottom - insetY],
+          [middleX, top + insetY], [middleX, bottom - insetY],
+          [left + insetX, middleY], [right - insetX, middleY],
         ];
-        for (const [fx, fy] of fractions) {
-          const x = left + (right - left) * fx;
-          const y = top + (bottom - top) * fy;
+        for (const [x, y] of points) {
           if (receivesInput(x, y)) {
             point = [x, y];
             break;
