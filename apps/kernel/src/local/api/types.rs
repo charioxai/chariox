@@ -16,6 +16,7 @@ mod agent_utility;
 mod apps;
 mod browser_import;
 mod kernel_browser;
+mod screenshot;
 mod capability;
 mod cloud_relay;
 mod config_capabilities;
@@ -52,6 +53,7 @@ pub use agent_utility::*;
 pub use apps::*;
 pub use browser_import::*;
 pub use kernel_browser::*;
+pub use screenshot::*;
 pub use capability::*;
 pub use cloud_relay::*;
 pub use config_capabilities::*;
@@ -255,4 +257,5 @@ pub use workspace::*;
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
 /// Version 417 adds kernel-owned sessionless host browser control.
 /// Version 418 adds owner-scoped App views and detached approval projection outside Rooms.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 418;
+/// Version 425 adds owner-only visible-region capture for prompt attachments.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 425;

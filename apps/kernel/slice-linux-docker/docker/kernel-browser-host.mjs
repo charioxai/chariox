@@ -9,6 +9,7 @@ import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { assertNotCancelled, assertCurrentDocument } from "./browser-controller-actions.mjs";
+import { captureRegionMasks } from "./kernel-browser-region-protection.mjs";
 import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
 
 const TAB_LIMIT = 128;
@@ -161,17 +162,20 @@ export class KernelBrowserHost {
     if (!tab) throw new Error("MD-2: host tab does not exist");
     return tab;
   }
-  async screenshot(tab) {
+  async screenshot(tab, protectedCapture = false) {
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
+    const regionMasks = protectedCapture ? await captureRegionMasks(connection, sessionId) : null;
     const data = await captureProtectedPage(this.browser, tab, this.protection.values,
       this.protection.targets.filter(target => target.kind === "browser"), async () => {
         const { data } = await connection.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false }, sessionId);
         return data;
       });
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
+    const protected_regions = protectedCapture
+      ? await regionMasks.afterCapture() : undefined;
     if (typeof data !== "string" || data.length > 4 * 1024 * 1024) throw new Error("MD-2: frame exceeds limit");
-    return { generation: this.generation, tab_id: tab.tab_id, document_id: tab.document_id, mime_type: "image/png", data_base64: data, width: 1280, height: 800 };
+    return { generation: this.generation, tab_id: tab.tab_id, document_id: tab.document_id, mime_type: "image/png", data_base64: data, width: 1280, height: 800, ...(protectedCapture ? { protected_regions } : {}) };
   }
   async subscribe(tab, boundFrames = false) {
     if (this.streams.size >= 16) throw new Error("MD-2: frame subscription limit reached");
@@ -298,7 +302,7 @@ export class KernelBrowserHost {
       return this.observe(await this.reconcile(), null, scope);
     }
     if (command.op === "screenshot") {
-      const frame = await this.screenshot(tab);
+      const frame = await this.screenshot(tab, command._capture_protection === true);
       // MD-3: explicit binding is an internal display/MCP seam. Legacy 417
       // still emits its existing frame shape until the coordinator adapter lands.
       if (!command.focused_agent && !command.bound_frames) delete frame.document_id;

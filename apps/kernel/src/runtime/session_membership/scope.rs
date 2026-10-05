@@ -186,6 +186,10 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::CaptureVisibleRegion(request) => match &request.surface {
+            crate::local::ScreenshotSurface::Room { session_id, .. } => Some(SessionMembershipScope::SessionId(session_id.clone())),
+            _ => None,
+        },
         LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),

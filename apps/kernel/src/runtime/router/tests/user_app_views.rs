@@ -200,6 +200,16 @@ fn run_drill(stall: bool, browser: bool) {
                 else {
                     panic!("open native view");
                 };
+                if !browser {
+                    let capture=LocalDaemonRequest::CaptureVisibleRegion(CaptureVisibleRegionRequest {
+                        capture_id:"human-capture".into(), surface:ScreenshotSurface::UserAppView {view_id:view.view_id.clone(),generation:1},
+                        region:ScreenshotRegion{x:0,y:0,width:10,height:10,viewport_width:1280,viewport_height:800,frame_width:1280,frame_height:800},
+                    });
+                    assert!(request(&router,"bob",capture.clone()).await.is_err(),"another owner cannot capture a view");
+                    assert!(request(&router,"alice",capture.clone()).await.is_err(),"native views have no kernel pixel surface");
+                    let mut provider=remote_command_for_request(&capture,Some("alice"));provider.caller.connection_class=Some(KernelConnectionClass::KernelAgent);
+                    assert!(router.dispatch(provider,capture).await.is_err(),"App/agent routes cannot invoke human capture");
+                }
                 assert_eq!(frontend.entry, "index.html");
                 assert!(frontend
                     .assets

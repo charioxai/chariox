@@ -137,6 +137,7 @@ mod room_environment_health;
 mod room_environment_placement;
 mod room_environment_state;
 mod room_screenshot;
+mod visible_region_capture;
 mod room_secret_observation;
 mod runtime_tool_call_activity;
 pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;

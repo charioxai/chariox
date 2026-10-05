@@ -9,6 +9,7 @@ pub enum LocalDaemonResponse {
     KernelAccessRevoked { revoked: usize, },
     /// MD-2: operation result; no CDP endpoints or profile paths.
     KernelBrowser { result: serde_json::Value, },
+    VisibleRegionCaptured { capture: VisibleRegionCapture },
     AppPublisherEnrollmentStatus { operation: AppPublisherEnrollmentSummary, },
     AppInstallOperationStatus { operation: AppInstallOperationSummary, },
     AppPackageUploadStatus { upload: AppPackageUploadSummary, },

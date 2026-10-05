@@ -21,3 +21,5 @@ export * from "./ipc-project-environment-setup-requests.js"
 export * from "./ipc-config-requests.js"
 
 export * from "./ipc-kernel-browser-requests.js"
+
+export * from "./ipc-screenshot-requests.js"
