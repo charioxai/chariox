@@ -188,7 +188,7 @@ test("MP11 cleanup revalidates replacement container and volume identities", asy
 test("MP11 owned Docker deletion uses immutable container ID and rechecks the volume", async () => {
   const { cleanupBrowserStateDockerResources, captureBrowserStateDockerOwnership, assertBrowserStateDockerNamesAvailable } = await import("./browser-state-drill-cleanup.mjs")
   const slice = { id: "slice", owner_kernel_id: "kernel", owner_machine_id: "machine" }
-  const labels = { "io.chariox.slice.id": "slice", "io.chariox.slice.owner-kernel-id": "kernel", "io.chariox.slice.owner-machine-id": "machine" }
+  const labels = { "io.chariox.slice.id": "slice", "io.chariox.slice.owner-kernel-id": "kernel", "io.chariox.slice.owner-machine-id": "machine", "io.chariox.slice.runtime-name": "unique-run" }
   const container = { Id: "a".repeat(64), Config: { Labels: labels } }
   const volume = { Name: "unique-run-home", CreatedAt: "created", Driver: "local", Mountpoint: "/owned", Labels: labels }
   const inspected = []
@@ -200,4 +200,15 @@ test("MP11 owned Docker deletion uses immutable container ID and rechecks the vo
   assert.deepEqual(removed, [["rm", "-f", container.Id], ["volume", "rm", "-f", volume.Name]])
   assert.ok(inspected.some(([kind, name]) => kind === "container" && name === container.Id))
   assert.equal(inspected.filter(([kind]) => kind === "volume").length, 3)
+})
+
+test("MP11 capture rejects Docker resources missing the unique run name label", async () => {
+  const { captureBrowserStateDockerOwnership } = await import("./browser-state-drill-cleanup.mjs")
+  const labels = { "io.chariox.slice.id": "slice", "io.chariox.slice.owner-kernel-id": "kernel", "io.chariox.slice.owner-machine-id": "machine" }
+  await assert.rejects(captureBrowserStateDockerOwnership({
+    runId: "unique-run", containerName: "unique-run", homeVolume: "unique-run-home",
+    slice: { id: "slice", owner_kernel_id: "kernel", owner_machine_id: "machine" },
+    inspect: async kind => kind === "container" ? { Id: "a".repeat(64), Config: { Labels: labels } }
+      : { Name: "unique-run-home", CreatedAt: "created", Driver: "local", Mountpoint: "/owned", Labels: labels },
+  }), /do not match/)
 })

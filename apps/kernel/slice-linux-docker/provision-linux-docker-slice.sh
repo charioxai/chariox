@@ -392,6 +392,7 @@ prepare_home_volume() {
     --label "io.chariox.slice.id=$SLICE_ID"
     --label "io.chariox.slice.owner-kernel-id=$SLICE_OWNER_KERNEL_ID"
     --label "io.chariox.slice.owner-machine-id=$SLICE_OWNER_MACHINE_ID"
+    --label "io.chariox.slice.runtime-name=$SLICE_NAME"
   )
   if disk_quota_enabled; then
     quota_labels+=(--label "io.chariox.slice.disk-quota=xfs-project-v1")
@@ -1013,6 +1014,7 @@ ensure_container() {
       --label "io.chariox.slice.id=$SLICE_ID"
       --label "io.chariox.slice.owner-kernel-id=$SLICE_OWNER_KERNEL_ID"
       --label "io.chariox.slice.owner-machine-id=$SLICE_OWNER_MACHINE_ID"
+      --label "io.chariox.slice.runtime-name=$SLICE_NAME"
       --ulimit core=0:0
       --ulimit "nofile=$SLICE_DOCKER_NOFILE_LIMIT:$SLICE_DOCKER_NOFILE_LIMIT"
       --pids-limit "$SLICE_DOCKER_PIDS_LIMIT"
