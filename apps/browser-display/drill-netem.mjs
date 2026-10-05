@@ -12,7 +12,9 @@ export async function shapeViewerLeg(name, original, hostNamespace) {
  const profile=profiles[name];
  if(!profile || name==='local')throw Error('MD-DISPLAY: invalid netem profile');
  const namespace=await readlink('/proc/self/ns/net');
- if(!hostNamespace || namespace===hostNamespace)throw Error('MD-DISPLAY: refuse host namespace shaping');
+ if(!hostNamespace || namespace===hostNamespace || namespace===await readlink('/proc/1/ns/net'))throw Error('MD-DISPLAY: refuse host namespace shaping');
+ const ownedName=execFileSync('/usr/sbin/ip',['netns','identify',String(process.pid)],{encoding:'utf8'}).trim();
+ if(!/^md-display-[0-9a-f]{12}$/.test(ownedName))throw Error('MD-DISPLAY: refuse unnamed or foreign namespace shaping');
  const target=new URL(original),sockets=new Set();
  let failure;
  const proxy=createServer(down=>{
