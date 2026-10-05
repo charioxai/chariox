@@ -316,15 +316,16 @@ impl KernelBrowserHost {
             if admission.user != user {
                 return Err("MD-N4: foreign note owner".into());
             }
-            let state = self
-                .inner
-                .lock()
-                .map_err(|_| "MD-N4: focus lock unavailable")?;
-            require_loaded(&state, user, &admission.agent, admission.capability)?;
-            if !Arc::ptr_eq(&state.focus[user].epoch, &admission.epoch) {
-                return Err("MD-N4: note focus changed".into());
+            if let Some(agent) = admission.agent.as_deref() {
+                let state = self.inner.lock().map_err(|_| "MD-N4: focus lock unavailable")?;
+                require_loaded(&state, user, agent, admission.capability)?;
+                if !Arc::ptr_eq(&state.focus[user].epoch, &admission.epoch) {
+                    return Err("MD-N4: note focus changed".into());
+                }
+                call()
+            } else {
+                call()
             }
-            call()
         } else {
             call()
         }
