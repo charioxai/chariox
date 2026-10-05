@@ -1737,8 +1737,9 @@ fn wait_for_child(
     maximum_entries: u64,
     allow_python_venv_symlink: bool,
 ) -> Result<ExitStatus, DaemonError> {
-    let mut signals = crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(child)
-        .map_err(|error| import_io_error(operation, error))?;
+    let mut signals =
+        crate::runtime::owned_process_signals::OwnedProcessSignals::for_session_child(child)
+            .map_err(|error| import_io_error(operation, error))?;
     let started = std::time::Instant::now();
     loop {
         signals
@@ -1746,9 +1747,10 @@ fn wait_for_child(
             .map_err(|error| import_io_error(operation, error))?;
         match child_exited_without_reaping(child) {
             Ok(true) => {
-                signals
-                    .kill_group()
-                    .map_err(|error| import_io_error(operation, error))?;
+                if let Err(error) = signals.kill_group() {
+                    terminate_child_tree(child, &mut signals);
+                    return Err(import_io_error(operation, error));
+                }
                 let status = child
                     .wait()
                     .map_err(|error| import_io_error(operation, error))?;
@@ -1783,7 +1785,7 @@ fn wait_for_child(
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn child_exited_without_reaping(child: &mut Child) -> io::Result<bool> {
     let mut status: libc::siginfo_t = unsafe { std::mem::zeroed() };
     let result = unsafe {
@@ -1801,7 +1803,7 @@ fn child_exited_without_reaping(child: &mut Child) -> io::Result<bool> {
     Ok(unsafe { status.si_pid() } != 0)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn child_exited_without_reaping(child: &mut Child) -> io::Result<bool> {
     child.try_wait().map(|status| status.is_some())
 }
@@ -1828,8 +1830,10 @@ fn terminate_child_tree(
     child: &mut Child,
     signals: &mut crate::runtime::owned_process_signals::OwnedProcessSignals,
 ) {
-    if signals.kill_group().is_ok() {
-        let _ = signals.kill_child();
+    if signals.kill_group().is_err() {
+        let _ = signals.kill_owned_processes();
+    }
+    if signals.kill_child().is_ok() {
         let _ = child.wait();
     }
 }
@@ -2242,6 +2246,77 @@ fn import_error(message: impl Into<String>) -> DaemonError {
 mod tests {
     use super::*;
     use crate::secret::{TransferredVaultSourceBinding, VaultUnlockLease};
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn mp11_review_import_retains_exited_session_leader_until_child_cleanup() {
+        use crate::runtime::owned_process_signals::OwnedProcessSignals;
+        let root = test_root("exited-parent-descendant");
+        fs::create_dir_all(&root).unwrap();
+        let release = root.join("release");
+        let pid_file = root.join("child-pid");
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg(
+            "sleep 30 & printf '%s' $! > \"$1\"; while [ ! -f \"$2\" ]; do sleep 0.01; done; exit 0",
+        ).arg("mp11-fixture").arg(&pid_file).arg(&release);
+        configure_child_process_group(&mut command);
+        let child = command.spawn().unwrap();
+        // A separate retained guard cleans the fixture even if the regression fails.
+        struct Cleanup(Child, OwnedProcessSignals, PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = self.1.kill_group();
+                let _ = self.1.kill_child();
+                let _ = self.0.wait();
+                let _ = fs::remove_dir_all(&self.2);
+            }
+        }
+        let signals = OwnedProcessSignals::for_child(&child).unwrap();
+        let mut cleanup = Cleanup(child, signals, root.clone());
+        let started = std::time::Instant::now();
+        while !pid_file.exists() || fs::read_to_string(&pid_file).unwrap().is_empty() {
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let descendant = fs::read_to_string(&pid_file)
+            .unwrap()
+            .parse::<u32>()
+            .unwrap();
+        cleanup.1.refresh().unwrap();
+        fs::write(&release, "release parent").unwrap();
+        while !child_exited_without_reaping(&mut cleanup.0).unwrap() {
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // The import's new guard has never seen the child attached to its parent.
+        let status = wait_for_child(
+            &mut cleanup.0,
+            "test exited parent",
+            &root,
+            Duration::from_secs(5),
+            1024 * 1024,
+            100,
+            false,
+        )
+        .unwrap();
+        assert!(status.success());
+        let stopped = std::time::Instant::now();
+        loop {
+            let inspection = Command::new("/bin/ps")
+                .args(["-o", "stat=", "-p", &descendant.to_string()])
+                .output()
+                .unwrap();
+            let state = String::from_utf8(inspection.stdout).unwrap();
+            if state.trim().is_empty() || state.trim().starts_with('Z') {
+                break;
+            }
+            assert!(
+                stopped.elapsed() < Duration::from_secs(2),
+                "fast-exiting import left a live descendant"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
 
     #[cfg(unix)]
     #[test]
