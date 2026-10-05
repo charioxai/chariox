@@ -78,17 +78,20 @@ if mode == "wait":
             shutil.copytree(self.base/'output', Path(evidence)/self._testMethodName)
         self.tmp.cleanup()
 
-    def start(self, mode='quick'):
+    def start(self, mode='quick', extra_args=()):
         self.env['KASUDO_FIXTURE_MODE']=mode
+        # Tiny synthetic stages use their own lock and explicit fixture resource floors.
         proc=subprocess.Popen([sys.executable,str(self.repo/'scripts'/SOURCE.name), '--kit-only',
-            '--output',str(self.base/'output'), '--artifact-receipt',str(self.receipt)],
+            '--output',str(self.base/'output'), '--artifact-receipt',str(self.receipt),
+            '--compile-lock',str(self.base/'compile.lock'), '--min-available-gib','0',
+            '--min-disk-free-gib','0', *extra_args],
             env=self.env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,start_new_session=True)
         row=validation.identity(proc.pid)
         if row: self.owned[proc.pid]=row[1]
         return proc
 
-    def run_fixture(self, mode='quick'):
-        proc=self.start(mode)
+    def run_fixture(self, mode='quick', extra_args=()):
+        proc=self.start(mode, extra_args)
         try:
             output=proc.communicate(timeout=35)[0]
             return proc.returncode,output
@@ -100,6 +103,34 @@ if mode == "wait":
     def test_clean_checkout_can_run_fixture_kit(self):
         code,output=self.run_fixture()
         self.assertEqual(code,0,output)
+        checks=[json.loads(line) for line in (self.base/'output/checks.jsonl').read_text().splitlines()]
+        self.assertEqual([check['name'] for check in checks],
+                         ['watchdog','popup-client','kit-smoke','sandboxed-pty-child'])
+        for check in checks[-2:]:
+            self.assertEqual(check['command'][:2],['flock',str(self.base/'compile.lock')])
+        cleanup=json.loads((self.base/'output/cleanup.json').read_text())
+        self.assertTrue(cleanup['state_removed'])
+        self.assertEqual(cleanup['remaining_owned_processes'],[])
+
+    def test_configured_resource_floor_refuses_stage_and_cleans_state(self):
+        for option in ['--min-available-gib','--min-disk-free-gib']:
+            with self.subTest(option=option):
+                code,output=self.run_fixture(extra_args=[option,'1000000000'])
+                self.assertNotEqual(code,0,output)
+                self.assertIn('resource floor before watchdog',output)
+                cleanup=json.loads((self.base/'output/cleanup.json').read_text())
+                self.assertTrue(cleanup['state_removed'])
+                self.assertEqual(cleanup['results'],0)
+                shutil.rmtree(self.base/'output')
+
+    def test_invalid_resource_floors_are_rejected_before_state_creation(self):
+        for option in ['--min-available-gib','--min-disk-free-gib']:
+            for value in ['nan','inf','-1']:
+                with self.subTest(option=option,value=value):
+                    code,output=self.run_fixture(extra_args=[option,value])
+                    self.assertNotEqual(code,0,output)
+                    self.assertIn('resource floors must be finite and nonnegative',output)
+                    self.assertFalse((self.base/'output').exists())
 
     def test_unstaged_source_is_refused_before_commands(self):
         (self.repo/'authority.rs').write_text('// uncommitted source\n')

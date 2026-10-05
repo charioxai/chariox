@@ -7,6 +7,7 @@ Cloud, relay machine, Docker resource or owner authentication is accessed.
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -105,7 +106,13 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--kit-only", action="store_true", help="validate newly changed kit against an already source-bound artifact")
     parser.add_argument("--artifact-receipt", type=Path)
+    parser.add_argument("--compile-lock", default=LOCK, help="lock shared by validation/build stages")
+    parser.add_argument("--min-available-gib", type=float, default=16, help="minimum available memory before/during stages")
+    parser.add_argument("--min-disk-free-gib", type=float, default=10, help="minimum free root disk before/during stages")
     args = parser.parse_args()
+    for floor in (args.min_available_gib, args.min_disk_free_gib):
+        if not math.isfinite(floor) or floor < 0:
+            parser.error("MP-10: resource floors must be finite and nonnegative")
     if os.uname().sysname != "Linux":
         parser.error("MP-11: run on reserved Linux builder; use SUDO_KIT.md on Mac")
     output = args.output.resolve()
@@ -120,18 +127,7 @@ def main():
             environment.pop(key)
     environment.update(CHARIOX_HOME=str(state / "state"), HOME=str(state / "home"),
                        TMPDIR=str(state / "tmp"), CHARIOX_LOG_DIR=str(state / "logs"),
-                       CARGO_HOME="/var/lib/chariox/dev/toolchains/cargo",
-                       RUSTUP_HOME="/var/lib/chariox/dev/toolchains/rustup",
-                       CARGO_TARGET_DIR=str(ROOT / "target"), CARGO_BUILD_JOBS="4",
-                       CARGO_PROFILE_DEV_DEBUG="0", CARGO_PROFILE_TEST_DEBUG="0",
-                       CARGO_INCREMENTAL="0", RUST_MIN_STACK="16777216", RUST_TEST_THREADS="1")
-    pinned = list(Path("/root/.local/share/pnpm/store/v11/links/@/pnpm/9.15.0").glob(
-        "*/node_modules/pnpm/bin/pnpm.cjs"))
-    if len(pinned) != 1:
-        raise RuntimeError("MP-11: expected one cached pnpm 9.15.0 executable")
-    (state / "bin").mkdir()
-    (state / "bin/pnpm").symlink_to(pinned[0])
-    environment["PATH"] = str(state / "bin") + ":/var/lib/chariox/dev/toolchains/cargo/bin:" + environment["PATH"]
+                       RUST_MIN_STACK="16777216", RUST_TEST_THREADS="1")
     for name in ("state", "home", "tmp", "logs"):
         (state / name).mkdir(mode=0o700)
     all_owned = {}
@@ -151,7 +147,7 @@ def main():
         source_identity((head, tree))
         before = sample()
         append(output / "resources.jsonl", before)
-        if before["available_gib"] < 16 or before["disk_free_gib"] < 10:
+        if before["available_gib"] < args.min_available_gib or before["disk_free_gib"] < args.min_disk_free_gib:
             raise RuntimeError("MP-10: resource floor before " + name)
         started = time.time()
         owned = {}
@@ -175,7 +171,7 @@ def main():
                     collect_owned(owned)
                     current = sample()
                     append(output / "resources.jsonl", {"stage": name, **current})
-                    if current["available_gib"] < 16 or current["disk_free_gib"] < 10:
+                    if current["available_gib"] < args.min_available_gib or current["disk_free_gib"] < args.min_disk_free_gib:
                         failure = "MP-10: measured resource floor during " + name
                         break
                     time.sleep(2)
@@ -233,17 +229,29 @@ def main():
             if (receipt["head"] != head or receipt.get("tree") != tree
                     or receipt.get("source_policy") != "clean_checkout" or digest != receipt["sha256"]):
                 raise RuntimeError("MP-11: artifact/source identity mismatch")
-            run("kit-smoke", ["flock", LOCK, "node", "scripts/sudo-kit-smoke.mjs", str(artifact)])
-            run("sandboxed-pty-child", ["flock", LOCK, str(artifact), "sandboxed_pty_survives_launching_thread_exit",
+            run("kit-smoke", ["flock", args.compile_lock, "node", "scripts/sudo-kit-smoke.mjs", str(artifact)])
+            run("sandboxed-pty-child", ["flock", args.compile_lock, str(artifact), "sandboxed_pty_survives_launching_thread_exit",
                                         "--nocapture", "--test-threads=1", "--ignored"])
             source_identity((head, tree))
             return
+        environment.update(CARGO_HOME="/var/lib/chariox/dev/toolchains/cargo",
+                           RUSTUP_HOME="/var/lib/chariox/dev/toolchains/rustup",
+                           CARGO_TARGET_DIR=str(ROOT / "target"), CARGO_BUILD_JOBS="4",
+                           CARGO_PROFILE_DEV_DEBUG="0", CARGO_PROFILE_TEST_DEBUG="0",
+                           CARGO_INCREMENTAL="0")
+        pinned = list(Path("/root/.local/share/pnpm/store/v11/links/@/pnpm/9.15.0").glob(
+            "*/node_modules/pnpm/bin/pnpm.cjs"))
+        if len(pinned) != 1:
+            raise RuntimeError("MP-11: expected one cached pnpm 9.15.0 executable")
+        (state / "bin").mkdir()
+        (state / "bin/pnpm").symlink_to(pinned[0])
+        environment["PATH"] = str(state / "bin") + ":/var/lib/chariox/dev/toolchains/cargo/bin:" + environment["PATH"]
         run("node-install", ["pnpm", "install", "--offline", "--frozen-lockfile", "--ignore-scripts",
                              "--store-dir", "/root/.local/share/pnpm/store",
                              "--filter", "@chariox/shell...", "--filter", "@chariox/cli..."])
         run("shell-build", ["pnpm", "--filter", "@chariox/shell", "run", "build"])
         run("cli-build", ["pnpm", "--filter", "@chariox/cli", "run", "build"])
-        run("rust-build", ["flock", LOCK, "cargo", "+1.88.0", "test", "-p", "chariox-kernel",
+        run("rust-build", ["flock", args.compile_lock, "cargo", "+1.88.0", "test", "-p", "chariox-kernel",
                            "--lib", "--locked", "--no-run", "--message-format=json"])
         artifact = None
         for line in (output / "rust-build.log").read_text().splitlines():
@@ -269,7 +277,7 @@ def main():
             ("provider-launch", "provider_launch"), ("provider-runtime", "provider_runtime::tests::launch"),
             ("managed-isolation", "managed_isolation"), ("pty", "pty::manager::tests"),
             ("protocol", "local::api::tests::protocol_shapes")]:
-            run(name, ["flock", LOCK, str(artifact), selector, "--nocapture", "--test-threads=1"])
+            run(name, ["flock", args.compile_lock, str(artifact), selector, "--nocapture", "--test-threads=1"])
         node_tests = [
             "packages/kernel-client/dist/ipc-control-response-replay.test.js",
             "packages/kernel-client/dist/ipc-unix-access.test.js",
@@ -278,9 +286,9 @@ def main():
             "apps/cli/dist/access-command.test.js", "apps/cli/dist/sudo-command.test.js",
             "apps/cli/dist/passkey-popup-controller.test.js"]
         run("node-focused", ["node", "--test", "--test-concurrency=1", *node_tests])
-        run("sandboxed-pty-child", ["flock", LOCK, str(artifact), "sandboxed_pty_survives_launching_thread_exit",
+        run("sandboxed-pty-child", ["flock", args.compile_lock, str(artifact), "sandboxed_pty_survives_launching_thread_exit",
                                     "--nocapture", "--test-threads=1", "--ignored"])
-        run("kit-smoke", ["flock", LOCK, "node", "scripts/sudo-kit-smoke.mjs", str(artifact)])
+        run("kit-smoke", ["flock", args.compile_lock, "node", "scripts/sudo-kit-smoke.mjs", str(artifact)])
         source_identity((head, tree))
     finally:
         cancellation_deferred = True
