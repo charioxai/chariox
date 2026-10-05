@@ -243,6 +243,52 @@ impl KernelRuntimeState {
         ))
     }
 
+    pub(super) async fn controller_browser_interact_tool_result(
+        &self,
+        session_id: &str,
+        slice_id: &str,
+        agent_id: &str,
+        args: crate::transport::runtime_tools::SliceBrowserInteractArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        use crate::runtime::browser_controller_action::BrowserLocatorAction;
+        use crate::transport::runtime_tools::SliceBrowserInteraction;
+        let element_ref = controller_browser_element_ref(
+            None,
+            Some(&args.field_id),
+            "runtime_tool_slice_browser_interact",
+        )?;
+        let action = match args.interaction {
+            SliceBrowserInteraction::Press {
+                key,
+                expected_value,
+            } => BrowserLocatorAction::Press {
+                key,
+                expected_value,
+            },
+            SliceBrowserInteraction::Drag {
+                delta_x,
+                delta_y,
+                expected_value,
+            } => BrowserLocatorAction::Drag {
+                delta_x,
+                delta_y,
+                expected_value,
+            },
+        };
+        let result = self
+            .perform_browser_environment_locator_action_as_agent(
+                session_id,
+                agent_id,
+                &element_ref,
+                action,
+                crate::runtime::browser_controller_action::MAX_BROWSER_ACTION_TIMEOUT_MS,
+            )
+            .await?;
+        Ok(controller_browser_action_tool_result(
+            slice_id, agent_id, result,
+        ))
+    }
+
     pub(super) async fn controller_browser_click_tool_result(
         &self,
         session_id: &str,

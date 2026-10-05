@@ -2885,6 +2885,11 @@ Coordinator allocation 2026-10-05: local daemon protocol 423 and relay peer
 protocol 72 cover rendered DOM grounding, native selection, paged rendered text,
 fenced action errors and read recovery, verified native temporal/range fills,
 sanitized range values and constraints, and cached foreground terminal polling.
+Observed opaque Browser locators also support one bounded native key press or
+pointer drag through the existing Room mutation authority. Optional numeric
+slider values are verified after input, with no mutation replay on a mismatch
+or lost acknowledgement. Passive rendered elements expose bounded geometry
+and computed appearance; page-authored attributes cannot supply that appearance.
 Browser execution remains kernel-owned on the common home/worker path. Provider
 MCP tools consume these observations; existing Web/native projections do not
 depend on the added fields, so their minimum supported versions stay unchanged.

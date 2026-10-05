@@ -1,3 +1,5 @@
+mod browser_interaction;
+pub use browser_interaction::{SliceBrowserInteractArgs, SliceBrowserInteraction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -99,6 +101,8 @@ pub const SLICE_BROWSER_FIND_TOOL: &str = "chariox.slice_browser_find";
 pub const SLICE_BROWSER_FIND_TOOL_ALIAS: &str = "slice_browser_find";
 pub const SLICE_BROWSER_FILL_TOOL: &str = "chariox.slice_browser_fill";
 pub const SLICE_BROWSER_FILL_TOOL_ALIAS: &str = "slice_browser_fill";
+pub const SLICE_BROWSER_INTERACT_TOOL: &str = "chariox.slice_browser_interact";
+pub const SLICE_BROWSER_INTERACT_TOOL_ALIAS: &str = "slice_browser_interact";
 pub const SLICE_BROWSER_CLICK_TOOL: &str = "chariox.slice_browser_click";
 pub const SLICE_BROWSER_CLICK_TOOL_ALIAS: &str = "slice_browser_click";
 pub const SLICE_BROWSER_SUBMIT_TOOL: &str = "chariox.slice_browser_submit";

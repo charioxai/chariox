@@ -115,7 +115,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_BROWSER_STATUS_TOOL.to_string(),
-            description: "Return DOM-level browser status for the Chariox slice browser, including URL, title, focused element, and visible fields/buttons/links.".to_string(),
+            description: "Return DOM-level browser status for the Chariox slice browser, including URL, title, focused element, visible fields/buttons/links, and up to 128 rendered elements with CSS bounds, parent IDs, and computed color/border appearance. elements_truncated reports the discovery bound. Geometry is passive; use opaque IDs for actions.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {},
@@ -150,13 +150,13 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_BROWSER_FIND_TOOL.to_string(),
-            description: "Find rendered browser fields, buttons, links, custom options and handler-backed elements by label, placeholder, name, text or role. kind=any includes generic clickable targets. Returned field_id is opaque and document-bound; rediscover after navigation.".to_string(),
+            description: "Find rendered browser fields, buttons, links, custom options and handler-backed elements by label, placeholder, name, text or role. kind=any includes generic clickable targets; kind=element searches the bounded passive rendered geometry entries from status. Returned field_id is opaque and document-bound; rediscover after navigation.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["query"],
                 "properties": {
                     "query": {"type": "string"},
-                    "kind": {"type": "string", "enum": ["field", "button", "link", "any"]}
+                    "kind": {"type": "string", "enum": ["field", "button", "link", "element", "any"]}
                 },
                 "additionalProperties": false
             }),
@@ -173,6 +173,21 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     "text": {"type": "string"}
                 },
                 "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_INTERACT_TOOL.to_string(),
+            description: "Send one native key press or pointer drag to an observed opaque field_id. action=press uses one of the listed keys; action=drag moves from the element center by delta_x/delta_y CSS pixels within the current viewport. For numeric native/ARIA sliders, expected_value optionally verifies the resulting value; mismatches fail without replay. Inspect fresh status afterward. No scripts or arbitrary selectors. Every call is one mutating Browser action.".to_string(),
+            input_schema: serde_json::json!({
+                "type":"object", "required":["field_id","action"],
+                "properties": {
+                    "field_id":{"type":"string"},
+                    "action":{"type":"string","enum":["press","drag"]},
+                    "key":{"type":"string","enum":["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Home","End","PageUp","PageDown","Enter","Escape","Tab","Space","Backspace","Delete"]},
+                    "delta_x":{"type":"integer","minimum":-2048,"maximum":2048},
+                    "delta_y":{"type":"integer","minimum":-2048,"maximum":2048},
+                    "expected_value":{"type":"string","maxLength":64}
+                }, "additionalProperties":false
             }),
         },
         RuntimeToolSpec {
@@ -353,6 +368,7 @@ fn slice_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
         SLICE_BROWSER_HISTORY_TOOL => SLICE_BROWSER_HISTORY_TOOL_ALIAS,
         SLICE_BROWSER_FIND_TOOL => SLICE_BROWSER_FIND_TOOL_ALIAS,
         SLICE_BROWSER_FILL_TOOL => SLICE_BROWSER_FILL_TOOL_ALIAS,
+        SLICE_BROWSER_INTERACT_TOOL => SLICE_BROWSER_INTERACT_TOOL_ALIAS,
         SLICE_BROWSER_CLICK_TOOL => SLICE_BROWSER_CLICK_TOOL_ALIAS,
         SLICE_BROWSER_SUBMIT_TOOL => SLICE_BROWSER_SUBMIT_TOOL_ALIAS,
         SLICE_BROWSER_DIALOG_TOOL => SLICE_BROWSER_DIALOG_TOOL_ALIAS,
@@ -443,6 +459,11 @@ pub fn canonical_slice_tool_name(tool_name: &str) -> Option<&'static str> {
         | "chariox_slice_browser_fill"
         | "mcp__chariox__slice_browser_fill"
         | "mcp__chariox__chariox_slice_browser_fill" => Some(SLICE_BROWSER_FILL_TOOL),
+        SLICE_BROWSER_INTERACT_TOOL
+        | SLICE_BROWSER_INTERACT_TOOL_ALIAS
+        | "chariox_slice_browser_interact"
+        | "mcp__chariox__slice_browser_interact"
+        | "mcp__chariox__chariox_slice_browser_interact" => Some(SLICE_BROWSER_INTERACT_TOOL),
         SLICE_BROWSER_CLICK_TOOL
         | SLICE_BROWSER_CLICK_TOOL_ALIAS
         | "chariox_slice_browser_click"

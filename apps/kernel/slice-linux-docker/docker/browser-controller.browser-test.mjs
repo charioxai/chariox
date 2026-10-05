@@ -18,6 +18,48 @@ const viewport = {
   desktop_pixel_width: 1280, desktop_pixel_height: 800,
 };
 
+test('MP-08/MP-10/MP-11 observed keys and drags verify sliders and rendered geometry', async () => {
+  await withController(async ({page,request}) => {
+    await page.setContent(`<label>Level<input id="native-level" type="range" min="3" max="19" step="2" value="11"></label>
+      <div id="custom-level" tabindex="0" role="slider" aria-valuemin="0" aria-valuemax="10" aria-valuenow="5"
+        style="width:180px;height:25px;border:2px dashed rgb(60,70,80);background:rgb(30,40,50)">Level</div>
+      <div id="handle" style="position:absolute;left:100px;top:150px;width:30px;height:30px;background:blue"></div>
+      <div id="outline" style="pointer-events:none;position:absolute;left:160px;top:150px;width:30px;height:30px;border:2px dashed blue"></div>
+      <script>
+        const custom=document.getElementById('custom-level'), handle=document.getElementById('handle');
+        custom.addEventListener('keydown',event=>{if(event.key==='ArrowRight')custom.setAttribute('aria-valuenow',Number(custom.getAttribute('aria-valuenow'))+1)});
+        let held=false, start=0, left=0;
+        handle.addEventListener('mousedown',event=>{held=true;start=event.clientX;left=parseFloat(handle.style.left)});
+        document.addEventListener('mousemove',event=>{if(held)handle.style.left=(left+event.clientX-start)+'px'});
+        document.addEventListener('mouseup',()=>held=false);
+      </script>`);
+    const target=(await request('browser.reconcile',{viewport})).result.tabs[0];
+    const snapshot=(await request('browser.snapshot',target)).result;
+    const node=id=>snapshot.dom_nodes.find(n=>n.attributes.id===id);
+    assert.equal(node('outline').attributes['chariox-rendered-border-top-style'],'dashed');
+    assert.equal(node('custom-level').attributes['chariox-rendered-background-color'],'rgb(30, 40, 50)');
+    const action=(id,action)=>request('browser.action',{...target,node_ref:node(id).node_ref,action,timeout_ms:100});
+    for (const [key,expected_value] of [['ArrowRight','13'],['Home','3'],['End','19']]) {
+      const result=await action('native-level',{kind:'press',key,expected_value});
+      assert.equal(result.ok,true,JSON.stringify(result.error));
+      assert.equal(await page.locator('#native-level').inputValue(),expected_value);
+    }
+    assert.equal((await action('custom-level',{kind:'press',key:'ArrowRight',expected_value:'6'})).ok,true);
+    const mismatch=await action('custom-level',{kind:'press',key:'ArrowRight',expected_value:'9'});
+    assert.equal(mismatch.error?.code,'browser_interaction_not_applied');
+    assert.equal(await page.locator('#custom-level').getAttribute('aria-valuenow'),'7','a verification failure does not replay input');
+    const dragged=await action('handle',{kind:'drag',delta_x:60,delta_y:0});
+    assert.equal(dragged.ok,true,JSON.stringify(dragged.error));
+    assert.equal(await page.locator('#handle').evaluate(n=>parseFloat(n.style.left)),160);
+    assert.equal((await action('handle',{kind:'drag',delta_x:60,delta_y:0,expected_value:'6'})).error?.code,'browser_action_invalid');
+    assert.equal(await page.locator('#handle').evaluate(n=>parseFloat(n.style.left)),160,'unsupported value verification rejects before drag');
+    await page.locator('#native-level').evaluate(n=>n.disabled=true);
+    assert.equal((await action('native-level',{kind:'press',key:'ArrowLeft',expected_value:'17'})).error?.code,'browser_element_disabled');
+    const fresh=(await request('browser.snapshot',target)).result;
+    assert.equal(fresh.dom_nodes.find(n=>n.node_ref===node('handle').node_ref).bounds.x,160);
+  });
+});
+
 test("MP-08/MP-10/MP-11 visible native labels ground styled check/radio controls", async () => {
   await withController(async ({page, request}) => {
     await page.setContent(`<style>input {display:none} label {display:block;margin:16px;padding:12px}</style>

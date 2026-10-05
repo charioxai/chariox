@@ -32,6 +32,23 @@ const capture = (connection, limits) => captureBrowserSnapshot({
   browserGeneration: 1, snapshotRevision: 1, limits,
 });
 
+test('MP-08/MP-10/MP-11 rendered box appearance comes from computed layout, not page attributes', async () => {
+  const connection = {
+    async send(method, params) {
+      if (method === 'Page.getFrameTree') return {frameTree:{frame:{loaderId:'page-1'}}};
+      if (method === 'Accessibility.getFullAXTree') return {nodes:[]};
+      const strings = ['DIV','visible','1','block','rgb(30, 40, 50)','rgb(60, 70, 80)','2px','dashed'];
+      assert.ok(params.computedStyles.includes('background-color'));
+      return {strings,documents:[{nodes:{backendNodeId:[1],nodeType:[1],nodeName:[0],parentIndex:[-1],attributes:[[]]},
+        layout:{nodeIndex:[0],bounds:[[10,20,40,50]],styles:[[1,2,3,4,5,6,7]]}}]};
+    },
+  };
+  const snapshot = await capture(connection);
+  assert.deepEqual(snapshot.dom_nodes[0].bounds,{x:10,y:20,width:40,height:50});
+  assert.equal(snapshot.dom_nodes[0].attributes['chariox-rendered-background-color'],'rgb(30, 40, 50)');
+  assert.equal(snapshot.dom_nodes[0].attributes['chariox-rendered-border-top-style'],'dashed');
+});
+
 test("snapshot preserves each frame's labels and frame-local AX relationships", async () => {
   const snapshot = await capture(fixture());
   assert.deepEqual(snapshot.accessibility_nodes.map((node) => [node.node_ref, node.parent_ref, node.child_refs]), [

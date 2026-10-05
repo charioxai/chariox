@@ -1,3 +1,4 @@
+import { BrowserInteractionError } from "./browser-controller-interactions.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { BrowserTextError } from "./browser-controller-text.mjs";
 import { BrowserInputCapture } from "./browser-controller-input.mjs";
@@ -1549,7 +1550,7 @@ function normalizeControllerError(error) {
   if (error instanceof BrowserSnapshotError) {
     return new BrowserControllerError(error.code, error.message);
   }
-  if (error instanceof BrowserActionError) {
+  if (error instanceof BrowserActionError || error instanceof BrowserInteractionError) {
     return new BrowserControllerError(error.code, error.message);
   }
   if (error instanceof BrowserFileTransferError) {

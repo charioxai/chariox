@@ -1,4 +1,5 @@
 import { fillNativeSelect, fillNativeValue } from "./browser-controller-selection.mjs";
+import { executeBrowserInteraction, normalizeBrowserInteraction } from "./browser-controller-interactions.mjs";
 const DEFAULT_ACTION_TIMEOUT_MS = 5_000;
 const MAX_ACTION_TIMEOUT_MS = 5_000;
 const MIN_ACTION_TIMEOUT_MS = 100;
@@ -102,6 +103,8 @@ export function assertNotCancelled(signal) {
 }
 
 function normalizeAction(action) {
+  const interaction = normalizeBrowserInteraction(action);
+  if (interaction) return interaction;
   if (action?.kind === "click") {
     return { kind: "click" };
   }
@@ -364,6 +367,9 @@ async function executeAction(
   signal,
 ) {
   assertNotCancelled(signal);
+  if (["press", "drag"].includes(action.kind)) {
+    return executeBrowserInteraction({connection, sessionId, objectId, geometry, action, signal});
+  }
   if (action.kind === "click") {
     return {
       dialogOpened: await dispatchClick(connection, sessionId, geometry.x, geometry.y, signal),

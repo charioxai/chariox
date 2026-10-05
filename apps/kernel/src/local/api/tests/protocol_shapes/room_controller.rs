@@ -1181,3 +1181,33 @@ fn mp08_browser_round2_snapshot_protocol_423_peer_72_is_hashed() {
     assert_eq!(serde_json::to_value(snapshot).unwrap(), wire);
     assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())), "44ea6942d71e7906ce3e4674d22f1332d98253e0c55497651f7bf470f758d807");
 }
+
+// MP-08/MP-10/MP-11: one key/drag mutation crosses the normal 423/72 locator contract.
+#[test]
+fn mp08_target_bound_interaction_protocol_423_peer_72_is_hashed() {
+    use crate::runtime::browser_controller_action::BrowserLocatorAction;
+    use sha2::{Digest, Sha256};
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 423);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 72);
+    {
+        let wire =
+            serde_json::json!({"kind": "press", "key": "ArrowRight", "expected_value": "13"});
+        let action: BrowserLocatorAction = serde_json::from_value(wire.clone()).unwrap();
+        assert!(action.validate().is_ok());
+        assert_eq!(serde_json::to_value(action).unwrap(), wire);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+            "a4e52ca843577a0d605dbb4e090f4448f07e3aeb075af78103f4951a608ec152"
+        );
+    }
+    {
+        let wire = serde_json::json!({"kind": "drag", "delta_x": 60, "delta_y": -20});
+        let action: BrowserLocatorAction = serde_json::from_value(wire.clone()).unwrap();
+        assert!(action.validate().is_ok());
+        assert_eq!(serde_json::to_value(action).unwrap(), wire);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+            "637fff3b3a06985655a6b47e75635ee1d7d1b807f41e68a7bb2675f67b9aeb57"
+        );
+    }
+}
