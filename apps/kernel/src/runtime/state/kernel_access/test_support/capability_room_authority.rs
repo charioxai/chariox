@@ -198,10 +198,28 @@ async fn kernel_access_room_stop_rechecks_worker_discovery() {
         0,
         "revoked Room stop reached worker"
     );
+    let after = state.room_environment_snapshot(session.id()).unwrap();
+    assert_eq!(before.lifecycle, EnvironmentLifecycle::Stopping);
     assert_eq!(
-        state.room_environment_snapshot(session.id()).unwrap(),
-        before,
-        "revoked continuation changed home Room state"
+        after.lifecycle,
+        EnvironmentLifecycle::Failed,
+        "denied release must settle the admitted stop under kernel authority"
+    );
+    assert!(after.event_cursor > before.event_cursor);
+    // Revocation still forbids worker effects. Only terminal bookkeeping is allowed.
+    let mut expected = before;
+    expected.lifecycle = EnvironmentLifecycle::Failed;
+    expected.event_cursor = after.event_cursor;
+    let controller = expected
+        .health
+        .iter_mut()
+        .find(|health| health.component == crate::session::EnvironmentComponent::BrowserController)
+        .unwrap();
+    controller.state = crate::session::EnvironmentComponentHealthState::Unavailable;
+    controller.diagnostic_code = Some("controller_stop_failed".into());
+    assert_eq!(
+        after, expected,
+        "denied stop changed more than terminal bookkeeping"
     );
     assert!(result
         .unwrap_err()
