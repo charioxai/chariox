@@ -156,8 +156,9 @@ try {
   report.controllerCommit='fda30571d';report.upstreamCommit='dc0e0885e5018b7b120e24d2f80e7f57b64046ac'
   for(const pin of options.pins)assert.equal(await hash(pin.path),pin.sha256,`MP-10 frozen bytes differ: ${path.basename(pin.path)}`)
   report.pins=options.pins;await checkpoint()
-  const continuation=options.priorEvidence?await verifyTimeWarpContinuation(options.priorEvidence):null
-  if(continuation){report.continuation=continuation.receipt;await checkpoint()}
+  const continuations=await Promise.all((options.priorEvidence?[options.priorEvidence]:options.priorEvidencePaths??[]).map(verifyTimeWarpContinuation))
+  const skipped=new Set(continuations.flatMap(c=>[...c.skip]))
+  if(continuations.length){report.continuations=continuations.map(c=>c.receipt);await checkpoint()}
   stage='runtime_startup';runtime=await startOwnedRuntime(options.runtime)
   report.runtime=runtime.source;await checkpoint()
   api=await openKernelClient({clientRoot:options.runtime.clientRoot,kernelUrl:runtime.kernelUrl})
@@ -170,7 +171,8 @@ try {
       const inspection=JSON.parse(await docker(['inspect',`chariox-slice-${name}`]))[0]
       assert.equal(inspection.Image,image);assert.equal(inspection.Config.Labels['io.chariox.slice.id'],sliceId)
       assert.equal(inspection.HostConfig.Memory,2048*1024**2);assert.equal(inspection.HostConfig.NanoCpus,1e9)
-      report.slice={id:sliceId,name,volumes:inspection.Mounts.filter(m=>m.Type==='volume').map(m=>m.Name)}
+      const slice=unwrap(await api.client.send(api.requests.getSliceRequest(sliceId)),'Slice').slice
+      report.slice={id:sliceId,name,workerKernelId:slice.worker_kernel_id,volumes:inspection.Mounts.filter(m=>m.Type==='volume').map(m=>m.Name)}
       const expected=runtime.source.artifacts.find(a=>a.name==='chariox-kernel').sha256.replace(/^sha256:/,'')
       assert.equal((await docker(['exec',`chariox-slice-${name}`,'sha256sum','/opt/chariox-slice/bin/chariox-kernel'])).split(/\s+/)[0],expected)
     }})
@@ -206,8 +208,19 @@ try {
     for(let i=0;i<13;i++){await pause(5000);await guard()}
     await api.client.send({PumpTerminalOutput:{session_id:room.owned.sessionId,attachment_id:attachment.id}})
     report.preflight.attachmentSurvived65Seconds=true
-  } else await room.spawn({provider:'codex',model:report.model,effort:'high',accountProfile:runtime.profileId})
-  const episodes=options.preflight?[]:expected.filter(e=>!continuation?.skip.has(`${e.taskId}:${e.era}`))
+  }
+  if(!options.preflight||options.workerProbe) {
+    stage='worker_provider_admission'
+    await room.spawn({provider:'codex',model:report.model,effort:'high',accountProfile:runtime.profileId,sliceRef:report.slice.id})
+    const state=unwrap(await api.client.send(api.requests.getSessionStateRequest(room.owned.sessionId)),'SessionState')
+    const agent=state.session.agents.find(a=>a.id===room.owned.agentId)
+    assert(report.slice.workerKernelId&&agent.remote_execution,'MP-10 kernel worker binding missing')
+    assert.equal(agent.remote_execution?.worker_kernel_id,report.slice.workerKernelId,'MP-10 frozen explicit worker placement required')
+    assert.equal(agent.effort,'high');assert.equal(agent.model,report.model)
+    report.provider={model:agent.model,workerKernelId:agent.remote_execution.worker_kernel_id,effort:agent.effort}
+    await checkpoint()
+  }
+  const episodes=options.preflight?[]:expected.filter(e=>!skipped.has(`${e.taskId}:${e.era}`))
   for(const episode of episodes) {
     await guard();stage='fixture_readiness'
     const row={mpItems:report.mpItems,...episode,seed:42,runId,effort:'high',harnessValid:false,startedAt:new Date().toISOString()}

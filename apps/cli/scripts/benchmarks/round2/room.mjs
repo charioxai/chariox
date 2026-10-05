@@ -39,10 +39,10 @@ export class Round2Room {
     }
   }
 
-  async spawn({ provider, model, effort = 'high', accountProfile }) {
+  async spawn({ provider, model, effort = 'high', accountProfile, sliceRef }) {
     const { client, requests: r } = this.api, sessionId = this.owned.sessionId
     const agent = unwrap(await client.send(r.spawnAgentRequest(sessionId, provider, `${this.runId}-agent`, model,
-      this.workspace, effort, 'build', 'yolo', undefined, undefined, undefined, accountProfile)), 'AgentSpawned').agent
+      this.workspace, effort, 'build', 'yolo', undefined, undefined, sliceRef, accountProfile)), 'AgentSpawned').agent
     this.owned.agentId = agent.id; await this.checkpoint(this.owned)
     const attachment = unwrap(await client.send(r.attachToSessionRequest(sessionId, this.runId)), 'SessionAttached').attachment
     this.owned.attachmentId = attachment.id; await this.checkpoint(this.owned)

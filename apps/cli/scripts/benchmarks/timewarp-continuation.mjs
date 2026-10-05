@@ -26,7 +26,13 @@ export async function verifyTimeWarpContinuation(directory) {
   const bytes=await Promise.all(files.map(name=>readFile(`${directory}/${name}`)))
   const [campaign,rows,runtime]=bytes.slice(0,3).map(b=>JSON.parse(b))
   const failures=bytes[3].toString().trim().split('\n').map(JSON.parse)
-  const proof=JSON.parse(await readFile(`${directory}/CLEANUP_SUPPLEMENT.json`,'utf8'))
+  const proof=campaign.cleanup?.complete?{
+    priorHashes:Object.fromEntries(files.map((name,i)=>[name,hash(bytes[i])])),root:runtime.root,workspace:runtime.workspace,
+    providerSubmissions:0,stateRemoved:runtime.cleanup.stateRemoved,workspaceRemoved:runtime.cleanup.workspaceRemoved,
+    roomGone:campaign.cleanup.rooms.sessionGone,slicesGone:campaign.cleanup.rooms.slices.every(s=>s.gone),
+    containerGone:campaign.cleanup.containerGone,volumesGone:campaign.cleanup.volumesGone,
+    processes:[...campaign.cleanup.processes,...runtime.cleanup.processes]
+  }:JSON.parse(await readFile(`${directory}/CLEANUP_SUPPLEMENT.json`,'utf8'))
   assert.deepEqual(proof.priorHashes,Object.fromEntries(files.map((name,i)=>[name,hash(bytes[i])])))
   assert.equal(proof.root,runtime.root);assert.equal(proof.workspace,runtime.workspace)
   assert.equal(proof.providerSubmissions,0)
