@@ -13,6 +13,13 @@ test('recovery requires same Room, Tabs and completed Action ledger', () => {
 test('a controller component name alone is not evidence of fault attribution', () => {
   const healthy = { health: [{ component: 'browser_controller', state: 'ready', diagnostic_code: null }] }
   assert.equal(controllerFaultAttributed(healthy, { Events: { events: [] } }), false)
-  assert.equal(controllerFaultAttributed(healthy, { Events: { events: [{ kind: 'HealthChanged' }] } }), true)
+  assert.equal(controllerFaultAttributed(healthy, { Events: { events: [{ kind: 'HealthChanged' }] } }), false)
   assert.equal(controllerFaultAttributed({ health: [{ component: 'browser_controller', state: 'failed' }] }), true)
+})
+test('MP-08 / MP-10 unrelated process loss cannot attribute a controller fault', () => {
+  const healthy = { health: [{ component: 'browser_controller', state: 'ready', diagnostic_code: null }] }
+  const action = outcome => [{ state: 'failed', outcome }]
+  assert.equal(controllerFaultAttributed(healthy, null, action({ code: 'streamer_process_lost' })), false)
+  assert.equal(controllerFaultAttributed(healthy, null, action({ code: 'browser_controller_process_lost' })), true)
+  assert.equal(controllerFaultAttributed(healthy, null, action({ code: 'browser_action_failed', message: 'controller appears healthy' })), false)
 })
