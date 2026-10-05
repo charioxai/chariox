@@ -306,16 +306,19 @@ export async function getJsonWithHeaders(url, headers = {}) {
   }
 }
 
-export async function getJson(url) {
-  return (await getJsonWithHeaders(url)).body
+export async function getJson(url, headers = {}) {
+  return (await getJsonWithHeaders(url, headers)).body
 }
 
-export async function waitForCloudRelayTarget(apiUrl, { accountId, realmId, daemonId, status }, timeoutMs = 30_000) {
+export async function waitForCloudRelayTarget(apiUrl, { accountId, realmId, daemonId, status, profile }, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs
   let lastTargets = null
   while (Date.now() < deadline) {
     const listed = await getJson(
       `${apiUrl}/relay/targets?accountId=${encodeURIComponent(accountId)}&realmId=${encodeURIComponent(realmId)}`,
+      profile?.machineCredential
+        ? { "x-chariox-machine-credential": profile.machineCredential, "x-chariox-machine-id": profile.machineId }
+        : { authorization: `Bearer ${profile?.cloudSessionToken ?? ""}` },
     )
     lastTargets = listed.targets ?? []
     const target = lastTargets.find((entry) => entry.daemonId === daemonId)

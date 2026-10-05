@@ -203,6 +203,7 @@ async function main() {
       args: ["cloud", "connect"],
     })
     const onlineTarget = await waitForCloudRelayTarget(apiUrl, {
+      profile: profileRef.current,
       accountId: profileRef.current.accountId,
       realmId: profileRef.current.realmId,
       daemonId,
@@ -218,6 +219,7 @@ async function main() {
       daemon = null
       log("cloud-target-offline")
       const offlineTarget = await waitForCloudRelayTarget(apiUrl, {
+      profile: profileRef.current,
         accountId: profileRef.current.accountId,
         realmId: profileRef.current.realmId,
         daemonId,
@@ -231,6 +233,7 @@ async function main() {
       localClient = new LocalIpcClient(kernelUrl, { localAuthEnvironment: daemonEnv })
       log("cloud-target-reonline")
       const reonlineTarget = await waitForCloudRelayTarget(apiUrl, {
+      profile: profileRef.current,
         accountId: profileRef.current.accountId,
         realmId: profileRef.current.realmId,
         daemonId,
@@ -592,6 +595,7 @@ async function main() {
     await terminateChild(daemon, "SIGINT")
     if (accountId && realmId) {
       await waitForCloudRelayTarget(apiUrl, {
+      profile: profileRef.current,
         accountId,
         realmId,
         daemonId,
