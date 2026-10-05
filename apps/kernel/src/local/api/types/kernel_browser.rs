@@ -1,9 +1,22 @@
-//! MD-2: sessionless host browser protocol (local 417).
+//! MD-2: sessionless host browser protocol (legacy 417; display 419).
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KernelBrowserCommand {
+    DisplayCapture {
+        tab_id: String,
+        generation: u64,
+    },
+    DisplayTakeover {
+        tab_id: String,
+        generation: u64,
+    },
+    DisplayRelease {
+        tab_id: String,
+        generation: u64,
+    },
+    DisplayActors,
     DisplaySubscribe {
         tab_id: String,
         generation: u64,

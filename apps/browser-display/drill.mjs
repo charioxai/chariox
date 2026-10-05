@@ -111,7 +111,7 @@ try {
   window.mdStream=await MDDisplay.attachBrowserDisplay(MDDisplay.canvas,mdTransport,{tab_id:ready.tab_id,generation:ready.generation},{bitrate});
  },{ready,bitrate:receipt.target_encrypted_bitrate});
  const first=await page.evaluate(()=>mdStream.next());receipt.bootstrap={kind:first.kind,sequence:first.sequence};
- const reference=async()=>Buffer.from((await page.evaluate(async()=>{const r=await mdTransport.request({KernelBrowser:{command:{op:'screenshot',tab_id:mdStream.binding.tab_id,generation:mdStream.binding.generation}}});return r.KernelBrowser.result.data_base64})),'base64');
+ const reference=async()=>Buffer.from((await page.evaluate(async()=>{const r=await mdTransport.request({KernelBrowser:{command:{op:'display_capture',tab_id:mdStream.binding.tab_id,generation:mdStream.binding.generation}}});return r.KernelBrowser.result.data_base64})),'base64');
  const actual=async()=>Buffer.from((await page.evaluate(()=>MDDisplay.canvas.toDataURL('image/png'))).split(',')[1],'base64');
  async function pair(name) {
   const source=await reference(),view=await actual();const {diff,...metric}=compare(source,view,PNG);
@@ -147,6 +147,15 @@ try {
  if(!receipt.final_fidelity.lossless)throw Error('MD-DISPLAY: small-change pixels differ');
  // Explicit stale document must fail through the production input seam.
  const stale=await page.evaluate(async()=>{try{await mdTransport.request({KernelBrowser:{command:{op:'display_input',tab_id:mdStream.binding.tab_id,generation:mdStream.binding.generation,document_id:'stale-fixture-loader',input:{kind:'click',x:1190,y:28}}}});return false}catch{return true}});if(!stale)throw Error('MD-DISPLAY: stale document admitted');receipt.stale_document_rejected=true;
+ receipt.takeover=await page.evaluate(()=>mdStream.takeover());
+ receipt.actors=await page.evaluate(()=>mdStream.actors());
+ const agentProbe=async name=>{await writeFile(path.join(home,name),'MD-DISPLAY focused MCP probe');return until(async()=>{try{return JSON.parse(await readFile(path.join(home,name+'.json'),'utf8'))}catch{return null}},name);};
+ receipt.agent_during_takeover=await agentProbe('PROBE_TAKEOVER');
+ if(!receipt.agent_during_takeover.takeover_fenced || !receipt.agent_during_takeover.observed_document)throw Error('MD-DISPLAY: takeover did not fence focused MCP input');
+ await page.evaluate(()=>mdStream.input({kind:'key',key:'Tab'}));
+ await page.evaluate(()=>mdStream.release());
+ receipt.agent_after_release=await agentProbe('PROBE_RELEASE');
+ if(receipt.agent_after_release.rejected)throw Error('MD-DISPLAY: focused MCP input did not resume after release');
  await page.evaluate(()=>mdStream.close());
  await writeFile(path.join(home,'STOP'),'MD-DISPLAY owned stop');
  const exit=await kernelExit;receipt.kernel_exit=exit;if(exit.code!==0)throw Error('MD-DISPLAY kernel drill failed');
