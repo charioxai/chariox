@@ -14,6 +14,9 @@ export const fixtureSource = dirname(fileURLToPath(import.meta.url));
 // its verified Browser.close imports the controller CDP client (closure below).
 const browserCloseModules = [
   "browser-controller-actions.mjs",
+  "browser-controller-actionability.mjs",
+  "browser-controller-interactions.mjs",
+  "browser-controller-geometry.mjs",
   "browser-controller-bar.mjs",
   "browser-controller-cdp.mjs",
   "browser-controller-compatibility.mjs",
