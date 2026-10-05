@@ -223,3 +223,6 @@ async fn check() {
     assert!(router.dispatch(command, request).await.is_err());
     router.runtime_state.shutdown_cleanup().await.unwrap();
 }
+
+#[path = "notes/live.rs"]
+mod live;
