@@ -59,10 +59,19 @@ impl KernelRuntimeState {
                 .kernel_browser_bound_operation(user, admission.as_ref(), method, params, false)
                 .await;
         }
-        let _display_credit = if method == "host.browser" && params["display_subscription_id"].is_string() {
-            Some(self.owned.kernel_browser_host.display_gate(user).acquire_owned().await
-                .map_err(|_| host_error("MD-DISPLAY: capture gate closed".into()))?)
-        } else { None };
+        let _display_credit =
+            if method == "host.browser" && params["display_subscription_id"].is_string() {
+                Some(
+                    self.owned
+                        .kernel_browser_host
+                        .display_gate(user)
+                        .acquire_owned()
+                        .await
+                        .map_err(|_| host_error("MD-DISPLAY: capture gate closed".into()))?,
+                )
+            } else {
+                None
+            };
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(user);
         let at = std::time::Instant::now();

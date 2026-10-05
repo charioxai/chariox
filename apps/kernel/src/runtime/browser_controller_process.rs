@@ -633,9 +633,14 @@ impl BrowserControllerProcessStdioBackend {
     // reports only this same supervisor PID, so don't repeat it per frame.
     // Keep exact owned-child exit detection and cold/recovery health admission.
     pub(crate) fn ensure_host_started(&mut self) -> Result<bool, String> {
-        if !self.host { return Err("host controller required".into()); }
+        if !self.host {
+            return Err("host controller required".into());
+        }
         self.take_exited_process()?;
-        if self.process.is_none() { self.start()?; return Ok(true); }
+        if self.process.is_none() {
+            self.start()?;
+            return Ok(true);
+        }
         Ok(false)
     }
     fn take_exited_process(&mut self) -> Result<Option<u32>, String> {
@@ -2455,13 +2460,32 @@ mod tests {
             "*'\"method\":\"health\"'*) printf 'health\\n' >> \"$(dirname \"$0\")/health-count\"; printf",
         );
         let tool = TestTool::new(&script);
-        let mut backend = BrowserControllerProcessStdioBackend::new(tool.path(),Vec::new(),HEALTHY_TEST_CONTROLLER_TIMEOUT).for_host();
+        let mut backend = BrowserControllerProcessStdioBackend::new(
+            tool.path(),
+            Vec::new(),
+            HEALTHY_TEST_CONTROLLER_TIMEOUT,
+        )
+        .for_host();
         assert!(backend.ensure_host_started().unwrap());
-        for _ in 0..8 { assert!(!backend.ensure_host_started().unwrap()); }
-        assert_eq!(fs::read_to_string(tool.path().parent().unwrap().join("health-count")).unwrap().lines().count(),1);
+        for _ in 0..8 {
+            assert!(!backend.ensure_host_started().unwrap());
+        }
+        assert_eq!(
+            fs::read_to_string(tool.path().parent().unwrap().join("health-count"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
         backend.stop().unwrap();
         assert!(backend.ensure_host_started().unwrap());
-        assert_eq!(fs::read_to_string(tool.path().parent().unwrap().join("health-count")).unwrap().lines().count(),2);
+        assert_eq!(
+            fs::read_to_string(tool.path().parent().unwrap().join("health-count"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
         backend.stop().unwrap();
     }
 

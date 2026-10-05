@@ -1,7 +1,6 @@
 //! MD-2: kernel authority for Chromium running directly on the host.
 use super::browser_controller_process::{
-    BrowserCancellation, BrowserControllerProcessBackend,
-    BrowserControllerProcessStdioBackend,
+    BrowserCancellation, BrowserControllerProcessBackend, BrowserControllerProcessStdioBackend,
 };
 use super::kernel_browser_actors::KernelBrowserActors;
 pub(crate) use super::kernel_browser_actors::KernelBrowserDocumentBinding;
@@ -67,7 +66,11 @@ impl KernelBrowserHost {
     // an entire WAN window of blocking capture/encode/pacing operations.
     pub(crate) fn display_gate(&self, user: &str) -> Arc<tokio::sync::Semaphore> {
         let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        state.display_gates.entry(user.into()).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1))).clone()
+        state
+            .display_gates
+            .entry(user.into())
+            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
+            .clone()
     }
     pub(crate) fn profile_root(&self, user: &str) -> PathBuf {
         self.root.join(Self::profile_key(user))
@@ -270,16 +273,27 @@ impl KernelBrowserHost {
         }
         let fresh = backend.ensure_host_started()?;
         self.check_admission(admission)?;
-        let hash = format!("{:x}",Sha256::digest(serde_json::to_vec(&policy).map_err(|_| "MD-5: invalid policy")?));
-        let applied = self.inner.lock().map_err(|_| "MD-5: protection lock poisoned")?
-            .protection_hashes.get(user).is_some_and(|previous| previous == &hash);
+        let hash = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&policy).map_err(|_| "MD-5: invalid policy")?)
+        );
+        let applied = self
+            .inner
+            .lock()
+            .map_err(|_| "MD-5: protection lock poisoned")?
+            .protection_hashes
+            .get(user)
+            .is_some_and(|previous| previous == &hash);
         // The scoped Vault barrier and backend mutex are held. Policy changes,
         // including insertion/retirement, and every new controller still apply
         // before capture/input; unchanged policies need no redundant RPC.
         if fresh || !applied {
             backend.host_request("host.protect", policy)?;
-            self.inner.lock().map_err(|_| "MD-5: protection lock poisoned")?
-                .protection_hashes.insert(user.into(),hash);
+            self.inner
+                .lock()
+                .map_err(|_| "MD-5: protection lock poisoned")?
+                .protection_hashes
+                .insert(user.into(), hash);
         }
         self.check_admission(admission)?;
         let model = self.actor_model(user)?;
@@ -477,6 +491,65 @@ fn require_loaded(state: &HostState, user: &str, agent: &str) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[cfg(unix)]
+    fn md_display_policy_change_and_controller_restart_reapply_before_capture() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-md-display-policy-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let script = root.join("controller.sh");
+        std::fs::write(&script,r#"protect=0
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$";;
+ *'"method":"host.protect"'*) protect=$((protect+1)); printf '{"id":%s,"ok":true,"result":{}}\n' "$id";;
+ *'"method":"host.browser"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"protect_count":%s}}\n' "$id" "$protect";;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null}}\n' "$id";exit 0;;
+ esac
+done
+"#).unwrap();
+        let backend = BrowserControllerProcessStdioBackend::new(
+            "/bin/sh",
+            vec![script.to_string_lossy().into_owned()],
+            Duration::from_secs(5),
+        )
+        .for_host();
+        let host = KernelBrowserHost::new(root.clone());
+        host.inner
+            .lock()
+            .unwrap()
+            .browsers
+            .insert("a".into(), Arc::new(Mutex::new(backend)));
+        let capture = |policy| {
+            host.protected_request(
+                "a",
+                None,
+                "host.browser",
+                serde_json::json!({"op":"screenshot"}),
+                policy,
+            )
+            .unwrap()
+        };
+        let first = serde_json::json!({"values":[],"targets":[],"unknown":false});
+        assert_eq!(capture(first.clone())["protect_count"], 1);
+        assert_eq!(capture(first)["protect_count"], 1);
+        let changed = serde_json::json!({"values":["synthetic-only"],"targets":[],"unknown":false});
+        assert_eq!(capture(changed.clone())["protect_count"], 2);
+        let backend = host.backend("a").unwrap();
+        backend.lock().unwrap().stop().unwrap();
+        assert_eq!(
+            capture(changed)["protect_count"],
+            1,
+            "new controller must receive even an unchanged policy"
+        );
+        backend.lock().unwrap().stop().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn profile_selection_is_private_stable_and_user_separated() {
         let host = KernelBrowserHost::new(PathBuf::from("/tmp/md2-state"));
