@@ -213,6 +213,18 @@ test("MP-08/MP-10/MP-11 actual CDP upload/download and passive capture fixture",
   const childChooser = childSnapshot.result.dom_nodes.find(node => node.document_index === childDocument.document_index && node.node_name === "BUTTON" && node.attributes.id === "choose");
   assert.ok(childChooser, "visible child trigger has an ordinary backend reference");
   assert.match(childChooser.node_ref, /^backend:/);
+  // An observed child control deliberately opens the parent's hidden input.
+  // The chooser is real, but its owning frame differs: no bytes may be selected.
+  const topSelection = await evaluate("document.querySelector('#attachment').files.length");
+  await evaluate("document.querySelector('#child-upload').contentDocument.querySelector('#choose').onclick = () => document.querySelector('#attachment').click(); true");
+  const unrelatedChooser = await request("browser.upload", { ...current, node_ref: childChooser.node_ref,
+    artifact_files: expected.map(file => ({ display_name: file.name, mime_type: file.type,
+      data_base64: file.bytes.toString("base64"), size_bytes: file.bytes.length, sha256: createHash("sha256").update(file.bytes).digest("hex") })) });
+  assert.equal(unrelatedChooser.ok, false, "a child trigger cannot bind a parent-frame chooser");
+  assert.equal(unrelatedChooser.error.code, "browser_upload_invalid");
+  assert.equal(await evaluate("document.querySelector('#attachment').files.length"), topSelection);
+  assert.equal(await evaluate("document.querySelector('#child-upload').contentDocument.querySelector('#attachment').files.length"), 0);
+  await evaluate("{ const doc = document.querySelector('#child-upload').contentDocument; doc.querySelector('#choose').onclick = () => doc.querySelector('#attachment').click(); } true");
   const childChosen = await request("browser.upload", { ...current, node_ref: childChooser.node_ref,
     artifact_files: expected.map(file => ({ display_name: file.name, mime_type: file.type,
       data_base64: file.bytes.toString("base64"), size_bytes: file.bytes.length, sha256: createHash("sha256").update(file.bytes).digest("hex") })) });
@@ -243,7 +255,7 @@ test("MP-08/MP-10/MP-11 actual CDP upload/download and passive capture fixture",
   await evaluate("document.querySelector('#isolated-login').remove(); true");
   const result = { mp: ["MP-08", "MP-10", "MP-11"], scope: "controller/Chromium fixture only",
     inputUpload: true, missingDenied: true, cancelNoPartialReuse: true, downloadExactBytes: true,
-    downloadCancelNoPartialReuse: true, isolatedIframePasswordMask: true, sameOriginChildChooser: true,
+    downloadCancelNoPartialReuse: true, isolatedIframePasswordMask: true, sameOriginChildChooser: true, unrelatedParentChooserDenied: true,
     capture: { sha256: createHash("sha256").update(image).digest("hex"), sizeBytes: image.length,
       targetId: current.target_id, documentId: before, viewport }, passiveEventsRedacted: true, controllerImageArtifact: true, controllerDownloadArtifact: true, controllerPassiveHar: true,
     chooser: { ok: chosen.ok, diagnostic: chosen.error?.code ?? null },

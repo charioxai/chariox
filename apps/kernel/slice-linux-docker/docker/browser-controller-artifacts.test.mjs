@@ -112,7 +112,7 @@ for (const scenario of ["matching", "wrong_session", "wrong_frame", "navigated",
 }
 
 // MP-08/MP-10/MP-11: same-renderer child controls have ordinary backend refs.
-for (const scenario of ["matching", "unrelated_frame", "child_navigation", "ancestor_navigation", "input_document_mismatch", "missing_control_document"]) {
+for (const scenario of ["matching", "unrelated_frame", "top_frame", "child_navigation", "ancestor_navigation", "input_document_mismatch", "missing_control_document"]) {
   test(`MP-08/MP-10/MP-11 child-frame chooser ${scenario}`, async t => {
     const root = await mkdtemp(path.join(tmpdir(), "chariox-b207-child-chooser-"));
     t.after(() => rm(root, { recursive: true, force: true }));
@@ -134,7 +134,7 @@ for (const scenario of ["matching", "unrelated_frame", "child_navigation", "ance
         return {};
       },
       waitForEvent() { return { cancel() {}, promise: Promise.resolve({ sessionId: "session", params: {
-        frameId: scenario === "unrelated_frame" ? "unrelated" : "child", backendNodeId: 2, mode: "selectSingle" } }) }; },
+        frameId: scenario === "unrelated_frame" ? "unrelated" : scenario === "top_frame" ? "top" : "child", backendNodeId: 2, mode: "selectSingle" } }) }; },
     };
     let exposed = false;
     const upload = uploadBrowserFiles({ connection, sessionId: "session", targetId: "target", documentId: "top-doc", nodeRef: "backend:1",
