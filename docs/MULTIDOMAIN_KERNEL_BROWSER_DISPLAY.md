@@ -264,37 +264,39 @@ closes from these results.
 
 ## MD-DISPLAY-02/04: Phase-4 latency measurements
 
-Execution source `4d4ebd85a` (kernel build source `c8518a3e2`; subsequent changes
-only adjust the harness timestamp/settling assertion). Clean receipt:
-`phase4/final-2mbps-v2/results.json` under the external display evidence root.
+Execution and kernel-build source `05387e1e4`. Clean receipt:
+`phase4/final-damage-2mbps/results.json` under the external display evidence root.
 The same headed, sandboxed Linux source, DPR2 geometry, 2 Mbps negotiated budget,
 production scoped relay and encrypted runtime events are used. Twenty clicks
 change a small binary counter on the docs fixture. The endpoint is a headless
 browser rAF callback **after** reading back and checking the visible counter.
 This is a software presentation proxy, not physical monitor photon timing.
 
-| Measurement | Instrumented before (`cb382fb22`) | Optimized (`4d4ebd85a`) |
+| Measurement | Instrumented before (`cb382fb22`) | Optimized (`05387e1e4`) |
 | --- | ---: | ---: |
-| Input to verified presentation p50 / p95 | 744.20 / 778.20 ms | 78.10 / 106.60 ms |
-| Input request round-trip p50 | 227.70 ms | 31.50 ms |
-| CDP input p50 | 3.87 ms | 3.42 ms |
-| Full CDP capture p50 | 148.59 ms | Small-change preview 6.18 + native crop 2.97 ms |
-| Source PNG decode p50 | 101.67 ms | Preview 1.33 + crop decode/merge 1.15 ms |
-| Dirty comparison/tile encode p50 | 4.85 ms | 7.21 ms |
+| Input to verified presentation p50 / p95 | 744.20 / 778.20 ms | 73.80 / 92.40 ms |
+| Input request round-trip p50 | 227.70 ms | 34.80 ms |
+| CDP input p50 | 3.87 ms | 3.71 ms |
+| Full CDP capture p50 | 148.59 ms | Small-change preview 5.94 + native crop 2.74 ms |
+| Source PNG decode p50 | 101.67 ms | Preview 1.31 + crop decode/merge 1.11 ms |
+| Dirty comparison/tile encode p50 | 4.85 ms | 0.89 ms |
 | Selected payload encode p50 | 1.62 ms | 0.02 ms (already encoded tiles) |
-| Pacing wait p50 | 27.36 ms | 1.00 ms |
+| Pacing wait p50 | 27.36 ms | 1.12 ms |
 | Event serialize/encrypt p50 | 0.85 ms | 0.87 ms |
 | Bounded frame-credit acquisition p50 | 0.09 ms | 0.04 ms |
 | Enqueued event → viewer arrival p50 | 42.60 ms | 2.00 ms |
-| Client decode p50 | 12.40 ms | 1.80 ms |
-| Client synchronous presentation p50 | 1.00 ms | <0.10 ms |
-| Entire next-credit round-trip p50 | 455.50 ms | 45.00 ms |
-| Observed received application bytes/s | 7,551 | 28,850 |
-| Observed live owned CPU (one core = 100%) | 88.9% | 160.3% |
+| Client decode p50 | 12.40 ms | 1.70 ms |
+| Client synchronous presentation p50 | 1.12 ms | <0.10 ms |
+| Entire next-credit round-trip p50 | 455.50 ms | 37.60 ms |
+| Observed received application bytes/s | 7,551 | 27,741 |
+| Observed live owned CPU (one core = 100%) | 88.9% | 162.3% |
 
 Spans overlap and are not additive. The event arrival span includes writer queue
 and both same-host relay hops; it does not isolate individual relay transit.
 Raw timestamps, per-stage p50/p95/p99 and histograms are in each JSON receipt.
+`phase4/provenance.json` binds 134 execution-source hashes, 30 exact embedded
+controller assets, current binary SHA-256, commands, checks and historical/final
+receipts. Documentation/status commits follow only with unchanged execution hashes.
 CPU excludes exited encoder workers and includes fixture/viewer readback. Byte
 rate excludes bootstrap, requests and TLS, includes intervening control responses
 and resource-sampling time; faster interaction increases bytes/s. Bootstrap and
@@ -303,7 +305,7 @@ idle changes without an additional serialization-duration sleep.
 
 Full-readback intermediate source `8473bf69a` measured 437.40 / 455.70 ms, still
 RED. Its process refresh cost was 13.50 ms per refresh (14 per click). Incremental
-Linux PID enumeration/identity reads reduce that to 1.47 ms in the final run.
+Linux PID enumeration/identity reads reduce that to 1.52 ms in the final run.
 Signaling always takes a fresh full membership/start-time snapshot; unsafe,
 foreign and reused groups remain rejected. The Mac `ps` path is unchanged and
 unmeasured. Fast native PNG capture and row-specific PNG predictors retain RGB;
@@ -315,9 +317,17 @@ through a bounded priority queue; large frames retain bounded event credit.
 TCP_NODELAY removes delayed receipt coupling on the local relay sockets. The
 presenter begins decoding an event while awaiting its receipt, then releases
 credit only after both finish. Native damage crops avoid full readback on each
-small input; full protected idle verification preserves settled pixels.
+small input; tile comparison uses those private crop bounds. Full protected idle
+verification scans the entire frame and preserves settled pixels.
 
-The final local run passes both latency thresholds, all 20 visual counter checks,
+Before the final crop-bounded tile scan, two runs passed at 78.10/106.60 and
+72.80/88.60 ms. A third clean run (`final-clean-2mbps`, source `6cfcf6410`)
+was RED: p50 88.50 ms, p95 100.20 ms. It retains its failing exit and receipt;
+that variance motivated the tile optimization rather than being discarded.
+
+A second clean run at `69a4897ef` (execution files unchanged from `05387e1e4`)
+polled a static display for 100 seconds / 256 polls, then passed p50/p95
+72.80/83.90 ms. Both final runs pass both latency thresholds, all 20 visual counter checks,
 exact settled and final RGB (MSE 0), stale-document rejection, takeover fencing,
 owner input and release/resumption. VP9 bootstrap remains 34.04 dB, followed by
 exact PNG. This does not improve large moving-video fidelity or prove arbitrary
@@ -332,9 +342,11 @@ next change. Fixes recognize nested `display_next` as outcome-unknown/no-replay,
 exclude transient display events from durable cursors, and renew delivery only
 inside successful admitted polling. The registration unit also rejects another
 client key and expires genuine idle. The final live static run is recorded
-separately in `phase4/final-static-100s/results.json`.
+separately in `phase4/final-damage-static-100s/results.json`. The earlier
+`final-static-100s` receipt retains its dirty-tree flag from a temporary test
+dependency symlink; it was not current-file proof after the native tile fix.
 
-Focused checks: 38 Node tests, 13 Rust ownership/registration/queue/protocol/
+Focused checks: 39 Node tests, 13 Rust ownership/registration/queue/protocol/
 event/actor/takeover/origin checks, 11 shared IPC tests and TypeScript typecheck.
 Build and checks have their own logs; historical RED receipts remain RED. The
 initial final run observed a distinct compositor refinement after the first exact
