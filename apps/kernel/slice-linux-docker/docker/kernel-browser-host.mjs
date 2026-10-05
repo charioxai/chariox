@@ -314,8 +314,15 @@ export class KernelBrowserHost {
       // and pending repairs are then invalidated by the new document as usual.
       if (!stream.capture || stream.capture.document !== tab.document_id)
         stream.capture = new DisplayCapture((clip) => this.screenshot(tab, clip), stream.device_scale_factor, this.timing);
-      const source = await stream.capture.next({ ...tab, input_epoch: this.inputEpochs.get(tab.tab_id) ?? 0 }, this.protection, stream.previous && command.after_sequence === stream.sequence, !stream.exact);
       const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
+      const layoutAt = timestamp();
+      const { cssVisualViewport: viewport } = await connection.send("Page.getLayoutMetrics", {}, sessionId);
+      this.timing('capture_layout_metrics', layoutAt);
+      // Native CDP clips are page rectangles. Our private damage hints are
+      // viewport rectangles; use full protected capture for scroll/zoom/unknown
+      // origins until that coordinate transform has separate mask/race proof.
+      const nativeCropSafe = viewport?.pageX === 0 && viewport?.pageY === 0 && viewport?.scale === 1;
+      const source = await stream.capture.next({ ...tab, input_epoch: this.inputEpochs.get(tab.tab_id) ?? 0 }, this.protection, stream.previous && command.after_sequence === stream.sequence, !stream.exact || !nativeCropSafe);
       try { await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id); }
       catch (error) { stream.invalidate(); throw error; }
       const frame = await stream.frame(source, source.document_id, command.after_sequence);

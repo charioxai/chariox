@@ -400,3 +400,19 @@ test('MD-DISPLAY navigation rebinds one display and still rejects old document i
   await assert.rejects(host.request({op:'input',tab_id:opened.tab_id,generation:opened.generation,document_id:first.document_id,input:{kind:'click',x:10,y:10}}),/stale input document/);
  }finally{if(flag===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=flag}
 }));
+test('MD-DISPLAY scrolled viewport falls back to full protected capture',()=>using(async({host,connection})=>{
+ const {encodePng,decodePng}=await import('./kernel-browser-pixels.mjs');
+ const flag=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try{
+  const opened=await host.request({op:'open',url:'http://127.0.0.1/scroll'}),send=connection.send;
+  connection.send=async(method,...args)=>method==='Page.getLayoutMetrics'?{cssVisualViewport:{pageX:0,pageY:480,scale:1}}:send(method,...args);
+  const pixels=Buffer.alloc(1280*800*4,255);
+  host.screenshot=async(tab,clip)=>{assert.equal(clip,null,'scrolled native crop is not a viewport rectangle');return {...tab,generation:opened.generation,data_base64:encodePng(1280,800,pixels)}};
+  const b=await host.request({op:'display_subscribe',tab_id:opened.tab_id,generation:opened.generation,codecs:['png'],bitrate:2_000_000,device_scale_factor:1});
+  const next=sequence=>host.request({op:'screenshot',display_subscription_id:b.subscription_id,generation:b.generation,after_sequence:sequence});
+  const first=(await next(0)).display_frame;pixels[(50*1280+50)*4]=0;
+  const frame=(await next(first.sequence)).display_frame;assert.equal(frame.kind,'tiles');
+  const tile=frame.tiles.find(tile=>tile.x<=50&&tile.y<=50&&tile.x+tile.width>50&&tile.y+tile.height>50);
+  assert.equal(decodePng(tile.data_base64).pixels[((50-tile.y)*tile.width+50-tile.x)*4],0);
+ }finally{if(flag===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=flag}
+}));
