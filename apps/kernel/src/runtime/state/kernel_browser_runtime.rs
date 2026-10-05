@@ -318,6 +318,69 @@ pub(super) fn host_error(message: String) -> DaemonError {
 mod document_tests {
     use super::*;
     #[test]
+    fn md3_local_terminals_have_distinct_stable_browser_actors() {
+        use crate::runtime::command::{KernelCommand, KernelCommandSource};
+        use crate::runtime::router::CommandRouter;
+        let app =
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let state = router.runtime_state();
+            let request = crate::local::LocalDaemonRequest::KernelBrowser(
+                crate::local::KernelBrowserRequest {
+                    command: KernelBrowserCommand::State,
+                },
+            );
+            let context = |caller| {
+                KernelCommand::from_local_request_with_caller(
+                    "same-retry-id",
+                    KernelCommandSource::LocalCli,
+                    caller,
+                    None,
+                    None,
+                    &request,
+                )
+            };
+            let a = context(
+                router
+                    .local_terminal_caller(KernelCommandSource::LocalCli, "kernel-connection-a")
+                    .await,
+            );
+            let b = context(
+                router
+                    .local_terminal_caller(KernelCommandSource::LocalCli, "kernel-connection-b")
+                    .await,
+            );
+            let retry = context(
+                router
+                    .local_terminal_caller(KernelCommandSource::LocalCli, "kernel-connection-a")
+                    .await,
+            );
+            let (user_a, actor_a) = state.kernel_browser_terminal_context(&a).unwrap();
+            let (user_b, actor_b) = state.kernel_browser_terminal_context(&b).unwrap();
+            assert_eq!(user_a, user_b, "MD-3: terminals share their user profile");
+            assert_ne!(
+                actor_a, actor_b,
+                "MD-3: one terminal must not overwrite another observation or release takeover"
+            );
+            assert_eq!(
+                state.kernel_browser_terminal_context(&retry).unwrap().1,
+                actor_a,
+                "MD-3: in-connection retry keeps its actor"
+            );
+            assert_ne!(
+                a.caller, b.caller,
+                "MD-3: caller-bound retry receipts must distinguish connections"
+            );
+            assert_eq!(a.caller, retry.caller);
+        });
+    }
+
+    #[test]
     fn mcp_input_requires_an_observed_document_without_changing_terminal_protocol() {
         let input = serde_json::json!({"command":{"op":"input","tab_id":"host-tab-a","generation":1,"input":{"kind":"click","x":1,"y":2}}});
         assert!(browser_tool_params(input.clone()).is_err());
