@@ -1,3 +1,4 @@
+mod client_reauthentication;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;

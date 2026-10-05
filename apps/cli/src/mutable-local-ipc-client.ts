@@ -75,6 +75,8 @@ export function createMutableLocalIpcClient(initialClient: LocalIpcClient): Muta
       }
       return previousClient
     },
+    retainForRelayRenewal() { return currentClient.retainForRelayRenewal() },
+    startRelayAuthRenewal(...args: Parameters<LocalIpcClient["startRelayAuthRenewal"]>) { return currentClient.startRelayAuthRenewal(...args) },
     supportsKernelEvents() {
       return currentClient.supportsKernelEvents()
     },

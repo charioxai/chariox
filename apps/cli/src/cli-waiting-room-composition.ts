@@ -1,3 +1,4 @@
+import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { randomUUID } from "node:crypto"
 import { mergeExternalProviderSessionsSorted } from "@chariox/kernel-client/external-provider-sessions"
 import { updateAgentConfig, updateAgentProfile } from "./agent-api.js"
@@ -388,9 +389,10 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     }
     const localPresence = loadLocalKernelPresences()
       .find((presence) => presence.kernelId === targetKernelRef)
+    const issuingClient = deps.client.currentClient()
     const connection = localPresence
       ? null
-      : await resolveKernelClientConnection(deps.client, {
+      : await resolveKernelClientConnection(issuingClient, {
           kernelRef: targetKernelRef,
           machineRef: machineRef ?? null,
           clientId: deps.options.clientId,
@@ -402,9 +404,21 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       ? new LocalIpcClient(localKernelEndpoint(localPresence))
       : new LocalIpcClient(connection!.relayUrl, {
           relayAuthToken: connection!.relayToken,
+          relayIdentity: createCliRelayIdentityStore().getOrCreate(),
           targetDaemonId: connection!.targetDaemonId ?? undefined,
           targetDaemonAlias: connection!.targetDaemonAlias ?? undefined,
         })
+    if (connection?.tokenExpiresAtMs) {
+      const release = issuingClient.retainForRelayRenewal()
+      nextClient.startRelayAuthRenewal(connection.tokenExpiresAtMs, async () => {
+        const fresh = await resolveKernelClientConnection(issuingClient, {
+          kernelRef: connection.kernelId ?? connection.targetDaemonId ?? targetKernelRef,
+          machineRef: connection.machineId ?? machineRef ?? null,
+          clientId: deps.options.clientId,
+        })
+        return { token: fresh.relayToken, expiresAtMs: fresh.tokenExpiresAtMs! }
+      }, release)
+    }
     if (typeof deps.client.replaceClient !== "function") {
       await nextClient.close()
       throw new Error("kernel client pivot is unavailable in this build")
