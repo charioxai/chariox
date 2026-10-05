@@ -157,6 +157,15 @@ impl CommandRouter {
             .map(Some);
         }
         match request {
+            LocalDaemonRequest::PreflightProviderAccountPortability(request) => {
+                return crate::runtime::provider_account_portability::execute_preflight(
+                    &self.config_projection.snapshot(),
+                    &self.provider_account_profiles,
+                    command,
+                    request,
+                )
+                .map(Some);
+            }
             request @ (LocalDaemonRequest::CreateDisposableWorker(_)
             | LocalDaemonRequest::GetDisposableWorker(_)
             | LocalDaemonRequest::ReleaseDisposableWorker(_)

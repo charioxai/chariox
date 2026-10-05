@@ -519,7 +519,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   }
 
   const managedEnvironmentLaunchController = new WaitingRoomManagedEnvironmentLaunchController({
-    createEnvironment: async (input) => createManagedEnvironment(await controlProfile(), input),
+    createEnvironment: async (input) => createManagedEnvironment(await controlProfile(), input, deps.client),
     getEnvironment: async (environmentId) => getManagedEnvironment(await controlProfile(), environmentId),
     requestLifecycle: async (input) => requestManagedEnvironmentLifecycle(await controlProfile(), input),
     prepareContextTransfer: async (environmentId) => prepareManagedEnvironmentContextTransfer(
@@ -850,7 +850,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     },
     requestReimage: async (input) => {
       assertLocalReimageAuthority()
-      return requestManagedEnvironmentReimage(await controlProfile(), input)
+      return requestManagedEnvironmentReimage(await controlProfile(), input, deps.client)
     },
     getEnvironment: async (environmentId) => {
       assertLocalReimageAuthority()

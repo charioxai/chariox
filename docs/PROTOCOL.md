@@ -3086,3 +3086,29 @@ Every self-hosted terminal request, subscription, event emission and replay chec
 
 
 Scoped self-hosted relays require separate operator-issued KERNEL and CLIENT transport tokens. A terminal pairing link replaces a scoped kernel transport token with the noncredential marker `operator-client-token-required`. The terminal supplies its CLIENT token with `--relay-token-env`; explicit transport credentials take precedence in either flag order. The kernel-issued key grant provides runtime admission, without giving the terminal a scoped kernel credential or issuer secret.
+
+### Provider account portability preflight, protocol 439 (MP-08 / MP-11)
+
+`PreflightProviderAccountPortability` accepts only `providerAccounts` selection
+metadata. The ordinary kernel owner gate applies to local and relay callers;
+shared-session membership, another realm, and kernel peers cannot use it. The
+kernel checks the selected accounts through the existing provider-native managed
+context exporter and discards the exported bytes. Success is
+`ProviderAccountPortabilityPreflightPassed: {}`. Neither request nor response
+contains credential values or human Cloud authority.
+
+The signed-in terminal runs this preflight on its source kernel before selected
+provider-account creation or reimage spends human Cloud authority, including
+before the reimage STOP. Cloud HTTP still uses the terminal's private, renewable
+client session. Export, transfer, import and launch remain kernel-owned and
+revalidate the actual selected credentials; an acknowledgement is not a durable
+transfer capability. Unsupported kernels fail with the protocol-439 diagnostic
+before Cloud mutation. This addition uses the coordinator-approved unmerged
+439 reservation; the relay wire format is unchanged.
+
+The focused boundary drill is the Rust test
+`provider_account_portability_websocket_drill`: it sends actual terminal
+WebSocket frames through the ordinary router and provider-native export paths
+with disposable synthetic Codex, Claude and OpenCode profiles. It establishes
+local protocol/portability behavior, not live provider login, provisioning or
+fresh-machine MP-10 acceptance.
