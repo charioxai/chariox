@@ -848,6 +848,161 @@ mod tests {
             .is_empty());
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mp11_review_credential_http_stall_allows_prompt_progress_and_revocation() {
+        use crate::config::{
+            UserCredentialConfig, UserCredentialInjectionConfig, UserCredentialSourceConfig,
+            UserCredentialUse,
+        };
+        use std::io::{Read, Write};
+        #[derive(Debug)]
+        struct SyntheticVault;
+        impl crate::secret::CredentialVaultStore for SyntheticVault {
+            fn get_secret(&self, _: &str, _: &str) -> Result<String, DaemonError> {
+                Ok("synthetic-http-test-value".into())
+            }
+            fn set_secret(&self, _: &str, _: &str, _: &str) -> Result<(), DaemonError> {
+                unreachable!()
+            }
+            fn delete_secret(&self, _: &str, _: &str) -> Result<(), DaemonError> {
+                unreachable!()
+            }
+        }
+        let (runtime, session, agent, attachment, binding) =
+            mp11_fixture(crate::DaemonConfig::for_tests()).await;
+        mp11_submit(&runtime, &session, &agent, &attachment, "caller prompt");
+        let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
+            home_kernel_id: runtime.owned.config_projection.snapshot().daemon_id,
+            home_session_id: session.clone(),
+            home_agent_id: agent.clone(),
+            leased_agent_id: binding.leased_agent_id.clone(),
+            worker_kernel_id: Some(binding.worker_kernel_id.clone()),
+            worker_machine_id: Some(binding.worker_machine_id.clone()),
+            worker_provider_run_id: "worker-run-1".into(),
+        };
+        let admitted = runtime
+            .with_relay_peer_authority(crate::runtime::relay_peer_authority::test_peer_authority(
+                "worker-kernel-1",
+            ))
+            .prepare_forwarded_peer_request(
+                &crate::transport::relay_peer::RelayPeerRequest::InvokeHomeCredentialTool {
+                    context: context.clone(),
+                    tool_name: crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL
+                        .into(),
+                    arguments: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let arrived = Arc::new(tokio::sync::Notify::new());
+        let (release, wait) = std::sync::mpsc::channel();
+        let server = std::thread::spawn({
+            let arrived = arrived.clone();
+            move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                    .unwrap();
+                let mut input = [0; 4096];
+                let count = stream.read(&mut input).unwrap();
+                assert!(
+                    String::from_utf8_lossy(&input[..count]).contains("synthetic-http-test-value")
+                );
+                arrived.notify_one();
+                let _ = wait.recv_timeout(std::time::Duration::from_secs(15));
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK",
+                );
+            }
+        });
+        let service = crate::secret::RuntimeSecretService::with_vault_store(
+            vec![UserCredentialConfig {
+                id: "synthetic".into(),
+                description: None,
+                metadata: None,
+                source: UserCredentialSourceConfig::Vault {
+                    key: "synthetic".into(),
+                },
+                allowed_hosts: vec![address.to_string()],
+                allowed_uses: vec![UserCredentialUse::Http],
+                injection: UserCredentialInjectionConfig::Header {
+                    name: "authorization".into(),
+                    value: "Bearer ${secret}".into(),
+                },
+            }],
+            "synthetic",
+            Arc::new(SyntheticVault),
+        );
+        let request = crate::secret::CredentialHttpRequest {
+            credential_id: "synthetic".into(),
+            method: "GET".into(),
+            url: format!("http://{address}/stall"),
+            headers: Default::default(),
+            body_text: None,
+            body_json: None,
+            timeout_ms: 30_000,
+            max_response_bytes: 1024,
+        };
+        let http = tokio::spawn(async move {
+            admitted
+                .forwarded_credential_http_request(context, service, request)
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(10), arrived.notified())
+            .await
+            .unwrap();
+        let mut progress = tokio::spawn({
+            let runtime = runtime.clone();
+            move || async move {
+                runtime
+                    .clone()
+                    .with_app_side_effect_blocking(move |app| {
+                        let (other_session, other_agent) = KernelSessionService::new(app)
+                            .create_session(CreateSessionRequest::new("unrelated", "unrelated"))?;
+                        let other_attachment =
+                            KernelSessionService::new(app).attach(AttachRequest::new(
+                                other_session.id(),
+                                "other-client",
+                                ClientCapabilityLevel::FullTerminal,
+                            ))?;
+                        app.agents
+                            .bind_remote_execution(other_agent.id(), binding.clone())?;
+                        let prompt = mp11_submit(
+                            &runtime,
+                            other_session.id(),
+                            other_agent.id(),
+                            other_attachment.id(),
+                            "unrelated prompt progresses",
+                        );
+                        assert_eq!(prompt.status(), PromptStatus::Running);
+                        let mut revoked = binding;
+                        revoked.execution_lease_id = "revoked while HTTP stalls".into();
+                        app.agents.bind_remote_execution(&agent, revoked)?;
+                        Ok(())
+                    })
+                    .await
+            }
+        }());
+        let advanced_while_stalled =
+            tokio::time::timeout(std::time::Duration::from_secs(2), &mut progress).await;
+        release.send(()).unwrap();
+        let progressed = advanced_while_stalled.is_ok();
+        if let Ok(result) = advanced_while_stalled {
+            result.unwrap().unwrap();
+        } else {
+            progress.await.unwrap().unwrap();
+        }
+        let response = http.await.unwrap();
+        server.join().unwrap();
+        assert!(
+            progressed,
+            "stalled credential HTTP blocked unrelated prompt and caller revocation"
+        );
+        assert!(response.is_err(), "revoked caller received HTTP response");
+    }
+
     #[tokio::test]
     async fn mp11_credential_release_revalidates_after_vault_unlock_deduplication() {
         mp11_vault_wait_revocation(true).await;

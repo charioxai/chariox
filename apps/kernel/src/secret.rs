@@ -113,6 +113,27 @@ pub struct CredentialHttpResponse {
     pub body_json: Option<serde_json::Value>,
 }
 
+/// An admitted credential operation with its secret prepared locally; no runtime locks
+/// travel with this value and execution may block on the remote endpoint.
+/// Deliberately neither Debug nor serializable because the request contains secret material.
+pub(crate) struct PreparedCredentialHttpRequest {
+    request: ureq::Request,
+    body: Option<String>,
+    max_response_bytes: u64,
+}
+
+impl PreparedCredentialHttpRequest {
+    pub(crate) fn execute(self) -> Result<CredentialHttpResponse, DaemonError> {
+        let response = if let Some(body) = self.body {
+            self.request.send_string(&body)
+        } else {
+            self.request.call()
+        }
+        .map_err(|error| http_error("http_request_with_credential", error))?;
+        decode_http_response(response, self.max_response_bytes)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RuntimeSecretService {
     credentials: Vec<UserCredentialConfig>,
@@ -212,6 +233,14 @@ impl RuntimeSecretService {
         &self,
         request: CredentialHttpRequest,
     ) -> Result<CredentialHttpResponse, DaemonError> {
+        self.prepare_http_request_with_credential(request)?
+            .execute()
+    }
+
+    pub(crate) fn prepare_http_request_with_credential(
+        &self,
+        request: CredentialHttpRequest,
+    ) -> Result<PreparedCredentialHttpRequest, DaemonError> {
         let credential = self.credential(&request.credential_id)?;
         self.ensure_use_allowed(credential, UserCredentialUse::Http)?;
         let target = url::Url::parse(&request.url).map_err(|error| {
@@ -328,14 +357,11 @@ impl RuntimeSecretService {
         for (name, value) in headers {
             http_request = http_request.set(&name, &value);
         }
-        let response = if let Some(body) = body {
-            http_request.send_string(&body)
-        } else {
-            http_request.call()
-        }
-        .map_err(|error| http_error("http_request_with_credential", error))?;
-
-        decode_http_response(response, request.max_response_bytes)
+        Ok(PreparedCredentialHttpRequest {
+            request: http_request,
+            body,
+            max_response_bytes: request.max_response_bytes,
+        })
     }
 
     pub fn terminal_secret_input(&self, credential_id: &str) -> Result<String, DaemonError> {
