@@ -36,6 +36,8 @@ type RemoteMachineKernelSummary = {
 }
 
 export type RemoteMachineCommandHandlerDeps = {
+  addSshMachine?: (host: string, options: { install_id?: string; port?: number; release?: string }) => Promise<import("./remote-machine-api.js").SshMachineResult>
+  removeSshMachine?: (installId: string) => Promise<import("./remote-machine-api.js").SshMachineResult>
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
   refreshWaitingRoomData?: () => Promise<void>
@@ -59,6 +61,10 @@ export async function handleRemoteMachineSlashCommand(
 ): Promise<void> {
   const args = command.args
   const subcommand = args[0]
+  if (subcommand === "add" || subcommand === "remove") {
+    await sshMachineCommand(deps, args)
+    return
+  }
   if (subcommand === "list") {
     await listRemoteMachines(deps)
     return
@@ -289,4 +295,38 @@ function upsertRemoteMachine(
   return current.map((candidate, candidateIndex) =>
     candidateIndex === index ? { ...candidate, ...machine } : candidate
   )
+}
+
+// MP-07 / MP-08 / MP-11: rendering and input only; kernel owns all deployment policy.
+async function sshMachineCommand(deps: RemoteMachineCommandHandlerDeps, args: string[]): Promise<void> {
+  const usage = "usage: /machine add ssh <host> [--id <install-id>] [--port <port>] [--release <approved-release>] | /machine remove <install-id>"
+  try {
+    if (args[0] === "remove") {
+      if (args.length !== 2 || !deps.removeSshMachine) { deps.flashFooter(usage, "error"); return }
+      const result = await deps.removeSshMachine(args[1]!)
+      deps.appendNotice(`removed SSH install ${result.install_id}; private kernel state retained`)
+      deps.flashFooter(`removed ${result.install_id}`, "info")
+      return
+    }
+    if (args[1] !== "ssh" || !args[2] || !deps.addSshMachine) { deps.flashFooter(usage, "error"); return }
+    const options: { install_id?: string; port?: number; release?: string } = {}
+    const seen = new Set<string>()
+    for (let i = 3; i < args.length; i += 2) {
+      const flag = args[i]!, value = args[i + 1]
+      if (!value || !["--id", "--port", "--release"].includes(flag) || seen.has(flag)) { deps.flashFooter(usage, "error"); return }
+      seen.add(flag)
+      if (flag === "--id") options.install_id = value
+      if (flag === "--release") options.release = value
+      if (flag === "--port") {
+        const port = Number(value)
+        if (!/^\d+$/.test(value) || !Number.isInteger(port) || port < 1024 || port > 65534 || [43118, 43119, 43120].includes(port)) { deps.flashFooter(usage, "error"); return }
+        options.port = port
+      }
+    }
+    deps.flashFooter(`installing Chariox on ${args[2]} over SSH`, "info")
+    const result = await deps.addSshMachine(args[2], options)
+    deps.appendNotice(`SSH install ${result.install_id} ${result.status}; kernel=${result.kernel_id ?? "-"} machine=${result.machine_id ?? "-"} release=${result.release_digest}. Select this Machine for project/context transfer; provider login stays on the target.`)
+    deps.flashFooter(`SSH machine ${result.install_id} ${result.status}`, "info")
+    await deps.refreshWaitingRoomData?.()
+  } catch (error) { deps.flashFooter(error instanceof Error ? error.message : "SSH machine operation failed", "error") }
 }

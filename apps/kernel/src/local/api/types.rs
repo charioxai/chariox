@@ -39,6 +39,7 @@ mod response;
 mod room_environment;
 mod session_control;
 mod slice;
+mod ssh_machine;
 mod terminal_command_catalog;
 mod terminal_interaction;
 mod waiting_room;
@@ -74,6 +75,7 @@ pub use response::*;
 pub use room_environment::*;
 pub use session_control::*;
 pub use slice::*;
+pub use ssh_machine::*;
 pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
 pub use waiting_room::*;
@@ -252,4 +254,5 @@ pub use workspace::*;
 /// Version 415 adds external sudo requests and requester attribution.
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
 /// Version 439 adds Cloud-free kernel-owned key-bound terminal admission.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 439;
+/// Version 444 adds owner-managed SSH machine add/remove. Relay shapes are unchanged.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 444;

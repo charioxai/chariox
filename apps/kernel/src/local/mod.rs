@@ -282,3 +282,5 @@ pub fn default_access_holder_pid() -> std::io::Result<u32> {
     let (_, grandparent) = crate::runtime::kernel_access::process::inspect(parent)?;
     Ok(grandparent)
 }
+
+pub use api::{AddSshMachineRequest, RemoveSshMachineRequest, SshMachineResult};
