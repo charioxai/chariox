@@ -237,9 +237,11 @@ impl KernelRuntimeState {
             .into_iter()
             .map(|run| run.session_id().to_string())
             .collect::<std::collections::BTreeSet<_>>();
-        let mut result = match self
-            .dispatch_authenticated_runtime_tool_call_inner(auth_token, tool_name, arguments)
-            .await
+        // MD-4: do not inline every provider/tool future into transport callers.
+        let mut result = match Box::pin(
+            self.dispatch_authenticated_runtime_tool_call_inner(auth_token, tool_name, arguments),
+        )
+        .await
         {
             Ok(result) => result,
             Err(mut error) => {
@@ -267,7 +269,11 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        if let Some(result) = self.try_kernel_browser_tool(auth_token, tool_name, arguments.clone()).await { return result; }
+        if let Some(result) =
+            Box::pin(self.try_kernel_browser_tool(auth_token, tool_name, arguments.clone())).await
+        {
+            return result;
+        }
         {
             let owned = &self.owned;
             let canonical_tool_name =
