@@ -1108,7 +1108,7 @@ impl CredentialVaultStore for Mp11RollbackRefusingVault {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             > 0
         {
-            return Err(secret_error("synthetic", "restore refused"));
+            return Err(secret_error("synthetic", "restore refused".into()));
         }
         self.memory.set_secret(service, key, value)?;
         std::fs::create_dir_all(&self.destination).unwrap();
