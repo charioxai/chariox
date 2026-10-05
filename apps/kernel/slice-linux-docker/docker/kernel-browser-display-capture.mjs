@@ -21,7 +21,7 @@ export function changedClip(before, after, scale) {
 }
 export class DisplayCapture {
   constructor(capture, scale, timing = () => {}, now = () => performance.now()) { this.capture = capture; this.scale = scale; this.timing = timing; this.now=now; this.invalidate(); }
-  invalidate() { this.previous = null; this.preview = null; this.document = null; this.policy = null; this.needsVerification = false; this.inputEpoch = null; this.verifiedAt = -Infinity; this.source = null; this.motion=false; }
+  invalidate() { this.previous = null; this.preview = null; this.document = null; this.policy = null; this.needsVerification = false; this.inputEpoch = null; this.verifiedAt = -Infinity; this.source = null; this.motion=false; this.motionData=null; this.stableAt=null; }
   async next(tab, policy, reusable, forceFull = false, motionClip = null) {
     if (!reusable || this.document !== tab.document_id || this.policy !== policy) this.invalidate();
     const capture = async clip => {
@@ -29,6 +29,15 @@ export class DisplayCapture {
       if (source.document_id !== tab.document_id || source.tab_id !== tab.tab_id) { this.invalidate(); throw Error('MD-DISPLAY: capture binding changed'); }
       return source;
     };
+    if (motionClip && this.motion) {
+      const source=await capture(motionClip);
+      if(source.data_base64 !== this.motionData) this.stableAt=this.now();
+      this.motionData=source.data_base64;
+      if(this.now()-(this.stableAt??this.now()) < 150) return {...source,motion:true};
+      // The entire motion viewport has stopped changing. Verify at native DPR
+      // before attempting any exact tile; never upscale a lossless repair.
+      motionClip=null; forceFull=true;
+    }
     const verify = forceFull || (this.needsVerification && tab.input_epoch === this.inputEpoch);
     const previewSource = verify && !motionClip ? null : await capture({ x:0,y:0,width:1280,height:800,scale:factor });
     let at = timestamp();
@@ -42,15 +51,16 @@ export class DisplayCapture {
     if (!verify && this.source && this.preview?.pixels.equals(preview?.pixels) &&
         tab.input_epoch === this.inputEpoch && policy.values?.length === 0 &&
         this.now()-this.verifiedAt < 250) return this.source;
-    const clip = !verify && this.previous && this.preview && changedClip(this.preview,preview,this.scale*factor);
+    const damage = this.preview && preview && changedClip(this.preview,preview,this.scale*factor);
+    const clip = !verify && this.previous && damage;
     let source, pixels;
     const changing = this.preview && preview && !this.preview.pixels.equals(preview.pixels);
-    if (motionClip && changing && (!clip || this.motion)) {
+    if (motionClip && changing && (!damage || this.motion)) {
       source=await capture(motionClip);
       // This is a complete protected viewport at reduced motion resolution,
       // never a dirty-region approximation. Idle verification stays native DPR.
       this.previous=null;this.preview=preview;this.document=tab.document_id;this.policy=policy;
-      this.inputEpoch=tab.input_epoch;this.motion=true;
+      this.inputEpoch=tab.input_epoch;this.motion=true;this.motionData=source.data_base64;this.stableAt=this.now();
       return {...source,motion:true};
     }
     this.motion=false;

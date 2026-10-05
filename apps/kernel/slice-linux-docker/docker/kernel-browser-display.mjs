@@ -98,20 +98,21 @@ export class DisplayStream {
   invalidate() { this.previous = null; this.exact = false; this.repair = null; this.capture?.invalidate(); }
   async frame(source, documentId, afterSequence) {
     let at = timestamp();
-    const current = source.pixels ?? decodePng(source.data_base64, this.device_scale_factor);
+    const current = source.motion ? {width:source.width,height:source.height,signature:source.data_base64,pixels:null}
+      : source.pixels ?? decodePng(source.data_base64, this.device_scale_factor);
     this.timing('png_decode', at); at = timestamp();
     // Already-admitted 419 credits may lag the delivered sequence. Eight
     // frames is the hard recovery window; clients still validate every base.
     const bound = documentId === this.document_id && this.acceptsCredit(afterSequence);
     if (!bound) this.invalidate();
-    const same = this.previous?.pixels.equals(current.pixels);
+    const same = current.signature ? this.previous?.signature === current.signature : Boolean(this.previous?.pixels && this.previous.pixels.equals(current.pixels));
     if (same && this.exact && !source.motion) return null;
     // Private crop metadata comes only from the protected native capture. The
     // cached frame is cloned unchanged outside it; full verification has no hint.
     const clip = source.dirty_clip;
     const region = clip && { x:clip.x*this.device_scale_factor, y:clip.y*this.device_scale_factor,
       width:clip.width*this.device_scale_factor, height:clip.height*this.device_scale_factor };
-    const tiles = this.exact ? dirtyTiles(this.previous, current, region) : [];
+    const tiles = this.exact && !source.motion ? dirtyTiles(this.previous, current, region) : [];
     this.timing('compare_tiles', at); at = timestamp();
     const png = () => typeof source.data_base64 === 'function' ? source.data_base64() : source.data_base64;
     const full = () => ({ kind: 'png', data_base64: png() });

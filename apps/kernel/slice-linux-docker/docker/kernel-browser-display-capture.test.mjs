@@ -40,12 +40,21 @@ test('MD-DISPLAY verified idle pixels avoid repeated full readback until deadlin
  await capture.next({...tab,input_epoch:1},policy,true);assert.equal(calls,3);
 });
 test('MD-DISPLAY changing whole viewport uses CSS motion resolution; idle returns to native pixels',async()=>{
- let changing=false;
+ let changing=false,time=0;
  const tab={tab_id:'t',document_id:'d'},policy={values:[]},calls=[];
- const capture=new DisplayCapture(async clip=>{calls.push(clip?.scale??1);const width=clip?Math.round(1280*clip.scale*2):2560,height=clip?Math.round(800*clip.scale*2):1600;return {...tab,generation:1,width,height,data_base64:encodePng(width,height,Buffer.alloc(width*height*4,changing?127:255))}},2);
+ const capture=new DisplayCapture(async clip=>{calls.push(clip?.scale??1);const width=clip?Math.round(1280*clip.scale*2):2560,height=clip?Math.round(800*clip.scale*2):1600;return {...tab,generation:1,width,height,data_base64:encodePng(width,height,Buffer.alloc(width*height*4,changing?127:255))}},2,()=>{},()=>time);
  const motion={x:0,y:0,width:1280,height:800,scale:.5};
  await capture.next(tab,policy,false,true,motion);changing=true;
  const moving=await capture.next(tab,policy,true,true,motion);
  assert.equal(moving.motion,true);assert.equal(moving.width,1280);assert.equal(calls.at(-1),.5);
- const idle=await capture.next(tab,policy,true,true,motion);assert.equal(idle.motion,undefined);assert.equal(idle.pixels.width,2560);
+ time=251;const idle=await capture.next(tab,policy,true,true,motion);assert.equal(idle.motion,undefined);assert.equal(idle.pixels.width,2560);
+});
+test('MD-DISPLAY forced verification of small input damage never enters motion mode',async()=>{
+ let changed=false;
+ const tab={tab_id:'t',document_id:'d',input_epoch:0},policy={values:[]};
+ const capture=new DisplayCapture(async clip=>{const width=clip?Math.round(1280*clip.scale):1280,height=clip?Math.round(800*clip.scale):800;const pixels=Buffer.alloc(width*height*4,255);if(changed)pixels[0]=0;return {...tab,generation:1,width,height,data_base64:encodePng(width,height,pixels)}},1);
+ const motion={x:0,y:0,width:1280,height:800,scale:1};
+ await capture.next(tab,policy,false,true,motion);changed=true;
+ const source=await capture.next({...tab,input_epoch:1},policy,true,true,motion);
+ assert.equal(source.motion,undefined);assert.equal(source.pixels.width,1280);
 });

@@ -181,7 +181,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     running=true;
     const desired=options.creditWindow ?? 4;
     if(!Number.isSafeInteger(desired)||desired<1||desired>8) {running=false;throw Error('MD-DISPLAY: invalid credit window');}
-    const batch=Math.min(192000,Math.max(24000,binding.bitrate/8*.5*.75-4096));
+    const batch=Math.min(192000,Math.max(24000,(binding.bitrate??options.bitrate??2000000)/8*.5*.75-4096));
     const count=Math.min(desired,Math.max(1,Math.floor(1024*1024/(batch*4/3+4096))));
     for(let i=0;i<count;i++) issue();
   };

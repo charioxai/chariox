@@ -42,3 +42,29 @@ test('MD-DISPLAY bounded window sends four credits before any receipt and drains
  await stopped;assert.equal(credits.length,4);assert.equal(stream.presenter.sequence,4);
  await stream.close();
 });
+
+test('MD-DISPLAY persistent decoder accepts key/delta and CSS motion pixels; rejects lost delta base',async()=>{
+ const {BrowserDisplayPresenter}=await import('./presenter.mjs');
+ const oldDecoder=globalThis.VideoDecoder,oldChunk=globalThis.EncodedVideoChunk,oldCanvas=globalThis.OffscreenCanvas;
+ let created=0,closed=0;const decoded=[];
+ const context={drawImage:()=>{}};
+ globalThis.OffscreenCanvas=class{getContext(){return context}};
+ globalThis.EncodedVideoChunk=class{constructor(value){Object.assign(this,value)}};
+ globalThis.VideoDecoder=class{
+   constructor(callbacks){this.callbacks=callbacks;this.state='configured';created++} configure(){}
+   decode(chunk){decoded.push(chunk.type);queueMicrotask(()=>this.callbacks.output({displayWidth:1280,displayHeight:800,close:()=>{}}))}
+   close(){this.state='closed';closed++}
+ };
+ const binding={subscription_id:'s',generation:1,tab_id:'t'},canvas={width:1,height:1,getContext:()=>context};
+ const presenter=new BrowserDisplayPresenter(canvas,binding);
+ const frame={...binding,document_id:'d',kind:'video',codec:'vp09.00.10.08',width:2560,height:1600,css_width:1280,css_height:800,device_scale_factor:2,data_base64:'YWJj'};
+ try{
+   assert.equal(await presenter.present({...frame,key:true,sequence:1}),true);
+   assert.equal(await presenter.present({...frame,key:false,sequence:2}),true);
+   assert.equal(created,1);assert.deepEqual(decoded,['key','delta']);
+   await assert.rejects(presenter.present({...frame,key:false,sequence:4}),/base lost/);
+   assert.equal(await presenter.present({...frame,key:true,sequence:5}),true);
+   assert.equal(created,2);assert.equal(canvas.width,2560);
+ }finally{presenter.close();globalThis.VideoDecoder=oldDecoder;globalThis.EncodedVideoChunk=oldChunk;globalThis.OffscreenCanvas=oldCanvas}
+ assert.equal(closed,2);
+});

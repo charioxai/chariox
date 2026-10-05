@@ -225,6 +225,7 @@ try {
  if(firstResource){const byPid=new Map(firstResource.processes.map(process=>[process.pid,process.cpu_ticks]));const delta=endResource.processes.reduce((total,process)=>total+Math.max(0,process.cpu_ticks-(byPid.get(process.pid)??process.cpu_ticks)),0);receipt.observed_owned_cpu_percent=delta/100/((endResource.at_ms-firstResource.at_ms)/1000)*100;receipt.cpu_note='live process deltas at Linux CLK_TCK=100; excludes already-exited encoder processes';}
  receipt.latency=distribution(probes);receipt.measurement_duration_ms=performance.now()-start;receipt.measured_local_response_bytes=(await page.evaluate(()=>mdWireBytes))-startBytes;receipt.local_bytes_per_second=receipt.measured_local_response_bytes*1000/receipt.measurement_duration_ms;receipt.frames=await page.evaluate(()=>mdFrames);receipt.client_timings=await page.evaluate(()=>mdTimings);
  receipt.after_input_verification=await page.evaluate(async()=>{const frame=await mdStream.next();return frame?{kind:frame.kind,sequence:frame.sequence}:null});
+ await drainRepairs(()=>page.evaluate(()=>mdStream.next()));
  receipt.final_fidelity=await pair('after-input');
  if(!receipt.final_fidelity.lossless)throw Error('MD-DISPLAY: small-change pixels differ');
  // Full navigation preserves the display subscription and rotates its source.
