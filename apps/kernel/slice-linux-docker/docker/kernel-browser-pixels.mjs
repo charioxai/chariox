@@ -5,12 +5,14 @@ import { deflateSync, inflateSync } from "node:zlib";
 import { locateBrowserRegions } from "./browser-observation-regions.mjs";
 
 const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+const crcTable = Uint32Array.from({ length: 256 }, (_, byte) => {
+  let value = byte;
+  for (let bit = 0; bit < 8; bit++) value = (value >>> 1) ^ ((value & 1) ? 0xedb88320 : 0);
+  return value >>> 0;
+});
 function crc(bytes) {
   let value = 0xffffffff;
-  for (const byte of bytes) {
-    value ^= byte;
-    for (let i = 0; i < 8; i++) value = (value >>> 1) ^ ((value & 1) ? 0xedb88320 : 0);
-  }
+  for (const byte of bytes) value = (value >>> 8) ^ crcTable[(value ^ byte) & 255];
   return (value ^ 0xffffffff) >>> 0;
 }
 function chunk(type, data) {
@@ -69,16 +71,25 @@ export function decodePng(data, scale = 1) {
     const filter = rows[y * (stride + 1)], source = y * (stride + 1) + 1, offset = y * stride;
     if (filter > 4) throw new Error("MD-5: invalid frame filter");
     if (filter === 0) { rows.copy(decoded, offset, source, source + stride); continue; }
-    // Apply only this row's PNG predictor; allocating/calling all five predictors
-    // for every byte stalls HiDPI text frames and the controller input queue.
-    for (let x = 0; x < stride; x++) {
-      const i = offset + x, a = x >= channels ? decoded[i - channels] : 0, b = y ? decoded[i - stride] : 0, c = y && x >= channels ? decoded[i - stride - channels] : 0;
-      let predictor;
-      if (filter === 1) predictor = a;
-      else if (filter === 2) predictor = b;
-      else if (filter === 3) predictor = Math.floor((a + b) / 2);
-      else predictor = paeth(a, b, c);
-      decoded[i] = (rows[source + x] + predictor) & 255;
+    // MD-DISPLAY-02/04: select the predictor once per row, rather than
+    // branching for every HiDPI byte. First-row/left-edge predictors are zero.
+    if (filter === 1 || (y === 0 && filter === 4)) {
+      for (let x = 0; x < channels; x++) decoded[offset + x] = rows[source + x];
+      for (let x = channels; x < stride; x++) decoded[offset + x] = (rows[source + x] + decoded[offset + x - channels]) & 255;
+    } else if (filter === 2) {
+      if (y === 0) rows.copy(decoded, offset, source, source + stride);
+      else for (let x = 0; x < stride; x++) decoded[offset + x] = (rows[source + x] + decoded[offset + x - stride]) & 255;
+    } else if (filter === 3) {
+      for (let x = 0; x < stride; x++) {
+        const i = offset + x, left = x >= channels ? decoded[i - channels] : 0, up = y ? decoded[i - stride] : 0;
+        decoded[i] = (rows[source + x] + ((left + up) >>> 1)) & 255;
+      }
+    } else {
+      for (let x = 0; x < channels; x++) decoded[offset + x] = (rows[source + x] + decoded[offset + x - stride]) & 255;
+      for (let x = channels; x < stride; x++) {
+        const i = offset + x;
+        decoded[i] = (rows[source + x] + paeth(decoded[i - channels], decoded[i - stride], decoded[i - stride - channels])) & 255;
+      }
     }
   }
   const pixels = channels === 4 ? decoded : Buffer.alloc(width * height * 4);

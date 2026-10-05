@@ -145,16 +145,14 @@ pub(super) async fn handle_incoming_envelope(
                         )
                         .await
                     {
-                        if super::envelope_io::send_outgoing_event_envelope(
-                            &outgoing_tx,
-                            RelayEnvelope::DaemonEvent {
+                        if outgoing_tx
+                            .send_display_event(RelayEnvelope::DaemonEvent {
                                 subscription_id,
                                 event_id,
                                 encrypted_event,
-                            },
-                        )
-                        .await
-                        .is_err()
+                            })
+                            .await
+                            .is_err()
                         {
                             return;
                         }

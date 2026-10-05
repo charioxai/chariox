@@ -197,7 +197,7 @@ export class KernelBrowserHost {
     const data = await captureProtectedPage(this.browser, tab, this.protection.values,
       this.protection.targets.filter(target => target.kind === "browser"), async () => {
         const at = timestamp();
-        const { data } = await connection.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false }, sessionId);
+        const { data } = await connection.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false, optimizeForSpeed: true }, sessionId);
         this.timing('cdp_capture', at);
         return data;
       }, scale);
