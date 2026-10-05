@@ -159,3 +159,4 @@ pub(crate) mod workspace_worktrees;
 pub(crate) mod kernel_access;
 
 pub(crate) mod relay_peer_authority;
+pub(crate) mod self_host_terminal_grants;

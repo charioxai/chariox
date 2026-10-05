@@ -191,13 +191,14 @@ export async function bootstrapCliRuntime(
         cliOptions.clientId,
         relayIdentity.publicKeyThumbprint,
       )
-      if (!joined.relay_token?.trim()) {
+      if (!joined.kernel_pairing && !joined.relay_token?.trim()) {
         throw new Error("key-bound terminal pairing returned no fresh relay token; refusing to continue with the unbound bootstrap token")
       }
+      if (joined.pairing.target_daemon_id !== cliOptions.targetDaemonId || joined.pairing.relay_url !== cliOptions.relayUrl) throw new Error("terminal pairing response targets another kernel or relay")
       await client.close()
       client = deps.createClient(
         kernelEndpoint,
-        relayClientOptions(cliOptions, relayIdentity, joined.relay_token),
+        relayClientOptions(cliOptions, relayIdentity, joined.relay_token ?? undefined),
       )
     } catch (error) {
       await Promise.resolve(bootstrapClient.close()).catch(() => {})

@@ -200,7 +200,7 @@ test("terminal pairing closes bootstrap transport and rejects a legacy unbound t
 
   await assert.rejects(
     bootstrapCliRuntime({ argv: ["chariox-terminal-pair-v1.fixture"], cwd: "/repo" }, deps),
-    /requires a fresh protocol 349 relay token/,
+    /requires a kernel-issued admission or a fresh bound relay token/,
   )
   assert.equal(createCount, 1)
   assert.equal(closeCount, 1)
@@ -284,3 +284,27 @@ function attachedBootstrap(
     preferences,
   } as unknown as BootstrapState
 }
+
+test("Cloud-free pairing keeps operator transport while the kernel admits the persisted terminal key", async t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "chariox-selfhost-bootstrap-"))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const identity = createCliRelayIdentityStore(`${root}/relay/cli-identity-v1.json`).getOrCreate()
+  const initial = fakeClient(), attached = fakeClient()
+  const options = cliOptions({ clientId:"terminal-one", relayUrl:"ws://relay.local", relayToken:"synthetic-operator-token", targetDaemonId:"home" })
+  const captured: Array<{relayAuthToken?:string;relayIdentity?:unknown}> = []
+  initial.send = async <T>() => ({ TerminalPairingLinkJoined: {
+    terminal: { terminal_id:"terminal-one",terminal_type:"cli",paired_at_ms:1,revoked:false },
+    pairing: { intent:"client", subject_id:"terminal-one",relay_url:"ws://relay.local",target_daemon_id:"home",public_key_thumbprint:identity.publicKeyThumbprint,paired_at_ms:1 },
+    kernel_pairing:true,
+  } }) as T
+  const deps = createDeps({ parseArgs:()=>options, getRelayIdentity:()=>identity,
+    createClient:(_endpoint,relayOptions)=>{captured.push(relayOptions ?? {});return captured.length===1?initial:attached},
+    bootstrapAttachedSession:async(client,opts,_workspace,_worktree,prefs)=>attachedBootstrap(client,opts,prefs),
+  })
+  const result = await bootstrapCliRuntime({argv:["chariox-terminal-pair-v1.fixture"],cwd:"/repo"},deps)
+  assert.equal(result.kind,"ready")
+  assert.equal(captured.length,2)
+  assert.equal(captured[1]?.relayAuthToken,"synthetic-operator-token")
+  assert.equal(captured[1]?.relayIdentity,identity)
+  assert.equal(createCliRelayIdentityStore(`${root}/relay/cli-identity-v1.json`).load()?.publicKeyThumbprint,identity.publicKeyThumbprint)
+})
