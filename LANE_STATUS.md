@@ -1,35 +1,47 @@
-# MD-DISPLAY-02/04 — Phase 3 implementation in progress
+# MD-DISPLAY-02/04 — Phase 3 reviewable, default off
 
-Base `84056953d1b478a581d1a557ed096829e51e12c2` from `md/kernel-browser`.
-Protocol allocation 419. Flag-gated portable VP9 + protected exact PNG repair,
-DPR2, existing authenticated kernel frame/input route. No MP acceptance claim.
+2026-10-05 final: implementation source `836e64630bc53d42e488dc97142416fdb0c92271`,
+rebased onto kbrowser `d6d03751ffea37198fb33530829f4cd76ae30fbf` per 01:35 inbox.
+Protocol 419; protected DPR2 VP9 + exact PNG/tiles through the typed capture/input
+API and existing encrypted kernel/relay queues. Public takeover/release/actors
+share the kernel ledger. Cloud integration module/harness and note are complete.
 
-2026-10-05 milestone: real production local relay + headed Chromium + focused
-MCP open + browser WebCrypto + exact settled RGB + 20 click probes pass.
-Intermediate p95 708–761 ms remains RED versus Phase 2. Snapshot avoidance did
-not fix it; PNG decoder CPU work optimized next. 29 focused Node tests pass;
-Rust shapes/event 4/4, conformance 4/4, kernel-client TypeScript check passes.
-Clean-source live receipt pending; no acceptance closure.
+MD-DISPLAY-02/04 final clean relay receipt: exact settled/patched RGB; 20/20 visual
+click acknowledgements; p50/p95 771.71/822.16 ms; 7,451 received encrypted bytes/s
+in the click interval; 70.5% observed owned CPU. Stale input is rejected; human
+takeover fences focused MCP input, owner input works, release resumes the agent.
+Latency remains RED against the comparable-latency goal. Bootstrap VP9 34.04 dB
+also does not beat historical Selkies docs fidelity. No acceptance closure.
 
-2026-10-05 earlier milestone: protected video/refinement adapter, transient kernel/relay
-event projection, presenter and protocol 419 shapes implemented; live drill next.
-Focused Node 27/27; portable VP9 worker synthetic encode passes. Initial Rust
-build found new outcome-field omissions; fixed and rebuild pending. No current
-source fidelity or encrypted live acceptance claimed.
+33 Node checks, 14 focused Rust checks, TypeScript, rustfmt and local build pass.
+Evidence/commands/source and binary hashes:
+`/root/.codex/evidence/browser-resume-20260930/display/phase3/provenance.json`.
+Final live receipt `final-typed-relay-2mbps/results.json`. Prior receipts remain
+historical; pre-rebase source retained at `agent/display-impl-pre-typed-api`.
 
-2026-10-05 initial inventory: clean source; no owned display processes/containers
-identified. Existing Xvfb :99 belongs to another run and is left alone.
-Resources: 224 GiB free disk, 52 GiB MemAvailable. Research branch left unchanged.
-Phase-2 reviewer fixes/evidence remain attributed to agent/display, not this head.
+MD-DISPLAY-02 cleanup: all owned drill state/processes gone; no containers created.
+Removed 6.16 GiB own incremental output, own temporary dependency symlinks and
+empty helper. Final binary/dependency objects retained for coordinator replay.
+No shared state, reviewer services, Docker caches, credentials or other lanes touched.
+
+2026-10-05 preceding milestones: pre-rebase clean component p95 704–772 ms;
+presenter event-before-receipt credit race fixed with fail-first test; typed API
+integration at `0949b015d` passed p95 803 ms; failed encoder retry spawn fixed
+with fail-first test at final source. Direct browser/local socket check correctly
+failed the existing Origin guard; unsupported drill mode removed. RED receipts
+are retained with their original sources. Research branch unchanged.
 
 ## Owner questions
 
-MD-DISPLAY-04: production fidelity/latency/WAN budget, codec/platform support,
-Room desktop migration and final design remain open; implementation flag defaults off.
+MD-DISPLAY-04: acceptable moving/settled fidelity, p95 latency and WAN/frame/total
+egress budgets, platform codecs, initial page scope, IME/cursor/clipboard/file
+chooser coverage and Room migration criteria remain decisions. Flag stays off.
 
 ## Coordinator asks
 
-MD-DISPLAY-04: allocated local 419 used; Cloud wiring and native Mac/Windows
-validation remain coordinator-owned. No new protocol allocation requested.
-MD-DISPLAY-02: initial inventory found no owned incident leftovers. This new lane
-was not running at 23:28:37; research attribution remains in its existing receipt.
+MD-DISPLAY-04: 01:35 REVIEW_INBOX handled: rebase + typed API + shared actors,
+protocol 419 snapshots and end-to-end takeover/release proof. See PUSH_READY.md.
+Cloud wiring, hosted WAN and native Mac/Windows validation remain external.
+No protocol allocation requested; no push/PR/CI/deploy actions performed.
+MD-DISPLAY-02: no owned incident leftovers found on initial inventory. This new
+lane was not running at 23:28:37; research incident attribution remains there.
