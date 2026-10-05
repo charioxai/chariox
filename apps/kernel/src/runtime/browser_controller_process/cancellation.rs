@@ -160,7 +160,9 @@ impl BrowserActionExecutions {
             .map_err(|_| "browser execution registry poisoned")?;
         if let Some(completed) = state.completed.iter().find(|entry| entry.key == key) {
             return if completed.fingerprint == fingerprint {
-                Ok(ExecutionAdmission::Replay(Box::new(completed.outcome.clone())))
+                Ok(ExecutionAdmission::Replay(Box::new(
+                    completed.outcome.clone(),
+                )))
             } else {
                 Err("browser execution identity was reused for a different request".into())
             };
@@ -212,7 +214,9 @@ impl BrowserActionExecutions {
             .map_err(|_| "browser execution registry poisoned")?;
         if let Some(completed) = state.completed.iter().find(|entry| entry.key == key) {
             return if completed.fingerprint == fingerprint {
-                Ok(RecoveryAdmission::Replay(Box::new(completed.outcome.clone())))
+                Ok(RecoveryAdmission::Replay(Box::new(
+                    completed.outcome.clone(),
+                )))
             } else {
                 Err("browser execution identity was reused for a different recovery request".into())
             };
