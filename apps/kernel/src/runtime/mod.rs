@@ -42,6 +42,7 @@ pub(crate) mod app_views;
 pub(crate) mod app_wake_pump;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_worker;
+pub(crate) mod browser_artifact;
 pub(crate) mod browser_controller_action;
 pub(crate) mod browser_controller_app_view;
 pub(crate) mod browser_controller_compatibility;

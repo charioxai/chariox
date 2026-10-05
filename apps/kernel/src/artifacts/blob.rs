@@ -71,7 +71,7 @@ pub(super) fn store(root: &Path, source: &Path) -> Result<(String, u64, PathBuf)
     Ok((sha256, size, blob))
 }
 
-fn open_regular(path: &Path) -> io::Result<File> {
+pub(super) fn open_regular(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]

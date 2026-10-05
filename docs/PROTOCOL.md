@@ -1201,6 +1201,26 @@ remained at protocol v290 and relay peer v26. The encrypted home-to-worker drill
 through the authenticated runtime MCP route and verifies stable Tab projection,
 physical controller effects, path redaction, cursor resume, and cleanup.
 
+MP-08/MP-10/MP-11, local protocol v420 adds `RoomBrowserArtifact` and the
+shared `slice_browser_artifact` tool. Attached clients supply Room, attachment,
+Tab and a capture/read/inspect operation; provider calls derive Room from the
+authenticated run and use its focused Tab. Image/network capture requires the
+observed browser generation; completed downloads additionally require an
+observed GUID. Home publishes bounded operational-only artifacts with opaque
+IDs, SHA-256, safe names and runtime/browser/Tab/document/viewport/observation
+identity. Reads are limited to 128 KiB and verify the stored bytes and current
+identity. Inspection is limited to 256 KiB; PDF extraction requires installed
+`pdftotext` with child time/output/resource limits. The provider may request
+native MCP image bytes from the same CDP Page capture. Protected images are
+conservatively masked in full; protected download bytes are withheld. Passive
+network attachments retain actual allowlisted CDP metadata, omitting cookie,
+auth and bodies. `slice_browser_upload` also accepts Room-owned opaque
+`artifact_ids`; home verifies and transfers bytes through the existing upload
+admission, staging and recovery path. The new controller peer Artifact variant
+and opaque upload variant require matching home/worker versions. Relay peer
+version coordination is pending merge allocation. See
+`docs/BROWSER_CONTROLLERFILES_ACCEPTANCE.md` for bounds and validation limits.
+
 `slice_screenshot` returns inline PNG data as the standard MCP `image` content
 block rather than embedding Base64 in the textual result. The companion text
 and `structuredContent` retain only screenshot metadata, so provider context

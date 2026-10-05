@@ -408,6 +408,9 @@ impl KernelRuntimeState {
         } else {
             None
         };
+        if matches!(&command, Command::Artifact { .. }) {
+            protection.require(session_id, true)?;
+        }
         protection.register_command(session_id, &command)?;
         if !matches!(
             &command,
@@ -761,6 +764,9 @@ async fn execute_local(
         } => processes
             .reconcile_browser(&session_id, &viewport, browser_bar_visible)
             .map(|reconciliation| Response::Reconciled { reconciliation }),
+        Command::Artifact { request } => processes
+            .browser_artifact(&session_id, &request)
+            .map(|capture| Response::Artifact { capture }),
         Command::Snapshot {
             target_id,
             document_id,

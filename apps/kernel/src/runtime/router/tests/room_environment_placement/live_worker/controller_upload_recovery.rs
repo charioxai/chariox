@@ -22,7 +22,10 @@ pub(super) async fn check_response_loss(
                 &fixture.rooms[0],
                 agent_id,
                 field,
-                vec![file.to_path_buf()],
+                crate::runtime::browser_controller_file_transfer::BrowserUploadFiles::new(vec![
+                    file.to_path_buf(),
+                ])
+                .unwrap(),
             )
             .await;
         if forget_receipt {
@@ -72,7 +75,10 @@ pub(super) async fn check_response_loss(
                 &fixture.rooms[0],
                 agent_id,
                 field,
-                vec![file.to_path_buf()],
+                crate::runtime::browser_controller_file_transfer::BrowserUploadFiles::new(vec![
+                    file.to_path_buf(),
+                ])
+                .unwrap(),
             )
             .await
             .unwrap();
@@ -105,7 +111,10 @@ pub(super) async fn check_restart(fixture: &LiveWorker, token: &str) {
             &fixture.rooms[0],
             &agent_id,
             &field,
-            vec![file.clone()],
+            crate::runtime::browser_controller_file_transfer::BrowserUploadFiles::new(vec![
+                file.clone()
+            ])
+            .unwrap(),
         )
         .await
         .expect_err("pre-restart upload must not execute");

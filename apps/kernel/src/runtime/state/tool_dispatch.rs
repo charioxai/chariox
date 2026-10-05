@@ -727,6 +727,7 @@ fn canonical_room_browser_runtime_tool(tool_name: &str) -> Option<&'static str> 
                 | SLICE_BROWSER_EVENTS_TOOL
                 | SLICE_BROWSER_DOWNLOADS_TOOL
                 | SLICE_BROWSER_UPLOAD_TOOL
+                | SLICE_BROWSER_ARTIFACT_TOOL
                 | SLICE_BROWSER_PERMISSION_TOOL
                 | SLICE_BROWSER_FIND_TOOL
                 | SLICE_BROWSER_TEXT_TOOL

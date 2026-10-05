@@ -1024,17 +1024,11 @@ impl KernelRuntimeState {
         session_id: &str,
         execution_id: &str,
         element_ref: &str,
-        paths: Vec<std::path::PathBuf>,
+        files: crate::runtime::browser_controller_file_transfer::BrowserUploadFiles,
     ) -> Result<
         crate::runtime::browser_controller_file_transfer::RoomBrowserUploadResult,
         DaemonError,
     > {
-        let files =
-            crate::runtime::browser_controller_file_transfer::BrowserUploadFiles::new(paths)
-                .map_err(|message| DaemonError::LocalTransport {
-                    operation: "browser_controller.upload",
-                    message,
-                })?;
         let environment = self
             .room_environment_snapshot(session_id)
             .map_err(|error| environment_runtime_error("browser_controller.upload", error))?;

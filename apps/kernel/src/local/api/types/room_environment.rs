@@ -356,3 +356,13 @@ pub struct SubmitRoomEnvironmentBrowserActionRequest {
     pub idempotency_key: String,
     pub action: RoomEnvironmentHumanBrowserAction,
 }
+
+// MP-08/MP-10/MP-11: client attachments call the same Browser artifact service.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoomBrowserArtifactRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+    pub tab_id: String,
+    pub operation: crate::transport::runtime_tools::SliceBrowserArtifactArgs,
+}

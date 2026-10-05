@@ -245,13 +245,30 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
+            name: SLICE_BROWSER_ARTIFACT_TOOL.to_string(),
+            description: "Capture the actual focused Browser tab as a bounded image, passive redacted network HAR, or completed download artifact. Use the observed browser_generation; download also requires its observed guid. Images with return_image_base64=true arrive as native MCP image bytes. Read/inspect an opaque artifact from this Room/tab; reads are bounded to 128 KiB and text/PDF inspection to 256 KiB. Protected image frames are fully masked. Paths stay private.".into(),
+            input_schema: serde_json::json!({"type":"object", "oneOf": [
+                {"type":"object", "required":["action","kind","browser_generation"], "properties": {
+                    "action":{"const":"capture"}, "kind":{"enum":["image","network","download"]},
+                    "browser_generation":{"type":"integer","minimum":1}, "guid":{"type":"string","maxLength":128},
+                    "return_image_base64":{"type":"boolean","default":false}}, "additionalProperties":false},
+                {"type":"object", "required":["action","artifact_id","max_bytes"], "properties": {
+                    "action":{"const":"read"}, "artifact_id":{"type":"string","minLength":1}, "offset":{"type":"integer","minimum":0},
+                    "max_bytes":{"type":"integer","minimum":1,"maximum":131072}}, "additionalProperties":false},
+                {"type":"object", "required":["action","artifact_id"], "properties": {
+                    "action":{"const":"inspect"}, "artifact_id":{"type":"string","minLength":1}}, "additionalProperties":false}
+            ]}),
+        },
+        RuntimeToolSpec {
             name: SLICE_BROWSER_UPLOAD_TOOL.to_string(),
-            description: "Upload bounded files from configured slice roots through an opaque field_id returned by slice_browser_status or slice_browser_find.".to_string(),
+            description: "Upload permitted opaque artifact_ids (or legacy configured-root files) through an observed field_id. A visible chooser must open a matching tab/document-bound file input. Artifacts retain exact filenames and byte hashes; do not supply raw provider-profile paths.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
-                "required": ["field_id", "files"],
+                "required": ["field_id"],
+                "oneOf": [{"required":["files"]},{"required":["artifact_ids"]}],
                 "properties": {
                     "field_id": {"type": "string", "minLength": 1},
+                    "artifact_ids": {"type":"array","minItems":1,"maxItems":20,"items":{"type":"string","minLength":1}},
                     "files": {
                         "type": "array",
                         "minItems": 1,
@@ -354,6 +371,7 @@ fn slice_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
         SLICE_BROWSER_DIALOG_TOOL => SLICE_BROWSER_DIALOG_TOOL_ALIAS,
         SLICE_BROWSER_EVENTS_TOOL => SLICE_BROWSER_EVENTS_TOOL_ALIAS,
         SLICE_BROWSER_DOWNLOADS_TOOL => SLICE_BROWSER_DOWNLOADS_TOOL_ALIAS,
+        SLICE_BROWSER_ARTIFACT_TOOL => SLICE_BROWSER_ARTIFACT_TOOL_ALIAS,
         SLICE_BROWSER_UPLOAD_TOOL => SLICE_BROWSER_UPLOAD_TOOL_ALIAS,
         SLICE_BROWSER_PERMISSION_TOOL => SLICE_BROWSER_PERMISSION_TOOL_ALIAS,
         SLICE_BROWSER_TEXT_TOOL => SLICE_BROWSER_TEXT_TOOL_ALIAS,
@@ -464,6 +482,11 @@ pub fn canonical_slice_tool_name(tool_name: &str) -> Option<&'static str> {
         | "chariox_slice_browser_downloads"
         | "mcp__chariox__slice_browser_downloads"
         | "mcp__chariox__chariox_slice_browser_downloads" => Some(SLICE_BROWSER_DOWNLOADS_TOOL),
+        SLICE_BROWSER_ARTIFACT_TOOL
+        | SLICE_BROWSER_ARTIFACT_TOOL_ALIAS
+        | "chariox_slice_browser_artifact"
+        | "mcp__chariox__slice_browser_artifact"
+        | "mcp__chariox__chariox_slice_browser_artifact" => Some(SLICE_BROWSER_ARTIFACT_TOOL),
         SLICE_BROWSER_UPLOAD_TOOL
         | SLICE_BROWSER_UPLOAD_TOOL_ALIAS
         | "chariox_slice_browser_upload"

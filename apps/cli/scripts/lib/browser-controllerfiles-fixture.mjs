@@ -73,10 +73,10 @@ export async function startControllerfilesFixture() {
         return json(response, 200, { attachments: parsed.attachments });
       }
       if (request.method === "GET" && url.pathname === "/network-proof") {
-        // Retain presence only. Passive captures must derive headers from CDP,
+        // MP-08/MP-10/MP-11: retain presence and public Accept only. Capture headers come from CDP,
         // not this verifier or synthetic HAR fields.
         network.push({ method: request.method, path: url.pathname,
-          cookiePresent: Boolean(request.headers.cookie), authPresent: Boolean(request.headers.authorization) });
+          cookiePresent: Boolean(request.headers.cookie), authPresent: Boolean(request.headers.authorization), accept: request.headers.accept?.slice(0, 1024) ?? null });
         response.setHeader("set-cookie", "fixture_private=synthetic; HttpOnly; SameSite=Strict; Path=/");
         return json(response, 200, { observed: true });
       }
