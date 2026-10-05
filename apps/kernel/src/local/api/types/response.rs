@@ -168,7 +168,7 @@ pub enum LocalDaemonResponse {
     CloudRelayLoggedOut,
     CloudRelayClientPaired { profile: CloudRelayProfile, },
     CloudRelayMachinePaired { profile: CloudRelayProfile, },
-    CloudRelayConnected { status: RelayStatus, profile: CloudRelayProfile, token: CloudRelayRuntimeToken, },
+    CloudRelayConnected { status: RelayStatus, profile: CloudRelayProfile, },
     CloudRelayClientTokenIssued { profile: CloudRelayProfile, token: CloudRelayRuntimeToken, },
     KernelClientConnectionResolved { connection: KernelClientConnection, },
     CloudSessionInviteCreated { invite: CloudSessionInvite, },

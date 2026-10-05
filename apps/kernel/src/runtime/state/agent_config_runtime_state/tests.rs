@@ -132,6 +132,9 @@ async fn cloud_owner_agent_profile_update_resolves_host_account_namespace() {
     let cloud_owner = "cloud-owner";
     let mut config = crate::config::DaemonConfig::for_tests();
     config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        kernel_id: None,
+        kernel_credential: None,
+        kernel_public_key_thumbprint: None,
         user_id: cloud_owner.to_string(),
         ..Default::default()
     });

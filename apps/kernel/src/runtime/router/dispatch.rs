@@ -57,6 +57,11 @@ impl CommandRouter {
         if let Some(response) = self.dispatch_kernel_access(&command, &request)? {
             return Ok(response);
         }
+        crate::runtime::cloud_relay_authorization::authorize_kernel_cloud_request(
+            &self.config_projection.snapshot(),
+            &command,
+            &request,
+        )?;
         self.audit_access_terminal_attempt(&command, &request)?;
         let command_trace = CommandTrace::from_command(&command);
         log_command_received(&command_trace);

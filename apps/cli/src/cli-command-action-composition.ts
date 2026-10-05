@@ -9,7 +9,6 @@ import type { CharioxLogger } from "./logging.js"
 import { createCommandActionHandlers } from "./command-actions.js"
 import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { resolveConfiguredCloudRelayApiUrl } from "./cli-options.js"
-import { bootstrapCloudRelayProfile } from "./cloud-relay.js"
 import { buildHostedCloudViewUrl } from "./cloud-command-lifecycle.js"
 import { importExternalProviderAgent } from "./external-provider-session-api.js"
 import { openExternalUrl } from "./external-url.js"
@@ -141,6 +140,7 @@ import {
 import {
   configureRelay,
   connectKernelCloudRelay,
+  getKernelCloudRelayProfile,
   getRelayStatus,
   issueKernelCloudRelayClientToken,
   logoutCloudRelay,
@@ -571,17 +571,12 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     sendCredentialEnrollmentKernelRequest: (request) => client.send(request),
     sendDeploymentSetupKernelRequest: (request) => client.send(request),
     configureRelay: (relayUrl, relayToken) => configureRelay(client, relayUrl, relayToken),
-    getCloudRelayProfile: () => relayCloudProfile(preferencesState()),
+    getCloudRelayProfile: () => getKernelCloudRelayProfile(client),
+    connectCloudRelay: () => connectKernelCloudRelay(client),
     saveCloudRelayProfile: async (profile) => {
       await saveRelayCloudProfile(profile)
       setPreferencesState((current: any) => mergeRelayCloudProfile(current, profile))
     },
-    bootstrapCloudRelay: (apiUrl, email, accountSlug) =>
-      bootstrapCloudRelayProfile({
-        apiUrl,
-        email,
-        ...(accountSlug ? { accountSlug } : {}),
-      }),
     startCloudDeviceLogin: (apiUrl, input) => startCloudRelayLogin(client, apiUrl, input),
     pollCloudDeviceLogin: (apiUrl, deviceCode) => pollCloudRelayLogin(client, apiUrl, deviceCode),
     openExternalUrl,
@@ -590,8 +585,6 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       pairKernelCloudRelayClient(client, clientId, alias),
     pairCloudRelayMachine: (_profile, machineId, alias) =>
       pairKernelCloudRelayMachine(client, machineId, alias),
-    issueCloudKernelRelayToken: async () => connectKernelCloudRelay(client),
-    issueCloudMachineRelayToken: async () => connectKernelCloudRelay(client),
     issueCloudClientRelayToken: async (_profile, targetDaemonAlias, tokenOptions) => {
       const relayIdentity = createCliRelayIdentityStore().getOrCreate()
       return issueKernelCloudRelayClientToken(

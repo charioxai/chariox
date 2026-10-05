@@ -81,6 +81,7 @@ use super::{
 mod protocol_shapes;
 mod provider_prompt_runtime;
 mod remote_inventory;
+mod cloud_kernel_ownership;
 mod room_environment;
 mod session_control;
 mod session_worktree_paths;

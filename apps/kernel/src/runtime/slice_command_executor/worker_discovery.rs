@@ -74,6 +74,9 @@ mod tests {
 
     fn expired_cloud_profile(api_url: String) -> crate::config::PersistedCloudRelayProfile {
         crate::config::PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             api_url,
             email: "user@example.test".to_string(),
             account_id: "account-1".to_string(),

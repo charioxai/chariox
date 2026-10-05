@@ -1,3 +1,4 @@
+import { cloudControlHeaders } from "./cloud-control-auth.js"
 import { execFile } from "node:child_process"
 import { readFile, mkdtemp, rm, stat } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
@@ -321,11 +322,7 @@ async function readJson<TResponse>(response: Response): Promise<TResponse> {
 }
 
 function cloudHeaders(profile: RelayCloudProfile): HeadersInit {
-  return {
-    accept: "application/json",
-    "content-type": "application/json",
-    ...(profile.cloudSessionToken ? { authorization: `Bearer ${profile.cloudSessionToken}` } : {}),
-  }
+  return cloudControlHeaders(profile)
 }
 
 function normalizeApiUrl(apiUrl: string): string {

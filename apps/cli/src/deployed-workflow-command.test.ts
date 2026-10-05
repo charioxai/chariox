@@ -13,7 +13,7 @@ import {
   handleDeployedWorkflowCloudCommand,
 } from "./deployed-workflow-command.js"
 import type { DeploymentPortfolioItem } from "./deployed-workflow-types.js"
-import type { RelayCloudProfile } from "./preferences.js"
+import type { CloudControlProfile as RelayCloudProfile } from "./cloud-control-auth.js"
 
 test("deployed workflow command renders portfolio convergence and attention", () => {
   assert.equal(formatDeploymentPortfolioItem(portfolioItem()), [

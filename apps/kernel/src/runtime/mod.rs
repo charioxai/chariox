@@ -58,6 +58,7 @@ pub mod capability_executor;
 pub(crate) mod capability_registry;
 mod claude_setup_token_login;
 pub(crate) mod cloud_api_client;
+mod cloud_relay_authorization;
 pub(crate) mod cloud_relay_connection_executor;
 pub(crate) mod cloud_relay_control;
 pub(crate) mod cloud_relay_executor;

@@ -1956,6 +1956,9 @@ mod tests {
     fn ticket_validation_binds_both_kernels_to_the_cloud_realm() {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             realm_id: "realm-1".to_string(),
             machine_id: Some("source-machine-test".to_string()),
             ..PersistedCloudRelayProfile::default()
@@ -2007,6 +2010,9 @@ mod tests {
         let address = listener.local_addr().expect("Cloud fixture address");
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             api_url: format!("http://{address}"),
             account_id: "account-1".to_string(),
             realm_id: "realm-1".to_string(),
@@ -2095,6 +2101,9 @@ mod tests {
     async fn prepared_git_enrollment_ticket_does_not_require_a_source_machine_credential() {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             api_url: "http://127.0.0.1:1".to_string(),
             realm_id: "realm-1".to_string(),
             machine_id: Some("source-machine-test".to_string()),
@@ -2198,6 +2207,9 @@ mod tests {
     fn modified_prepared_git_enrollment_cannot_claim_the_operation_id() {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             realm_id: "realm-1".to_string(),
             machine_id: Some("source-machine-test".to_string()),
             ..PersistedCloudRelayProfile::default()

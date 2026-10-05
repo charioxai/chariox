@@ -12,6 +12,7 @@ use crate::config::RelayConfig;
 mod connection;
 mod display;
 mod health;
+mod metadata_scope;
 use connection::handle_connection;
 use display::{handle_display_connection, is_display_http_request};
 use health::{handle_health_connection, is_health_http_request};

@@ -121,6 +121,9 @@ fn dynamic_registry_config(server_url: String) -> crate::DaemonConfig {
     config.event_registry_url = Some(server_url.clone());
     config.event_generator_management_targets.clear();
     config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        kernel_id: None,
+        kernel_credential: None,
+        kernel_public_key_thumbprint: None,
         api_url: server_url,
         email: "external@example.test".to_string(),
         account_id: "account-external".to_string(),
