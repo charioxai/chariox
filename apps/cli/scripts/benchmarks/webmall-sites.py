@@ -179,14 +179,20 @@ def sync_search_indexes():
         docker("exec", name, "wp", "elasticpress", "clear-sync")
         docker("exec", name, "wp", "elasticpress", "sync", "--setup", "--yes", "--stop-on-error", "--per-page=100", timeout=300)
 
-if args.operation == "repair-search":
-    sync_search_indexes()
-    search = collect_search_readiness()
+def write_fixture_readiness(search, qualification):
     public = {"mp_items": MP, "status": "ready", "urls": json.loads((lane / "site-urls.json").read_text()),
               "catalog": json.loads((evidence / "catalog-restored.json").read_text()), "search": search,
               "loopbackPorts": json.loads((root / "ports.json").read_text()), "network": owned["network"],
-              "source": "2697d35cdfcfedcf1ade89b7ad86722db8daa8a7", "repair": "complete lane-owned index rebuild"}
+              "source": "2697d35cdfcfedcf1ade89b7ad86722db8daa8a7", "qualification": qualification}
+    prior = evidence / "sites-readiness.json"
+    if prior.exists():
+        (evidence / ("sites-readiness-prior-" + uuid.uuid4().hex + ".json")).write_bytes(prior.read_bytes())
     (evidence / "sites-readiness.json").write_text(json.dumps(public, indent=2) + "\n")
+
+if args.operation == "repair-search":
+    sync_search_indexes()
+    search = collect_search_readiness()
+    write_fixture_readiness(search, "complete lane-owned index rebuild")
     print("MP-08/MP-10 complete search rebuild ready")
     raise SystemExit(0)
 
@@ -194,6 +200,7 @@ if args.operation == "probe":
     result = collect_search_readiness()
     target = evidence / "search-admission.json"
     target.write_text(json.dumps(result, indent=2) + "\n")
+    write_fixture_readiness(result, "current published catalog ID completeness")
     print("MP-08/MP-10 search admission ready")
     raise SystemExit(0)
 
