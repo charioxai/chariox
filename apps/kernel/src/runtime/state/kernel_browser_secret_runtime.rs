@@ -100,7 +100,7 @@ impl KernelRuntimeState {
         })
         .await
         .map_err(|_| host_error("MD-5: browser task failed".into()))?
-        .map_err(|message| protection.scrub_error(&scope, host_error(message)))?;
+        .map_err(|message| protection.scrub_error(&scope, message.into_daemon("kernel_browser")))?;
         crate::transport::kernel_browser_display::timing("protected_host_ipc", at);
         if !protect {
             return Ok(result);

@@ -66,7 +66,7 @@ done
                 .join()
                 .unwrap()
                 .unwrap_err()
-                .contains("browser_action_cancelled"));
+                .to_string().contains("browser_action_cancelled"));
         });
         let requests: Vec<serde_json::Value> = fs::read_to_string(root.join("requests"))
             .unwrap()
@@ -80,7 +80,7 @@ done
         assert!(backend
             .host_request_cancellable(method, serde_json::json!({}), Some(signal))
             .unwrap_err()
-            .contains("before dispatch"));
+            .to_string().contains("before dispatch"));
         assert_eq!(
             fs::read_to_string(root.join("requests"))
                 .unwrap()

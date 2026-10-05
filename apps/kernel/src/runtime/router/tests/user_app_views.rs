@@ -191,18 +191,12 @@ fn run_drill(stall: bool, browser: bool) {
                 let mut unverified = remote_command_for_request(&open, None);
                 unverified.caller.connection_class = Some(KernelConnectionClass::Unauthenticated);
                 assert!(matches!(
-                    router.dispatch(unverified, open.clone()).await.unwrap(),
-                    LocalDaemonResponse::AppRequestFailed {
-                        code: AppRequestErrorCode::Unauthorized
-                    }
+                    router.dispatch(unverified, open.clone()).await, Err(DaemonError::UserDomainRefused { reason: crate::error::UserDomainRefusalReason::NotGranted })
                 ));
                 let mut provider = remote_command_for_request(&open, Some("alice"));
                 provider.caller.connection_class = Some(KernelConnectionClass::KernelAgent);
                 assert!(matches!(
-                    router.dispatch(provider, open.clone()).await.unwrap(),
-                    LocalDaemonResponse::AppRequestFailed {
-                        code: AppRequestErrorCode::Unauthorized
-                    }
+                    router.dispatch(provider, open.clone()).await, Err(DaemonError::UserDomainRefused { reason: crate::error::UserDomainRefusalReason::NotGranted })
                 ));
                 let LocalDaemonResponse::UserAppViewOpened { view, frontend } =
                     request(&router, "alice", open).await.unwrap()
@@ -236,10 +230,7 @@ fn run_drill(stall: bool, browser: bool) {
                     view_id: view.view_id.clone(),
                 });
                 assert!(matches!(
-                    request(&router, "bob", fetch.clone()).await.unwrap(),
-                    LocalDaemonResponse::AppRequestFailed {
-                        code: AppRequestErrorCode::NotFound
-                    }
+                    request(&router, "bob", fetch.clone()).await, Err(DaemonError::UserDomainRefused { reason: crate::error::UserDomainRefusalReason::NotGranted })
                 ));
                 assert!(matches!(
                     request(&router, "alice", fetch).await.unwrap(),
@@ -251,10 +242,7 @@ fn run_drill(stall: bool, browser: bool) {
                     input: serde_json::json!({"text":"native"}),
                 });
                 assert!(matches!(
-                    request(&router, "bob", call.clone()).await.unwrap(),
-                    LocalDaemonResponse::AppRequestFailed {
-                        code: AppRequestErrorCode::NotFound
-                    }
+                    request(&router, "bob", call.clone()).await, Err(DaemonError::UserDomainRefused { reason: crate::error::UserDomainRefusalReason::NotGranted })
                 ));
                 if stall {
                     let call_router = router.clone();
@@ -443,17 +431,11 @@ fn run_drill(stall: bool, browser: bool) {
                     view_id: view.view_id.clone(),
                 });
                 assert!(matches!(
-                    request(&router, "bob", close.clone()).await.unwrap(),
-                    LocalDaemonResponse::AppRequestFailed {
-                        code: AppRequestErrorCode::NotFound
-                    }
+                    request(&router, "bob", close.clone()).await, Err(DaemonError::UserDomainRefused { reason: crate::error::UserDomainRefusalReason::NotGranted })
                 ));
                 request(&router, "alice", close).await.unwrap();
                 assert!(matches!(
-                    request(&router, "alice", call).await.unwrap(),
-                    LocalDaemonResponse::AppRequestFailed {
-                        code: AppRequestErrorCode::NotFound
-                    }
+                    request(&router, "alice", call).await, Err(DaemonError::UserDomainRefused { reason: crate::error::UserDomainRefusalReason::NotGranted })
                 ));
                 let LocalDaemonResponse::UserAppViewsListed { views } = request(
                     &router,
@@ -535,10 +517,7 @@ async fn user_app_view_detached_decision_uses_the_sessionless_reply_contract() {
     let mut host = remote_command_for_request(&reply, Some("alice"));
     host.caller.connection_class = Some(KernelConnectionClass::Host);
     assert!(matches!(
-        router.dispatch(host, reply.clone()).await.unwrap(),
-        LocalDaemonResponse::AppRequestFailed {
-            code: AppRequestErrorCode::Unauthorized
-        }
+        router.dispatch(host, reply.clone()).await, Err(DaemonError::UserDomainRefused { reason: crate::error::UserDomainRefusalReason::NotGranted })
     ));
     assert!(matches!(
         request(&router, "alice", reply).await.unwrap(),

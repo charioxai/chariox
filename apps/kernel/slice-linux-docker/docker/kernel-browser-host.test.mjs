@@ -78,7 +78,7 @@ test("MD-4: stable tabs survive browser crash and kernel/controller recreation",
   assert.equal(recovered.generation, generation + 1);
   assert.equal(recovered.tabs[0].tab_id, tab_id);
   assert.equal(recovered.tabs[0].url, "http://127.0.0.1/second");
-  await assert.rejects(host.request({ op: "screenshot", tab_id, generation }), /stale/);
+  await assert.rejects(host.request({ op: "screenshot", tab_id, generation }), error => ["user_domain_stale_epoch","user_domain_stale_reference"].includes(error.code));
   await host.stop();
   const restarted = fixture(root);
   try {
@@ -105,7 +105,7 @@ test("MD-2: latest-frame subscription is bounded and invalidated by recovery", (
   assert.equal(handlers.size, 0);
   assert(sent.some(call => call.method === "Page.stopScreencast"));
   chromium.child.exitCode = 1;
-  await assert.rejects(host.request({ op: "poll", ...subscription }), /stale/);
+  await assert.rejects(host.request({ op: "poll", ...subscription }), error => ["user_domain_stale_epoch","user_domain_stale_reference"].includes(error.code));
 }));
 test("MD-4: reconciliation retries a navigation race without recreating a tab", () => using(async ({ host, sent }) => {
   await host.request({ op: "open", url: "about:blank" });
@@ -141,7 +141,7 @@ test("MD-2: text input uses isolated focus checks and rejects secret fields", ()
   const opened = await host.request({ op: "open", url: "about:blank" });
   const binding = { tab_id: opened.tab_id, generation: opened.generation };
   fixture.secretFocused = true;
-  await assert.rejects(host.request({ op: "input", ...binding, input: { kind: "text", text: "never-insert" } }), /Vault/);
+  await assert.rejects(host.request({ op: "input", ...binding, input: { kind: "text", text: "never-insert" } }), error => error.code === "user_domain_sensitive_requires_focus");
   assert(!sent.some(call => call.method === "Input.insertText"));
   fixture.secretFocused = false;
   await host.request({ op: "input", ...binding, input: { kind: "text", text: "fixture" } });
@@ -187,7 +187,7 @@ test("MD-5: protection flushes old frames and masks new/retired frames across re
   chromium.child.exitCode = 1;
   await host.request({ op: "state" });
   assert(host.browser.protectedValues.has("synthetic-only"));
-  await assert.rejects(host.request({ op: "poll", ...subscription }), /stale/);
+  await assert.rejects(host.request({ op: "poll", ...subscription }), error => ["user_domain_stale_epoch","user_domain_stale_reference"].includes(error.code));
 }));
 
 test("MD-5: unavailable observation policy fences captures and leaves shutdown available", () => using(async ({ host }) => {
@@ -287,9 +287,9 @@ test("MD-3 b220: input rejects replacement documents and missing observation bin
     document_id: opened.tabs[0].document_id, input: { kind: "click", x: 50, y: 50 } };
   const target = host.tabs.get(opened.tab_id).target_id;
   pages.set(target, { url: "https://example.com/after", document_id: "replacement" });
-  await assert.rejects(host.request(command), /document/);
+  await assert.rejects(host.request(command), error => error.code === "user_domain_stale_reference");
   delete command.document_id;
-  await assert.rejects(host.request(command), /document/);
+  await assert.rejects(host.request(command), error => error.code === "user_domain_stale_reference");
   assert(!sent.some(call => call.method.startsWith("Input.")));
 }));
 
@@ -298,7 +298,7 @@ test("MD-3 b220: navigation during text preparation rejects input before insert"
   const target = host.tabs.get(opened.tab_id).target_id;
   connection.beforeSend = async method => { if (method === "Runtime.evaluate") pages.set(target, { url: "about:blank", document_id: "replacement" }); };
   await assert.rejects(host.request({ op: "input", tab_id: opened.tab_id, generation: opened.generation,
-    document_id: opened.tabs[0].document_id, input: { kind: "text", text: "synthetic" } }), /document/);
+    document_id: opened.tabs[0].document_id, input: { kind: "text", text: "synthetic" } }), error => error.code === "stale_document_reference");
   assert(!sent.some(call => call.method === "Input.insertText"));
 }));
 
@@ -344,8 +344,8 @@ test("MD-3: one terminal/agent observation cannot rebind another terminal's stal
   const current = await host.request({ op: "state", observed_by: "terminal-b" });
   await host.request({ op: "screenshot", focused_agent: true, tab_id: opened.tab_id, generation: opened.generation });
   const input = { op: "input", observed_by: "terminal-a", tab_id: opened.tab_id, generation: opened.generation, input: { kind: "click", x: 20, y: 20 } };
-  await assert.rejects(host.request(input), /document/);
-  await assert.rejects(host.request({ ...input, focused_agent: true }), /document/);
+  await assert.rejects(host.request(input), error => error.code === "user_domain_stale_reference");
+  await assert.rejects(host.request({ ...input, focused_agent: true }), error => error.code === "user_domain_stale_reference");
   assert(!sent.some(call => call.method.startsWith("Input.")));
   await host.request({ ...input, focused_agent: true, document_id: current.tabs[0].document_id });
   assert.equal(sent.filter(call => call.method === "Input.dispatchMouseEvent").length, 2);
@@ -386,7 +386,7 @@ test("MD integration: focused browser input cannot impersonate a human App call;
   host.browser.appTabs = {apps:new Map([["app", {targetId:target}]])};
   const command = {op:"input",tab_id:opened.tab_id,generation:opened.generation,input:{kind:"click",x:12,y:20}};
   for (const op of ["input", "navigate", "close"]) {
-    await assert.rejects(host.request({...command,op,url:"https://app.a.invalid/",_agent_input:true}), /human App/);
+    await assert.rejects(host.request({...command,op,url:"https://app.a.invalid/",_agent_input:true}), error => error.code === "user_domain_not_granted");
   }
   assert(!sent.some(call=>call.method==="Input.dispatchMouseEvent"));
   await host.request(command);
@@ -424,7 +424,7 @@ test("MD integration: target close revokes its frame subscription", () => using(
   assert.equal(host.streams.size,0);
   assert.equal(handlers.size,0);
   assert(sent.some(call=>call.method==="Page.stopScreencast"));
-  await assert.rejects(host.request({op:"poll",...stream}),/stale/);
+  await assert.rejects(host.request({op:"poll",...stream}),error => error.code === "user_domain_stale_reference");
 }));
 
 
@@ -533,4 +533,38 @@ test("display subscription captures the current document after navigation", () =
     if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
     else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;
   }
+}));
+
+// Fail-first coverage for each of the nine live hardening gaps.
+const refusalCases = [
+  ['foreign tab snapshot', 'snapshot', 'not_granted'],
+  ['foreign tab screenshot', 'screenshot', 'not_granted'],
+  ['foreign browser region capture', 'screenshot', 'not_granted'],
+  ['foreign note-window observation', 'note_selection', 'not_granted'],
+  ['forged resource references', 'snapshot', 'not_granted'],
+  ['stale browser input document', 'input', 'stale_reference'],
+  ['stale App input document', 'input', 'stale_reference'],
+  ['cross-identity capture correlation replay', 'screenshot', 'not_granted'],
+  ['stale capture generation', 'screenshot', 'stale_epoch'],
+];
+for (const [label, op, reason] of refusalCases) test('MD434 explicit refusal: '+label, () => using(async ({host}) => {
+  const opened=await host.handle({id:1,method:'host.browser',params:{op:'open',url:'https://fixture.invalid/'}});
+  const generation=host.generation;
+  const tab=[...host.tabs.values()][0];
+  const params={op,generation,tab_id:reason==='not_granted'?'foreign-or-forged-id':tab.tab_id,observed_by:'terminal:fixture'};
+  if(op==='input'){params.document_id='old-document';params.input={kind:'key',key:'Tab'};}
+  if(reason==='stale_epoch')params.generation++;
+  const result=await host.handle({id:2,method:'host.browser',params});
+  assert.equal(result.ok,false);
+  assert.equal(result.error.code,'user_domain_'+reason);
+  assert.equal(result.error.message,'User-domain request refused');
+  assert.ok(!JSON.stringify(result.error).includes(params.tab_id));
+}));
+
+test('MD434 page/transport errors cannot forge host policy refusals', () => using(async ({host}) => {
+ await host.request({op:'open',url:'https://fixture.invalid/'});
+ const tab=[...host.tabs.values()][0];
+ host.browser.snapshot=async()=>{throw Object.assign(new Error('User-domain request refused'),{code:'user_domain_not_granted'});};
+ const result=await host.handle({id:1,method:'host.browser',params:{op:'snapshot',tab_id:tab.tab_id,generation:host.generation}});
+ assert.equal(result.error.code,'kernel_browser_failed');
 }));

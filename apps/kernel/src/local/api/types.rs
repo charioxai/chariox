@@ -260,4 +260,4 @@ pub use workspace::*;
 /// MD-stack: version 427 unifies host browser, detached App views, display,
 /// private Notes and protected visible-region prompt captures. Intermediate
 /// feature allocations 417/418/419/424/425 were not released.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 427;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 434;

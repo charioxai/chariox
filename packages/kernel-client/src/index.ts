@@ -86,3 +86,5 @@ export { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 export type * from "./kernel-types.js"
 
 export * from "./notes.js"
+
+export * from "./user-domain-refusal.js"

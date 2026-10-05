@@ -38,15 +38,29 @@ impl KernelRuntimeState {
     ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
         // This is a human frontend channel, never an agent/host escalation.
         if !command.is_terminal_caller() {
-            return Some(Ok(crate::runtime::app_control::failed(
-                AppRequestErrorCode::Unauthorized,
-            )));
+            return Some(Err(DaemonError::UserDomainRefused {
+                reason: crate::error::UserDomainRefusalReason::NotGranted,
+            }));
         }
         let owner = match crate::runtime::app_control::owner(command) {
             Ok(owner) => owner,
+            Err(AppRequestErrorCode::Unauthorized | AppRequestErrorCode::NotFound) => {
+                return Some(Err(DaemonError::UserDomainRefused {
+                    reason: crate::error::UserDomainRefusalReason::NotGranted,
+                }))
+            }
             Err(code) => return Some(Ok(crate::runtime::app_control::failed(code))),
         };
-        Some(Box::pin(self.user_app_view_request(&owner, command, request)).await)
+        Some(
+            match Box::pin(self.user_app_view_request(&owner, command, request)).await {
+                Ok(LocalDaemonResponse::AppRequestFailed {
+                    code: AppRequestErrorCode::NotFound | AppRequestErrorCode::Unauthorized,
+                }) => Err(DaemonError::UserDomainRefused {
+                    reason: crate::error::UserDomainRefusalReason::NotGranted,
+                }),
+                result => result,
+            },
+        )
     }
 
     async fn user_app_view_request(

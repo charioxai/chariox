@@ -464,10 +464,7 @@ impl KernelRuntimeState {
     }
 }
 pub(super) fn host_error(message: String) -> DaemonError {
-    DaemonError::LocalTransport {
-        operation: "kernel_browser",
-        message,
-    }
+    crate::error::HostFailure::from(message).into_daemon("kernel_browser")
 }
 
 #[cfg(test)]

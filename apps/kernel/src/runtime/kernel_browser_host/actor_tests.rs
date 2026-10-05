@@ -84,10 +84,18 @@ done
             .contains("browser_action_cancelled"));
     });
     assert!(root.join("cancelled").exists());
-    assert!(host
-        .protected_request("alice", Some("agent"), "host.browser", mutation, policy)
-        .unwrap_err()
-        .contains("human owns"));
+    let admission = host.admit("alice", "agent").unwrap();
+    assert!(matches!(
+        host.protected_request_admitted(
+            "alice",
+            Some(&admission),
+            "host.browser",
+            mutation,
+            policy
+        )
+        .unwrap_err(),
+        crate::error::HostFailure::Refused(crate::error::UserDomainRefusalReason::NotGranted)
+    ));
     let state = host.actor_snapshot("alice").unwrap();
     assert_eq!(state["input_ownership"][0]["actor_id"], "terminal:a");
     assert_eq!(state["actions"][0]["state"], "cancelled");

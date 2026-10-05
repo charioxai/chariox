@@ -1,4 +1,6 @@
 // MD-2: sessionless host adapter over the shared controller/CDP implementation.
+import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
+import { BrowserActionError } from "./browser-controller-actions.mjs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -170,17 +172,17 @@ export class KernelBrowserHost {
   }
   async target(command) {
     const started = timestamp();
-    if (command.generation !== this.generation) throw new Error("MD-2: stale browser generation; refresh state");
+    if (command.generation !== this.generation) throw new UserDomainRefusal("stale_epoch");
     await this.reconcile();
     this.timing('target_reconcile', started);
     const tab = this.tabs.get(command.tab_id);
-    if (!tab) throw new Error("MD-2: host tab does not exist");
+    if (!tab) throw new UserDomainRefusal("not_granted");
     return tab;
   }
   async displayTarget(command) {
-    if (command.generation !== this.generation) throw new Error("MD-DISPLAY: stale generation");
+    if (command.generation !== this.generation) throw new UserDomainRefusal("stale_epoch");
     const stored = this.tabs.get(command.tab_id);
-    if (!stored) throw new Error("MD-DISPLAY: unknown tab");
+    if (!stored) throw new UserDomainRefusal("not_granted");
     const { connection, sessionId } = await this.browser.resolvePageTarget(stored.target_id);
     const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
     const document_id = frameTree?.frame?.loaderId;
@@ -310,7 +312,7 @@ export class KernelBrowserHost {
     const encodedCapture = command.op === "screenshot" && typeof command.display_subscription_id === "string";
     if (encodedCapture || command.op === "display_attach" || (command.op === "unsubscribe" && this.displays.has(command.subscription_id))) {
       const stream = this.displays.get(command.display_subscription_id ?? command.subscription_id);
-      if (!stream || stream.observed_by !== scope || command.generation !== this.generation) throw new Error("MD-DISPLAY: stale or foreign display");
+      if (!stream || stream.observed_by !== scope || command.generation !== this.generation) throw new UserDomainRefusal("not_granted");
       if (command.op === "unsubscribe") { await stream.close(); this.displays.delete(command.subscription_id); return { generation: this.generation, unsubscribed: true }; }
       stream.expires = Date.now() + 60_000;
       this.armDisplayExpiry(stream);
@@ -325,7 +327,7 @@ export class KernelBrowserHost {
       return { generation: this.generation, frame_sent: frame !== null, display_frame: frame };
     }
     if (["poll", "unsubscribe"].includes(command.op)) {
-      if (command.generation !== this.generation || !this.streams.has(command.subscription_id)) throw new Error("MD-2: stale frame subscription");
+      if (command.generation !== this.generation || !this.streams.has(command.subscription_id)) throw new UserDomainRefusal("stale_reference");
       const stream = this.streams.get(command.subscription_id);
       stream.expires = Date.now() + 60_000;
       this.armExpiry(command.subscription_id, stream);
@@ -336,7 +338,7 @@ export class KernelBrowserHost {
     assertNotCancelled(signal);
     if (["input", "navigate", "close"].includes(command.op) && (command.focused_agent || command._agent_input)
       && [...(this.browser.appTabs?.apps?.values() ?? [])].some(app => app.targetId === tab.target_id)) {
-      throw new Error("Use the focused App tool channel; browser input cannot act as the human App frontend");
+      throw new UserDomainRefusal("not_granted");
     }
     const binding = { target_id: tab.target_id, document_id: tab.document_id };
     if (command.op === "display_subscribe") {
@@ -375,7 +377,7 @@ export class KernelBrowserHost {
     if (command.op === "snapshot") return this.observe({ generation: this.generation, snapshot: await this.browser.snapshot(binding) }, tab, scope);
     if (command.op === "input") {
       const observed = command.document_id ?? (command.focused_agent ? null : this.observedDocuments.get(scope)?.get(tab.tab_id));
-      if (!observed || observed !== tab.document_id) throw new Error("MD-3: stale input document; observe the tab again");
+      if (!observed || observed !== tab.document_id) throw new UserDomainRefusal("stale_reference");
       const at = timestamp();
       let dispatched = false;
       try { await inputHostTab(this.browser, tab, command.input, { signal, onDispatch: () => { dispatched = true; } }); this.timing('cdp_input', at); }
@@ -413,7 +415,7 @@ export class KernelBrowserHost {
         await this.start();
         if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
         const tab = await this.target(request.params);
-        if (tab.document_id !== request.params.document_id) throw new Error("MD-5: stale secret document");
+        if (tab.document_id !== request.params.document_id) throw new UserDomainRefusal("stale_reference");
         await this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
           node_ref: request.params.node_ref, action: request.params.action, timeout_ms: 10_000 }, { signal });
         await this.save();
@@ -438,7 +440,7 @@ export class KernelBrowserHost {
         if (generation !== undefined && (!this.browser || this.chromium.child?.exitCode !== null
           || this.chromium.child?.signalCode !== null)) throw new Error("App host is no longer live");
         await this.start();
-        if (generation !== undefined && generation !== this.generation) throw new Error("MD integration: stale App host generation");
+        if (generation !== undefined && generation !== this.generation) throw new UserDomainRefusal("stale_epoch");
         const result = await handleBrowserControllerRequest({ ...request, params }, { browser: this.browser, signal });
         if (result.ok) {
           await this.reconcile();
@@ -451,6 +453,8 @@ export class KernelBrowserHost {
       }
       throw new Error("MD-2: unsupported host method");
     } catch (error) {
+      if (error instanceof UserDomainRefusal) return {id:request.id,ok:false,error:{code:error.code,message:error.message}};
+      if (error instanceof BrowserActionError && ["stale_document_reference","stale_element_reference"].includes(error.code)) return {id:request.id,ok:false,error:{code:"user_domain_stale_reference",message:"User-domain request refused"}};
       if (error?.code === "browser_action_cancelled") await this.stop();
       return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }
   }
