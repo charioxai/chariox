@@ -61,7 +61,7 @@ async function runWorkerResumeMatrix({ options, runtimeRoot, evidenceRoot, ports
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
   const homeKernelUrl = `ws://127.0.0.1:${ports.homeKernelPort}`
   const workerKernelUrl = `ws://127.0.0.1:${ports.workerKernelPort}`
-  const realProvider = realProviderEnv()
+  const realProvider = realProviderEnv(options.providers)
   let isolatedHome = null
   let isolatedWorker = null
   if (options.workerState === "isolated") {

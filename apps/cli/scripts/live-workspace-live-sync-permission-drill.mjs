@@ -453,6 +453,12 @@ function requireRemotePlacement(agent, workerKernel) {
 async function runDrill(privateRoot) {
   const options = parseArgs(process.argv.slice(2))
   const provider = options.provider
+  if (provider === 'codex') requireScopedProviderPath(process.env,'CODEX_HOME')
+  if (provider.startsWith('claude')) requireScopedProviderPath(process.env,'CLAUDE_CONFIG_DIR')
+  if (provider === 'opencode') {
+    requireScopedProviderPath(process.env,'OPENCODE_CONFIG_DIR')
+    if (!process.env.OPENCODE_DATA_HOME) requireScopedProviderPath(process.env,'XDG_DATA_HOME')
+  }
   const model = options.providerModels[provider] ?? options.model ?? defaultModelForProvider(provider)
   const cliModel = cliModelForProvider(provider, model)
   const effort = options.effort ?? defaultEffortForProvider(provider)
