@@ -20,6 +20,7 @@ import {
   INVENTORY_SCHEMA,
   MP_ROWS,
   parseArgs,
+  runCli,
   PRIOR_REVIEWED_SOURCE_COMMIT,
   PRIOR_REVIEWED_SOURCE_TREE,
   stableJson,
@@ -2511,4 +2512,27 @@ test("MP-11 security mode emits exact-blob anchors and cannot pass without parit
     assert.equal(report.securityScope.gate.parity.status, "pending");
     assert.equal(report.fullInventory.gating, false);
   });
+});
+
+test("MP-11 critical review records require an explicit checked verdict and severity", () => {
+  const review = DEFAULT_SEMANTIC_DISPOSITIONS.find(r => r.anchor.category === "security_critical");
+  assert.ok(review);
+  const source = { commit: review.sourceCommit, tree: review.sourceTree };
+  for (const metadata of [
+    { verdict: undefined }, { check: "" }, { enforces: "" },
+    { verdict: "OK", severity: "P2" }, { verdict: "FINDING", severity: null },
+  ]) {
+    assert.throws(() => evaluateSemanticDisposition(review.anchor, source, [
+      { ...review, independentReview: { ...review.independentReview, ...metadata } },
+    ]), /invalid independent semantic review metadata/);
+  }
+});
+
+test("MP-11 malformed security scope cannot fall back to a non-gating inventory", () => {
+  for (const args of [["--scope"], ["--scope", "securty-critical"], ["--scope", "--output", "/tmp/out.json"]]) {
+    assert.throws(() => parseArgs(args), /MP-11 --scope requires/);
+    let error = "";
+    assert.equal(runCli(args, { write: () => assert.fail("malformed scope must not enumerate"), error: text => { error += text; } }), 2);
+    assert.match(error, /MP-11 --scope requires/);
+  }
 });

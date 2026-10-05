@@ -801,7 +801,14 @@ function validateSemanticReview(review) {
   const anchor = review?.anchor;
   const metadata = review?.independentReview;
   const validSha = (value) => typeof value === "string" && /^[0-9a-f]{40}$/.test(value);
-  if (typeof review?.id !== "string" || !review.id.trim()
+  const invalidSecurityReview = anchor?.category === "security_critical" && (
+    !["OK", "FINDING"].includes(metadata?.verdict)
+    || typeof metadata?.enforces !== "string" || !metadata.enforces.trim()
+    || typeof metadata?.check !== "string" || metadata.check.trim().length < 20
+    || (metadata.verdict === "FINDING"
+      ? !["P0", "P1", "P2", "P3"].includes(metadata.severity) || review.disposition !== "removal_required"
+      : metadata.severity !== null || review.disposition !== "ordinary_path1_behavior"));
+  if (invalidSecurityReview || typeof review?.id !== "string" || !review.id.trim()
     || !validSha(review.sourceCommit) || !validSha(review.sourceTree)
     || !anchor || typeof anchor.path !== "string" || !anchor.path
     || !validSha(anchor.blob) || !Number.isInteger(anchor.line) || anchor.line < 1
@@ -1202,7 +1209,10 @@ export function parseArgs(argv) {
     else if (argument === "--expect-source-commit") options.expectedCommit = argv[++index];
     else if (argument === "--expect-source-tree") options.expectedTree = argv[++index];
     else if (argument === "--source-ref") options.sourceRef = argv[++index];
-    else if (argument === "--scope") options.scope = argv[++index];
+    else if (argument === "--scope") {
+      options.scope = argv[++index];
+      if (!["full-inventory", "security-critical"].includes(options.scope)) throw new Error("MP-11 --scope requires full-inventory or security-critical");
+    }
     else if (argument === "--parity-matrix") options.parityMatrixPath = resolve(argv[++index]);
     else if (argument === "--help") options.help = true;
     else throw new Error(`unknown argument: ${argument}`);
@@ -1211,7 +1221,9 @@ export function parseArgs(argv) {
 }
 
 export function runCli(argv = process.argv.slice(2), io = { write: (value) => process.stdout.write(value), error: (value) => process.stderr.write(value) }) {
-  const options = parseArgs(argv);
+  let options;
+  try { options = parseArgs(argv); }
+  catch (error) { io.error(`${error instanceof Error ? error.message : String(error)}\n`); return 2; }
   if (options.help) {
     io.write("usage: node managed-parity-source-inventory.mjs [--root DIR] [--source-ref REF] [--expect-source-commit SHA] [--expect-source-tree TREE] [--output FILE] [--scope full-inventory|security-critical] [--parity-matrix FILE]\n");
     return 0;
