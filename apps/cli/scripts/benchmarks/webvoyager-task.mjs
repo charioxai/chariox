@@ -8,7 +8,8 @@ import { pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { Round2Room } from './round2/room.mjs'
 import { unwrap, getTurn, loadTurnHistory, assembleTurnEntries } from './round2/kernel.mjs'
-import { finalAnswer } from './round2/export.mjs'
+import { finalAnswer, settlementRecord } from './round2/export.mjs'
+import { providerFailureFlags } from './round2/provider-availability.mjs'
 import { observeKernelRpcErrors, rpcErrorRecord } from './round2/rpc-errors.mjs'
 import { submitOnce } from './webvoyager-admission.mjs'
 import { judgeWebVoyager } from './webvoyager-linked-judge.mjs'
@@ -120,7 +121,13 @@ export async function runWebVoyagerTask({ task, runtime, options }) {
     row.forbiddenTools = row.toolTrace.filter(tool => !/^(slice_open_url|slice_browser_[a-z_]+)$/.test(tool.tool)).map(tool => tool.tool)
     row.providerError = entries.some(item => item.entry.kind === 'provider_error')
     row.providerUnauthorized = entries.some(item => item.entry.kind === 'provider_error' && /401|unauthorized|refresh_token_reused/i.test(item.entry.text))
+    row.providerErrors = settlementRecord({ turn, entries: originals, elapsedMs: Date.now() - providerStart, ...identity, helpers }).providerErrors
+    row.providerUsageExhausted = entries.some(item => item.entry.kind === 'provider_error' && providerFailureFlags(item.entry.text).usageExhausted)
     if (row.providerUnauthorized) console.log('MP-08/MP-10 coordinator notice: linked provider unauthorized')
+    if (row.providerError || turn.lifecycle !== 'completed') {
+      seam = 'provider_settlement'; await checkpoint()
+      throw Error('MP-08/MP-10 provider failed; original settlement errors retained')
+    }
     row.answer = finalAnswer(turn, originals, helpers)
     await writeFile(`${directory}/answer.txt`, row.answer, { mode: 0o600 })
     row.actions = actions.map(action => ({ id: action.action_id, kind: action.kind, mode: action.mode, state: action.state, actorId: action.actor_id }))
@@ -135,6 +142,8 @@ export async function runWebVoyagerTask({ task, runtime, options }) {
       root: runtime.root, accountHome: options.runtime.accountHome }))
   } catch (error) {
     row.firstFailingSeam = seam; row.failure = rpcErrorRecord(error)
+    if (error.judgeFailure) row.judgeFailure = error.judgeFailure
+    row.providerUsageExhausted ||= providerFailureFlags(error.message).usageExhausted
     if (seam !== 'official_prompt_judge') row.harnessValid = false
   } finally {
     if (agentId) {

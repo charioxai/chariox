@@ -5,6 +5,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { promisify } from 'node:util'
 import path from 'node:path'
 import { stopOwnedProcess } from './round2/owned-processes.mjs'
+import { nativeFailureEvidence } from './round2/provider-availability.mjs'
 const exec = promisify(execFile)
 
 export async function judgeWebVoyager({ task, directory, screenshots, upstream, root, accountHome }) {
@@ -22,7 +23,7 @@ export async function judgeWebVoyager({ task, directory, screenshots, upstream, 
     HOME: `${root}/home`, CODEX_HOME: accountHome, LANG: 'C.UTF-8' }, stdio: ['pipe', 'pipe', 'ignore'] })
   await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject) })
   assert(Number.isSafeInteger(child.pid) && child.pid > 1)
-  let output = '', abort
+  let output = '', abort, exitCode, firstError
   const exited = new Promise(resolve => child.once('exit', code => resolve(code)))
   const timer = setTimeout(() => { abort = 'deadline'; void stopOwnedProcess(child, { detached: true }).catch(() => {}) }, 120000)
   child.stdout.on('data', data => {
@@ -34,8 +35,8 @@ export async function judgeWebVoyager({ task, directory, screenshots, upstream, 
   child.stdin.on('error', () => { abort ??= 'stdin' })
   child.stdin.end(input.user)
   try {
-    const code = await exited
-    assert(!abort && code === 0, 'MP-10 substitute judge failed')
+    exitCode = await exited
+    assert(!abort && exitCode === 0, 'MP-10 substitute judge failed')
     const events = output.trim().split('\n').map(line => JSON.parse(line))
     const tools = events.filter(event => event.type === 'item.completed' && !['agent_message', 'reasoning'].includes(event.item?.type)).length
     const answer = await readFile(`${directory}/judge-answer.txt`, 'utf8')
@@ -45,8 +46,18 @@ export async function judgeWebVoyager({ task, directory, screenshots, upstream, 
       judgeWallSeconds: (Date.now() - start) / 1000, judgeAnswer: answer, judgeVerdict: verdict, judgeValid: verdict !== null }
     await writeFile(`${directory}/judge-audit.json`, JSON.stringify(result, null, 2), { mode: 0o600 })
     return result
+  } catch (error) {
+    firstError = error
+    error.judgeFailure = nativeFailureEvidence({ output, exitCode, abort })
+    try { await writeFile(`${directory}/judge-failure.json`, JSON.stringify(error.judgeFailure, null, 2) + '\n', { mode: 0o600 }) }
+    catch { error.judgeFailure.evidenceWriteFailed = true }
+    throw error
   } finally {
     clearTimeout(timer)
-    assert(await stopOwnedProcess(child, { detached: true }), 'MP-11 judge exit acknowledgement missing')
+    try { assert(await stopOwnedProcess(child, { detached: true }), 'MP-11 judge exit acknowledgement missing') }
+    catch (error) {
+      if (firstError) { firstError.judgeFailure.cleanupFailed = true; throw firstError }
+      throw error
+    }
   }
 }
