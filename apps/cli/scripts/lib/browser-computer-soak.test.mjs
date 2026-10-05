@@ -1032,3 +1032,8 @@ test("MP-11-RD-F6 redaction streams safe prefixes and caps retained error eviden
   assert.match(output, /REDACTED LOG TRUNCATED/)
   assert.equal(output.includes("MP11_CANARY"), false)
 })
+
+test("MP-11-RD-F6 original 520-character canary reproduction is redacted", async () => {
+  assert.equal(await retainedOutput(["xxxMP11_CANARY" + "z".repeat(506)], ["MP11_CANARY"]),
+    "xxx[REDACTED]" + "z".repeat(506))
+})
