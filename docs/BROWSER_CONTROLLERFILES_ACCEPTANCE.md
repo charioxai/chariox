@@ -37,9 +37,22 @@ explicit inspection error; download chunk reads remain available.
 
 Image capture uses the same attached CDP Page session, checks document and
 viewport before/after capture, and passes actual PNG bytes to the existing MCP
-native `image` converter. If protected values or a password input are present,
+native `image` converter. Protection checks traverse all owned renderer sessions,
+including nested isolated cross-origin iframes and local descendants, before and
+after the composited screenshot. Frame/document/parent identity changes reject
+the capture, and temporary isolated-frame sessions detach on every outcome.
+If protected values or a password input are present,
 the whole viewport is conservatively blacked out. This is not selective visual
 redaction. Downloads are withheld while protected values are registered.
+
+MP-08/MP-10/MP-11 isolated-password regression:
+`node --test apps/kernel/slice-linux-docker/docker/browser-controller-image-capture.test.mjs`
+checks exact image/mask bytes, owned/foreign renderer boundaries and identity
+fences. The real Chromium controllerfiles drill forces site isolation and embeds
+a localhost password iframe in its 127.0.0.1 tab without any registered Vault
+value. It requires an actual iframe target absent from the top DOM snapshot,
+then compares the returned artifact with the full-viewport black PNG byte for
+byte. These focused checks do not establish provider/Web/TUI or Path-1 parity.
 
 Passive capture retains actual CDP request/response metadata for the same
 Tab/document, including observed extra-info headers. It allowlists only Accept,

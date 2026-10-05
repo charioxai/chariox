@@ -36,6 +36,10 @@ export async function startControllerfilesFixture() {
     const url = new URL(request.url, "http://127.0.0.1");
     try {
       if (request.method === "GET" && url.pathname === "/") return send(response, 200, page, "text/html; charset=utf-8");
+      // MP-08/MP-10/MP-11: served through localhost beside a 127.0.0.1 top
+      // document so Chromium's site isolation creates a separate renderer.
+      if (request.method === "GET" && url.pathname === "/isolated-login") return send(response, 200,
+        '<!doctype html><title>Isolated login fixture</title><body style="background:red"><label>Isolated password<input type="password" value="fixture-password"></label><p>Protected iframe content</p>', "text/html; charset=utf-8");
       if (request.method === "GET" && url.pathname === "/receipts") return json(response, 200, { receipts });
       if (request.method === "GET" && url.pathname === "/downloads/slow.bin") {
         response.writeHead(200, { "content-type": "application/octet-stream", "content-length": 1024 * 1024,
