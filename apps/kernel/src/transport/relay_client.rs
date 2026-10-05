@@ -235,3 +235,5 @@ type RelayCommandResultCache = Arc<CommandResultCache>;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) use tests::vault_drill::VaultRelayDrill;
