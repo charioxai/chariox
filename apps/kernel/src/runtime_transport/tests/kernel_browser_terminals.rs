@@ -85,18 +85,18 @@ async fn mdnotes_two_local_connections_child() {
                 let listener = listener.clone();
                 async move {
                     let client = connect_async(format!("ws://{address}"));
-                    let accepted = async {
+                    let server = tokio::spawn(async move {
                         let (stream, _) = listener.accept().await.unwrap();
-                        tokio::spawn(handle_kernel_connection(
+                        handle_kernel_connection(
                             runtime,
                             router,
                             InboundRequestAdmission::new(process_inbound_request_limit()),
                             KernelLocalAuth::Unconfigured,
                             stream,
-                        ))
-                    };
-                    let (client, server) = tokio::join!(client, accepted);
-                    (client.unwrap().0, server)
+                        )
+                        .await
+                    });
+                    (client.await.unwrap().0, server)
                 }
             };
             (
