@@ -501,6 +501,12 @@ esac
         r#"#!/bin/sh
 set -eu
 case "$1 $2 $3" in
+  "config --global --null")
+    test -f "$HOME/git-helper" || exit 1
+    printf '!gh auth git-credential\0'
+    ;;
+  "config --global --unset-all") /bin/rm -f "$HOME/git-helper" ;;
+  "config --global --add") /usr/bin/touch "$HOME/git-helper" ;;
   "config --global --get-regexp") test -f "$HOME/git-helper" ;;
   "config --global --remove-section") /bin/rm -f "$HOME/git-helper" ;;
   *) exit 2 ;;
