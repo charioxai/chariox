@@ -14,6 +14,7 @@ const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, arg, index, all) => index % 2 ? pairs : [...pairs, [arg.slice(2), all[index + 1]]], []))
 for (const key of ['kernel', 'relay', 'client', 'account-dir', 'output', 'state-parent']) assert.ok(path.isAbsolute(args[key] ?? ''), `MP-08 --${key} requires an absolute path`)
 assert.ok(!args.output.startsWith(repo + '/') && !args['state-parent'].startsWith(repo + '/'))
+const model=args.model??'gpt-5.5'
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const unwrap = (response, key) => { if (response.Error) throw new Error(response.Error.message); assert.ok(response[key], `MP-08 missing ${key}`); return response[key] }
 await mkdir(args.output, { recursive: true, mode: 0o700 })
@@ -38,7 +39,7 @@ const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key])=>
   CHARIOX_DAEMON_SOCKET: path.join(state, 'kernel.sock'),
   TERM: 'xterm-256color', COLORTERM: 'truecolor' }
 for (const key of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'OPENCODE_CONFIG_DIR', 'CHARIOX_RELAY_URL', 'CHARIOX_RELAY_TOKEN', 'CHARIOX_CLOUD_PROFILE', 'CHARIOX_CLOUD_TOKEN', 'CHARIOX_CLOUD_RELAY_CONFIG_JSON', 'CHARIOX_CLOUD_RELAY_CONFIG_PATH']) delete env[key]
-const receipt = { mpItems: ['MP-08','MP-10','MP-11'], source: args.source, clientSource: args['client-source'],
+const receipt = { mpItems: ['MP-08','MP-10','MP-11'], source: args.source, clientSource: args['client-source'], model,
   startedAt: new Date().toISOString(), steps: [], resources: [], limitations: ['Local TUI acceptance; Cloud union Web pane and fresh Path-1 comparison are separate gates.'] }
 for (const key of ['kernel','relay','client']) receipt[key + 'Sha256'] = createHash('sha256').update(await readFile(args[key])).digest('hex')
 const bundle = createHash('sha256')
@@ -82,14 +83,14 @@ try {
   const profile = unwrap(await client.send(requests.linkProviderAccountProfileRequest('codex','relost-acct-686',args['account-dir'])), 'ProviderAccountProfile').profile
   const created=unwrap(await client.send(requests.createSessionRequest(workspace,workspace,'relost-workflows')), 'SessionCreated')
   sessionId=created.session.id
-  const agent=unwrap(await client.send(requests.spawnAgentRequest(sessionId,'codex','workflow-codex','gpt-6.1-sol',workspace,'low','build','yolo',undefined,undefined,undefined,profile.profile_id)), 'AgentSpawned').agent
+  const agent=unwrap(await client.send(requests.spawnAgentRequest(sessionId,'codex','workflow-codex',model,workspace,'low','build','yolo',undefined,undefined,undefined,profile.profile_id)), 'AgentSpawned').agent
   unwrap(await client.send(requests.createAgentWorkflowRequest(sessionId,agent.id,'trigger','tui','Review')), 'AgentWorkflowCreated')
   const inventoryState=await stateUntil(s=>s.room_workflows?.workflow_count===1)
   const heading=inventoryState.room_workflows.workflows[0].label+' /'
   receipt.workflowLabel=inventoryState.room_workflows.workflows[0].label
   terminal=spawnOwned('python3',[path.join(repo,'apps/cli/scripts/lib/room-workflows-tui-pty.py'),path.join(repo,'apps/kernel/slice-linux-docker'),
     'bun',args.client,'--kernel-url',`ws://127.0.0.1:${ports[0]}`,'--session',sessionId,'--workspace',workspace,'--worktree',workspace,
-    '--provider','codex','--model','gpt-6.1-sol','--account-profile',profile.profile_id,'--client-id','relost-tui'],{cwd:repo,env,stdio:['pipe','pipe','pipe'],detached:true})
+    '--provider','codex','--model',model,'--account-profile',profile.profile_id,'--client-id','relost-tui'],{cwd:repo,env,stdio:['pipe','pipe','pipe'],detached:true})
   terminal.stdout.on('data', chunk=> {buffer+=chunk;while(buffer.includes('\n')){const i=buffer.indexOf('\n');const message=JSON.parse(buffer.slice(0,i));buffer=buffer.slice(i+1);const waiter=pending.get(message.id);pending.delete(message.id);if(message.error)waiter?.reject(new Error(message.error));else waiter?.resolve(message.result)}})
   terminal.stderr.on('data', chunk=> { /* Only fixture diagnostics; no provider stdout is connected here. */ receipt.terminalError=String(chunk).slice(-1000) })
   terminal.on('close',()=>{for(const waiter of pending.values())waiter.reject(new Error('MP-08 terminal driver exited'));pending.clear()})
@@ -114,7 +115,7 @@ try {
   await key('\x13') // Ctrl+S
   await stateUntil(s=>s.room_workflows.workflows[0].running_count===0&&s.room_workflows.workflows[0].paused_count===0)
   await capture('08-stopped',text=>text.includes('0 running')&&text.includes('0 paused'))
-  await key('Reply RELOST_WORKFLOW_OK')
+  await key('Say RELOST_WORKFLOW_OK only.')
   await key('\r')
   await stateUntil(s=>s.room_workflows.workflows[0].runs.length>0)
   // Use a real provider completion and the terminal's real agent panes as proof.
