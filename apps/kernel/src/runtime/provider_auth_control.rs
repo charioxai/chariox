@@ -52,12 +52,30 @@ pub(crate) async fn execute_get_provider_auth_status_request(
     request: GetProviderAuthStatusRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let registry = runtime_state.provider_account_profile_registry().clone();
+    let profile_before = registry
+        .get(owner_user_id, &request.provider, &request.account_profile)
+        .ok();
+    let provider = request.provider.clone();
+    let account_profile = request.account_profile.clone();
+    let owner_for_changes = owner_user_id.to_string();
     let owner_user_id = owner_user_id.to_string();
-    tokio::task::spawn_blocking(move || {
+    let response = tokio::task::spawn_blocking(move || {
         provider_auth_status_response(&registry, &owner_user_id, request)
     })
     .await
-    .map_err(|error| provider_auth_task_error("get provider auth status", error))?
+    .map_err(|error| provider_auth_task_error("get provider auth status", error))?;
+    let profile_after = runtime_state
+        .provider_account_profile_registry()
+        .get(&owner_for_changes, &provider, &account_profile)
+        .ok();
+    // Auth observations may update or remove the profile even on an error.
+    if profile_before != profile_after {
+        runtime_state
+            .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+            .await;
+        runtime_state.record_waiting_room_change();
+    }
+    response
 }
 
 async fn reconcile_running_terminal_provider_auth(
