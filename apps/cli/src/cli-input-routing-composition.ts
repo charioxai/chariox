@@ -34,7 +34,7 @@ type AnyFn = (...args: any[]) => any
 export type CliInputRoutingCompositionDeps = {
   handleKernelApprovalKey?: (event: import("./kernel-approval-controller.js").KernelApprovalKey) => boolean
   openKernelApprovals: () => void
-  kernelApprovalOwnsInput?: () => boolean
+  kernelApprovalOwnsInput?: (event?: { name: string }) => boolean
   client: any
   options: any
   appLogger: any
@@ -671,7 +671,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   }
 
   const stdinKeyController = createCliStdinKeyController({
-    kernelApprovalOwnsInput: () => deps.kernelApprovalOwnsInput?.() ?? false,
+    kernelApprovalOwnsInput: (event) => deps.kernelApprovalOwnsInput?.(event) ?? false,
     parseKeypress: (chunk, options) => parseKeypress(chunk, options),
     dialogOverlayOpen: deps.dialogOverlayOpen,
     closeActiveDialogOverlay: deps.closeActiveDialogOverlay,

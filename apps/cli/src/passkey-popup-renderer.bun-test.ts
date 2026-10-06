@@ -1,12 +1,14 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { BoxRenderable, TextRenderable, TextareaRenderable } from "@opentui/core"
+import { BoxRenderable, TextRenderable, TextareaRenderable, parseKeypress } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { PasskeyPrompt } from "@chariox/kernel-client/kernel-types"
 import { createPasskeyPopupController, type PasskeyPopupView } from "./passkey-popup-controller.js"
 import { createPasskeyPopupRenderer } from "./passkey-popup-renderer.js"
 import { routeRawPastes } from "./raw-paste-routing.js"
 import { theme } from "./theme.js"
+import { renderCliDialogOverlay } from "./cli-dialog-overlay.js"
+import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
 
 const prompt: PasskeyPrompt = {
   kind: "critical_approval", session_id: "session-1", session_alias: "Payments", interaction_id: "app_validation_op-1",
@@ -213,3 +215,79 @@ test("MP-11 kafix arrival preview shows the waiting request and requires deliber
     assert.doesNotMatch(frame, /Passkey:|Enter approves/)
   } finally { h.renderer.destroy() }
 })
+
+for (const kittyKeyboard of [false, true]) {
+  for (const underneath of ["hotkeys", "session-browser", "command-center"] as const) {
+    test(`MP-08/MP-11 preview Escape consumes both input paths over ${underneath} (kitty ${kittyKeyboard})`, async () => {
+      const h = await createTestRenderer({ width: 80, height: 24, useThread: false, kittyKeyboard })
+      let underlyingOpen = true
+      const underlying = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
+      h.renderer.root.add(underlying)
+      const closeUnderlying = () => { underlyingOpen = false; underlying.visible = false }
+      if (underneath === "command-center") {
+        underlying.add(new TextRenderable(h.renderer, { content: "command-center draft" }))
+      } else {
+        renderCliDialogOverlay({
+          overlayBox: underlying, renderer: h.renderer, dimensions: { width: 80, height: 24 },
+          mode: underneath, onDismiss: closeUnderlying, sessions: [], normalizeSessionBrowserIndex: () => 0,
+          terminalPairing: null, terminalPairingQrLines: [], hotkeySections: [],
+        })
+      }
+      const popupBox = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
+      h.renderer.root.add(popupBox)
+      const surface = createPasskeyPopupRenderer(h.renderer, noActions)
+      surface.assign(popupBox)
+      const popup = createPasskeyPopupController({
+        connected: () => true,
+        onView: (view) => surface.render(view, { width: 80, height: 24 }),
+        scroll() {}, notify() {}, onOpen() {}, onClose() {}, respond: async () => {},
+      })
+      const stdin = createCliStdinKeyController({
+        parseKeypress, kernelApprovalOwnsInput: popup.ownsInput,
+        dialogOverlayOpen: () => underneath === "hotkeys" && underlyingOpen,
+        closeActiveDialogOverlay: closeUnderlying,
+        handleSessionBrowserKey: (event) => {
+          if (underneath !== "session-browser" || !underlyingOpen) return false
+          if (event.name === "escape") closeUnderlying()
+          return true
+        },
+        promptFocused: () => true,
+        commandCenterOpen: () => underneath === "command-center" && underlyingOpen,
+        commandCenterQuery: () => "draft", clearCommandCenter: closeUnderlying,
+        focusedInteractionActive: () => false, handleFocusedInteractionKey: () => false,
+        handleQueuedPromptKey: () => false, requestExit() {}, toggleWorkspaceScreen() {},
+        isAttached: () => true, workflowScreenActive: () => false, cycleWorkflowCanvasNode() {},
+        handleWorkflowDetailPaneKey: () => false, cycleAgentFocus() {}, copyPromptSelection: () => false,
+        hasActiveTurnWork: () => false, requestPromptStop() {}, removePromptAttachmentsForEdit: () => false,
+        currentPromptText: () => "draft", pendingAttachmentCount: () => 0, removeLastPendingPromptAttachment() {},
+        handlePromptTurnNavigationKey: () => false, handleWaitingRoomKey: () => false,
+      })
+      const onData = (chunk: Buffer | string) => { stdin.handleData(chunk) }
+      // Match the CLI listener order. A bare Escape is delayed by OpenTUI,
+      // so raw stdin can receive those bytes before the keypress callback.
+      h.renderer.keyInput.on("keypress", popup.handleKey)
+      h.renderer.stdin.on("data", onData)
+      try {
+        popup.apply([prompt])
+        assert.equal(popup.view().attention, true)
+        assert.equal(popup.ownsInput(), false)
+        h.renderer.stdin.emit("data", Buffer.from(kittyKeyboard ? "\x1b[27u" : "\x1b"))
+        if (!kittyKeyboard) await new Promise((resolve) => setTimeout(resolve, 50))
+        assert.equal(popup.view().attention, false)
+        assert.equal(underlyingOpen, true, "dismissing the preview must not close the underlying dialog")
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        assert.equal(popup.ownsInput(), false, "consumption lasts only this input turn")
+        await h.renderOnce()
+        assert.match(h.captureCharFrame(), underneath === "hotkeys" ? /Hotkeys/ : underneath === "session-browser" ? /All Sessions/ : /command-center draft/)
+        h.renderer.stdin.emit("data", Buffer.from(kittyKeyboard ? "\x1b[27u" : "\x1b"))
+        if (!kittyKeyboard) await new Promise((resolve) => setTimeout(resolve, 50))
+        assert.equal(underlyingOpen, false, "the next Escape reaches the underlying dialog")
+      } finally {
+        h.renderer.stdin.off("data", onData)
+        h.renderer.keyInput.off("keypress", popup.handleKey)
+        popup.dispose()
+        h.renderer.destroy()
+      }
+    })
+  }
+}
