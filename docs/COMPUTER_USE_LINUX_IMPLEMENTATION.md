@@ -12,12 +12,20 @@ private session bus under its external profile state. The kernel must run as a
 normal Unix user. Xvfb disables TCP, allocates distinct authenticated local sockets and requires a fresh
 0600 Xauthority file; inherited login-display/bus authority is discarded.
 Native helper temporary files stay in the private runtime directory.
+MP-08 / MP-11: Xvfb alone uses a Bubblewrap mount of that owned directory at
+`/tmp`, because Xvfb hardcodes its socket and keymap scratch paths. Network and
+IPC remain shared for authenticated abstract X11 connections; provider launches
+are unchanged. Owned session and accessibility buses use distinct short abstract
+addresses with EXTERNAL authentication, avoiding global temporary directories
+and Unix socket path limits. The accessibility daemon inherits its own address
+before activating registry children.
 Chromium retains its renderer sandbox and CDP pipe and binds to that display.
 Shutdown uses positive PID/start-time identities for owned children and
 verified descendants, removes the private runtime, and retires input helpers.
 No real login screen is adopted.
 
-Host prerequisites are Xvfb, Openbox, dbus-daemon, setxkbmap, python3 with
+Host prerequisites are Bubblewrap, Xvfb, Openbox, dbus-daemon with the installed
+AT-SPI accessibility bus configuration, setxkbmap, python3 with
 python-xlib/Pillow/pyatspi, xclip, Tesseract and native Chromium. OCR reuses the
 slice text finder. Unicode input reuses the slice keyboard helper, including
 its accelerator-safe overlay fence; a portable Xlib backend supports the host
