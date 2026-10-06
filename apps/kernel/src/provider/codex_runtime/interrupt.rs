@@ -24,7 +24,9 @@ pub fn abort_codex_turn(
     let client = CodexClient::new(provider_run_id, state.endpoint())?;
     let Some(submitted_turn_id) = state.active_turn_id.clone() else {
         return client.thread_background_terminals_clean(
-            &mut state.socket, &mut state.next_request_id, &thread_id,
+            &mut state.socket,
+            &mut state.next_request_id,
+            &thread_id,
             &mut state.buffered_notifications,
         );
     };
@@ -63,7 +65,9 @@ pub fn abort_codex_turn(
                 // running terminal in this thread, including prior turns.
                 // Keep cancellation owned until its ACK; never hide failure.
                 client.thread_background_terminals_clean(
-                    &mut state.socket, &mut state.next_request_id, &thread_id,
+                    &mut state.socket,
+                    &mut state.next_request_id,
+                    &thread_id,
                     &mut state.buffered_notifications,
                 )?;
                 // The cleanup RPC can buffer a successor start too. Apply the

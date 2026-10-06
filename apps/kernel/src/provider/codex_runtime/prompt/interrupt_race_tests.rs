@@ -47,7 +47,11 @@ fn interrupt_fixture_with_event(
             let method = request["method"].as_str().unwrap();
             if method == "thread/backgroundTerminals/clean" {
                 assert_eq!(request["params"], json!({"threadId":"thread"}));
-                socket.send(Message::Text(json!({"id":request["id"],"result":{}}).to_string().into())).unwrap();
+                socket
+                    .send(Message::Text(
+                        json!({"id":request["id"],"result":{}}).to_string().into(),
+                    ))
+                    .unwrap();
                 break;
             }
             methods.push(method.to_string());

@@ -357,7 +357,13 @@ fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str) {
         assert_eq!(applied_context, "context before cancellation");
         assert_eq!(
             methods,
-            ["thread/start", "turn/start", "turn/interrupt", "thread/backgroundTerminals/clean", "turn/start"]
+            [
+                "thread/start",
+                "turn/start",
+                "turn/interrupt",
+                "thread/backgroundTerminals/clean",
+                "turn/start"
+            ]
         );
         return;
     }

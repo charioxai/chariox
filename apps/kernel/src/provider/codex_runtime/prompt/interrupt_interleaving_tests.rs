@@ -83,7 +83,11 @@ fn generated_interrupt_fixture(case: RaceCase) {
             let request: Value = serde_json::from_str(&raw).unwrap();
             if request["method"] == "thread/backgroundTerminals/clean" {
                 assert_eq!(request["params"], json!({"threadId":"thread"}));
-                socket.send(Message::Text(json!({"id":request["id"],"result":{}}).to_string().into())).unwrap();
+                socket
+                    .send(Message::Text(
+                        json!({"id":request["id"],"result":{}}).to_string().into(),
+                    ))
+                    .unwrap();
                 break;
             }
             calls += 1;

@@ -339,11 +339,15 @@ impl CodexClient {
         buffered_notifications: &mut Vec<CodexNotification>,
     ) -> Result<(), DaemonError> {
         let _: Value = self.send_request_buffering_notifications(
-            socket, next_request_id, "thread/backgroundTerminals/clean",
-            json!({ "threadId": thread_id }), buffered_notifications,
+            socket,
+            next_request_id,
+            "thread/backgroundTerminals/clean",
+            json!({ "threadId": thread_id }),
+            buffered_notifications,
         )?;
         crate::logging::debug_with_fields(
-            "daemon.provider.codex", "codex thread terminals cleaned trace",
+            "daemon.provider.codex",
+            "codex thread terminals cleaned trace",
             json!({"provider_run_id":self.provider_run_id}),
         );
         Ok(())
