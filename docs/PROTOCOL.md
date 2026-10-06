@@ -11,7 +11,7 @@ private resume payloads, launch manifests and free-form diagnostics. Native TUI
 structured endpoints are projected only when the URL has no userinfo, query or
 fragment. Internal persistence and authenticated worker launch/projection
 contracts retain `RuntimeProviderRun`; no relay-peer shape changes in this
-revision (peer protocol remains 70 on this branch).
+revision (peer protocol remains 73 on this branch).
 
 The focused synthetic protocol drill is
 `apps/cli/scripts/public-provider-run-protocol-drill.mjs`. It runs the Rust DTO,
@@ -405,6 +405,8 @@ requires the caller's direct spawned child in the same room; self, peers,
 parents and grandchildren are denied. Workflow mutations require the caller
 or its direct child as immutable object creator. A peer workflow invocation
 creates a separately caller-owned run, without changing definition ownership.
+Running a peer's saved source may create a caller-owned definition/run; it
+does not rewrite the peer artifact's provenance or application history.
 PR1 agent-authored workflow declarations cannot provision extension grants;
 owner-admitted capability paths remain separate until the capability-grants PR.
 Current room, run/lease and creator fences apply after waits before effects;
@@ -415,7 +417,10 @@ persists `room.obligation.registered` with actor/room/run/prompt, kind and
 resource reference. A dispatch receipt records accepted resource identity or
 a proven pre-admission rejection. Receipt-write failure after admission must
 preserve dispatch and return the obligation/resource IDs so callers inspect
-existing work before retrying. Ambiguous post-commit failures retain intent;
+existing work before retrying. The receipt transaction finishes before newly
+admitted provider dispatches are spawned, including when the receipt fails,
+so a failing receipt cannot batch-roll back those startup writes.
+Ambiguous post-commit failures retain intent;
 PR1 does not add automatic replay, settlement, yield or recovery scheduling.
 Those lifecycle semantics belong to PR2.
 
