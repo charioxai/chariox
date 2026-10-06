@@ -4,8 +4,9 @@ Round 2 is active and remains **not accepted**. The coordinator allocated
 local daemon448 / relay peer91 and identified the product-linked Codex profile.
 The numeric accounting drill passes on the real relay/kernel/TUI/Codex path.
 Matching USD remains blocked by missing authoritative pricing inputs. The
-SWE smoke scored10/10 resolved with no evaluator errors; the full50 campaign
-is next. No scored full result is claimed yet.
+SWE smoke scored10/10 and the fresh full50 scored44/50 resolved (88%), both
+with zero evaluator errors and empty patches. Terminal-Bench has zero scored
+tasks: its container provider placement still needs coordinator setup.
 
 ## MP-08 / MP-10 / MP-11 — round 2 implementation and provenance
 
@@ -76,7 +77,8 @@ instance checkout. `swe_campaign.py` preserves the exact denominator, serializes
 tasks, binds campaign provenance, checks resources and stops on fresh quota or
 incomplete cleanup. The first interrupted task attempt is retained with its
 solver edits, unscored; it was not reused as a clean base. A subsequent clean-base
-admission failure is retained separately. Valid smoke tasks use fresh checkouts.
+admission failure is retained separately. Valid smoke and full tasks use separate fresh checkouts; no smoke outcomes
+are reused in the full denominator.
 Claude/OpenCode await the coordinator's Mac home to builder worker grant.
 No source test, partial task set or unavailable accounting closes an MP item.
 
@@ -128,6 +130,49 @@ is a local smoke reproduction, not a full score or MP acceptance. The actual
 CSV/summary/plot is generated from frozen campaign and official scorer receipts;
 missing USD produces no cost/accuracy point.
 The historical0-run diagnostic CSV/plot is not a zero-cost/zero-accuracy result.
+
+MP-08 / MP-10: the full SWE Verified Mini baseline completed50/50 independent
+solver turns and officially resolved44/50 (88%), with6 unresolved,0 scorer
+errors,0 empty patches and0 unstopped task containers. The scorer guard then removed only the50 exact
+newly pulled, unused task image tags; no shared cache cleanup ran. The unchanged official
+v4.1.0 evaluator run is
+`chariox-evals-full-2c6c95cdf4534b82b62bc50470886fa2`. Every task used frozen
+product source82a444a77 and kernel SHA f25b48a1...; subsequent allocation-guard
+commits are not relabelled as that runtime. All50 real TUI usage reports match
+the final native Codex counters and all runtime cleanup completed. Solver wall
+sum is4950.44s, mean99.01s, median94.80s and nearest-rank p95=191.08s. No task
+has an authoritative USD quote. This is a local unpriced Codex baseline,
+not ordinary/managed/provider parity or matching-dollar acceptance.
+
+The six unresolved tasks remain in the denominator. Post-scoring analysis
+identifies implementation defects: django-12193 fixes the array caller but
+leaves CheckboxInput mutating attrs; django-12273 leaves saved inheritance
+links when copying with pk=None; sphinx-7590 encodes incorrect C++ literal IDs;
+sphinx-7748 adds a singleton signature continuation; sphinx-7985 emits an extra
+existing-file link result; sphinx-11510 adds include-read rather than extending
+the expected source-read behavior. Official failed-test IDs, patch hashes and
+test-log hashes are retained externally. No scored patch was retried after
+seeing verifier results.
+
+MP-11: a wider allocation audit corrected stale current-version435 assertions,
+publication defaults and the public-provider drill stamp to448. Fail-first
+Node/CLI/publication checks were retained. Focused10 Rust guards,3 actual
+public-provider boundary checks,14 Node guards,5 CLI guards and4 boundary-script
+checks pass. Historical released snapshots and clients' unchanged minimum
+versions retain their original identities. These checks establish their focused
+security/protocol scope, not the complete narrowed MP-11 parity matrix.
+
+MP-08 / MP-10 / MP-11: Terminal task environment inventory exposed a native
+loader blocker before any scored task: the host-built kernel requires
+GLIBC2.38/2.39 in Bookworm. Building the same frozen82a source in the project's
+pinned Rust1.88 Bookworm image produced a kernel with maximum GLIBC2.34;
+the actual native protocol probe changes from RED(exit1) to GREEN(exit0,448).
+It still fails Bullseye(GLIBC2.31). A Bullseye-compatible build is being prepared
+without changing official task images. The bundled provider zsh also has a
+newer libc requirement; its actual task-path use is not established. These are
+component admission probes, not Terminal-Bench provider/task acceptance.
+
+
 
 All state, logs, screenshots and output stay outside source repositories. Signal
 helpers reject system/invalid PIDs and settle only verified owned descendants.

@@ -2,7 +2,10 @@
 
 This is a diagnostic pilot area. Accounting history/CLI uses the coordinator allocation
 local448 / peer91 and the approved product-linked `acct-686` mapping. Live
-acceptance and scored baselines are recorded separately. No full benchmark score is claimed.
+acceptance and scored baselines are recorded separately. The unpriced Codex SWE
+baseline scored 10/10 smoke and 44/50 full (88%) with the unchanged official
+evaluator. Terminal-Bench remains blocked on provider placement; no score is
+claimed for it. See the evidence scope in `docs/EVALS_PHASE1.md`.
 
 `inputs.lock.json` freezes the exact 89 Terminal-Bench 2.0 and 50 HAL Verified
 Mini tasks plus official harness revisions. Use `PYTHONDONTWRITEBYTECODE=1` and
