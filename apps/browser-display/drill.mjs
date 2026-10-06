@@ -139,7 +139,7 @@ try {
  const port=await until(async()=>{checkChild(viewer,'viewer');try{return Number((await readFile(path.join(viewerHome,'DevToolsActivePort'),'utf8')).split('\n')[0])}catch{return null}},'viewer');
  browser=await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
  const page=await browser.contexts()[0].newPage();page.on('pageerror',()=>errors.push(Error('MD-DISPLAY browser callback failure')));await page.goto(`${origin}/harness.html`);await page.waitForFunction(()=>window.MDDisplay);
- await page.evaluate(async({ready,bitrate,pngOnly,creditWindow,requestedCodec,dpr})=>{
+ await page.evaluate(async({ready,bitrate,pngOnly,creditWindow,requestedCodec,dpr,defaultDpr})=>{
   if(pngOnly)globalThis.VideoDecoder=undefined;
   const api=await import('/browser-relay-crypto.mjs');
   const sender=await api.createRelayKeypair();
@@ -182,14 +182,21 @@ try {
   mdTransport.subscribeDisplay=binding=>control({kind:'client_subscribe',subscription_id:binding.subscription_id,target:{daemon_id:bootstrap.daemon_id},session_id:binding.subscription_id,attachment_id:String(binding.generation),client_public_key:sender.publicKeyBase64,subscription_scope:'kernel_browser_display',resume_from_event_id:null});
   mdTransport.unsubscribeDisplay=binding=>control({kind:'client_unsubscribe',subscription_id:binding.subscription_id,client_public_key:sender.publicKeyBase64});
   const motionSamples=new (await import('/motion-samples.mjs')).MotionSamples();
-  window.mdStream=await MDDisplay.attachBrowserDisplay(MDDisplay.canvas,mdTransport,{tab_id:ready.tab_id,generation:ready.generation},{bitrate,creditWindow,deviceScaleFactor:dpr,codec:requestedCodec,onTiming:timing,onPresented:frame=>{
+  window.mdStream=await MDDisplay.attachBrowserDisplay(MDDisplay.canvas,mdTransport,{tab_id:ready.tab_id,generation:ready.generation},{bitrate,creditWindow,...(defaultDpr?{}:{deviceScaleFactor:dpr}),codec:requestedCodec,onTiming:timing,onPresented:frame=>{
     const sample={sequence:frame.sequence,kind:frame.kind,drawn_ms:stamp(),content_changed:motionSamples.sample(MDDisplay.canvas)};window.mdPresentation=sample;mdPresentations.push(sample);
     requestAnimationFrame(()=>{
       if(window.mdProbeLeft!==undefined){const c=MDDisplay.canvas.getContext('2d');let n=0;for(let i=0;i<5;i++){const p=c.getImageData(mdProbeLeft+4*dpr+i*8*dpr,28*dpr,1,1).data;if(p[0]>128)n|=1<<i}sample.step=n;}
       sample.presented_ms=stamp();
     });
   }});
- },{ready,bitrate:receipt.target_encrypted_bitrate,pngOnly:process.env.MD_PNG_ONLY==='1',creditWindow:Number(process.env.MD_CREDIT_WINDOW||4),requestedCodec:process.env.MD_CODEC||null,dpr:geometry.dpr});
+ },{ready,bitrate:receipt.target_encrypted_bitrate,pngOnly:process.env.MD_PNG_ONLY==='1',creditWindow:Number(process.env.MD_CREDIT_WINDOW||4),requestedCodec:process.env.MD_CODEC||null,dpr:geometry.dpr,defaultDpr:process.env.MD_DEFAULT_DPR==='1'});
+ receipt.decode_support=await page.evaluate(async()=>Object.fromEntries(await Promise.all(['avc1.420033','vp8'].map(async codec=>[codec,Boolean((await VideoDecoder.isConfigSupported({codec})).supported)]))));
+ receipt.default_dpr_negotiation=process.env.MD_DEFAULT_DPR==='1';
+ if(receipt.default_dpr_negotiation&&await page.evaluate(()=>mdStream.binding.device_scale_factor)!==1)throw Error('MP-08: #893 default DPR is unsupported');
+ if(process.env.MD_GEOMETRY_PROBE==='1'){
+  receipt.unsupported_dpr_rejected=await page.evaluate(async ready=>{try{const reply=await mdTransport.request({KernelBrowser:{command:{op:'display_subscribe',tab_id:ready.tab_id,generation:ready.generation,codecs:['avc1.420033','png','chariox-video-dependencies-v1','chariox-stripes-v1'],bitrate:8000000,device_scale_factor:2}}});return Boolean(reply.Error)}catch{return true}},ready);
+  if(!receipt.unsupported_dpr_rejected)throw Error('MP-08: #893 admitted unsupported 1080p DPR2');
+ }
  receipt.codec=await page.evaluate(()=>mdStream.binding.codec);receipt.codec_provenance='kernel negotiated binding; delivered video codecs retained in frame metadata';
  const bootstrapStarted=performance.now();
  const first=await until(()=>page.evaluate(()=>mdStream.next()),'first asynchronous display frame');receipt.bootstrap={kind:first.kind,sequence:first.sequence,duration_ms:performance.now()-bootstrapStarted};
