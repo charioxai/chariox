@@ -138,12 +138,13 @@ try {
   const oldRunIds=new Set((await stateUntil(()=>true)).room_workflows.workflows[0].runs.map(run=>run.run_id))
   await key('Return the required workflow JSON envelope with summary done and output.message RELOST_WORKFLOW_OK.')
   await key('\r')
-  await stateUntil(s=>s.room_workflows.workflows[0].runs.some(run=>!oldRunIds.has(run.run_id)))
+  const admitted=await stateUntil(s=>s.room_workflows.workflows[0].runs.some(run=>!oldRunIds.has(run.run_id)))
+  const completionRunId=admitted.room_workflows.workflows[0].runs.find(run=>!oldRunIds.has(run.run_id)).run_id
   // Use a real provider completion and the terminal's real agent panes as proof.
   await key('\t')
   const settled=await stateUntil(s=>s.room_workflows.workflows[0].running_count===0,180000)
-  const finalRun=settled.room_workflows.workflows[0].runs.find(run=>!oldRunIds.has(run.run_id))
-  receipt.finalRun={runId:finalRun.run_id,status:finalRun.status}
+  const finalRun=settled.session.workflow_runs.find(run=>run.id===completionRunId)
+  receipt.finalRun={runId:finalRun.id,status:finalRun.status}
   assert.equal(finalRun.status.toLowerCase(),'completed','MP-08 workflow must complete successfully, not merely stop')
   const history=unwrap(await client.send(requests.getSessionHistoryOutlineRequest(sessionId,[agent.id],4)), 'SessionHistoryOutline')
   const hasMarker=value=>{
