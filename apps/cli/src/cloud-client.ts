@@ -61,7 +61,12 @@ export class CloudClient {
     await show({ verificationUrl: started.verificationUrl, userCode: started.userCode })
     let interval = started.intervalSeconds
     while (Date.now() < Date.parse(started.expiresAt)) {
-      const result = await cloudClientRequest<LoginResult>(apiUrl, "/auth/device/poll", { body: { deviceCode: started.deviceCode } })
+      const result = await cloudClientRequest<LoginResult>(apiUrl, "/auth/device/poll", { body: { deviceCode: started.deviceCode, supportsAccessDenied: true } }).catch((error: unknown) => {
+        if (error instanceof CloudClientAuthError && error.legacyDevicePollSchemaRejected) {
+          return cloudClientRequest<LoginResult>(apiUrl, "/auth/device/poll", { body: { deviceCode: started.deviceCode } })
+        }
+        throw error
+      })
       if (result.status === "approved") {
         if (!result.profile || result.profile.enrollmentKind !== "CLIENT"
           || result.profile.publicKeyThumbprint !== identity.publicKeyThumbprint || result.profile.clientId !== clientId

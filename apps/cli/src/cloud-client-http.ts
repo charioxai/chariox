@@ -1,5 +1,5 @@
 export class CloudClientAuthError extends Error {
-  constructor(readonly code: string) { super(code === "profile_conflict" ? "Cloud profile conflict (profile_conflict); use a separate CHARIOX_HOME" : `Cloud client authentication failed (${code})`) }
+  constructor(readonly code: string, readonly legacyDevicePollSchemaRejected = false) { super(code === "profile_conflict" ? "Cloud profile conflict (profile_conflict); use a separate CHARIOX_HOME" : `Cloud client authentication failed (${code})`) }
 }
 
 export async function cloudClientRequest<T>(apiUrl: string, pathname: string, options: { body?: unknown; accessToken?: string } = {}): Promise<T> {
@@ -11,9 +11,14 @@ export async function cloudClientRequest<T>(apiUrl: string, pathname: string, op
     ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }), signal: AbortSignal.timeout(20_000),
   })
   if (!response.ok) {
-    const error = await response.json().catch(() => null) as { error?: { code?: string } } | null
+    const error = await response.json().catch(() => null) as { error?: { code?: string; message?: string } } | null
     const code = error?.error?.code
-    throw new CloudClientAuthError(code && /^[a-z_]{1,64}$/.test(code) ? code : `http_${response.status}`)
+    // MP-08/MP-11: keep raw error bodies private while recognizing #898's
+    // exact legacy device-poll schema rejection for one capability retry.
+    const legacyDevicePollSchemaRejected = pathname === "/auth/device/poll"
+      && response.status === 400 && code === "invalid_request"
+      && error?.error?.message === "Request validation failed"
+    throw new CloudClientAuthError(code && /^[a-z_]{1,64}$/.test(code) ? code : `http_${response.status}`, legacyDevicePollSchemaRejected)
   }
   return (response.status === 204 ? undefined : await response.json()) as T
 }
