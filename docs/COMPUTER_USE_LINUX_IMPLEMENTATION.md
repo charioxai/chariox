@@ -132,8 +132,12 @@ local and remote real TUIs: Unicode save with independent UTF-8 bytes, AT-SPI
 action and stale refusal, pixel-canvas OCR, human takeover and grant revoke.
 An exact-source slice image also supports the existing Room Unicode, OCR and
 human takeover flow through real provider runs. Full slice cells remain blocked
-on the Room AT-SPI extension and a defined per-agent revoke contract. Claude
-cells need an owner-linked profile.
+on the Room AT-SPI extension and a defined per-agent revoke contract.
+MP-10: an existing product-linked Claude profile is authenticated, but its
+real host provider turns are blocked by account quota. Claude slice cells
+also require administrator-provisioned access to the shared Docker admission
+locks and the supported managed credential launch path. These prerequisites
+must be resolved without replacing live locks or manually transferring credentials.
 
 These do not establish optimized display transport, Web input/IME, type-to-echo
 performance, OSWorld or MP-10 fresh-machine ordinary/managed Path-1 parity.
