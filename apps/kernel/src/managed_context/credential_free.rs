@@ -48,7 +48,7 @@ pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError
             )
         })
         || bytes
-            .windows(15)
+            .windows(b"PRIVATE KEY-----".len())
             .any(|window| window == b"PRIVATE KEY-----")
     {
         return Err(refused());
@@ -340,7 +340,7 @@ mod tests {
                 br#"{"ciphertext":"synthetic-vault-canary","kdf":{}}"#,
             ),
         ] {
-            assert!(validate_bytes(path, bytes).is_err());
+            assert!(validate_bytes(path, bytes).is_err(), "fixture path {path}");
         }
         assert!(validate_bytes("README.md", b"ordinary project instructions").is_ok());
         assert!(validate_bytes("origin-url", b"ssh://git@example.test/project.git").is_ok());
