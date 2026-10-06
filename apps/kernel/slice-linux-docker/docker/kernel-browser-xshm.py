@@ -114,14 +114,16 @@ try:
         if not dirty or time.monotonic()-last<.016:continue
         if pool and not free_slots:
             select.select([sys.stdin.fileno()],[],[],.016);continue
-        at=time.time()*1000
+        # MP-08/MP-10: pace capture starts, not completion of readback/hash.
+        # Adding their cost to16ms misses the next60Hz damage notification.
+        last=time.monotonic();at=time.time()*1000
         if pid_of(d,window)!=owner or dims(d,window)!=(ww,hh):raise ValueError('window fence')
         stage='get_image'
         get_image_ms=time.time()*1000
         if not get_image(d,pixmap,image,0,offset,0xffffffff):raise ValueError('readback')
         image_ready_ms=time.time()*1000
         # XShm avoids Xlib pixel IPC. One bounded copy crosses the helper pipe.
-        raw=c.string_at(shm.shmaddr,size);readback_ms=time.time()*1000;sig=fingerprint.update(raw);fingerprint_ms=time.time()*1000;last=time.monotonic();dirty=False
+        raw=c.string_at(shm.shmaddr,size);readback_ms=time.time()*1000;sig=fingerprint.update(raw);fingerprint_ms=time.time()*1000;dirty=False
         if not fingerprint.changed_bands:continue
         signature=sig;serial+=1
         # Full native readback/fingerprint remains authoritative. Avoid moving
