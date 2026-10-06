@@ -1,7 +1,8 @@
 # BYOM over SSH (MP-07 / MP-08 / MP-11)
 
-PR1 reviewed base: OSS ownership `68b1f48d4` (local 439, relay 70);
-BYOM adds local 444, with no relay shape change. Owner request 2026-10-05 adds an owner-managed machine, not a
+PR1 coordinator-requested base: OSS ownership `f61b0fab5` on main `e325afa58`
+(local 439, relay 73);
+BYOM retains local 444 and inherits relay 73, with no BYOM relay shape change. Owner request 2026-10-05 adds an owner-managed machine, not a
 Cloud-disposable environment. The ordinary runtime remains the authority.
 MP-11 follows the owner's narrowed behavioural/security-anchor scope.
 
@@ -140,3 +141,12 @@ schema and coordinator commands.
 Cloud ticket redemption uses the strict #302 ticket variant of `/auth/device/poll`: ticket, machineId, kernelId, publicKeyThumbprint, and an optional string kernelAlias. Account IDs and user IDs are separate; owner admission compares the returned userId to the source owner's userId, with the normal shared kernel/key/machine binding checks. An absent alias is omitted.
 
 A ticket-issue failure cannot reserve an install. Failed deployment and corrected retries reconcile the source selection only after an SSH inspection positively proves no install root or loaded/on-disk service exists. Unknown access failures, edited units and published installs remain protected. Remove can clear a proven absent selection. These helper messages are internal SSH installer inputs, not new local/relay protocol shapes.
+
+## MP-07 / MP-08 / MP-11 ownership rebase
+
+The strict startup parser admits the private owner-managed stdin enrollment and
+readiness commands before ordinary runtime initialization. Extra arguments are
+refused. The inherited Browser/Computer/public-provider guards bind local 444
+and retain relay 73; wire hashes remain unchanged except the aggregate snapshot
+that includes the local version. Local source/mock drills do not establish live
+Cloud, signed distribution, service-manager or fresh-machine acceptance.

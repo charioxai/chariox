@@ -3242,5 +3242,5 @@ with the same ID/release/port reuses the enrolled identity; another release
 requires an explicit later upgrade. Remove stops/uninstalls the owned service
 and release tree while retaining private kernel state and directory identity.
 No VM provisioning/deletion or runtime proxy is involved. Relay peer protocol
-remains 70; native/web minimums are unchanged for existing behavior. The SSH
+inherits 73 from the ownership base; native/web minimums are unchanged for existing behavior. The SSH
 commands themselves require a local-444-capable kernel/client pair.
