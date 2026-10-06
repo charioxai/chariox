@@ -13,6 +13,33 @@ s=importlib.util.module_from_spec(spec);spec.loader.exec_module(s)
 region=dict(x=20,y=20,width=40,height=40)
 
 class ProtectionTests(unittest.TestCase):
+    def test_offscreen_and_partial_intersections_in_input_and_decoded_guards(self):
+        masks = [dict(x=-100,y=0,width=20,height=20),
+                 dict(x=140,y=0,width=20,height=20),
+                 dict(x=0,y=-100,width=20,height=20),
+                 dict(x=0,y=140,width=20,height=20)]
+        pixels = bytearray([255]) * (128*128*4)
+        # Fully offscreen boxes have no intersection, including negative ends.
+        s._protection.black_input(pixels,128,128,masks)
+        rows=s.StripeEncoder().encode(pixels,128,128,8000000,True,'avc1.420033',masks)
+        self.assertEqual(len(rows),8)
+        for row in rows:
+            guard=s._protection.DecodedMaskGuard(row['codec'])
+            self.assertTrue(guard.safe(base64.b64decode(row['data_base64']),masks,128,row['height'],y=row['y']))
+        partial = dict(x=-10,y=30,width=30,height=30)
+        for y in range(30,60):
+            for x in range(20):pixels[(y*128+x)*4:(y*128+x)*4+3]=bytes(3)
+        s._protection.black_input(pixels,128,128,[partial])
+        # Intersection is still enforced, both full-frame and per stripe.
+        white=s.StripeEncoder().encode(bytes([255])*128*128*4,128,128,8000000,True)
+        self.assertFalse(s._protection.DecodedMaskGuard('avc1.420033').safe(
+            base64.b64decode(white[2]['data_base64']),[partial],128,white[2]['height'],y=white[2]['y']))
+        with self.assertRaisesRegex(ValueError,'unmasked'):
+            s.StripeEncoder().encode(bytes([255])*128*128*4,128,128,8000000,True,'avc1.420033',[partial])
+        pixels[(40*128+10)*4]=255
+        with self.assertRaisesRegex(ValueError,'unmasked'):
+            s._protection.black_input(pixels,128,128,[partial])
+
     def test_unmasked_input_never_reaches_any_codec(self):
         e=s.StripeEncoder()
         def forbidden(*args):raise AssertionError('codec saw unmasked input')

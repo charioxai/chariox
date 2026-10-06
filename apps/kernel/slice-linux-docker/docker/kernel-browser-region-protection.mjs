@@ -1,5 +1,5 @@
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
-import {maskPng,opaqueFrame,cropProtectedPng,displayMaskRegions} from './kernel-browser-pixels.mjs';
+import {maskPng,opaqueFrame,cropProtectedPng,displayMaskRegions,displayFullMaskRegions} from './kernel-browser-pixels.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 // Screenshot-region masks from trusted CDP metadata, never page JavaScript.
 async function regions(connection, sessionId, mirrorStructured = false) {
@@ -116,5 +116,5 @@ export async function captureProtectedDisplay(host,tab,clip=null,optimizeForSpee
   const cropped=cropProtectedPng(frame.data_base64,clip,scale);
   const full=!clip||clip.width===geometry.width&&clip.height===geometry.height;
   const regions=(frame[displayMaskRegions]??[]).map(r=>({x:(r.x-(full?0:clip.x*scale))*(clip?.scale??1),y:(r.y-(full?0:clip.y*scale))*(clip?.scale??1),width:r.width*(clip?.scale??1),height:r.height*(clip?.scale??1)}));
-  return {...frame,...cropped,[displayMaskRegions]:regions};
+  return {...frame,...cropped,[displayMaskRegions]:regions,[displayFullMaskRegions]:frame[displayMaskRegions]};
 }

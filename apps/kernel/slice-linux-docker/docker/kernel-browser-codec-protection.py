@@ -16,8 +16,10 @@ def bounds(regions, width, height):
         x, y, w, h = values
         if w < 0 or h < 0:
             raise ValueError('mask geometry unavailable')
-        result.append((max(0, math.floor(x)), max(0, math.floor(y)),
-                       min(width, math.ceil(x + w)), min(height, math.ceil(y + h))))
+        left, top = min(width, max(0, math.floor(x))), min(height, max(0, math.floor(y)))
+        right, bottom = min(width, max(0, math.ceil(x + w))), min(height, max(0, math.ceil(y + h)))
+        if left < right and top < bottom:
+            result.append((left, top, right, bottom))
     return result
 
 

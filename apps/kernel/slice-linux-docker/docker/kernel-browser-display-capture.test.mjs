@@ -1,7 +1,51 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DisplayCapture, changedClip } from './kernel-browser-display-capture.mjs';
-import { encodePng } from './kernel-browser-pixels.mjs';
+import { encodePng, displayMaskRegions } from './kernel-browser-pixels.mjs';
+import { captureProtectedDisplay } from './kernel-browser-region-protection.mjs';
+import { DisplayStream, PortableEncoder } from './kernel-browser-display.mjs';
+import { randomBytes } from 'node:crypto';
+
+test('MP-11: protected crop over patch budget keeps all full-raster masks through real encoder',async()=>{
+ const tab={tab_id:'t',document_id:'d',input_epoch:0},policy={values:[]};
+ const masks=[{x:900,y:200,width:24,height:24},{x:40,y:60,width:32,height:32}];
+ const pixels=Buffer.alloc(1280*800*4,255);
+ const host={generation:1,scales:new Map([['t',1]]),screenshot:async()=>({...tab,generation:1,protected_regions:masks,data_base64:encodePng(1280,800,pixels)})};
+ const capture=new DisplayCapture(clip=>captureProtectedDisplay(host,tab,clip),1);
+ const encoder=new PortableEncoder();let encodedMasks;
+ const encode=encoder.encode.bind(encoder);encoder.encode=(...args)=>{encodedMasks=args[4];return encode(...args)};
+ let now=0;
+ const stream=new DisplayStream({subscription_id:'s',tab_id:'t',document_id:'d',device_scale_factor:1,bitrate:128000,codec:'png',dependencies:true},{encoder,now:()=>now,wait:async ms=>{now+=ms}});
+ try{
+  const initial=await capture.next(tab,policy,false);
+  await stream.frame(initial,'d',0);
+  const noise=randomBytes(112*112*4);
+  for(let row=0;row<112;row++)noise.copy(pixels,((184+row)*1280+880)*4,row*112*4,(row+1)*112*4);
+  tab.input_epoch++;
+  const merged=await capture.next(tab,policy,true);
+  assert(merged.dirty_clip,'must exercise crop merge');
+  stream.codec='avc1.420033';
+  const frame=await stream.frame(merged,'d',stream.sequence);
+  assert(encodedMasks,'patch must exceed budget and reach the real full-frame encoder');
+  assert.deepEqual(encodedMasks,masks,'include protected fields outside crop');
+  assert.equal(encoder.failure,null);
+  assert(['video','png'].includes(frame.kind),'decoded guard may choose protected exact fallback');
+ }finally{await stream.close()}
+});
+
+test('MP-11: real full-frame codec ignores offscreen masks and guards partial intersections',async()=>{
+ const encoder=new PortableEncoder(),pixels=Buffer.alloc(128*128*4,255);
+ const masks=[{x:-100,y:0,width:20,height:20},{x:140,y:0,width:20,height:20},
+  {x:0,y:-100,width:20,height:20},{x:0,y:140,width:20,height:20},
+  {x:-10,y:32,width:42,height:32}];
+ for(let y=32;y<64;y++)pixels.fill(Buffer.from([0,0,0,255]),y*128*4,(y*128+32)*4);
+ try{
+  const frame=await encoder.encode(encodePng(128,128,pixels),8000000,true,'avc1.420033',masks);
+  assert.equal(encoder.failure,null);assert(frame.dropped||frame.key);
+  pixels[(40*128+10)*4]=255;
+  await assert.rejects(encoder.encode(encodePng(128,128,pixels),8000000,true,'avc1.420033',masks),/encoder unavailable/);
+ }finally{await encoder.close()}
+});
 test('MD-DISPLAY crop pixels stay native; unchanged preview verifies missed fine detail', async () => {
   let pixels=Buffer.alloc(1280*800*4,255), thumbnail=Buffer.alloc(160*100*4,255);
   const calls=[], tab={tab_id:'t',document_id:'d'}, policy={};

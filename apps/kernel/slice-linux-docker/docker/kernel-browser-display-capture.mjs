@@ -3,7 +3,7 @@ import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // the kernel, and never supplies displayed pixels. Changed rectangles are read
 // at native DPR. An unchanged thumbnail ALWAYS triggers full protected readback
 // to verify high-frequency detail it can miss. Large changes use full capture.
-import { decodePng, encodePng } from './kernel-browser-pixels.mjs';
+import { decodePng, encodePng, displayMaskRegions, displayFullMaskRegions } from './kernel-browser-pixels.mjs';
 import { timestamp } from './kernel-browser-timing.mjs';
 const factor = 1 / 8;
 export function changedClip(before, after, scale) {
@@ -85,7 +85,11 @@ export class DisplayCapture {
       for (let row = 0; row < crop.height; row++) crop.pixels.copy(pixels.pixels,
         ((clip.y*this.scale+row)*pixels.width+clip.x*this.scale)*4,row*crop.width*4,(row+1)*crop.width*4);
       this.timing('crop_decode_merge',at);
+      // The merged raster is full size. Crop-relative masks cannot bind its
+      // encoder input/output; retain fields outside the crop as well.
+      if(source[displayMaskRegions]&&!source[displayFullMaskRegions])throw Error('MP-11: full raster masks unavailable');
       source = { ...source, pixels, dirty_clip:clip, full_size_hint:this.fullSize,
+        [displayMaskRegions]:source[displayFullMaskRegions]??[],
         data_base64:() => encodePng(pixels.width,pixels.height,pixels.pixels) };
     } else {
       source = await capture(null); at = timestamp();

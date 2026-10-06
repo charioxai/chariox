@@ -5,6 +5,9 @@ import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 import { deflateSync, inflateSync, crc32 } from "node:zlib";
 import { locateBrowserRegions } from "./browser-observation-regions.mjs";
 
+// MP-11: preserve the complete viewport policy across protected crop merges.
+export const displayFullMaskRegions = Symbol('displayFullMaskRegions');
+
 const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const crcTable = Uint32Array.from({ length: 256 }, (_, byte) => {
   let value = byte;
