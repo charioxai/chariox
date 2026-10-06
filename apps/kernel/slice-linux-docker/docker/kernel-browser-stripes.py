@@ -46,7 +46,7 @@ class StripeEncoder:
                 codec.pix_fmt='yuv420p';codec.time_base=Fraction(1,60);codec.framerate=Fraction(60,1)
                 codec.bit_rate=max(16000,int(bitrate*.45*h/height));codec.thread_count=1
                 if backend=='libx264':
-                    codec.options={'preset':'ultrafast','tune':'zerolatency','profile':'baseline','level':'5.1','crf':'23','g':'120','bf':'0','forced-idr':'1','x264-params':'sync-lookahead=0:repeat-headers=1:annexb=1:rc-lookahead=0'}
+                    codec.options={'preset':'ultrafast','tune':'zerolatency','profile':'baseline','level':'5.1','crf':'23','g':'120','bf':'0','forced-idr':'1','x264-params':f'sync-lookahead=0:repeat-headers=1:annexb=1:rc-lookahead=0:vbv-maxrate={max(16,codec.bit_rate//1000)}:vbv-bufsize={max(16,codec.bit_rate//20000)}'}
                 elif backend=='libopenh264':codec.options={'profile':'constrained_baseline','allow_skip_frames':'0','rc_mode':'bitrate','max_nal_size':'0'}
                 else:codec.options={'deadline':'realtime','cpu-used':'8','lag-in-frames':'0','g':'120','error-resilient':'1'}
                 old={'codec':codec,'sequence':0};self.rows[row]=old
