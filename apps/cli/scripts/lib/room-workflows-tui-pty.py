@@ -50,7 +50,10 @@ def capture(prefix):
     text = "\n".join(screen.display)
     Path(prefix + ".txt").write_text(text)
     Path(prefix + ".ansi.log").write_bytes(raw)
-    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 14)
+    fonts = ["/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
+             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"]
+    font_path = next((candidate for candidate in fonts if Path(candidate).is_file()), None)
+    font = ImageFont.truetype(font_path, 14) if font_path else ImageFont.load_default()
     canvas = Image.new("RGB", (160 * 9, 42 * 18), "#111827")
     draw = ImageDraw.Draw(canvas)
     for y, line in enumerate(screen.display):
