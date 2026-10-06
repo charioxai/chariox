@@ -26,7 +26,18 @@ child = subprocess.Popen(sys.argv[2:], stdin=slave, stdout=slave, stderr=slave,
 os.close(slave)
 owned = OwnedProcesses()
 handle = owned.record(child.pid, watch=True, fresh_launch=True)
-screen = pyte.Screen(160, 42)
+class TerminalScreen(pyte.Screen):
+    def write_process_input(self, data):
+        os.write(master, data.encode())
+
+    def report_device_status(self, mode, private=False):
+        if private and mode == 6:
+            self.write_process_input(f"\x1b[?{self.cursor.y + 1};{self.cursor.x + 1}R")
+        else:
+            super().report_device_status(mode)
+
+
+screen = TerminalScreen(160, 42)
 stream = pyte.ByteStream(screen)
 raw = bytearray()
 

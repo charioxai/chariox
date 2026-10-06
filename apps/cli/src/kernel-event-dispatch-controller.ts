@@ -158,6 +158,10 @@ export function createKernelEventDispatchController(
       case "heartbeat":
         deps.recordDaemonActivity("kernel_heartbeat")
         return
+      case "room_workflows_changed":
+        // The room workflow composition subscribes to these itself.
+        deps.recordDaemonActivity("kernel_room_workflows_changed")
+        return
       case "passkey_prompts_changed":
         // The passkey popup composition subscribes to these itself.
         deps.recordDaemonActivity("kernel_passkey_prompts_changed")
