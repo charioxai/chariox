@@ -209,7 +209,7 @@ try {
     assert.equal(result.code,0,`MP-08 ${name}: ${result.output}`);return JSON.parse(result.output.trim())
   }
   async function copy(name, inject=false) {
-    const start=await cli(name+'-start',source,['copy',selectionPath]);const initial=start.ManagedContextTransferStatus.status
+    const start=await cli(name+'-start',source,['copy',selectionPath]);const initial=start.ManagedContextTransferStarted.status
     if(inject)faultContext=initial.contextId
     await until(async()=> (await automation({action:'snapshot'})).interactions?.some(i=>i.id.startsWith('project-environment:')),'compulsory native Project review')
     await capture(name+'-review'); await automation({action:'interaction_submit',choiceIndex:0})
