@@ -97,10 +97,14 @@ async fn check() {
             json!({"command":{"op":"state"}}),
         )
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
     assert!(
-        error.contains("not_granted") || error.contains("not loaded"),
+        matches!(
+            error,
+            crate::error::DaemonError::UserDomainRefused {
+                reason: crate::error::UserDomainRefusalReason::NotGranted
+            }
+        ),
         "{error}"
     );
     router.runtime_state.shutdown_cleanup().await.unwrap();

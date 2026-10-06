@@ -53,7 +53,7 @@ incomplete accessibility coverage reports OCR fallback.
 Password roles expose no text/actions. Protected registry values/targets,
 unknown visible windows, incomplete AT-SPI coverage or password widgets cause
 full-desktop black PNG and withheld OCR/clipboard. Coverage is checked before
-and after capture; a changed tree rejects the observation. This conservative
+and after capture or clipboard read; a changed tree rejects the observation. This conservative
 policy avoids claiming precise non-browser secret masks. Agents cannot operate
 or observe through Computer while human App views are open, preventing bypass
 of App human-channel admission before the display lane provides a mapping.

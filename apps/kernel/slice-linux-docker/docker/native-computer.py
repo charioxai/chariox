@@ -96,6 +96,8 @@ def main(request):
         coverage=accessibility.snapshot(request.get('processes',[]))
         if request['mask'] or not coverage['available'] or not coverage['complete'] or coverage['protected']: return {'text':'[protected]'}
         result=subprocess.run(['xclip','-selection','clipboard','-o'],check=True,capture_output=True,timeout=2)
+        after=accessibility.snapshot(request.get('processes',[]))
+        if coverage!=after:raise ValueError('native protection changed during clipboard read')
         if len(result.stdout)>65536: raise ValueError('clipboard too large')
         return {'text':result.stdout.decode('utf-8')}
     accessibility=load('native-accessibility')
