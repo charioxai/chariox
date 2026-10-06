@@ -49,12 +49,14 @@ test("a missing default stays unavailable instead of silently selecting the firs
   assert.equal(selectedProviderAccount(accounts, "codex", "default"), null)
 })
 
-test("provider account display uses only the public alias", () => {
+test("provider account display shows email, plan and machine login on one line", () => {
   const profile = account("codex", "internal-profile", true)
   profile.label = "codex-1"
   profile.identity_summary = "owner@example.com"
+  profile.plan = "team"
+  profile.origin = "default"
 
-  assert.equal(providerAccountDisplayLabel(profile), "codex-1")
+  assert.equal(providerAccountDisplayLabel(profile), "codex-1 · owner@example.com · team · from this machine's Codex login")
 })
 
 test("TUI marks hard exhaustion without hiding Claude and Codex accounts backed by credits", () => {
