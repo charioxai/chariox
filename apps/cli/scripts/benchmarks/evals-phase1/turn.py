@@ -24,7 +24,7 @@ import termios
 import time
 import fcntl
 
-from contract import safe_pid, completed_answer, quota_exhausted, admit_placement, leased_target, task_usage, session_usage_visible
+from contract import safe_pid, completed_answer, quota_exhausted, admit_placement, leased_target, task_usage, session_usage_visible, provider_failure_class
 
 
 def file_hash(path):
@@ -330,6 +330,7 @@ def run(request, evidence):
         client.send('submit_prompt', prompt='/agent permissions ' + agent_id + ' yolo')
         snap = client.send('snapshot')
         prior_prompt_ids = {e.get('promptId') for e in snap.get('transcript', {}).get('entries', []) if e.get('promptId')}
+        prior_entry_ids = {e.get('id') for e in snap.get('transcript', {}).get('entries', [])}
         client.send('submit_prompt', prompt=request['instruction'])
         deadline = time.monotonic() + request.get('timeout_seconds', 1800)
         def submitted():
@@ -343,6 +344,7 @@ def run(request, evidence):
             agent = next((a for a in s.get('session', {}).get('agents', []) if a.get('id') == agent_id), {})
             if agent.get('state') in {'Error', 'Failed'}:
                 measurement['status'] = 'provider_failed'
+                measurement['provider_failure_class'] = provider_failure_class(s.get('transcript',{}).get('entries',[]),prompt_id,prior_entry_ids)
                 return {'answer': None, 'provider_failed': True}
             answer = completed_answer(s, session_id, agent_id, prompt_id)
             if answer is not None:
@@ -355,6 +357,17 @@ def run(request, evidence):
         final = wait_owned(settled, deadline)
         screenshot('02-turn-completed')
         measurement.update(status='provider_failed' if final.get('provider_failed') else 'completed', answer=final['answer'], provider_turn_settled=True)
+        failure_class = measurement.get('provider_failure_class')
+        if failure_class == 'auth_unauthorized':
+            measurement.update(status='provider_auth_failed',first_failing_seam='official provider unauthorized; coordinator action required')
+        elif failure_class == 'quota_or_rate_limit':
+            measurement.update(status='provider_quota_unconfirmed',first_failing_seam='official provider quota/rate limit')
+            if placement == 'local':
+                refreshed = subprocess.run([*status_command,'--refresh'],env=env,capture_output=True,text=True,timeout=60)
+                account = status() if refreshed.returncode == 0 else None
+                if account and quota_exhausted(account['meters'],int(time.time()*1000)):
+                    (evidence/'account-status.json').write_text(json.dumps(account,indent=2))
+                    measurement['status']='quota_exhausted'
         stage = 'usage_report'
         usage_command = [str(root / 'bin/bun'), str(Path(__file__).with_name('usage_status.mjs')), str(root), endpoint, session_id]
         usage_read = subprocess.run(usage_command, env=env, capture_output=True, text=True, timeout=30)

@@ -141,3 +141,15 @@ def settled_measurement(measurement):
     try:admit_token_usage(measurement.get('usage') or {},measurement['session_id'])
     except (ValueError,KeyError):return False
     return True
+
+
+def provider_failure_class(entries, prompt_id, prior_ids=()):
+    """MP-08 / MP-10 / MP-11: classify only new task errors; retain no raw error payload."""
+    text='\n'.join(str(e.get('text','')) for e in entries if e.get('role')=='error'
+                   and e.get('id') not in prior_ids and e.get('promptId') in {None,prompt_id}).lower()
+    for name,pattern in [('auth_unauthorized',r'\b401\b|\bunauthori[sz]ed\b'),
+                         ('quota_or_rate_limit',r'usage.limit|quota.exceeded|rate.limit|usage_limit_reached'),
+                         ('policy_rejected',r'cyber_policy'),
+                         ('model_rejected',r'unsupported.model|model.*not.supported')]:
+        if re.search(pattern,text):return name
+    return 'provider_error_unknown'
