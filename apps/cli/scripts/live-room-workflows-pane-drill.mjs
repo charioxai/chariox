@@ -161,10 +161,18 @@ try {
   receipt.status='GREEN'
 } catch(error) {
   receipt.status='RED';receipt.firstFailure=error.message
+  if(terminal&&terminal.exitCode===null)await terminalCommand('capture',{prefix:path.join(args.output,'failure')}).catch(()=>{})
   if (args['expect-red']==='1' && error.message==='MP-08 TUI assertion failed at 01-room-inventory')receipt.expectedRed=true
   else process.exitCode=1
 } finally {
-  const cleanupGroups=[kernel,relay].filter(Boolean).flatMap(child=>ownedProcessGroupHandles(child))
+  await writeFile(path.join(args.output,'result.json'),JSON.stringify(receipt,null,2)+'\n',{mode:0o600})
+  const cleanupGroups=[]
+  for(const child of [kernel,relay].filter(Boolean)){
+    for(let attempt=0;;attempt++){
+      try{cleanupGroups.push(...ownedProcessGroupHandles(child));break}
+      catch(error){if(attempt>=9)throw error;await sleep(100)}
+    }
+  }
   if(sessionId)await client?.send(requests.endSessionRequest(sessionId)).catch(()=>{})
   if(terminal&&terminal.exitCode===null&&terminal.signalCode===null){terminal.stdin.write(JSON.stringify({id:++nextId,action:'close'})+'\n');await sleep(1000);if(terminal.exitCode===null)signalOwnedProcess(terminal,'SIGTERM')}
   await client?.close().catch(()=>{})
