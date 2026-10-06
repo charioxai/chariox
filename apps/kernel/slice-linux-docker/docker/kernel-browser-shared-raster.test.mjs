@@ -36,3 +36,15 @@ test('MP-10 attestation reads one snapshot rather than one file per channel',asy
   assert.throws(()=>raw.pixels,/retired/);
  }finally{await rm(root,{recursive:true,force:true})}
 });
+
+test('MP-08/MP-10/MP-11 private masking copies are detached from the lease and reject changed ownership or retired data',async()=>{
+ const {mkdtemp,writeFile,chmod,rm}=await import('node:fs/promises');const {tmpdir}=await import('node:os');const path=await import('node:path');
+ const root=await mkdtemp(path.join(tmpdir(),'chariox-mask-copy-'));let raw;
+ try{
+  const file=path.join(root,'0');await writeFile(file,Buffer.alloc(1280*800*4,17),{mode:0o600});
+  raw=new SharedRasterPool(root,()=>{}).apply({slot:0,serial:1,width:1280,height:800});
+  const a=raw.copyPixels(),b=raw.copyPixels();a.fill(0);assert.equal(b[0],17);assert.equal(raw.pixels[0],17);
+  await chmod(file,0o644);assert.throws(()=>raw.copyPixels(),/owner/);await chmod(file,0o600);
+  raw.release();assert.throws(()=>raw.copyPixels(),/retired/);raw=null;
+ }finally{raw?.release();await rm(root,{recursive:true,force:true})}
+});

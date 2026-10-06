@@ -254,7 +254,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   return { binding, presenter, next, start, stop,
     get running() { return running; },
     get error() { return failure; },
-    input: async input => {presenter.prediction?.restore();idle.wake();const submitted={...input},sequence=presenter.sequence,epoch=++predictionEpoch;const reply=await request(presenter.input(submitted));if(!stopped&&epoch===predictionEpoch&&presenter.sequence===sequence)presenter.prediction?.predict(submitted,options.deviceScaleFactor??1);return reply;},
+    input: async input => {presenter.prediction?.restore();idle.wake();const submitted={...input},sequence=presenter.sequence,epoch=++predictionEpoch;const reply=await request(presenter.input(submitted));if(!stopped){idle.wake();if(epoch===predictionEpoch&&presenter.sequence===sequence)presenter.prediction?.predict(submitted,options.deviceScaleFactor??1)}return reply;},
     takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_takeover', ...tab });},
     release: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_release', ...tab });},
     actors: () => request({ op: 'display_actors' }),

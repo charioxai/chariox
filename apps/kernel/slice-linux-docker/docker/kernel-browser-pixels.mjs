@@ -125,7 +125,7 @@ export const displayMaskRegions = Symbol('kernel display protection');
 export function maskNativeRaster(raw, regions, previousRegions) {
   if(!regions.length)return raw;
   const {width,height}=raw;
-  const frame=maskPixels({width,height,pixels:Buffer.from(raw.pixels)},regions.map(r=>[r.x,r.y,r.width,r.height]));
+  const frame=maskPixels({width,height,pixels:raw.copyPixels?.()??Buffer.from(raw.pixels)},regions.map(r=>[r.x,r.y,r.width,r.height]));
   // MP-08/MP-10/MP-11: scheduling hint over protected pixels only. This is
   // never an attestation or an equality proof: stripes compare exact bytes,
   // and native exact damage must ship even when this hint collides.
@@ -134,7 +134,7 @@ export function maskNativeRaster(raw, regions, previousRegions) {
   // repair; the capture owner supplies the preceding admitted mask geometry.
   const damage=previousRegions&&JSON.stringify(previousRegions)===JSON.stringify(regions)?raw.damage:[0,0,width,height];
   const result={...raw,...frame,[displayMaskRegions]:regions,damage,signature:crc32(frame.pixels).toString(16),retain(){},release(){}};
-  delete result.shared;delete result.readRegion;
+  delete result.shared;delete result.readRegion;delete result.copyPixels;
   return result;
 }
 // MP-08/MP-11: crop/thumbnail only an already-protected viewport. The display
