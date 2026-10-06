@@ -2,7 +2,7 @@
 use super::*;
 
 #[test]
-fn room_admission_inline_source_name_conflict_has_no_effect() {
+fn room_admission_named_source_lookup_stays_in_room() {
     run_large_stack_async_test("room-inline-source-history", inline_source_history);
 }
 
@@ -63,6 +63,9 @@ workflow.endpoint(review,{{handle:"entry"}});"#,
         .unwrap();
     assert!(created.ok, "{created:?}");
     let before = registry.get("peer-inline").unwrap().unwrap();
+    let validation = router.dispatch_authenticated_runtime_tool_call(&actor_auth, "chariox.workflow_code.validate",
+        serde_json::json!({"name":"peer-inline"})).await;
+    assert!(validation.as_ref().is_ok_and(|v| v.ok), "A01 named validation must resolve the actual room artifact: {validation:?}");
     for tool in ["chariox.workflow_code.apply", "chariox.workflow_code.run"] {
         let error = router
             .dispatch_authenticated_runtime_tool_call(
