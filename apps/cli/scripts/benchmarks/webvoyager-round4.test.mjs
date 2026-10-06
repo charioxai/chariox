@@ -23,3 +23,18 @@ test('MP-11 allowlist permits only the existing screenshot observation in vision
     }
   }
 })
+
+test('MP-10 partial vision campaigns retain invalids and cannot report full eligible rates', async () => {
+  const { compareRound4 } = await import('./webvoyager-round4-report.mjs')
+  const good = { harnessValid: true, judgeValid: true, judgeVerdict: 'SUCCESS' }
+  const old = [{ taskId: 'A--0', ...good }, { taskId: 'B--0', ...good, judgeVerdict: 'NOT SUCCESS', answer: 'cookie consent' }, { taskId: 'B--1', harnessValid: false }]
+  const now = [{ taskId: 'A--0', harnessValid: true, judgeValid: false }, { taskId: 'B--0', ...good }]
+  const partial = compareRound4(old, now, 3)
+  assert.deepEqual(partial.round4VisionAllowed, { tasks: 2, wins: 1, valid: 1, invalid: 1, rate: 0.5, eligible: 3, unattempted: 1, eligibleRate: null })
+  assert.equal(partial.paired.gained, 1); assert.equal(partial.paired.lost, 1)
+  assert.equal(partial.byBaselineClass.find(c => c.category.includes('consent')).afterWins, 1)
+  assert.equal(partial.perSite.find(s => s.site === 'B').unattempted, 1)
+  assert.equal(partial.top3RemainingLossClasses[0].category, 'harness/runtime error')
+  assert.equal(compareRound4(old, [...now, { taskId: 'B--1', ...good }], 3).round4VisionAllowed.eligibleRate, 2 / 3)
+  assert.throws(() => compareRound4(old, [now[0], now[0]], 3))
+})
