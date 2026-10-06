@@ -21,17 +21,18 @@ const port = () => new Promise(resolve => {
   server.listen(0, '127.0.0.1', () => { const value = server.address().port; server.close(() => resolve(value)) })
 })
 
-export async function startOwnedRuntime({ lane, evidence, release, repo, clientRoot, image, accountHome, label, viewport, sandboxCompatibility = true }) {
+export async function startOwnedRuntime({ lane, evidence, release, repo, clientRoot, image, accountHome, label, viewport, sandboxCompatibility = true, laneName = 'r2next' }) {
   for (const value of [lane, evidence, release, repo, clientRoot, accountHome]) assert(path.isAbsolute(value), 'MP-10 absolute runtime roots required')
-  assert(lane.startsWith('/root/.chariox/dev/browser-resume-20260930/agents/r2next/'))
-  assert(evidence.startsWith('/root/.codex/evidence/browser-resume-20260930/r2next/'))
-  assert.match(label, /^r2next-[a-z0-9-]+$/)
+  assert.match(laneName, /^(r2next|wvanalysis)$/)
+  assert(path.resolve(lane).startsWith(`/root/.chariox/dev/browser-resume-20260930/agents/${laneName}/`))
+  assert(path.resolve(evidence).startsWith(`/root/.codex/evidence/browser-resume-20260930/${laneName}/`))
+  assert(label.startsWith(`${laneName}-`) && /^[a-z0-9-]+$/.test(label))
   assert.match(image, /^sha256:[a-f0-9]{64}$/)
   assert.equal(typeof sandboxCompatibility, 'boolean')
   await mkdir(evidence, { recursive: true, mode: 0o700 })
   await mkdir(lane, { recursive: true, mode: 0o700 })
   const root = await mkdtemp(`${lane}/runtime-`)
-  const workspace = await mkdtemp('/root/work/agent-r2next-runtime-workspace-')
+  const workspace = await mkdtemp(`/root/work/agent-${laneName}-runtime-workspace-`)
   await chmod(root, 0o711); await chmod(workspace, 0o777)
   const children = []
   const report = { mpItems: ['MP-08', 'MP-10', 'MP-11'], label, root, workspace, resources: [], unsigned: true }
@@ -69,7 +70,7 @@ export async function startOwnedRuntime({ lane, evidence, release, repo, clientR
     }
     // Preserve unsettled state for recovery; never erase a live Room's authority.
     if (!preserveState && !cleanup.inventoryUnavailable && !cleanup.unresolvedRooms.length && !cleanup.unresolvedSlices.length && cleanup.processes.every(row => row.stopped)) {
-      assert(root.startsWith(`${lane}/runtime-`) && workspace.startsWith('/root/work/agent-r2next-runtime-workspace-'))
+      assert(root.startsWith(`${lane}/runtime-`) && workspace.startsWith(`/root/work/agent-${laneName}-runtime-workspace-`))
       await rm(root, { recursive: true }); cleanup.stateRemoved = true
       await rm(workspace, { recursive: true }); cleanup.workspaceRemoved = true
     }
