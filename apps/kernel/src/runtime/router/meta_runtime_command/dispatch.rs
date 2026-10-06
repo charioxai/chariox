@@ -761,11 +761,30 @@ impl CommandRouter {
         reference: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agents = self.runtime_state.session_agents(session_id);
-        crate::runtime::room_tool_admission::resolve_agent(
-            &agents,
-            metaagent.session_id(),
-            reference,
-        )
-        .cloned()
+        if self.runtime_state.room_agent_tools_enabled() {
+            return crate::runtime::room_tool_admission::resolve_agent(
+                &agents,
+                metaagent.session_id(),
+                reference,
+            )
+            .cloned();
+        }
+        let owned_agents = agents
+            .into_iter()
+            .filter(|agent| {
+                !agent.is_metaagent() && agent.controlled_by_metaagent_id() == Some(metaagent.id())
+            })
+            .collect::<Vec<_>>();
+        owned_agents
+            .iter()
+            .find(|agent| {
+                agent.id() == reference
+                    || agent.agent_ref() == reference
+                    || agent.alias() == Some(reference)
+            })
+            .cloned()
+            .ok_or_else(|| {
+                meta_command_error(owned_regular_agent_error_message(reference, &owned_agents))
+            })
     }
 }

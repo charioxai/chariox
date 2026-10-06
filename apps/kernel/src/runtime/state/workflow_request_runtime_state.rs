@@ -11,6 +11,20 @@ impl KernelRuntimeState {
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
     ) {
+        self.with_room_request_origin(caller_metaagent_id.as_deref(), &request)
+            .execute_admitted_workflow_request(request, caller_user_id, caller_metaagent_id)
+            .await
+    }
+
+    async fn execute_admitted_workflow_request(
+        &self,
+        request: LocalDaemonRequest,
+        caller_user_id: String,
+        caller_metaagent_id: Option<String>,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<crate::session::RuntimeSession>,
+    ) {
         if let Err(error) = self.authorize_current_external_command() {
             return (Err(error), None);
         }

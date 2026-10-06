@@ -70,6 +70,14 @@ impl SessionRuntimeStore {
         self.state.authorize_room_provider_epoch(actor, run)
     }
 
+    pub(super) fn with_room_request_origin(
+        &self,
+        actor: Option<&str>,
+        request: &LocalDaemonRequest,
+    ) -> Self {
+        Self::new(self.state.with_room_request_origin(actor, request))
+    }
+
     pub(super) fn with_room_provider_origin(&self, actor: Option<&str>, run: Option<&str>) -> Self {
         Self::new(self.state.with_room_provider_origin(actor, run))
     }

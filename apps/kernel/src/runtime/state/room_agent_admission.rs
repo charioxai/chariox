@@ -3,6 +3,19 @@ use super::*;
 use crate::runtime::room_tool_admission::{denied, direct_child};
 
 impl KernelRuntimeState {
+    /// MP-08 / MP-11: retain the admitted typed operation across asynchronous waits.
+    pub(crate) fn with_room_request_origin(
+        &self,
+        actor: Option<&str>,
+        request: &LocalDaemonRequest,
+    ) -> Self {
+        let mut state = self.clone();
+        if self.room_agent_tools_enabled() {
+            state.room_request_origin = actor.map(|actor| (actor.to_owned(), request.clone()));
+        }
+        state
+    }
+
     pub(crate) fn with_room_provider_origin(&self, actor: Option<&str>, run: Option<&str>) -> Self {
         let mut state = self.clone();
         if self.room_agent_tools_enabled() {

@@ -386,11 +386,10 @@ impl KernelRuntimeState {
                 });
             }
             if is_meta_tool {
-                let run =
-                    unambiguous_runtime_tool_provider_run(&provider_runs, canonical_tool_name)?;
+                let (provider_run, _, _) = self.metaagent_context_for_auth_token(auth_token)?;
                 if let Some(result) = self
                     .try_dispatch_remote_meta_runtime_tool_call(
-                        run,
+                        &provider_run,
                         canonical_tool_name,
                         arguments.clone(),
                     )
@@ -398,7 +397,6 @@ impl KernelRuntimeState {
                 {
                     return Ok(result);
                 }
-                let (provider_run, _, _) = self.metaagent_context_for_auth_token(auth_token)?;
                 return self
                     .dispatch_meta_runtime_tool_call(&provider_run, canonical_tool_name, arguments)
                     .await;

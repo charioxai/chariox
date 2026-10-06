@@ -34,6 +34,16 @@ impl SessionRuntimeCommandExecutor {
         executor
     }
 
+    pub(super) fn with_room_request_origin(
+        &self,
+        actor: Option<&str>,
+        request: &LocalDaemonRequest,
+    ) -> Self {
+        let mut executor = self.clone();
+        executor.store = self.store.with_room_request_origin(actor, request);
+        executor
+    }
+
     pub(super) fn with_room_provider_origin(&self, actor: Option<&str>, run: Option<&str>) -> Self {
         let mut executor = self.clone();
         executor.store = self.store.with_room_provider_origin(actor, run);

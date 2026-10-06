@@ -334,6 +334,10 @@ async fn run_session_command_lane(
                         envelope.caller_metaagent_id.as_deref(),
                         envelope.provider_run_id.as_deref(),
                     )
+                    .with_room_request_origin(
+                        envelope.caller_metaagent_id.as_deref(),
+                        &envelope.request,
+                    )
                     .execute(
                         envelope.request,
                         envelope.caller_user_id,
