@@ -129,6 +129,7 @@ impl KernelRuntimeState {
         let mut suppressed_count = 0usize;
         let mut matched = false;
         loop {
+            self.authorize_current_external_command()?;
             let batch = self.meta_drain_trace_batch(session.id(), &subscription, mode, limit);
             drained_count += batch.drained_count;
             suppressed_count += batch.suppressed_count;

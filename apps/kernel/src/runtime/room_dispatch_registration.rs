@@ -28,7 +28,13 @@ pub(crate) fn receipt(
         store.append_event("room.obligation.dispatch_receipt", Some(id.to_string()), serde_json::json!({
             "schema_version": 1, "id": id, "dispatch_state": if accepted {"accepted"} else {"rejected"},
             "status": if accepted {"open"} else {"failed"}, "resource_id": resource, "recorded_at_ms": crate::session::unix_epoch_ms(),
-        }))?;
+        })).map_err(|error| DaemonError::LocalTransport {
+            operation: "room_dispatch_receipt",
+            message: format!(
+                "{} dispatch for obligation `{id}`, resource `{}`; receipt persistence failed: {error}; inspect the resource before retrying",
+                if accepted { "accepted" } else { "rejected" }, resource.unwrap_or("none")
+            ),
+        })?;
     }
     Ok(())
 }

@@ -335,7 +335,6 @@ impl KernelRuntimeState {
                 .owned
                 .steer_active_metaagent_prompt(session_id, &prompt)?
             {
-                self.record_room_dispatch_receipt(obligation.as_deref(), true, Some(&prompt_id))?;
                 self.spawn_workflow_prompt_dispatches(dispatches);
                 self.persist_metaagent_prompt_submission(
                     session_id,
@@ -345,6 +344,7 @@ impl KernelRuntimeState {
                     "steered",
                     None,
                 );
+                self.record_room_dispatch_receipt(obligation.as_deref(), true, Some(&prompt_id))?;
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
@@ -363,7 +363,6 @@ impl KernelRuntimeState {
                 refresh_projection: true,
             })
             .await?;
-        self.record_room_dispatch_receipt(obligation.as_deref(), true, Some(&prompt_id))?;
         if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
             (&submission.outcome, submission.dispatch.as_ref())
         {
@@ -398,6 +397,7 @@ impl KernelRuntimeState {
         if let Some(dispatch) = submission.remote_dispatch.take() {
             self.spawn_remote_prompt_dispatch(dispatch);
         }
+        self.record_room_dispatch_receipt(obligation.as_deref(), true, Some(&prompt_id))?;
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({

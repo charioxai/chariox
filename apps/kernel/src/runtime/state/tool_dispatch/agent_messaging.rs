@@ -199,6 +199,7 @@ impl KernelRuntimeState {
                 sender.id(),
                 &sender_prompt_id,
             )? {
+                self.record_room_dispatch_receipt(obligation.as_deref(), false, None)?;
                 return Ok(agent_message_failure(
                     "sender turn is no longer running; agent message was not sent",
                 ));
@@ -268,6 +269,7 @@ impl KernelRuntimeState {
             sender.id(),
             &sender_prompt_id,
         )? {
+            self.record_room_dispatch_receipt(obligation.as_deref(), false, None)?;
             return Ok(agent_message_failure(
                 "sender turn is no longer running; agent message was not sent",
             ));
@@ -302,6 +304,7 @@ impl KernelRuntimeState {
             sender.id(),
             &sender_prompt_id,
         )? {
+            self.record_room_dispatch_receipt(obligation.as_deref(), false, None)?;
             return Ok(agent_message_failure(
                 "sender turn is no longer running; agent message was not sent",
             ));
@@ -336,7 +339,6 @@ impl KernelRuntimeState {
             .dispatch
             .as_ref()
             .map(|dispatch| dispatch.provider_run_id.clone());
-        self.record_room_dispatch_receipt(obligation.as_deref(), true, Some(&prompt_id))?;
         if let Some(dispatch) = submission.dispatch.take() {
             self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
         }
@@ -361,6 +363,7 @@ impl KernelRuntimeState {
         {
             store.record(operation_id, fingerprint, result.clone());
         }
+        self.record_room_dispatch_receipt(obligation.as_deref(), true, Some(&prompt_id))?;
         Ok(result)
     }
 

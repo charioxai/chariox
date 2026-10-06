@@ -244,6 +244,46 @@ async fn room_boundaries() {
             .await
             .ok
     );
+    // MP-08/MP-11 A01/G18: invalid queue rejects before admission, not an open intent.
+    let node = room_command(&router, &auth_a, "workflow resolve own-flow").await;
+    let node_id = node.payload["response"]["workflow"]["nodes"][0]["id"]
+        .as_str()
+        .unwrap();
+    assert!(
+        room_command(
+            &router,
+            &auth_a,
+            &format!("workflow endpoint new own-flow {node_id} start")
+        )
+        .await
+        .ok
+    );
+    let (failed, _) = router
+        .runtime_state
+        .execute_workflow_request(
+            LocalDaemonRequest::InvokeWorkflowEndpoint(
+                crate::local::InvokeWorkflowEndpointRequest {
+                    session_id: session.id().into(),
+                    workflow_ref: "own-flow".into(),
+                    endpoint_ref: "start".into(),
+                    queue_ref: Some("missing-queue".into()),
+                    prompt: Some("never dispatched".into()),
+                    publication_invocation: None,
+                },
+            ),
+            a.owner_user_id().into(),
+            Some(a.id().into()),
+        )
+        .await;
+    assert!(failed.is_err());
+    let app_guard = app.lock().await;
+    let db = rusqlite::Connection::open(app_guard.durable_state_store().path()).unwrap();
+    let rejected: i64 = db.query_row("SELECT count(*) FROM durable_state_events WHERE kind='room.obligation.dispatch_receipt' AND json_extract(payload_json,'$.dispatch_state')='rejected'", [], |r|r.get(0)).unwrap();
+    assert_eq!(
+        rejected, 1,
+        "known queue rejection must close only its dispatch intent"
+    );
+    drop(app_guard);
     let peer_alias = room_command(&router, &auth_a, "agent alias peer stolen").await;
     assert!(!peer_alias.ok);
     // The raw/native typed request path sees the same mutation fence.
@@ -336,4 +376,158 @@ fn room_admission_writer_failure_prevents_agent_creation() {
     assert_eq!(count, 1, "one committed creation intent after retry");
     let json = serde_json::to_value(created).unwrap();
     assert_eq!(json["spawned_by_agent_id"], actor.id());
+}
+
+// MP-08 / MP-11, A01/G10: a bounded trace wait cannot return on a replaced run.
+#[test]
+fn room_admission_trace_result_rechecks_provider_epoch() {
+    run_large_stack_async_test("room-stale-trace-result", stale_trace_result);
+}
+
+async fn stale_trace_result() {
+    let env = TestMetaRuntimeEnv::new("room-stale-trace");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, actor) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
+    let peer = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("peer"))
+        .unwrap();
+    let run = launch_test_provider(
+        &mut app,
+        session.id(),
+        actor.id(),
+        "dev-stub",
+        "dev-stub",
+        "room-model",
+    );
+    let auth = run.runtime_mcp_auth_token().unwrap().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let subscribed = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &auth,
+            "chariox.trace.subscribe",
+            serde_json::json!({"agent_ref":peer.id()}),
+        )
+        .await
+        .unwrap();
+    assert!(subscribed.ok);
+    let bound = router
+        .runtime_state
+        .with_room_provider_origin(Some(actor.id()), Some(run.id()));
+    let future = bound.dispatch_meta_runtime_tool_call_for_agent(
+        session.id(),
+        actor.id(),
+        "chariox.trace.wait",
+        serde_json::json!({
+            "subscription_id":subscribed.payload["subscription"]["subscription_id"],
+            "wait_ms":100, "until":"worker_output", "limit":1
+        }),
+    );
+    tokio::pin!(future);
+    assert!(
+        futures_util::poll!(future.as_mut()).is_pending(),
+        "wait must cross a real async boundary"
+    );
+    {
+        let mut app = app.lock().await;
+        app.providers_mut()
+            .terminate_run_provider_only(session.id(), run.id())
+            .unwrap();
+        launch_test_provider(
+            &mut app,
+            session.id(),
+            actor.id(),
+            "dev-stub",
+            "dev-stub",
+            "replacement-model",
+        );
+    }
+    assert!(
+        future.await.is_err(),
+        "A01/G10: a stale provider run must not receive a post-wait result"
+    );
+}
+
+// MP-08 / MP-11, A01/G18: distinguish rejected creation from committed effects.
+#[test]
+fn room_admission_receipt_failure_preserves_created_resource_identity() {
+    let env = TestMetaRuntimeEnv::new("room-receipt-failure");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, actor) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
+    let db = rusqlite::Connection::open(app.durable_state_store().path()).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_receipt BEFORE INSERT ON durable_state_events WHEN NEW.kind='room.obligation.dispatch_receipt' BEGIN SELECT RAISE(FAIL, 'receipt failure'); END;").unwrap();
+    let failed = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("created-despite-receipt-error")
+                .with_spawned_by_agent_id(actor.id()),
+        )
+        .unwrap_err();
+    let child = app
+        .agents()
+        .get_session_agents(session.id())
+        .into_iter()
+        .find(|a| a.alias() == Some("created-despite-receipt-error"))
+        .unwrap();
+    let message = failed.to_string();
+    assert!(
+        message.contains(child.id()),
+        "accepted resource identity missing: {message}"
+    );
+    assert!(
+        message.contains("accepted") && message.contains("obligation-"),
+        "dispatch disposition missing: {message}"
+    );
+}
+
+#[test]
+fn room_admission_known_creation_rejection_records_failed_intent() {
+    let env = TestMetaRuntimeEnv::new("room-rejected-creation");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, actor) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
+    let request = || {
+        CreateAgentRequest::new(session.id(), "dev-stub")
+            .with_alias("duplicate")
+            .with_spawned_by_agent_id(actor.id())
+    };
+    crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(request())
+        .unwrap();
+    assert!(crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(request())
+        .is_err());
+    let db = rusqlite::Connection::open(app.durable_state_store().path()).unwrap();
+    let rejected: i64 = db.query_row("SELECT count(*) FROM durable_state_events WHERE kind='room.obligation.dispatch_receipt' AND json_extract(payload_json,'$.dispatch_state')='rejected'", [], |r|r.get(0)).unwrap();
+    assert_eq!(
+        rejected, 1,
+        "known rejection must not leave an open dispatch intent"
+    );
 }

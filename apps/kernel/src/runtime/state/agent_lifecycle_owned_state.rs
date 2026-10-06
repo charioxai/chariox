@@ -12,8 +12,20 @@ impl KernelRuntimeOwnedState {
             .transpose()?
             .flatten();
         let mut sessions = self.session_store.write();
-        let agent = self.agent_store.create_agent(request, &mut sessions)?;
+        let created = self.agent_store.create_agent(request, &mut sessions);
         drop(sessions);
+        let agent = match created {
+            Ok(agent) => agent,
+            Err(error) => {
+                crate::runtime::room_dispatch_registration::receipt(
+                    &self.durable_state_store,
+                    obligation.as_deref(),
+                    false,
+                    None,
+                )?;
+                return Err(error);
+            }
+        };
         self.durable_state_store.append_event(
             "agent.created",
             Some(agent.id().to_string()),
@@ -34,20 +46,32 @@ impl KernelRuntimeOwnedState {
         &self,
         requests: Vec<crate::agent::CreateAgentRequest>,
     ) -> Result<Vec<crate::agent::AgentInstance>, DaemonError> {
-        let obligations = requests
-            .iter()
-            .map(|request| {
-                request
-                    .spawned_by_agent_id
-                    .as_deref()
-                    .map(|id| self.register_room_dispatch_obligation(id, "delegate", None))
-                    .transpose()
-                    .map(Option::flatten)
-            })
-            .collect::<Result<Vec<_>, DaemonError>>()?;
+        let mut obligations = Vec::with_capacity(requests.len());
+        for request in &requests {
+            let registered = request
+                .spawned_by_agent_id
+                .as_deref()
+                .map(|id| self.register_room_dispatch_obligation(id, "delegate", None))
+                .transpose()
+                .map(Option::flatten);
+            match registered {
+                Ok(id) => obligations.push(id),
+                Err(error) => {
+                    self.reject_agent_creation_obligations(&obligations)?;
+                    return Err(error);
+                }
+            }
+        }
         let mut sessions = self.session_store.write();
-        let agents = self.agent_store.create_agents(requests, &mut sessions)?;
+        let created = self.agent_store.create_agents(requests, &mut sessions);
         drop(sessions);
+        let agents = match created {
+            Ok(agents) => agents,
+            Err(error) => {
+                self.reject_agent_creation_obligations(&obligations)?;
+                return Err(error);
+            }
+        };
         if let Some(first_agent) = agents.first() {
             self.durable_state_store.append_event(
                 "agents.created",
@@ -58,15 +82,45 @@ impl KernelRuntimeOwnedState {
                 }),
             )?;
         }
+        let mut first_error = None;
         for (agent, obligation) in agents.iter().zip(obligations.iter()) {
-            crate::runtime::room_dispatch_registration::receipt(
+            if let Err(error) = crate::runtime::room_dispatch_registration::receipt(
                 &self.durable_state_store,
                 obligation.as_deref(),
                 true,
                 Some(agent.id()),
-            )?;
+            ) {
+                first_error.get_or_insert(error);
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(DaemonError::LocalTransport {
+                operation: "room_dispatch_receipt",
+                message: format!(
+                    "accepted agent batch {:?}; {error}",
+                    agents.iter().map(|a| a.id()).collect::<Vec<_>>()
+                ),
+            });
         }
         Ok(agents)
+    }
+
+    fn reject_agent_creation_obligations(
+        &self,
+        obligations: &[Option<String>],
+    ) -> Result<(), DaemonError> {
+        let mut first_error = None;
+        for id in obligations {
+            if let Err(error) = crate::runtime::room_dispatch_registration::receipt(
+                &self.durable_state_store,
+                id.as_deref(),
+                false,
+                None,
+            ) {
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
 
     pub(super) fn ensure_agent_owner(

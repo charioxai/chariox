@@ -384,6 +384,39 @@ visible prompt mechanism, but filtering and durable inbox state remain
 kernel-owned. A missing provider run or delivery failure must be surfaced in
 the event status and retry path rather than being silently dropped.
 
+## 3.3.4 Regular Agent Room Tools (MP-08 / MP-10 / MP-11, A01)
+
+PR1 is enabled with `CHARIOX_ROOM_AGENT_TOOLS=1`. Ordinary provider runs receive
+`chariox.room.*`, command/guide discovery, public room history/trace, and the
+existing workflow-code/registry tools. Legacy `/meta` remains available during
+migration. Aliases share the kernel admission path; they do not create another
+prompt or authority path.
+
+Local daemon protocol 450 adds immutable `spawned_by_agent_id` to agent
+projections and `created_by_agent_id` to workflows, runs and queued workflow
+prompts. Missing legacy creators decode as unknown; controller identity never
+backfills creator authority. Spawn creator is derived from the authenticated
+provider actor, not accepted from a client command. Relay peer shapes are
+unchanged in this PR.
+
+Agents may spawn without room agent-count limits, message any current room
+agent, create workflows, and observe/run peers' workflows. Agent rename/delete
+requires the caller's direct spawned child in the same room; self, peers,
+parents and grandchildren are denied. Workflow mutations require the caller
+or its direct child as immutable object creator. A peer workflow invocation
+creates a separately caller-owned run, without changing definition ownership.
+Current room, run/lease and creator fences apply after waits before effects;
+a replaced provider run cannot receive an asynchronous room-tool result.
+
+Before delegation, message submission or workflow invocation, the kernel
+persists `room.obligation.registered` with actor/room/run/prompt, kind and
+resource reference. A dispatch receipt records accepted resource identity or
+a proven pre-admission rejection. Receipt-write failure after admission must
+preserve dispatch and return the obligation/resource IDs so callers inspect
+existing work before retrying. Ambiguous post-commit failures retain intent;
+PR1 does not add automatic replay, settlement, yield or recovery scheduling.
+Those lifecycle semantics belong to PR2.
+
 ## 3.4 Workflow Coordination Semantics
 
 Multi-agent workflow coordination is a daemon-owned structured protocol concern.

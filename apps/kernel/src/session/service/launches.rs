@@ -8,6 +8,7 @@ pub(crate) struct WorkflowRuntimeInstanceProvisionCandidate {
     pub(crate) ordinal: u16,
     pub(crate) primary: bool,
     pub(crate) source_worktree_id: String,
+    pub(crate) creating_agent_id: Option<String>,
 }
 
 impl SessionService {
@@ -777,6 +778,7 @@ impl SessionService {
                 ordinal,
                 primary: count == 0,
                 source_worktree_id: session.worktree_id().to_string(),
+                creating_agent_id: queued_prompt.created_by_agent_id().map(str::to_string),
             }));
         }
         Ok(None)

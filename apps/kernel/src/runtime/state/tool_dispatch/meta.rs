@@ -152,7 +152,7 @@ impl KernelRuntimeState {
         }
         let tool_name = crate::transport::runtime_tools::canonical_meta_tool_name(tool_name)
             .unwrap_or(tool_name);
-        match tool_name {
+        let result = match tool_name {
             META_SESSION_OVERVIEW_TOOL => {
                 let args = serde_json::from_value::<MetaSessionOverviewArgs>(arguments)
                     .map_err(invalid_meta_args)?;
@@ -711,7 +711,9 @@ impl KernelRuntimeState {
                 operation: "runtime_tool_meta",
                 message: format!("unsupported metaagent tool `{tool_name}`"),
             }),
-        }
+        };
+        self.authorize_current_external_command()?;
+        result
     }
 
     fn persist_metaagent_event_record(

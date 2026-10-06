@@ -1970,3 +1970,55 @@ pub(in crate::runtime) fn runtime_state_from_app(app: DaemonApp) -> KernelRuntim
         workspace_coordinator,
     )
 }
+
+// MP-08/MP-10/MP-11 A01: instance nodes belong to the invoking agent, not the template.
+#[test]
+fn room_admission_concurrent_workflow_nodes_record_invoking_creator() {
+    let (runtime, session_id, workflow_id, endpoint_id, _test_root) = runtime_with_idle_workflow();
+    let actor = runtime
+        .owned
+        .agent_store
+        .get_session_agents(&session_id)
+        .into_iter()
+        .find(|agent| agent.alias().is_none())
+        .unwrap();
+    runtime
+        .owned
+        .session_store
+        .write()
+        .set_workflow_endpoint_max_instances(&session_id, &workflow_id, &endpoint_id, 2)
+        .unwrap();
+    for message in ["first real dispatch", "second real dispatch"] {
+        runtime
+            .owned
+            .workflow_enqueue_prompt_by_agent_and_maybe_start(
+                &session_id,
+                &workflow_id,
+                &endpoint_id,
+                Some(message.into()),
+                None,
+                None,
+                Some(actor.id()),
+                None,
+            )
+            .unwrap();
+    }
+    let copies = runtime
+        .owned
+        .agent_store
+        .get_session_agents(&session_id)
+        .into_iter()
+        .filter(|agent| !agent.visible_in_freeform())
+        .collect::<Vec<_>>();
+    assert!(
+        !copies.is_empty(),
+        "second invocation must materialize an instance node"
+    );
+    for copy in copies {
+        assert_eq!(
+            copy.spawned_by_agent_id(),
+            Some(actor.id()),
+            "new instance nodes need the initiator's immutable lineage"
+        );
+    }
+}

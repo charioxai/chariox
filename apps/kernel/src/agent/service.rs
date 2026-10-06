@@ -257,6 +257,16 @@ impl AgentService {
         session_id: &str,
         worktree_id: &str,
     ) -> AgentInstance {
+        self.materialize_workflow_runtime_agent_by_agent(agent, session_id, worktree_id, None)
+    }
+
+    pub(crate) fn materialize_workflow_runtime_agent_by_agent(
+        &mut self,
+        agent: AgentInstance,
+        session_id: &str,
+        worktree_id: &str,
+        creator: Option<&str>,
+    ) -> AgentInstance {
         // A workflow instance copy must never reuse the source agent's visible
         // alias; allocate a deterministic user-facing alias by appending the
         // next available numeric suffix (e.g. `pr-reviewer` -> `pr-reviewer-2`).
@@ -270,6 +280,7 @@ impl AgentService {
             session_id,
             worktree_id,
         );
+        agent.record_spawn_creator(creator.map(str::to_string));
         if let Some(copied_alias) = copied_alias {
             agent.set_alias(Some(copied_alias));
         }

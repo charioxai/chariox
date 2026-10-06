@@ -333,8 +333,17 @@ impl<'a> KernelSessionService<'a> {
         }
         let session_store = self.app.session_state_store();
         let mut sessions = session_store.write();
-        let agent = self.app.agents.create_agent(request, &mut sessions)?;
+        let created = self.app.agents.create_agent(request, &mut sessions);
         drop(sessions);
+        let agent = match created {
+            Ok(agent) => agent,
+            Err(error) => {
+                crate::runtime::room_dispatch_registration::receipt(
+                    &self.app.durable_state_store(), obligation.as_deref(), false, None,
+                )?;
+                return Err(error);
+            }
+        };
         self.app.durable_state_store().append_event(
             "agent.created",
             Some(agent.id().to_string()),

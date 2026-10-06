@@ -52,6 +52,7 @@ impl KernelRuntimeState {
                         request.queue_ref.as_deref(),
                         request.publication_invocation.clone(),
                         caller_agent_id,
+                        obligation.as_deref(),
                     ) {
                     Ok(outcome) => outcome,
                     Err(error) => return (Err(error), None),
@@ -75,6 +76,8 @@ impl KernelRuntimeState {
                         ..
                     } => queued_prompt.id(),
                 };
+                // Admission already committed: receipt failure must not discard dispatches.
+                self.spawn_workflow_prompt_dispatches(dispatches);
                 if let Err(error) = self.record_room_dispatch_receipt(
                     obligation.as_deref(),
                     true,
@@ -82,7 +85,6 @@ impl KernelRuntimeState {
                 ) {
                     return (Err(error), None);
                 }
-                self.spawn_workflow_prompt_dispatches(dispatches);
                 let refreshed_workflow_run = match dev_stub_workflow_run_id.as_deref() {
                     Some(workflow_run_id) => {
                         self.wait_for_dev_stub_workflow_run_start(
