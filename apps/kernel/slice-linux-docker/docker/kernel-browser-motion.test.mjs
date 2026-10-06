@@ -58,3 +58,18 @@ test('MD-DISPLAY eligible exact damage suppresses speculative encode and lost ba
   assert.deepEqual(calls,[true]);assert.equal(producer.take().encoded.key,true,'losing the base must reoffer skipped pixels independently');
  }finally{await stream.close()}
 });
+
+test('MP-10 lost queued stripe resets only affected row references',async()=>{
+ let now=0,latest,offer;const resets=[];
+ const source={subscribe(f){offer=f;return()=>{}},sample:()=>latest};
+ const encoder={async encodeStripes(raw,bitrate,reset){resets.push(reset);return{stripes:(reset===true?[0,1,2,3,4,5,6,7]:reset.length?reset:[raw.row]).map(row=>({row,key:reset===true||reset.includes(row),data_base64:'AA=='}))}}};
+ const m=new MotionEncoder(source,encoder,{stripes:true,codec:'avc1.420033',bitrate:8000000,now:()=>now});
+ try{
+  latest={serial:1,raw:{row:0}};offer(latest);await m.active;assert.equal(m.take().encoded.stripes.length,8);
+  latest={serial:2,raw:{row:0}};offer(latest);await m.active;
+  latest={serial:3,raw:{row:0}};offer(latest);await m.active;
+  now=150;assert.equal(m.take(),null);await m.active;
+  assert.deepEqual(resets.at(-1),[0]);assert.deepEqual(m.take().encoded.stripes.map(r=>r.row),[0]);
+  m.invalidate();await m.active;assert.equal(resets.at(-1),true,'protection/navigation fences reset every row');
+ }finally{await m.close()}
+});

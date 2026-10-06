@@ -1,20 +1,21 @@
 // MD-DISPLAY-02/04: source-driven encoding, bounded latest work and recovery.
 // Capture/encode never await a viewer credit. Dropped dependencies force a key.
 export class MotionEncoder {
- constructor(source,encoder,{bitrate,codec,independent=false,valid=()=>true,shouldEncode=()=>true,timing=()=>{},now=()=>performance.now()}={}){
-  Object.assign(this,{source,encoder,bitrate,codec,independent,valid,shouldEncode,timing,now});this.frames=[];this.pending=null;this.active=null;this.key=true;this.rate=new CreditBudget(bitrate,now);this.revision=0;this.lastSerial=-1;this.closed=false;
+ constructor(source,encoder,{bitrate,codec,independent=false,stripes=false,valid=()=>true,shouldEncode=()=>true,timing=()=>{},now=()=>performance.now()}={}){
+  Object.assign(this,{source,encoder,bitrate,codec,independent,stripes,valid,shouldEncode,timing,now});this.frames=[];this.pending=null;this.active=null;this.key=true;this.resetRows=new Set();this.rate=new CreditBudget(bitrate,now);this.revision=0;this.lastSerial=-1;this.closed=false;
   this.off=source.subscribe(sample=>this.offer(sample));this.offer(source.sample());
  }
- offer(sample){if(!sample||this.closed||!this.valid()||sample.serial<=this.lastSerial)return;this.lastSerial=sample.serial;if(!this.shouldEncode(sample))return;this.pending={...sample,offeredAt:this.now()};this.pump();}
+ offer(sample){if(!sample||this.closed||!this.valid()||sample.serial<=this.lastSerial)return;this.lastSerial=sample.serial;if(!this.shouldEncode(sample))return;this.pending?.raw?.release?.();sample.raw?.retain?.();this.pending={...sample,offeredAt:this.now()};this.pump();}
  pump(){if(this.active||!this.pending||this.closed||this.frames.length>=2)return;this.active=this.run().catch(()=>{if(!this.closed)this.failure=Error('MD-DISPLAY: motion encoder failed')}).finally(()=>{this.active=null;if(this.pending&&!this.closed&&!this.failure)this.pump()});}
  async run(){
   while(this.pending&&!this.closed&&!this.failure&&this.frames.length<2){
-   const sample=this.pending;this.pending=null;const revision=this.revision,key=this.independent||this.key;this.key=false;const at=performance.timeOrigin+this.now();
-   const encoded=await this.encoder.encode(sample.raw?{...sample.raw,motion:true}:sample.data_base64,this.rate.bitrate,key,this.codec);this.timing('motion_encode',at);
+   const sample=this.pending;this.pending=null;const revision=this.revision,key=this.independent||this.key;this.key=false;const reset=key?true:[...this.resetRows];this.resetRows.clear();const at=performance.timeOrigin+this.now();
+   let encoded;try{encoded=this.stripes&&sample.raw?await this.encoder.encodeStripes({...sample.raw,motion:true},this.rate.bitrate,reset,this.codec):await this.encoder.encode(sample.raw?{...sample.raw,motion:true}:sample.data_base64,this.rate.bitrate,key,this.codec)}finally{sample.raw?.release?.()}this.timing('motion_encode',at);
    if(['vaapi','x264','vp9','webcodecs'].includes(this.encoder.backend))this.timing('motion_backend_'+this.encoder.backend,performance.timeOrigin+this.now());
    if(this.closed||!this.valid())return;
-   if(revision!==this.revision){this.key=true;continue;}
-   if(this.frames.length>=2||this.frames.reduce((n,f)=>n+f.encoded.data_base64.length,encoded.data_base64.length)>1024*1024){this.frames=[];this.key=true;continue;}
+   if(encoded.stripes?.length===0)continue;
+   if(revision!==this.revision){if(this.stripes&&!this.key)for(const row of encoded.stripes??[])this.resetRows.add(row.row);else this.key=true;continue;}
+   if(this.frames.length>=2||this.frames.reduce((n,f)=>n+JSON.stringify(f.encoded).length,JSON.stringify(encoded).length)>1024*1024){this.invalidateRows();continue;}
    this.frames.push({...sample,encoded});
   }
  }
@@ -29,13 +30,14 @@ export class MotionEncoder {
   // discarding its recovery key then starves the decoder forever. Permit that
   // independently decodable base a bounded300ms; stale deltas still retire
   // their entire reference chain after100ms, and older keys also retire.
-  if(oldest && age>(oldest.encoded.key?300:100) && this.source.sample()?.serial>oldest.serial){
-   this.rate.feedback(4);this.invalidate();this.pump();return null;
+  if(oldest && age>((oldest.encoded.key||oldest.encoded.stripes?.every(r=>r.key))?300:100) && this.source.sample()?.serial>oldest.serial){
+   this.rate.feedback(4);this.invalidateRows();this.pump();return null;
   }
   const frame=this.frames.shift()??null;this.pump();return frame;
  }
- retireUnsent(){if(this.frames.length||this.active||this.pending)this.invalidate(false)}
- invalidate(reoffer=true){this.revision++;this.key=true;this.frames=[];this.pending=null;if(reoffer){this.lastSerial=-1;if(!this.closed)this.offer(this.source.sample())}else this.lastSerial=Math.max(this.lastSerial,this.source.sample()?.serial??-1);}
+ retireUnsent(){if(this.frames.length||this.active||this.pending)this.invalidateRows(false)}
+ invalidateRows(reoffer=true){if(!this.stripes)return this.invalidate(reoffer);for(const frame of this.frames)for(const row of frame.encoded.stripes??[])this.resetRows.add(row.row);this.revision++;this.frames=[];this.pending?.raw?.release?.();this.pending=null;if(reoffer){this.lastSerial=-1;if(!this.closed)this.offer(this.source.sample())}else this.lastSerial=Math.max(this.lastSerial,this.source.sample()?.serial??-1);}
+ invalidate(reoffer=true){this.revision++;this.key=true;this.frames=[];this.pending?.raw?.release?.();this.pending=null;if(reoffer){this.lastSerial=-1;if(!this.closed)this.offer(this.source.sample())}else this.lastSerial=Math.max(this.lastSerial,this.source.sample()?.serial??-1);}
  async close(){if(this.closed)return;this.closed=true;this.off?.();this.invalidate();await this.active;}
 }
 

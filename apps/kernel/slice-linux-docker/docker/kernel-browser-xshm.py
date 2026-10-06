@@ -10,6 +10,7 @@ import struct
 import sys
 import time
 import importlib.util
+import mmap
 from pathlib import Path
 spec=importlib.util.spec_from_file_location('raster_damage',Path(__file__).with_name('kernel-browser-raster-damage.py'))
 raster_damage=importlib.util.module_from_spec(spec);spec.loader.exec_module(raster_damage)
@@ -50,10 +51,17 @@ def dims(d,w):
     return width.value,height.value
 
 d=None;image=None;shm=Shm(shmid=-1);attached=False;dam=0;pixmap=0;window=0
+pool=[];free_slots=set();leased={}
 stage='start'
 try:
     config=json.loads(sys.stdin.buffer.readline());owner=config['pid'];width=config['width'];height=config['height']
     if not isinstance(owner,int) or owner<=1 or not raster_damage.capture_geometry_allowed(width,height):raise ValueError('admission')
+    if config.get('pool'):
+        root=Path(config['pool'])
+        if not root.is_absolute() or root.is_symlink() or root.stat().st_uid!=os.getuid() or root.stat().st_mode & 0o077:raise ValueError('pool owner')
+        for slot in range(3):
+            file=os.open(root/str(slot),os.O_CREAT|os.O_EXCL|os.O_RDWR|os.O_NOFOLLOW,0o600);os.ftruncate(file,width*height*4)
+            pool.append(mmap.mmap(file,width*height*4));os.close(file);free_slots.add(slot)
     d=open_display(os.environ['DISPLAY'].encode())
     if not d or not query_shm(d):raise ValueError('XShm unavailable')
     event_base=I();error_base=I()
@@ -82,10 +90,19 @@ try:
     stage='damage'
     dam=create_damage(d,window,0) # RawRectangles; retain damage union, coalesce to60Hz.
     event=(L*24)();dirty=True;area=[0,0,width,height];last=0;signature=None;serial=0;previous=None;damage_ready_ms=time.time()*1000
-    fingerprint=raster_damage.RasterFingerprint(width,height)
+    fingerprint=raster_damage.RasterFingerprint(width,height);control=b''
     while True:
         if not pending(d):select.select([fd(d),sys.stdin.fileno()],[],[],max(0,.016-(time.monotonic()-last)) if dirty else 1)
-        if select.select([sys.stdin.fileno()],[],[],0)[0]:break
+        if select.select([sys.stdin.fileno()],[],[],0)[0]:
+            data=os.read(sys.stdin.fileno(),4096)
+            if not data:break
+            control+=data
+            if len(control)>8192:raise ValueError('pool control bound')
+            while b'\n' in control:
+                line,control=control.split(b'\n',1)
+                release=json.loads(line);slot=release.get('release')
+                if type(slot) is not int or leased.get(slot)!=release.get('serial'):raise ValueError('pool release')
+                del leased[slot];free_slots.add(slot)
         while pending(d):
             next_event(d,c.byref(event))
             if c.cast(event,c.POINTER(I))[0]==event_base.value:
@@ -95,6 +112,8 @@ try:
                     if not dirty:damage_ready_ms=time.time()*1000
                     area=[min(area[0],x0),min(area[1],y0),max(area[2],x1),max(area[3],y1)] if dirty else [x0,y0,x1,y1];dirty=True
         if not dirty or time.monotonic()-last<.016:continue
+        if pool and not free_slots:
+            select.select([sys.stdin.fileno()],[],[],.016);continue
         at=time.time()*1000
         if pid_of(d,window)!=owner or dims(d,window)!=(ww,hh):raise ValueError('window fence')
         stage='get_image'
@@ -103,7 +122,7 @@ try:
         image_ready_ms=time.time()*1000
         # XShm avoids Xlib pixel IPC. One bounded copy crosses the helper pipe.
         raw=c.string_at(shm.shmaddr,size);readback_ms=time.time()*1000;sig=fingerprint.update(raw);fingerprint_ms=time.time()*1000;last=time.monotonic();dirty=False
-        if sig==signature:continue
+        if not fingerprint.changed_bands:continue
         signature=sig;serial+=1
         # Full native readback/fingerprint remains authoritative. Avoid moving
         # 16MiB through the private pipe for a small changed rectangle. Receiver
@@ -111,7 +130,11 @@ try:
         patch,payload=raster_damage.raster_payload(previous,raw,width,height,area,fingerprint)
         # Both sparse delivery and native exact tiles use the readback delta.
         area=patch or [0,0,width,height];previous=raw;damage_ms=time.time()*1000
-        header=json.dumps(dict(width=width,height=height,length=len(payload),serial=serial,base_serial=serial-1,patch=patch,signature=sig,captured_ms=at,capture_ms=time.time()*1000-at,readback_ms=readback_ms,fingerprint_ms=fingerprint_ms,damage_ms=damage_ms,damage=area,window_height=hh,offset=offset,damage_ready_ms=damage_ready_ms,get_image_ms=get_image_ms,image_ready_ms=image_ready_ms)).encode()
+        slot=None
+        if pool:
+            slot=min(free_slots);free_slots.remove(slot);leased[slot]=serial
+            pool[slot][:]=raw;payload=b"\0";patch=None
+        header=json.dumps(dict(slot=slot,width=width,height=height,length=len(payload),serial=serial,base_serial=serial-1,patch=patch,signature=sig,captured_ms=at,capture_ms=time.time()*1000-at,readback_ms=readback_ms,fingerprint_ms=fingerprint_ms,damage_ms=damage_ms,damage=area,window_height=hh,offset=offset,damage_ready_ms=damage_ready_ms,get_image_ms=get_image_ms,image_ready_ms=image_ready_ms)).encode()
         sys.stdout.buffer.write(struct.pack('!I',len(header))+header+payload);sys.stdout.buffer.flush()
 except Exception:
     sys.stderr.write('MD-DISPLAY: native stage '+stage+'\n');sys.exit(1)
@@ -123,3 +146,4 @@ finally:
     if shm.shmaddr:shmdt(shm.shmaddr)
     if shm.shmid>=0:shmctl(shm.shmid,0,None)
     if d:close_display(d)
+    for mapping in pool:mapping.close()

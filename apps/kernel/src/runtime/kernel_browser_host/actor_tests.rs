@@ -840,6 +840,8 @@ done
 "#).unwrap();
     let host = KernelBrowserHost::new(root.clone());
     host.install_fixture_backend("alice", &script, &root);
+    // MP-11: observations cannot implicitly start a stopped controller.
+    host.backend("alice").unwrap().lock().unwrap().start().unwrap();
     let policy = json!({"values":[],"targets":[],"unknown":false});
     let (tx, rx) = std::sync::mpsc::channel();
     let early = std::thread::scope(|scope| {

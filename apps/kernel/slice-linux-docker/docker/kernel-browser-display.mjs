@@ -18,6 +18,7 @@ export class PortableEncoder {
   async encode(png, bitrate, reset = false, codec = 'vp09.00.10.08') {
     return typeof png==='object' ? this.exchange({raw:png,bitrate,reset,codec}) : this.exchange({png,bitrate,reset,codec});
   }
+  async encodeStripes(raw,bitrate,reset=false,codec='avc1.420033'){return this.exchange({raw,bitrate,reset,codec,operation:'stripes'})}
   async hash(png) { return this.exchange({png,operation:'fingerprint'}); }
   async exchange(request) {
     if (this.failure) throw this.failure;
@@ -38,7 +39,10 @@ export class PortableEncoder {
         try {
           const reply = JSON.parse(line);
           if(reply.error)return fail();
-          if(this.pending?.hash){
+          if(this.pending?.stripes){
+            if(!Array.isArray(reply.stripes)||reply.stripes.length>8)return fail();
+            this.backend=reply.backend;this.pending.resolve({stripes:reply.stripes});
+          }else if(this.pending?.hash){
             if(!/^[a-f0-9]{64}$/.test(reply.signature)||!Number.isInteger(reply.width)||!Number.isInteger(reply.height)||reply.width<1||reply.height<1||reply.width>2560||reply.height>1600)return fail();
             this.pending.resolve(reply);
           }else{
@@ -54,8 +58,8 @@ export class PortableEncoder {
     try {
       return await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('MD-DISPLAY: encode timeout')), 10_000);
-        this.pending = { hash:request.operation==='fingerprint', resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); } };
-        if(request.raw){const {pixels,...raw}=request.raw;this.child.stdin.write(JSON.stringify({...request,raw})+'\n');this.child.stdin.write(pixels)}else this.child.stdin.write(JSON.stringify(request) + '\n');
+        this.pending = { stripes:request.operation==='stripes',hash:request.operation==='fingerprint', resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); } };
+        if(request.raw?.shared){this.child.stdin.write(JSON.stringify(request)+'\n')}else if(request.raw){const {pixels,...raw}=request.raw;this.child.stdin.write(JSON.stringify({...request,raw})+'\n');this.child.stdin.write(pixels)}else this.child.stdin.write(JSON.stringify(request) + '\n');
       });
     } catch (error) { await this.close(); throw error; }
   }
@@ -115,7 +119,7 @@ export class DisplayStream {
       this.invalidate();
       // Selection can already have taken a delta from the producer. Resetting
       // only future work cannot make that packet independently decodable.
-      if (source.encoded && !source.encoded.key) return null;
+      if (source.encoded && (source.encoded.stripes ? source.encoded.stripes.length!==8||source.encoded.stripes.some(r=>!r.key) : !source.encoded.key)) return null;
     }
     const same = current.signature ? this.previous?.signature === current.signature : Boolean(this.previous?.pixels && this.previous.pixels.equals(current.pixels));
     // Taken packets have already advanced the persistent codec reference chain.
@@ -157,8 +161,11 @@ export class DisplayStream {
     else if (this.codec === 'png') payload = full();
     else {
       const encoded = source.encoded ?? await this.encoder.encode(png(), this.bitrate, !this.dependencies || !bound || !this.previous || this.exact || Boolean(this.repair),this.codec);
+      if(encoded.stripes){payload={kind:'stripes',base_sequence:this.sequence,stripes:encoded.stripes};}
+      else {
       if(!this.dependencies && typeof encoded!=='string' && !encoded.key)throw Error('MD-DISPLAY: unnegotiated dependent frame');
       payload = { kind:'video', codec:this.codec, ...(typeof encoded === 'string' ? {key:true,data_base64:encoded} : encoded) };
+      }
     }
     this.timing('select_encode', at); at = timestamp();
     const packet = { ...payload, subscription_id: this.subscription_id, tab_id: this.tab_id,
@@ -178,7 +185,7 @@ export class DisplayStream {
     if(deadline<=this.now())await this.wait(0);
     while(this.now()<deadline){
       if(!currentBinding()){
-        if(payload.kind==='video')this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}
+        if(['video','stripes'].includes(payload.kind))this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}
         return null;
       }
       const before=this.now(),slice=Math.min(deadline-before,8);await this.wait(slice);
@@ -188,13 +195,13 @@ export class DisplayStream {
     this.tokens = Math.min(16*1024, this.tokens + Math.max(0,this.now()-this.refillAt)*this.bitrate/8000)-bytes;
     this.tokens = Math.max(0,this.tokens); this.refillAt = this.now();
     this.timing('pacing', at);
-    if (!await validate()) { if(payload.kind==='video')this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}return null; }
+    if (!await validate()) { if(['video','stripes'].includes(payload.kind))this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}return null; }
     this.document_id = documentId; this.previous = current; this.repair = repair?.length ? repair : null;this.repairSerial=source.refinement_serial;
     // A small exact patch can acknowledge input over a lossy video base. It
     // certifies only its damaged pixels; idle native verification still repairs
     // the untouched raster before the whole frame becomes exact.
-    this.exact = source.native_tiles ? wasExact : payload.kind !== 'video' && !this.repair; this.sequence++;
-    if(payload.kind!=='video')this.producer?.retireUnsent();
+    this.exact = source.native_tiles ? wasExact : !['video','stripes'].includes(payload.kind) && !this.repair; this.sequence++;
+    if(!['video','stripes'].includes(payload.kind))this.producer?.retireUnsent();
     return packet;
   }
   async close() { clearTimeout(this.timer); this.invalidate(); await this.producer?.close();await this.refiner?.close();await this.pixels.close();await this.encoder.close(); }

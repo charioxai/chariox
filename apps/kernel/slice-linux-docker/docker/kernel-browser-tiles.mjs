@@ -30,7 +30,7 @@ export function dirtyTiles(previous, current, region = null, all = false) {
 // MD-DISPLAY-02/04: exact small native damage, only on a contiguous serial
 // following a complete exact frame. No approximation or reduced raster.
 export function nativeDamageTiles(raw, checkOnly = false) {
-  if(!raw || raw.format!=='bgr0' || !Number.isSafeInteger(raw.width) || !Number.isSafeInteger(raw.height) ||
+  if(!raw || raw.shared || raw.format!=='bgr0' || !Number.isSafeInteger(raw.width) || !Number.isSafeInteger(raw.height) ||
     raw.width<1 || raw.width>2560 || raw.height<1 || raw.height>1600 ||
     (typeof raw.readRegion==='function'?raw.length:raw.pixels?.length)!==raw.width*raw.height*4 || !Array.isArray(raw.damage) || raw.damage.length!==4) return null;
   const [left,top,right,bottom]=raw.damage;

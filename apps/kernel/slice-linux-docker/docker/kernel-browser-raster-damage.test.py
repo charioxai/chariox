@@ -102,5 +102,17 @@ class FingerprintTest(unittest.TestCase):
         self.assertNotEqual(initial,module.RasterFingerprint(256,80).update(raw),'geometry binds band interpretation')
         with self.assertRaises(ValueError):cache.update(raw[:-4])
 
+class CollisionTest(unittest.TestCase):
+    def test_mp11_hash_collision_still_exposes_changed_bands(self):
+        original=module.fast_hash
+        module.fast_hash=lambda data:0
+        try:
+            cache=module.RasterFingerprint(128,80)
+            first=cache.update(bytes(128*80*4))
+            second=cache.update(bytes([1])*(128*80*4))
+            self.assertEqual(first,second)
+            self.assertTrue(cache.changed_bands, 'hash collision cannot suppress publication')
+        finally:module.fast_hash=original
+
 if __name__ == '__main__':
     unittest.main()

@@ -133,3 +133,13 @@ test('MP-08/MP-10 1080p motion admits 720p video while rejecting arbitrary decod
  try{assert.equal(await presenter.present({...frame,sequence:1}),true);assert.equal(draws,1);size=[960,540];await assert.rejects(presenter.present({...frame,sequence:2}),/decoded geometry/);assert.equal(draws,1);assert.equal(presenter.sequence,1)}
  finally{presenter.close();globalThis.VideoDecoder=oldDecoder;globalThis.EncodedVideoChunk=oldChunk}
 });
+
+test('MP-08/MP-10 #893 default viewer offers DPR1 for a 1080p host',async()=>{
+ let command;
+ const transport={onEvent:()=>()=>{},request:async request=>{
+  if(request.KernelBrowser.command.op==='display_subscribe')command=request.KernelBrowser.command;
+  return{KernelBrowser:{result:{subscription_id:'s',generation:1,codec:'png'}}};
+ }};
+ const stream=await attachBrowserDisplay({width:1,height:1},transport,{tab_id:'t',generation:1});
+ try{assert.equal(command.device_scale_factor,1)}finally{await stream.close()}
+});

@@ -2,7 +2,7 @@
 import {PixelWorker} from './kernel-browser-pixel-worker.mjs';
 import {timestamp} from './kernel-browser-timing.mjs';
 export class NativeRefiner {
- constructor(capture,{pixels=new PixelWorker(),now=()=>performance.now(),quietMs=80,verifyMs=250,prepareTiles=false,timing=()=>{}}={}){Object.assign(this,{capture,pixels,now,quietMs,verifyMs,prepareTiles,timing});this.latest=null;this.active=null;this.closed=false;this.verifiedAt=-Infinity;this.revision=0;this.prepared=null;}
+ constructor(capture,{pixels=new PixelWorker(),now=()=>performance.now(),quietMs=300,verifyMs=250,prepareTiles=false,timing=()=>{}}={}){Object.assign(this,{capture,pixels,now,quietMs,verifyMs,prepareTiles,timing});this.latest=null;this.active=null;this.closed=false;this.verifiedAt=-Infinity;this.revision=0;this.prepared=null;}
  same(a,b){return a&&b&&a.source===b.source&&a.document===b.document&&a.policy===b.policy&&a.epoch===b.epoch&&a.serial===b.serial;}
  request(binding,changedAt,valid){
   if(this.closed)throw Error('MD-DISPLAY: refiner closed');

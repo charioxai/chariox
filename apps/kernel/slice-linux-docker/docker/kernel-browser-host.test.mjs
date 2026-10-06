@@ -664,3 +664,17 @@ test('private CDP pipe loss retires the browser generation even while child is l
   assert.equal(after.tabs[0].tab_id,before.tab_id);
   await assert.rejects(host.request({op:'screenshot',tab_id:before.tab_id,generation:before.generation}),{code:'user_domain_stale_epoch'});
 }));
+
+// MP-08/MP-10: run this bound admission check under both supported host geometries.
+test('MP-08/MP-10 #893 unsupported DPR fails before emulation/subscription mutation',()=>using(async({host,sent})=>{
+ const {displayGeometry}=await import('./kernel-browser-geometry.mjs');
+ const old=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try{
+  const opened=await host.request({op:'open',url:'about:blank'});
+  const before=sent.filter(x=>x.method==='Emulation.setDeviceMetricsOverride').length;
+  const dpr=displayGeometry.width===1920?2:3;
+  await assert.rejects(host.request({op:'display_subscribe',tab_id:opened.tab_id,generation:opened.generation,codecs:['png'],bitrate:8000000,device_scale_factor:dpr}),/negotiation/);
+  assert.equal(host.displays.size,0);assert.equal(host.scales.size,0);
+  assert.equal(sent.filter(x=>x.method==='Emulation.setDeviceMetricsOverride').length,before);
+ }finally{if(old===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=old}
+}));

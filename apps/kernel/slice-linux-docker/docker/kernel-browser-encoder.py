@@ -7,6 +7,8 @@ import json
 import sys
 import os
 import shutil
+import mmap
+import stat
 import subprocess
 import threading
 from pathlib import Path
@@ -89,6 +91,7 @@ class VaapiEncoder:
         self.configuration=None
 
 def main():
+    stripes = None
     codec = None
     configuration = None
     sequence = 0
@@ -102,16 +105,39 @@ def main():
             if 'raw' in request:
                 raw=request['raw'];w=raw['width'];h=raw['height'];size=w*h*4
                 if not (1<=w<=2560 and 1<=h<=1600) or raw['format']!='bgr0' or raw['length']!=size:raise ValueError('raw bound')
-                pixels=sys.stdin.buffer.read(size)
+                if raw.get('shared'):
+                    shared=raw['shared']
+                    if shared.get('length')!=size:raise ValueError('shared size')
+                    file=os.open(shared['path'],os.O_RDONLY|os.O_NOFOLLOW)
+                    try:
+                        info=os.fstat(file)
+                        if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_mode & 0o077 or info.st_size!=size:raise ValueError('shared owner')
+                        mapping=mmap.mmap(file,size,access=mmap.ACCESS_READ)
+                    finally:os.close(file)
+                    pixels=mapping
+                else:pixels=sys.stdin.buffer.read(size)
                 if len(pixels)!=size:raise ValueError('raw truncated')
-                frame=av.VideoFrame(w,h,'bgr0')
-                frame.planes[0].update(pixels)
+                if request.get('operation')!='stripes':
+                    frame=av.VideoFrame(w,h,'bgr0')
+                    frame.planes[0].update(pixels)
+
             else:
                 png = base64.b64decode(request['png'], validate=True)
                 if len(png) > 4 * 1024 * 1024:raise ValueError('frame bound')
                 with av.open(io.BytesIO(png)) as source:frame = next(source.decode(video=0))
-            if frame.width > 2560 or frame.height > 1600:
+            if request.get('operation')!='stripes' and (frame.width > 2560 or frame.height > 1600):
                 raise ValueError('geometry bound')
+            if request.get('operation')=='stripes':
+                import importlib.util
+                if stripes is None:
+                    spec=importlib.util.spec_from_file_location('stripes',Path(__file__).with_name('kernel-browser-stripes.py'))
+                    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);stripes=module.StripeEncoder()
+                if 'raw' not in request:raise ValueError('stripes require admitted raster')
+                try:rows=stripes.encode(pixels,w,h,request['bitrate'],request.get('reset',False),request.get('codec','avc1.420033'))
+                finally:
+                    if raw.get('shared'):mapping.close()
+                print(json.dumps({'stripes':rows,'backend':stripes.backend}),flush=True);continue
+            if request.get('raw',{}).get('shared'):mapping.close()
             if request.get('operation')=='fingerprint':
                 signature=hashlib.sha256(frame.format.name.encode())
                 for plane in frame.planes:

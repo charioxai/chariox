@@ -1,8 +1,15 @@
 """MD-DISPLAY-02/04: sparse bounds come from the complete readback, not events."""
 
 import ctypes
-import hashlib
+import ctypes.util
 import struct
+
+# MP-08/MP-10/MP-11: fast scheduling hash, never an authority/attestation digest.
+_xxh = ctypes.CDLL(ctypes.util.find_library("xxhash") or "libxxhash.so.0").XXH3_64bits
+_xxh.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+_xxh.restype = ctypes.c_uint64
+def fast_hash(data):
+    return _xxh(ctypes.cast(ctypes.c_char_p(data), ctypes.c_void_p), len(data))
 
 _memcmp = ctypes.CDLL(None).memcmp
 _memcmp.restype = ctypes.c_int
@@ -22,9 +29,9 @@ class RasterComparison:
 
 
 class RasterFingerprint:
-    # SHA256 over geometry and ordered SHA256 band digests binds every byte.
-    # Reuse a band digest only after comparing its actual complete readback.
-    # XDamage/event rectangles never authorize reuse. Dense motion rehashes all.
+    # Hash changed bands only, after exact byte comparisons. Event rectangles
+    # never authorize reuse. A collision cannot suppress change: changed_bands
+    # drives publication; this signature is only a scheduling hint.
     def __init__(self, width, height):
         self.width, self.height = width, height
         self.band = width*4*64
@@ -37,7 +44,6 @@ class RasterFingerprint:
         if len(raw) != self.width*self.height*4:
             raise ValueError('fingerprint raster size')
         compare = RasterComparison(self.previous, raw) if self.previous is not None else None
-        view = memoryview(raw)
         digests = []
         changed = []
         for n, start in enumerate(range(0, len(raw), self.band)):
@@ -46,15 +52,14 @@ class RasterFingerprint:
                 digests.append(self.digests[n])
             else:
                 changed.append((start, end))
-                digests.append(hashlib.sha256(view[start:end]).digest())
+                digests.append(struct.pack("!Q", fast_hash(raw[start:end])))
         self.compared_previous, self.changed_bands = self.previous, changed
         # An unchanged readback must not replace the last authoritative byte
         # object: the next published sparse packet still follows that snapshot.
         if changed:
             self.previous = raw
         self.digests = digests
-        return hashlib.sha256(b'chariox-native-raster-v1' +
-                              struct.pack('!II', self.width, self.height) + b''.join(digests)).hexdigest()
+        return f'{fast_hash(struct.pack("!II", self.width, self.height) + b"".join(digests)):016x}'
 
 
 def raster_payload(previous, raw, width, height, event_area, fingerprint=None):
