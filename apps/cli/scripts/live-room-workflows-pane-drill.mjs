@@ -141,12 +141,14 @@ try {
   // Use a real provider completion and the terminal's real agent panes as proof.
   await key('\t')
   await stateUntil(s=>s.room_workflows.workflows[0].running_count===0,180000)
-  await capture('09-provider-completion',text=>text.includes('RELOST_WORKFLOW_OK'),60000)
   const history=unwrap(await client.send(requests.getSessionHistoryOutlineRequest(sessionId,[agent.id],4)), 'SessionHistoryOutline')
   const completed=history.agents.flatMap(agent=>agent.turns).find(turn=>
     [turn.summary,...turn.entries].some(value=>value?.entry.kind==='provider_output'&&value.entry.text.trim()==='RELOST_WORKFLOW_OK'))
+  receipt.providerTurnEvidence=history.agents.flatMap(value=>value.turns).map(turn=>({turnId:turn.turn_id,lifecycle:turn.lifecycle,hasMarker:[turn.summary,...turn.entries].some(value=>value?.entry.kind==='provider_output'&&value.entry.text.trim()==='RELOST_WORKFLOW_OK')}))
   assert.ok(completed,'MP-08 official provider output must be distinct from the user prompt')
   receipt.providerCompletion={provider:'codex',agentId:agent.id,turnId:completed.turn_id,lifecycle:completed.lifecycle,output:'RELOST_WORKFLOW_OK'}
+  await key('\t') // Navigate from the primary agent pane to the workflow agent.
+  await capture('09-provider-completion',text=>text.includes('RELOST_WORKFLOW_OK'),60000)
   receipt.status='GREEN'
 } catch(error) {
   receipt.status='RED';receipt.firstFailure=error.message
