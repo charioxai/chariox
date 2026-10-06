@@ -1,6 +1,7 @@
 // MP-08/MP-11: authority-sensitive native dispatch, without page values.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { runInNewContext } from "node:vm";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 
 function fixture(protectedTarget = false) {
@@ -15,6 +16,27 @@ function fixture(protectedTarget = false) {
   return { sent, browser: { resolvePageTarget: async () => ({ connection, sessionId: "s" }), inputCapture: { run: async (_c, _s, fn) => fn() } } };
 }
 const tab = { target_id: "t", document_id: "doc" };
+test('MP-08/MP-11: admitted same-origin mirror frames inspect the live leaf and fail closed for protected or opaque targets',async()=>{
+  const element=(fields={})=>({tagName:'INPUT',closest:()=>null,...fields});
+  for(const [name,leaf,protectedTarget] of [
+    ['ordinary',element(),false],['password',element({type:'password'}),true],
+    ['uppercase OTP',element({autocomplete:'ONE-TIME-CODE'}),true],
+    ['payment',element({autocomplete:'CC-NUMBER'}),true],
+    ['protected ancestor',element({closest:()=>({})}),true],
+    ['shadow password',element({shadowRoot:{activeElement:element({type:'password'})}}),true],
+    ['opaque',null,true],
+  ]) for(const mirror of [false,true]) {
+    const {browser,sent}=fixture();const {connection}=await browser.resolvePageTarget();const send=connection.send;
+    connection.send=async(method,params)=>method==='Runtime.evaluate'
+      ? {result:{value:runInNewContext(params.expression,{document:{activeElement:element({tagName:'IFRAME',contentDocument:leaf&&{activeElement:leaf}})}})}}
+      : send(method,params);
+    const input={kind:'text',text:'fixture'};
+    const pending=inputHostTab(browser,tab,mirror?{kind:'mirror'}:input,
+      mirror?{resolveMirror:async()=>({input,guard:async()=>{}})}:{});
+    if(protectedTarget||!mirror) {await assert.rejects(pending,{code:'user_domain_sensitive_requires_focus'},name);assert.equal(sent.filter(x=>x.method.startsWith('Input.')).length,0);}
+    else {await pending;assert.equal(sent.filter(x=>x.method==='Input.insertText').length,1);}
+  }
+});
 test("MP-11: retained typing, keys and clicks dispatch identically to focused input", async () => {
   for (const input of [{kind:'click',x:1,y:2},{kind:'text',text:'fixture'},
     ...['Tab','Shift+Tab','Enter','Space','Delete','Backspace','ArrowLeft','Home','a','Escape'].map(key=>({kind:'key',key}))]) {

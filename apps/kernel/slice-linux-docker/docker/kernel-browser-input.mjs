@@ -8,6 +8,7 @@ const keyCodes = { Tab: 9, Enter: 13, Escape: 27, Backspace: 8, Delete: 46,
 export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror } = {}) {
     assertNotCancelled(signal);
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
+    const mirrorInput = input.kind === "mirror";
     const check = async () => {
       assertNotCancelled(signal);
       await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
@@ -22,7 +23,18 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       }, sessionId);
       const { result } = await connection.send("Runtime.evaluate", {
         contextId: executionContextId,
-        expression: "(() => { let e = document.activeElement; while(e?.shadowRoot?.activeElement) e = e.shadowRoot.activeElement; return !!e && (e.type === 'password' || e.tagName === 'IFRAME' || /password|one-time-code/.test(e.autocomplete || '')); })()",
+        // MP-08/MP-11: admitted mirrors may target observed same-origin frame
+        // descendants. Inspect the live leaf in this isolated world; direct
+        // frame input and inaccessible/protected frames still fail closed.
+        expression: `(() => { let e = document.activeElement; while(e) {
+          if(e.type === 'password' || /password|one-time-code|cc-/i.test(e.autocomplete || '') || e.closest('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')) return true;
+          if(e.shadowRoot?.activeElement) { e = e.shadowRoot.activeElement; continue; }
+          if(e.tagName === 'IFRAME') {
+            if(!${mirrorInput}) return true;
+            try { const leaf = e.contentDocument?.activeElement; if(!leaf) return true; e = leaf; continue; } catch { return true; }
+          }
+          return false;
+        } return true; })()`,
         returnByValue: true,
       }, sessionId);
       if (result?.value !== false) throw new UserDomainRefusal("sensitive_requires_focus");

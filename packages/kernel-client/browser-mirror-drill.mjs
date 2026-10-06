@@ -82,7 +82,7 @@ if(process.argv[2]!=='child') {
     await resource();await new Promise(resolve=>origin.listen(0,'127.0.0.1',resolve));await new Promise(resolve=>serve.listen(0,'127.0.0.1',resolve));
     const originUrl=`http://127.0.0.1:${origin.address().port}`,viewerUrl=`http://127.0.0.1:${serve.address().port}`;
     // MP-11: the reference viewer is fixture-owned; product source CDP stays on its private pipe.
-    browser=await chromium.launch({executablePath:path.join(root,'chromium-launcher'),chromiumSandbox:true,headless:true,args:['--disable-frame-rate-limit']});const context=await browser.newContext();viewer=await context.newPage();await viewer.setViewportSize({width:1280,height:800});
+    browser=await chromium.launch({executablePath:path.join(root,'chromium-launcher'),chromiumSandbox:true,headless:true,ignoreDefaultArgs:['--hide-scrollbars'],args:['--disable-frame-rate-limit']});const context=await browser.newContext();viewer=await context.newPage();await viewer.setViewportSize({width:1280,height:800});
     let forbiddenRequests=0;viewer.on('request',req=>{if(req.url().startsWith(originUrl))forbiddenRequests++});
     const viewerCdp=await browser.contexts()[0].newCDPSession(viewer);
     // MP-10: send JSON bytes across the synthetic bridge, as production does.
