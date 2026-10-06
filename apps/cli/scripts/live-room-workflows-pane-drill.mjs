@@ -80,7 +80,7 @@ async function diagnostics(result) {
       let entry;try{entry=JSON.parse(line)}catch{continue}
       if(entry.component!=='daemon.app_events')continue
       const error=String(entry.error??'')
-      records.push({component:entry.component,message:entry.message,error:/token|credential|bearer|secret|passphrase|auth/i.test(error)?'[credential-related diagnostic suppressed]':error})
+      records.push({component:entry.component,message:entry.message,error:error.includes('is not authenticated;')?'provider account lacks successful product auth observation':/token|credential|bearer|secret|passphrase|auth/i.test(error)?'[credential-related diagnostic suppressed]':error})
     }
   }
   await writeFile(path.join(args.output,'runtime-pump.json'),JSON.stringify({mpItems:['MP-08','MP-11'],messages:records,
@@ -95,7 +95,7 @@ async function stateUntil(predicate, timeout=60000) {
 try {
   relay = spawnOwned(args.relay, [], { cwd:repo,env,stdio:'ignore',detached:true })
   kernel = spawnOwned(args.kernel, [], { cwd:repo,env,stdio:'ignore',detached:true })
-  client = new LocalIpcClient(`ws://127.0.0.1:${ports[0]}`, {localAuthEnvironment:env,controlRequestRetryDeadlineMs:1000})
+  client = new LocalIpcClient(`ws://127.0.0.1:${ports[0]}`, {localAuthEnvironment:env,controlRequestRetryDeadlineMs:15000})
   for(let i=0;;i++) {if(kernel.exitCode!==null)throw new Error(`MP-08 kernel startup exited (${kernel.exitCode})`);try{await client.send(requests.listSessionsRequest());break}catch(error){if(i>=80)throw error;await sleep(250)}}
   const profile = unwrap(await client.send(requests.linkProviderAccountProfileRequest('codex','relost-acct-686',args['account-dir'])), 'ProviderAccountProfile').profile
   const auth=unwrap(await client.send(requests.getProviderAuthStatusRequest('codex',profile.profile_id)), 'ProviderAuthStatus').status
