@@ -19,6 +19,17 @@ for argument do
   previous=$argument
 done
 case "$version" in ''|*@*) printf '%s\n' 'MP-07: use a published versioned installer' >&2; exit 1 ;; esac
+# MP-07/MP-11: macOS's stock LibreSSL cannot verify Ed25519 with pkeyutl -rawin.
+case "$(openssl version 2>/dev/null || true)" in
+  'OpenSSL 3.'*) ;;
+  *)
+    printf '%s\n' 'MP-07/MP-11: Setup requires OpenSSL 3.x with Ed25519 support on PATH; macOS system LibreSSL is unsupported.' >&2
+    case "$platform" in
+      darwin-arm64) printf '%s\n' 'MP-07/MP-11: Run brew install openssl@3, then export PATH="$(brew --prefix openssl@3)/bin:$PATH" and rerun this installer.' >&2 ;;
+      *) printf '%s\n' 'MP-07/MP-11: Install OpenSSL 3 using your system package manager, put its bin directory on PATH and rerun this installer.' >&2 ;;
+    esac
+    exit 1 ;;
+esac
 stage=$(mktemp -d "${TMPDIR:-/tmp}/chariox-setup.XXXXXXXX")
 trap 'rm -rf -- "$stage"' EXIT HUP INT TERM
 curl -fsS --location --max-redirs 5 --proto-redir '=https' --proto '=https' --max-time 300 --max-filesize 268435456 "$base/v$version/chariox-setup-$version-$platform" -o "$stage/chariox-setup"
