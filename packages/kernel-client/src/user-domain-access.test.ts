@@ -117,3 +117,15 @@ test("successful lower-cursor replay refreshes authority and fences concurrent o
   assert.equal(controller.lastObservedRetainedUse(grant), 600)
   assert.equal(requests.at(-1).after, 2)
 })
+
+// MP-08 / MP-10 / MP-11: the new grant operation alone requires 449.
+test("Room Computer grant is version gated and uses the existing Access transport", async () => {
+  const old = fixture(448); old.controller.sync(); await tick()
+  await assert.rejects(old.controller.grantRoomComputer("a"), /449/)
+  assert(!old.requests.some(r => r.KernelBrowser.command.op === "grant_room_computer")); old.controller.stop()
+  const h = fixture(449); h.controller.sync(); await tick()
+  h.set({ ...event(2), room_computer: [{ agent_id: "a", session_id: "s", allowed: true }] })
+  await h.controller.grantRoomComputer("a")
+  assert.deepEqual(h.requests.at(-1).KernelBrowser.command, { op: "grant_room_computer", agent_id: "a" })
+  assert.equal(h.controller.snapshot!.room_computer![0]!.allowed, true); h.controller.stop()
+})

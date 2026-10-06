@@ -34,6 +34,7 @@ use crate::session::CanonicalViewport;
 
 mod app_view_bridge;
 mod cancellation;
+mod room_computer;
 pub(crate) use cancellation::CancellationSignal as BrowserCancellation;
 mod configuration_cancellation;
 mod lifecycle_cancellation;

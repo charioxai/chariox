@@ -6,6 +6,7 @@ export type KernelBrowserInput =
   | { kind: "key"; key: string }
   | { kind: "scroll"; x: number; y: number; delta_x: number; delta_y: number }
 export type KernelBrowserCommand =
+  | { op: "grant_room_computer"; agent_id: string }
   | { op: "computer"; command: KernelComputerCommand }
   | { op: "list_grants" }
   | { op: "subscribe_grants"; after: number; wait_ms: number }
@@ -46,6 +47,7 @@ export type UserDomainGrant = {
   idle_timeout_seconds: number; expiry_rule: string
 }
 export type UserDomainGrantEvent = {
+  room_computer?: { agent_id: string; session_id: string; allowed: boolean }[]
   event: "user_domain_grants_changed"; cursor: number; grants: UserDomainGrant[];
   notice: { agent_id: string; resource: UserDomainResource; at_ms: number } | null
 }

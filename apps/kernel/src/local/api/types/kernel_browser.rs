@@ -7,6 +7,9 @@ pub enum KernelBrowserCommand {
     Computer {
         command: KernelComputerCommand,
     },
+    GrantRoomComputer {
+        agent_id: String,
+    },
     ListGrants,
     SubscribeGrants {
         after: u64,

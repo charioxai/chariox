@@ -139,6 +139,7 @@ mod room_browser_controller;
 mod room_browser_controller_admission;
 mod room_browser_manifest_sync;
 mod room_browser_start_failure;
+mod room_computer_access;
 mod room_computer_observation;
 mod room_display;
 mod room_environment_health;
@@ -196,6 +197,7 @@ struct KernelRuntimeOwnedState {
     browser_controller_processes:
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
+    room_computer_revoked: Arc<std::sync::Mutex<BTreeSet<String>>>,
     room_secret_observations: room_secret_observation::RoomSecretObservations,
     kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations,
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
@@ -813,6 +815,7 @@ impl KernelRuntimeState {
                 browser_import_admission:
                     crate::runtime::browser_import_admission::BrowserImportAdmission::default(),
                 environment_execution_gates: Default::default(),
+                room_computer_revoked: Default::default(),
                 room_secret_observations,
                 kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations::new(
                     config.private_runtime_state_root().join("kernel-browser/observations"),

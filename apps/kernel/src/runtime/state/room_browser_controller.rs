@@ -652,6 +652,18 @@ async fn execute_local(
                 .cancellation()
                 .with_authorizer(authorize_input.clone());
             let input_result = match action {
+                crate::transport::room_browser_controller::RoomComputerInputAction::TargetAction { tree_revision, target_id, action } => {
+                    let policy = state.owned.room_secret_observations.capture_policy(session_id)?;
+                    let policy: serde_json::Value = serde_json::from_str(&policy).map_err(|_| controller_route_error("protection unavailable"))?;
+                    let controller = processes.clone();
+                    let room = session_id.to_string();
+                    let authorize = authorize_input.clone();
+                    tokio::task::spawn_blocking(move || {
+                        authorize().map_err(|e| crate::error::HostFailure::Other(e.to_string()))?;
+                        controller.room_computer_action(&room, serde_json::json!({"observer":actor_id,"tree_revision":tree_revision,"target_id":target_id,"action":action,"policy":policy}), move || cancellation.requested() || cancellation.authorize().is_err())
+                    }).await.map_err(|_| controller_route_error("accessibility action task failed"))?
+                        .map(|_| ()).map_err(|error| error.into_daemon("room_computer"))
+                }
                 crate::transport::room_browser_controller::RoomComputerInputAction::PointerMove {
                     x,
                     y,

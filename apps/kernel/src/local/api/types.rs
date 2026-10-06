@@ -264,4 +264,5 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: version 443 combines main 435 with the multidomain
 /// host browser, App views, Notes, grants, captures and DOM mirror contract.
 /// MP-08/MP-11: reserved version446 adds owned Linux desktop targets and input.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 446;
+/// MP-08 / MP-10 / MP-11: Room AT-SPI and per-agent Computer revoke.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 449;

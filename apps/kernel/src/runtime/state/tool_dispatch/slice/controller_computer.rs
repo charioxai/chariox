@@ -45,7 +45,7 @@ impl KernelRuntimeState {
             .await
     }
 
-    async fn controller_computer_input_tool_result(
+    pub(super) async fn controller_computer_input_tool_result(
         &self,
         session_id: &str,
         slice_id: &str,

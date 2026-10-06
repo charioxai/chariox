@@ -58,7 +58,11 @@ def snapshot(processes):
         if desktop.childCount>64:complete=False
         # A private bus alone does not prove all visible windows expose AT-SPI.
         # Unknown/unscoped native windows make password coverage uncertain.
-        from Xlib import X, display
+        try:
+            from Xlib import X, display
+        except ModuleNotFoundError as error:
+            if error.name != 'Xlib': raise
+            from selkies.Xlib import X, display
         connection=display.Display()
         try:
             root=connection.screen().root

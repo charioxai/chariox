@@ -28,6 +28,7 @@ pub(crate) fn computer_input_action_metadata(
     viewport_revision: u64,
 ) -> ComputerInputActionMetadata {
     let (kind, arguments) = match input {
+        RoomComputerInputAction::TargetAction { .. } => ("accessibility_action", None),
         RoomComputerInputAction::PointerMove { x, y } => (
             "pointer_move",
             Some(EnvironmentActionArguments::PointerMove {
@@ -145,6 +146,23 @@ pub(crate) fn validate_computer_input_action(
     };
 
     match input {
+        RoomComputerInputAction::TargetAction {
+            tree_revision,
+            target_id,
+            action,
+        } => {
+            if *tree_revision == 0
+                || !target_id.starts_with("atspi-")
+                || target_id.len() > 128
+                || action.is_empty()
+                || action.len() > 64
+                || action.chars().any(char::is_control)
+            {
+                Err(EnvironmentError::InvalidKeyboardKey)
+            } else {
+                Ok(())
+            }
+        }
         RoomComputerInputAction::PointerMove { x, y } => validate_point(*x, *y),
         RoomComputerInputAction::PointerDrag {
             from_x,

@@ -1,6 +1,8 @@
 import type { KernelBrowserCommand, UserDomainGrant, UserDomainGrantEvent, UserDomainResource } from "./kernel-types-kernel-browser.js"
 
 export const userDomainAccessMinimumProtocol = 443
+// MP-08 / MP-10 / MP-11: only Room Computer grant consumers require 449.
+export const roomComputerAccessMinimumProtocol = 449
 // LocalIpcClient has a 5s response-stall watchdog and no per-request options.
 // Keep each owner observation below that watchdog on every client transport.
 export const userDomainGrantPollWaitMs = 1000
@@ -115,6 +117,16 @@ export class UserDomainAccessController {
         this.retry = setTimeout(() => { if (revision === this.revision) this.refresh() }, 2000)
       }
     }
+  }
+  async grantRoomComputer(agentId: string): Promise<void> {
+    this.sync()
+    if ((this.protocol ?? 0) < roomComputerAccessMinimumProtocol) throw new Error("Room Computer grants require kernel protocol 449.")
+    if (this.busy) return
+    if (!this.snapshot || this.error) throw new Error(this.error ?? "Access grants are loading.")
+    const revision = this.revision
+    this.busy = true; this.publish()
+    try { this.apply(await this.request({ op: "grant_room_computer", agent_id: agentId }, revision, this.abort?.signal)) }
+    finally { if (revision === this.revision) { this.busy = false; this.publish() } }
   }
   async revoke(agentId: string | null): Promise<void> {
     this.sync()

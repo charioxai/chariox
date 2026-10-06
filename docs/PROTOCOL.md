@@ -3167,3 +3167,9 @@ existing terminal/passkey gate and shared pending-interaction authority;
 a detached passkey popup has an empty session routing field. Room App views
 retain their existing protocol. See [App views without a session](MULTIDOMAIN_APP_VIEWS.md)
 for host isolation, lifecycle and migration. No relay-peer shape changes.
+
+### MP-08 / MP-10 / MP-11: Room Computer access (local 449, peer 92)
+
+Room membership grants Computer control by default. The owner can revoke a specific agent's Computer control through the existing Access command (`revoke_grants`) and restore it with `grant_room_computer`. Membership and Browser access remain intact. The kernel checks the restriction at input admission, queued dispatch and active cancellation; workers retain the existing authenticated Room peer binding. Access snapshots project each owned agent's Room Computer permission.
+
+Slice Computer accessibility uses the existing controller and native AT-SPI backend through bounded `chariox.slice_accessibility` snapshots and `chariox.slice_target_action` actions. Handles belong to an observer and tree revision; stale or foreign handles fail closed. The controller joins the desktop session's private D-Bus address, scopes visible processes to the desktop user, applies the current observation policy and routes target actions through the normal Room Action ledger and cancellation path. The relay remains encrypted transport only.

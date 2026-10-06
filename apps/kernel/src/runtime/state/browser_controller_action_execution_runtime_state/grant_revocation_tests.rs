@@ -171,3 +171,104 @@ async fn dispatched_computer_action_settles_after_grant_revocation() {
         .unwrap()
         .unwrap();
 }
+
+// MP-08 / MP-10 / MP-11: revoke Computer only; membership and Browser survive.
+#[tokio::test]
+async fn mp08_room_computer_revoke_denies_queued_and_new_input_and_regrants() {
+    crate::test_support::isolated_env_test!();
+    let room = TestRoom::new("room-computer-revoke");
+    let snapshot = room
+        .runtime
+        .room_environment_snapshot(&room.session_id)
+        .unwrap();
+    let actor = crate::session::agent_environment_actor_id(&room.agent_id);
+    let submit = || {
+        room.runtime
+            .submit_room_environment_action(
+                &room.session_id,
+                EnvironmentActionRequest::computer_mutation(
+                    &actor,
+                    snapshot.runtime_generation,
+                    "pointer_move",
+                    None,
+                ),
+            )
+            .unwrap()
+            .0
+    };
+    let ActionAdmission::Accepted { action_id: first } = submit() else {
+        panic!("first admission")
+    };
+    let ActionAdmission::Queued {
+        action_id: queued, ..
+    } = submit()
+    else {
+        panic!("queued admission")
+    };
+    room.runtime
+        .set_room_computer_access("local", Some(&room.agent_id), false)
+        .unwrap();
+    assert!(room
+        .runtime
+        .authorize_admitted_browser_action(&room.session_id, &queued)
+        .is_err());
+    assert!(room
+        .runtime
+        .execute_computer_input_as_agent(
+            &room.session_id,
+            &room.agent_id,
+            RoomComputerInputAction::PointerMove { x: 10, y: 10 }
+        )
+        .await
+        .is_err());
+    assert!(room
+        .runtime
+        .execute_computer_input_as_agent(
+            &room.session_id,
+            &room.agent_id,
+            RoomComputerInputAction::TargetAction {
+                tree_revision: 1,
+                target_id: "atspi-old".into(),
+                action: "click".into()
+            }
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        room.runtime
+            .owned
+            .agent_store
+            .get_agent(&room.agent_id)
+            .unwrap()
+            .session_id(),
+        room.session_id
+    );
+    assert_eq!(
+        room.runtime
+            .room_environment_snapshot(&room.session_id)
+            .unwrap()
+            .actions
+            .iter()
+            .find(|a| a.action_id == queued)
+            .unwrap()
+            .state,
+        EnvironmentActionState::Cancelled
+    );
+    room.runtime
+        .finish_room_environment_action(
+            &room.session_id,
+            &first,
+            EnvironmentActionTerminal::Completed,
+        )
+        .unwrap();
+    room.runtime
+        .set_room_computer_access("foreign", Some(&room.agent_id), true)
+        .unwrap_err();
+    room.runtime
+        .set_room_computer_access("local", Some(&room.agent_id), true)
+        .unwrap();
+    room.runtime
+        .require_room_computer_access(&room.agent_id)
+        .unwrap();
+    assert!(matches!(submit(), ActionAdmission::Accepted { .. }));
+}

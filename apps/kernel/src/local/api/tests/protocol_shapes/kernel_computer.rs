@@ -2,7 +2,7 @@
 use super::*;
 #[test]
 fn mp08_mp11_kernel_computer_446_89_shapes_are_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 446);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 449);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         89

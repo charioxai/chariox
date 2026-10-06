@@ -431,7 +431,12 @@ PYTHON
   # Desktop-launched programs inherit one session bus. Without it, ordinary
   # GTK applications cannot persist dconf settings. The supervisor stops the
   # bus when Openbox exits, so stop only Openbox rather than killing both.
-  nohup dbus-run-session -- openbox >"$LOGS/openbox.log" 2>&1 &
+  # MP-08 / MP-11: native observations attach to the SAME desktop session bus.
+  local computer_runtime="$ROOT/private"
+  if [[ -n "${CHARIOX_SLICE_PRIVATE_ROOT:-}" ]]; then computer_runtime="$CHARIOX_SLICE_PRIVATE_ROOT/runtime"; fi
+  install -d -m 0700 "$computer_runtime"
+  rm -f "$computer_runtime/desktop-session-address"
+  nohup dbus-run-session -- sh -c 'umask 077; printf "%s" "$DBUS_SESSION_BUS_ADDRESS" > "$1"; exec openbox' sh "$computer_runtime/desktop-session-address" >"$LOGS/openbox.log" 2>&1 &
   nohup tint2 -c "$ROOT/tint2rc" >"$LOGS/taskbar.log" 2>&1 &
   if [[ "$VIEWER_BACKEND" == "selkies" ]]; then
     if ! slice_selkies start >/dev/null; then

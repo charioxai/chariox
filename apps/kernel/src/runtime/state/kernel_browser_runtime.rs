@@ -67,7 +67,8 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
         .map_err(|_| host_error("MD-3: invalid browser command".into()))?;
     if matches!(
         &request.command,
-        KernelBrowserCommand::ListGrants
+        KernelBrowserCommand::GrantRoomComputer { .. }
+            | KernelBrowserCommand::ListGrants
             | KernelBrowserCommand::SubscribeGrants { .. }
             | KernelBrowserCommand::RevokeGrants { .. }
             | KernelBrowserCommand::MirrorSubscribe { .. }
@@ -180,10 +181,15 @@ impl KernelRuntimeState {
                 let (user, actor) = self.kernel_browser_terminal_context(caller)?;
                 self.refresh_user_domain_grants();
                 match &command {
-                    KernelBrowserCommand::ListGrants
+                    KernelBrowserCommand::GrantRoomComputer { .. }
+                    | KernelBrowserCommand::ListGrants
                     | KernelBrowserCommand::RevokeGrants { .. }
                     | KernelBrowserCommand::SubscribeGrants { .. } => {
+                        if let KernelBrowserCommand::GrantRoomComputer { agent_id } = &command {
+                            self.set_room_computer_access(&user, Some(agent_id), true)?;
+                        }
                         if let KernelBrowserCommand::RevokeGrants { agent_id } = &command {
+                            self.set_room_computer_access(&user, agent_id.as_deref(), false)?;
                             self.owned
                                 .kernel_browser_host
                                 .revoke_grants(&user, agent_id.as_deref());
@@ -207,10 +213,12 @@ impl KernelRuntimeState {
                             }
                         }
                         let kernel = self.owned.config_projection.snapshot().daemon_id;
-                        return Ok(self
+                        let mut snapshot = self
                             .owned
                             .kernel_browser_host
-                            .grant_snapshot(&user, &kernel));
+                            .grant_snapshot(&user, &kernel);
+                        snapshot["room_computer"] = self.room_computer_access_projection(&user);
+                        return Ok(snapshot);
                     }
                     _ => {}
                 }
