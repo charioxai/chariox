@@ -35,7 +35,8 @@ pub use vault::{
 };
 #[cfg(test)]
 pub(crate) use vault::{
-    create_chariox_encrypted_vault_for_test, fail_next_vault_dir_sync_for_test,
+    create_chariox_encrypted_vault_for_test, expire_chariox_encrypted_vault_for_test,
+    fail_next_vault_dir_sync_for_test,
 };
 
 #[cfg(test)]

@@ -1,7 +1,8 @@
+import { spawnOwned, signalOwnedProcessGroup, registerCapturedProcessGroup } from "../../../kernel/slice-linux-docker/owned-process-signals.mjs"
 import { appendFile, chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, rename, rm, stat, writeFile } from "node:fs/promises"
 import { createWriteStream, readFileSync, readlinkSync } from "node:fs"
 import { createHash } from "node:crypto"
-import { execFile, spawn } from "node:child_process"
+import { execFile } from "node:child_process"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
@@ -359,7 +360,7 @@ export async function runBrowserComputerSoak({ options, repoRoot, scriptPath }) 
 export async function launchDetachedRunner({ command, args, cwd, env, logPath, gatePath }, {
   openLog = (candidate) => open(candidate, "a", 0o600),
   prepareLaunchGate = (candidate) => rm(candidate, { force: true }),
-  spawnChild = spawn,
+  spawnChild = spawnOwned,
   captureIdentity = (name, child) => captureSpawnedIdentity(name, child),
   writeStartupEvidence,
   releaseLaunchGate = releaseDetachedLaunchGate,
@@ -563,7 +564,9 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
     })
     if (selkies.available !== true || !Number.isSafeInteger(selkies.pid)) throw new Error("Selkies did not report a healthy owned process")
     selkiesPid = selkies.pid
-    ownedIdentities.push(...await captureOwnedIdentities([["viewer", selkiesPid]]))
+    const [viewerIdentity] = await captureOwnedIdentities([["viewer", selkiesPid]])
+    viewerIdentity.signalIdentity = registerCapturedProcessGroup(viewerIdentity)
+    ownedIdentities.push(viewerIdentity)
 
     controller = new ControllerClient(await spawnProtocol("browser-controller", runtime.node, [path.join(sourceRoot, "browser-controller.mjs"), "stdio"], {
       env: environment, cwd: repoRoot, logsRoot,
@@ -584,6 +587,7 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
       ["runner", process.pid], ...[...owned].map(([name, child]) => [name, child.pid]),
       ["browser-controller", controller.child.pid], ["display-stream", stream.child.pid], ["viewer", selkiesPid],
     ])
+    ownedIdentities.find(entry => entry.name === "viewer").signalIdentity = viewerIdentity.signalIdentity
     result.controller = ownedIdentities.find((entry) => entry.name === "browser-controller")
 
     await recordSample("initial", [process.pid, ...pids(owned), selkiesPid])
@@ -953,7 +957,7 @@ function failedCleanupEvidence(error) {
   }
 }
 
-async function captureOwnedIdentities(entries) {
+export async function captureOwnedIdentities(entries) {
   const identities = []
   for (const [name, pid] of entries) {
     if (!Number.isSafeInteger(pid)) throw new Error(`owned ${name} process did not expose a PID`)
@@ -1161,7 +1165,7 @@ class StreamClient {
 
 async function spawnLogged(name, command, args, { env, cwd, logsRoot }) {
   const log = createWriteStream(path.join(logsRoot, `${name}.log`), { flags: "a", mode: 0o600 })
-  const child = spawn(command, args, { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] })
+  const child = spawnOwned(command, args, { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] })
   child.ownedIdentity = await captureSpawnedIdentity(name, child)
   log.once("error", (error) => { child.retainedLogError = bounded(error?.message ?? error) })
   child.retainedLogFinished = new Promise((resolve) => log.once("close", resolve))
@@ -1179,7 +1183,7 @@ async function spawnLogged(name, command, args, { env, cwd, logsRoot }) {
 
 async function spawnProtocol(name, command, args, { env, cwd, logsRoot }) {
   const log = createWriteStream(path.join(logsRoot, `${name}.stderr.log`), { flags: "a", mode: 0o600 })
-  const child = spawn(command, args, { cwd, env, detached: true, stdio: ["pipe", "pipe", "pipe"] })
+  const child = spawnOwned(command, args, { cwd, env, detached: true, stdio: ["pipe", "pipe", "pipe"] })
   child.ownedIdentity = await captureSpawnedIdentity(name, child)
   log.once("error", (error) => { child.retainedLogError = bounded(error?.message ?? error) })
   child.retainedLogFinished = new Promise((resolve) => log.once("close", resolve))
@@ -1214,7 +1218,7 @@ export function createRedactingTransform({ secretValues = retainedSecretValues }
 export async function terminateOwnedProcessGroup(name, child, {
   identity = processIdentity,
   isRunning = processIsRunning,
-  signal = process.kill,
+  signal = signalOwnedProcessGroup,
   wait = waitForExit,
   waitForLog = waitForRetainedLog,
 } = {}) {
@@ -1234,7 +1238,7 @@ export async function terminateOwnedProcessGroup(name, child, {
     return { name, ok: false, pidReuseSafe: false, error: "owned process identity changed before SIGTERM" }
   }
   let forced = false
-  try { signal(-expected.processGroupId, "SIGTERM") } catch (error) {
+  try { signal(child, "SIGTERM") } catch (error) {
     if (error?.code !== "ESRCH") return { name, ok: false, pidReuseSafe: true, error: bounded(error?.message ?? error) }
   }
   if (!await wait(child, 5_000, false)) {
@@ -1248,7 +1252,7 @@ export async function terminateOwnedProcessGroup(name, child, {
     if (!processIdentityMatches(expected, beforeKill) || beforeKill.processGroupId !== expected.pid) {
       return { name, ok: false, forced, pidReuseSafe: false, error: "owned process identity changed before SIGKILL" }
     }
-    try { signal(-expected.processGroupId, "SIGKILL") } catch (error) {
+    try { signal(child, "SIGKILL") } catch (error) {
       if (error?.code !== "ESRCH") return { name, ok: false, forced, pidReuseSafe: true, error: bounded(error?.message ?? error) }
     }
     await wait(child, 2_000, false)
@@ -1262,7 +1266,7 @@ const terminateGroup = terminateOwnedProcessGroup
 export async function terminateCapturedProcessGroup(name, expected, {
   identity = processIdentity,
   isRunning = processIsRunning,
-  signal = process.kill,
+  signal = signalOwnedProcessGroup,
 } = {}) {
   if (!expected) return { name, ok: false, pidReuseSafe: false, error: "owned process identity was not captured" }
   const observed = await identity(expected.pid)
@@ -1272,7 +1276,7 @@ export async function terminateCapturedProcessGroup(name, expected, {
   if (!processIdentityMatches(expected, observed) || observed.processGroupId !== expected.pid) {
     return { name, ok: false, pidReuseSafe: false, error: "owned process identity changed before SIGTERM" }
   }
-  try { signal(-expected.processGroupId, "SIGTERM") } catch (error) {
+  try { signal(expected.signalIdentity, "SIGTERM") } catch (error) {
     if (error?.code !== "ESRCH") return { name, ok: false, pidReuseSafe: true, error: bounded(error?.message ?? error) }
   }
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -1289,7 +1293,7 @@ export async function terminateCapturedProcessGroup(name, expected, {
   if (!processIdentityMatches(expected, beforeKill) || beforeKill.processGroupId !== expected.pid) {
     return { name, ok: false, forced: true, pidReuseSafe: false, error: "owned process identity changed before SIGKILL" }
   }
-  try { signal(-expected.processGroupId, "SIGKILL") } catch (error) {
+  try { signal(expected.signalIdentity, "SIGKILL") } catch (error) {
     if (error?.code !== "ESRCH") return { name, ok: false, forced: true, pidReuseSafe: true, error: bounded(error?.message ?? error) }
   }
   for (let attempt = 0; attempt < 40; attempt += 1) {

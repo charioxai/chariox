@@ -1,7 +1,7 @@
+import { spawnOwned, signalOwnedProcessGroup } from "../../../kernel/slice-linux-docker/owned-process-signals.mjs"
 import { access, mkdir, rm, stat, statfs, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { spawn } from "node:child_process"
 import { once } from "node:events"
 import { fileURLToPath } from "node:url"
 
@@ -345,7 +345,7 @@ export async function spawnBounded(command, args = [], {
   }
   const startedAt = new Date().toISOString()
   const startedMonoNs = process.hrtime.bigint()
-  const child = spawn(command, args, {
+  const child = spawnOwned(command, args, {
     cwd,
     env: env ? { ...process.env, ...env } : process.env,
     detached: process.platform !== "win32",
@@ -412,13 +412,13 @@ export async function stopOwnedProcesses(registry) {
 function killOwnedChild(child) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return
   try {
-    if (child.pid && process.platform !== "win32") process.kill(-child.pid, "SIGTERM")
+    if (child.pid && process.platform !== "win32") signalOwnedProcessGroup(child, "SIGTERM")
     else child.kill("SIGTERM")
   } catch {}
   setTimeout(() => {
     try {
       if (child.exitCode === null && child.signalCode === null) {
-        if (child.pid && process.platform !== "win32") process.kill(-child.pid, "SIGKILL")
+        if (child.pid && process.platform !== "win32") signalOwnedProcessGroup(child, "SIGKILL")
         else child.kill("SIGKILL")
       }
     } catch {}

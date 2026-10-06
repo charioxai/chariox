@@ -1,9 +1,10 @@
 #!/usr/bin/env node
+import { spawnOwned, signalOwnedProcessGroup, signalOwnedProcess, ownedProcessHandles } from "../../kernel/slice-linux-docker/owned-process-signals.mjs"
 // Home-kernel memory soak for leased agents: relay + home + worker kernels, N leased Claude
 // agents backed by a fake streaming CLI, TUIs that poll terminal output, outline polls, idle
 // sessions, and the cx-driver pattern that queues prompts while a turn runs. Fails when the home
 // kernel's RSS exceeds --max-rss-mb.
-import { execFileSync, spawn, spawnSync } from "node:child_process"
+import { execFileSync, spawnSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import net from "node:net"
@@ -105,7 +106,7 @@ function startKernel(name, port, base, relayToken, acceptLeases) {
   if (name === "home") writeFileSync(path.join(home, "home", "config.toml"), "[credential_vault]\nbackend = \"process_memory\"\n")
   const kernelBin = (name === "worker" ? argValue("--worker-kernel-bin") : undefined) ?? argValue("--kernel-bin") ?? path.join(targetDir, "chariox-kernel")
   const profileWorker = heaptrackWorker && name === "worker"
-  const child = spawn(profileWorker ? "heaptrack" : kernelBin, profileWorker ? ["--record-only", "-o", path.join(evidenceDir, "worker-heaptrack"), kernelBin] : [], {
+  const child = spawnOwned(profileWorker ? "heaptrack" : kernelBin, profileWorker ? ["--record-only", "-o", path.join(evidenceDir, "worker-heaptrack"), kernelBin] : [], {
     cwd: path.join(root, "workspace"),
     detached: process.platform !== "win32",
     stdio: "ignore",
@@ -175,7 +176,7 @@ try {
   chmodSync(path.join(root, "claude"), 0o700)
   const base = await freePort()
   const relayToken = randomUUID()
-  children.push(spawn(path.join(targetDir, "chariox-relay"), [], { detached: process.platform !== "win32", stdio: "ignore", env: { ...childBaseEnv, HOME: path.join(root, "relay"), CHARIOX_HOME: path.join(root, "relay", "home"), CHARIOX_RELAY_HOST: "127.0.0.1", CHARIOX_RELAY_PORT: String(base), CHARIOX_RELAY_TOKEN: relayToken } }))
+  children.push(spawnOwned(path.join(targetDir, "chariox-relay"), [], { detached: process.platform !== "win32", stdio: "ignore", env: { ...childBaseEnv, HOME: path.join(root, "relay"), CHARIOX_HOME: path.join(root, "relay", "home"), CHARIOX_RELAY_HOST: "127.0.0.1", CHARIOX_RELAY_PORT: String(base), CHARIOX_RELAY_TOKEN: relayToken } }))
   await sleep(1_000)
   startKernel("worker", base + 10, base, relayToken, true)
   const home = startKernel("home", base + 20, base, relayToken, false)
@@ -248,16 +249,16 @@ try {
     try {
       if (child.profileKernelBin) {
         // Stop the debuggee first so heaptrack can finish its compressed stream.
-        const pids = readFileSync(`/proc/${child.pid}/task/${child.pid}/children`, "utf8").trim().split(/\s+/).filter(Boolean)
-        for (const pid of pids) {
-          if (readlinkSync(`/proc/${pid}/exe`) === child.profileKernelBin) process.kill(Number(pid), "SIGTERM")
+        for (const handle of ownedProcessHandles(child)) {
+          if (handle.pid !== child.pid && readlinkSync(`/proc/${handle.pid}/exe`) === child.profileKernelBin) signalOwnedProcess(handle, "SIGTERM")
         }
-      } else child.kill("SIGTERM")
+      } else if (process.platform === "win32") child.kill("SIGTERM")
+      else signalOwnedProcess(child, "SIGTERM")
     } catch {}
   }
   await sleep(3_000)
   for (const child of children) {
-    try { process.platform === "win32" ? child.kill("SIGKILL") : process.kill(-child.pid, "SIGKILL") } catch {}
+    try { process.platform === "win32" ? child.kill("SIGKILL") : signalOwnedProcessGroup(child, "SIGKILL") } catch {}
   }
   if (evidenceDir) {
     for (const name of ["home", "worker"]) {

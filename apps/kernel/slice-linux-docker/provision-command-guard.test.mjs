@@ -1,5 +1,6 @@
+import { spawnOwned, signalOwnedProcessGroup } from "./owned-process-signals.mjs"
 import assert from "node:assert/strict"
-import { spawn, spawnSync } from "node:child_process"
+import { spawnSync } from "node:child_process"
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -17,7 +18,7 @@ async function runShell(root, body, { input = "", deadline = 4000, environment =
   const source = await readFile(provisioner, "utf8")
   const script = join(root, "invoke.sh")
   await writeFile(script, source.replace(/^SCRIPT_DIR=.*$/m, `SCRIPT_DIR='${directory}'`).replace('main "$@"', body))
-  const child = spawn("bash", [script], {
+  const child = spawnOwned("bash", [script], {
     detached: true,
     env: { PATH: process.env.PATH, TMPDIR: root, HOME: root,
       CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: `sha256:${"b".repeat(64)}`, ...environment },
@@ -34,7 +35,7 @@ async function runShell(root, body, { input = "", deadline = 4000, environment =
   const interrupt = signalAfter === undefined ? undefined : setTimeout(() => child.kill("SIGTERM"), signalAfter)
   const timer = setTimeout(() => {
     expired = true
-    try { process.kill(-child.pid, "SIGKILL") } catch {}
+    try { signalOwnedProcessGroup(child, "SIGKILL") } catch {}
   }, deadline)
   try {
     const status = await new Promise((resolve, reject) => {
@@ -46,7 +47,7 @@ async function runShell(root, body, { input = "", deadline = 4000, environment =
   } finally {
     clearTimeout(timer)
     clearTimeout(interrupt)
-    if (!closed) { try { process.kill(-child.pid, "SIGKILL") } catch {} }
+    if (!closed) { try { signalOwnedProcessGroup(child, "SIGKILL") } catch {} }
   }
 }
 
@@ -150,7 +151,7 @@ while True:
  print("public-fixture",flush=True)
  time.sleep(.01)
 `)
-    child = spawn("python3", [join(directory, "slice-command-guard.py"), "unbounded", "--", "python3", producer, pidPath], { stdio: ["ignore", "pipe", "pipe"] })
+    child = spawnOwned("python3", [join(directory, "slice-command-guard.py"), "unbounded", "--", "python3", producer, pidPath], { stdio: ["ignore", "pipe", "pipe"] })
     let stderr = ""
     child.stderr.on("data", bytes => { stderr += bytes })
     const result = new Promise((resolve, reject) => {

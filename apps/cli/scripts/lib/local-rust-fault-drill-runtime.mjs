@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process"
+import { spawnOwned, signalOwnedProcessGroup } from "../../../kernel/slice-linux-docker/owned-process-signals.mjs"
 import { chmod, mkdir, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -160,7 +160,7 @@ function defaultReportPath(evidenceSubdir, now = new Date()) {
 export function createRunner({ repoRoot, children }) {
   return (command, args, { env = process.env, timeoutMs = 600_000, allowFailure = false, onSpawn } = {}) => (
     new Promise((resolve, reject) => {
-      const child = spawn(command, args, {
+      const child = spawnOwned(command, args, {
         cwd: repoRoot,
         env,
         detached: process.platform !== "win32",
@@ -210,7 +210,7 @@ export function createRunner({ repoRoot, children }) {
 function terminateGroup(child, signal) {
   if (!child?.pid || child.exitCode !== null) return
   try {
-    process.kill(-child.pid, signal)
+    signalOwnedProcessGroup(child, signal)
   } catch {
     child.kill(signal)
   }
