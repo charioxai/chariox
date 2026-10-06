@@ -8,8 +8,15 @@ import signal
 import subprocess
 import sys
 import tempfile
-from Xlib import X, display
-from Xlib.ext import xtest
+try:
+    from Xlib import X, display
+    from Xlib.ext import xtest
+except ModuleNotFoundError as error:
+    if error.name != 'Xlib': raise
+    # MP-08 / MP-11: use the same installed XTEST backend as the keyboard
+    # helper when the selected interpreter exposes the vendored package.
+    from selkies.Xlib import X, display
+    from selkies.Xlib.ext import xtest
 from PIL import Image
 
 
