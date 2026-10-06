@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawnOwned, signalOwnedProcessGroup } from "../../../apps/kernel/slice-linux-docker/owned-process-signals.mjs"
 import { appendFile, mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import { renderCodexMcpArgs, reservePort } from './provider-launcher.mjs'
@@ -234,22 +234,22 @@ export class CodexAppServerRun {
   }
 
   async stop() {
-    if (this.child.exitCode != null) return
     try {
-      process.kill(-this.child.pid, 'SIGTERM')
+      signalOwnedProcessGroup(this.child, 'SIGTERM')
     } catch {
       this.child.kill('SIGTERM')
     }
-    await Promise.race([
-      new Promise((resolve) => this.child.once('exit', resolve)),
-      sleep(2000),
-    ])
-    if (this.child.exitCode == null) {
-      try {
-        process.kill(-this.child.pid, 'SIGKILL')
-      } catch {
-        this.child.kill('SIGKILL')
-      }
+    if (this.child.exitCode == null && this.child.signalCode == null) {
+      await Promise.race([
+        new Promise((resolve) => this.child.once('exit', resolve)),
+        sleep(2000),
+      ])
+    }
+    // Leader exit does not settle provider descendants in the owned group.
+    try {
+      signalOwnedProcessGroup(this.child, 'SIGKILL')
+    } catch {
+      this.child.kill('SIGKILL')
     }
   }
 }
@@ -260,7 +260,7 @@ export async function launchCodexServer({ agentId, mcps, artifactDir, extraEnv =
   const endpoint = `ws://127.0.0.1:${port}`
   const logPath = path.join(artifactDir, `${agentId}-codex.log`)
   const args = ['app-server', ...renderCodexMcpArgs(mcps), '--listen', endpoint]
-  const child = spawn(resolveCodexBinary(), args, {
+  const child = spawnOwned(resolveCodexBinary(), args, {
     cwd: process.cwd(),
     env: { ...process.env, ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe'],

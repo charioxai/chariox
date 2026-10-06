@@ -890,6 +890,70 @@ mod tests {
         }
     }
 
+    // MP-11 F1: exercise the actual wait and shared management reply path.
+    #[tokio::test]
+    async fn vault_management_reply_after_expiry_requires_unlock() {
+        let workspace = crate::test_support::TestWorktree::new("vault-expired-reply");
+        let private_state = crate::test_support::TestWorktree::new("vault-expired-reply-state");
+        let path = private_state.path().join("vault.json");
+        crate::secret::create_chariox_encrypted_vault_for_test(&path, "test passphrase").unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = path.display().to_string();
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(workspace.session_request())
+            .unwrap();
+        let state =
+            super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(app);
+        for choice in ["extend_30m", "extend_60m"] {
+            crate::secret::unlock_chariox_encrypted_vault(
+                &path,
+                "test passphrase",
+                crate::secret::VaultUnlockLease::KernelShutdown,
+            )
+            .unwrap();
+            let call = state.manage_credential_vault_unlock(session.id(), agent.id());
+            tokio::pin!(call);
+            let interaction = tokio::select! {
+                result = &mut call => panic!("management must await reply: {result:?}"),
+                result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                    loop {
+                        let snapshot = state.owned.session_store.get_session(session.id()).unwrap();
+                        if let Some(interaction) = snapshot.active_interaction_for_agent(agent.id()) {
+                            break interaction.clone();
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    }
+                }) => result.expect("management interaction"),
+            };
+            crate::secret::expire_chariox_encrypted_vault_for_test(&path);
+            state
+                .owned
+                .resolve_runtime_interaction(
+                    session.id(),
+                    interaction.id(),
+                    choice,
+                    None,
+                    Some(session.owner_user_id()),
+                    false,
+                )
+                .unwrap();
+            let result = call.await;
+            crate::secret::lock_chariox_encrypted_vault(&path).unwrap();
+            std::fs::remove_file(&path).unwrap();
+            assert!(result.is_err(), "reply must not revive an expired key");
+            assert!(crate::secret::is_chariox_vault_locked_error(
+                &result.unwrap_err()
+            ));
+            if choice == "extend_30m" {
+                crate::secret::create_chariox_encrypted_vault_for_test(&path, "test passphrase")
+                    .unwrap();
+            }
+        }
+    }
+
     #[test]
     fn vault_passphrase_prompt_cannot_encode_an_unlock_lease_as_the_secret() {
         let interaction = vault_passphrase_interaction("session-1", "agent-1", "test");

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process"
+import { spawnOwned, signalOwnedProcessGroup } from "../../../kernel/slice-linux-docker/owned-process-signals.mjs"
 import { randomBytes } from "node:crypto"
 import { createWriteStream } from "node:fs"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
@@ -61,7 +61,7 @@ export async function tcpReady(host, port) {
 export function spawnLogged(executable, args, options) {
   const stdout = createWriteStream(options.stdout, { flags: "a" })
   const stderr = createWriteStream(options.stderr, { flags: "a" })
-  const child = spawn(executable, args, {
+  const child = spawnOwned(executable, args, {
     cwd: options.cwd,
     env: process.env,
     detached: true,
@@ -84,14 +84,14 @@ export function spawnLogged(executable, args, options) {
 export async function stopChild(child) {
   if (!child || child.exitCode != null) return
   try {
-    process.kill(-child.pid, "SIGTERM")
+    signalOwnedProcessGroup(child, "SIGTERM")
   } catch {
     child.kill("SIGTERM")
   }
   await Promise.race([new Promise((resolve) => child.once("exit", resolve)), sleep(2_000)])
   if (child.exitCode == null) {
     try {
-      process.kill(-child.pid, "SIGKILL")
+      signalOwnedProcessGroup(child, "SIGKILL")
     } catch {
       child.kill("SIGKILL")
     }

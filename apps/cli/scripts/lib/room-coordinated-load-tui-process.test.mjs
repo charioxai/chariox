@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { getEventListeners } from "node:events"
-import { spawn } from "node:child_process"
+import { spawnOwned as spawn, createOwnedSignalGuard, signalOwnedProcess, signalOwnedProcessGroup, processSnapshot } from "../../../kernel/slice-linux-docker/owned-process-signals.mjs"
 import test from "node:test"
 import { promisify } from "node:util"
 import { execFile } from "node:child_process"
@@ -65,4 +65,31 @@ test("PTY descendant groups are measured and stopped with their owned wrapper", 
     assert.ok(metrics.rssBytes > 10 * 1024 * 1024)
   } finally { await stopProcessGroup(child.pid, child) }
   assert.deepEqual(await currentOwnedPids(descendantTasks), [])
+})
+
+// MP-11: a real PTY process ignores wrapper HUP/TERM and survives its shutdown.
+test("MP-11 PTY subgroup retains launch ownership after wrapper shutdown", { skip: process.platform !== "linux" }, async () => {
+  const invocation = roomTuiPtyInvocation([process.execPath, "-e",
+    "process.on('SIGHUP',()=>{});process.on('SIGTERM',()=>{});console.log('READY:'+process.pid);setInterval(()=>{},1000)"])
+  const child = spawn(invocation.command, invocation.args, { detached: true, stdio: ['ignore', 'pipe', 'ignore'] })
+  let output = ''
+  child.stdout.on('data', chunk => { output += chunk })
+  let survivor
+  const fallback = createOwnedSignalGuard()
+  try {
+    for (let n = 0; n < 100 && !output.includes('READY:'); n++) await sleep(20)
+    const pid = Number(output.match(/READY:(\d+)/)?.[1])
+    assert.ok(Number.isSafeInteger(pid) && pid > 1)
+    survivor = fallback.record(pid, { expectedStart: processSnapshot().find(row => row.pid === pid)?.start })
+    await sleep(60) // allow the launch observer to capture separate PTY groups
+    signalOwnedProcess(child, 'SIGKILL')
+    for (let n = 0; n < 100 && child.exitCode === null && child.signalCode === null; n++) await sleep(20)
+    assert.ok(child.exitCode !== null || child.signalCode !== null, 'wrapper exited')
+    assert.ok(processSnapshot().some(row => row.pid === pid && row.state !== 'Z'), 'PTY descendant survived wrapper shutdown')
+    await stopProcessGroup(child.pid, child)
+    assert.ok(!processSnapshot().some(row => row.pid === pid && row.state !== 'Z'), 'surviving PTY descendant settled')
+  } finally {
+    if (survivor) fallback.pid(survivor, 'SIGKILL')
+    if (child.exitCode === null && child.signalCode === null) signalOwnedProcessGroup(child, 'SIGKILL')
+  }
 })
