@@ -4,6 +4,9 @@ use crate::durable_state::workflow_notifications::{NotificationOperation, Prepar
 use crate::local::*;
 use crate::session::*;
 
+#[cfg(unix)]
+mod native_pty;
+
 async fn fixture(
     app_event: bool,
     active_runs: usize,
@@ -976,7 +979,7 @@ async fn notification_inject_remote_ack_loss_reconciles_after_real_bootstrap() {
             .unwrap();
         runtime
             .owned
-            .mark_notification_submit(&session, &injection, Some(&binding), false)
+            .mark_notification_submit(&session, &injection, Some(&binding))
             .unwrap();
         // Worker has either applied it (ACK lost) or durably rejected it; home sees neither.
         let receipt = crate::transport::relay_peer::LeasedPromptReceipt {
@@ -1124,7 +1127,7 @@ async fn notification_inject_structured_pending_survives_restart_before_actor_wr
         .unwrap();
     runtime
         .owned
-        .mark_notification_submit(&session, &injection, None, true)
+        .mark_notification_submit(&session, &injection, None)
         .unwrap();
     let epoch = runtime.owned.provider_store.structured_submit_epoch();
     let config = runtime.owned.config_projection.snapshot();

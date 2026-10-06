@@ -183,7 +183,10 @@ finished-submit reapers correlate the actual result with the durable injection.
 Codex hidden-context failures before steering and explicit negative RPC replies
 permit queue fallback. Write, read, malformed-reply and disconnect errors do not
 prove non-acceptance: the exact local provider run, target prompt/turn, agent and
-submit epoch remain durably held. A restart also holds an unsettled local submit
+submit epoch remain durably held. Every local path, including native Claude,
+Claude-headless and plain PTY writers, persists this same send intent before I/O.
+A lost native hook acknowledgement or durable settlement cannot authorize another
+write or a new workflow invocation. A restart also holds an unsettled local submit
 intent, even if the original turn ended. Local providers have no authoritative
 steer-receipt reconciliation API, so unknown outcomes expire without replay or
 queue fallback; this can delay or expire an input that never reached the provider.
