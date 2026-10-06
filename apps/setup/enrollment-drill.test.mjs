@@ -11,16 +11,18 @@ import { tmpdir } from "node:os"
 import { setupFixture } from "./fixture.mjs"
 import { installLocal } from "./installer.mjs"
 import { availablePort, stopOwned } from "../kernel/ssh-machine/ssh-target-fixture.mjs"
-const { WebSocketServer } = createRequire(new URL("../../packages/kernel-client/package.json", import.meta.url))("ws")
+const { WebSocketServer, WebSocket } = createRequire(new URL("../../packages/kernel-client/package.json", import.meta.url))("ws")
 const kernel = process.env.CHARIOX_BYOM_DRILL_KERNEL
 if (!kernel?.startsWith("/")) throw new Error("MP-07/MP-08/MP-11: choose exact built CHARIOX_BYOM_DRILL_KERNEL")
 const pause = () => new Promise(r => setTimeout(r, 100))
 test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempotence, readiness and state-retaining uninstall", { timeout: 300_000 }, async t => {
   const dir = await mkdtemp(join(await realpath(process.env.CHARIOX_BYOM_TEST_STATE ?? tmpdir()), "setup-live-"))
-  const errors = []
+  const errors = [], operations = []
+  let phase = "fixture"
   const children = new Set(), services = new Map(), registrations = new Map(), devices = new Map(), credentials = new Map(), calls = [], tickets = new Set()
   let cloud, release, relay
   t.after(async () => {
+    t.diagnostic(`MP-07/MP-08/MP-11 seam=${phase}; calls=${calls.join(",")}; kernelOperations=${operations.join(",")}; ownChildren=${[...children].map(c => c.exitCode ?? "running").join(",")}; relayRegistrations=${registrations.size}; fixtureErrors=${errors.length}`)
     for (const child of children) await stopOwned(child)
     if (relay) { for (const socket of relay.clients) socket.terminate(); await new Promise(r => relay.close(r)) }
     for (const server of [cloud, release]) if (server?.listening) await new Promise(r => server.close(r))
@@ -34,7 +36,7 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
     if (frame.kind === "daemon_metadata_query") socket.send(JSON.stringify({ kind: "daemon_metadata_response", request_id: frame.request_id, kernels: [], machines: [], error: null }))
   }))
   const relayUrl = `ws://127.0.0.1:${relay.address().port}`
-  let apiUrl
+  let apiUrl, lastIdentity
   cloud = createServer(async (req, res) => {
     try {
     let raw = ""; for await (const chunk of req) raw += chunk
@@ -59,10 +61,13 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
         if (!device?.approved) return send(200, { status: "authorization_pending", intervalSeconds: 1 })
         devices.delete(body.deviceCode); identity = device; calls.push("device-approved")
       }
+      lastIdentity = { kernelId:identity.kernelId, machineId:identity.machineId }
       const credential = randomBytes(32).toString("hex"); credentials.set(credential, identity.kernelId)
       return send(200, { status: "approved", kernelCredential: credential, profile: { email: "fixture@example.test", accountId: "account-owner", userId: "owner", accountSlug: "owner", realmId: "owner", issuerId: "fixture", relayUrl, kernelId: identity.kernelId, machineId: identity.machineId, publicKeyThumbprint: identity.publicKeyThumbprint } })
     }
     if (req.url === "/relay/token") {
+      calls.push("grant")
+      await new Promise(r => setTimeout(r,1500))
       assert.equal(credentials.get(body.kernelCredential), body.subject)
       const payload = Buffer.from(JSON.stringify({ exp: Date.now() + 600_000, public_key_thumbprint: body.publicKeyThumbprint })).toString("base64url")
       return send(200, { token: `fixture.${payload}.fixture`, expiresAt: new Date(Date.now() + 600_000).toISOString() })
@@ -70,7 +75,7 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
     if (req.url === "/kernels/presence") return send(200, {})
     if (req.url.startsWith("/relay/targets")) return send(200, { kernels: [] })
     return send(404, {})
-    } catch { errors.push("Cloud schema assertion failed"); res.writeHead(500); res.end("{}") }
+    } catch { calls.push("Cloud-assertion-refused"); errors.push("Cloud schema assertion failed"); res.writeHead(500); res.end("{}") }
   })
   await new Promise(r => cloud.listen(0, "127.0.0.1", r)); apiUrl = `http://127.0.0.1:${cloud.address().port}`
   const f = await setupFixture(dir, { kernel: await readFile(kernel) }), archive = await readFile(f.archive)
@@ -83,6 +88,21 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
   const home = join(dir, "home"); await mkdir(home)
   const staging = join(home, ".chariox/dev/md-staging"); await mkdir(staging, { recursive: true }); await writeFile(join(staging, "sentinel"), "keep")
   const port = await availablePort(), port2 = await availablePort()
+  const probe = async (id, selectedPort, expected) => {
+    try {
+      const authPath = join(home, `.chariox/dev/ssh-machines/${id}/state/kernel-local-auth/${selectedPort}.token`)
+      let auth
+      for (let i=0;i<50;i++) { try { auth = await readFile(authPath,"utf8"); break } catch { await pause() } }
+      if (!auth) { t.diagnostic("MP-11 public status probe: own local auth unavailable"); return }
+      const ws = new WebSocket(`ws://127.0.0.1:${selectedPort}/kernel`,{headers:{authorization:`Bearer ${auth.trim()}`}})
+      await new Promise(resolve => {
+        const timer = setTimeout(() => {ws.terminate(); resolve()},5000)
+        ws.on("error",()=>{clearTimeout(timer); resolve()})
+        ws.on("open",()=>ws.send(JSON.stringify({type:"request",request_id:"byom-ready",request:{RelayStatus:null}})))
+        ws.on("message",bytes=>{const value=JSON.parse(bytes);if(value.request_id!=="byom-ready")return;const status=value.response?.RelayStatus?.status;assert.equal(status?.connected,false,"delayed relay grants force an early disconnected poll");t.diagnostic(`MP-11 own status: connected=${status?.connected}; kernelMatches=${status?.daemon_id===expected.kernelId}; machineMatches=${status?.machine_id===expected.machineId}; responseError=${Boolean(value.error)}`);clearTimeout(timer);ws.close();resolve()})
+      })
+    } catch { t.diagnostic("MP-11 own public status probe failed") }
+  }
   const serviceManager = async args => {
     const service = args.at(-1), id = service === "chariox-ssh-second.service" ? "second" : "local"
     if (args[0] === "show") {
@@ -93,12 +113,14 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
     if (args[0] === "enable" && !services.has(id)) {
       const selectedPort = id === "local" ? port : port2
       const env = { PATH: process.env.PATH, LANG: "C.UTF-8", HOME: home, CHARIOX_HOME: `${home}/.chariox/dev/ssh-machines/${id}`, CHARIOX_KERNEL_HOST: "127.0.0.1", CHARIOX_KERNEL_PORT: String(selectedPort), CHARIOX_MCP_HOST: "127.0.0.1", CHARIOX_MCP_PORT: String(selectedPort + 1), CHARIOX_PROVIDER_PROCESS_ORPHAN_TTL_MS: "18446744073709551615", CODEX_HOME: `${home}/.codex`, CLAUDE_CONFIG_DIR: `${home}/.claude`, OPENCODE_CONFIG_DIR: `${home}/.config/opencode`, XDG_CONFIG_HOME: `${home}/.config`, XDG_DATA_HOME: `${home}/.local/share`, XDG_STATE_HOME: `${home}/.local/state` }
-      const child = spawn(`${home}/.local/share/chariox/ssh-machines/${id}/current/bin/chariox-kernel`, [], { env, stdio: "ignore" }); children.add(child); services.set(id, child); calls.push(`start-${id}`)
+      const child = spawn(`${home}/.local/share/chariox/ssh-machines/${id}/current/bin/chariox-kernel`, [], { env, stdio: ["ignore","ignore","pipe"] });
+      child.stderr.on("data", chunk => { const match = chunk.toString().match(/operation: "([a-zA-Z0-9 _.-]{1,80})"/); if (match) operations.push(match[1]); for (const category of ["panicked","public key","token","credential","bind","Address already in use"]) if (chunk.toString().includes(category)) operations.push(`contains-${category.replaceAll(" ","-")}`) }); children.add(child); services.set(id, child); calls.push(`start-${id}`); t.diagnostic(`MP-07/MP-08/MP-11 start ${id}, public kernel port=${selectedPort}`); await probe(id, selectedPort, {...lastIdentity})
     }
     if (args[0] === "disable" && services.has(id)) { await stopOwned(services.get(id)); services.delete(id); calls.push(`stop-${id}`) }
     return ""
   }
   const notices = [], options = { home, port, version: f.version, publicKeyHex: f.publicKeyHex, apiUrl, releaseBase: `http://127.0.0.1:${release.address().port}`, extractorSource: await readFile(new URL("../../deploy/managed-kernel/extract-release.py", import.meta.url), "utf8"), serviceManager, notice: value => notices.push(value), openBrowser: async url => { assert.equal(url, `${apiUrl}/approve`); for (const device of devices.values()) device.approved = true; calls.push("open-browser") } }
+  phase = "device install/start/readiness"
   const first = await installLocal(options)
   assert.equal(first.status, "ready"); assert.equal(first.userId, "owner")
   const active = join(home, ".chariox/dev/ssh-machines/local/kernels/active")
@@ -107,21 +129,26 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
   assert.ok(calls.indexOf("device-approved") < calls.indexOf("start-local"))
   for (let i = 0; i < 50 && !registrations.has(first.kernelId); i++) await pause()
   assert.ok(registrations.has(first.kernelId))
+  phase = "device repair/readiness"
   assert.equal((await installLocal({ ...options, action: "repair", userId: "owner" })).kernelId, first.kernelId)
   assert.equal(calls.filter(v => v === "device-start").length, 1)
   // A browser code must not silently claim success over an already-enrolled owner's state.
   const ticket = randomBytes(24).toString("hex"); tickets.add(ticket)
+  phase = "ambiguous browser code refusal"
   await assert.rejects(installLocal({ ...options, action: "repair", ticket }), /command failed/)
   assert.ok(tickets.has(ticket)); tickets.delete(ticket)
+  phase = "first uninstall"
   const removed = await installLocal({ ...options, action: "remove" })
   assert.equal(removed.stateRetained, true)
   assert.deepEqual(await readdir(staging), ["sentinel"])
   // Fresh second install proves browser-code redemption independently of device flow.
   const secondTicket = randomBytes(24).toString("hex"); tickets.add(secondTicket)
   const secondOptions = { ...options, port: port2, installId: "second", ticket: secondTicket }
+  phase = "fresh ticket install/start/readiness"
   const second = await installLocal(secondOptions)
   assert.equal(second.status, "ready"); assert.notEqual(second.kernelId, first.kernelId)
   assert.equal(secondOptions.ticket, ""); assert.equal(tickets.size, 0)
+  phase = "second uninstall"
   await installLocal({ ...options, port: port2, installId: "second", action: "remove" })
   async function noSecrets(directory) {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -133,5 +160,6 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
   await noSecrets(join(home, ".chariox/dev/ssh-machines"))
   assert.deepEqual(errors,[])
   assert.equal(notices.some(value => value.includes(secondTicket)), false)
+  phase = "complete"
   t.diagnostic(`MP-07/MP-08/MP-11: seams=${calls.join(",")}; published identities=2; source kernel SHA256=${createHash("sha256").update(await readFile(kernel)).digest("hex")}`)
 })
