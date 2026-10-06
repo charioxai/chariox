@@ -79,7 +79,9 @@ Provider tools cannot forge actor fields, take over/release human input, or hold
 persistent physical keys. Worker/browser tool wrappers cannot bypass admission.
 
 Browser and Computer mutations reserve the same Desktop input target in the
-existing actor/action ledger. Human Computer input requests takeover before
+existing actor/action ledger. Whole-desktop input also reserves open Browser tabs,
+so tab-scoped human takeovers fence and cancel native input. Ordinary Browser
+takeovers retain their existing tab scope. Human Computer input requests takeover before
 waiting for controller I/O, cancelling active agent input. Takeover acknowledgments
 wait for held-key reset. Release validates surface/generation/owner, resets keys
 before releasing ownership, and denies a superseded owner. Disconnect/revoke

@@ -173,6 +173,18 @@ impl KernelBrowserActors {
         if !request.targets.contains(&InputTarget::Desktop) {
             request.targets.push(InputTarget::Desktop);
         }
+        // Whole-desktop native input can affect any foreground browser tab.
+        // Honor existing tab-scoped human takeovers without widening ordinary
+        // Browser-to-Browser ownership to unrelated tabs.
+        if params["_native"] == true {
+            request.targets.extend(
+                self.tabs
+                    .snapshot()
+                    .0
+                    .into_iter()
+                    .map(|tab| InputTarget::BrowserTab(tab.tab_id)),
+            );
+        }
         // Store counts and coordinates only; payloads/secret bytes never enter the ledger.
         let outer = &params["input"];
         let input = if outer["kind"] == "mirror" {

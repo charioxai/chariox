@@ -85,3 +85,25 @@ fn mp11_human_desktop_takeover_cancels_browser_input_and_fences_native_input() {
         .begin(agent, &json!({"op":"native_input","generation":1}))
         .is_ok());
 }
+
+#[test]
+fn mp11_browser_tab_takeover_also_fences_and_cancels_whole_desktop_input() {
+    let mut model = KernelBrowserActors::default();
+    model
+        .reconcile(&json!({"generation":1,"tabs":[{"tab_id":"t","document_id":"d"}]}))
+        .unwrap();
+    model
+        .reconcile_desktop(&json!({"surface_id":"s","generation":"g"}))
+        .unwrap();
+    let agent = EnvironmentActor::new("agent:a", EnvironmentActorKind::Agent, "Agent");
+    let human = EnvironmentActor::new("terminal:a", EnvironmentActorKind::Human, "Human");
+    let input = json!({"op":"input","_native":true});
+    model.takeover(human.clone(), "t", 1).unwrap();
+    assert!(model.begin(agent.clone(), &input).is_err());
+    model.release(&human.actor_id, "t", 1).unwrap();
+    let (id, cancel) = model.begin(agent.clone(), &input).unwrap();
+    model.takeover(human, "t", 1).unwrap();
+    assert!(cancel.requested());
+    model.finish(&id, EnvironmentActionTerminal::Cancelled);
+    assert!(model.begin(agent, &input).is_err());
+}
