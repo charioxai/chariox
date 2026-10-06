@@ -23,6 +23,9 @@ the binding 12:22/12:34 UTC inbox additions: post-overhaul evals and the two
 flagship external-service build/deploy variants below. Runtime pins stay fixed.
 The 13:32 UTC review additionally binds windowed sudo to owner-authorized work
 and permits useful goal continuation while independent sources remain live.
+Round 4 starts at `9e4c642e5a000cfbe48bde38220a37fa5ae938b6`. The binding
+2026-10-06 REAL LIVE DRILLS rule supersedes earlier controlled acceptance and
+non-gating showcase wording: real user scenarios gate acceptance and staging.
 
 Source read for this study:
 
@@ -848,14 +851,27 @@ and its real-path drill. Sequential dependencies below avoid deleting `/meta`
 before replacements work; hand-off and history can follow the room admission
 foundation independently of watchers.
 
-Every drill uses the built real web app entry/flags, real CLI/TUI, real kernel,
-a real local relay and real official provider(s) when provider runs are touched.
-Drive prompts/actions via Playwright web UI and the TUI, not internal IPC alone.
-Use the shared `scripts/e2e-stack` when available; otherwise build the equivalent
-isolated stack. A first-party service is a controllable test target, never a
-replacement for real runtime/provider components. Run the same scripted flow
-on base to produce RED, then candidate for GREEN, with deterministic faults at
-the relevant acceptance boundaries. No fixture-only pass closes a PR.
+Acceptance requires **real live drills of exact user scenarios**: built real
+web app entry/flags in a desktop browser at DPR 1 and 2, real CLI/TUI, kernel,
+machines, official Codex/Claude/OpenCode harnesses on real linked accounts,
+the real hosted Caddy-fronted `wss://` relay, and real sites/services/accounts.
+Drive prompts/actions through web UI and TUI; Playwright may automate the real
+desktop browser, but internal IPC alone cannot prove the user flow. Use
+`scripts/e2e-stack` when available with these real resources, otherwise assemble
+the equivalent real stack. Run changed flows on base for RED and candidate for
+GREEN; fault only lane-owned runs/transport at recorded boundaries.
+
+Mocks/fixtures (Mailpit, local OIDC, fixture pages, stub agents, local-relay-only
+and Stripe test-mode-only flows) are supplementary regression checks, never
+acceptance. Payment may use a real service's native sandbox/test mode **on a
+real account**; otherwise it is `BLOCKED(owner payment approval)` until the
+owner authorizes the exact real payment. A missing real resource is
+`BLOCKED(owner, exact action)`, never permission to substitute a mock.
+
+**Staging:** nothing is staged for the owner until the feature set is completely
+finished and has passed all required real live drills. Authorized real drill
+publications below are validation runs; they do not mark the feature ready for
+owner staging. This design study authorizes no deployment or hosted-system access.
 
 | PR / size / dependencies | Scope; mandatory appendix cells |
 | --- | --- |
@@ -869,7 +885,7 @@ the relevant acceptance boundaries. No fixture-only pass closes a PR.
 | 8 — payment confirmation, M; 4 + 6 + 7 | Single-use owner confirmation and uncertain effects; A08, G01–G18 + S01–S04. MP-08/MP-10/MP-11. |
 | 9 — history search, M; 1 + protected history projection | Room-authorized public FTS, redaction/invalidation; A09, G01–G18 + S01–S04. MP-08/MP-10/MP-11. |
 | 10 — leased wakes/elevation, M; 2–4 | Home ordering, worker causal fences and placement parity; A10, G01–G18 + S01–S05. MP-08/MP-09/MP-10/MP-11. |
-| 11 — retirement/migration, S–M; 1–10 + 12 accepted | Legacy drain/migration, minimum versions and final integration; A11, G01–G18 + S01–S04, then flagship FA01–FA10 and I01–I03. MP-08/MP-09/MP-10/MP-11. |
+| 11 — retirement/migration, S–M; 1–10 + 12 accepted | Legacy drain/migration, minimum versions and final integration; A11, G01–G18 + S01–S04, then LIVE flagship FB01–FB08 and I01–I03. FA01–FA10 remain supplementary regression. MP-08/MP-09/MP-10/MP-11. |
 | 12 — hybrid goal loop, M; 2–4 + 10 | Persisted objective, bounded completion check, useful independent continuation/check-ins, blocked owner paths and goal migration; A12, G01–G18 + S01–S07. Land before 11. MP-08/MP-09/MP-10/MP-11. |
 
 After the overhaul PRs and their functional gates, run the separate **Evals and
@@ -900,10 +916,12 @@ action. The gate compares expected IDs with results: missing, duplicate, blank,
 skipped, N/A or unknown results fail. No provider/client/placement substitution
 or source-only pass. A runner failure cannot silently shorten the manifest.
 At this revision the gating expected set is 19,440 A cells plus 432 I cells
-(three scenarios × 72 axis combinations × two integration phases) and 1,440 FA
-cells (ten controlled flagship cases × 72 axes × two integration phases).
-The 576 FB showcase cells (eight cases × 72 axes) are separate and non-gating.
-These are coverage
+(three scenarios × 72 axis combinations × two integration phases) and 1,152 FB
+cells (eight LIVE flagship cases × 72 axes × two integration phases): 21,024
+acceptance cells. The 1,440 FA controlled regression cells (ten cases × 72 axes
+× two integration phases) are separate and never acceptance. DPR 1/2 and each
+required site/condition are individually asserted subruns, retained in the
+manifest without changing these parent-cell counts. These are coverage
 requirements, not executed results; the planning manifest initializes each
 separate ID to B0 with its steps/evidence. Later PR splits must expand the same
 requirements for every new PR; they cannot reduce coverage.
@@ -922,9 +940,34 @@ exact fault point before/after commit and first failing seam on base.
 | Axis | Numbered setup steps / required values |
 | --- | --- |
 | Provider | CX = Codex, OC = OpenCode, CL = Claude. 1. Select a product-linked account and pin official harness version. 2. Launch the selected real provider through the built kernel; no SDK, stub or alternate runtime. |
-| Client | W = web, T = local TUI, R = remote TUI, B = combined web + local + remote TUI. 1. Attach built real client(s), web with real entry/flags via Playwright, TUI binary via PTY. 2. Drive prompts and owner interactions through that UI. 3. Reconnect and inspect the same task. B rotates prompt/answering clients in both directions and asserts every projection; other cells drive only their selected client, plus the existing browser attachment when pixels are needed. |
-| Placement | L = provider on home kernel; R = leased provider on a distinct real worker kernel through the real relay; S = provider in a product-provisioned Docker slice selected by `slice_ref`, attached through home admission. 1. Provision lane-owned topology through product commands. 2. Verify execution and home/worker/run/lease bindings. 3. Keep the user-domain Chromium outside the slice. All 12 PRs affect provider/task paths, so S is relevant to each; include worker-loss subcases on S. |
+| Client | W = web, T = local TUI, R = remote TUI, B = combined web + local + remote TUI. 1. Attach built real client(s), web with real entry/flags in a real desktop browser via Playwright at DPR 1 and 2, TUI binary via PTY on a real machine. 2. Drive prompts and owner interactions through that UI over the hosted relay. 3. Reconnect and inspect the same task. B rotates prompt/answering clients in both directions and asserts every projection; other cells drive only their selected client, plus the existing real browser attachment at both densities when pixels are needed. |
+| Placement | L = provider on home kernel; R = leased provider on a distinct real worker kernel through the hosted relay; S = provider in a product-provisioned Docker slice selected by `slice_ref`, attached through home admission. 1. Provision lane-owned topology through product commands on real machines. 2. Verify execution and home/worker/run/lease bindings; L still uses the hosted client relay path. 3. Keep the user-domain Chromium outside the slice. All 12 PRs affect provider/task paths, so S is relevant to each; include worker-loss subcases on S. |
 | Environment | O = ordinary kernel; M = same reviewed runtime on a fresh/fresh-equivalent managed Path-1 host. 1. Pin OSS/Cloud/binary/image identities. 2. Run with normal product launch, compare O/M outcomes after excluding only signed deployment and mandatory shutdown. M requires coordinator-provided authorized infrastructure; this study authorizes no provisioning/deployment. |
+
+**P0 — owner prerequisites shared by every A/I/FB matrix:** product-linked
+real accounts and available quota for all three official providers; paired
+built OSS/Cloud clients/kernel; real desktop browser and TUI machines; owning
+kernel's user-domain Chromium; authorized hosted `wss://` relay enrollment;
+lane-scoped network shaping at approximately 8 Mbit/s client uplink and measured
+RTT ≥60 ms; authorized real worker/Path-1 hosts and slice provisioner/image for
+the placement axes; enrolled passkey, protected Vault setup and owner available
+for approvals, 2FA, renewal and hand-offs. Missing resources retain the affected
+cell as BLOCKED with the owner/coordinator's exact provisioning/linking action.
+
+**Real conditions, required alongside every user-facing matrix:** freeze URLs
+before dispatch for an `en.wikipedia.org` article, `www.wikipedia.org` portal,
+`github.com` repo page, Google search results page, a major news site and
+`developer.mozilla.org` docs page. At each site, at DPR 1 and 2 over the shaped
+hosted path, report DOM-mirror coverage (full mirroring expected; only an
+explicit owner-accepted exception permits a gap), successful screenshot
+capture, click/type → visible change P95 ≤150 ms, and smooth scroll ≥30 fps
+where streamed. Use an applicable real action on each page and retain sample
+counts, frame/timing traces, RTT/uplink and screenshots per site/condition.
+No PNG polling slideshow as a primary path. A missed threshold is FAIL. Include
+an uninterrupted ≥3-hour real browser/provider/relay stability session in FB06,
+with no unintended disconnect or stuck view, plus I02's recovery run. These
+conditions apply even when the feature's service-specific flow targets another
+real site; no loopback or fixture result replaces them.
 
 Browser/App positive cells target an admitted user-domain resource on its owning
 execution kernel; never route leased user-domain control across kernels. Where
@@ -936,10 +979,12 @@ control plus a real leased child; its R/S cells exercise remote primary runs.
 **Evidence E, required for every cell:** screenshots per web/view step, TUI
 screen captures per terminal step, redacted console/kernel/relay/worker/provider
 logs and a safe timeline of task/obligation/wait/interaction/run/lease/receipt
-IDs; assertions against actual artifacts or first-party service receipts,
+IDs; assertions against actual artifacts or real external-service receipts,
 commands and exit codes, RED base seam and GREEN candidate results, resource
-samples and exact owned cleanup. Never capture passkeys, credential payloads
-or private pixels. Private synthetic-canary checkers return booleans/counts;
+samples and exact owned cleanup; P0 resource readiness, real site/account
+metadata without secrets, per-site/DPR/network coverage and latency/frame
+measurements, real elapsed duration and hand-off outcomes. Never capture passkeys,
+credential payloads or private pixels. Private synthetic-canary checkers return booleans/counts;
 scan before retaining evidence. A log assertion alone cannot prove UI flow.
 
 **Results, explicitly assigned to every expanded cell:** initial design result
@@ -947,15 +992,15 @@ is `BLOCKED(B0)` for all A/I/FA/FB IDs: coordinator must assign implementation l
 and supply the implemented, built OSS/Cloud candidate and real e2e stack; this
 document changes no runtime. Replace B0 per cell at execution with `PASS`,
 `FAIL(first seam)` or `BLOCKED(reason, owner, exact action)` and evidence.
-Provider login, approved external-service sandbox account, authorized managed
-host or named unlanded dependency are actionable blockers; an implementation
+Provider login, approved real account with service-native sandbox, authorized
+managed host or named unlanded dependency are actionable blockers; an implementation
 bug, missing test, elapsed time or skipped validation is FAIL, never BLOCKED.
 All table results below apply separately to every expanded ID, including M.
 
-A PR is done only when every cell is PASS or has an evidence-backed, owner-
-actionable BLOCKED disposition and **none is omitted**. BLOCKED is not a feature
-PASS or MP acceptance: keep the affected feature gate open, publish the owner's
-unblocking action and rerun on the exact final integration. Do not remove `/meta`
+A PR is done only when **every required real live cell and subrun is PASS** and
+none is omitted. An evidence-backed owner-actionable BLOCKED disposition is
+incomplete work: keep the feature/staging gate open, publish the owner's exact
+unblocking action and rerun on the final integration. Do not remove `/meta`
 or declare runtime acceptance while a replacement's required flow is blocked.
 MP-11 additionally requires current semantic reviews of applicable security
 anchors: sandbox, Vault/credentials, relay admission/peer gates, signing/trust
@@ -977,11 +1022,11 @@ already pass on base; do not deliberately weaken base to manufacture RED.
 | G05 | 1. Redeliver identical source occurrence, wake intent, completion and owner response twice. 2. Reconnect and redeliver again. One logical admission/wake/interaction action; no extra provider run or external effect. | Original/deduplicated IDs, service effect count and answer timeline. | BLOCKED(B0) |
 | G06 | 1. Queue a privileged call while waiting. 2. Expire elevation; separately revoke elevation, room/resource grant and worker lease before effect. 3. Wake/resume. Each current fence denies stale authority visibly; regular authorized work proceeds. | Expiry/revoke rows and exact before-effect denials, no stale effect. | BLOCKED(B0) |
 | G07 | 1. Complete a source concurrently with registration/yield. 2. Race resource creation with done and deletion/cancellation with wait. 3. Race two owner responses/extension requests and stale status delivery. Atomic revisions produce one outcome, no orphan obligation or stale state overwrite. | Barrier/commit order, competing receipts, final UI/ledger and effect counts. | BLOCKED(B0) |
-| G08 | 1. Create a second room with public synthetic markers. 2. Ask tested agent to use its IDs/aliases in every exposed read/mutate/subscribe operation. Deny before lookup output, counts, snippets, trace, target discovery or side effects. | Both-room unchanged artifact counts, safe denial and leakage absence. | BLOCKED(B0) |
+| G08 | 1. Create a second owner-authorized room with a separate real repository task and actual provider history. 2. Ask tested agent to use its IDs/aliases in every exposed read/mutate/subscribe operation. Deny before lookup output, counts, snippets, trace, target discovery or side effects. | Both-room actual unchanged artifacts/history, safe denial and leakage absence. | BLOCKED(B0) |
 | G09 | 1. At the real admitted transport boundary, fault sender/source identity and room/kernel/machine/lease binding in separate submissions. 2. Retry with valid identity. Forged requests deny before mutation, valid request still works; relay remains opaque transport. | Boundary fault receipt, admission logs, unchanged foreign resources. | BLOCKED(B0) |
 | G10 | 1. Retain a request/completion from the old provider run/lease. 2. Replace run/placement, then deliver the stale request through the real boundary. Reject old tool authority, completion and lineage mutation; current run remains usable. | Run/epoch pairs, denials, current-run UI and ledger. | BLOCKED(B0) |
 | G11 | 1. Elevate parent. 2. Spawn child → grandchild and workflow node, send/forward messages and wake them. 3. Try privileged operations, passkey/approval replies and Extend from each descendant. All stay regular; owner-only verification and unrelated peer destruction remain denied. | Status rows for entire chain, denied operations and unchanged peer objects. | BLOCKED(B0) |
-| G12 | 1. Exercise passkey, Vault, hand-off and private-overlay synthetic canaries via protected owner/product paths. 2. Try page/process echoes and malicious output. 3. Scan model/tool/history/trace/events/FTS, DOM/screenshots/mirror, logs and retained evidence. No secret is observable/searchable; relay/Cloud receive no plaintext. | Boolean leak report for each sink, protection epochs, safe pixels and bounded malicious output. | BLOCKED(B0) |
+| G12 | 1. Exercise real owner passkey, Vault-backed service login, actual hand-off and private-overlay protection via product paths. 2. Check real page/process observation and output without exposing any value. 3. Privately scan model/tool/history/trace/events/FTS, DOM/screenshots/mirror, logs and retained evidence. No secret is observable/searchable; relay/Cloud receive no plaintext. Synthetic echo/malicious-output canaries supplement these real flows as separate regression subruns. | Boolean leak report for each sink, actual service outcome, protection epochs and safe pixels; no secret in reports. | BLOCKED(B0) |
 | G13 | 1. Start an owned source that stays healthy. 2. Yield with a 60-second deadline. 3. Let it lapse, then repeat with restart before the deadline. One `deadline_reached` wake re-evaluates; new waiting requires a fresh finite deadline. | Countdown screens, durable occurrence/time and real provider re-evaluation. | BLOCKED(B0) |
 | G14 | 1. Wait separately on delegate, workflow, process and App source. 2. Delete/fail delegate, cancel workflow, lose process and revoke App. 3. Remove all sources before deadline; also lose one required source while another lives. Immediate failure event wakes/blocks, never eternal waiting. | Per-source cause and bounded wake time, visible failed obligation and resolution. | BLOCKED(B0) |
 | G15 | 1. Cause three consecutive wakes with only repeated status/deadline changes. 2. Restart between wakes 2/3. Escalate once to blocked with one user interaction; no fourth autonomous loop. 3. Repeat with a real result between wakes; counter resets. | Counter/progress receipts, blocked notification/screens and negative-loop count. | BLOCKED(B0) |
@@ -991,14 +1036,22 @@ already pass on base; do not deliberately weaken base to manufacture RED.
 
 ### MP-08 / MP-10 / MP-11 — A01 room admission and descendant control
 
+**Owner prerequisites:** P0; owner-authorized real repository/workspace and
+implementation request with frontend/backend/review work; existing room peer
+and a real user-authored workflow. Verify actual artifacts/build results.
+
 | Case | Exact steps and expected behavior | Expected evidence beyond E | Result |
 | --- | --- | --- | --- |
-| S01 | 1. Create ordinary A through selected client. 2. Prompt A to spawn B and C, message pre-existing peer P, create and run a workflow. 3. Receive all answers without `/meta`/task plan; inspect P's public history/trace. | Room tool listing, prompt/result correlations and obligation creation/settlement. | BLOCKED(B0) |
+| S01 | 1. Create ordinary A through selected client for the authorized real repository change. 2. Prompt A to spawn B and C for implementation/review, message pre-existing peer P, create and run the build/review workflow. 3. Verify actual artifacts/results without `/meta`/task plan; inspect P's public history/trace. | Real repository diff/build/review results, room tool listing, prompt/result correlations and obligation creation/settlement. | BLOCKED(B0) |
 | S02 | 1. Let B spawn D and a workflow. 2. A may edit/cancel B-created workflow/run but cannot rename/delete D. 3. A messages B to rename/delete D; only B may execute it. Direct creator identity admits each effect; waiters get deletion failures. | Immutable creator receipts, A denial, B mutation and message correlation. | BLOCKED(B0) |
 | S03 | 1. Try rename/delete against self, parent, sibling C from B, peer P, legacy unknown-lineage agent and other room. 2. Try peer workflow edit/cancel/delete/alias/apply/import replacement, including sudo/raw/native aliases. All deny. | Denials at shared fence and unchanged object versions/runs. | BLOCKED(B0) |
 | S04 | 1. A runs P's workflow and observes it. 2. A cancels only its new run; cannot edit P's definition/cancel P's run. 3. Race deletion of B against B spawning D; reject stale spawn or preserve D visibly for user intervention, with no implicit adoption/cascade. | Independent run creators, race revision and complete owned-only cleanup. | BLOCKED(B0) |
 
 ### MP-08 / MP-09 / MP-10 / MP-11 — A02 durable wakes and turn enforcement
+
+**Owner prerequisites:** P0 and A01's real repository task/team; authorized
+client/worker disconnect and owned-kernel restart windows. Messaging uses
+actual implementation results from the linked providers.
 
 | Case | Exact steps and expected behavior | Expected evidence beyond E | Result |
 | --- | --- | --- | --- |
@@ -1009,14 +1062,23 @@ already pass on base; do not deliberately weaken base to manufacture RED.
 
 ### MP-08 / MP-09 / MP-10 / MP-11 — A03 process and timer watchers
 
+**Owner prerequisites:** P0; real repository/build dependencies, authenticated
+GitHub access to an owner-approved real PR/check run (read-only), and authorized
+managed STOP/start window. Build/check output cannot be a marker-emitting stub.
+
 | Case | Exact steps and expected behavior | Expected evidence beyond E | Result |
 | --- | --- | --- | --- |
-| S01 | 1. Prompt real agent to start an owned CLI process that emits a marker then exits. 2. Register output/exit and a timer with deadlines, yield. 3. Handle each wake and cancel remaining registrations. | Public process handle, real output/exit, timer and cleanup receipts. | BLOCKED(B0) |
+| S01 | 1. Prompt real agent to start the authorized repository's actual build/test CLI process. 2. Register meaningful build output/exit and a timer with deadlines, yield. 3. Handle each wake, verify actual artifact/test outcome and cancel remaining registrations. | Public process handle, real build output/artifact/exit, timer and cleanup receipts. | BLOCKED(B0) |
 | S02 | 1. Run real `gh pr checks --watch` on coordinator-approved read-only PR. 2. Yield on process output/exit. 3. Complete after observed checks. Core parses no GitHub semantics. Missing approved PR is a named owner blocker. | CLI version/exit, public PR identity, safe output and provider continuation. | BLOCKED(B0) |
-| S03 | 1. Flood owned stdout/stderr with malicious text/escapes/canary echo. 2. Cancel a resisting child; attempt PID reuse and targets 0/1/-1/undefined/NaN/non-owned PID. Reject unsafe signals, bound tails/matcher, retain actual cleanup proof. | Signal guard denials, start/group ownership checks and resource/tail bounds. | BLOCKED(B0) |
+| S03 | 1. Observe bounded stdout/stderr from the real build/check process. 2. Cancel its owned child through user/provider UI; verify start/group ownership and physical settlement. 3. Supplement with malicious-output/canary, resisting-child/PID-reuse and 0/1/-1/undefined/NaN/non-owned-target regression attempts; all unsafe signals deny before sending. Actual cancellation/cleanup must pass independently of fixtures. | Real command/output/exit and owned cancellation/cleanup receipts, plus separate signal-guard/resource-bound regression evidence. | BLOCKED(B0) |
 | S04 | 1. Wait on future timer, permit normal managed idle STOP. 2. Normally start again after due time. 3. Reconcile a lost process without relaunch. Due timer coalesces once; MP-09 policy remains intact. O uses ordinary restart as control. | Shutdown/last-turn-finished times, restart wake, `process_lost` and no relaunch. | BLOCKED(B0) |
 
 ### MP-08 / MP-10 / MP-11 — A04 hour-scale sudo
+
+**Owner prerequisites:** P0; authorized real owner-wide operation tied to the
+repository/deploy request, real target account/namespace, fresh passkey and owner
+availability across 60-minute expiry and 2/4/8-hour selections. Use real elapsed
+windows and actual target receipts; synthetic clocks are regression-only.
 
 | Case | Exact steps and expected behavior | Expected evidence beyond E | Result |
 | --- | --- | --- | --- |
@@ -1029,50 +1091,81 @@ already pass on base; do not deliberately weaken base to manufacture RED.
 
 ### MP-08 / MP-10 / MP-11 — A05 capability grants
 
+**Owner prerequisites:** P0; trusted installed production App with executable
+native agent adapter, admitted key/capabilities and a real service account
+(for example GitHub), real browser tabs on the fixed public-site list, and
+owner-authorized child grant subset. Missing adapter/account is a named blocker.
+
 | Case | Exact steps and expected behavior | Expected evidence beyond E | Result |
 | --- | --- | --- | --- |
-| S01 | 1. User asks regular agent to open/attach trusted App and owning-kernel browser. 2. Agent uses them, user changes focus. 3. Retained authorized use succeeds; revoke then denies. | Prompt causation/grant IDs, real App operation and browser/view change. | BLOCKED(B0) |
+| S01 | 1. User asks regular agent to open/attach the trusted real-service App and owning-kernel browser on the approved GitHub repo/docs page. 2. Agent performs the authorized service operation and browser task, user changes focus. 3. Retained authorized use succeeds; revoke then denies. | Prompt causation/grant IDs, real account/service receipt and browser/view change. | BLOCKED(B0) |
 | S02 | 1. Try unrelated existing tab/App acquisition and agent focus to self-grant. 2. Try untrusted App/executable key and forged capability. No minting authority or tool publication. | App trust/admission checks and unchanged grant set. | BLOCKED(B0) |
 | S03 | 1. Transfer explicit permitted resource subset to child. 2. Attempt unrelated resource or elevation inheritance. 3. Revoke parent binding, inspect child fences. No implicit widening. | Parent/child grant attribution and bounded revoke outcomes. | BLOCKED(B0) |
 | S04 | 1. Leased agent uses Room Browser/Computer route. 2. Attempt home user-domain browser from worker; deny. 3. Exercise real native App-agent MCP path and revoke its source while waiting. Missing executable adapter is an explicit coordinator dependency. | Same Room tab/action identity, denied cross-kernel call and source-loss wake. | BLOCKED(B0) |
 
 ### MP-08 / MP-10 / MP-11 — A06 Vault generation and login
 
+**Owner prerequisites:** P0; real mailbox/verification recipient, a selected
+real service that permits authorized email sign-up, existing service login
+in Vault and owner available for real verification challenges. Use the owner's
+existing Google account where selected; never automate Google account creation.
+
 | Case | Exact steps and expected behavior | Expected evidence beyond E | Result |
 | --- | --- | --- | --- |
-| S01 | 1. Owner elevates real agent and grants first-party browser target. 2. Agent generates opaque credential and registers/logs in via protected fill then observed click. 3. Verify authenticated session outside model. | Handle-only result, protected target view and server-side boolean auth receipt. | BLOCKED(B0) |
+| S01 | 1. Owner elevates real agent and grants selected permitted real-service browser target. 2. Agent generates opaque credential, registers via protected fill/observed click, verifies through the real mailbox with owner hand-off where required, then logs in. 3. Independently verify actual authenticated account/session. | Handle-only result, protected target view, real verification/account/session receipt and absence scan. | BLOCKED(B0) |
 | S02 | 1. Drop ACK after generation commit, retry same operation. 2. Lock Vault, then owner unlocks via UI. 3. Revoke during fill wait. Same committed handle, no new secret or stale insertion. | Generation receipt/dedup, unlock interaction and denied insertion. | BLOCKED(B0) |
-| S03 | 1. Change origin, document/node or protection epoch after discovery. 2. Try wrong handle scope and expiry mid-wait. 3. Echo synthetic secret in page/errors/pixels. Reject before secret resolution/effect, protection hides every echo. | Target fences, no-effect count and G12 scan per sink. | BLOCKED(B0) |
+| S03 | 1. Change actual service origin, document/node or protection epoch after discovery. 2. Try wrong handle scope and expiry mid-wait. 3. Privately check real service page/errors/pixels for protected observations; synthetic echo attacks run separately as regression. Reject before secret resolution/effect, protection hides actual sensitive observations. | Real target fences, no-effect count and G12 scan per sink. | BLOCKED(B0) |
 | S04 | 1. Owner supplies approved public-service account through product paths. 2. Real agent logs in; owner handles service challenge. 3. Reconnect and verify usability. Missing account/challenge action names owner and exact next step. | Redacted real-service auth/session proof and resumed real provider. | BLOCKED(B0) |
 
 ### MP-08 / MP-10 / MP-11 — A07 protected hand-off
 
+**Owner prerequisites:** P0; real mailbox/Google or permitted service account
+with an actual 2FA/human verification or protected login step, owner able to
+complete it, and actual Vault entry/save choice. Manufactured challenges and
+fixture codes are regression-only.
+
 | Case | Exact steps and expected behavior | Expected evidence beyond E | Result |
 | --- | --- | --- | --- |
-| S01 | 1. Real agent reaches controlled automation-disallowed step, requests owner click/code/secret in separate tasks. 2. Owner acts in scoped view/protected entry. 3. Agent resumes from safe status, settles hand-off obligation and completes. | Blocked interaction on every terminal, one bound action and safe resumed answer. | BLOCKED(B0) |
+| S01 | 1. Real agent reaches actual service verification/login or automation-disallowed step, requests required owner click/code/secret; cover each kind on a real authorized service. 2. Owner acts in scoped view/protected entry. 3. Agent resumes from safe status, verifies actual service outcome, settles hand-off obligation and completes. | Real challenge reason/outcome, blocked interaction on every terminal, one bound action and safe resumed answer. | BLOCKED(B0) |
 | S02 | 1. Race two terminals responding; reconnect a third. 2. Replay late response. 3. Navigate/replace target during pending request. One claimed action; stale target cancels/requires fresh request. Single-client cells use two instances of that client. | Interaction revision, claimed response and physical effect count. | BLOCKED(B0) |
 | S03 | 1. Let hand-off expire without owner action. 2. Restart with a pending request and revalidate target. 3. Request unsupported opaque region, complete using existing takeover attachment. No auto-answer/replay or second browser. | Timeout/reminder/block state, target revalidation and browser identity. | BLOCKED(B0) |
-| S04 | 1. Enter synthetic secret/code; choose save-to-Vault separately. 2. Cause page echo and model/history search. 3. Finish or cancel. Input never becomes context/history/trace/pixels; saved secret adds no read grant. | Handle-only save receipt and full G12 absence report. | BLOCKED(B0) |
+| S04 | 1. Owner enters actual required service secret/code through protected UI; choose save-to-Vault separately. 2. Verify observation protection and model/history search through boolean private checks without recording the value. 3. Finish the real service step or cancel. Input never becomes context/history/trace/pixels; saved secret adds no read grant. | Real service outcome, handle-only save receipt and full G12 absence report; synthetic echo cases remain supplementary. | BLOCKED(B0) |
 
 ### MP-08 / MP-10 / MP-11 — A08 payments
 
+**Owner prerequisites:** P0; real payment-provider account, approved real
+merchant/checkout and permitted native sandbox/test mode on that account. If
+the service offers no such mode, `BLOCKED(owner payment approval)` until owner
+authorizes exact payee/amount/action and payment method through protected UI.
+Standalone Stripe test-mode fixtures do not satisfy this matrix.
+
 | Case | Exact steps and expected behavior | Expected evidence beyond E | Result |
 | --- | --- | --- | --- |
-| S01 | 1. Elevated real agent prepares first-party checkout. 2. Owner confirms exact payee/amount/cart/action through client. 3. Verify one service receipt; repeat a second payment requiring new confirmation. | Bound interaction details, two distinct confirmations/receipts. | BLOCKED(B0) |
+| S01 | 1. Elevated real agent prepares approved real-service checkout using native sandbox/test mode on the real account, or explicitly owner-approved real payment. 2. Owner confirms exact payee/amount/cart/action through client. 3. Verify actual provider receipt; repeat a separately approved second payment requiring new confirmation. | Real account/mode assertion, bound interaction details, two distinct provider confirmations/receipts. | BLOCKED(B0) |
 | S02 | 1. Replay confirmation; change amount/payee/origin/document in separate runs. 2. Attempt commit under old confirmation and sudo alone. All deny; unknown payment surface requires owner hand-off. | Binding mismatches, no new charge and hand-off screen. | BLOCKED(B0) |
 | S03 | 1. Omit owner response, expire/revoke while pending. 2. Drop ACK after actual commit. 3. Reconcile site receipt. No timeout approval or second click/charge, uncertainty visible. | Pending/expired screens, service count and receipt reconciliation. | BLOCKED(B0) |
-| S04 | 1. Use owner-approved real-site sandbox/test account. 2. Prepare, confirm and verify test payment through browser/App. No live-money charge required; missing sandbox/account names exact owner action. | Real sandbox receipt and protected browser/App action trace. | BLOCKED(B0) |
+| S04 | 1. Use real provider account with service-native sandbox/test mode where offered. 2. Prepare, confirm and independently verify provider payment through real browser/App. Without that mode, require exact owner real-payment approval before action; missing approval is BLOCKED(owner payment approval). | Real account/mode or exact payment authorization, provider receipt and protected browser/App action trace. | BLOCKED(B0) |
 
 ### MP-08 / MP-10 / MP-11 — A09 public history search
 
+**Owner prerequisites:** P0; real A01/flagship task history across peers and
+leases, owner-authorized retention/delete/rebuild runs and actual protected
+service interactions for privacy checks. Search actual implementation/tool
+records and service outcomes; canned marker transcripts are regression-only.
+
 | Case | Exact steps and expected behavior | Expected evidence beyond E | Result |
 | --- | --- | --- | --- |
-| S01 | 1. Peer generates public prompt/answer/tool result markers. 2. Agent searches each, opens detail and paginates via client prompt. 3. Restart/reconnect, repeat on leased history. IDs/snippets/detail are authorized and stable. | Search/detail UI, public event IDs and index coverage/cursor. | BLOCKED(B0) |
+| S01 | 1. Peer completes real repository/service work producing actual public prompts, answers and tool results. 2. Agent searches each by real task terms, opens detail and paginates via client prompt. 3. Restart/reconnect, repeat on leased history. IDs/snippets/detail match actual work and remain authorized/stable. | Real task/artifact correlation, search/detail UI, public event IDs and index coverage/cursor. | BLOCKED(B0) |
 | S02 | 1. Try foreign-room counts/snippets/detail and guessed event/blob refs. 2. Try missing/ambiguous owner/room scope under sudo. Deny before ranking/snippet generation; no existence leak. | Scoped query fences and boolean foreign-marker absence. | BLOCKED(B0) |
-| S03 | 1. Generate private-overlay/Vault/hand-off echoes through protected paths. 2. Search before/after rebuild. 3. Invalidate/delete public rows, search cached and paginated results. No secret/stale token remains searchable. | G12 sink report, invalidation cursor and zero-hit assertions. | BLOCKED(B0) |
+| S03 | 1. Complete actual protected service login/hand-off and private-overlay work. 2. Privately verify sensitive material is absent from search before/after rebuild; synthetic echo attacks are separate regression. 3. Invalidate/delete actual public task rows, search cached and paginated results. No secret/stale token remains searchable. | Real task/service receipts, boolean G12 sink report, invalidation cursor and zero-hit assertions. | BLOCKED(B0) |
 | S04 | 1. Interrupt incremental indexing/rebuild, restart. 2. Query excluded legacy unknown-provenance rows and retention gap. 3. Resume sanitized rebuild. Coverage stays explicitly incomplete, no raw-history fallback. | Index version/coverage UI and sanitized rebuild receipt. | BLOCKED(B0) |
 
 ### MP-08 / MP-09 / MP-10 / MP-11 — A10 leased wakes and elevation
+
+**Owner prerequisites:** P0; real home and distinct worker machines enrolled
+through hosted relay, accounts materialized through normal Chariox paths,
+actual delegated repository/deploy work and authorized lease-loss, worker
+restart and managed STOP/start windows. Simulated workers are regression-only.
 
 | Case | Exact steps and expected behavior | Expected evidence beyond E | Result |
 | --- | --- | --- | --- |
@@ -1084,6 +1177,11 @@ already pass on base; do not deliberately weaken base to manufacture RED.
 
 ### MP-08 / MP-09 / MP-10 / MP-11 — A11 migration and retirement
 
+**Owner prerequisites:** P0; owner-authorized real legacy tasks/subscriptions/
+goal history, actual supported old/minimum client builds, final paired candidate,
+all live service/deploy/payment resources from FB/I and current independent
+security-anchor reviews. Fixture-seeded history is supplementary only.
+
 | Case | Exact steps and expected behavior | Expected evidence beyond E | Result |
 | --- | --- | --- | --- |
 | S01 | 1. Open real persisted legacy meta tasks/subscriptions and goal history. 2. Drain/migrate cursors idempotently, restart twice. 3. Ordinary agent delegates → yields → wakes → searches → browser → hand-off, sudo does typed Vault/login/payment. | Preserved event/history IDs, regular identity and zero-open final ledger. | BLOCKED(B0) |
@@ -1093,9 +1191,15 @@ already pass on base; do not deliberately weaken base to manufacture RED.
 
 ### MP-08 / MP-09 / MP-10 / MP-11 — A12 goal acceptance matrix
 
+**Owner prerequisites:** P0; actual owner repository/app request, real long
+build/check work and delegate artifacts, permitted service account requiring
+hand-off, real legacy `/goal` history, and owner available for decisions,
+quota/billing/approval and sudo renewal. Include I01's real Vercel publication
+and FB's real Cloud/Firebase services; missing accounts block the affected cells.
+
 | Case | Exact steps and expected behavior | Expected evidence beyond E | Result |
 | --- | --- | --- | --- |
-| S01 | 1. Owner submits `/goal` to build a two-artifact app. 2. Agent ends after first artifact with no live source; goal check says incomplete. 3. Kernel immediately continues, second artifact completes, one bounded completion check confirms done. Ordinary prompt control uses no continuing goal loop. | Original objective, evaluation/continuation receipts, goal row and verified two artifacts. | BLOCKED(B0) |
+| S01 | 1. Owner submits `/goal` for the real app's frontend/backend implementation and actual publication request. 2. Agent ends after frontend work with no live source; goal check says incomplete. 3. Kernel immediately continues, backend and authorized deployment complete, one bounded completion check confirms independently verified live app. Ordinary prompt control uses no continuing goal loop. | Original objective, real artifacts/deploy receipt/live URL, evaluation/continuation receipts and goal row. | BLOCKED(B0) |
 | S02 | 1. Goal delegates real work, yields with 1-minute check-in interval, source stays live without progress. 2. Check-in wakes ask whether sources progress; verify configurable 10-minute default and 60-minute maximum in separate tasks. 3. Kill required/all sources and restart before due check. No infinite waits, missed intervals coalesce, no-progress guard persists. | Deadline/source-liveness/check-in timeline, all-client wait countdown and restart guard. | BLOCKED(B0) |
 | S03 | 1. Try done with each obligation kind still open, then repeat false claim. 2. Timeout/malform evaluation and drop its acceptance ACK separately. 3. Deliver stale evaluation after objective edit. At most one check per work revision, no evaluator recursion or duplicate spend, bounded correction then user block, stale result fenced. | Check counts/origin/60-second bound/8 KiB result, corrected goal row and no recursive turn. | BLOCKED(B0) |
 | S04 | 1. Trigger each blocked category: decision/input, 2FA/refusal/automation prohibition, missing account/quota/billing/credential, unanswered approval/expired required sudo, progress guard. 2. Deliver source progress/reconnect while blocked; neither resumes. 3. Owner resolves through protected product UI or cancels. Exactly one revalidated resume/cancel, human input stays protected. | Each category's interaction/notification, owner response receipt and boolean leakage scan. | BLOCKED(B0) |
@@ -1107,8 +1211,10 @@ already pass on base; do not deliberately weaken base to manufacture RED.
 
 The top end-to-end scenario is **“/sudo agent builds and deploys a web app with
 external services”**, using `/sudo /goal` for durable overall completion. Run
-variant A before I01–I03; variant B is a periodic live showcase, not a gate.
-Both use the real stack, mixed official providers and protected user-domain
+the **LIVE variant B as the acceptance gate** before I01–I03, on both integration
+heads. Variant A is renamed the **controlled regression suite** and remains
+supplementary; its fixture results never establish acceptance or staging readiness.
+Live runs use the real stack, mixed official providers and protected user-domain
 Chromium outside slices. The home kernel remains runtime authority; Cloud's
 publication runtime serves the produced app, never proxies agent traffic.
 
@@ -1116,22 +1222,23 @@ publication runtime serves the produced app, never proxies agent traffic.
 
 | Variant | Owner/coordinator action and blocking seam |
 | --- | --- |
-| A — controlled acceptance | Supply exact paired built OSS/Cloud and `scripts/e2e-stack` (equivalent isolated stack until available), authorized staging publication target/namespace and public URL, product-linked access to all three providers, enrolled passkey and owner available for approvals/unlock/hand-off/renewal. Supply Stripe test-mode account/access through protected product configuration; no live-money credentials. Provide isolated Mailpit, local OIDC and DB services reachable from the publication runtime. Supply authorized fresh Path-1 host for M cells. Missing staging permission, Stripe access or owner action is an explicit BLOCKED with owner and next step; this plan authorizes no lane deployment. |
-| B — live showcase | Owner supplies a dedicated mailbox with credentials in the Vault, an **existing Google account** authorized for Firebase Spark (free) Auth + Firestore + Hosting, access to Chariox Cloud publication, linked provider plans and an agreed usage/time/$ ceiling. Owner remains available for 2FA, phone/human verification, approvals and passkey renewal. Any optional Supabase/Clerk-style service must permit normal email sign-up for this use and stay within the approved free/test scope; missing account/quota/billing is BLOCKED, never an implicit paid upgrade. |
+| A — controlled regression suite | Supply isolated `scripts/e2e-stack` (equivalent until available), built clients/kernel and authorized regression publication namespace, Mailpit, local OIDC, DB and Stripe test-mode configuration. Use protected product input and owned resources. These are regression prerequisites only; this plan authorizes no deployment and no FA receipt can close a live gate. |
+| B — LIVE acceptance gate | Supply P0 and a dedicated **real mailbox** with credentials in the Vault and approved real recipient; an **existing Google account** authorized for Firebase Spark (free) Auth + Firestore + Hosting; real Chariox Cloud publication account/namespace and public URL; a selected real Supabase/Clerk-style service permitting normal email sign-up; linked real provider plans and agreed usage/time/$ ceiling. Owner remains available for 2FA, phone/human verification, approvals and passkey renewal. Payment uses an approved real provider account's native sandbox/test mode where offered; otherwise BLOCKED(owner payment approval) until exact real payment is authorized. Missing mailbox/account/service permission/quota/Cloud deploy authority or owner action is BLOCKED(owner, supply/link/authorize the named resource); no implicit upgrade, fixture substitution or automated Google account creation. |
 
 **Matrix expansion:** `FA{01..10}-{provider}-{client}-{placement}-{environment}-
 {before-retirement|after-retirement}` and
-`FB{01..08}-{provider}-{client}-{placement}-{environment}`, using all 72 axes
+`FB{01..08}-{provider}-{client}-{placement}-{environment}-
+{before-retirement|after-retirement}`, using all 72 axes
 above with the selected provider as root and all three providers in the team.
 Each FA cell first runs FA01 to reach its seam; each FB cell first runs FB01.
 Other required variants in a row get separate asserted subruns. Materialize
 every ID with steps, E, extra evidence and explicit result; no omitted cells.
-FA must show real-path base RED → candidate GREEN for changed behavior and pass
-on both integration heads. FB records PASS/FAIL/BLOCKED per scheduled campaign;
-unscheduled cells remain explicit BLOCKED(coordinator, schedule showcase),
-never PASS. FA/FB receipts cannot substitute for each other or other MP gates.
+FB must show real live base RED → candidate GREEN for changed behavior and pass
+on both integration heads, with P0/site/density/network/duration conditions.
+FA records regression RED/GREEN separately. Scheduling or running only FA cannot
+close FB, I or any MP gate; every missing live resource/action remains explicit.
 
-#### MP-08 / MP-09 / MP-10 / MP-11 — variant A: controlled acceptance matrix
+#### MP-08 / MP-09 / MP-10 / MP-11 — variant A: controlled regression suite (never acceptance)
 
 | Cell | Exact numbered user flow and expected behavior | Expected evidence beyond E | Result |
 | --- | --- | --- | --- |
@@ -1146,35 +1253,42 @@ never PASS. FA/FB receipts cannot substitute for each other or other MP gates.
 | FA09 | 1. Post-deploy watcher observes live URL, auth and DB behavior. 2. Inject unhealthy response then recovery; yield with finite check-ins, show long-wait notification and restart recovery. 3. Cancel/settle watcher explicitly before done. Test ordinary/managed activity and normal shutdown/start without a new Cloud wake scheduler. | Live Chromium assertions plus watcher output/exit, source/deadline/check-in timeline, O/M activity and MP-09 receipts, cleanup. | BLOCKED(B0) |
 | FA10 | 1. Combine deploy-wait restart, sudo expiry/extension, open-obligation done claim and delegate failure in one FA01 run at recorded barriers. 2. Resolve only required owner interactions, verify live app and payment/mail/DB receipts. 3. Finish root done and every delegate explicitly done/cancelled, zero open obligations or dormant/unclassified agents; remove only owned runtime/publication/fixture resources. | Complete fault/recovery timeline, real-client screenshots/logs per step, exact heads, one-effect counts, final goal/room state and verified cleanup. | BLOCKED(B0) |
 
-#### MP-08 / MP-09 / MP-10 / MP-11 — variant B: live showcase matrix (non-gating)
+#### MP-08 / MP-09 / MP-10 / MP-11 — variant B: LIVE acceptance matrix
 
 | Cell | Exact numbered user flow and expected behavior | Expected evidence beyond E | Result |
 | --- | --- | --- | --- |
-| FB01 | 1. Owner submits the same flagship `/sudo /goal` prompt with approved service scope and budget. 2. Mixed team builds auth/data app, uses dedicated mailbox and existing Google/Firebase account, publishes to Firebase Hosting on Spark and Chariox Cloud. 3. Watch both live URLs, independently verify auth/data round trip and settle work before done. | Two deployment receipts/URLs/artifact bindings, real browser flow, team and goal ledger, measured success. | BLOCKED(B0) |
+| FB01 | 1. Owner submits flagship `/sudo /goal` prompt with approved real service scope/budget. 2. Mixed real-account team builds auth/data app, uses real mailbox and existing Google/Firebase Spark account, completes permitted real-service sign-up and actual hand-offs. 3. Integrate payment using real provider account's native sandbox/test mode where offered, else BLOCKED(owner payment approval) pending exact real-payment authorization; owner confirms bound checkout and verify provider receipt. 4. Publish to real Firebase Hosting on Spark and Chariox Cloud, watch both live URLs, independently verify sign-up/login/auth/data/payment in desktop browser at DPR 1/2 over shaped hosted relay, settle work before done. | Real mail/signup/auth/DB/payment receipts, two actual deployment receipts/URLs/artifact bindings, per-step browser/TUI evidence and P0 timings, mixed-team goal ledger and measured success. | BLOCKED(B0) |
 | FB02 | 1. Kernel injects dedicated mailbox login from Vault. 2. Agent retrieves verification through browser UI; owner handles 2FA/human checks via protected interaction. 3. Resume from safe status only and verify mail outcome. | Mailbox access/outcome without message challenges or credentials in evidence, hand-off reason/count/duration and leak scan. | BLOCKED(B0) |
 | FB03 | 1. Use existing Google account; never automate Google account creation. 2. Configure Spark Auth + Firestore + Hosting through permitted flows, owner handles account/phone/verification steps. 3. Prove auth and persisted data on hosted app; quota/billing requirement blocks, no automatic upgrade. | Approved account/project metadata, Spark plan assertion, hosted auth/data receipts, protected hand-offs and any exact blocker. | BLOCKED(B0) |
-| FB04 | 1. If owner elects Supabase/Clerk-style service, record allowed normal email sign-up scope before starting. 2. Generate Vault password, inject and verify via mailbox; human/refusal/automation-restricted step hands off. 3. Verify permitted service integration. Without an elected service record BLOCKED(owner, select/authorize optional service), not invented success. | Scope decision, opaque generation receipt, verification/integration assertion and safe hand-off history. | BLOCKED(B0) |
+| FB04 | 1. Owner selects a real Supabase/Clerk-style service permitting normal email sign-up and records scope before starting. 2. Generate Vault password, kernel-inject and verify through real mailbox; human/refusal/automation-restricted step hands off. 3. Verify real account/service integration in the deployed app. Missing selection/permission is BLOCKED(owner, select/authorize permitted real service). | Scope decision, opaque generation receipt, real delivered verification/account/integration assertion and actual safe hand-off history. | BLOCKED(B0) |
 | FB05 | 1. Encounter verification, model refusal, disallowed automation or missing user resource. 2. Surface owner-only blocked interaction across clients; never evade refusal or create replacement identity. 3. Owner completes permitted isolated step/provides resource and explicitly resumes, or cancels with honest unsuccessful result. | Reason/notification, protected action and single resume/cancel, service outcome and hand-off totals. | BLOCKED(B0) |
-| FB06 | 1. Span a long build/deploy wait with goal check-ins and expiry notice. 2. Owner freshly extends/reauthorizes when needed; reconnect to retained state. 3. Verify publication on both targets and settle post-deploy watchers; no dormant agent or implicit renewal. | Real timing, sudo/goal UI, deployment reconciliation and final zero-open ledger. | BLOCKED(B0) |
+| FB06 | 1. Run ≥3-hour uninterrupted real browser/provider/hosted-relay session on FB01's services/sites; no unintended disconnect/stuck view, meet all per-site/DPR/network thresholds. 2. In separate recorded live subruns combine real deploy-wait owned-kernel restart, 60-minute sudo expiry/fresh extension, done claim with open obligations and real delegate failure; revalidate clients/targets and reconcile actual service/publication receipts without duplicates. 3. Owner resolves required hand-offs/reauthorization, verify both deployments and settle watchers/delegates; no dormant agent or implicit renewal. | Monotonic multi-hour stability and per-site timing/frame/screenshots, four real fault seams/recovery traces, sudo/goal UI, single-effect deploy/service receipts and final zero-open ledger. | BLOCKED(B0) |
 | FB07 | 1. Freeze success rubric and limits before prompt. 2. Measure independent task success, total/active/wait wall time, tokens and API-equivalent $, hand-off count/reasons/time, agents/providers and delegation count/tree. 3. Include failed/blocked attempts, unknown usage and plan throttling; report no cost as zero merely because it ran on a plan. | Per-attempt metrics/price snapshot and coverage, grader assertions, failure seam and hand-off/delegation ledger. | BLOCKED(B0) |
 | FB08 | 1. Run private evidence absence checks before retention. 2. Remove only campaign-created test data/deployments/watchers and revoke temporary grants; retain owner mailbox/Google identity, Vault entries and linked credentials. 3. Record final product state, resource recovery and cleanup. | Boolean scan, exact owned cleanup/retention list, service receipt and final resource samples. | BLOCKED(B0) |
 
 Run I01–I03 on the exact final paired OSS/Cloud build, after PRs 1–10 + 12, then
 again after retirement. IDs are `I{01..03}-{provider}-{client}-{placement}-
-{environment}` over every axis above (72 cells per scenario per integration
-phase). Steps/evidence/results expand exactly like A cells. Mix all three
+{environment}-{before-retirement|after-retirement}` over every axis above
+(72 cells per scenario per integration phase). Steps/evidence/results expand
+exactly like A cells. Mix all three
 providers in delegation chains, rotating the selected provider as root;
 never use simulated time for hour/multi-hour duration acceptance.
 
+| Integration | Owner prerequisites beyond P0 and LIVE FB resources |
+| --- | --- |
+| I01 | Real Vercel account/team/project and authorized publication URL/budget, repository and real build/check dependencies, owner available for passkey extension and deploy approval. Missing Vercel access is BLOCKED(owner, link/authorize Vercel account); no fixture or alternate target satisfies this exact scenario. |
+| I02 | Real repository/build/deploy objective needing ≥3 hours, three linked provider accounts, real home/worker machines and authorized owned restart/partition windows. Owner available for lost elevation/child intervention; retain actual service/artifact receipts throughout. |
+| I03 | Real mailbox/Google or permitted service account requiring actual protected 2FA/code/secret step, credential through Vault and owner available to complete it; authorized owned-kernel restart/reconnect. Manufactured challenges cannot replace the real hand-off. |
+
 | Scenario | Exact numbered user flow and expected behavior | Expected evidence beyond E | Result |
 | --- | --- | --- | --- |
-| I01 | 1. Owner submits one `/sudo /goal build this web app and publish it on Vercel` prompt, selects default 60 minutes and verifies passkey. If no approved account, name an equivalent owner-controlled first-party deploy target in the manifest before starting. 2. Root delegates frontend/test/package work across real providers; delegates stay regular, root retains privileged publish step. 3. Include a real ≥15-minute external build/check wait with finite deadline and long-wait notification; total task lasts >60 minutes. 4. Observe 10-minute warning, Extend from another attached client where B applies, freshly verify to 2 hours. 5. Wake, publish via permitted protected target, verify served app in real Chromium plus deploy receipt. 6. Complete all delegates/workflows/watchers/processes/hand-offs, finish with zero open obligations and no waiting/blocked/unclassified agent. No second user task prompt or silent renewal. | Timeline with original prompt/passkey receipt, real elapsed duration, warning/extension, chain lineage/regular child status, per-step UI, deployed URL/artifact digest and final room/ledger. | BLOCKED(B0) |
-| I02 | 1. Owner starts `/goal` on A for a real ≥3-hour task; A → B → C chain uses all providers and owned workflow/process/timer waits. 2. Restart owned home at hour 1 and worker at hour 2; partition/reconnect relay once. 3. Sweep overdue/dead sources and reauthorize root sudo via fresh owner passkey when lost; none inherited. 4. A requests B to settle/delete its own child C; A cannot destructively act on C. In a separate branch lose B with C alive, show owner intervention and no inherited rights. 5. Resume retained chain/results, settle every obligation and verify actual final artifacts, all agents explicitly done/cancelled. Failure/blocked cases notify user and resume only on owner action. | Monotonic ≥3-hour run, both restart/partition records, lineage and correction counters across restart, deadline/source-loss wakes, reauthorization UI, final artifact/zero-open ledger. | BLOCKED(B0) |
-| I03 | 1. Owner prompts a real agent to finish a browser task requiring a protected human code/secret step. 2. Agent requests hand-off, becomes blocked on every terminal, retains its task/obligation and finite interaction expiry. 3. Disconnect/reconnect client; restart owned kernel while pending, revalidate target; verify restart removes sudo. 4. Owner supplies protected input through same bound interaction (fresh request if stale), then explicitly reauthorizes if needed. 5. Agent resumes once from safe outcome, finishes target operation and final answer, no open obligations or private input in context/history/pixels/logs/index. | Before/after blocked/hand-off screens, target generation, one action/resume receipt, real service outcome and boolean full-sink scan. | BLOCKED(B0) |
+| I01 | 1. Owner submits one `/sudo /goal build this web app and publish it on Vercel` prompt, selects default 60 minutes and verifies passkey; missing real Vercel account is BLOCKED(owner, link/authorize Vercel account). 2. Root delegates frontend/test/package work across real-account providers; delegates stay regular, root retains privileged publish step. 3. Include a real ≥15-minute external build/check wait with finite deadline and long-wait notification; total task lasts >60 minutes. 4. Observe 10-minute warning, Extend from another attached client where B applies, freshly verify to 2 hours. 5. Wake, publish to actual Vercel project through protected target over hosted relay, verify served app at DPR 1/2 plus real deploy receipt. 6. Complete all delegates/workflows/watchers/processes/hand-offs, finish with zero open obligations and no waiting/blocked/unclassified agent. No second user task prompt or silent renewal. | Timeline with original prompt/passkey receipt, real elapsed duration, warning/extension, chain lineage/regular child status, per-step web/TUI and P0 condition evidence, real Vercel URL/artifact/deploy receipt and final room/ledger. | BLOCKED(B0) |
+| I02 | 1. Owner starts `/goal` on A for real repository/build/deploy work lasting ≥3 hours; A → B → C chain uses all real-account providers and owned workflow/process/timer waits on real machines. 2. Restart owned home at hour 1 and worker at hour 2; partition/reconnect only the lane-owned connection to hosted relay once. 3. Sweep overdue/dead sources and reauthorize root sudo via fresh owner passkey when lost; none inherited. 4. A requests B to settle/delete its own child C; A cannot destructively act on C. In a separate branch lose B with C alive, show owner intervention and no inherited rights. 5. Resume retained chain/results, settle every obligation and independently verify actual artifacts/deployment, all agents explicitly done/cancelled. Failure/blocked cases notify user and resume only on owner action. | Monotonic ≥3-hour run, real artifact/service/deploy receipts, P0 condition captures, both restart/partition records, lineage/correction counters, deadline/source-loss wakes, reauthorization UI and zero-open ledger. | BLOCKED(B0) |
+| I03 | 1. Owner prompts a real-account agent to finish actual mailbox/Google/permitted-service login or verification requiring protected human code/secret through the real desktop browser over hosted relay. 2. Agent requests actual hand-off, becomes blocked on every terminal, retains task/obligation and finite interaction expiry. 3. Disconnect/reconnect client; restart owned kernel while pending, revalidate real target; verify restart removes sudo. 4. Owner supplies actual protected input through same bound interaction (fresh request if stale), then explicitly reauthorizes if needed. 5. Agent resumes once from safe outcome, independently verify real service operation and final answer, no open obligations or private input in context/history/pixels/logs/index. | DPR 1/2 before/after blocked/hand-off screens and P0 condition captures, target generation, one actual action/resume receipt, real service outcome and boolean full-sink scan. | BLOCKED(B0) |
 
 ## MP-08 / MP-09 / MP-10 / MP-11 — Evals and optimization (after overhaul, non-gating)
 
-Start scored runs after PRs 1–12 and controlled acceptance pass; freeze an
+Start scored runs after PRs 1–12 and real live acceptance pass; freeze an
 accepted reference build first. This phase does not gate their merge or MP
 closure. Aim to establish, through measured comparisons, Chariox's accuracy
 versus **API-equivalent $, tokens and wall time Pareto frontier** for multi-agent
@@ -1197,7 +1311,7 @@ selection and report uncertainty; optimize without tuning on held-out answers.
 | 2 — Long-Horizon Terminal-Bench | Durable goals, deadline/check-in/no-progress guards (2/12), watchers (3), hour-scale sudo/fresh owner extension where allowed (4), leased recovery (10), history/migration (9/11). |
 | Open Chariox multi-agent suite: parallel bundles | Public independent task bundles/graders; fan-out/results, direct-child rights and cancellation (1/2), watchers (3), leased parity (10), overall completion (12). |
 | Open suite: mixed difficulty | Public tasks with known grading; planner/worker assignment, mixed/cheap teams, verifier and best-of-n; room authority/results (1/2), history (9), leases (10), completion checks (12). |
-| Open suite: long-horizon build+deploy with restarts | Public tasks/graders and first-party services; flagship FA flow, goals/wakes/watchers (2/3/12), sudo (4), capability/Vault/hand-off/payment (5–8), history (9), leased restart and migration (10/11). |
+| Open suite: long-horizon build+deploy with restarts | Public tasks/graders and real services; LIVE flagship FB flow, goals/wakes/watchers (2/3/12), sudo (4), capability/Vault/hand-off/payment (5–8), history (9), leased restart and migration (10/11). Controlled FA fixtures remain separate regression/eval targets, never feature acceptance. |
 
 Pin maintainers' task/rule versions and licenses before each pilot; preserve
 official graders and distinguish subset/local reproduction from official
