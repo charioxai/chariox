@@ -58,7 +58,7 @@ def report(campaign_dir, output):
              'successes':successes,'complete':complete,'accuracy_percent':100*successes/len(expected) if complete else None,
              'harness_errors':sum(bool(r['official_exception']) for r in rows),'cleanup_complete':all(r['cleanup_complete'] for r in rows),
              'wall_time_seconds':campaign['finished_at']-campaign['started_at'],
-             'solver_wall_time_seconds':sum((json.loads(Path(i['official_result']).read_text()).get('agent_result') or {}).get('metadata',{}).get('chariox',{}).get('wall_time_seconds',0) for i in entries.values()),
+             'solver_wall_time_seconds':sum((((json.loads(Path(i['official_result']).read_text()).get('agent_result') or {}).get('metadata') or {}).get('chariox') or {}).get('wall_time_seconds',0) for i in entries.values()),
              'tokens':{key:sum(r[key] for r in rows) if all(type(r[key]) is int for r in rows) else None for key in tokens},
              'measured_tasks':sum(type(r['input_tokens']) is int for r in rows),
              'proxy_cost':{'label':'proxy','lower_usd':str(sum(Decimal(r['proxy_usd_lower']) for r in rows)),

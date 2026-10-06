@@ -24,7 +24,7 @@ import termios
 import time
 import fcntl
 
-from contract import safe_pid, completed_answer, quota_exhausted, admit_placement, leased_target
+from contract import safe_pid, completed_answer, quota_exhausted, admit_placement, leased_target, task_usage, session_usage_visible
 
 
 def file_hash(path):
@@ -336,15 +336,15 @@ def run(request, evidence):
         stage = 'usage_report'
         usage_command = [str(root / 'bin/bun'), str(Path(__file__).with_name('usage_status.mjs')), str(root), endpoint, session_id]
         usage_read = subprocess.run(usage_command, env=env, capture_output=True, text=True, timeout=30)
+        report = None
         if usage_read.returncode == 0:
             report = json.loads(usage_read.stdout)
             (evidence / 'kernel-usage.json').write_text(json.dumps(report, indent=2))
-            total = report['total']
-            price = total.get('api_equivalent_nanodollars')
-            if total['unavailable_turns'] == 0 and report['turns'] and all(t['completed'] for t in report['turns']):
-                measurement['usage'] = {'session_id': session_id, 'complete': True,
-                    **total['usage'], 'api_equivalent_nanodollars': int(price) if price is not None else None}
-                measurement['usage_unavailable_reason'] = None if price is not None else 'official harness lacks the fields required by the exact dated model price'
+            measurement['usage'] = task_usage(report, session_id, agent_id, prompt_id, request.get('task_descendant_bindings', ()))
+            measurement['usage_unavailable_reason'] = (
+                'selected task run accounting unavailable' if measurement['usage'] is None else
+                None if measurement['usage']['api_equivalent_nanodollars'] is not None else
+                'official harness lacks the fields required by the exact dated model price')
         client.send('submit_prompt', prompt='/session usage')
         screenshot('03-usage-report-collapsed')
         # Use the real TUI's user click handler to open its ordinary multiline
@@ -360,9 +360,7 @@ def run(request, evidence):
         (evidence / 'usage-view-actions.json').write_text(json.dumps(view_actions, indent=2) + '\n')
         visible = screenshot('04-usage-report-expanded')
         usage = measurement['usage']
-        measurement['tui_usage_visible'] = usage is not None and all(
-            f'{label} {usage[key]}' in visible
-            for label, key in [('input', 'input_tokens'), ('cached', 'cached_input_tokens'), ('output', 'output_tokens')])
+        measurement['tui_usage_visible'] = usage is not None and report is not None and session_usage_visible(report, visible)
         if measurement['status'] == 'completed' and request.get('numeric_accounting_required') and not measurement['tui_usage_visible']:
             measurement['status'] = 'accounting_projection_failed'
             measurement['first_failing_seam'] = 'real TUI usage projection'

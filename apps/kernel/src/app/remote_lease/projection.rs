@@ -12,6 +12,7 @@ use crate::transport::relay_peer::{
 use chariox_relay::protocol::ClientTarget;
 
 use super::RemoteLeaseRuntime;
+mod usage;
 
 #[cfg(test)]
 mod history_tests;
@@ -963,6 +964,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .unwrap_or_else(|| agent_id.to_string());
         let projected_provider_run_id =
             crate::provider::projected_leased_provider_run_id(&leased_agent_id, provider_run_id);
+        let projected_usage = provider_run.as_ref().map(|run| run.usage());
         if let Some(provider_run) = provider_run {
             let projected_run = provider_run.projected_for_home_agent_with_id(
                 projected_provider_run_id.clone(),
@@ -1098,6 +1100,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             if !saw_completion && !workflow_output_ready {
                 return Ok(outcome);
             }
+            self.persist_home_turn_usage(session_id, agent_id, active_prompt.id(), &projected_provider_run_id, projected_usage)?;
             if active_prompt.workflow_run_id().is_some() && !workflow_output_ready {
                 if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
                     active_prompt.workflow_run_id(),

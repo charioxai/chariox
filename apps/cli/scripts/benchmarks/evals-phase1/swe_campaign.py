@@ -6,11 +6,31 @@ import json
 import subprocess
 import sys
 import time
+from uuid import uuid4
 from pathlib import Path
 
 from swe_adapter import load_tasks
 from turn import preflight, resource_sample
 
+
+
+def archive_quota_attempt(result, prediction):
+    """MP-08 / MP-10 / MP-11: fresh retry rechecks product quota; keep prior evidence."""
+    if not result.exists():return False
+    measurement=json.loads(result.read_text())
+    if measurement.get('status')!='quota_exhausted':return False
+    if not measurement.get('cleanup_complete'):
+        raise RuntimeError('MP-11: quota attempt cleanup incomplete')
+    if prediction.exists():
+        raise RuntimeError('MP-08 / MP-10: quota admission unexpectedly produced a prediction')
+    archive=result.parent/'quota-attempts'/uuid4().hex
+    archive.mkdir(parents=True,mode=0o700)
+    evidence=result.with_suffix('.evidence')
+    if evidence.exists():evidence.rename(archive/evidence.name)
+    log=result.with_suffix('.runner.log')
+    if log.exists():log.rename(archive/log.name)
+    result.rename(archive/result.name)
+    return True
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -38,9 +58,15 @@ def main():
                'campaign_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     args.output_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     campaign = args.output_root / 'campaign.json'
-    if campaign.exists() and json.loads(campaign.read_text()) != receipt:
-        parser.error('MP-08 / MP-10: existing campaign identity differs')
-    campaign.write_text(json.dumps(receipt, indent=2) + '\n')
+    if campaign.exists():
+        previous=json.loads(campaign.read_text())
+        if {k:v for k,v in previous.items() if k!='campaign_sha256'} != {k:v for k,v in receipt.items() if k!='campaign_sha256'}:
+            parser.error('MP-08 / MP-10: existing campaign identity differs')
+    else:
+        campaign.write_text(json.dumps(receipt, indent=2) + '\n')
+    attempts=args.output_root/'campaign-attempts'
+    attempts.mkdir(mode=0o700,exist_ok=True)
+    (attempts/(uuid4().hex+'.json')).write_text(json.dumps(dict(receipt,started_at=time.time()),indent=2)+'\n')
     args.workspace_root.mkdir(parents=True, exist_ok=True)
     for instance in ids:
         before = resource_sample()
@@ -48,6 +74,7 @@ def main():
         workspace = args.workspace_root / instance
         result = args.output_root / (instance + '.json')
         prediction = args.output_root / (instance + '.prediction.jsonl')
+        archive_quota_attempt(result, prediction)
         if not result.exists():
             if not workspace.exists():
                 subprocess.run(['git', 'init', str(workspace)], check=True, stdout=subprocess.DEVNULL)

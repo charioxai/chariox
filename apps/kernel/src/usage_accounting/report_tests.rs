@@ -117,3 +117,42 @@ fn mp08_mp10_mp11_unmeasured_bound_prompt_does_not_disappear_from_total() {
     assert_eq!(report.total.usage.input, None);
     assert_eq!(report.total.api_equivalent_nanodollars, None);
 }
+
+#[test]
+fn mp08_mp10_mp11_previous_usage_lookup_does_not_decode_other_turns() {
+    let dir = crate::test_support::TestWorktree::new("mp08-usage-scoped-lookup");
+    let store = OperationalHistoryStore::open(dir.path().join("usage.db")).unwrap();
+    let t = turn("p1", "root", None, 10);
+    store
+        .append_operational_event(
+            HistoryEventKind::ProviderStatus,
+            None,
+            None,
+            BTreeMap::from([(METADATA_KEY.into(), json!(t))]),
+            crate::history::HistoryEventTurnContext {
+                session_id: Some("session".into()),
+                prompt_id: Some("p1".into()),
+                provider_run_id: Some("run".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    store
+        .append_operational_event(
+            HistoryEventKind::ProviderStatus,
+            None,
+            None,
+            BTreeMap::from([(METADATA_KEY.into(), json!("malformed unrelated record"))]),
+            crate::history::HistoryEventTurnContext {
+                session_id: Some("session".into()),
+                prompt_id: Some("unrelated".into()),
+                provider_run_id: Some("other-run".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(latest(&store, "session", "p1", "run").unwrap(), Some(t));
+    assert!(latest(&store, "session", "p1", "foreign-run")
+        .unwrap()
+        .is_none());
+}

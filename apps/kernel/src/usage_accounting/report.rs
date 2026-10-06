@@ -151,6 +151,36 @@ pub fn load(
     Ok(from_turns(session_id, latest.into_values().collect()))
 }
 
+/// MP-08 / MP-10: only the indexed, latest record for this prompt/run is decoded.
+pub fn latest(
+    store: &OperationalHistoryStore,
+    session: &str,
+    prompt: &str,
+    run: &str,
+) -> Result<Option<TurnUsage>, DaemonError> {
+    store
+        .latest_turn_usage(session, prompt, run)?
+        .map(|value| {
+            let turn: TurnUsage = serde_json::from_value(value).map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: Some(session.into()),
+                    operation: "decode provider usage",
+                    message: error.to_string(),
+                }
+            })?;
+            if turn.session_id != session || turn.prompt_id != prompt || turn.provider_run_id != run
+            {
+                return Err(DaemonError::SessionHistoryFailed {
+                    session_id: Some(session.into()),
+                    operation: "bind provider usage",
+                    message: "foreign turn accounting".into(),
+                });
+            }
+            Ok(turn)
+        })
+        .transpose()
+}
+
 pub fn from_turns(session_id: &str, turns: Vec<TurnUsage>) -> SessionUsageReport {
     let mut agents = BTreeMap::new();
     let parents: BTreeMap<_, _> = turns

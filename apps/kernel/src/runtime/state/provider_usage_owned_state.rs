@@ -25,10 +25,12 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(());
         };
-        let previous = report::load(&self.operational_history_store, session_id)?
-            .turns
-            .into_iter()
-            .find(|t| t.prompt_id == prompt.id() && t.provider_run_id == provider_run_id);
+        let previous = report::latest(
+            &self.operational_history_store,
+            session_id,
+            prompt.id(),
+            provider_run_id,
+        )?;
         let counters = batch.resolved_usage;
         let mut turn = TurnUsage {
             session_id: session_id.into(),
