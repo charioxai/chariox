@@ -192,6 +192,7 @@ def run(request, evidence):
     start = time.monotonic()
     measurement = {'mp_items': ['MP-08', 'MP-10', 'MP-11'], 'source_commit': request['source_commit'],
                    'placement': placement, 'kernel_sha256': request['kernel_sha256'], 'status': 'failed', 'usage': None,
+                   'runner_sha256': file_hash(Path(__file__)),
                    'resources_before': resources_before,
                    'usage_unavailable_reason': 'kernel has not reported a priced complete turn'}
 
@@ -346,9 +347,14 @@ def run(request, evidence):
         # Use the real TUI's user click handler to open its ordinary multiline
         # notice; do not treat hidden snapshot text as visible-screen evidence.
         snap = client.send('snapshot')
+        view_actions = []
         for entry in snap.get('transcript', {}).get('entries', []):
-            if any(str(entry.get(key, '')).startswith('Usage (standard API-equivalent') for key in ['text', 'blobTitle']) and entry.get('blobCollapsed') is True:
+            selected = any('Usage (standard API-equivalent' in str(entry.get(key, '')) for key in ['text', 'blobTitle', 'blobSummary'])
+            view_actions.append({**{key: entry.get(key) for key in ['id', 'role', 'blobCollapsible', 'blobCollapsed']}, 'usageSelected': selected})
+            if selected:
+                client.send('toggle_blob', entryId=entry['id'], collapsed=False)
                 client.send('toggle_blob', entryId=entry['id'], collapsed=False, agentId=agent_id)
+        (evidence / 'usage-view-actions.json').write_text(json.dumps(view_actions, indent=2) + '\n')
         visible = screenshot('04-usage-report-expanded')
         usage = measurement['usage']
         measurement['tui_usage_visible'] = usage is not None and all(

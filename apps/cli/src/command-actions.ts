@@ -159,7 +159,7 @@ type CommandActionDeps =
   multiAgentResponseLayout: () => MultiAgentResponseLayout
   maxAgentsPerScreen: () => number
   flashFooter: (message: string, tone: FooterTone) => void
-  appendNotice: (message: string) => void
+  appendNotice: (message: string, emphasis?: "muted", mergeKey?: string) => void
   sendRoomEnvironmentRequest?: RoomCommandHandlerDeps["send"]
   reconnectRoomEventStream?: RoomCommandHandlerDeps["reconnectEventStream"]
   openRoomViewer?: RoomCommandHandlerDeps["openViewer"]
@@ -221,7 +221,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return true
       }
       const { SessionUsage } = await deps.sendRoomEnvironmentRequest<{ SessionUsage: { report: SessionUsageReport } }>({ GetSessionUsage: { session_id: deps.sessionState().id } })
-      deps.appendNotice(formatSessionUsage(SessionUsage.report))
+      deps.appendNotice(formatSessionUsage(SessionUsage.report), "muted", `session-usage:${deps.sessionState().id}`)
       return true
     }
     return handleSessionSlashCommand({ ...deps, currentWorkspaceTarget, currentWorktreeTarget }, command)
