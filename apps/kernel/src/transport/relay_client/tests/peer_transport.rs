@@ -536,6 +536,9 @@ async fn proxied_peer_requests_are_handled_through_relay() {
         RelayPeerResponse::Pong {
             value: "hello-remote-kernel".to_string(),
             daemon_id: config_b.daemon_id.clone(),
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+            ),
         }
     );
 

@@ -3120,3 +3120,17 @@ Protocol 416 adds `AppRequestFailed {code: "receipt_expired"}` for an
   preserved through compaction. Legacy kernels fail closed on that journal
   rather than redispatch an expired identity after rollback; their App control
   requests report storage unavailable until a supporting kernel is restored.
+
+### Protocol 418: user-domain App views
+
+`OpenUserAppView`, `ListUserAppViews`, `CloseUserAppView`,
+`GetUserAppViewFrontend`, `CallUserAppView` and `SubscribeUserAppViews` address
+ephemeral owner-scoped App view instances with no session, Room or slice.
+Bundles contain only verified signed frontend assets; page calls retain the
+existing durable App tool/host-action path and omit the optional SDK
+`room_id`. The owner snapshot subscription includes detached kernel
+`RuntimeInteraction` decisions. `AnswerUserDomainInteraction` uses the
+existing terminal/passkey gate and shared pending-interaction authority;
+a detached passkey popup has an empty session routing field. Room App views
+retain their existing protocol. See [App views without a session](MULTIDOMAIN_APP_VIEWS.md)
+for host isolation, lifecycle and migration. No relay-peer shape changes.

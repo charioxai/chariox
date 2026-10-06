@@ -1,0 +1,96 @@
+[
+  {
+    "Notes": {
+      "command": {
+        "op": "capture_selection",
+        "window": {
+          "kind": "panel",
+          "window_id": "message-42"
+        }
+      }
+    }
+  },
+  {
+    "Notes": {
+      "command": {
+        "op": "report_selection",
+        "anchor": {
+          "window": {
+            "kind": "panel",
+            "window_id": "message-42"
+          },
+          "url": null,
+          "document_id": null,
+          "hint": null,
+          "quote": {
+            "exact": "quote",
+            "prefix": "before",
+            "suffix": "after"
+          }
+        },
+        "box_css": null
+      }
+    }
+  },
+  {
+    "Notes": {
+      "command": {
+        "op": "create",
+        "selection_id": "s",
+        "comment": "explain"
+      }
+    }
+  },
+  {
+    "Notes": {
+      "command": {
+        "op": "list",
+        "window": {
+          "kind": "panel",
+          "window_id": "message-42"
+        }
+      }
+    }
+  },
+  {
+    "Notes": {
+      "command": {
+        "op": "read",
+        "note_id": "n"
+      }
+    }
+  },
+  {
+    "Notes": {
+      "command": {
+        "op": "reply",
+        "note_id": "n",
+        "comment": "answer"
+      }
+    }
+  },
+  {
+    "Notes": {
+      "command": {
+        "op": "resolve",
+        "note_id": "n"
+      }
+    }
+  },
+  {
+    "Notes": {
+      "command": {
+        "op": "reanchor",
+        "note_id": "n"
+      }
+    }
+  },
+  {
+    "Notes": {
+      "command": {
+        "op": "ask",
+        "note_id": "n"
+      }
+    }
+  }
+]

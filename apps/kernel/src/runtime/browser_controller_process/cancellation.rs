@@ -13,7 +13,9 @@ type ExecutionKey = (String, String);
 type ExecutionOutcome = Result<Response, String>;
 
 #[derive(Default)]
-pub(super) struct CancellationSignal {
+pub(crate) struct CancellationSignal {
+    parent: Option<Arc<CancellationSignal>>,
+    authority: Option<Box<dyn Fn() -> bool + Send + Sync>>,
     requested: AtomicBool,
     stopped: AtomicBool,
     accepted: AtomicBool,
@@ -21,8 +23,29 @@ pub(super) struct CancellationSignal {
 }
 
 impl CancellationSignal {
-    pub(super) fn requested(&self) -> bool {
+    pub(crate) fn for_authority(
+        parent: Arc<Self>,
+        authority: impl Fn() -> bool + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            parent: Some(parent),
+            authority: Some(Box::new(authority)),
+            ..Self::default()
+        }
+    }
+    pub(crate) fn request_cancel(&self) {
+        self.requested.store(true, Ordering::Release);
+    }
+    pub(crate) fn requested(&self) -> bool {
         self.requested.load(Ordering::Acquire)
+            || self
+                .parent
+                .as_ref()
+                .is_some_and(|parent| parent.requested())
+            || self
+                .authority
+                .as_ref()
+                .is_some_and(|authority| !authority())
     }
     pub(super) fn confirm_stop(&self) {
         self.accepted.store(true, Ordering::Release);

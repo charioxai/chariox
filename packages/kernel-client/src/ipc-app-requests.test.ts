@@ -188,3 +188,22 @@ test("snapshot restore binds installation, generation and saved identity without
     RestoreAppDataSnapshot: { installation_id: "todo", expected_generation: "3", snapshot_id: "snapshot-1" },
   })
 })
+
+import { openUserAppViewRequest, listUserAppViewsRequest, closeUserAppViewRequest, getUserAppViewFrontendRequest, callUserAppViewRequest, subscribeUserAppViewsRequest, answerUserDomainInteractionRequest, userAppViewsMinimumProtocolVersion } from "./ipc-app-requests.js"
+
+test("protocol 418 user-domain channel and subscription supply no session or caller authority", () => {
+  assert.equal(userAppViewsMinimumProtocolVersion, 427)
+  assert.deepEqual(openUserAppViewRequest("todo"), { OpenUserAppView: { installation_id: "todo" } })
+  assert.deepEqual(listUserAppViewsRequest(), { ListUserAppViews: {} })
+  assert.deepEqual(closeUserAppViewRequest("v"), { CloseUserAppView: { view_id: "v" } })
+  assert.deepEqual(getUserAppViewFrontendRequest("v"), { GetUserAppViewFrontend: { view_id: "v" } })
+  assert.deepEqual(callUserAppViewRequest("v", "echo", { text: "hi" }), { CallUserAppView: { view_id: "v", method: "echo", input: { text: "hi" } } })
+  assert.deepEqual(subscribeUserAppViewsRequest(4), { SubscribeUserAppViews: { after: 4, wait_ms: 25000 } })
+  assert.deepEqual(answerUserDomainInteractionRequest({ interactionId: "d", choiceId: "deny" }), { AnswerUserDomainInteraction: { interaction_id: "d", choice_id: "deny", passkey: null, passkey_remember_minutes: null } })
+})
+
+test("protocol 418 kernel browser fallback is explicit; the native default stays wire-compatible", async () => {
+  const { openUserAppViewRequest } = await import("./ipc-app-requests.js")
+  assert.deepEqual(openUserAppViewRequest("todo"), { OpenUserAppView: { installation_id: "todo" } })
+  assert.deepEqual(openUserAppViewRequest("todo", "kernel_browser"), { OpenUserAppView: { installation_id: "todo", host: "kernel_browser" } })
+})

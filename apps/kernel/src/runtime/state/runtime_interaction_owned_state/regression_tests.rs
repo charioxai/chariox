@@ -236,6 +236,7 @@ async fn pruning_dead_store_tokens_closes_only_kernel_operation_responders() {
                 agent_lifetime: None,
                 session_id: "same-session".into(),
                 session_store_identity: sessions.weak_identity(),
+                user_domain_interaction: None,
                 kernel_operation_owner: owner,
                 terminal_credential_owner: None,
                 kernel_operation_deadline: None,

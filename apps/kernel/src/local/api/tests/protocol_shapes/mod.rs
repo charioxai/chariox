@@ -22,11 +22,13 @@ mod event_publication;
 mod extension_apps;
 mod fresh_remote_relay_inventory;
 mod kernel_access;
+mod kernel_browser;
 mod kernel_operation_interactions;
 mod managed_activity;
 mod managed_context;
 mod managed_environment;
 mod native_spawn_slice;
+mod notes;
 mod project_environment_manifest;
 mod project_environment_setup;
 mod prompt_settings;
@@ -43,6 +45,7 @@ mod room_environment_placement;
 mod slice_disk_quota;
 mod slice_display;
 mod slice_logs;
+mod user_app_views;
 mod workflow_code;
 mod workspace_history_external;
 
@@ -82,3 +85,5 @@ fn history_page_entry(
         },
     }
 }
+
+mod screenshot;

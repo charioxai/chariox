@@ -146,3 +146,28 @@ fn admission_error(message: &str) -> DaemonError {
         message: message.to_string(),
     }
 }
+
+// MD-N2: refuse before serializing a new command to an old or unknown worker.
+pub(super) fn require_notes_worker_protocol(version: Option<u32>) -> Result<(), DaemonError> {
+    if version
+        .is_some_and(|version| version >= crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION)
+    {
+        Ok(())
+    } else {
+        Err(admission_error(
+            "Room Notes require relay peer protocol 74 or newer",
+        ))
+    }
+}
+#[cfg(test)]
+mod notes_peer_tests {
+    #[test]
+    fn md_notes_refuses_unknown_and_pre_union_workers_before_dispatch() {
+        for version in [None, Some(70), Some(71), Some(72), Some(73)] {
+            assert!(super::require_notes_worker_protocol(version).is_err());
+        }
+        for version in [Some(74), Some(75)] {
+            assert!(super::require_notes_worker_protocol(version).is_ok());
+        }
+    }
+}
