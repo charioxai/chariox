@@ -30,6 +30,84 @@ impl Drop for TestRoot {
 }
 
 #[test]
+fn room_admission_saved_artifact_run_preserves_peer_metadata() {
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let root = TestRoot::new();
+                    let mut config = DaemonConfig::for_tests();
+                    config.room_agent_tools = true;
+                    config.user_config.artifacts.operational.root =
+                        Some(root.path().join("artifacts").display().to_string());
+                    let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+                    let (room, actor) = KernelSessionService::new(&mut app)
+                        .create_session(CreateSessionRequest::new(
+                            root.path().to_string_lossy(),
+                            root.path().to_string_lossy(),
+                        ))
+                        .unwrap();
+                    let peer = KernelSessionService::new(&mut app)
+                        .spawn_agent(crate::agent::CreateAgentRequest::new(room.id(), "dev-stub"))
+                        .unwrap();
+                    let child = KernelSessionService::new(&mut app)
+                        .spawn_agent(crate::agent::CreateAgentRequest::new(room.id(), "dev-stub")
+                            .with_spawned_by_agent_id(actor.id()))
+                        .unwrap();
+                    let registry = WorkflowCodeArtifactRegistry::new(vec![config
+                        .workflow_code_artifact_root().join("rooms").join(room.id())]);
+                    for (name, creator) in [("self", Some(actor.id())), ("child", Some(child.id())),
+                        ("peer", Some(peer.id())), ("unknown", None)] {
+                        registry.save(name, WorkflowCodeLanguage::JavaScript, "review source",
+                            serde_json::from_value(serde_json::json!({"workflow":{},
+                                "nodes":[{"handle":"review", "agent":{"kind":"existing", "agent_ref":peer.id()}}],
+                                "endpoints":[{"handle":"entry","entry_node":"review"}]})).unwrap(),
+                            WorkflowCodeValidationReport {ok: true, diagnostics: vec![]},
+                            WorkflowCodeArtifactActor::new(actor.owner_user_id(), creator.map(str::to_owned)),
+                            WorkflowCodeArtifactHistoryAction::Created).unwrap();
+                    }
+                    let app = Arc::new(Mutex::new(app));
+                    let runtime = CommandRouter::with_interactive_capacity(app.clone(), 1).runtime_state();
+                    for (name, may_update_history) in [("self", true), ("child", true), ("peer", false), ("unknown", false)] {
+                        let request = LocalDaemonRequest::RunWorkflowCodeArtifact(
+                            crate::local::RunWorkflowCodeArtifactRequest {
+                                session_id: room.id().to_owned(), name: name.to_owned(),
+                                provider_rebindings: vec![], agent_rebindings: vec![],
+                                endpoint: None, queue_ref: None, prompt: "review".to_owned(),
+                            });
+                        let scoped = runtime.with_room_request_origin(Some(actor.id()), &request);
+                        let before = registry.get(name).unwrap().unwrap();
+                        let mut held = app.lock().await;
+                        let result = crate::runtime::state::workflow_code_request_support::workflow_code_artifact_apply_result(
+                            &mut held, name, WorkflowCodeArtifactHistoryAction::Run,
+                            crate::runtime::state::workflow_code_request_support::WorkflowApplyContext {
+                                session_id: room.id(), provider_rebindings: &[], agent_rebindings: &[],
+                                caller_user_id: actor.owner_user_id().to_owned(),
+                                controlled_by_metaagent_id: Some(actor.id().to_owned()),
+                                operation: "room_artifact_test", run_endpoint: Some(Some("entry")), run_queue: None,
+                                authorize: &|| scoped.authorize_current_external_command(),
+                            }).unwrap();
+                        let workflow = held.sessions().resolve_workflow_ref(room.id(), &result.apply.workflow_id).unwrap();
+                        assert_eq!(workflow.created_by_agent_id(), Some(actor.id()));
+                        let after = registry.get(name).unwrap().unwrap();
+                        assert_eq!(after.metadata.provenance.created_by, before.metadata.provenance.created_by);
+                        if may_update_history {
+                            assert_eq!(after.metadata.history.len(), before.metadata.history.len() + 1);
+                        } else {
+                            assert_eq!(serde_json::to_value(&after.metadata).unwrap(), serde_json::to_value(&before.metadata).unwrap(),
+                                "A01 peer/unknown source runs may create caller resources but never mutate {name} metadata");
+                        }
+                    }
+                });
+        })
+        .unwrap().join().unwrap();
+}
+
+#[test]
 fn room_admission_artifact_creator_rechecked_after_app_wait() {
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024)
