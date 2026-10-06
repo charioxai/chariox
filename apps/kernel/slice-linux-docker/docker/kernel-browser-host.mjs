@@ -423,6 +423,9 @@ export class KernelBrowserHost {
       if(stream.compositorRegionRevision!==regionRevision){stream.invalidate();stream.compositorRegionRevision=regionRevision;}
       const sample=compositor?.sample();
       let source;
+      // MP-08/MP-10/MP-11: an admitted native source refreshing its masks
+      // must not put an exact CDP capture in front of the next input credit.
+      if(compositor&&!sample&&stream.codec!=='png')return {generation:this.generation,frame_sent:false,display_frame:null};
       if(compositor&&sample&&stream.codec!=='png'){
         // Serials are source-local. Retiring a source also retires its exact
         // base, even when a newly navigated document starts at the same serial.
@@ -431,9 +434,9 @@ export class KernelBrowserHost {
         // packet. A lost canvas base also reoffers any skipped patchable source.
         // Once retired, empty credits must let the pending recovery key finish.
         if(stream.previous&&(stream.document_id!==tab.document_id||!stream.acceptsCredit(command.after_sequence)))stream.invalidate();
-        if(!stream.refiner||stream.refinerDocument!==tab.document_id){await stream.refiner?.close();stream.refiner=new NativeRefiner(()=>this.displayScreenshot(tab,null,false),{now:()=>performance.now(),prepareTiles:true,timing:this.timing});stream.refinerDocument=tab.document_id;}
+        if(!stream.refiner||stream.refinerDocument!==tab.document_id){await stream.refiner?.close();stream.refiner=new NativeRefiner(binding=>binding.native?binding.sample:this.displayScreenshot(tab,null,false),{now:()=>performance.now(),prepareTiles:true,timing:this.timing});stream.refinerDocument=tab.document_id;}
         const policy=this.protection;
-        const binding={source:compositor,document:tab.document_id,policy,epoch,serial:sample.serial,scale:stream.device_scale_factor,native:compositor.attested===true&&Boolean(sample.raw)};
+        const binding={source:compositor,document:tab.document_id,policy,epoch,serial:sample.serial,scale:stream.device_scale_factor,native:compositor.attested===true&&Boolean(sample.raw),sample};
         // Always run the deadline/epoch-aware verifier before unchanged reuse.
         // A lossy JPEG fingerprint cannot rule out fine native RGB damage.
         const exact=stream.refiner.request(binding,Math.max(compositor.changedAt,this.inputChangedAt.get(tab.tab_id)??-Infinity),()=>this.protection===policy&&compositor.sample()?.serial===sample.serial&&(this.inputEpochs.get(tab.tab_id)??0)===epoch);
@@ -443,7 +446,7 @@ export class KernelBrowserHost {
         const encoded=patchable ? null : stream.producer.take();
         if(patchable){stream.producer.retireUnsent();source={...sample,motion:false,native_tiles:nativeDamageTiles(sample.raw),generation:this.generation};}
         else if(encoded){source={...encoded,generation:this.generation};}
-        else if(exact&&stream.previous)source=exact;
+        else if(exact&&stream.previous)source={...exact,generation:this.generation};
         // The viewer already backs off empty credits. A second delay while
         // holding the capture gate adds latency to every pipelined slot.
         else return {generation:this.generation,frame_sent:false,display_frame:null};
@@ -538,11 +541,11 @@ export class KernelBrowserHost {
         dispatched = true;
         this.inputChangedAt.set(tab.tab_id, performance.now());
         this.inputEpochs.set(tab.tab_id, (this.inputEpochs.get(tab.tab_id) ?? 0) + 1);
-        this.compositors.get(tab.tab_id)?.wake?.();
+        this.compositors.get(tab.tab_id)?.source?.wake?.();
       };
       try {
         await this.sampleLane(tab).run("input", () => inputHostTab(this.browser, tab, command.input, { signal, onDispatch, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
-        if(dispatched)this.compositors.get(tab.tab_id)?.wake?.();
+        if(dispatched)this.compositors.get(tab.tab_id)?.source?.wake?.();
         this.timing('cdp_input', at);
       }
       catch (error) {

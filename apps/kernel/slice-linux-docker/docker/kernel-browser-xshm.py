@@ -90,7 +90,7 @@ try:
     stage='damage'
     dam=create_damage(d,window,0) # RawRectangles; retain damage union, coalesce to60Hz.
     event=(L*24)();dirty=True;area=[0,0,width,height];last=0;signature=None;serial=0;previous=None;damage_ready_ms=time.time()*1000
-    fingerprint=raster_damage.RasterFingerprint(width,height);control=b'';urgent_until=0;wake_ms=None
+    fingerprint=raster_damage.RasterFingerprint(width,height);control=b'';urgent_until=0;wake_ms=None;refresh=False
     while True:
         if not pending(d):select.select([fd(d),sys.stdin.fileno()],[],[],raster_damage.capture_wait(last,dirty,time.monotonic(),urgent_until))
         if select.select([sys.stdin.fileno()],[],[],0)[0]:
@@ -102,6 +102,12 @@ try:
                 line,control=control.split(b'\n',1)
                 release=json.loads(line)
                 if release == {'wake':True}:
+                    urgent_until=time.monotonic()+.1;wake_ms=time.time()*1000
+                    continue
+                if release == {'refresh':True}:
+                    # MP-11: trusted protection changes can be paint-free.
+                    # One complete readback per coalesced refresh, no polling.
+                    dirty=True;refresh=True;area=[0,0,width,height]
                     urgent_until=time.monotonic()+.1;wake_ms=time.time()*1000
                     continue
                 slot=release.get('release')
@@ -129,7 +135,8 @@ try:
         image_ready_ms=time.time()*1000
         # XShm avoids Xlib pixel IPC. One bounded copy crosses the helper pipe.
         raw=c.string_at(shm.shmaddr,size);readback_ms=time.time()*1000;sig=fingerprint.update(raw);fingerprint_ms=time.time()*1000;dirty=False
-        if not fingerprint.changed_bands:continue
+        if not fingerprint.changed_bands and not refresh:continue
+        refresh=False
         signature=sig;serial+=1
         # Full native readback/fingerprint remains authoritative. Avoid moving
         # 16MiB through the private pipe for a small changed rectangle. Receiver

@@ -19,7 +19,7 @@ export async function selectNativeCapture({platform=process.platform,display,cre
 }
 export class LinuxCapture {
  constructor({display,pid,connection,sessionId,tab,scale,policy,screenshot,allowed,timing=()=>{}}){
-  Object.assign(this,{display,pid,connection,sessionId,tab,scale,policy,screenshot,allowed,timing});this.listeners=new Set();this.closed=false;this.attested=false;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
+  Object.assign(this,{display,pid,connection,sessionId,tab,scale,policy,screenshot,allowed,timing});this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
  }
  subscribe(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn)}
  valid(){return !this.closed&&ownsDisplay(this.display)&&this.allowed(this.policy)}
@@ -28,7 +28,14 @@ export class LinuxCapture {
   if(m.method==='Target.targetCreated'&&m.params?.targetInfo?.type==='page')this.fence();
   // MP-11: attribute-only protection changes produce no XDamage. Fence even
   // before attestation, so an empty snapshot cannot outlive marker insertion.
-  if(this.regions&&regionProtectionChanged(m,this.sessionId,this.regions.guard?.hasRegions))this.fence();
+  if(this.regions&&regionProtectionChanged(m,this.sessionId,this.regions.guard?.hasRegions)){
+   if(!this.attested){this.fence();return;}
+   // MP-08/MP-10/MP-11: the owned window/document binding stays intact.
+   // Retire all pixels and queued consumers by revision, refresh only trusted
+   // region metadata, and mask any readback older than that new fence in full.
+   this.regionRevision++;this.regions.retire();this.latest?.raw.release?.();this.pending?.release?.();
+   this.latest=null;this.pending=null;this.changedAt=performance.now();this.wake(true);
+  }
  }
  async start(){
   if(!this.valid()||!Number.isSafeInteger(this.pid)||this.pid<=1)throw Error('MD-DISPLAY: native surface not owned');
@@ -87,13 +94,23 @@ export class LinuxCapture {
   if(this.publishing)return;this.publishing=true;
   try{while(this.pending&&this.valid()){
    let raw=this.pending;this.pending=null;this.publishingRaw=raw;
+   const revision=this.regionRevision;
    let at=performance.timeOrigin+performance.now();
    await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id);this.timing('native_document_fence',at);
    at=performance.timeOrigin+performance.now();
    const visibility=await this.connection.send('Runtime.evaluate',{expression:'document.visibilityState',contextId:this.contextId,returnByValue:true},this.sessionId);
    this.timing('native_visibility_fence',at);
    if(visibility.result?.value!=='visible')throw Error('native source not visible');
-   at=performance.timeOrigin+performance.now();const regions=await this.regions.regions(raw);this.timing('native_region_fence',at);
+   at=performance.timeOrigin+performance.now();let regions;
+   try{
+    if(!this.regions.guard)await this.regions.refresh();
+    regions=await this.regions.regions(raw);
+   }catch(error){if(revision===this.regionRevision)throw error;}
+   this.timing('native_region_fence',at);
+   if(revision!==this.regionRevision){raw.release?.();this.publishingRaw=null;continue;}
+   // Attribute-only changes need a new readback even if XDamage/pixels did
+   // not change. The first readback may precede the refreshed metadata.
+   if(raw.captured_ms<this.regions.beforeAt)this.wake(true);
    at=performance.timeOrigin+performance.now();const masked=maskNativeRaster(raw,regions,this.previousRegions);this.timing('native_mask_copy_hash',at);
    if(masked!==raw){raw.release?.();raw=masked;this.publishingRaw=raw;}
    if(!this.valid())break;
@@ -107,7 +124,7 @@ export class LinuxCapture {
   }}catch{this.fence()}finally{this.publishingRaw?.release?.();this.publishingRaw=null;this.publishing=false}
  }
  // MP-08/MP-10: only admitted physical input reaches this owned helper.
- wake(){if(this.valid()&&this.child&&!this.child.stdin.destroyed)this.child.stdin.write(JSON.stringify({wake:true})+'\n')}
+ wake(refresh=false){if(this.valid()&&this.child&&!this.child.stdin.destroyed)this.child.stdin.write(JSON.stringify(refresh?{refresh:true}:{wake:true})+'\n')}
  sample(after=-1){return this.valid()&&this.attested&&this.latest?.serial>after?this.latest:null}
  fence(){this.closed=true;this.attested=false;this.regions?.retire();this.latest?.raw.release?.();this.pending?.release?.();this.latest=null;this.pending=null;this.listeners.clear();if(!this.closing)this.closing=this.cleanup();this.closing.catch(()=>{})}
  pause(){} resume(){} // CDP exact reads do not mutate the native display.

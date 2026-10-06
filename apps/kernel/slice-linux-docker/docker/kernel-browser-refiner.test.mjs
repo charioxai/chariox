@@ -1,6 +1,21 @@
 // MD-DISPLAY-02/04: exact work cannot block input or commit an overtaken source.
 import test from 'node:test';import assert from 'node:assert/strict';import {NativeRefiner} from './kernel-browser-refiner.mjs';
+import {PixelWorker} from './kernel-browser-pixel-worker.mjs';
+import {decodePng,displayMaskRegions} from './kernel-browser-pixels.mjs';
 const binding={document:'d',policy:{},epoch:1,serial:1,scale:2};
+test('MP-08/MP-10/MP-11 admitted native exact repair never acquires CDP screenshot lane',async()=>{
+ let retained=0;const data=Buffer.from([3,2,1,0,0,0,0,0]);
+ const raw={width:2,height:1,pixels:data,retain:()=>retained++,release:()=>retained--,[displayMaskRegions]:[{x:1,y:0,width:1,height:1}]};
+ const sample={raw,width:2,height:1,tab_id:'t',document_id:'d',motion:true};
+ const r=new NativeRefiner(async b=>{assert.equal(b.sample,sample);return sample;},{now:()=>400,pixels:new PixelWorker()});
+ try{
+  r.request({...binding,native:true,sample},0,()=>true);await r.active;
+  assert.equal(r.failure,undefined);assert.equal(retained,0);assert.equal(r.latest.motion,false);
+  assert.deepEqual([...r.latest.pixels.pixels],[1,2,3,255,0,0,0,255]);
+  assert.deepEqual(r.latest[displayMaskRegions],raw[displayMaskRegions]);
+  assert.deepEqual(decodePng(r.latest.data_base64()).pixels,r.latest.pixels.pixels);
+ }finally{await r.close()}
+});
 test('MD-DISPLAY native read is asynchronous, bounded and invalidated before commit',async()=>{let release,captures=0,now=200;const r=new NativeRefiner(()=>{captures++;return new Promise(ok=>release=ok)},{quietMs:80,now:()=>now,pixels:{async run(){return {width:1,height:1,pixels:Buffer.alloc(4)}},async close(){}}});assert.equal(r.request(binding,0,()=>true),null);assert.equal(r.request(binding,0,()=>true),null);assert.equal(captures,1);r.request({...binding,epoch:2},0,()=>true);release({data_base64:'x'});await r.active;assert.equal(r.latest,null);assert.equal(r.request({...binding,epoch:2},0,()=>true),null);release({data_base64:'x'});await r.active;assert.equal(r.latest.settled_verified,true);await r.close()});
 test('MD-DISPLAY native verification errors follow awaited failure path',async()=>{const r=new NativeRefiner(async()=>{throw Error('fixture')},{quietMs:80,now:()=>200,pixels:{async close(){}}});r.request(binding,0,()=>true);await r.active;assert.throws(()=>r.request(binding,0,()=>true),/verification failed/);await r.close()});
 test('MD-DISPLAY close waits for owned verification and never publishes its result',async()=>{let release,closed=false;const r=new NativeRefiner(()=>new Promise(ok=>release=ok),{quietMs:80,now:()=>200,pixels:{async run(){return {}},async close(){closed=true}}});r.request(binding,0,()=>true);const closing=r.close();await Promise.resolve();assert.equal(closed,false);release({data_base64:'x'});await closing;assert.equal(closed,true);assert.equal(r.latest,null)});
