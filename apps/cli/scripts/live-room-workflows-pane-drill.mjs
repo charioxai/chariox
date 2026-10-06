@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // MP-08/MP-10/MP-11: real kernel, local relay, official Codex and keyboard TUI flow.
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { readFile, readdir, mkdir, mkdtemp, rm, statfs, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import path from 'node:path'
@@ -15,6 +15,7 @@ const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, arg, index,
 for (const key of ['kernel', 'relay', 'client', 'account-dir', 'output', 'state-parent']) assert.ok(path.isAbsolute(args[key] ?? ''), `MP-08 --${key} requires an absolute path`)
 assert.ok(!args.output.startsWith(repo + '/') && !args['state-parent'].startsWith(repo + '/'))
 const model=args.model??'gpt-5.5'
+const relayTransport = args.transport === 'relay'
 const interruptRaceRounds = Number(args['interrupt-race-rounds'] ?? 0)
 assert.ok(Number.isInteger(interruptRaceRounds) && interruptRaceRounds >= 0 && interruptRaceRounds <= 30)
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -42,8 +43,11 @@ const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key])=>
   CHARIOX_DAEMON_SOCKET: path.join(state, 'kernel.sock'),
   TERM: 'xterm-256color', COLORTERM: 'truecolor' }
 for (const key of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'OPENCODE_CONFIG_DIR', 'CHARIOX_RELAY_URL', 'CHARIOX_RELAY_TOKEN', 'CHARIOX_CLOUD_PROFILE', 'CHARIOX_CLOUD_TOKEN', 'CHARIOX_CLOUD_RELAY_CONFIG_JSON', 'CHARIOX_CLOUD_RELAY_CONFIG_PATH']) delete env[key]
+// Operator configuration for an isolated loopback relay; kernel/client identities
+// and terminal enrollment are generated through the normal product pairing flow.
+if (relayTransport) env.CHARIOX_RELAY_TOKEN = randomBytes(32).toString('hex')
 const receipt = { mpItems: ['MP-08','MP-10','MP-11'], source: args.source, clientSource: args['client-source'], model,
-  startedAt: new Date().toISOString(), steps: [], resources: [], limitations: ['Local TUI acceptance; Cloud union Web pane and fresh Path-1 comparison are separate gates.'] }
+  startedAt: new Date().toISOString(), steps: [], resources: [], transport: relayTransport ? 'paired-relay' : 'local', limitations: ['Web room-pane and fresh Path-1 comparison require their own real-path evidence.'] }
 for (const key of ['kernel','relay','client']) receipt[key + 'Sha256'] = createHash('sha256').update(await readFile(args[key])).digest('hex')
 const bundle = createHash('sha256')
 for (const name of (await readdir(path.dirname(args.client))).filter(name=>name.endsWith('.js')).sort()) {
@@ -123,9 +127,28 @@ try {
   const inventoryState=await stateUntil(s=>s.room_workflows?.workflow_count===1)
   const heading=inventoryState.room_workflows.workflows[0].label+' /'
   receipt.workflowLabel=inventoryState.room_workflows.workflows[0].label
+  let connectionArgs = ['--kernel-url',`ws://127.0.0.1:${ports[0]}`,'--client-id','relost-tui']
+  let terminalEnv = env
+  if (relayTransport) {
+    unwrap(await client.send(requests.configureRelayRequest(`ws://127.0.0.1:${ports[4]}`,env.CHARIOX_RELAY_TOKEN)), 'RelayConfigured')
+    let status
+    for(let attempt=0;;attempt++) {
+      status=unwrap(await client.send(requests.relayStatusRequest()), 'RelayStatus').status
+      if(status.connected)break
+      assert.ok(attempt<100,'MP-08 relay target must be heartbeat-fresh and connected')
+      await sleep(100)
+    }
+    const pairing=unwrap(await client.send(requests.createTerminalPairingLinkRequest('cli','Wfpause relay TUI',300000)), 'TerminalPairingLinkCreated').pairing
+    connectionArgs=['--terminal-pairing-link',pairing.pairing_link]
+    terminalEnv={...env,HOME:path.join(state,'tui-user'),CHARIOX_HOME:path.join(state,'tui'),
+      XDG_CONFIG_HOME:path.join(state,'tui-config'),XDG_STATE_HOME:path.join(state,'tui-state'),
+      XDG_DATA_HOME:path.join(state,'tui-data'),XDG_CACHE_HOME:path.join(state,'tui-cache')}
+    delete terminalEnv.CHARIOX_RELAY_TOKEN
+    receipt.relay={connected:status.connected,targetDaemonId:status.daemon_id,terminalId:pairing.terminal_id}
+  }
   terminal=spawnOwned('python3',[path.join(repo,'apps/cli/scripts/lib/room-workflows-tui-pty.py'),path.join(repo,'apps/kernel/slice-linux-docker'),
-    'bun',args.client,'--kernel-url',`ws://127.0.0.1:${ports[0]}`,'--session',sessionId,'--workspace',workspace,'--worktree',workspace,
-    '--provider','codex','--model',model,'--account-profile',profile.profile_id,'--client-id','relost-tui'],{cwd:repo,env,stdio:['pipe','pipe','pipe'],detached:true})
+    'bun',args.client,...connectionArgs,'--session',sessionId,'--workspace',workspace,'--worktree',workspace,
+    '--provider','codex','--model',model,'--account-profile',profile.profile_id],{cwd:repo,env:terminalEnv,stdio:['pipe','pipe','pipe'],detached:true})
   terminal.stdout.on('data', chunk=> {buffer+=chunk;while(buffer.includes('\n')){const i=buffer.indexOf('\n');const message=JSON.parse(buffer.slice(0,i));buffer=buffer.slice(i+1);const waiter=pending.get(message.id);pending.delete(message.id);if(message.error)waiter?.reject(new Error(message.error));else waiter?.resolve(message.result)}})
   terminal.stderr.on('data', chunk=> { /* Only fixture diagnostics; no provider stdout is connected here. */ receipt.terminalError=String(chunk).slice(-1000) })
   terminal.on('close',()=>{for(const waiter of pending.values())waiter.reject(new Error('MP-08 terminal driver exited'));pending.clear()})

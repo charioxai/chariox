@@ -82,13 +82,18 @@ pub fn abort_codex_turn(
                 });
                 observe_buffered_turns(&mut state.turn_tracker, fresh_notifications);
                 let snapshot_id = response.as_ref().and_then(codex_active_turn_id);
-                // The interrupt validator's listener can still name the previous
-                // turn while Core has admitted the resumed turn. A fresh lifecycle
-                // event supersedes that validator; otherwise use its exact ID only
-                // after the same-thread reread confirms the record exists.
+                crate::logging::debug_with_fields(
+                    "daemon.provider.codex",
+                    "codex turn interrupt snapshot trace",
+                    json!({"provider_run_id":provider_run_id,"turn_id":snapshot_id}),
+                );
+                // The validator may advance while the reread is in flight. Fresh
+                // lifecycle events and the current in-progress record supersede
+                // the ID in the rejection, which is already an older observation.
                 let actual_id = fresh_lifecycle
                     .then(|| state.turn_tracker.provider_active_turn_id.clone())
                     .flatten()
+                    .or(snapshot_id)
                     .or_else(|| {
                         stale_id
                             .filter(|id| {
@@ -97,8 +102,7 @@ pub fn abort_codex_turn(
                                 })
                             })
                             .map(str::to_string)
-                    })
-                    .or(snapshot_id);
+                    });
                 if let Some(actual_id) = actual_id {
                     crate::logging::debug_with_fields(
                         "daemon.provider.codex",
@@ -174,13 +178,15 @@ fn codex_turn_record<'a>(response: &'a Value, turn_id: &str) -> Option<&'a Value
 }
 
 fn codex_active_turn_id(response: &Value) -> Option<String> {
-    let mut active = response
+    // thread/turns/list defaults to newest first. During admission, history
+    // can retain an older in-progress record alongside the current turn.
+    let active = response
         .get("data")?
         .as_array()?
         .iter()
-        .filter(|turn| turn.get("status").and_then(Value::as_str) == Some("inProgress"));
-    let id = active.next()?.get("id")?.as_str()?.trim();
-    (!id.is_empty() && active.next().is_none()).then(|| id.to_string())
+        .find(|turn| turn.get("status").and_then(Value::as_str) == Some("inProgress"))?;
+    let id = active.get("id")?.as_str()?.trim();
+    (!id.is_empty()).then(|| id.to_string())
 }
 
 pub(super) fn codex_turn_is_terminal(response: &Value, turn_id: &str) -> bool {

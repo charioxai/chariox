@@ -9,7 +9,7 @@ fn interrupt_fixture(
     turns: Value,
     retry_error: Option<&str>,
 ) -> Result<(), DaemonError> {
-    interrupt_fixture_with_event(first_error, turns, retry_error, false)
+    interrupt_fixture_with_event(first_error, turns, retry_error, false, "actual")
 }
 
 fn interrupt_fixture_with_event(
@@ -17,6 +17,7 @@ fn interrupt_fixture_with_event(
     turns: Value,
     retry_error: Option<&str>,
     started_during_read: bool,
+    retry_turn_id: &str,
 ) -> Result<(), DaemonError> {
     let expect_retry = turns["data"]
         .as_array()
@@ -25,6 +26,7 @@ fn interrupt_fixture_with_event(
     let endpoint = format!("ws://{}", listener.local_addr().unwrap());
     let first_error = first_error.to_string();
     let retry_error = retry_error.map(str::to_string);
+    let retry_turn_id = retry_turn_id.to_string();
     let server = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         stream
@@ -54,7 +56,7 @@ fn interrupt_fixture_with_event(
                     json!({"result":turns})
                 }
                 ("turn/interrupt", 3) => {
-                    assert_eq!(request["params"]["turnId"], "actual");
+                    assert_eq!(request["params"]["turnId"], retry_turn_id);
                     match &retry_error {
                         Some(error) => json!({"error":{"code":-32600,"message":error}}),
                         None => json!({"result":{}}),
@@ -141,11 +143,13 @@ fn mp08_interrupt_unrelated_provider_failure_is_not_suppressed() {
 }
 
 #[test]
-fn mp08_interrupt_listener_id_can_lag_the_core_snapshot() {
-    interrupt_fixture(
+fn mp08_interrupt_reread_supersedes_a_stale_rejection_identity() {
+    interrupt_fixture_with_event(
         "expected active turn id submitted but found actual",
         json!({"data":[{"id":"actual","status":"interrupted"},{"id":"submitted","status":"inProgress"}]}),
         None,
+        false,
+        "submitted",
     ).unwrap();
 }
 
@@ -156,6 +160,7 @@ fn mp08_interrupt_fresh_start_event_supersedes_a_stale_snapshot() {
         json!({"data":[{"id":"submitted","status":"inProgress"}]}),
         None,
         true,
+        "actual",
     )
     .unwrap();
 }
@@ -191,4 +196,15 @@ fn mp08_interrupt_uses_the_buffered_provider_start_identity() {
     abort_codex_turn("run", &mut state).unwrap();
     assert!(state.active_turn_id.is_none());
     server.join().unwrap();
+}
+
+#[test]
+fn mp08_interrupt_newest_active_record_supersedes_older_in_progress_history() {
+    interrupt_fixture_with_event(
+        "expected active turn id submitted but found actual",
+        json!({"data":[{"id":"submitted","status":"inProgress"},{"id":"actual","status":"inProgress"}]}),
+        None,
+        false,
+        "submitted",
+    ).unwrap();
 }
