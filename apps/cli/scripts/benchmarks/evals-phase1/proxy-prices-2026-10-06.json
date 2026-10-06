@@ -1,0 +1,20 @@
+{
+  "mp_items": ["MP-08", "MP-10"],
+  "version": 1,
+  "observed_date": "2026-10-06",
+  "label": "proxy",
+  "unit": "nanodollars_per_token",
+  "source_url": "https://developers.openai.com/api/docs/pricing",
+  "scope": "Standard global API list price proxy; excludes subscription, infrastructure, tools, Fast mode and regional charges. Tokens are primary.",
+  "mappings": {
+    "gpt-6.1-sol": {
+      "api_model": "gpt-6.1-sol",
+      "rationale": "The exact model has a public API price; identity is the closest public mapping.",
+      "bands": {
+        "short": {"input": 2000, "cached_input": 100, "cache_write": 2500, "output": 10000},
+        "long": {"input": 4000, "cached_input": 200, "cache_write": 5000, "output": 15000}
+      },
+      "cache_write_bound": "0 <= unreported cache-write tokens <= reported non-cached input tokens; conservative additive envelope, not asserted billing semantics"
+    }
+  }
+}

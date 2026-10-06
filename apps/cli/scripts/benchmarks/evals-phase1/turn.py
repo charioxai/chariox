@@ -29,7 +29,10 @@ from contract import safe_pid, completed_answer, quota_exhausted, admit_placemen
 
 def file_hash(path):
     with path.open("rb") as source:
-        return hashlib.file_digest(source, "sha256").hexdigest()
+        digest = hashlib.sha256()
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+        return digest.hexdigest()
 
 
 def preflight(runtime_root, source_commit, kernel_sha256, local_protocol):

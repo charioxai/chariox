@@ -7,6 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from contract import validate_lock
+from proxy_prices import proxy_quote
 
 
 def main():
@@ -41,12 +42,16 @@ def main():
             raise ValueError('MP-08 / MP-10: task source identity mismatch')
         usage = result.get('usage') or {}
         cost = usage.get('api_equivalent_nanodollars')
+        proxy = proxy_quote(campaign['model'], usage) if usage else None
         rows.append({'benchmark': 'swe_verified_mini', 'phase': campaign['phase'], 'task_id': task,
                      'provider': 'codex', 'model': campaign['model'], 'status': result['status'],
                      'official_outcome': 'error' if task in official['error_ids'] else 'empty_patch' if task in official['empty_patch_ids'] else 'resolved' if task in resolved else 'unresolved',
                      'resolved': task in resolved, 'cleanup_complete': result['cleanup_complete'],
                      **{key: usage.get(key, '') for key in ['input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_tokens']},
                      'api_equivalent_usd': '' if cost is None else str(Decimal(cost) / Decimal(10**9)),
+                     'proxy_usd_lower': '' if proxy is None else str(Decimal(proxy['lower_nanodollars']) / Decimal(10**9)),
+                     'proxy_usd_upper': '' if proxy is None else str(Decimal(proxy['upper_nanodollars']) / Decimal(10**9)),
+                     'proxy_unknown_fields': '' if proxy is None else ','.join(proxy['unknown_fields']),
                      'wall_time_seconds': result['wall_time_seconds']})
     args.output.mkdir(parents=True, exist_ok=True)
     with (args.output / 'task-results.csv').open('x', newline='') as output:
@@ -62,17 +67,24 @@ def main():
                'priced_tasks': sum(row['api_equivalent_usd'] != '' for row in rows),
                'wall_time_seconds': sum(row['wall_time_seconds'] for row in rows),
                'scope': 'local reproduction using unchanged official scorer; smoke is not full acceptance'}
+    summary['tokens'] = {key: sum(row[key] for row in rows) if all(type(row[key]) is int for row in rows) else None for key in ['input_tokens','cached_input_tokens','output_tokens','reasoning_tokens']}
+    summary['proxy_cost'] = {'label':'proxy','lower_usd': str(sum(Decimal(r['proxy_usd_lower']) for r in rows)), 'upper_usd': str(sum(Decimal(r['proxy_usd_upper']) for r in rows)), 'unknown_fields':['context_band','cache_write_tokens']} if all(r['proxy_usd_lower'] != '' for r in rows) else None
+    summary['proxy_mapping'] = json.loads(Path(__file__).with_name('proxy-prices-2026-10-06.json').read_text())
     (args.output / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(7, 4))
-    ax.set(xlabel='API-equivalent cost per task (USD)', ylabel='Task accuracy (%)',
+    ax.set(xlabel='Proxy API cost per task (USD; bounded)', ylabel='Task accuracy (%)',
            ylim=(0, 100), title='MP-08 / MP-10: SWE Verified Mini ' + campaign['phase'])
-    if summary['priced_tasks'] == len(rows):
-        ax.scatter(sum(Decimal(r['api_equivalent_usd']) for r in rows) / len(rows), summary['accuracy_percent'])
+    if summary['proxy_cost']:
+        lower = float(summary['proxy_cost']['lower_usd']) / len(rows)
+        upper = float(summary['proxy_cost']['upper_usd']) / len(rows)
+        ax.plot([lower,upper],[summary['accuracy_percent']]*2,marker='|',linewidth=3,label='proxy interval; band/cache-write unknown')
+        ax.annotate(f"{len(resolved)}/{len(expected)}",((lower+upper)/2,summary['accuracy_percent']),xytext=(0,8),textcoords='offset points',ha='center')
+        ax.legend(loc='lower right')
     else:
-        ax.text(0.5, 0.5, f"Official scorer: {len(resolved)}/{len(expected)} resolved\nUSD unavailable; no cost/accuracy point", transform=ax.transAxes, ha='center', va='center')
+        ax.text(0.5,0.5,'Proxy unavailable; no cost/accuracy point',transform=ax.transAxes,ha='center')
     ax.grid(alpha=0.2); fig.tight_layout()
     fig.savefig(args.output / 'cost-vs-accuracy.png', dpi=160)
     plt.close(fig)

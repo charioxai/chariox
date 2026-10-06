@@ -1,12 +1,56 @@
-# MP-08 / MP-10 / MP-11 — evals phase 1, round 2
+# MP-08 / MP-10 / MP-11 — evals phase 1, round 3
 
-Round 2 is active and remains **not accepted**. The coordinator allocated
-local daemon448 / relay peer91 and identified the product-linked Codex profile.
-The numeric accounting drill passes on the real relay/kernel/TUI/Codex path.
-Matching USD remains blocked by missing authoritative pricing inputs. The
-SWE smoke scored10/10 and the fresh full50 scored44/50 resolved (88%), both
-with zero evaluator errors and empty patches. Terminal-Bench has zero scored
-tasks: its container provider placement still needs coordinator setup.
+MP-08 / MP-10: tokens (input, cached input, output and reasoning) are the
+primary cost metrics. Round 3 uses the coordinator-approved official Harbor
+same-host placement, with the existing product-linked Codex profile registered
+through the real TUI. The 10-task Terminal-Bench smoke precedes 89 fresh full
+tasks. Claude/OpenCode adapters remain available; their owner-side lease grants
+are still pending. Local benchmark results do not establish managed parity.
+
+MP-08 / MP-10: the existing SWE Verified Mini full result remains **44/50
+(88%)**, zero scorer errors. It used product source `82a444a77`, kernel SHA
+`f25b48a1...`, official Codex 0.159.3 / `gpt-6.1-sol` / low effort. It consumed
+18,013,227 input tokens, including 16,588,544 cached tokens, plus 111,474 output
+tokens, of which 8,110 were reasoning. Solver wall time was 4,950.44 seconds.
+Applying the dated proxy mapping produces **proxy USD 5.6229604–17.8119658**
+for the full run. This is a conservative interval, not an invoice or an exact
+billing quote. Original round-2 receipts and runtime identities stay unchanged.
+
+## MP-08 / MP-10 — dated proxy price mapping
+
+The editable [proxy mapping](../apps/cli/scripts/benchmarks/evals-phase1/proxy-prices-2026-10-06.json)
+records its source URL, observation date (2026-10-06), units and assumptions.
+The exact public API model exists, so the closest mapping is an identity:
+
+| Provider model | Public API proxy model | Short input / cached / write / output per million | Long input / cached / write / output per million |
+| --- | --- | --- | --- |
+| `gpt-6.1-sol` | `gpt-6.1-sol` | proxy USD 2 / 0.10 / 2.50 / 10 | proxy USD 4 / 0.20 / 5 / 15 |
+
+Source: [official OpenAI API pricing](https://developers.openai.com/api/docs/pricing),
+observed 2026-10-06. Reasoning is included in output once. The native harness
+omits context-band and cache-write counts; these remain **unknown**, not zero.
+The report takes the minimum/maximum band and bounds unreported write tokens
+between zero and non-cached input. Its conservative additive envelope includes
+base non-cached input plus possible write charges; it does not assert the
+provider's billing partition. The lower endpoint is a bound, not an assertion
+that writes were zero. No point estimate is emitted while categories are
+unknown. Subscription, infrastructure, tool, Fast-mode and regional charges
+are outside this proxy. Every plotted dollar value is labeled **proxy**.
+
+## MP-08 / MP-10 / MP-11 — round 3 real-path admission
+
+The first official Harbor attempt failed before container startup because the
+builder had no Compose plugin. A SHA-256-verified, pinned Compose v2.39.4 plugin
+is now scoped to the lane's Docker CLI tooling. The unchanged pinned official
+Bookworm task then reproduced the native loader failure through Harbor runtime
+preflight, before provider launch. These attempts have no benchmark score.
+A compatible native kernel/relay build is queued under the shared compile lock.
+The serial campaign retains exact task and harness pins, official verifier
+results, real TUI/relay/kernel/provider evidence, fresh quota checks, resource
+samples and exact owned-resource cleanup. Missing tasks never become zeros or
+a full accuracy score. MP-11 signal guards reject system/invalid PIDs before
+harness subprocess signaling. This preparation and RED evidence do not close
+an MP acceptance item.
 
 ## MP-08 / MP-10 / MP-11 — round 2 implementation and provenance
 
@@ -57,15 +101,14 @@ receipt proves one fresh, single-agent turn, not resume/delegation/leased parity
 or matching USD. Pairing-bootstrap failures without Cloud grants never reached
 a provider turn and are not accounting-red evidence.
 
-Pricing remains explicitly unavailable when the official harness lacks a field
+Historical round-2 exact pricing remains explicitly unavailable when the official harness lacks a field
 required by the exact dated price table. Codex0.159.3 supplies cumulative input,
 cached input, output and reasoning, but no cache-write/context-price-band
 breakdown for the supported `gpt-6.1-sol` model. The runner retains known tokens
-with null cost; it never invents zero cache writes or selects a band. This blocks
-matching USD acceptance unless an exactly priceable model/profile or authoritative
-counters are supplied. Diagnostic benchmark execution can continue unpriced.
+with null cost; it never invents zero cache writes or selects a band. Round 3 supersedes the exact-dollar gate with primary tokens and the explicit
+bounded proxy mapping above; the native exact quote remains unavailable.
 
-## MP-08 / MP-10 — campaign state
+## MP-08 / MP-10 — archived round 2 campaign state
 
 The exact89 /50 task pins below remain unchanged. Codex smoke10 precedes each
 full run, with serial tasks and fresh plan-exhaustion checks. Terminal-Bench

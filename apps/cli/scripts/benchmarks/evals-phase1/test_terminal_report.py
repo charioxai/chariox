@@ -1,0 +1,47 @@
+"""MP-08 / MP-10: missing tasks and changed identities cannot become a full score."""
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from terminal_report import report
+
+class ReportTests(unittest.TestCase):
+    def setup_campaign(self, root, count=10):
+        lock=json.loads(Path(__file__).with_name('inputs.lock.json').read_text())
+        ids=lock['terminal_bench_2']['task_ids'][:10]
+        campaign={'phase':'smoke','task_ids':ids,'harness_revision':lock['harbor']['revision'],
+                  'task_revision':lock['terminal_bench_2']['revision'],'source_commit':'a'*40,'kernel_sha256':'b'*64,
+                  'model':'gpt-6.1-sol','status':'completed','started_at':0,'finished_at':10,'tasks':[]}
+        for task in ids[:count]:
+            path=root/(task+'.json')
+            path.write_text(json.dumps({'task_name':task,'agent_info':{'version':'a'*40},'agent_result':{'metadata':{'chariox':{
+                'source_commit':'a'*40,'kernel_sha256':'b'*64,'session_id':'s','status':'completed','cleanup_complete':True,
+                'usage':{'session_id':'s','complete':True,'input_tokens':10,'cached_input_tokens':5,'output_tokens':2,'reasoning_tokens':1}}}},
+                'verifier_result':{'rewards':{'reward':1 if task==ids[0] else 0}},'exception_info':None}))
+            campaign['tasks'].append({'task_id':task,'official_result':str(path),'wall_time_seconds':1,'cleanup':{'remaining_containers':[]}})
+        (root/'campaign.json').write_text(json.dumps(campaign))
+        return campaign
+
+    def test_unresolved_tasks_remain_in_denominator_and_reasoning_is_not_added(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);self.setup_campaign(root)
+            s=report(root,root/'report')
+            self.assertEqual(s['accuracy_percent'],10)
+            self.assertEqual(s['tokens']['output_tokens'],20)
+            self.assertEqual(s['tokens']['reasoning_tokens'],10)
+            self.assertIsNotNone(s['proxy_cost'])
+
+    def test_incomplete_campaign_has_no_full_accuracy_or_fake_zero_tokens(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);self.setup_campaign(root,count=1)
+            s=report(root,root/'report')
+            self.assertFalse(s['complete']);self.assertIsNone(s['accuracy_percent'])
+            self.assertIsNone(s['tokens']['input_tokens']);self.assertIsNone(s['proxy_cost'])
+            self.assertEqual(s['denominator'],10)
+
+    def test_official_runtime_identity_drift_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);campaign=self.setup_campaign(root)
+            path=Path(campaign['tasks'][0]['official_result']);record=json.loads(path.read_text())
+            record['agent_info']['version']='c'*40;path.write_text(json.dumps(record))
+            with self.assertRaises(ValueError):report(root,root/'report')

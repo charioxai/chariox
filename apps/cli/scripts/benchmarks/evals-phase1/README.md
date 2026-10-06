@@ -1,11 +1,12 @@
 # MP-08 / MP-10 / MP-11 — evals phase 1 preparation
 
-This is a diagnostic pilot area. Accounting history/CLI uses the coordinator allocation
-local448 / peer91 and the approved product-linked `acct-686` mapping. Live
-acceptance and scored baselines are recorded separately. The unpriced Codex SWE
-baseline scored 10/10 smoke and 44/50 full (88%) with the unchanged official
-evaluator. Terminal-Bench remains blocked on provider placement; no score is
-claimed for it. See the evidence scope in `docs/EVALS_PHASE1.md`.
+MP-08 / MP-10: round 3 uses tokens as primary cost metrics and an explicit dated
+proxy mapping with unknown band/write bounds. The unchanged official SWE full
+baseline scored 44/50 (88%). The coordinator approved official Harbor on the
+same builder, exposing the existing product-linked Codex profile through the
+standard environment bind mount and registering it through the normal TUI.
+Claude/OpenCode still need owner-side leased grants. No source check closes an
+MP item. See `docs/EVALS_PHASE1.md` for live result scope.
 
 `inputs.lock.json` freezes the exact 89 Terminal-Bench 2.0 and 50 HAL Verified
 Mini tasks plus official harness revisions. Use `PYTHONDONTWRITEBYTECODE=1` and
@@ -51,7 +52,7 @@ with Harbor's `--agent` option. Pass `--ak` values for `runtime_root`, optionall
 `runtime_bundle` (a host bundle to upload), `profile_path`, `source_commit`,
 `kernel_sha256`, `local_protocol`, `placement` and `provider=codex`; `--model` is an exact
 native provider model ID. Use `--path` for the pinned Terminal-Bench checkout,
-`--n-concurrent 1` and an external `--jobs-dir`. The first 10 task IDs in the
+`--n-concurrent 1` and an external `--jobs-dir`. Pass `relay_binary` for the real encrypted relay TUI path. The first 10 task IDs in the
 lock define a reproducible smoke; the full run must retain all 89 IDs.
 
 For HAL Mini, `swe_campaign.py --help` drives the serial smoke/full solver
@@ -90,3 +91,32 @@ The report validates campaign/scorer provenance and writes actual task CSV,
 summary and a cost/accuracy plot. Missing prices produce no cost/accuracy point.
 No fixture, imported interface or source check closes an MP item. See
 [`docs/EVALS_PHASE1.md`](../../../../../docs/EVALS_PHASE1.md) for exact blockers.
+
+## MP-08 / MP-10 / MP-11 — round 3 serial Terminal-Bench campaign
+
+`terminal_campaign.py --help` selects exactly the frozen first ten tasks or all
+89, with fresh official Harbor trials, no score-based retries and no smoke
+reuse. It requires the clean pinned task checkout, hash-bound runtime and the
+approved existing product profile. Harbor's standard mounts expose the public
+runtime read-only and the product-managed profile at its existing path; no
+credential is copied. Use a lane-scoped Compose plugin via `DOCKER_CONFIG`.
+The kernel and relay must load on the oldest official task OS. The Python hash
+reader supports Bullseye's Python 3.9. Runner dependency venvs live in disposable
+container scratch, outside the retained logs.
+
+`terminal_report.py --help` validates official task/runtime identities and writes
+the CSV, primary token totals, bounded proxy estimates, elapsed time and
+cost-versus-accuracy plot. `--compare-summary` can add the existing SWE result.
+Incomplete campaigns have no full accuracy score; missing accounting stays
+unknown. `proxy-prices-2026-10-06.json` is the editable model mapping. The exact
+public API model exists, so `gpt-6.1-sol` maps to itself. Every dollar estimate
+is labeled proxy. Unknown context bands span the public bands; cache-write
+counts span zero through non-cached input using a conservative additive
+envelope. Reasoning is already included in output and is never added twice.
+
+MP-11: `signal_guard.py` wraps real harness child-process signal operations
+with explicit system/invalid PID rejection. `harbor_cleanup.py` settles only
+exact Compose projects recorded in the fresh owned job directory. A manual
+settlement or unknown retained volume makes the campaign fail; unused task
+image tags are removed only when absent before this run, pinned to the same
+image ID afterward, and used by no container. Shared caches/images are untouched.
