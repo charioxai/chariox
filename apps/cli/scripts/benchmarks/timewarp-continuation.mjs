@@ -23,17 +23,23 @@ export function classifyTimeWarpContinuation(rows, failures) {
 export async function verifyTimeWarpContinuation(directory) {
   assert(path.isAbsolute(directory)&&directory.startsWith('/root/.codex/evidence/browser-resume-20260930/r2next/'))
   const files=['CAMPAIGN.json','RESULTS.json','runtime.json','rpc-errors.jsonl']
-  const bytes=await Promise.all(files.map(name=>readFile(`${directory}/${name}`)))
+  const bytes=await Promise.all(files.map(name=>readFile(`${directory}/${name}`).catch(error=>{
+    if(name==='rpc-errors.jsonl'&&error.code==='ENOENT')return null
+    throw error
+  })))
   const [campaign,rows,runtime]=bytes.slice(0,3).map(b=>JSON.parse(b))
-  const failures=bytes[3].toString().trim().split('\n').map(JSON.parse)
+  const errors=bytes[3]?.toString().trim()
+  const failures=errors?errors.split('\n').map(JSON.parse):[]
+  // A null pin records native absence; never fabricate an empty error receipt.
+  const priorHashes=Object.fromEntries(files.map((name,i)=>[name,bytes[i]===null?null:hash(bytes[i])]))
   const proof=campaign.cleanup?.complete?{
-    priorHashes:Object.fromEntries(files.map((name,i)=>[name,hash(bytes[i])])),root:runtime.root,workspace:runtime.workspace,
+    priorHashes,root:runtime.root,workspace:runtime.workspace,
     providerSubmissions:0,stateRemoved:runtime.cleanup.stateRemoved,workspaceRemoved:runtime.cleanup.workspaceRemoved,
     roomGone:campaign.cleanup.rooms.sessionGone,slicesGone:campaign.cleanup.rooms.slices.every(s=>s.gone),
     containerGone:campaign.cleanup.containerGone,volumesGone:campaign.cleanup.volumesGone,
     processes:[...campaign.cleanup.processes,...runtime.cleanup.processes]
   }:JSON.parse(await readFile(`${directory}/CLEANUP_SUPPLEMENT.json`,'utf8'))
-  assert.deepEqual(proof.priorHashes,Object.fromEntries(files.map((name,i)=>[name,hash(bytes[i])])))
+  assert.deepEqual(proof.priorHashes,priorHashes)
   assert.equal(proof.root,runtime.root);assert.equal(proof.workspace,runtime.workspace)
   assert.equal(proof.providerSubmissions,0)
   assert(proof.stateRemoved&&proof.workspaceRemoved&&proof.roomGone&&proof.slicesGone&&proof.containerGone&&proof.volumesGone)
