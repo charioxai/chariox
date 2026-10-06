@@ -21,6 +21,11 @@ test("MP-07/MP-08/MP-11 actual SSH install/repeat/two IDs/stop/remove/tamper and
   assert.equal((await runSshMachine("byom-local", twoRequest, release)).status, "installed")
   // Authentication keys are synthetic and never copied into either install.
   assert.equal((await runSshMachine("byom-local", { ...baseRequest, action: "stop" })).status, "stopped")
+  // MP-07 / MP-11: a real SSH retry can finish a proven owned removal after unit unlink.
+  await writeFile(join(home, "fixture-fail-reload"), "one transient failure")
+  await assert.rejects(runSshMachine("byom-local", { ...baseRequest, action: "remove" }), /SSH deployment failed/)
+  await assert.rejects(readFile(join(home, ".config/systemd/user/chariox-ssh-byom-one.service")), { code: "ENOENT" })
+  assert.equal((await runSshMachine("byom-local", { ...baseRequest, action: "inspect" })).status, "installed")
   assert.equal((await runSshMachine("byom-local", { ...baseRequest, action: "remove" })).status, "removed")
   assert.equal((await runSshMachine("byom-local", { ...twoRequest, action: "remove" })).status, "removed")
   const bad = join(scratch, "tampered.tar.gz"); await writeFile(bad, "corrupt archive")

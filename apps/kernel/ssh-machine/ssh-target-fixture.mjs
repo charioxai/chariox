@@ -61,7 +61,9 @@ if (!args.every(a => !a.endsWith(".service") || /^chariox-ssh-byom-(one|two|tamp
 fs.appendFileSync(path.join(process.env.HOME,"fixture-service-calls"),JSON.stringify(args)+"\\n")
 if (args[0] === "show") {
  const p = path.join(process.env.HOME,".config/systemd/user",args[1]); const exists=fs.existsSync(p)
- console.log("LoadState="+(exists?"loaded":"not-found")+"\\nFragmentPath="+(exists?p:"")+"\\nDropInPaths=")
+ console.log("LoadState="+(exists?"loaded":"not-found")+"\\nFragmentPath="+(exists?p:"")+"\\nDropInPaths=\\nActiveState=inactive\\nUnitFileState=disabled")
+} else if (args[0] === "daemon-reload" && fs.existsSync(path.join(process.env.HOME,"fixture-fail-reload"))) {
+ fs.unlinkSync(path.join(process.env.HOME,"fixture-fail-reload")); process.exit(5)
 } else if (!["daemon-reload","disable"].includes(args[0])) process.exit(4)
 `, { mode: 0o700 })
   // Node treats an extensionless executable as CommonJS: use require for the test manager.
