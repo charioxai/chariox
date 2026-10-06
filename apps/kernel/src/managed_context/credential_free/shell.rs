@@ -1,6 +1,6 @@
 //! MP-08/MP-11: inspect shell words without executing or expanding input.
 
-fn sensitive(key: &str) -> bool {
+pub(super) fn sensitive(key: &str) -> bool {
     let key = key.to_ascii_lowercase().replace('-', "_");
     [
         "password",

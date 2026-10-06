@@ -1951,9 +1951,16 @@ mod tests {
     }
 
     fn assert_source_shell_result(text: &str, history: bool, accepted: bool) {
-        use crate::managed_context::owner_managed::*;
         let fixture =
             crate::managed_context::credential_free::tests::InlineShellFixture::new(text, history);
+        assert_source_fixture_result(fixture, accepted);
+    }
+
+    fn assert_source_fixture_result(
+        fixture: crate::managed_context::credential_free::tests::InlineShellFixture,
+        accepted: bool,
+    ) {
+        use crate::managed_context::owner_managed::*;
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
             realm_id: "realm".into(),
@@ -2012,6 +2019,39 @@ mod tests {
                 .exists(),
             "MP-11 rejected package is cleaned up"
         );
+    }
+
+    #[test]
+    fn mp08_mp11_source_refuses_utf16_in_overlay_and_history() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        use crate::managed_context::credential_free::tests::{utf16, InlineShellFixture};
+        for history in [false, true] {
+            for little_endian in [true, false] {
+                assert_source_fixture_result(
+                    InlineShellFixture::file(
+                        "bootstrap.ps1",
+                        &utf16("$env:API_KEY = 'synthetic-canary'\n", little_endian),
+                        history,
+                    ),
+                    false,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mp08_mp11_source_accepts_package_metadata_in_overlay_and_history() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        use crate::managed_context::credential_free::tests::{
+            InlineShellFixture, PACKAGE_METADATA,
+        };
+        for history in [false, true] {
+            for (path, bytes) in PACKAGE_METADATA {
+                assert_source_fixture_result(InlineShellFixture::file(path, bytes, history), true);
+            }
+        }
     }
 
     #[test]

@@ -94,6 +94,10 @@ pub(crate) struct InlineShellFixture {
 
 impl InlineShellFixture {
     pub(crate) fn new(text: &str, history: bool) -> Self {
+        Self::file("bootstrap.sh", text.as_bytes(), history)
+    }
+
+    pub(crate) fn file(path: &str, bytes: &[u8], history: bool) -> Self {
         let root = std::env::temp_dir().join(format!(
             "chariox-inline-shell-{:032x}",
             rand::random::<u128>()
@@ -119,19 +123,19 @@ impl InlineShellFixture {
         )
         .unwrap();
         fs::write(
-            fixture.project.join("bootstrap.sh"),
-            if history { text } else { "echo ready\n" },
+            fixture.project.join(path),
+            if history { bytes } else { b"echo ready\n" },
         )
         .unwrap();
-        git(&fixture.project, &["add", "bootstrap.sh"], MAX_FILE).unwrap();
+        git(&fixture.project, &["add", path], MAX_FILE).unwrap();
         git(&fixture.project, &["commit", "-m", "fixture"], MAX_FILE).unwrap();
         fs::write(
-            fixture.project.join("bootstrap.sh"),
-            if history { "echo ready\n" } else { text },
+            fixture.project.join(path),
+            if history { b"echo ready\n" } else { bytes },
         )
         .unwrap();
         if history {
-            git(&fixture.project, &["add", "bootstrap.sh"], MAX_FILE).unwrap();
+            git(&fixture.project, &["add", path], MAX_FILE).unwrap();
             git(
                 &fixture.project,
                 &["commit", "-m", "replace fixture"],
@@ -371,5 +375,168 @@ fn mp08_mp11_target_accepts_ordinary_short_flags_in_overlay_and_history() {
             history,
         )
         .assert_target_result(true);
+    }
+}
+
+// MP-08/MP-11: encoded files and package metadata cross both real package boundaries.
+pub(crate) fn utf16(text: &str, little_endian: bool) -> Vec<u8> {
+    let mut bytes = if little_endian {
+        vec![0xff, 0xfe]
+    } else {
+        vec![0xfe, 0xff]
+    };
+    for unit in text.encode_utf16() {
+        bytes.extend(if little_endian {
+            unit.to_le_bytes()
+        } else {
+            unit.to_be_bytes()
+        });
+    }
+    bytes
+}
+
+pub(crate) const PACKAGE_METADATA: &[(&str, &[u8])] = &[
+    ("package.json", br#"{"dependencies":{"js-tokens":"^4.0.0","secret-tool":"^1.0.0"},"devDependencies":{"@example/tokenizer":"^2.0.0"},"scripts":{"build":"node build.js"}}"#),
+    ("package-lock.json", br#"{"lockfileVersion":3,"packages":{"":{"dependencies":{"js-tokens":"^4.0.0"}},"node_modules/js-tokens":{"version":"4.0.0","resolved":"https://registry.npmjs.org/js-tokens/-/js-tokens-4.0.0.tgz","integrity":"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}},"dependencies":{"js-tokens":{"version":"4.0.0"}}}"#),
+    ("usage.json", br#"{"input_tokens":42,"output_tokens":7,"total_tokens":49,"token_count":49,"max_tokens":4096}"#),
+];
+
+#[test]
+fn mp08_mp11_target_refuses_utf16_in_overlay_and_history() {
+    crate::test_support::isolated_env_test!();
+    let _lock = crate::env_lock::lock();
+    for history in [false, true] {
+        for little_endian in [true, false] {
+            InlineShellFixture::file(
+                "bootstrap.ps1",
+                &utf16("$env:API_KEY = 'synthetic-canary'\n", little_endian),
+                history,
+            )
+            .assert_target_result(false);
+        }
+    }
+}
+
+#[test]
+fn mp08_mp11_target_accepts_package_metadata_in_overlay_and_history() {
+    crate::test_support::isolated_env_test!();
+    let _lock = crate::env_lock::lock();
+    for history in [false, true] {
+        for (path, bytes) in PACKAGE_METADATA {
+            InlineShellFixture::file(path, bytes, history).assert_target_result(true);
+        }
+    }
+}
+
+#[test]
+fn mp11_supported_encodings_are_inspected_and_unclassifiable_bytes_refused() {
+    let credential = "$env:API_KEY = 'synthetic-canary'\n";
+    let ordinary = "Write-Output 'ready 🦀'\n";
+    for text in [credential, ordinary] {
+        for little_endian in [true, false] {
+            let mut utf32 = if little_endian {
+                vec![0xff, 0xfe, 0, 0]
+            } else {
+                vec![0, 0, 0xfe, 0xff]
+            };
+            for ch in text.chars() {
+                utf32.extend(if little_endian {
+                    (ch as u32).to_le_bytes()
+                } else {
+                    (ch as u32).to_be_bytes()
+                });
+            }
+            for bytes in [
+                utf16(text, little_endian),
+                utf32,
+                [b"\xef\xbb\xbf".as_slice(), text.as_bytes()].concat(),
+            ] {
+                assert_eq!(
+                    validate_bytes("bootstrap.ps1", &bytes).is_ok(),
+                    text == ordinary,
+                    "MP-11 supported encoding"
+                );
+            }
+        }
+    }
+    for bytes in [
+        b"\xff\xfe\x00".as_slice(),
+        b"\xff\xfe\x00\xd8",
+        b"\x00\x00\xfe\xff\x00\x11\x00\x00",
+        b"\xffAPI_KEY=synthetic-canary",
+        b"A\x00P\x00I\x00",
+        b"echo \x1bready",
+        b"\xff\xfe\x00\x00\x61",
+    ] {
+        assert!(
+            validate_bytes("bootstrap.ps1", bytes).is_err(),
+            "MP-11 unclassifiable bytes"
+        );
+    }
+}
+
+#[test]
+fn mp11_metadata_roles_do_not_hide_authentication_values() {
+    for (path, bytes) in [
+        (
+            "package.json",
+            br#"{"dependencies":{"js-tokens":"https://owner:synthetic-canary@example.test"}}"#
+                .as_slice(),
+        ),
+        (
+            "package.json",
+            br#"{"dependencies":{"js-tokens":{"api_key":"synthetic-canary"}}}"#,
+        ),
+        (
+            "package-lock.json",
+            br#"{"packages":{"node_modules/js-tokens":{"token":"synthetic-canary"}}}"#,
+        ),
+        (
+            "package-lock.json",
+            br#"{"packages":{"node_modules/js-tokens":{"integrity":"API_KEY=synthetic-canary"}}}"#,
+        ),
+        (
+            "package.json",
+            br#"{"scripts":{"build":"API_KEY=synthetic-canary node build.js"}}"#,
+        ),
+        (
+            "package.json",
+            br#"{"token":"synthetic-canary","input_tokens":4}"#,
+        ),
+        (
+            "package.json",
+            br#"{"dependencies":{"js-tokens":{"dependencies":{"token":"synthetic-canary"}}}}"#,
+        ),
+        (
+            "settings.json",
+            br#"{"vault_file_base64":"synthetic-canary"}"#,
+        ),
+        (
+            "settings.json",
+            br#"{"sealed_unlock_key":"synthetic-canary"}"#,
+        ),
+        ("usage.json", br#"{"token_count":"synthetic-canary"}"#),
+        ("usage.json", br#"{"token":1234}"#),
+        (
+            "settings.json",
+            br#"{"dependencies":{"token":"synthetic-canary"}}"#,
+        ),
+        (
+            "package.json",
+            br#"{"dependencies":{"js-tokens":"^4.0.0"},"extra":{"secret":"synthetic-canary"}}"#,
+        ),
+        (
+            "package.json",
+            br#"{"name":"js-tokens","description":"-----BEGIN PRIVATE KEY-----"}"#,
+        ),
+        (
+            "package.json",
+            br#"{"dependencies":{"js-tokens":"^4.0.0"} // malformed"#,
+        ),
+    ] {
+        assert!(
+            validate_bytes(path, bytes).is_err(),
+            "MP-11 authentication fixture {path}"
+        );
     }
 }
