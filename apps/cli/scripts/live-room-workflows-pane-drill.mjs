@@ -162,6 +162,7 @@ try {
   if (noisyInterruptRounds) {
     receipt.noisyInterrupts = []
     receipt.noisyProducerFailures = []
+    receipt.noisyControlFailures = []
     for (let round = 0; round < noisyInterruptRounds; round++) {
       const label = `noisy-${String(round + 1).padStart(2,'0')}`
       const action = round % 2 ? 'stop' : 'pause'
@@ -203,7 +204,8 @@ try {
       Object.assign(sample,timing)
       await writeFile(path.join(args.output,label+'-timing.json'),JSON.stringify({mpItems:receipt.mpItems,...sample},null,2)+'\n',{mode:0o600})
       assert.ok(timing.sent, 'MP-08 noisy cancellation must actually send turn/interrupt')
-      assert.ok(timing.stopToInterruptSentMs <= 1000, `MP-08 noisy ${action} interrupt sent too late: ${timing.stopToInterruptSentMs}ms`)
+      if(timing.stopToInterruptSentMs>1000)receipt.noisyControlFailures.push({round:round+1,action,
+        seam:'interrupt sent after one-second budget',stopToInterruptSentMs:timing.stopToInterruptSentMs})
       const settled = await stateUntil(s=>Object.values(s.agent_activity).every(activity=>!activity.active_prompt_count),10000)
       // Recompute after kernel settlement: an initial stale-ID completion
       // must not hide the interrupt/completion of the actual running turn.
@@ -213,7 +215,8 @@ try {
         && trace.at>=noiseStartedAtMs && trace.at<control.sentAtMs && (!timing.sent || trace.providerRunId===timing.sent.providerRunId)).length})
       await writeFile(path.join(args.output,label+'-timing.json'),JSON.stringify({mpItems:receipt.mpItems,...sample},null,2)+'\n',{mode:0o600})
       assert.ok(timing.ended, 'MP-08 noisy cancellation must receive provider turn/completed')
-      assert.ok(timing.stopToTurnEndedMs <= 5000, `MP-08 noisy ${action} provider ended too late: ${timing.stopToTurnEndedMs}ms`)
+      if(timing.stopToTurnEndedMs>5000)receipt.noisyControlFailures.push({round:round+1,action,
+        seam:'provider turn ended after five-second budget',stopToTurnEndedMs:timing.stopToTurnEndedMs})
       await diagnostics(settled)
       const run=unwrap(await client.send(requests.getWorkflowRunRequest(sessionId,runId)), 'WorkflowRun').workflow_run
       sample.status=run.status
@@ -336,6 +339,7 @@ try {
   // Finish the other requested controls and provider completion, but retain
   // a RED acceptance result if any shell outlived its cancellation budget.
   assert.equal(receipt.noisyProducerFailures?.length ?? 0,0,'MP-08 noisy shell output continued beyond five-second cancellation budget')
+  assert.equal(receipt.noisyControlFailures?.length ?? 0,0,'MP-08 noisy control exceeded interrupt or turn-completion budget')
   receipt.status=receipt.expectedRed?'RED':'GREEN'
 } catch(error) {
   receipt.status='RED';receipt.firstFailure=error.message
