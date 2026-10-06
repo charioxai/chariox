@@ -8,27 +8,36 @@ use crate::local::ManagedEnvironmentProviderAccountSelection;
 fn provider_account_portability_websocket_drill() {
     crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
     let shared_tmp_mode = std::fs::metadata("/tmp").unwrap().permissions().mode() & 0o7777;
     let root = std::env::temp_dir().join(format!("chx-kp-{:x}", rand::random::<u64>()));
     std::fs::create_dir(&root).unwrap();
-    // The isolated child has a nested TMPDIR, which can exceed sockaddr_un.
-    // Keep only the disposable listener at a short, uniquely owned path.
-    let socket_path = PathBuf::from("/tmp").join(format!(
-        "cx-kp-{}-{:x}.sock", std::process::id(), rand::random::<u64>()
+    // Keep the listener short without making a shared directory its private parent.
+    let socket_dir = PathBuf::from("/tmp").join(format!(
+        "cx-kp-{}-{:x}", std::process::id(), rand::random::<u64>()
     ));
-    struct Cleanup(PathBuf, PathBuf);
+    std::fs::DirBuilder::new().mode(0o700).create(&socket_dir).unwrap();
+    let socket_metadata = std::fs::symlink_metadata(&socket_dir).unwrap();
+    let socket_path = socket_dir.join("k.sock");
+    struct Cleanup {
+        root: PathBuf,
+        socket_dir: PathBuf,
+        socket_device: u64,
+        socket_inode: u64,
+    }
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            use std::os::unix::fs::FileTypeExt;
-            if let Ok(metadata) = std::fs::symlink_metadata(&self.1) {
-                assert!(metadata.file_type().is_socket());
-                std::fs::remove_file(&self.1).unwrap();
-            }
-            std::fs::remove_dir_all(&self.0).unwrap();
+            let metadata = std::fs::symlink_metadata(&self.socket_dir).unwrap();
+            assert!(metadata.is_dir());
+            assert_eq!((metadata.dev(), metadata.ino()), (self.socket_device, self.socket_inode));
+            std::fs::remove_dir_all(&self.socket_dir).unwrap();
+            std::fs::remove_dir_all(&self.root).unwrap();
         }
     }
-    let _cleanup = Cleanup(root.clone(), socket_path.clone());
+    let _cleanup = Cleanup {
+        root: root.clone(), socket_dir: socket_dir.clone(),
+        socket_device: socket_metadata.dev(), socket_inode: socket_metadata.ino(),
+    };
     std::env::set_var("CHARIOX_HOME", &root);
     tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 * 1024 * 1024).build().unwrap().block_on(async {
         let tcp = StdTcpListener::bind("127.0.0.1:0").unwrap();
@@ -45,6 +54,7 @@ fn provider_account_portability_websocket_drill() {
         });
         let app = DaemonApp::bootstrap(config).unwrap();
         assert_eq!(std::fs::metadata("/tmp").unwrap().permissions().mode() & 0o7777, shared_tmp_mode, "kernel fixture must not change shared temporary-directory permissions");
+        assert_eq!(std::fs::metadata(&socket_dir).unwrap().permissions().mode() & 0o777, 0o700);
         let profiles = app.provider_account_profile_registry();
         let mut accounts = Vec::new();
         let mut paths = Vec::new();
@@ -103,4 +113,5 @@ fn provider_account_portability_websocket_drill() {
         timeout(Duration::from_secs(5), server).await.unwrap().unwrap().unwrap();
         result
     });
+    assert_eq!(std::fs::metadata("/tmp").unwrap().permissions().mode() & 0o7777, shared_tmp_mode, "complete portability drill must preserve shared temporary-directory permissions");
 }
