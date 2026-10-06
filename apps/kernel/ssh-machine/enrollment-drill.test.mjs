@@ -124,6 +124,7 @@ test("MP-07/MP-08/MP-11 source-kernel add/remove, stdin redemption, replay refus
   const targetPort = await availablePort()
   const staging = join(h.home,".chariox/dev/md-staging")
   await mkdir(staging,{recursive:true}); await writeFile(join(staging,"sentinel"),"keep")
+  let serviceEnabled = false
   serviceControl = createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk
     const args = JSON.parse(raw)
@@ -132,9 +133,10 @@ test("MP-07/MP-08/MP-11 source-kernel add/remove, stdin redemption, replay refus
     if (args[0] === "show") {
       const unit = join(h.home, ".config/systemd/user", args[1]); let exists = true
       try { await readFile(unit) } catch { exists = false }
-      out = `LoadState=${exists ? "loaded" : "not-found"}\nFragmentPath=${exists ? unit : ""}\nDropInPaths=\n`
+      out = `LoadState=${exists ? "loaded" : "not-found"}\nFragmentPath=${exists ? unit : ""}\nDropInPaths=\nActiveState=${serviceChildren.has("byom-one") ? "active" : "inactive"}\nUnitFileState=${serviceEnabled ? "enabled" : "disabled"}\n`
     }
-    if (args[0] === "enable" && !serviceChildren.has("byom-one")) {
+    if (args[0] === "enable") serviceEnabled = true
+    if (args[0] === "start" && !serviceChildren.has("byom-one")) {
       const targetEnv = { ...sourceEnv, CHARIOX_LOG_DIR:join(staging,"forbidden-logs"), HOME: h.home, PATH: h.targetPath, CHARIOX_HOME: join(h.home, ".chariox/dev/ssh-machines/byom-one"), CHARIOX_KERNEL_PORT: String(targetPort), CHARIOX_MCP_PORT:String(targetPort + 1) }
       const unit = await readFile(join(h.home,".config/systemd/user/chariox-ssh-byom-one.service"),"utf8")
       for (const line of unit.split("\n")) if (line.startsWith("UnsetEnvironment=")) for (const key of line.slice("UnsetEnvironment=".length).split(/\s+/)) delete targetEnv[key]
@@ -142,7 +144,8 @@ test("MP-07/MP-08/MP-11 source-kernel add/remove, stdin redemption, replay refus
       const child = spawn(join(h.home, ".local/share/chariox/ssh-machines/byom-one/current/usr/local/bin/chariox-kernel"), [], { env: targetEnv, stdio: "ignore" })
       children.add(child); serviceChildren.set("byom-one",child); calls.push("start")
     }
-    if (args[0] === "disable") { const child = serviceChildren.get("byom-one"); if (child) { await stopOwned(child); serviceChildren.delete("byom-one") }; calls.push("stop") }
+    if (args[0] === "disable") serviceEnabled = false
+    if (args[0] === "stop" || (args[0] === "disable" && args.includes("--now"))) { const child = serviceChildren.get("byom-one"); if (child) { await stopOwned(child); serviceChildren.delete("byom-one") }; calls.push("stop") }
     res.end(out)
   })
   const controlUrl = await serve(serviceControl)

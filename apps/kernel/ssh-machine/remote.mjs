@@ -99,6 +99,22 @@ async function portFree(port) {
   })
   await new Promise((yes, no) => server.close(e => e ? no(e) : yes()))
 }
+// MP-07 / MP-08 / MP-11: service mutations belong only to this invocation.
+async function serviceState(serviceManager, service) {
+  const info = await serviceManager(["show", service, "--property=ActiveState", "--property=UnitFileState"], true)
+  const fields = Object.fromEntries(info.trim().split("\n").map(line => line.split(/=(.*)/s).slice(0, 2)))
+  if (!["active", "inactive", "failed"].includes(fields.ActiveState) || !["enabled", "disabled", "not-found", ""].includes(fields.UnitFileState)) fail("cannot prove prior service state")
+  return { active: fields.ActiveState === "active", enabled: fields.UnitFileState === "enabled" }
+}
+// A durable removal intent is written only after validating and stopping the owned install.
+async function pendingRemoval(root, marker, serviceManager) {
+  const path = join(root, "removal.json")
+  if (!await metadata(path)) return false
+  if (JSON.stringify(JSON.parse(await regular(path))) !== JSON.stringify(marker)) fail("removal identity differs from owned install")
+  const state = await serviceState(serviceManager, marker.service)
+  if (state.active || state.enabled) fail("pending removal requires an owned stopped, disabled service")
+  return true
+}
 // MP-08 / MP-11: absence is a read-only target fact, never inferred from an SSH failure.
 async function inspectMachine(r, home, stage, serviceManager) {
   const parent = await existingTree(home, ".local/share/chariox/ssh-machines")
@@ -116,7 +132,9 @@ async function inspectMachine(r, home, stage, serviceManager) {
   await directory(root,false)
   const marker = JSON.parse(await regular(join(root,"install.json")))
   if (marker.format !== FORMAT || marker.installId !== r.installId || marker.port !== r.port || marker.service !== service || marker.releaseDigest !== r.releaseDigest || !unit || (fields.FragmentPath && fields.FragmentPath !== unit)) fail("existing install differs")
-  if (digestOf(await regular(unit)) !== marker.unitDigest || await readlink(join(root,"current")) !== `releases/${r.releaseDigest.slice(7)}`) fail("existing install was changed")
+  const removing = await pendingRemoval(root, marker, serviceManager)
+  if ((!removing || await metadata(unit)) && digestOf(await regular(unit)) !== marker.unitDigest) fail("existing install was changed")
+  if (await readlink(join(root,"current")) !== `releases/${r.releaseDigest.slice(7)}`) fail("existing install was changed")
   await directory(join(root,"releases"),false); await directory(join(root,"releases",r.releaseDigest.slice(7)),false)
   await verifyImage(join(root,"releases",r.releaseDigest.slice(7)),r.releaseDigest,root,stage)
   return { installId:r.installId,status:"installed",releaseDigest:r.releaseDigest,enrolled:false }
@@ -151,15 +169,19 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
     const fields = Object.fromEntries(info.trim().split("\n").map(line => line.split(/=(.*)/s).slice(0, 2)))
     if (!["not-found", "loaded"].includes(fields.LoadState) || !Object.hasOwn(fields, "FragmentPath") || !Object.hasOwn(fields, "DropInPaths") || fields.DropInPaths) fail("working systemd --user with no unit overrides is required")
     const rootMeta = await metadata(root)
-    let marker
+    let marker, removing = false
     if (rootMeta) {
       await directory(root, false)
       const expected = ["builder-public-pin", "current", "install.json", "release-public-pin", "releases"]
+      if (await metadata(join(root, "removal.json"))) expected.push("removal.json")
+      expected.sort()
       if (JSON.stringify((await readdir(root)).sort()) !== JSON.stringify(expected)) fail("unexpected material in install root; retain it and resolve ownership before uninstall")
       marker = JSON.parse(await regular(markerPath))
       if (marker.format !== FORMAT || marker.installId !== r.installId || marker.service !== service || marker.port !== r.port || marker.releaseDigest !== r.releaseDigest) fail("existing install identity differs; use explicit upgrade rather than replacing it")
       if (fields.FragmentPath && fields.FragmentPath !== unitPath) fail("service name belongs to another installation")
-      if (digestOf(await regular(unitPath)) !== marker.unitDigest) fail("user service was changed; refusing to control it")
+      removing = await pendingRemoval(root, marker, serviceManager)
+      if ((!removing || await metadata(unitPath)) && digestOf(await regular(unitPath)) !== marker.unitDigest) fail("user service was changed; refusing to control it")
+      if (removing && r.action !== "remove") fail("removal in progress; retry remove before reinstalling")
       const current = await lstat(join(root, "current"))
       if (!current.isSymbolicLink() || await readlink(join(root, "current")) !== `releases/${r.releaseDigest.slice(7)}`) fail("active release pointer was changed")
       await directory(join(root, "releases"), false)
@@ -173,9 +195,14 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
     }
     if (r.action === "stop" || r.action === "remove") {
       if (!marker) fail("no owned install found")
-      await serviceManager(["disable", "--now", service])
+      if (!removing) await serviceManager(["disable", "--now", service])
       if (r.action === "remove") {
-        await rm(unitPath)
+        if (!removing) {
+          const state = await serviceState(serviceManager, service)
+          if (state.active || state.enabled) fail("removal requires an owned stopped, disabled service")
+          await writeFile(join(root, "removal.json"), JSON.stringify(marker), { mode: 0o600, flag: "wx" })
+        }
+        if (await metadata(unitPath)) await rm(unitPath)
         await serviceManager(["daemon-reload"])
         // This marked root contains release bytes/public pins only; mutable runtime state is separate and retained.
         await rm(root, { recursive: true })
@@ -191,12 +218,19 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
       const identity = await invoke(["--owner-managed-enroll-stdin"], enrollment)
       enrollment.ticket = ""
       if (!identity || identity.userId !== enrollment.userId || !identity.kernelId || !identity.machineId || !identity.publicKeyThumbprint) fail("target enrollment identity does not match the owner")
-      await serviceManager(["enable", "--now", service])
+      const prior = await serviceState(serviceManager, service)
+      let enabledHere = false, startedHere = false
       try {
+        if (!prior.enabled) { enabledHere = true; await serviceManager(["enable", service]) }
+        if (!prior.active) { startedHere = true; await serviceManager(["start", service]) }
         const ready = await invoke(["--owner-managed-ready"])
         if (!ready.connected || ["kernelId", "machineId", "userId", "publicKeyThumbprint"].some(k => ready[k] !== identity[k])) fail("target kernel did not become relay-ready with the enrolled identity")
         return { installId: r.installId, status: "ready", releaseDigest: r.releaseDigest, ...Object.fromEntries(["kernelId", "machineId", "userId", "publicKeyThumbprint"].map(k => [k, identity[k]])), ticketConsumed: identity.ticketConsumed === true, connected: true }
-      } catch (error) { await serviceManager(["disable", "--now", service]); throw error }
+      } catch (error) {
+        try { if (startedHere) await serviceManager(["stop", service]) }
+        finally { if (enabledHere) await serviceManager(["disable", service]) }
+        throw error
+      }
     }
     if (marker) return { installId: r.installId, status: "installed", releaseDigest: marker.releaseDigest, enrolled: false }
     await portFree(r.port)

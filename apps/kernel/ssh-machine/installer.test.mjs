@@ -18,7 +18,7 @@ async function harness(t, kernelBytes) {
   for (const [name, p] of [["release.tar.gz", f.archive], ["release-public-pin", f.releasePublicKey], ["builder-public-pin", f.builderPublicKey]]) await copyFile(p, join(stage, name))
   for (const [name, p] of [["extract-release.py", "../../../deploy/managed-kernel/extract-release.py"], ["verify-image-release.mjs", "../../../deploy/managed-kernel/verify-image-release.mjs"], ["path1-service-policy.mjs", "../../../deploy/managed-kernel/path1-service-policy.mjs"]]) await copyFile(new URL(p, import.meta.url), join(stage, name))
   const calls = [], request = { action: "install", installId: "byom-test", port: 55129, releaseDigest: f.releaseDigest }
-  const options = { home, stage, serviceManager: async args => { calls.push(args); return "LoadState=not-found\nFragmentPath=\nDropInPaths=\n" } }
+  const options = { home, stage, serviceManager: async args => { calls.push(args); return "LoadState=not-found\nFragmentPath=\nDropInPaths=\nActiveState=inactive\nUnitFileState=disabled\n" } }
   const root = join(home, ".local/share/chariox/ssh-machines/byom-test")
   return { dir, home, stage, f, calls, request, options, root }
 }
@@ -151,4 +151,72 @@ test("MP-08/MP-11 inspection recognizes published signed installs and refuses ch
   assert.equal((await runMachine({ ...h.request, action:"inspect" }, h.options)).status,"installed")
   await writeFile(join(h.home,".config/systemd/user/chariox-ssh-byom-test.service"),"foreign edited service")
   await assert.rejects(runMachine({ ...h.request, action:"inspect" }, h.options), /changed/)
+})
+
+// MP-07 / MP-08 / MP-11: review round 00:54, fail-first service ownership/recovery cases.
+for (const prior of [{ active: true, enabled: true }, { active: true, enabled: false }, { active: false, enabled: true }, { active: false, enabled: false }]) {
+  test(`MP-08/MP-11 repeat readiness failure restores active=${prior.active} enabled=${prior.enabled}`, async t => {
+    const h = await harness(t); await runMachine(h.request, h.options)
+    let active = prior.active, enabled = prior.enabled
+    const calls = []
+    const serviceManager = async args => {
+      calls.push(args)
+      if (args[0] === "show") return `LoadState=loaded\nFragmentPath=${join(h.home, ".config/systemd/user/chariox-ssh-byom-test.service")}\nDropInPaths=\nActiveState=${active ? "active" : "inactive"}\nUnitFileState=${enabled ? "enabled" : "disabled"}\n`
+      if (args[0] === "enable") { enabled = true; if (args.includes("--now")) active = true }
+      if (args[0] === "disable") { enabled = false; if (args.includes("--now")) active = false }
+      if (args[0] === "start") active = true
+      if (args[0] === "stop") active = false
+    }
+    const enrollment = { ticket: "synthetic-ticket", apiUrl: "http://127.0.0.1:1", userId: "owner" }
+    await assert.rejects(runMachine({ ...h.request, action: "start" }, { ...h.options, enrollment, serviceManager,
+      kernelCommand: async args => ({ kernelId: "kernel", machineId: "machine", userId: "owner", publicKeyThumbprint: "key", connected: args[0] !== "--owner-managed-ready" }),
+    }), /relay-ready/)
+    assert.equal(active, prior.active, "pre-existing running work must survive readiness failure")
+    assert.equal(enabled, prior.enabled, "existing boot enablement must survive readiness failure")
+    if (prior.active && prior.enabled) assert.ok(calls.every(args => args[0] === "show"), "repeat must not mutate existing service")
+  })
+}
+
+test("MP-07/MP-11 removal retries after unit unlink and reload failure, retaining private state", async t => {
+  const h = await harness(t); await runMachine(h.request, h.options)
+  const unit = join(h.home, ".config/systemd/user/chariox-ssh-byom-test.service")
+  const state = join(h.home, ".chariox/dev/ssh-machines/byom-test/sentinel")
+  await writeFile(state, "keep private state")
+  await assert.rejects(runMachine({ ...h.request, action: "remove" }, { ...h.options, serviceManager: async args => {
+    if (args[0] === "daemon-reload") throw new Error("transient reload failure")
+    return h.options.serviceManager(args)
+  } }), /transient reload failure/)
+  await assert.rejects(readFile(unit), { code: "ENOENT" })
+  assert.equal((await runMachine({ ...h.request, action: "inspect" }, h.options)).status, "installed", "inspection must retain published ownership through removal")
+  await assert.rejects(runMachine(h.request, h.options), /removal.*remove/, "pending removal must not silently revive a kernel")
+  assert.equal((await runMachine({ ...h.request, action: "remove" }, h.options)).status, "removed")
+  assert.equal(await readFile(state, "utf8"), "keep private state")
+  assert.equal((await runMachine({ ...h.request, action: "inspect" }, h.options)).status, "absent")
+  assert.equal((await runMachine(h.request, h.options)).status, "installed", "same ID can be installed after completed removal")
+})
+
+test("MP-11 interrupted removal still rejects replacement foreign units and active jobs", async t => {
+  const h = await harness(t); await runMachine(h.request, h.options)
+  const request = { ...h.request, action: "remove" }
+  await assert.rejects(runMachine(request, { ...h.options, serviceManager: async args => {
+    if (args[0] === "daemon-reload") throw new Error("interrupted removal")
+    return h.options.serviceManager(args)
+  } }), /interrupted removal/)
+  const unit = join(h.home, ".config/systemd/user/chariox-ssh-byom-test.service")
+  await writeFile(unit, "foreign replacement")
+  await assert.rejects(runMachine(request, h.options), /changed/)
+  await rm(unit)
+  await assert.rejects(runMachine(request, { ...h.options, serviceManager: async args => {
+    if (args[0] === "show") return "LoadState=loaded\nFragmentPath=\nDropInPaths=\nActiveState=active\nUnitFileState=disabled\n"
+    return h.options.serviceManager(args)
+  } }), /stopped/)
+  assert.equal((await readFile(join(h.root, "install.json"))).length > 0, true)
+})
+
+test("MP-11 a missing unit without proven removal intent cannot be adopted", async t => {
+  const h = await harness(t); await runMachine(h.request, h.options)
+  await rm(join(h.home, ".config/systemd/user/chariox-ssh-byom-test.service"))
+  await assert.rejects(runMachine({ ...h.request, action: "remove" }, h.options), { code: "ENOENT" })
+  await assert.rejects(runMachine({ ...h.request, action: "inspect" }, h.options), { code: "ENOENT" })
+  assert.ok((await readFile(join(h.root, "install.json"))).length)
 })
