@@ -87,3 +87,5 @@ export type * from "./kernel-types.js"
 
 export { roomBrowserArtifactRequest, roomBrowserArtifactMinimumProtocolVersion, type RoomBrowserArtifactOperation } from "./ipc-room-environment-requests.js"
 export * from "./notes.js"
+
+export * from "./user-domain-refusal.js"

@@ -2048,8 +2048,8 @@ mod multidomain_union_tests {
     #[test]
     fn md_notes_room_observation_protocol_74_snapshot_and_hash() {
         use sha2::{Digest, Sha256};
-        assert_eq!(super::RELAY_PEER_PROTOCOL_VERSION, 74);
-        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 427);
+        assert_eq!(super::RELAY_PEER_PROTOCOL_VERSION, 80);
+        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 434);
         let request = serde_json::json!({"kind":"room_browser_controller","session_id":"room-1","slice_id":"slice-1","command":{"kind":"note_observation","target_id":"target-1","document_id":"doc-1","quote":{"exact":"quote","prefix":"before","suffix":"after"}}});
         let response = serde_json::json!({"kind":"room_browser_controller","session_id":"room-1","slice_id":"slice-1","result":{"kind":"note_observation","observation":{"target_id":"target-1","document_id":"doc-1","url":"https://example.test/","selection":null,"anchoring":null}}});
         let decoded: super::RelayPeerRequest = serde_json::from_value(request.clone()).unwrap();
@@ -2072,7 +2072,7 @@ mod notes_protocol_probe_tests {
     #[test]
     fn md_notes_protocol_probe_preserves_legacy_pong_and_pins_union_advertisement() {
         use sha2::{Digest, Sha256};
-        assert_eq!(super::RELAY_PEER_PROTOCOL_VERSION, 74);
+        assert_eq!(super::RELAY_PEER_PROTOCOL_VERSION, 80);
         let current = serde_json::json!({"kind":"pong","value":"md-notes-protocol","daemon_id":"worker-1","relay_peer_protocol_version":74});
         let legacy =
             serde_json::json!({"kind":"pong","value":"md-notes-protocol","daemon_id":"worker-1"});

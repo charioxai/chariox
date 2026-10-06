@@ -46,10 +46,10 @@ test("unknown versions and unrelated requests retain existing transport behavior
 })
 
 
-test("MD-stack user App and browser surfaces require union protocol 427", () => {
+test("MD-stack user App and browser surfaces require union protocol 434", () => {
   for (const name of ["OpenUserAppView", "ListUserAppViews", "CloseUserAppView", "GetUserAppViewFrontend", "CallUserAppView", "SubscribeUserAppViews", "AnswerUserDomainInteraction"]) {
-    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 417), /427/)
-    assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 427))
+    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 417), /434/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 434))
   }
-  assert.throws(() => requireKernelFeatureProtocol({KernelBrowser: {command:{op:"input"}}},416), /427/)
+  assert.throws(() => requireKernelFeatureProtocol({KernelBrowser: {command:{op:"input"}}},416), /434/)
 })

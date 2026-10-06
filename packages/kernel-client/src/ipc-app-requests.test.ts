@@ -192,7 +192,7 @@ test("snapshot restore binds installation, generation and saved identity without
 import { openUserAppViewRequest, listUserAppViewsRequest, closeUserAppViewRequest, getUserAppViewFrontendRequest, callUserAppViewRequest, subscribeUserAppViewsRequest, answerUserDomainInteractionRequest, userAppViewsMinimumProtocolVersion } from "./ipc-app-requests.js"
 
 test("protocol 418 user-domain channel and subscription supply no session or caller authority", () => {
-  assert.equal(userAppViewsMinimumProtocolVersion, 427)
+  assert.equal(userAppViewsMinimumProtocolVersion, 434)
   assert.deepEqual(openUserAppViewRequest("todo"), { OpenUserAppView: { installation_id: "todo" } })
   assert.deepEqual(listUserAppViewsRequest(), { ListUserAppViews: {} })
   assert.deepEqual(closeUserAppViewRequest("v"), { CloseUserAppView: { view_id: "v" } })

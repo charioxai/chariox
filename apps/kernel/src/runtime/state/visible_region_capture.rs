@@ -27,7 +27,7 @@ impl KernelRuntimeState {
         request: CaptureVisibleRegionRequest,
     ) -> Result<VisibleRegionCapture, DaemonError> {
         if !command.is_terminal_caller() {
-            return Err(capture_error("Authenticated human terminal required"));
+            return Err(DaemonError::UserDomainRefused { reason: crate::error::UserDomainRefusalReason::NotGranted });
         }
         if request.capture_id.is_empty()
             || request.capture_id.len() > 64
@@ -107,7 +107,7 @@ impl KernelRuntimeState {
                                 .user_views()
                                 .get(&owner, view_id)
                                 .ok_or_else(|| {
-                                    capture_error("App view unavailable for this owner")
+                                    DaemonError::UserDomainRefused { reason: crate::error::UserDomainRefusalReason::NotGranted }
                                 })?;
                             let browser = view.browser.ok_or_else(|| {
                                 capture_error(
@@ -115,7 +115,7 @@ impl KernelRuntimeState {
                                 )
                             })?;
                             if browser.generation != *generation {
-                                return Err(capture_error("Stale App host generation"));
+                                return Err(DaemonError::UserDomainRefused { reason: crate::error::UserDomainRefusalReason::StaleEpoch });
                             }
                             (browser.tab_id, browser.generation)
                         }
