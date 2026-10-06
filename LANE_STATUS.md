@@ -1,3 +1,9 @@
+# MP-11 phase23 supervisor cleanup follow-up
+
+2026-10-06: coordinator 22:45 P2 mapped to kernel-owned native capture pool and Xauthority reclamation. Native display uses the existing private kernel packet directory; durable Chromium profile remains separate. Fixed-slot cleanup validates owner/private mode/type/link count/size through retained directory FDs, never recurses or reads authority contents. Fail-first Rust check reproduced pool/authority leak; extended real-binary component crash drill inspects persistent and transient paths before harness removal. Not real live acceptance.
+
+MP-11 allocation audit: SysV capture uses IPC_RMID after attach; X resources die with owned X server; COW encoder mappings close on every request; encoder handoffs and stripe packets already kernel-owned; native pool + display.xauth now kernel-owned too. Durable profile/tabs remain intentional persistence. Current security-anchor review is still coordinator-owned.
+
 # MP-08/MP-10/MP-11 — phase23 IN PROGRESS
 
 2026-10-06: required base7d09b7ae761f4cfe0912ca61eb957be35fb59db0; md/display-perf. Native protected motion now uses a leased private COW transform in Python; no Node full raster read/write per frame. PNG CRC stays checked with native zlib. Native exact quiet30ms; exact contiguous patches avoid full re-verification; small PNG avoids redundant tiles. Supplemental60Hz wheel instrument and opt-in existing whole-video capability for owner VAAPI comparison. Serialized client/protocol shapes unchanged447/90.

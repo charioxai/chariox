@@ -13,14 +13,64 @@ pub(super) struct DisplayPackets {
 
 impl DisplayPackets {
     #[cfg(unix)]
-    fn reclaim_encoder_raster(&self, name: &str) {
+    fn reclaim_private_files(directory: &File, names: &[&str], limit: u64) -> bool {
         use std::os::fd::{AsRawFd, FromRawFd};
         use std::os::unix::fs::MetadataExt;
-        // Node mkdtemp appends exactly six ASCII letters/digits. Never walk
-        // arbitrary directories or follow a substituted directory/file link.
-        if name.len() != 14
-            || !name.starts_with("encoder-")
-            || !name.bytes().skip(8).all(|b| b.is_ascii_alphanumeric())
+        let mut files = Vec::new();
+        for name in names {
+            let name = std::ffi::CString::new(*name).unwrap();
+            let fd = unsafe {
+                libc::openat(
+                    directory.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+                )
+            };
+            if fd < 0 {
+                if std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT) {
+                    continue;
+                }
+                return false;
+            }
+            let file = unsafe { File::from_raw_fd(fd) };
+            let Ok(info) = file.metadata() else {
+                return false;
+            };
+            if !info.is_file()
+                || info.uid() != unsafe { libc::geteuid() }
+                || info.mode() & 0o077 != 0
+                || info.nlink() != 1
+                || info.len() > limit
+            {
+                return false;
+            }
+            files.push((name, file));
+        }
+        // Validate every fixed slot before removing any; never read authority bytes.
+        for (name, _file) in files {
+            unsafe {
+                libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0);
+            }
+        }
+        true
+    }
+
+    #[cfg(unix)]
+    fn reclaim_rasters(&self, name: &str) {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::os::unix::fs::MetadataExt;
+        let (prefix, files): (&str, &[&str]) = if name.starts_with("encoder-") {
+            ("encoder-", &["raster"])
+        } else if name.starts_with("raster-") {
+            ("raster-", &["0", "1", "2"])
+        } else {
+            return;
+        };
+        if name.len() != prefix.len() + 6
+            || !name
+                .bytes()
+                .skip(prefix.len())
+                .all(|b| b.is_ascii_alphanumeric())
         {
             return;
         }
@@ -44,32 +94,10 @@ impl DisplayPackets {
         if info.uid() != unsafe { libc::geteuid() } || info.mode() & 0o077 != 0 {
             return;
         }
-        let fd = unsafe {
-            libc::openat(
-                directory.as_raw_fd(),
-                c"raster".as_ptr(),
-                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
-            )
-        };
-        if fd >= 0 {
-            let raster = unsafe { File::from_raw_fd(fd) };
-            let Ok(info) = raster.metadata() else {
-                return;
-            };
-            if !info.is_file()
-                || info.uid() != unsafe { libc::geteuid() }
-                || info.mode() & 0o077 != 0
-                || info.nlink() != 1
-                || info.len() > 2560 * 1600 * 4
-            {
-                return;
-            }
-            unsafe {
-                libc::unlinkat(directory.as_raw_fd(), c"raster".as_ptr(), 0);
-            }
+        if !Self::reclaim_private_files(&directory, files, 2560 * 1600 * 4) {
+            return;
         }
-        // An empty partial handoff is disposable too. Unknown contents keep
-        // the directory intact; removal is never recursive.
+        // Unknown contents prevent removal. Never recurse or follow links.
         unsafe {
             libc::unlinkat(
                 self.directory.as_raw_fd(),
@@ -227,7 +255,10 @@ impl Drop for DisplayPackets {
             if let Ok(entries) = std::fs::read_dir(&self.root) {
                 for entry in entries.flatten() {
                     let name = entry.file_name().to_string_lossy().into_owned();
-                    self.reclaim_encoder_raster(&name);
+                    self.reclaim_rasters(&name);
+                    if name == "display.xauth" {
+                        Self::reclaim_private_files(&self.directory, &["display.xauth"], 4096);
+                    }
                     if name.len() == 37
                         && name.ends_with(".json")
                         && name.bytes().take(32).all(|b| b.is_ascii_hexdigit())
@@ -290,66 +321,93 @@ mod tests {
         );
     }
     #[test]
+    fn mp11_native_packets_reclaim_capture_pool_and_xauth_after_death() {
+        let spool = DisplayPackets::create().unwrap();
+        let root = spool.root.clone();
+        let directory = root.join("raster-Ab1234");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for name in ["0", "1", "2"] {
+            let file = directory.join(name);
+            std::fs::write(&file, b"MP-11 owned capture").unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let auth = root.join("display.xauth");
+        std::fs::write(&auth, b"MP-11 synthetic authority").unwrap();
+        std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600)).unwrap();
+        drop(spool);
+        let reclaimed = !root.exists();
+        if !reclaimed {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        assert!(
+            reclaimed,
+            "MP-11: supervisor death leaked native pool/xauth"
+        );
+    }
+    #[test]
     fn mp11_native_packets_cleanup_rejects_unvalidated_raster_entries() {
-        for case in [
-            "directory_link",
-            "file_link",
-            "hardlink",
-            "permissions",
-            "oversize",
-            "unknown",
-        ] {
-            let spool = DisplayPackets::create().unwrap();
-            let root = spool.root.clone();
-            let outside = DisplayPackets::create().unwrap();
-            let external = outside.root.join("retained");
-            std::fs::write(&external, b"MP-11 retained public sentinel").unwrap();
-            let directory = root.join("encoder-Ab1234");
-            if case == "directory_link" {
-                std::os::unix::fs::symlink(&outside.root, &directory).unwrap();
-            } else {
-                std::fs::create_dir(&directory).unwrap();
-                std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
-                    .unwrap();
-                let raster = directory.join("raster");
-                match case {
-                    "file_link" => std::os::unix::fs::symlink(&external, &raster).unwrap(),
-                    "hardlink" => std::fs::hard_link(&external, &raster).unwrap(),
-                    "unknown" => {
-                        std::fs::write(directory.join("other"), b"retain").unwrap();
-                    }
-                    _ => {
-                        let file = OpenOptions::new()
-                            .create_new(true)
-                            .write(true)
-                            .open(&raster)
-                            .unwrap();
-                        file.set_len(if case == "oversize" {
-                            2560 * 1600 * 4 + 1
-                        } else {
-                            16
-                        })
+        for prefix in ["encoder-", "raster-"] {
+            for case in [
+                "directory_link",
+                "file_link",
+                "hardlink",
+                "permissions",
+                "oversize",
+                "unknown",
+            ] {
+                let spool = DisplayPackets::create().unwrap();
+                let root = spool.root.clone();
+                let outside = DisplayPackets::create().unwrap();
+                let external = outside.root.join("retained");
+                std::fs::write(&external, b"MP-11 retained public sentinel").unwrap();
+                let directory = root.join(format!("{prefix}Ab1234"));
+                if case == "directory_link" {
+                    std::os::unix::fs::symlink(&outside.root, &directory).unwrap();
+                } else {
+                    std::fs::create_dir(&directory).unwrap();
+                    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
                         .unwrap();
-                        std::fs::set_permissions(
-                            &raster,
-                            std::fs::Permissions::from_mode(if case == "permissions" {
-                                0o644
+                    let raster = directory.join(if prefix == "raster-" { "0" } else { "raster" });
+                    match case {
+                        "file_link" => std::os::unix::fs::symlink(&external, &raster).unwrap(),
+                        "hardlink" => std::fs::hard_link(&external, &raster).unwrap(),
+                        "unknown" => {
+                            std::fs::write(directory.join("other"), b"retain").unwrap();
+                        }
+                        _ => {
+                            let file = OpenOptions::new()
+                                .create_new(true)
+                                .write(true)
+                                .open(&raster)
+                                .unwrap();
+                            file.set_len(if case == "oversize" {
+                                2560 * 1600 * 4 + 1
                             } else {
-                                0o600
-                            }),
-                        )
-                        .unwrap();
+                                16
+                            })
+                            .unwrap();
+                            std::fs::set_permissions(
+                                &raster,
+                                std::fs::Permissions::from_mode(if case == "permissions" {
+                                    0o644
+                                } else {
+                                    0o600
+                                }),
+                            )
+                            .unwrap();
+                        }
                     }
                 }
+                drop(spool);
+                assert!(directory.symlink_metadata().is_ok(), "{case}");
+                assert_eq!(
+                    std::fs::read(&external).unwrap(),
+                    b"MP-11 retained public sentinel"
+                );
+                std::fs::remove_dir_all(root).unwrap();
+                std::fs::remove_file(external).unwrap();
             }
-            drop(spool);
-            assert!(directory.symlink_metadata().is_ok(), "{case}");
-            assert_eq!(
-                std::fs::read(&external).unwrap(),
-                b"MP-11 retained public sentinel"
-            );
-            std::fs::remove_dir_all(root).unwrap();
-            std::fs::remove_file(external).unwrap();
         }
         let spool = DisplayPackets::create().unwrap();
         let root = spool.root.clone();
@@ -361,6 +419,53 @@ mod tests {
         .unwrap();
         drop(spool);
         assert!(!root.exists(), "empty partial handoff must be reclaimed");
+    }
+    #[test]
+    fn mp11_native_packets_preserve_unsafe_authority_and_partial_pool() {
+        for case in ["symlink", "permissions", "oversize", "hardlink"] {
+            let spool = DisplayPackets::create().unwrap();
+            let root = spool.root.clone();
+            let auth = root.join("display.xauth");
+            if case == "symlink" {
+                std::os::unix::fs::symlink("/dev/null", &auth).unwrap();
+            } else {
+                let file = OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&auth)
+                    .unwrap();
+                file.set_len(if case == "oversize" { 4097 } else { 16 })
+                    .unwrap();
+                std::fs::set_permissions(
+                    &auth,
+                    std::fs::Permissions::from_mode(if case == "permissions" {
+                        0o644
+                    } else {
+                        0o600
+                    }),
+                )
+                .unwrap();
+                if case == "hardlink" {
+                    std::fs::hard_link(&auth, root.join("retained")).unwrap();
+                }
+            }
+            drop(spool);
+            assert!(auth.symlink_metadata().is_ok(), "{case}");
+            std::fs::remove_dir_all(root).unwrap();
+        }
+        let spool = DisplayPackets::create().unwrap();
+        let root = spool.root.clone();
+        let directory = root.join("raster-Ab1234");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(directory.join("0"), b"partial").unwrap();
+        std::fs::set_permissions(directory.join("0"), std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+        drop(spool);
+        assert!(
+            !root.exists(),
+            "MP-11 partial native pool must be reclaimed"
+        );
     }
     fn packet(spool: &DisplayPackets) -> (PathBuf, Value) {
         let name = format!("{}.json", format!("{:032x}", rand::random::<u128>()));

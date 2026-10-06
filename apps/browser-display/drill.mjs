@@ -385,9 +385,18 @@ try {
  // kernel reclamation before the drill removes its disposable state parent.
  if(process.env.MD_SUPERVISOR_CRASH==='1')try{
   const packetRoots=(await readdir(shortTmp)).filter(name=>/^chariox-display-[a-f0-9]{32}$/.test(name)).map(name=>path.join(shortTmp,name));
-  let rasterBytes=0;
-  for(const directory of packetRoots)for(const name of await readdir(directory))if(/^encoder-[A-Za-z0-9]{6}$/.test(name))rasterBytes+=(await stat(path.join(directory,name,'raster'))).size;
-  if(!rasterBytes)throw Error('MP-11: abrupt supervisor drill did not create encoder rasters');
+  const browserRoot=path.join(home,'chariox','kernel-browser');
+  const profileRoots=(await readdir(browserRoot)).filter(name=>/^[a-f0-9]{64}$/.test(name)).map(name=>path.join(browserRoot,name));
+  const poolFiles=[],authFiles=[],profiles=[];let rasterBytes=0;
+  for(const directory of [...packetRoots,...profileRoots])for(const name of await readdir(directory)){
+   if(/^(encoder|raster)-[A-Za-z0-9]{6}$/.test(name))for(const file of name.startsWith('raster-')?['0','1','2']:['raster']){
+    const filename=path.join(directory,name,file);const info=await stat(filename).catch(()=>null);
+    if(info){poolFiles.push(filename);rasterBytes+=info.size;}
+   }
+   if(name==='display.xauth')authFiles.push(path.join(directory,name));
+   if(name==='profile')profiles.push(path.join(directory,name));
+  }
+  if(!rasterBytes||!profiles.length)throw Error('MP-11: abrupt supervisor drill did not create capture rasters and durable profile');
   const supervisors=[];
   for(const name of await readdir('/proc'))if(/^\d+$/.test(name))try{
    const pid=Number(name),command=readFileSync(`/proc/${pid}/cmdline`,'utf8').split('\0');
@@ -395,7 +404,7 @@ try {
   }catch{}
   if(supervisors.length!==1||!Number.isSafeInteger(supervisors[0])||supervisors[0]<=1)throw Error('MP-11: unsafe or ambiguous owned supervisor PID');
   process.kill(supervisors[0],'SIGKILL');
-  receipt.supervisor_crash={raster_bytes:rasterBytes,packet_roots:packetRoots,owned_supervisor_pid:supervisors[0]};
+  receipt.supervisor_crash={raster_bytes:rasterBytes,packet_roots:packetRoots,pool_files:poolFiles,auth_files:authFiles,durable_profiles:profiles,owned_supervisor_pid:supervisors[0]};
  }catch(error){receipt.cleanup.push(error.message);receipt.status='RED';process.exitCode=1}
 
  if(!receipt.supervisor_crash)await page.evaluate(()=>mdStream.close());
@@ -434,7 +443,12 @@ finally {
  if(receipt.supervisor_crash){
   receipt.supervisor_crash.remaining_packet_roots=[];
   for(const directory of receipt.supervisor_crash.packet_roots)try{await stat(directory);receipt.supervisor_crash.remaining_packet_roots.push(directory)}catch(error){if(error.code!=='ENOENT')throw error}
-  if(receipt.supervisor_crash.remaining_packet_roots.length){receipt.cleanup.push('MP-11: supervisor death leaked reusable encoder raster');receipt.status='RED';process.exitCode=1}
+  receipt.supervisor_crash.remaining_transient_files=[];
+  for(const file of [...receipt.supervisor_crash.pool_files,...receipt.supervisor_crash.auth_files])if(await stat(file).catch(()=>null))receipt.supervisor_crash.remaining_transient_files.push(file);
+  receipt.supervisor_crash.durable_profiles_retained=true;
+  for(const profile of receipt.supervisor_crash.durable_profiles)if(!(await stat(profile).catch(()=>null))?.isDirectory())receipt.supervisor_crash.durable_profiles_retained=false;
+  if(!receipt.supervisor_crash.durable_profiles_retained)throw Error('MP-11: supervisor cleanup removed durable browser profile');
+  if(receipt.supervisor_crash.remaining_packet_roots.length||receipt.supervisor_crash.remaining_transient_files.length){receipt.cleanup.push('MP-11: supervisor death leaked reusable encoder raster');receipt.status='RED';process.exitCode=1}
  }
  // Read only our non-secret, fixed-label diagnostic files before disposing state.
  const traces=[];

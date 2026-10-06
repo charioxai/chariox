@@ -68,7 +68,8 @@ export class HostChromium {
     }
     const binary=await executable(environment);
     if(process.platform==='linux'&&environment.CHARIOX_KERNEL_BROWSER_DISPLAY==='1'&&environment.CHARIOX_KERNEL_BROWSER_HEADLESS!=='1'){
-      this.display=new OwnedDisplay(this.root);
+      // MP-11: the kernel reclaims this transient root even after supervisor SIGKILL.
+      this.display=new OwnedDisplay(environment.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT || this.root);
       try{environment={...environment,...await this.display.start()};}catch{this.display=null;}
     }
     const child = spawn(binary, launchArguments(profile,
