@@ -110,7 +110,10 @@ fn shell_word_input(text: &str) -> String {
     let mut quote = None;
     let mut escaped = false;
     for ch in text.chars() {
-        if quote.is_none() && !escaped && matches!(ch, ';' | '|' | '&' | '(' | ')' | '\n') {
+        if quote.is_none() && !escaped && ch == '\n' {
+            // MP-11: preserve comment termination, including a script shebang.
+            input.push_str(" ; \n");
+        } else if quote.is_none() && !escaped && matches!(ch, ';' | '|' | '&' | '(' | ')') {
             input.push_str(" ; ");
         } else {
             input.push(if quote.is_none() && !escaped && matches!(ch, '<' | '>') {
@@ -207,7 +210,11 @@ fn inspect_words(text: &str, depth: usize) -> bool {
         return true;
     }
     let Ok(words) = shell_words::split(&shell_word_input(text)) else {
-        return false; // MP-11: raw candidates above remain checked for non-shell files.
+        // MP-11: a malformed later line must not disable decodable command
+        // checks earlier in any free-form file. Known shell files additionally
+        // fail closed on whole-file malformed syntax through unsupported_shell.
+        return text.contains('\n')
+            && (depth >= 4 || text.lines().any(|line| inspect_words(line, depth + 1)));
     };
     command_credentials(&words)
         || words.iter().any(|word| {
@@ -243,6 +250,15 @@ pub(super) fn credential_text(text: &str) -> bool {
 
 pub(super) fn unsupported_shell(path: &str, text: &str) -> bool {
     // MP-11: do not admit malformed shell files using only the lexical fallback.
-    matches!(path.rsplit('.').next(), Some("sh" | "bash" | "zsh"))
+    (matches!(path.rsplit('.').next(), Some("sh" | "bash" | "zsh"))
+        || text.lines().next().is_some_and(|line| {
+            line.starts_with("#!")
+                && line.split_whitespace().any(|word| {
+                    matches!(
+                        word.trim_start_matches("#!").rsplit('/').next(),
+                        Some("sh" | "bash" | "zsh")
+                    )
+                })
+        }))
         && shell_words::split(&shell_word_input(text)).is_err()
 }

@@ -1,13 +1,16 @@
 //! MP-08 / MP-11: fail-closed checks before packaging and before target mutation.
+#[path = "credential_free/config.rs"]
+mod config;
 #[path = "credential_free/json.rs"]
 mod json;
 #[path = "credential_free/shell.rs"]
 mod shell;
 #[path = "credential_free/text.rs"]
 mod text;
+pub(crate) use config::exportable_mcp;
 use shell::{credential_text, unsupported_shell};
 
-use super::kernel::{KernelContextPayload, KernelExtensionDependency};
+use super::kernel::KernelContextPayload;
 use super::owner_managed::admission_error;
 use crate::error::DaemonError;
 use serde_json::Value;
@@ -48,21 +51,20 @@ fn credential_url(url: &url::Url) -> bool {
 
 pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError> {
     let name = path.to_ascii_lowercase();
-    if crate::project_environment::secret_looking_project_path(&name)
+    if text::credential_format(path)
+        || credential_text(path)
+        || crate::project_environment::secret_looking_project_path(&name)
         || name.split('/').any(|part| {
             matches!(
                 part,
                 "auth.json" | ".git-credentials" | ".netrc" | "vault.json" | "vault" | "keys"
             )
         })
-        || bytes
-            .windows(b"PRIVATE KEY-----".len())
-            .any(|window| window == b"PRIVATE KEY-----")
     {
         return Err(refused());
     }
     let text = text::decode(bytes)?;
-    if text.contains("PRIVATE KEY-----") {
+    if text::credential_format(&text) {
         return Err(refused());
     }
     // Inspect valid JSON structurally: object keys may name dependencies or
@@ -84,18 +86,7 @@ pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError
 }
 
 pub(crate) fn validate_kernel_payload(payload: &KernelContextPayload) -> Result<(), DaemonError> {
-    if payload.vault.is_some()
-        || payload
-            .dependencies
-            .iter()
-            .any(|dependency| matches!(dependency, KernelExtensionDependency::Credential { .. }))
-    {
-        return Err(refused());
-    }
-    // MP-11: inspect decoded package files as well as metadata; never echo content.
-    let value = serde_json::to_value((&payload.extensions, &payload.dependencies))
-        .map_err(|_| refused())?;
-    json::validate(&value, json::Role::Fields)
+    config::validate(payload)
 }
 
 struct ScanRoot(PathBuf);

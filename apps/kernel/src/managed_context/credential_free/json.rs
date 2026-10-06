@@ -1,5 +1,5 @@
 //! MP-08/MP-11: JSON keys are classified by schema role; values stay inspected.
-use super::{credential_text, credential_url, refused, validate_bytes, MAX_FILE};
+use super::{credential_text, credential_url, refused};
 use crate::error::DaemonError;
 use base64::Engine;
 use serde_json::Value;
@@ -104,7 +104,8 @@ pub(super) fn validate(value: &Value, role: Role) -> Result<(), DaemonError> {
                 // Names in package dependency dictionaries and lockfile entry maps
                 // are identifiers, not authentication field names. Still inspect
                 // names for embedded assignments/URLs and recurse into all values.
-                if credential_text(key)
+                if super::text::credential_format(key)
+                    || credential_text(key)
                     || url::Url::parse(key).is_ok_and(|url| credential_url(&url))
                 {
                     return Err(refused());
@@ -121,24 +122,7 @@ pub(super) fn validate(value: &Value, role: Role) -> Result<(), DaemonError> {
                 if matches!(role, Role::LockEntry) && key == "integrity" && integrity(value) {
                     continue;
                 }
-                if key == "path" && !role.names() {
-                    validate_bytes(value.as_str().ok_or_else(refused)?, b"")?;
-                }
-                if matches!(
-                    key.as_str(),
-                    "content_base64" | "contentBase64" | "source_base64"
-                ) && !role.names()
-                {
-                    let decoded = base64::engine::general_purpose::STANDARD
-                        .decode(value.as_str().ok_or_else(refused)?)
-                        .map_err(|_| refused())?;
-                    if decoded.len() as u64 > MAX_FILE {
-                        return Err(refused());
-                    }
-                    validate_bytes("package-content", &decoded)?;
-                } else {
-                    validate(value, role.child(key))?;
-                }
+                validate(value, role.child(key))?;
             }
         }
         Value::Array(values) => {
@@ -147,7 +131,7 @@ pub(super) fn validate(value: &Value, role: Role) -> Result<(), DaemonError> {
             }
         }
         Value::String(text) => {
-            if text.contains("PRIVATE KEY-----")
+            if super::text::credential_format(text)
                 || credential_text(text)
                 || url::Url::parse(text).is_ok_and(|url| credential_url(&url))
             {

@@ -167,6 +167,7 @@ fn export_kernel_context_mode(
         sources.original_mcp_root.as_deref(),
         &mut extensions,
         &mut budget,
+        without_credentials,
     )?;
     export_skills(&sources.skill_root, &mut extensions, &mut budget)?;
     export_scripts(&sources.script_root, &mut extensions, &mut budget)?;
@@ -258,9 +259,15 @@ fn export_mcps(
     original_root: Option<&Path>,
     extensions: &mut Vec<KernelExtensionSnapshot>,
     budget: &mut SnapshotMemoryBudget,
+    without_credentials: bool,
 ) -> Result<(), DaemonError> {
     let registry = crate::mcp::CharioxMcpRegistry::new(vec![root.to_path_buf()]);
     for config in registry.list()? {
+        let config = if without_credentials {
+            crate::managed_context::credential_free::exportable_mcp(&config)
+        } else {
+            config
+        };
         let (config, runtime) = export_portable_mcp(root, original_root, config)?;
         let name = config.name.clone();
         let definition = KernelExtensionDefinition::Mcp {
