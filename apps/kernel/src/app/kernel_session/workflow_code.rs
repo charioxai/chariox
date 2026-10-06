@@ -556,6 +556,17 @@ impl<'a> KernelSessionService<'a> {
             );
         }
         for node in &definition.nodes {
+            if self.app.config().room_agent_tools
+                && caller_metaagent_id.is_some()
+                && !node.extensions.is_empty()
+            {
+                push_workflow_code_target_validation_error(
+                    validation,
+                    "unauthorized_extension_provisioning",
+                    "PR1 room workflows cannot provision capability grants; use owner-admitted capabilities".to_owned(),
+                    Some(node.handle.clone()),
+                );
+            }
             match &node.agent {
                 WorkflowCodeAgentBinding::Create(agent) => {
                     let provider = agent.provider.trim();
