@@ -83,10 +83,10 @@ test("MP-11: revocation closes idle and in-flight grant streams without another 
   assert(!host.streams.has(idle.subscription_id));
 }));
 
-test("MD-2: native launch keeps sandbox and uses a separate dynamic loopback profile", () => {
+test("MD-2: native launch keeps sandbox and a private inherited CDP pipe", () => {
   const args = launchArguments("/tmp/private-profile", true);
-  assert(args.includes("--remote-debugging-port=0"));
-  assert(args.includes("--remote-debugging-address=127.0.0.1"));
+  assert(args.includes("--remote-debugging-pipe"));
+  assert(!args.some(arg => /remote-debugging-(port|address)/.test(arg)));
   assert(args.includes("--user-data-dir=/tmp/private-profile"));
   assert(!args.some(arg => /no-sandbox|disable-setuid-sandbox/.test(arg)));
 });
@@ -632,4 +632,19 @@ test('MP-11: only pre-dispatch mirror epoch refusal survives host error sanitiza
     const rejected=await host.handle({id:'other',method:'host.browser',params:{op:'input'}});
     assert.equal(rejected.error.message,'MD-2: host browser operation failed; refresh state or check host browser readiness');
   }
+}));
+
+test('private CDP pipe loss retires the browser generation even while child is live', () => using(async ({host,chromium,connection}) => {
+  let open=true;
+  chromium.connection=connection;
+  connection.isOpen=()=>open;
+  const start=chromium.start;
+  chromium.start=async()=>{open=true;return start()};
+  const before=await host.request({op:'open',url:'https://example.com/'});
+  open=false;
+  await assert.rejects(host.request({op:'state'}),{code:'browser_unavailable'});
+  const after=await host.request({op:'start'});
+  assert.equal(after.generation,before.generation+1);
+  assert.equal(after.tabs[0].tab_id,before.tab_id);
+  await assert.rejects(host.request({op:'screenshot',tab_id:before.tab_id,generation:before.generation}),/stale/);
 }));

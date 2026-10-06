@@ -18,12 +18,21 @@ function installNoteObserver() {
     }
     return result;
   };
+  // A shadow tree inherits the observation boundary of every shadow host.
+  // Isolated-world DOM methods cannot be replaced by page scripts.
+  const protectedElement = element => {
+    for (let current=element;current;current=current.getRootNode?.()?.host) {
+      if (current.closest('script,style,noscript,input,textarea,[data-chariox-secret],[data-chariox-observation-protected]')) return true;
+    }
+    return false;
+  };
   const index = (root=document.body??document.documentElement) => {
     const nodes = [];
     let text = "";
+    if (root instanceof ShadowRoot && protectedElement(root.host)) return {nodes,text};
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      if (node.parentElement?.closest('script,style,noscript,input,textarea,[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')) continue;
+      if (protectedElement(node.parentElement)) continue;
       const range = document.createRange(); range.selectNodeContents(node);
       if (!range.getClientRects().length) continue;
       if (text.length + node.length > maxText) return null;

@@ -3,6 +3,7 @@ import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { displayTiming, timestamp } from './kernel-browser-timing.mjs';
 import { BrowserCdpClient, isTrustedStaleReferenceError } from "./browser-controller-cdp.mjs";
@@ -34,7 +35,7 @@ export function navigationUrl(raw) {
 }
 
 export class KernelBrowserHost {
-  constructor(root, { chromium = new HostChromium(root), browserFactory = endpoint => new BrowserCdpClient({ debuggerEndpoint: endpoint }) } = {}) {
+  constructor(root, { chromium = new HostChromium(root), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection }) } = {}) {
     this.root = root;
     this.timing = displayTiming(root);
     this.chromium = chromium;
@@ -80,7 +81,8 @@ export class KernelBrowserHost {
   }
   async start({ signal, allowStart = true } = {}) {
     assertNotCancelled(signal);
-    if (this.browser && this.chromium.child?.exitCode === null && this.chromium.child?.signalCode === null) return;
+    if (this.browser && this.chromium.child?.exitCode === null && this.chromium.child?.signalCode === null
+      && this.chromium.connection?.isOpen() !== false) return;
     if (!allowStart) throw new BrowserActionError("browser_unavailable", "MP-11: user browser is stopped or unavailable; explicitly start/open the browser");
     for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
@@ -99,9 +101,9 @@ export class KernelBrowserHost {
       throw new Error("MD-2: invalid browser tab registry");
     }
     assertNotCancelled(signal);
-    const endpoint = await this.chromium.start();
+    const connection = await this.chromium.start();
     assertNotCancelled(signal);
-    this.browser = this.browserFactory(endpoint);
+    this.browser = this.browserFactory(connection);
     this.browser.protectedValues = new Set(this.protection.values);
     this.generation = saved.generation + 1;
     // Publish the new generation before any restoration, so old references never revive.
@@ -484,7 +486,7 @@ export class KernelBrowserHost {
   }
 }
 
-if (process.argv[2] === "stdio") {
+if (process.argv[2] === "stdio" && process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const host = new KernelBrowserHost(process.argv[3]);
   let closing = false;
   const stop = async () => { if (closing) return; closing = true; await host.stop(); process.exit(0); };
