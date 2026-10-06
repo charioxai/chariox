@@ -135,14 +135,14 @@ try {
  kernel=await launchOwned(process.env.MD_BINARY_LOADER || path.join(root,'kernel-tests'),[...(process.env.MD_BINARY_LOADER ? ['--library-path',process.env.MD_BINARY_LIBS,path.join(root,'kernel-tests')] : []),'--ignored','--exact','runtime::router::tests::kernel_browser::display::kernel_browser_display_protocol_drill','--nocapture'],{uid:runUid,gid:runGid,detached:true,cwd:root,env:{...override,PATH:runtimePath,HOME:home,TMPDIR:shortTmp,DISPLAY:`:${screen.trim()}`,CHARIOX_HOME:path.join(home,'chariox'),CHARIOX_LOG_DIR:path.join(home,'logs'),CHARIOX_DISPLAY_DRILL_ROOT:home,CHARIOX_DISPLAY_FIXTURE_URL:`${origin}/${workload}`,CHARIOX_KERNEL_BROWSER_EXECUTABLE:chrome,CHARIOX_KERNEL_BROWSER_DISPLAY:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_BROWSER_DISPLAY_GEOMETRY:process.env.MD_GEOMETRY,CHARIOX_BROWSER_DISPLAY_SOFTWARE:process.env.MD_SOFTWARE,CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER:process.env.MD_ENCODER,CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER:openh264Adapter,CHARIOX_BROWSER_DISPLAY_PYTHON:pythonWrapper},stdio:['ignore','pipe','pipe']});groups.push(kernel.pid);await cpu.track(kernel.pid);
  kernel.stdout.on('data',b=>log.push(b));kernel.stderr.on('data',b=>log.push(b));
  kernelExit=waitChild(kernel);
+ ready=await until(async()=>{checkChild(kernel,'kernel');try{return JSON.parse(await readFile(path.join(home,'ready.json'),'utf8'))}catch{return null}},'focused MCP opens user-domain tab',45000);
+ receipt.protocol=ready.protocol;receipt.opened_by=ready.opened_by;
  if(process.env.MD_KERNEL_PERF){
   if(!path.isAbsolute(process.env.MD_KERNEL_PERF))throw Error('MP-10: absolute profiler executable required');
   // Sample instruction addresses only; never capture stacks/runtime key bytes.
-  kernelProfiler=await launchOwned(process.env.MD_KERNEL_PERF,['record','-q','-e','cpu-clock','-F','99','-p',String(kernel.pid),'-o',path.join(output,'kernel.perf.data')],{detached:true,stdio:'ignore',env:{PATH:runtimePath,...(process.env.MD_PERF_LIBS?{LD_LIBRARY_PATH:process.env.MD_PERF_LIBS}:{})}});
+  kernelProfiler=await launchOwned(process.env.MD_KERNEL_PERF,['record','-q','--no-inherit','-e','cpu-clock','-F','99','-p',String(kernel.pid),'-o',path.join(output,'kernel.perf.data')],{detached:true,stdio:'ignore',env:{PATH:runtimePath,...(process.env.MD_PERF_LIBS?{LD_LIBRARY_PATH:process.env.MD_PERF_LIBS}:{})}});
   receipt.kernel_profiling='MP-10: instruction-only cpu-clock samples of this owned kernel; no stack or memory capture';
  }
- ready=await until(async()=>{checkChild(kernel,'kernel');try{return JSON.parse(await readFile(path.join(home,'ready.json'),'utf8'))}catch{return null}},'focused MCP opens user-domain tab',45000);
- receipt.protocol=ready.protocol;receipt.opened_by=ready.opened_by;
  if(process.env.MD_SOURCE_ASSETS!=='1'){
   // Only public controller source files; never profile/config/auth/identity files.
   const base=path.join(home,'chariox','kernel-browser','controller-assets');
