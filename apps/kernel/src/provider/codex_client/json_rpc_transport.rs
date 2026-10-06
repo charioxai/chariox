@@ -269,7 +269,7 @@ impl CodexClient {
         Ok(())
     }
 
-    fn read_next_message(
+    pub(super) fn read_next_message(
         &self,
         socket: &mut CodexSocket,
         timeout: Duration,
@@ -337,7 +337,7 @@ fn codex_read_should_retry(error: &std::io::Error) -> bool {
     )
 }
 
-fn codex_request_timeout(method: &str) -> Duration {
+pub(super) fn codex_request_timeout(method: &str) -> Duration {
     match method {
         "thread/start" | "thread/resume" => Duration::from_secs(120),
         _ => Duration::from_secs(30),

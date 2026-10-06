@@ -1,10 +1,11 @@
 //! MP-08 / MP-10: stop the output producer before awaiting interrupt replies.
 use super::json_rpc::JsonRpcMessage;
+use super::json_rpc_transport::codex_request_timeout;
 use super::notifications::{parse_notification, rpc_error_message};
 use super::{CodexClient, CodexNotification, CodexSocket};
 use crate::error::DaemonError;
 use serde_json::json;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
 
 impl CodexClient {
@@ -48,7 +49,7 @@ impl CodexClient {
                 );
             }
         }
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + codex_request_timeout("turn/interrupt");
         let mut interrupt_result = None;
         let mut cleanup_result = None;
         while interrupt_result.is_none() || cleanup_result.is_none() {
