@@ -9,7 +9,7 @@ fn interrupt_fixture(
     turns: Value,
     retry_error: Option<&str>,
 ) -> Result<(), DaemonError> {
-    interrupt_fixture_with_event(first_error, turns, retry_error, false, "actual")
+    interrupt_fixture_with_event(first_error, turns, retry_error, false, "actual", false)
 }
 
 fn interrupt_fixture_with_event(
@@ -18,10 +18,16 @@ fn interrupt_fixture_with_event(
     retry_error: Option<&str>,
     started_during_read: bool,
     retry_turn_id: &str,
+    assert_waits_for_start: bool,
 ) -> Result<(), DaemonError> {
-    let expect_retry = turns["data"]
-        .as_array()
-        .is_some_and(|turns| turns.iter().any(|turn| turn["status"] == "inProgress"));
+    let expect_retry = assert_waits_for_start
+        || turns["data"]
+            .as_array()
+            .is_some_and(|turns| turns.iter().any(|turn| turn["status"] == "inProgress"))
+        || (first_error.starts_with("expected active turn id ")
+            && turns["data"]
+                .as_array()
+                .is_some_and(|turns| !turns.iter().any(|turn| turn["id"] == "submitted")));
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("ws://{}", listener.local_addr().unwrap());
     let first_error = first_error.to_string();
@@ -44,6 +50,15 @@ fn interrupt_fixture_with_event(
                     json!({"error":{"code":-32600,"message":first_error}})
                 }
                 ("thread/turns/list", 2) => {
+                    if !expect_retry
+                        && turns["data"].as_array().is_some_and(|turns| {
+                            turns.iter().any(|turn| {
+                                turn["id"] == "submitted" && turn["status"] == "interrupted"
+                            })
+                        })
+                    {
+                        socket.send(Message::Text(json!({"method":"turn/completed","params":{"turn":{"id":"submitted","status":"interrupted","items":[]}}}).to_string().into())).unwrap();
+                    }
                     if started_during_read {
                         socket
                             .send(Message::Text(
@@ -69,6 +84,29 @@ fn interrupt_fixture_with_event(
             socket
                 .send(Message::Text(response.to_string().into()))
                 .unwrap();
+            if method == "thread/turns/list"
+                && expect_retry
+                && (!started_during_read || retry_turn_id != "actual")
+            {
+                if assert_waits_for_start {
+                    socket
+                        .get_ref()
+                        .set_read_timeout(Some(Duration::from_millis(50)))
+                        .unwrap();
+                    assert!(socket.read().is_err(), "interrupt retry must wait for provider turn/started, not just the snapshot");
+                    socket
+                        .get_ref()
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                }
+                socket
+                    .send(Message::Text(
+                        json!({"method":"turn/started","params":{"turn":{"id":retry_turn_id}}})
+                            .to_string()
+                            .into(),
+                    ))
+                    .unwrap();
+            }
         }
         methods
     });
@@ -150,6 +188,7 @@ fn mp08_interrupt_reread_supersedes_a_stale_rejection_identity() {
         None,
         false,
         "submitted",
+        false,
     ).unwrap();
 }
 
@@ -161,6 +200,7 @@ fn mp08_interrupt_fresh_start_event_supersedes_a_stale_snapshot() {
         None,
         true,
         "actual",
+        false,
     )
     .unwrap();
 }
@@ -206,5 +246,65 @@ fn mp08_interrupt_newest_active_record_supersedes_older_in_progress_history() {
         None,
         false,
         "submitted",
+        false,
     ).unwrap();
+}
+
+#[test]
+fn mp08_interrupt_retry_waits_for_provider_start_after_admitted_snapshot() {
+    interrupt_fixture_with_event(
+        "expected active turn id submitted but found actual",
+        json!({"data":[{"id":"submitted","status":"inProgress"},{"id":"actual","status":"interrupted"}]}),
+        None,
+        false,
+        "submitted",
+        true,
+    ).unwrap();
+}
+
+#[test]
+fn mp08_interrupt_late_old_start_does_not_override_the_current_snapshot() {
+    interrupt_fixture_with_event(
+        "expected active turn id submitted but found actual",
+        json!({"data":[{"id":"submitted","status":"inProgress"},{"id":"actual","status":"inProgress"}]}),
+        None,
+        true,
+        "submitted",
+        false,
+    ).unwrap();
+}
+
+#[test]
+fn mp08_interrupt_missing_admitted_record_waits_for_its_real_start() {
+    interrupt_fixture_with_event(
+        "expected active turn id submitted but found actual",
+        json!({"data":[{"id":"actual","status":"interrupted"}]}),
+        None,
+        false,
+        "submitted",
+        true,
+    )
+    .unwrap();
+}
+
+#[test]
+fn mp08_interrupt_normalized_interrupted_snapshot_still_cancels_queued_turn() {
+    interrupt_fixture_with_event(
+        "expected active turn id submitted but found actual",
+        json!({"data":[{"id":"submitted","status":"interrupted"},{"id":"actual","status":"interrupted"}]}),
+        None, false, "submitted", true,
+    ).unwrap();
+}
+
+#[test]
+fn mp08_interrupt_no_active_does_not_settle_a_normalized_unstarted_turn() {
+    interrupt_fixture_with_event(
+        "no active turn to interrupt",
+        json!({"data":[{"id":"submitted","status":"interrupted"}]}),
+        None,
+        false,
+        "submitted",
+        true,
+    )
+    .unwrap();
 }

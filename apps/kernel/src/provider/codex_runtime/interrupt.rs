@@ -93,6 +93,12 @@ pub fn abort_codex_turn(
                 let actual_id = fresh_lifecycle
                     .then(|| state.turn_tracker.provider_active_turn_id.clone())
                     .flatten()
+                    .filter(|id| {
+                        snapshot_id.as_deref().is_none_or(|current| current == id)
+                            || response
+                                .as_ref()
+                                .is_some_and(|response| codex_turn_record(response, id).is_none())
+                    })
                     .or(snapshot_id)
                     .or_else(|| {
                         stale_id
@@ -103,30 +109,46 @@ pub fn abort_codex_turn(
                             })
                             .map(str::to_string)
                     });
-                if let Some(actual_id) = actual_id {
-                    crate::logging::debug_with_fields(
-                        "daemon.provider.codex",
-                        "codex turn interrupt identity refreshed",
-                        json!({"provider_run_id":provider_run_id,"turn_id":actual_id,"previous_active_turn_id":turn_id}),
-                    );
-                    state.turn_tracker.provider_active_turn_id = Some(actual_id.clone());
-                    turn_id = actual_id;
-                    if stale_id.is_some() {
-                        retried_stale_id = true;
-                    }
-                } else if waiting_for_start
-                    && response.as_ref().is_some_and(|response| {
-                        codex_turn_is_terminal(response, &submitted_turn_id)
-                    })
-                {
+                if response.as_ref().is_some_and(|response| {
+                    codex_active_turn_id(response).is_none()
+                        && terminal_interruption_is_settled(response, &submitted_turn_id, state)
+                }) {
                     note_codex_turn_interrupt_accepted(
                         &mut state.active_turn_id,
                         &mut state.turn_tracker,
                         &mut state.buffered_notifications,
                     );
                     return Ok(());
-                } else if stale_id.is_some() {
-                    return Err(error);
+                }
+                let target = actual_id
+                    .filter(|id| {
+                        response
+                            .as_ref()
+                            .is_none_or(|response| !codex_turn_is_terminal(response, id))
+                    })
+                    .unwrap_or_else(|| submitted_turn_id.clone());
+                if !wait_for_provider_turn_start(
+                    provider_run_id,
+                    &client,
+                    state,
+                    &target,
+                    deadline,
+                )? {
+                    note_codex_turn_interrupt_accepted(
+                        &mut state.active_turn_id,
+                        &mut state.turn_tracker,
+                        &mut state.buffered_notifications,
+                    );
+                    return Ok(());
+                }
+                crate::logging::debug_with_fields(
+                    "daemon.provider.codex",
+                    "codex turn interrupt identity refreshed",
+                    json!({"provider_run_id":provider_run_id,"turn_id":target,"previous_active_turn_id":turn_id}),
+                );
+                turn_id = target;
+                if stale_id.is_some() {
+                    retried_stale_id = true;
                 }
                 if Instant::now() >= deadline {
                     return Err(error);
@@ -135,6 +157,68 @@ pub fn abort_codex_turn(
                     sleep(INTERRUPT_RETRY_INTERVAL);
                 }
             }
+        }
+    }
+}
+
+fn terminal_interruption_is_settled(
+    response: &Value,
+    turn_id: &str,
+    state: &CodexRuntimeState,
+) -> bool {
+    if !codex_turn_is_terminal(response, turn_id) {
+        return false;
+    }
+    // Codex can normalize an admitted, not-yet-started record to interrupted.
+    // That status needs actual completion evidence, rather than hiding a queued turn.
+    let interrupted = codex_turn_record(response, turn_id)
+        .and_then(|turn| turn.get("status"))
+        .and_then(Value::as_str)
+        == Some("interrupted");
+    !interrupted || state.turn_tracker.has_terminal_for(turn_id)
+        || state.buffered_notifications.iter().any(|event| {
+            matches!(event, CodexNotification::TurnCompleted { turn_id: completed, .. } if completed == turn_id)
+        })
+}
+
+fn wait_for_provider_turn_start(
+    provider_run_id: &str,
+    client: &CodexClient,
+    state: &mut CodexRuntimeState,
+    turn_id: &str,
+    deadline: Instant,
+) -> Result<bool, DaemonError> {
+    // A turn/start reply and the rollout snapshot can precede the listener's
+    // interrupt validator. Only the lifecycle event proves this turn started.
+    observe_buffered_turns(&mut state.turn_tracker, &state.buffered_notifications);
+    loop {
+        if state.turn_tracker.has_terminal_for(turn_id) || state.buffered_notifications.iter().any(|event| {
+            matches!(event, CodexNotification::TurnCompleted { turn_id: completed, .. } if completed == turn_id)
+        }) {
+            return Ok(false);
+        }
+        if state.turn_tracker.provider_active_turn_id.as_deref() == Some(turn_id) {
+            crate::logging::debug_with_fields(
+                "daemon.provider.codex",
+                "codex turn interrupt provider started trace",
+                json!({"provider_run_id":provider_run_id,"turn_id":turn_id}),
+            );
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Err(DaemonError::ProviderProtocol {
+                provider_run_id: provider_run_id.to_string(),
+                operation: "turn/interrupt",
+                message: "timed out waiting for the current provider turn to start".to_string(),
+            });
+        }
+        if let Some(notification) =
+            client.read_notification(&mut state.socket, INTERRUPT_RETRY_INTERVAL)?
+        {
+            state.turn_tracker.observe_provider_turn(&notification);
+            state.buffered_notifications.push(notification);
+        } else {
+            sleep(INTERRUPT_RETRY_INTERVAL);
         }
     }
 }

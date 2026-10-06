@@ -44,6 +44,12 @@ struct CodexPendingTerminal {
 }
 
 impl CodexTurnTracker {
+    pub(super) fn has_terminal_for(&self, turn_id: &str) -> bool {
+        self.pending_terminal
+            .as_ref()
+            .is_some_and(|terminal| terminal.signal.turn_id == turn_id)
+    }
+
     pub(super) fn reset_for_submitted(&mut self) {
         let provider_active_turn_id = self.provider_active_turn_id.take();
         *self = Self::default();
