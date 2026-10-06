@@ -37,6 +37,26 @@ test('MP-10 sample comparison retains invalid rows, counts gains/losses, and rej
     await write('CAMPAIGN.json', campaign)
     await write('RESULTS.json', rows.map((row, i) => i === 0 ? { ...row, source: { ...source, protocol: '999' } } : row))
     await assert.rejects(exec('node', [report, root]))
+    const prior = `${root}/prior`; await mkdir(prior)
+    const priorRows = rows.slice(0, 2), priorFiles = {
+      'CAMPAIGN.json': { harnessCommit: 'first-harness' }, 'RESULTS.json': priorRows,
+      'SAMPLE_INPUT.json': sample, 'runtime.json': { source } }
+    const priorReceipts = []
+    for (const [name, value] of Object.entries(priorFiles)) {
+      const bytes = JSON.stringify(value); await writeFile(`${prior}/${name}`, bytes)
+      priorReceipts.push({ name, sha256: createHash('sha256').update(bytes).digest('hex') })
+    }
+    await writeFile(`${prior}/runtime-resources.jsonl`, 'prior resource receipt')
+    await write('CAMPAIGN.json', { ...campaign, harnessCommit: 'continuation-harness', continuation: {
+      priorEvidence: prior, priorSettled: 2, priorReceipts, resourceSha256: createHash('sha256').update('prior resource receipt').digest('hex') } })
+    await write('RESULTS.json', rows); await rm(`${root}/COMPARISON.json`)
+    await exec('node', [report, root])
+    const continued = JSON.parse(await readFile(`${root}/COMPARISON.json`, 'utf8'))
+    assert.equal(continued.harnessRuns[0].commit, 'first-harness')
+    assert.equal(continued.harnessRuns[1].commit, 'continuation-harness')
+    assert.equal(continued.paired[0].attemptEvidence, `${prior}/attempts/task-0`)
+    await write('RESULTS.json', rows.map((row, i) => i === 0 ? { ...row, judgeVerdict: 'SUCCESS' } : row))
+    await assert.rejects(exec('node', [report, root]), /prior attempts changed or rescored/)
   } finally {
     assert(root.startsWith(`${evidence}/report-test-`)); await rm(root, { recursive: true })
   }
