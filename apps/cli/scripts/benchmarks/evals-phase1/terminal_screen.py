@@ -17,3 +17,6 @@ def capture(log, output):
     for row,text in enumerate(screen.display):
         draw.text((0,row*18),text,font=font,fill='#eeeeee')
     canvas.save(output)
+    text = "\n".join(screen.display)
+    Path(output).with_suffix(".txt").write_text(text + "\n")
+    return text

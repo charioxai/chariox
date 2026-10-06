@@ -200,7 +200,7 @@ def run(request, evidence):
     def screenshot(name):
         from terminal_screen import capture
         time.sleep(0.5)
-        capture(evidence / 'task.terminal.log', evidence / (name + '.png'))
+        return capture(evidence / 'task.terminal.log', evidence / (name + '.png'))
 
     def tick():
         resource_sample()
@@ -340,7 +340,15 @@ def run(request, evidence):
                     **total['usage'], 'api_equivalent_nanodollars': int(price) if price is not None else None}
                 measurement['usage_unavailable_reason'] = None if price is not None else 'official harness lacks the fields required by the exact dated model price'
         client.send('submit_prompt', prompt='/session usage')
-        screenshot('03-usage-report')
+        visible = screenshot('03-usage-report')
+        usage = measurement['usage']
+        measurement['tui_usage_visible'] = usage is not None and all(
+            f'{label} {usage[key]}' in visible
+            for label, key in [('input', 'input_tokens'), ('cached', 'cached_input_tokens'), ('output', 'output_tokens')])
+        if measurement['status'] == 'completed' and request.get('numeric_accounting_required') and not measurement['tui_usage_visible']:
+            measurement['status'] = 'accounting_projection_failed'
+            measurement['first_failing_seam'] = 'real TUI usage projection'
+
         if measurement['status'] == 'completed' and request.get('accounting_required') and (measurement['usage'] is None or measurement['usage']['api_equivalent_nanodollars'] is None):
             measurement['status'] = 'accounting_unavailable'
         client.send('exit')
