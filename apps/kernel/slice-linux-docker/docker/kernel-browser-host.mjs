@@ -25,6 +25,7 @@ import { DisplayStream } from "./kernel-browser-display.mjs";
 import {nativeDamageTiles} from './kernel-browser-tiles.mjs';
 import {MotionEncoder} from './kernel-browser-motion.mjs';
 import {NativeRefiner} from './kernel-browser-refiner.mjs';
+import {nativeCreditEmpty} from './kernel-browser-native-credit.mjs';
 import { DisplayCapture } from './kernel-browser-display-capture.mjs';
 
 // Private display operations may overlap input; lifecycle still settles all
@@ -394,6 +395,10 @@ export class KernelBrowserHost {
       stream.expires = Date.now() + 60_000;
       this.armDisplayExpiry(stream);
       if (command.op === "display_attach") return { attached: true, generation: this.generation };
+      const cachedSource=this.compositors.get(stream.tab_id)?.source;
+      if(nativeCreditEmpty(stream,cachedSource,this.protection,this.inputEpochs.get(stream.tab_id)??0,
+          this.inputChangedAt.get(stream.tab_id)??-Infinity,command.after_sequence))
+        return {generation:this.generation,frame_sent:false,display_frame:null};
       const tab = await this.displayTarget({ tab_id: stream.tab_id, generation: command.generation });
       // Recreate the closure when navigation changes the loader binding. Pixels
       // and pending repairs are then invalidated by the new document as usual.
@@ -429,6 +434,7 @@ export class KernelBrowserHost {
         // Always run the deadline/epoch-aware verifier before unchanged reuse.
         // A lossy JPEG fingerprint cannot rule out fine native RGB damage.
         const exact=stream.refiner.request(binding,Math.max(compositor.changedAt,this.inputChangedAt.get(tab.tab_id)??-Infinity),()=>this.protection===policy&&compositor.sample()?.serial===sample.serial&&(this.inputEpochs.get(tab.tab_id)??0)===epoch);
+        stream.creditEpoch=epoch;
         stream.producer.feedback(Math.max(0,stream.sequence-command.after_sequence));
         const patchable=stream.canPatchNative(sample);
         const encoded=patchable ? null : stream.producer.take();

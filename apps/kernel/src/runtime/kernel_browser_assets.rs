@@ -2,6 +2,7 @@
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 const ASSETS: &[(&str, &[u8])] = &[
+    ("kernel-browser-native-credit.mjs", include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-credit.mjs")),
     ("kernel-browser-openh264.py", include_bytes!("../../slice-linux-docker/docker/kernel-browser-openh264.py")),
     ("browser-controller-image.mjs", include_bytes!("../../slice-linux-docker/docker/browser-controller-image.mjs")),
     ("browser-controller-artifacts.mjs", include_bytes!("../../slice-linux-docker/docker/browser-controller-artifacts.mjs")),
