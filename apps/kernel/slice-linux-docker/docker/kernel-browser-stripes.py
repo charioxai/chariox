@@ -12,6 +12,8 @@ import re
 import av
 import importlib.util
 from pathlib import Path
+_spec=importlib.util.spec_from_file_location('codec_protection',Path(__file__).with_name('kernel-browser-codec-protection.py'))
+_protection=importlib.util.module_from_spec(_spec);_spec.loader.exec_module(_protection)
 
 _xxh=ctypes.CDLL(ctypes.util.find_library('xxhash') or 'libxxhash.so.0').XXH3_64bits
 _xxh.argtypes=[ctypes.c_void_p,ctypes.c_size_t];_xxh.restype=ctypes.c_uint64
@@ -66,12 +68,16 @@ class StripeEncoder:
         self.backend=os.environ.get('CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER','libx264')
         if self.backend not in ('libx264','libopenh264','libvpx'):raise ValueError('encoder selection')
 
-    def encode(self,pixels,width,height,bitrate,reset=False,selected="avc1.420033"):
+    def encode(self,pixels,width,height,bitrate,reset=False,selected="avc1.420033",regions=None):
+        self.protection_dropped=False
         if type(width) is not int or width<16 or width>2560 or width%2 or height>1600 or len(pixels)!=width*height*4:raise ValueError('stripe geometry')
         backend="libvpx" if selected=="vp8" else self.backend
         if selected not in ("vp8","avc1.420033") or (selected=="avc1.420033" and backend=="libvpx"):raise ValueError("stripe codec selection")
         self.effective_backend=backend
-        config=(width,height,bitrate,backend)
+        regions=[] if regions is None else regions
+        _protection.black_input(pixels,width,height,regions)
+        protected_bounds=_protection.bounds(regions,width,height)
+        config=(width,height,bitrate,backend,repr(regions))
         if config!=self.config:self.rows={};self.config=config;reset=True
         resets=set(range(8)) if reset is True else set(reset or [])
         if any(type(i) is not int or i<0 or i>=8 for i in resets):raise ValueError('stripe reset')
@@ -96,19 +102,28 @@ class StripeEncoder:
                     codec.options={'preset':'ultrafast','tune':'zerolatency','profile':'baseline','level':'5.1','crf':'23','g':'120','bf':'0','forced-idr':'1','x264-params':f'scenecut=0:sync-lookahead=0:repeat-headers=1:annexb=1:rc-lookahead=0:vbv-maxrate={max(16,codec.bit_rate//1000)}:vbv-bufsize={max(16,codec.bit_rate//20000)}'}
                 elif backend=='libopenh264':codec.options={'profile':'constrained_baseline','allow_skip_frames':'0','rc_mode':'bitrate','max_nal_size':'0'}
                 else:codec.options={'deadline':'realtime','cpu-used':'8','lag-in-frames':'0','g':'120','error-resilient':'1','bufsize':str(max(16000,codec.bit_rate//20)),'maxrate':str(codec.bit_rate),'minrate':'0','undershoot-pct':'95','overshoot-pct':'5','qmin':'4','qmax':'48','rc_init_occupancy':str(max(16000,codec.bit_rate//20)),'max-intra-rate':'200'}
-                old={'codec':codec,'sequence':0,'converter':BgrConverter()};self.rows[row]=old
+                old={'codec':codec,'sequence':0,'converter':BgrConverter(),
+                     'guard':_protection.DecodedMaskGuard(selected) if any(left<right and top<y+h and bottom>y for left,top,right,bottom in protected_bounds) else None};self.rows[row]=old
             codec=old['codec'];frame=old['converter'].convert(data,width,h)
             frame.time_base=codec.time_base;frame.pts=old['sequence']
             frame.pict_type=av.video.frame.PictureType.I if old['sequence']==0 else av.video.frame.PictureType.NONE
             packets=list(codec.encode(frame))
             if len(packets)!=1:raise ValueError('stripe packet count')
             packet=bytes(packets[0]);key=packets[0].is_keyframe if selected=='vp8' else any(nal and nal[0]&31==5 for nal in re.split(b'\x00\x00\x01',packet))
+            if old['guard'] and not old['guard'].safe(packet,regions,width,h,y=y):
+                return False
             previous=old['sequence'];old.update(sequence=previous+1,hash=signature,pixels=data)
             return dict(row=row,y=y,height=h,codec=selected,key=key,sequence=previous+1,reference_sequence=None if key else previous,data_base64=base64.b64encode(packet).decode())
         # MP-10: one bounded pool, one codec thread per independent row.
         # Unchanged rows return before codec conversion or rate control.
         work=enumerate(row_geometry(height))
         output=[row for row in (self.pool.map(encode_row,work) if self.pool and backend=='libx264' else map(encode_row,work)) if row is not None]
+        if any(row is False for row in output):
+            # Drop before packetization and retire advanced codec references.
+            # The next source damage starts independent row chains.
+            self.rows={}
+            self.protection_dropped=True
+            return []
         if sum(len(row['data_base64']) for row in output)>1024*1024:raise ValueError('stripe payload bound')
         return output
 

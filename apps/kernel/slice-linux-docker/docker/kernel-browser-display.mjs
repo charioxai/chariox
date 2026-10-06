@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { decodePng, encodePng } from './kernel-browser-pixels.mjs';
+import { decodePng, encodePng, displayMaskRegions } from './kernel-browser-pixels.mjs';
 import {dirtyTiles, nativeDamageTiles} from './kernel-browser-tiles.mjs';
 import {PixelWorker} from './kernel-browser-pixel-worker.mjs';
 export {dirtyTiles} from './kernel-browser-tiles.mjs';
@@ -17,12 +17,13 @@ export function safeChildPid(child) {
 }
 export class PortableEncoder {
   constructor() { this.child = null; this.pending = null; this.failure = null; this.packets=new Set(); }
-  async encode(png, bitrate, reset = false, codec = 'vp09.00.10.08') {
-    return typeof png==='object' ? this.exchange({raw:png,bitrate,reset,codec}) : this.exchange({png,bitrate,reset,codec});
+  async encode(png, bitrate, reset = false, codec = 'vp09.00.10.08', regions = []) {
+    return typeof png==='object' ? this.exchange({raw:png,bitrate,reset,codec}) : this.exchange({png,bitrate,reset,codec,protected_regions:regions});
   }
   async encodeStripes(raw,bitrate,reset=false,codec='avc1.420033'){return this.exchange({raw,bitrate,reset,codec,operation:'stripes'})}
   async hash(png) { return this.exchange({png,operation:'fingerprint'}); }
   async exchange(request) {
+    if(request.raw)request={...request,protected_regions:request.raw[displayMaskRegions]??[]};
     if (this.failure) throw this.failure;
     if (!this.child) {
       const child = spawn(process.env.CHARIOX_BROWSER_DISPLAY_PYTHON || 'python3',
@@ -41,6 +42,11 @@ export class PortableEncoder {
         try {
           const reply = JSON.parse(line);
           if(reply.error)return fail();
+          if(reply.dropped===true){
+            this.backend=({libx264:'x264',libopenh264:'openh264',libvpx:'vp8'})[reply.backend]??reply.backend;
+            this.converter=['libyuv','swscale'].includes(reply.converter)?reply.converter:null;
+            this.pending?.resolve({dropped:true});this.pending=null;return;
+          }
           if(this.pending?.stripes){
             if(!Array.isArray(reply.stripes)||reply.stripes.length>8)return fail();
             this.workers=reply.workers;this.backend=({libx264:'x264',libopenh264:'openh264',libvpx:'vp8'})[reply.backend];this.converter=['libyuv','swscale'].includes(reply.converter)?reply.converter:null;if(reply.packet){
@@ -175,10 +181,11 @@ export class DisplayStream {
         repair = remaining.slice(batch.length);
       }
     } else if (!source.motion && tiles.length && JSON.stringify(patch).length < Math.min(patchLimit, source.full_size_hint ?? JSON.stringify(full()).length)) payload = patch;
-    else if (this.codec === 'png') payload = full();
+    else if (this.codec === 'png'||source.force_lossless) payload = full();
     else {
-      const encoded = source.encoded ?? await this.encoder.encode(png(), this.bitrate, !this.dependencies || !bound || !this.previous || this.exact || Boolean(this.repair),this.codec);
-      if(encoded.stripes){payload={kind:'stripes',base_sequence:this.sequence,stripes:encoded.stripes,...(encoded.packet?{native_packet:encoded.packet}:{})};}
+      const encoded = source.encoded ?? await this.encoder.encode(png(), this.bitrate, !this.dependencies || !bound || !this.previous || this.exact || Boolean(this.repair),this.codec,source[displayMaskRegions]??[]);
+      if(encoded.dropped)payload=full();
+      else if(encoded.stripes){payload={kind:'stripes',base_sequence:this.sequence,stripes:encoded.stripes,...(encoded.packet?{native_packet:encoded.packet}:{})};}
       else {
       if(!this.dependencies && typeof encoded!=='string' && !encoded.key)throw Error('MD-DISPLAY: unnegotiated dependent frame');
       payload = { kind:'video', codec:this.codec, ...(typeof encoded === 'string' ? {key:true,data_base64:encoded} : encoded) };

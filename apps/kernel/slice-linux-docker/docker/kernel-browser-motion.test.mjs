@@ -1,5 +1,23 @@
 // MD-DISPLAY-02/04: stalled encode does not own input/credit; loss resets deltas.
 import test from 'node:test';import assert from 'node:assert/strict';import{MotionEncoder,CreditBudget}from'./kernel-browser-motion.mjs';
+test('MP-11 a rejected lossy mask emits only protected exact pixels and recovers with a key',async()=>{
+ const {decodePng}=await import('./kernel-browser-pixels.mjs');
+ let latest,offer;const calls=[];
+ const source={subscribe:f=>{offer=f;return()=>{}},sample:()=>latest};
+ const encoder={async encodeStripes(raw,b,reset){calls.push(reset);return calls.length===1?{dropped:true}:{stripes:[{row:0,key:reset===true,data_base64:'AA=='}]}}};
+ const m=new MotionEncoder(source,encoder,{stripes:true,codec:'avc1.420033',bitrate:8000000});
+ try{
+  latest={serial:1,raw:{width:128,height:128,pixels:Buffer.alloc(128*128*4)}};offer(latest);await m.active;
+  const exact=m.take();assert.equal(exact.force_lossless,true);assert.equal(exact.encoded,undefined);assert.equal(exact.raw,undefined);
+  assert.equal(decodePng(exact.data_base64).pixels[0],0);
+  latest={...latest,serial:2};offer(latest);await m.active;assert.equal(m.take().encoded.stripes[0].key,true);
+ }finally{await m.close()}
+});
+test('MP-11 oversized exact protection fallback fails closed without retaining a frame',async()=>{
+ const latest={serial:1,data_base64:'A'.repeat(1024*1024+1)},source={subscribe:()=>()=>{},sample:()=>latest};
+ const m=new MotionEncoder(source,{encode:async()=>({dropped:true})},{codec:'avc1.420033',bitrate:8000000});
+ try{await m.active;assert.equal(m.frames.length,0);assert.throws(()=>m.take(),/motion encoder failed/)}finally{await m.close()}
+});
 test('MP-08/MP-10 raw-less stripe fallback recovers an oversized unsent full-video packet',async()=>{
  const latest={serial:1,data_base64:'source'},keys=[];
  const source={subscribe:()=>()=>{},sample:()=>latest};

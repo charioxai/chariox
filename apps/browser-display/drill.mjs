@@ -19,6 +19,7 @@ import { distribution } from './drill-metrics.mjs';
 import {MetricsWorker} from './drill-metrics-worker.mjs';
 import {sourceIdentity} from './source-identity.mjs';
 import { summarizeStages } from './drill-stages.mjs';
+import {stressProtection} from './drill-protection.mjs';
 import { launchOwned, waitChild, stopGroup, checkChild } from './drill-owned-process.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const [binary, output, tools, pytools] = process.argv.slice(2);
@@ -349,6 +350,7 @@ try {
  receipt.final_fidelity=inputVerified.fidelity;receipt.final_verification_attempts=inputVerified.verification_attempts;
  if(!receipt.final_fidelity.lossless)throw Error('MD-DISPLAY: small-change pixels differ');
  if(process.env.MD_PROTECTED==='1'){
+  if(process.env.MD_PROTECTION_REPETITIONS)receipt.protection_stress=await stressProtection({page,pair,pause,resource,repetitions:Number(process.env.MD_PROTECTION_REPETITIONS)});
   receipt.protected_reference_recovery=await page.evaluate(async()=>{
    const previous=mdStream.presenter.sequence;mdStream.presenter.sequence=0;let frame;const deadline=performance.now()+10000;
    while(!(frame=await mdStream.next())){if(performance.now()>deadline)throw Error('MP-11: protected reference recovery timeout');await new Promise(r=>setTimeout(r,4));}
@@ -396,6 +398,10 @@ try {
  if(process.env.MD_REQUIRE_LATENCY==='1'&&!receipt.latency_goal.passed)throw Error('MD-DISPLAY: input-to-presentation latency goal remains RED');
 } catch(error) {
  receipt.status='RED';receipt.error=String(error.message);process.exitCode=receipt.interrupted?130:1;
+ if(browser&&process.env.MD_PROTECTED==='1')try{
+  const page=browser.contexts()[0].pages().at(-1);receipt.protected_presentations=await page.evaluate(()=>window.mdProtection);
+  for(const failure of receipt.protected_presentations?.failures??[]){await writeFile(path.join(output,'protected-failure-'+failure.sequence+'.png'),Buffer.from(failure.png.split(',')[1],'base64'));delete failure.png;}
+ }catch{}
  if(browser)try{const page=browser.contexts()[0].pages().at(-1);receipt.failure_client=await page.evaluate(()=>({frames:window.mdFrames,presentations:window.mdPresentations,stream_running:window.mdStream?.running,stream_error:window.mdStream?.error?.message,sequence:window.mdStream?.presenter?.sequence}));}catch{}
 }
 finally {

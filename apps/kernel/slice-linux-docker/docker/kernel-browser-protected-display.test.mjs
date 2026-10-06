@@ -1,8 +1,8 @@
 // MP-08/MP-11: pixels are protected before every native/codec/crop boundary.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {encodePng,decodePng,maskPng,maskNativeRaster,cropProtectedPng} from './kernel-browser-pixels.mjs';
-import {NativeRegionProtection,regionProtectionChanged} from './kernel-browser-region-protection.mjs';
+import {encodePng,decodePng,maskPng,maskNativeRaster,cropProtectedPng,displayMaskRegions} from './kernel-browser-pixels.mjs';
+import {NativeRegionProtection,regionProtectionChanged,captureProtectedDisplay} from './kernel-browser-region-protection.mjs';
 import {CompositorSource} from './kernel-browser-compositor.mjs';
 
 const region={x:900,y:200,width:150,height:80};
@@ -13,6 +13,8 @@ test('MP-11 native masking removes the shared-file bypass and preserves immutabl
  assert.equal(masked.pixels[(240*1280+950)*4],0);
  assert.equal(masked.pixels[0],255);
  assert.equal(masked.shared,undefined);assert.equal(masked.readRegion,undefined);
+ assert.deepEqual(masked[displayMaskRegions],[region]);
+ assert.equal(JSON.stringify(masked).includes('kernel display protection'),false,'trusted masks never extend the public wire shape');
  assert.deepEqual(masked.damage,[0,0,1280,800]);
  const changed=raw();changed.pixels[(240*1280+950)*4]=37;
  assert.equal(maskNativeRaster(changed,[region]).signature,masked.signature,'private-only changes have no displayed fingerprint');
@@ -51,6 +53,19 @@ test('MP-11 raw CDP frames wake a fresh protected capture before fingerprinting/
   protect:async()=>({data_base64:masked}),hasher:{hash:async data=>{assert.equal(data,masked);return {width:1280,height:800,signature:'masked'};},close:async()=>{}}});
  source.attested=true;source.subscribe(sample=>emitted=sample);source.pendingImage={data:unmasked,receivedAt:0,format:'png'};
  await source.processLatest();assert.equal(emitted.data_base64,masked);await source.close();
+});
+test('MP-11 trusted mask metadata stays aligned through native crops and DPR2 thumbnails without a wire field',async()=>{
+ for(const scale of [1,2]){
+  const width=1280*scale,height=800*scale,png=encodePng(width,height,Buffer.alloc(width*height*4,255));
+  const mask={x:900*scale,y:200*scale,width:150*scale,height:80*scale};
+  const tab={tab_id:'tab',document_id:'doc'},host={scales:new Map([['tab',scale]]),screenshot:async()=>({tab_id:'tab',document_id:'doc',width,height,data_base64:png,protected_regions:[mask]})};
+  const crop=await captureProtectedDisplay(host,tab,{x:890,y:190,width:50,height:50,scale:1});
+  assert.deepEqual(crop[displayMaskRegions],[{x:10*scale,y:10*scale,width:150*scale,height:80*scale}]);
+  assert.equal(decodePng(crop.data_base64).pixels[(30*scale*crop.width+30*scale)*4],0);
+  const thumbnail=await captureProtectedDisplay(host,tab,{x:400,y:800,width:1280,height:800,scale:1/8});
+  assert.deepEqual(thumbnail[displayMaskRegions],[{x:900*scale/8,y:200*scale/8,width:150*scale/8,height:80*scale/8}]);
+  assert.equal(Object.keys(thumbnail).some(k=>k.includes('protect')||k.includes('mask')),false);
+ }
 });
 test('MP-11 attribute-only protected/layout changes retire cached native and CDP observations',()=>{
  for(const name of ['type','autocomplete','data-chariox-secret','data-chariox-observation-protected','data-observation-protected'])

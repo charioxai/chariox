@@ -15,6 +15,9 @@ import uuid
 from pathlib import Path
 from fractions import Fraction
 import av
+import importlib.util
+_spec=importlib.util.spec_from_file_location('codec_protection',Path(__file__).with_name('kernel-browser-codec-protection.py'))
+protection=importlib.util.module_from_spec(_spec);_spec.loader.exec_module(protection)
 
 
 def h264_idr(packet):
@@ -98,11 +101,13 @@ def main():
     sequence = 0
     hardware = None
     hardware_disabled = os.environ.get('CHARIOX_BROWSER_DISPLAY_SOFTWARE') == '1'
+    mask_guard = None
     while True:
         line=sys.stdin.buffer.readline()
         if not line:break
         try:
             request = json.loads(line)
+            regions=request.get('protected_regions',[])
             if 'raw' in request:
                 raw=request['raw'];w=raw['width'];h=raw['height'];size=w*h*4
                 if not (1<=w<=2560 and 1<=h<=1600) or raw['format']!='bgr0' or raw['length']!=size:raise ValueError('raw bound')
@@ -134,12 +139,13 @@ def main():
                     spec=importlib.util.spec_from_file_location('stripes',Path(__file__).with_name('kernel-browser-stripes.py'))
                     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);stripes=module.StripeEncoder()
                 if 'raw' not in request:raise ValueError('stripes require admitted raster')
-                try:rows=stripes.encode(pixels,w,h,request['bitrate'],request.get('reset',False),request.get('codec','avc1.420033'))
+                try:rows=stripes.encode(pixels,w,h,request['bitrate'],request.get('reset',False),request.get('codec','avc1.420033'),regions)
                 finally:
                     if raw.get('shared'):mapping.close()
                 # MP-08/MP-10: packetize all rows once in the native helper. Node
                 # receives headers only; the kernel consumes the private file.
                 reply={'stripes':rows,'backend':stripes.effective_backend,'workers':stripes.workers if stripes.effective_backend=='libx264' else 1,'converter':'libyuv' if all(row['converter'].convert_native for row in stripes.rows.values()) else 'swscale'}
+                if stripes.protection_dropped:reply['dropped']=True
                 root=os.environ.get('CHARIOX_BROWSER_DISPLAY_PACKET_ROOT')
                 if root and rows:
                     directory=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
@@ -169,9 +175,15 @@ def main():
                 print(json.dumps({'signature':signature.hexdigest(),'width':frame.width,'height':frame.height}),flush=True)
                 continue
             if request.get('operation') is not None:raise ValueError('operation bound')
+            source_width,source_height=frame.width,frame.height
+            if regions:
+                original=frame.reformat(format='bgr0');plane=original.planes[0]
+                source=bytes(plane)
+                source=b''.join(source[y*plane.line_size:y*plane.line_size+frame.width*4] for y in range(frame.height))
+                protection.black_input(source,frame.width,frame.height,regions)
             selected=request.get('codec','vp09.00.10.08')
             if selected not in ('vp8','vp09.00.10.08','vp09.00.40.08','vp09.00.50.08','avc1.420033'):raise ValueError('codec admission')
-            if selected.startswith('avc1') and not hardware_disabled and shutil.which('ffmpeg') and any(Path('/dev/dri').glob('renderD*')):
+            if selected.startswith('avc1') and not regions and not hardware_disabled and shutil.which('ffmpeg') and any(Path('/dev/dri').glob('renderD*')):
                 try:
                     if hardware is None:hardware = VaapiEncoder()
                     packet = hardware.encode(frame, request['bitrate'], request.get('reset',False))
@@ -193,7 +205,7 @@ def main():
                 frame=frame.reformat(width=1280,height=720,format='yuv420p',interpolation='FAST_BILINEAR')
             software_h264=os.environ.get('CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER','libx264')
             if selected.startswith('avc1') and software_h264 not in ('libx264','libopenh264'):raise ValueError('software H264 selection')
-            config = (frame.width, frame.height, request['bitrate'], selected,software_h264)
+            config = (frame.width, frame.height, request['bitrate'], selected,software_h264,repr(regions))
             if codec is None or config != configuration:
                 if selected.startswith('avc1') and software_h264=='libopenh264' and os.environ.get('CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER'):
                     import importlib.util
@@ -220,6 +232,7 @@ def main():
                      'level':'5.1','crf':'23','g':'120','bf':'0',
                      'x264-params':f'intra-refresh=1:sync-lookahead=0:repeat-headers=1:annexb=1:rc-lookahead=0:vbv-maxrate={codec.bit_rate//1000}:vbv-bufsize={max(32,codec.bit_rate//10000)}'}
                 configuration, sequence = config, 0
+                mask_guard=protection.DecodedMaskGuard(selected) if regions else None
             frame = frame.reformat(format='yuv420p')
             # PNG decoders mark every input as I; clear that hint for inter prediction.
             frame.pict_type = av.video.frame.PictureType.I if request.get('reset') else av.video.frame.PictureType.NONE
@@ -231,6 +244,12 @@ def main():
             if len(packets) != 1:
                 raise ValueError('one realtime packet required')
             sequence += 1
+            if mask_guard and not mask_guard.safe(bytes(packets[0]),regions,frame.width,frame.height,source_width=source_width,source_height=source_height):
+                # Never publish an uncertain reconstruction, or a descendant
+                # of its dropped reference. Exact repair may still settle.
+                codec,configuration,mask_guard=None,None,None
+                print(json.dumps({'dropped':True}),flush=True)
+                continue
             print(json.dumps({'data_base64': base64.b64encode(bytes(packets[0])).decode(),
                               'key': packets[0].is_keyframe if not selected.startswith('avc1') else h264_idr(bytes(packets[0])),'backend':'vp8' if selected=='vp8' else 'vp9' if selected.startswith('vp09') else 'openh264' if software_h264=='libopenh264' else 'x264'}), flush=True)
         except Exception:

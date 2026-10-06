@@ -4,7 +4,7 @@ import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // navigation fences the source synchronously; no raw pixels after Vault use.
 import {setTimeout as delay} from 'node:timers/promises';
 import {PortableEncoder} from './kernel-browser-display.mjs';
-import {decodePng} from './kernel-browser-pixels.mjs';
+import {decodePng,displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 import {regionProtectionChanged} from './kernel-browser-region-protection.mjs';
 export function jpegDimensions(bytes) {
@@ -80,14 +80,15 @@ export class CompositorSource {
         let {data,receivedAt,format}=this.pendingImage;this.pendingImage=null;const revision=this.regionRevision;
         // MP-11: screencast pixels have no protected-layout binding. Use them
         // only as a wake; capture/mask afresh before hashing or video encoding.
-        if(this.protect){data=(await this.protect()).data_base64;format='png';}
+        let protectedRegions=[];
+        if(this.protect){const source=await this.protect();data=source.data_base64;protectedRegions=source[displayMaskRegions]??[];format='png';}
         const fingerprint=await this.hasher.hash(data);this.timing('source_'+format+'_fingerprint',receivedAt);
         if(this.closed||this.fenced||!this.allowed(this.policy))break;
         if(revision!==this.regionRevision)continue;
         if(this.sampling||this.now()<this.ignoreUntil)continue;
         if(fingerprint.width!==this.width||fingerprint.height!==this.height)throw Error('source geometry');
         if(this.latest?.signature!==fingerprint.signature){this.motionStreak=this.now()-this.changedAt<90?this.motionStreak+1:1;this.serial++;this.changedAt=this.now();}
-        this.latest={data_base64:data,signature:fingerprint.signature,width:this.width,height:this.height,motion:true,tab_id:this.tab.tab_id,document_id:this.tab.document_id,serial:this.serial};
+        this.latest={data_base64:data,[displayMaskRegions]:protectedRegions,signature:fingerprint.signature,width:this.width,height:this.height,motion:true,tab_id:this.tab.tab_id,document_id:this.tab.document_id,serial:this.serial};
         if(this.attested)for(const listener of this.listeners)listener(this.latest);
       }
     }catch{this.fenced=true;this.attested=false;this.latest=null;await this.close().catch(error=>{this.failure=error});}

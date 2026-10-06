@@ -68,11 +68,11 @@ export class BrowserEncoder {
   if(result.exceptionDetails)throw Error('MD-DISPLAY: browser encoder unavailable');
   return this.context;
  }
- async encode(image,bitrate,reset=false,codec='vp09.00.10.08'){
+ async encode(image,bitrate,reset=false,codec='vp09.00.10.08',regions=[]){
   if(this.closed||this.busy)throw Error('MD-DISPLAY: browser encoder closed/busy');
   this.busy=true;
   try{
-  if(typeof image==='object'||process.env.CHARIOX_BROWSER_DISPLAY_SOFTWARE==='1')return await this.fallback.encode(image,bitrate,reset,codec);
+  if(typeof image==='object'||regions.length||process.env.CHARIOX_BROWSER_DISPLAY_SOFTWARE==='1')return await this.fallback.encode(image,bitrate,reset,codec,regions);
   if(this.fallbackOnly)return await this.fallback.encode(image,bitrate,reset,codec);
   try{
    const c=await this.contextFor();

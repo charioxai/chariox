@@ -1,3 +1,17 @@
+# MP-08/MP-10/MP-11 — phase19 RUNNING
+
+MP-11: base b77569f2e. Reproduced mask threshold RED (3 presentations) with actual embedded phase18 runtime and new failure-retaining harness. Diagnostic adapter proves a masked native keyframe reconstructs RGB76 at the private codec boundary; replay of the same public raster deterministically reproduces it (source RGB0). This is a lossy reconstruction failure, not evidence of unmasked input reaching the codec. New guard validates black source input, decodes protected outputs before packetization, drops uncertain batches, resets references and sends an exact protected fallback. Revised 200-cycle motion/settle/reference-loss preview is running; earlier stall/queue failures remain retained diagnostics. No acceptance claimed.
+
+MP-08/MP-10: performance follows the security regression. Local protocol447/relay90 shapes unchanged; private Symbol mask metadata never serializes into client frames. Rust compile uses the shared slot/jobs4; memory/disk floors sampled. Evidence: /root/.codex/evidence/browser-resume-20260930/display-perf/phase19/.
+
+## MP-08/MP-10/MP-11 Coordinator asks
+
+Real live acceptance is coordinator-owned per phase19 prompt. Supply/run paired Cloud md/display-web aa9c44f8 app entry+real flags, exact kernel/relay/CLI artifacts, hosted wss8Mbps/RTT>=60ms, real sites, DPR1/2 desktop, real provider where relevant and multi-hour stability. This lane remains prohibited from contacting the hosted relay or Apps machine. No owner laptop/GPU endpoint supplied. Prepare an exact build/kit and commands here; component runs do not close these gates.
+
+## MP-11 Review inbox
+
+Display-perf inbox absent at start; historical mappings below remain bound to their original commits. Check the absolute lane inbox after each commit batch.
+
 # MP-08/MP-10/MP-11 — phase18 FINAL; acceptance NOT DONE
 
 2026-10-06 18:21 UTC: runtime c0e8a1fdfc352dcb6548d12222e811386db004bd; diagnostic harness17f1d91bd. Base c42d74363; branch md/display-perf; protocol447/relay90 unchanged. Local commits only, [skip ci], required coauthor.

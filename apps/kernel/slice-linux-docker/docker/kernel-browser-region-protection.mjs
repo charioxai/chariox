@@ -1,5 +1,5 @@
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
-import {maskPng,opaqueFrame,cropProtectedPng} from './kernel-browser-pixels.mjs';
+import {maskPng,opaqueFrame,cropProtectedPng,displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 // Screenshot-region masks from trusted CDP metadata, never page JavaScript.
 async function regions(connection, sessionId, mirrorStructured = false) {
@@ -105,13 +105,16 @@ export async function captureProtectedDisplay(host,tab,clip=null,optimizeForSpee
   const scale=host.scales.get(tab.tab_id)??1;let frame;
   try{
     const {protected_regions,...captured}=await host.screenshot(tab,null,true,'png',optimizeForSpeed);
-    frame={...captured,data_base64:protected_regions.length?maskPng(captured.data_base64,protected_regions.map(r=>[r.x,r.y,r.width,r.height]),scale):captured.data_base64};
+    frame={...captured,[displayMaskRegions]:protected_regions,data_base64:protected_regions.length?maskPng(captured.data_base64,protected_regions.map(r=>[r.x,r.y,r.width,r.height]),scale):captured.data_base64};
   }catch(error){
     if(['stale_document_reference','browser_action_cancelled'].includes(error?.code))throw error;
     const {connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id);
     await assertCurrentDocument(connection,sessionId,tab.target_id,tab.document_id);
     const width=geometry.width*scale,height=geometry.height*scale;
-    frame={generation:host.generation,tab_id:tab.tab_id,document_id:tab.document_id,mime_type:'image/png',width,height,data_base64:opaqueFrame(width,height)};
+    frame={generation:host.generation,tab_id:tab.tab_id,document_id:tab.document_id,mime_type:'image/png',width,height,[displayMaskRegions]:[{x:0,y:0,width,height}],data_base64:opaqueFrame(width,height)};
   }
-  return {...frame,...cropProtectedPng(frame.data_base64,clip,scale)};
+  const cropped=cropProtectedPng(frame.data_base64,clip,scale);
+  const full=!clip||clip.width===geometry.width&&clip.height===geometry.height;
+  const regions=(frame[displayMaskRegions]??[]).map(r=>({x:(r.x-(full?0:clip.x*scale))*(clip?.scale??1),y:(r.y-(full?0:clip.y*scale))*(clip?.scale??1),width:r.width*(clip?.scale??1),height:r.height*(clip?.scale??1)}));
+  return {...frame,...cropped,[displayMaskRegions]:regions};
 }

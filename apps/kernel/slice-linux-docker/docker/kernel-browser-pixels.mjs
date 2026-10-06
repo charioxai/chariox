@@ -122,11 +122,12 @@ export function maskPng(data, regions, scale = 1) {
 }
 // MP-08/MP-11: never mutate a leased raster or let its unmasked shared file
 // bypass protection in an encoder/native tile. Only masked bytes leave here.
+export const displayMaskRegions = Symbol('kernel display protection');
 export function maskNativeRaster(raw, regions) {
   if(!regions.length)return raw;
   const {width,height}=raw;
   const frame=maskPixels({width,height,pixels:Buffer.from(raw.pixels)},regions.map(r=>[r.x,r.y,r.width,r.height]));
-  const result={...raw,...frame,damage:[0,0,width,height],signature:createHash('sha256').update(frame.pixels).digest('hex'),retain(){},release(){}};
+  const result={...raw,...frame,[displayMaskRegions]:regions,damage:[0,0,width,height],signature:createHash('sha256').update(frame.pixels).digest('hex'),retain(){},release(){}};
   delete result.shared;delete result.readRegion;
   return result;
 }
