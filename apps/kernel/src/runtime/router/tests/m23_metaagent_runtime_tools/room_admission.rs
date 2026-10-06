@@ -2,6 +2,91 @@
 use super::*;
 
 #[test]
+fn room_admission_inline_source_name_conflict_has_no_effect() {
+    run_large_stack_async_test("room-inline-source-history", inline_source_history);
+}
+
+async fn inline_source_history() {
+    let env = TestMetaRuntimeEnv::new("room-inline-source");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+    let (room, actor) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
+    let peer = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(room.id(), "dev-stub").with_alias("peer"),
+        )
+        .unwrap();
+    let actor_run = launch_test_provider(
+        &mut app,
+        room.id(),
+        actor.id(),
+        "dev-stub",
+        "dev-stub",
+        "room-model",
+    );
+    let peer_run = launch_test_provider(
+        &mut app,
+        room.id(),
+        peer.id(),
+        "dev-stub",
+        "dev-stub",
+        "room-model",
+    );
+    let actor_auth = actor_run.runtime_mcp_auth_token().unwrap().to_owned();
+    let peer_auth = peer_run.runtime_mcp_auth_token().unwrap().to_owned();
+    let registry = crate::workflow_code::WorkflowCodeArtifactRegistry::new(vec![config
+        .workflow_code_artifact_root()
+        .join("rooms")
+        .join(room.id())]);
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let source = format!(
+        r#"workflow.define({{alias: "inline-review"}});
+const review = workflow.node({{handle:"review",agent:workflow.existingAgent("{}"),canCompleteWorkflowRun:true}});
+workflow.endpoint(review,{{handle:"entry"}});"#,
+        peer.id()
+    );
+    let created = router
+        .dispatch_authenticated_runtime_tool_call(
+            &peer_auth,
+            "chariox.workflow_code.create",
+            serde_json::json!({"name":"peer-inline","source":source}),
+        )
+        .await
+        .unwrap();
+    assert!(created.ok, "{created:?}");
+    let before = registry.get("peer-inline").unwrap().unwrap();
+    for tool in ["chariox.workflow_code.apply", "chariox.workflow_code.run"] {
+        let error = router
+            .dispatch_authenticated_runtime_tool_call(
+                &actor_auth,
+                tool,
+                serde_json::json!({"name":"peer-inline","source":source}),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("pass either name or source, not both"),
+            "{error}"
+        );
+    }
+    let after = registry.get("peer-inline").unwrap().unwrap();
+    assert_eq!(
+        after.metadata, before.metadata,
+        "A01 inline source/name must not rewrite peer artifact metadata"
+    );
+}
+
+#[test]
 fn room_admission_regular_spawn_and_direct_child_control() {
     run_large_stack_async_test(
         "room-admission-lineage",
