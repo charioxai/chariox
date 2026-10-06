@@ -8,7 +8,11 @@ export async function interruptTraces(logDir) {
     if (!name.endsWith('.ndjson')) continue
     for (const line of (await readFile(path.join(logDir, name), 'utf8')).split('\n')) {
       let entry; try { entry = JSON.parse(line) } catch { continue }
-      if (entry.component !== 'daemon.provider.codex' || ![
+      if(entry.component==='daemon.command_latency' && entry.command_type==='room_workflow_runs.control') {
+        traces.push({at:entry.timestamp_ms,message:entry.message,commandType:entry.command_type,source:entry.source,queueWaitMs:entry.queue_wait_ms,commandAgeMs:entry.command_age_ms})
+        continue
+      }
+      if (entry.component !== 'daemon.provider.codex'  || ![
         'codex turn interrupt sent trace', 'codex turn completion received trace',
         'codex command output received trace', 'codex thread terminals cleaned trace',
       ].includes(entry.message)) continue

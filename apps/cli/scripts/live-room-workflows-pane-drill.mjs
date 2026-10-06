@@ -44,6 +44,8 @@ const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key])=>
   CHARIOX_CODEX_PORT: String(ports[2]), CHARIOX_OPENCODE_PORT: String(ports[3]),
   CHARIOX_RELAY_PORT: String(ports[4]), CHARIOX_LOG_DIR: path.join(state,'logs'),
   CHARIOX_LOG_LEVEL: tracingInterrupts ? 'debug' : 'info',
+  CHARIOX_PERF_DIAGNOSTICS: tracingInterrupts ? '1' : '0',
+  CHARIOX_PERF_DIAGNOSTICS_SAMPLE_RATE: '1',
   CHARIOX_DAEMON_SOCKET: path.join(state, 'kernel.sock'),
   TERM: 'xterm-256color', COLORTERM: 'truecolor' }
 for (const key of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'OPENCODE_CONFIG_DIR', 'CHARIOX_RELAY_URL', 'CHARIOX_RELAY_TOKEN', 'CHARIOX_CLOUD_PROFILE', 'CHARIOX_CLOUD_TOKEN', 'CHARIOX_CLOUD_RELAY_CONFIG_JSON', 'CHARIOX_CLOUD_RELAY_CONFIG_PATH']) delete env[key]
