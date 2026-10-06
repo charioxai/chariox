@@ -221,7 +221,7 @@ def run(request, evidence):
         transport = [] if '--relay-url' in extra else ['--kernel-url', endpoint]
         cli = subprocess.Popen([str(root / 'bin/bun'), str(root / 'apps/cli/dist/index.js'),
                                 *transport, '--automation-socket', str(automation), *extra],
-                               env=env, stdin=slave, stdout=slave, stderr=slave)
+                               env=env, cwd=request['workspace'], stdin=slave, stdout=slave, stderr=slave)
         os.close(slave); processes.append(cli)
         # Drain the PTY continuously so real rendering cannot block the client.
         import threading
@@ -271,7 +271,7 @@ def run(request, evidence):
                 measurement['status'] = 'quota_exhausted'
                 raise RuntimeError('MP-08 / MP-10: proven rolling plan quota exhaustion')
             setup.send('exit')
-            client = launch_cli(['--create-session', '--workspace', request['workspace'], '--provider', provider,
+            client = launch_cli(['--create-session', '--workspace', request['workspace'], '--worktree', request['workspace'], '--provider', provider,
                                  '--model', request['model'], '--effort', request.get('effort', 'low'), '--account-profile', account['profile_id']], 'local' if request.get('relay_binary') else 'task')
             snap = wait_owned(lambda: client.send('snapshot'), time.monotonic() + 30)
             snap = wait_owned(lambda: (s if (s := client.send('snapshot')).get('session', {}).get('agents') else None), time.monotonic() + 60)
