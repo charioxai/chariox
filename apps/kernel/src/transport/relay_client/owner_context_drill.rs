@@ -286,6 +286,8 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
     target.daemon_id = "owner-target-kernel".into();
     target.host_machine_id = "owner-target-machine".into();
     target.user_config_path = root.join("target-config.toml");
+    let target_config_canary = b"# MP-08/MP-11: target runtime configuration is preserved.\n";
+    std::fs::write(&target.user_config_path, target_config_canary).unwrap();
     target.user_config.history.operational.path =
         Some(root.join("target-operational.db").display().to_string());
     target.user_config.artifacts.operational.root =
@@ -736,6 +738,7 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
         .await
         .unwrap();
     assert_eq!(replay.receipt, result.receipt);
+    assert!(std::fs::read(&target.user_config_path).unwrap() == target_config_canary);
     server.await.unwrap();
     // MP-10: synthetic bound identities and mocked admission are local evidence only.
     let _public_package_hash = format!("{:x}", Sha256::digest(package_bytes));
