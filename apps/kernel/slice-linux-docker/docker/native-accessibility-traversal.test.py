@@ -116,6 +116,33 @@ class TraversalTest(unittest.TestCase):
         self.assertTrue(tree['complete'])
         self.assertEqual([n['path'] for n in tree['nodes'] if n['role']=='table cell'], [[0,i] for i in range(4)])
 
+    def bounded_table(self, hidden, secret=False):
+        children = [Node('Name', 'table column header'), Cell(1,
+            [Node('Never expose', 'password text', secret=True)] if secret else [])]
+        table = VirtualTable(children)
+        table.childCount = len(children)
+        table.gap = True  # GTK headers/empty space do not resolve to table cells.
+        table.getState = lambda: types.SimpleNamespace(contains=lambda flag:
+            flag == 2 or (flag == 1 and not hidden))
+        if hidden:
+            table.queryComponent = lambda: types.SimpleNamespace(getExtents=lambda coords:
+                types.SimpleNamespace(x=-2147483648,y=-2147483648,width=1,height=1))
+        return table
+
+    def test_mp08_bounded_gtk_tables_cover_headers_and_hidden_children(self):
+        for hidden in [False, True]:
+            tree = self.snapshot([Node('Save', 'application', [self.bounded_table(hidden)])])
+            self.assertTrue(tree['complete'])
+            self.assertFalse(tree['protected'])
+            self.assertEqual(len(tree['nodes']), 4)
+
+    def test_mp11_bounded_gtk_table_password_descendants_stay_protected(self):
+        for hidden in [False, True]:
+            tree = self.snapshot([Node('Save', 'application', [self.bounded_table(hidden, True)])])
+            self.assertTrue(tree['complete'])
+            self.assertTrue(tree['protected'])
+            self.assertEqual(tree['nodes'][-1]['name'], '[protected]')
+
     def test_mp11_virtual_cell_secret_descendants_still_protect_pixels(self):
         cells = [Cell(i) for i in range(4)]
         cells[3].children = [Node('Secret', 'password text', secret=True)]

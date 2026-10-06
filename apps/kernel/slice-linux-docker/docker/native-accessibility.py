@@ -92,7 +92,12 @@ def snapshot(processes):
         nodes.append({'pid':pid,'started':started,'path':path,'role':role,'name':'[protected]' if secret else (node.name or '')[:4096],'states':states,'bounds':bounds,'actions':actions,'protected':secret})
         if not secret:
             managed_table = (node.getRole() == pyatspi.ROLE_TABLE and
-                             state.contains(pyatspi.STATE_MANAGES_DESCENDANTS))
+                             state.contains(pyatspi.STATE_MANAGES_DESCENDANTS) and
+                             node.childCount > MAX_NODES)
+            # MP-08 / MP-11: finite GTK tables include headers, empty space and
+            # hidden views without screen geometry. Cover all their children,
+            # including password descendants; only huge virtual tables need
+            # the verified visible-cell walk.
             try:
                 children = visible_table_children(node, bounds) if managed_table else (
                     (i, node.getChildAtIndex(i)) for i in range(min(node.childCount, MAX_NODES)))
