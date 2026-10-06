@@ -6,6 +6,7 @@ import { mkdir, readFile, readdir, readlink, realpath, writeFile } from "node:fs
 import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 
 import { startManagedOrdinaryLiveKernelBinding } from "./lib/managed-ordinary-live-kernel-binding.mjs"
+import { signalOwnedChild } from "./lib/managed-ordinary-owned-child.mjs"
 import { prepareManagedOrdinaryProbeEnvironment } from "./lib/managed-ordinary-kernel-endpoint.mjs"
 import { startManagedOrdinaryProviderTurnBinding } from "./lib/managed-ordinary-provider-turn-binding.mjs"
 import {
@@ -169,7 +170,7 @@ export async function defaultRunCommand(command, args = [], options = {}) {
     if (Number.isFinite(timeout) && timeout > 0) {
       timer = setTimeout(() => {
         timedOut = true
-        child.kill(options.killSignal ?? "SIGTERM")
+        signalOwnedChild(child, options.killSignal ?? "SIGTERM")
       }, timeout)
       timer.unref?.()
     }
@@ -244,6 +245,7 @@ function normalizeGenericResult(result, rowId, checkId) {
   for (const key of required) normalized[key] = result[key]
   if (rowId === "MP-01" && checkId === "privilege_state") {
     expectedBoolean(result, "no_new_privs", rowId, checkId, false)
+    expectedBoolean(result, "observed_no_new_privs", rowId, checkId, false)
     normalized.no_new_privs = false
   }
   if (rowId === "MP-02" && checkId === "directory_discovery") {
@@ -276,6 +278,7 @@ function normalizeProviderAncestry(result) {
   expectedBoolean(result, "bwrap_ancestor", "MP-01", "provider_ancestry", false)
   expectedBoolean(result, "fresh_worker", "MP-01", "provider_ancestry")
   expectedBoolean(result, "ancestry_complete", "MP-01", "provider_ancestry")
+  expectedBoolean(result, "observed_bwrap_ancestor", "MP-01", "provider_ancestry", false)
   return { observed: true, provider_observed: true, bwrap_ancestor: false, fresh_worker: true }
 }
 
@@ -569,6 +572,10 @@ export function createParityCollector({
     const commandEnvironment = { ...(processApi.env ?? {}) }
     for (const name of ["CHARIOX_KERNEL_LOCAL_AUTH_TOKEN", "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE",
       "CHARIOX_PARITY_PROJECT_SETUP_RELAY_TOKEN", "CHARIOX_PARITY_SIGNING_KEY"]) delete commandEnvironment[name]
+    const signingSecret = Buffer.isBuffer(ctx.signingKey) ? ctx.signingKey.toString("utf8") : ctx.signingKey
+    for (const [name, value] of Object.entries(commandEnvironment)) {
+      if (name.startsWith("CHARIOX_PARITY_") || value === signingSecret) delete commandEnvironment[name]
+    }
     const startedAt = nowIso(clock)
     let raw
     let caught = null
@@ -601,8 +608,8 @@ export function createParityCollector({
       timed_out: normalized.timedOut,
       stdout_sha256: `sha256:${sha256(normalized.stdout)}`,
       stderr_sha256: `sha256:${sha256(normalized.stderr)}`,
-      stdout_redacted: redactText(normalized.stdout, [ctx.probeEnvironment?.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN, ctx.probeEnvironment?.CHARIOX_PARITY_PROJECT_SETUP_RELAY_TOKEN]),
-      stderr_redacted: redactText(normalized.stderr, [ctx.probeEnvironment?.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN, ctx.probeEnvironment?.CHARIOX_PARITY_PROJECT_SETUP_RELAY_TOKEN]),
+      stdout_redacted: redactText(normalized.stdout, [signingSecret, ctx.probeEnvironment?.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN, ctx.probeEnvironment?.CHARIOX_PARITY_PROJECT_SETUP_RELAY_TOKEN]),
+      stderr_redacted: redactText(normalized.stderr, [signingSecret, ctx.probeEnvironment?.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN, ctx.probeEnvironment?.CHARIOX_PARITY_PROJECT_SETUP_RELAY_TOKEN]),
       error_code: typeof caught?.code === "string" ? caught.code : null,
     }
     const evidencePath = join(ctx.evidenceDir, ctx.topology, rowId, checkId, `${step}.json`)
@@ -644,17 +651,18 @@ export function createParityCollector({
       "--nested-path", ctx.nestedPath,
       "--new-directory", ctx.newDirectory,
     ]
-    if (rowId === "MP-02" && checkId === "exact_path_entry") {
+    if (rowId === "MP-02" && checkId === "exact_path_entry" || rowId === "MP-04") {
       args.push("--expected-cwd", ctx.expectedCwd)
     }
-    if (rowId === "MP-10" && checkId === "capture_boundary") {
+    if ((rowId === "MP-01" && checkId === "provider_ancestry")
+      || (rowId === "MP-10" && checkId === "capture_boundary")) {
       args.push("--provider", ctx.provider)
     }
     return args
   }
 
   async function runProbe(ctx, rowId, checkId, normalizer) {
-    const probeCwd = rowId === "MP-02" && checkId === "exact_path_entry"
+    const probeCwd = rowId === "MP-02" && checkId === "exact_path_entry" || rowId === "MP-04"
       ? ctx.expectedCwd
       : ctx.sourceRoot
     const probeArguments = [ctx.probePath, ...probeArgs(ctx, rowId, checkId)]
@@ -793,6 +801,9 @@ export function createParityCollector({
     if (actualRelayProtocol !== ctx.relayProtocol) throw new CollectorError("protocol_identity_mismatch", "relay protocol mismatch")
 
     ctx.probeEnvironment = await probeEnvironmentFactory(processApi.env ?? {})
+    const signingSecret = Buffer.isBuffer(ctx.signingKey) ? ctx.signingKey.toString("utf8") : ctx.signingKey
+    ctx.probeEnvironment = Object.fromEntries(Object.entries(ctx.probeEnvironment).filter(([name, value]) =>
+      name !== "CHARIOX_PARITY_SIGNING_KEY" && value !== signingSecret))
 
     let providerTurnBinding
     try {
@@ -1119,3 +1130,5 @@ export async function runCli(argv = process.argv.slice(2), {
 if (import.meta.url === `file://${process.argv[1]}`) {
   process.exitCode = await runCli()
 }
+
+export { normalizeGenericResult, normalizeProviderAncestry }

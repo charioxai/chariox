@@ -534,6 +534,14 @@ class FakeActionConnection {
     if (method === "Page.getFrameTree") {
       return { frameTree: { frame: { loaderId: this.loaderId } } };
     }
+    if (method === "DOMSnapshot.captureSnapshot") {
+      return { strings: ["frame-a"], documents: [{ frameId: 0, nodes: { backendNodeId: [103, 104] } }] };
+    }
+    if (method === "Page.createIsolatedWorld") {
+      assert.equal(params.frameId, "frame-a");
+      assert.equal(params.grantUniveralAccess, false);
+      return { executionContextId: 7 };
+    }
     if (method === "DOM.resolveNode") {
       if (this.resolveError) throw this.resolveError;
       return { object: { objectId: "object-1" } };

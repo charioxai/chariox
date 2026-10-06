@@ -1,5 +1,24 @@
 # Chariox v1 Protocol
 
+### MP-11 F7 public provider-run boundary (local protocol 435)
+
+All client-facing provider-run responses (single/batch launch, read, selection,
+external import and fork) and terminal snapshot/change events use
+`PublicProviderRun`. This allowlist carries identity, selection, usage, state,
+control capabilities, public import metadata and native session binding. It
+omits provider launch environment/arguments, MCP authorization/configuration,
+private resume payloads, launch manifests and free-form diagnostics. Native TUI
+structured endpoints are projected only when the URL has no userinfo, query or
+fragment. Internal persistence and authenticated worker launch/projection
+contracts retain `RuntimeProviderRun`; no relay-peer shape changes in this
+revision (peer protocol remains 70 on this branch).
+
+The focused synthetic protocol drill is
+`apps/cli/scripts/public-provider-run-protocol-drill.mjs`. It runs the Rust DTO,
+response/event and private persistence regressions with a prebuilt kernel test
+binary; it neither invokes provider accounts nor establishes live parity.
+
+
 ## Status
 
 Draft protocol aligned with `docs/spec-v1.md`.
@@ -855,6 +874,9 @@ MP-08 / MP-11: the worker excludes agent screenshot, OCR, text-from-frame and ge
 
 Protocol v302 and relay peer protocol v37 complete the shared human Computer mouse and keyboard input surface. `SubmitRoomEnvironmentAction` adds `pointer_move`, `pointer_drag`, `pointer_scroll`, `keyboard_text`, and `keyboard_key` beside the v294 `pointer_click`. Every action uses the same authenticated human Actor, explicit desktop takeover, current runtime generation, canonical viewport revision, opaque idempotency key, Room Action ledger, and bound-worker controller route. Pointer coordinates are canonical desktop pixels and must remain inside the current desktop bounds. Drag identifies both endpoints and the left, middle, or right button. Scroll uses signed discrete wheel steps: negative horizontal means left, positive horizontal means right, negative vertical means up, and positive vertical means down. At least one axis must be nonzero and each axis is bounded to 120 steps per Action. Keyboard text is nonempty UTF-8 bounded to 64 KiB. Keyboard key input is a nonempty ASCII xdotool key or chord name, bounded to 128 bytes, with a repeat count from 1 through 32. Human Computer input targets whichever desktop application already owns focus; it never activates Chromium implicitly. Text and chord payloads travel to the worker helper over stdin and are redacted from Debug output. The durable Action record keeps only text byte/character counts or a key repeat count, never keyboard contents. The in-memory idempotency ledger compares a domain-separated HMAC of keyboard contents, keyed by the home kernel identity, so a reused key with different same-length input conflicts without exposing a guessable content digest. As with v294 clicks, physical input is at-most-once and has no replay command after an ambiguous delivery failure.
 
+MP-08/MP-10/MP-11, allocated local protocol426: `SubmitRoomEnvironmentAction` adds `keyboard_hold` (`key`, `duration_ms`) and `pointer_hold` (`x`, `y`, `button`, `duration_ms`). Provider `slice_keyboard` and `slice_mouse` expose `action=hold` through that same Room admission, bound Environment route and Action cancellation. A hold presses, waits 1–10000 ms, then releases before completing the Action; it never leaves native input held between Actions. The desktop remains reserved while holding. Human takeover cancels through the existing Action and process-group/reset path; release settles before a cancelled acknowledgement. Native interruption also releases in the helper's finalizer. Holds never refocus a desktop application. Keyboard holds use existing base-layout key names and explicit modifier chords (for example `shift+Left`); unmapped/duplicate keys, invalid durations and pre-existing native holds fail closed. Ordinary text and Unicode continue through the text helper. Keyboard history stores duration only, and HMAC idempotency binds the redacted key contents while Action arguments bind duration. Pointer history retains canonical coordinates, button, duration and viewport revision. Existing clients which do not request holds retain their supported minimums; hold callers require426. The relay envelope remains unchanged; a protocol411 worker rejects the new inner enum discriminant instead of silently applying a tap. Separate persistent down/up calls are not part of this bounded contract. Physical input retains the at-most-once and no-replay rule.
+
+
 Relay peer protocol v38 adds the typed `ObserveRoomComputer` request and `RoomComputerObserved` response for provider-facing screen status, OCR, and text lookup. The home kernel derives the Room and agent from the authenticated provider run, requires the Room's running bound slice, holds its Environment-use guard, and sends the request only to that physical worker. The worker independently validates the authenticated home kernel key and exact Room/slice provisioner binding before running the bounded screen helper. A leased provider first forwards the normal runtime-tool call to home; a direct-home provider enters the same home authority directly. Status returns the home-owned canonical viewport and a client-attachment marker, not the worker's private viewer or display details. OCR and text lookup may reference an opaque artifact ID from `slice_screenshot`; the worker resolves it only after verifying source kind, media type, Room, slice, size, stored bytes, and PNG signature. Caller-supplied Room image paths are rejected. Text lookup emits every non-overlapping occurrence in visual reading order with native screenshot-pixel coordinates. Its result preserves `match` as the first occurrence or null and adds `matches` plus `match_count`; these additive fields live inside the existing opaque runtime-tool payload and do not change a typed relay or local-daemon shape, so they require no additional protocol-version or client-minimum bump. Raw helper stdout and stderr, artifact paths, viewer URLs, and find queries are absent from Debug output and the worker result. Observation results are bounded to 256 KiB per helper stream and do not enter the mutating Room Action ledger. The focused direct-home and leased-provider drills cross the real encrypted relay and verify authority, canonical dimensions, Unicode OCR, multiple-match, no-match, and native-scale coordinates, opaque artifact reuse, cross-Room rejection, redaction, and cleanup. No local daemon request or response changed, so client minimum versions remain unchanged; home and worker kernels must share relay peer protocol v38.
 
 Provider runtime calls to `slice_mouse` and `slice_keyboard` reuse those Computer actions. For a leased agent, the worker forwards the authenticated call to home through the existing runtime-tool relay route. Home derives the Room and agent Actor from the active provider run, admits the Action against the authoritative Room, and returns the resulting Action and Environment metadata. The physical worker only executes the existing controller command. It does not create a private Room authority or a second action history. Keyboard contents remain absent from the Action record and result. The tool argument additions for horizontal scroll, pointer button, and key repeat are backward-compatible JSON fields, and the execution reuses the existing v302/v37 command shapes, so this correction requires no protocol version bump.
@@ -1200,6 +1222,32 @@ adapter added no local-daemon or relay serialization, so that checkpoint
 remained at protocol v290 and relay peer v26. The encrypted home-to-worker drill invokes every tool
 through the authenticated runtime MCP route and verifies stable Tab projection,
 physical controller effects, path redaction, cursor resume, and cleanup.
+
+MP-08/MP-10/MP-11, local protocol v426 adds `RoomBrowserArtifact` and the
+shared `slice_browser_artifact` tool. Attached clients supply Room, attachment,
+Tab and a capture/read/inspect operation; provider calls derive Room from the
+authenticated run and use its focused Tab. Image/network capture requires the
+observed browser generation; completed downloads additionally require an
+observed GUID. Home publishes bounded operational-only artifacts with opaque
+IDs, SHA-256, safe names and runtime/browser/Tab/document/viewport/observation
+identity. Reads are limited to 128 KiB and verify the stored bytes and current
+identity. Inspection is limited to 256 KiB; PDF extraction requires installed
+`pdftotext` with child time/output/resource limits. The provider may request
+native MCP image bytes from the same CDP Page capture. Unix-socket clients requesting
+inline bytes receive them only when the complete encoded response fits the local
+WebSocket response 1 MiB inline-image budget. Otherwise capture returns artifact metadata for existing bounded
+chunk reads; the native MCP image bound remains 8 MiB. No new serialized shape
+is needed for this delivery bound. Protected images are
+conservatively masked in full; protected download bytes are withheld. Passive
+network attachments retain actual allowlisted CDP metadata, omitting cookie,
+auth and bodies. `slice_browser_upload` also accepts Room-owned opaque
+`artifact_ids`; home verifies and transfers bytes through the existing upload
+admission, staging and recovery path. The new controller peer Artifact variant
+and opaque upload variant require relay peer protocol v73. The existing lease
+admission/rebind and hosted token installation/confirmation gates reject v70
+peers before these operations; image preflight requires v73 and matching runtime
+source lineage. Local client protocol is v426. See
+`docs/BROWSER_CONTROLLERFILES_ACCEPTANCE.md` for bounds and validation limits.
 
 `slice_screenshot` returns inline PNG data as the standard MCP `image` content
 block rather than embedding Base64 in the textual result. The companion text

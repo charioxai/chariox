@@ -86,7 +86,16 @@ impl KernelRuntimeState {
         let (service, _vault_observation_guard) = self
             .room_secret_input_service(session_id, &args.credential_id)
             .await?;
-        let secret = zeroize::Zeroizing::new(service.computer_secret_input(&args.credential_id)?);
+        let secret = self
+            .with_authorized_app_side_effect(|_| {
+                self.with_forwarded_binding_operation(|| {
+                    Ok(zeroize::Zeroizing::new(
+                        service.computer_secret_input(&args.credential_id)?,
+                    ))
+                })
+            })
+            .await?;
+        self.authorize_current_forwarded_binding()?;
         let execution = self
             .execute_computer_input_as_agent_for_generation(
                 session_id,

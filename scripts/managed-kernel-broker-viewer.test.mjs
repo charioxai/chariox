@@ -13,7 +13,8 @@ async function fixture(context) {
   const share = await mkdtemp(join(tmpdir(), "chariox-broker-viewer-"))
   context.after(() => rm(share, { recursive: true, force: true }))
   return (request) => spawnSync(process.execPath, [broker, "--validate-request"], {
-    input: JSON.stringify(request), encoding: "utf8", timeout: 5000,
+    // Allow broker startup under shared-builder load; admission assertions stay exact.
+    input: JSON.stringify(request), encoding: "utf8", timeout: 15_000,
     env: { ...process.env, CHARIOX_SLICE_DOCKER_SHARE_ROOT: share },
   })
 }

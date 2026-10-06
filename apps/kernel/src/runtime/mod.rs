@@ -42,6 +42,7 @@ pub(crate) mod app_views;
 pub(crate) mod app_wake_pump;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_worker;
+pub(crate) mod browser_artifact;
 pub(crate) mod browser_controller_action;
 pub(crate) mod browser_controller_app_view;
 pub(crate) mod browser_controller_compatibility;
@@ -99,6 +100,7 @@ pub(crate) mod metaagent_event_control;
 pub(crate) mod metaagent_guides;
 pub(crate) mod metaagent_trace;
 pub(crate) mod native_interaction_bridge;
+pub(crate) mod owned_process_signals;
 pub(crate) mod pairing_invite_executor;
 pub mod process_health;
 pub(crate) mod project_environment_setup_utility;
@@ -154,3 +156,5 @@ pub(crate) mod workspace_search;
 pub(crate) mod workspace_worktrees;
 
 pub(crate) mod kernel_access;
+
+pub(crate) mod relay_peer_authority;

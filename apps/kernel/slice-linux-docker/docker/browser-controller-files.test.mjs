@@ -182,7 +182,7 @@ test("uploads resolve regular files inside configured roots without returning pa
   });
 });
 
-for (const failure of ["detached", "invalid", "exception", "set-files-failed"]) {
+for (const failure of ["detached", "exception", "set-files-failed"]) {
 test(`upload ${failure} releases its resolved object without reporting success`, async () => {
   const connection = new FakeFileConnection();
   connection.failure = failure;

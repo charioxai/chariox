@@ -192,18 +192,13 @@ test("does not seed a partial OpenCode model catalog", async (t) => {
   )
 })
 
-test("seeds a scoped Hetzner OpenCode runtime without its session database", () => {
-  const command = hetznerOpenCodeRuntimeProfileSeedCommand(
-    "/tmp/arb-remote-native-tui-42-123456789",
-  )
-  assert.match(command, /\/root\/\.local\/share\/opencode\/auth\.json/)
-  assert.match(command, /\/root\/\.cache\/opencode\/models\.json/)
-  assert.match(command, /\/root\/\.cache\/opencode\/version/)
-  assert.doesNotMatch(command, /opencode\.db/)
-  assert.throws(
-    () => hetznerOpenCodeRuntimeProfileSeedCommand("/tmp"),
-    /refusing unexpected Hetzner native TUI runtime root/,
-  )
+test("MP-11 F25 standard OpenCode workers require an explicit provisioned profile", () => {
+  const root="/tmp/arb-remote-native-tui-42-123456789"
+  assert.throws(()=>hetznerOpenCodeRuntimeProfileSeedCommand(root), /explicit linked provider scope/)
+  const command=hetznerOpenCodeRuntimeProfileSeedCommand(root,"/synthetic/linked/data/opencode")
+  assert.match(command, /test -f.*synthetic\/linked\/data\/opencode\/auth\.json/)
+  assert.doesNotMatch(command, /install|cp |opencode\.db|\/root\//)
+  assert.throws(()=>hetznerOpenCodeRuntimeProfileSeedCommand("/tmp","/synthetic/profile"),/refusing unexpected/)
 })
 
 test("stops the Hetzner runtime before restoring Claude trust", async () => {

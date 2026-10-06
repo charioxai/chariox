@@ -60,6 +60,9 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
             retryable,
             ..
         } => relay_error(code, message, *retryable),
+        DaemonError::RelayPeerCleanupAbsent { code, .. } => {
+            relay_error(code, &error.to_string(), false)
+        }
         DaemonError::ManagedContext {
             code, retryable, ..
         } => relay_error(code, &error.to_string(), *retryable),

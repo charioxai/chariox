@@ -1,7 +1,7 @@
 #!/usr/bin/env node
+import { spawnOwned, signalOwnedProcessGroup, signalOwnedProcess } from "../../kernel/slice-linux-docker/owned-process-signals.mjs"
 
 import { createHash, createHmac } from "node:crypto"
-import { spawn } from "node:child_process"
 import { access, chmod, mkdir, writeFile } from "node:fs/promises"
 import { constants as fsConstants } from "node:fs"
 import net from "node:net"
@@ -411,7 +411,7 @@ async function resourceSnapshot(label, relayPid = null) {
 
 async function runDiagnostic(command, args) {
   return await new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] })
+    const child = spawnOwned(command, args, { stdio: ["ignore", "pipe", "pipe"] })
     const stdout = []
     const stderr = []
     child.stdout.on("data", (chunk) => stdout.push(chunk))
@@ -434,9 +434,9 @@ async function writeReport(reportPath, report) {
 function terminateGroup(child, signal) {
   if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return
   try {
-    process.kill(-child.pid, signal)
+    signalOwnedProcessGroup(child.pid, signal)
   } catch {
-    child.kill(signal)
+    signalOwnedProcess(child, signal)
   }
 }
 
@@ -507,7 +507,7 @@ async function main() {
     report.resources.push(await resourceSnapshot("before"))
     port = await freePort()
     url = `ws://127.0.0.1:${port}`
-    relay = spawn(options.relayBinary, [], {
+    relay = spawnOwned(options.relayBinary, [], {
       cwd: repoRoot,
       detached: process.platform !== "win32",
       env: {

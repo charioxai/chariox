@@ -2834,7 +2834,9 @@ test("a terminated managed image install releases the lock for a concurrent inst
   assert.equal(firstSignal, "SIGTERM")
   await waitForPath(join(harness.state, "flock-acquired-second"))
   await writeFile(join(harness.state, "flock-release-second"), "release\n")
-  assert.equal((await withTimeout(secondExit, "second installer timed out"))[0], 0)
+  // MP-03/MP-07/MP-10: the five-second acquired-lock fence above remains
+  // separate from full installation, including protected storage admission.
+  assert.equal((await withTimeout(secondExit, "second installer timed out", 45_000))[0], 0)
 })
 
 test("managed image installer has no runtime start or network path", async () => {
@@ -2897,3 +2899,36 @@ test("App storage helper and unit remain bound to signed release provenance", as
   assert.equal(tampered.status, 1)
   assert.match(tampered.stderr, /chariox-app-storage.service is corrupted/)
 })
+
+for (const fault of ["home-validation", "migration-ancestor", "activation"]) {
+  test(`MP-11 F14 failed shared-host to Path-1 ${fault} preserves access policy`, async context => {
+    if (process.platform !== "linux" || process.getuid?.() !== 0) { context.skip("Linux ownership semantics"); return }
+    const root = await mkdtemp(join(tmpdir(), "mp11-policy-")); context.after(() => rm(root,{recursive:true,force:true}))
+    const fixture = await makeFixture(root); const output = join(root,"release")
+    const packaged = runPackager({...fixture,output}); assert.equal(packaged.status,0,packaged.stderr)
+    const harness = await createInstallerHarness(root)
+    const env = {...process.env,PATH:`${harness.bin}:${process.env.PATH}`,HARNESS_STATE:harness.state,
+      CHARIOX_IMAGE_INSTALL_ROOT:harness.installRoot,CHARIOX_IMAGE_INSTALL_LOCK:join(harness.state,"install.lock"),
+      CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY:fixture.trustedBuilderPublicKey}
+    const selectedInstaller = process.env.MP11_TEST_INSTALLER ?? installer
+    const prior = spawnSync(selectedInstaller,installerArguments(join(output,"rootfs"),packaged.stdout.trim(),fixture),{encoding:"utf8",env})
+    assert.equal(prior.status,0,prior.stderr)
+    const current = await readlink(join(harness.installRoot,"usr/lib/chariox/current"))
+    const policy = join(harness.installRoot,"etc/sudoers.d/90-chariox-path1")
+    await mkdir(join(harness.installRoot,"etc/sudoers.d"),{recursive:true})
+    await writeFile(policy,"chariox ALL=(ALL) /synthetic/restricted-command\n",{mode:0o440})
+    if(fault==="home-validation") await writeFile(join(harness.state,"user-chariox-home"),"/incompatible")
+    if(fault==="migration-ancestor") {
+      await rename(join(harness.installRoot,"home/chariox"),join(harness.installRoot,"home/original"))
+      await symlink("original",join(harness.installRoot,"home/chariox"))
+    }
+    const failed = spawnSync(selectedInstaller,installerArguments(join(output,"rootfs"),packaged.stdout.trim(),fixture,"path1"),
+      {encoding:"utf8",env:{...env,...(fault==="activation"?{HARNESS_LOGINCTL_FAIL:"1"}:{})}})
+    assert.equal(failed.status,1)
+    const shell = await readFile(join(harness.state,"user-chariox-shell"),"utf8").catch(()=>"/usr/sbin/nologin")
+    assert.equal(shell,"/usr/sbin/nologin")
+    assert.equal(await readFile(policy,"utf8"),"chariox ALL=(ALL) /synthetic/restricted-command\n")
+    assert.equal((await stat(policy)).mode&0o777,0o440)
+    assert.equal(await readlink(join(harness.installRoot,"usr/lib/chariox/current")),current)
+  })
+}

@@ -186,6 +186,12 @@ pub(crate) trait BrowserControllerProcessBackend {
     ) -> Result<BrowserControllerPermissionResult, String> {
         Err("browser controller backend does not support permissions".to_string())
     }
+    fn browser_artifact(
+        &mut self,
+        _request: &super::browser_artifact::BrowserArtifactRequest,
+    ) -> Result<super::browser_artifact::BrowserArtifactCapture, String> {
+        Err("browser controller backend does not support Browser artifacts".into())
+    }
     fn app_view(
         &mut self,
         _request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
@@ -822,6 +828,16 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(result)
     }
 
+    fn browser_artifact(
+        &mut self,
+        request: &super::browser_artifact::BrowserArtifactRequest,
+    ) -> Result<super::browser_artifact::BrowserArtifactCapture, String> {
+        let result = self
+            .request_serializable("browser.artifact", request, self.timeout)?
+            .into_result::<super::browser_artifact::BrowserArtifactCapture>("browser.artifact")?;
+        result.validate(request)?;
+        Ok(result)
+    }
     fn app_view(
         &mut self,
         request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
@@ -1284,6 +1300,14 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         })
     }
 
+    pub(crate) fn browser_artifact(
+        &mut self,
+        session_id: &str,
+        request: &super::browser_artifact::BrowserArtifactRequest,
+    ) -> Result<super::browser_artifact::BrowserArtifactCapture, String> {
+        self.require_lease(session_id)?;
+        self.supervisor.browser_artifact(request)
+    }
     pub(crate) fn app_view(
         &mut self,
         session_id: &str,
@@ -1643,6 +1667,19 @@ impl BrowserControllerProcessStore {
             .map(Some)
     }
 
+    pub(crate) fn browser_artifact(
+        &self,
+        session_id: &str,
+        request: &super::browser_artifact::BrowserArtifactRequest,
+    ) -> Result<Option<super::browser_artifact::BrowserArtifactCapture>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership.browser_artifact(session_id, request).map(Some)
+    }
     pub(crate) fn app_view(
         &self,
         session_id: &str,
@@ -1884,6 +1921,13 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
             .set_browser_permission(target_id, document_id, permission, setting)
     }
 
+    fn browser_artifact(
+        &mut self,
+        request: &super::browser_artifact::BrowserArtifactRequest,
+    ) -> Result<super::browser_artifact::BrowserArtifactCapture, String> {
+        self.ensure_started_without_transparent_restart()?;
+        self.backend.browser_artifact(request)
+    }
     fn app_view(
         &mut self,
         request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,

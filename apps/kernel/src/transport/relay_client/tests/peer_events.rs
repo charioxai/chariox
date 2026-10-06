@@ -87,6 +87,25 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
     let sender_private_key = relay_crypto::generate_private_key_base64();
     let sender_public_key = relay_crypto::public_key_from_private_key_base64(&sender_private_key)
         .expect("sender public key should derive");
+    app.lock()
+        .await
+        .agents()
+        .bind_remote_execution(
+            &agent_id,
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-1".into(),
+                worker_machine_id: "worker-machine-1".into(),
+                execution_lease_id: "event-lease-1".into(),
+                leased_agent_id: agent_id.clone(),
+                active_worker_provider_run_id: Some("remote:worker:provider-run-1".into()),
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
     let plaintext = serde_json::to_vec(&RelayPeerEvent::LeasedRuntimeProjection {
         home_session_id: session_id.clone(),
         home_agent_id: agent_id.clone(),

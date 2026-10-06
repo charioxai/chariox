@@ -182,7 +182,7 @@ async fn run_controlled_workspace_live_sync_target(
 fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        70
+        73
     );
     let mut materialization = crate::account_profile::ProviderAccountMaterialization {
         profile: crate::account_profile::ProviderAccountReplicaMetadata {
@@ -229,7 +229,7 @@ fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted()
 fn remote_provider_launch_credential_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        70
+        73
     );
     let request = RelayPeerRequest::SubmitLeasedPrompt {
         leased_agent_id: "leased-agent-1".to_string(),
@@ -298,7 +298,7 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
 
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        70
+        73
     );
     let request = RelayPeerRequest::UploadManagedContextChunk {
         transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
@@ -932,6 +932,7 @@ async fn leased_worker_workspace_live_sync_keeps_forwarding_after_worker_commits
 
 #[tokio::test(flavor = "multi_thread")]
 async fn workspace_live_sync_changes_apply_to_linked_peer_worktree_through_relay() {
+    crate::test_support::isolated_env_test!();
     let _relay_test_guard = relay_client_test_guard().await;
     let test_root = std::env::temp_dir().join(format!(
         "chariox-relay-workspace-live-sync-{}-{}",
@@ -947,6 +948,30 @@ async fn workspace_live_sync_changes_apply_to_linked_peer_worktree_through_relay
     std::fs::create_dir_all(&source_root).expect("source root should be created");
     std::fs::create_dir_all(&target_src).expect("target src should be created");
     std::fs::write(target_src.join("lib.rs"), "old\n").expect("target file should be seeded");
+
+    for repository in [&source_root, &target_root] {
+        let status = std::process::Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(repository)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let status = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=MP fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "initial fixture",
+            ])
+            .current_dir(repository)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
 
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),
@@ -1016,6 +1041,23 @@ async fn workspace_live_sync_changes_apply_to_linked_peer_worktree_through_relay
     wait_for_daemon_registration(registry.clone(), &config_home.daemon_id).await;
     wait_for_daemon_registration(registry.clone(), &config_worker.daemon_id).await;
 
+    // MP-11: prove the home key by a normal encrypted response before accepting
+    // its filesystem mutation on this shared-token self-hosted relay.
+    let handshake = send_peer_request_via_relay(
+        &app_worker,
+        &state_worker,
+        ClientTarget {
+            daemon_id: Some(config_home.daemon_id.clone()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::Ping {
+            value: "workspace-link-handshake".into(),
+        },
+    )
+    .await
+    .expect("authenticate the source home through the product peer path");
+    assert!(matches!(handshake, RelayPeerResponse::Pong { .. }));
+
     {
         let mut app = app_worker.lock().await;
         let session_id = create_test_session(
@@ -1039,6 +1081,18 @@ async fn workspace_live_sync_changes_apply_to_linked_peer_worktree_through_relay
                 None,
             )
             .expect("worker target should attach to workspace link");
+        app.sessions_mut()
+            .attach_workspace_link(
+                &session_id,
+                link.link_id(),
+                "user-1".to_string(),
+                config_home.host_machine_id.clone(),
+                config_home.daemon_id.clone(),
+                source_root.to_string_lossy().to_string(),
+                None,
+                None,
+            )
+            .expect("authenticated source should attach to the same workspace link");
     }
 
     let change = crate::git_observer::WorkspaceLiveSyncChange {
@@ -1092,7 +1146,9 @@ async fn workspace_live_sync_changes_apply_to_linked_peer_worktree_through_relay
     assert_eq!(target_result.path_results.len(), 1);
     assert_eq!(
         target_result.path_results[0].status,
-        crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied
+        crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied,
+        "{}",
+        target_result.path_results[0].message
     );
     assert_eq!(
         std::fs::read_to_string(target_src.join("lib.rs")).expect("target file should be readable"),

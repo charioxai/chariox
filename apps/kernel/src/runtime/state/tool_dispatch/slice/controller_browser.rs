@@ -454,13 +454,23 @@ impl KernelRuntimeState {
             "runtime_tool_slice_browser_upload",
         )
         .await?;
+        let files = if args.artifact_ids.is_empty() {
+            crate::runtime::browser_controller_file_transfer::BrowserUploadFiles::new(args.files)
+                .map_err(|message| DaemonError::LocalTransport {
+                    operation: "browser_upload",
+                    message,
+                })?
+        } else {
+            if !args.files.is_empty() {
+                return Err(DaemonError::LocalTransport {
+                    operation: "browser_upload",
+                    message: "use files or artifact_ids, not both".into(),
+                });
+            }
+            self.browser_upload_artifacts(session_id, &args.artifact_ids)?
+        };
         let result = self
-            .upload_browser_environment_files_as_agent(
-                session_id,
-                agent_id,
-                &args.field_id,
-                args.files,
-            )
+            .upload_browser_environment_files_as_agent(session_id, agent_id, &args.field_id, files)
             .await?;
         Ok(controller_browser_upload_tool_result(
             slice_id,

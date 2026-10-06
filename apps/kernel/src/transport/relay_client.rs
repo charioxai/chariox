@@ -70,7 +70,9 @@ pub(crate) use peer_client::{
     enqueue_peer_request_via_connected_relay_with_timeout,
     send_peer_request_to_known_kernel_via_relay,
     send_peer_request_to_known_kernel_via_relay_with_timeout,
+    send_peer_request_via_connected_relay_authenticated,
     send_peer_request_via_connected_relay_authorized,
+    send_peer_request_via_temporary_connection_authenticated,
     send_peer_request_via_temporary_connection_authorized, RelayPeerResponseWaiter,
 };
 use peer_client::{resolve_pending_peer_response, RelayPeerResponseEnvelope};

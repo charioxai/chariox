@@ -90,6 +90,10 @@ struct TransferredVaultKeyEnvelope {
 
 pub trait CredentialVaultStore: Send + Sync + std::fmt::Debug {
     fn get_secret(&self, service: &str, key: &str) -> Result<String, DaemonError>;
+    /// Only Ok(None) establishes absence; read failures must never authorize replacement.
+    fn find_secret(&self, service: &str, key: &str) -> Result<Option<String>, DaemonError> {
+        self.get_secret(service, key).map(Some)
+    }
     fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError>;
     fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError>;
 }
@@ -138,15 +142,18 @@ impl CharioxEncryptedCredentialVaultStore {
 
 impl CredentialVaultStore for CharioxEncryptedCredentialVaultStore {
     fn get_secret(&self, service: &str, key: &str) -> Result<String, DaemonError> {
+        self.find_secret(service, key)?
+            .ok_or_else(|| secret_error(format!("credential `{key}` not found in vault")))
+    }
+    fn find_secret(&self, service: &str, key: &str) -> Result<Option<String>, DaemonError> {
         let _read = vault_read_lock()?;
         let vault_key = unlocked_vault_key(&self.path)?;
         let plaintext = read_vault_plaintext(&self.path, vault_key.as_ref())?;
-        plaintext
+        Ok(plaintext
             .secrets
             .get(service)
             .and_then(|service_secrets| service_secrets.get(key))
-            .cloned()
-            .ok_or_else(|| secret_error(format!("credential `{key}` not found in Chariox vault")))
+            .cloned())
     }
 
     fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError> {
@@ -198,16 +205,15 @@ pub struct ProcessMemoryCredentialVaultStore;
 
 impl CredentialVaultStore for ProcessMemoryCredentialVaultStore {
     fn get_secret(&self, service: &str, key: &str) -> Result<String, DaemonError> {
-        process_memory_vault()
+        self.find_secret(service, key)?
+            .ok_or_else(|| secret_error(format!("credential `{key}` not found in vault")))
+    }
+    fn find_secret(&self, service: &str, key: &str) -> Result<Option<String>, DaemonError> {
+        Ok(process_memory_vault()
             .lock()
             .map_err(|error| secret_error(format!("process memory vault lock poisoned: {error}")))?
             .get(&(service.to_string(), key.to_string()))
-            .map(|value| value.to_string())
-            .ok_or_else(|| {
-                secret_error(format!(
-                    "credential `{key}` not found in process memory vault"
-                ))
-            })
+            .map(|value| value.to_string()))
     }
 
     fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError> {

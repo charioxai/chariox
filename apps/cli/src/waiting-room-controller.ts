@@ -25,6 +25,7 @@ import {
 import {
   clearStagedWaitingRoomWorktreeSelection,
   stageWaitingRoomWorktreeSelection,
+  waitingRoomWorktreeDisabledHint,
 } from "./waiting-room-worktrees.js"
 import type { SessionProjectSelection, WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import type {
@@ -460,6 +461,7 @@ export function deriveWaitingRoomControlActivationDecision(options: {
         message: "edit the workspace path and press Enter",
       }
     case "worktree":
+      if (waitingRoomWorktreeDisabledHint()) return { action: "error", message: waitingRoomWorktreeDisabledHint()! }
       return {
         action: "stage-command",
         command: `/worktree ${options.worktreePath}`,

@@ -37,6 +37,10 @@ pub(super) fn dev_stub_pty_args(model: &str) -> Vec<String> {
         "terminal-echo-a" | "terminal-echo-b" => Some(dev_stub_terminal_echo_script()),
         "model-source" | "workflow-test-idle" => Some(dev_stub_native_tui_idle_script()),
         "native-tui-idle" => Some(dev_stub_native_tui_idle_script()),
+        "runtime-mcp-fixture" => Some(format!(
+            "stty -echo -icanon 2>/dev/null || true; exec node -e {}",
+            shell_single_quote(include_str!("runtime_mcp_fixture.cjs"))
+        )),
         _ => None,
     }
     .unwrap_or_else(|| "cat".to_string());
@@ -70,7 +74,8 @@ pub(super) fn dev_stub_pty_env(request: &LaunchProviderRequest) -> BTreeMap<Stri
     let mut env = BTreeMap::new();
     if matches!(
         request.model.as_str(),
-        "workflow-intermediate-node"
+        "runtime-mcp-fixture"
+            | "workflow-intermediate-node"
             | "workflow-delayed-output"
             | "workflow-dashboard-producer-node"
             | "workflow-final-passthrough-node"

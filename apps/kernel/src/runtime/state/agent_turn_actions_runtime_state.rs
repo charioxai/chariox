@@ -278,9 +278,13 @@ impl KernelRuntimeState {
             .await?
         {
             return match response {
-                crate::local::LocalDaemonResponse::ProviderRunLaunched { provider_run } => {
-                    Ok(provider_run)
-                }
+                crate::local::LocalDaemonResponse::ProviderRunLaunched { provider_run } => self
+                    .owned
+                    .provider_run_projection
+                    .get(provider_run.id())
+                    .ok_or_else(|| DaemonError::ProviderRunNotFound {
+                        provider_run_id: provider_run.id().to_owned(),
+                    }),
                 other => Err(DaemonError::LocalTransport {
                     operation: "agent fork",
                     message: format!("unexpected remote provider launch response: {other:?}"),

@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -188,52 +187,24 @@ fn atomic_write_private(
     bytes: &[u8],
     operation: &'static str,
 ) -> Result<(), DaemonError> {
-    let parent = path.parent().ok_or_else(|| DaemonError::LocalTransport {
-        operation,
-        message: "registry path has no parent".to_string(),
-    })?;
-    ensure_private_dir(parent, operation)?;
-    let tmp_path = parent.join(format!(
-        ".{}.{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("credential"),
-        std::process::id()
-    ));
-    {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&tmp_path)
-            .map_err(io_error(operation))?;
-        set_private_file_permissions(&tmp_path, operation)?;
-        file.write_all(bytes).map_err(io_error(operation))?;
-        file.sync_all().map_err(io_error(operation))?;
-    }
-    fs::rename(&tmp_path, path).map_err(io_error(operation))?;
-    set_private_file_permissions(path, operation)
+    crate::config::write_private_file(path, bytes).map_err(io_error(operation))
 }
 
 #[cfg(unix)]
 fn set_private_dir_permissions(path: &Path, operation: &'static str) -> Result<(), DaemonError> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(io_error(operation))
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(io_error(operation))?;
+    directory
+        .set_permissions(fs::Permissions::from_mode(0o700))
+        .map_err(io_error(operation))
 }
 
 #[cfg(not(unix))]
 fn set_private_dir_permissions(_path: &Path, _operation: &'static str) -> Result<(), DaemonError> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_private_file_permissions(path: &Path, operation: &'static str) -> Result<(), DaemonError> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(io_error(operation))
-}
-
-#[cfg(not(unix))]
-fn set_private_file_permissions(_path: &Path, _operation: &'static str) -> Result<(), DaemonError> {
     Ok(())
 }
 
@@ -341,4 +312,72 @@ mod tests {
         );
         let _ = fs::remove_dir_all(&root);
     }
+}
+
+#[cfg(all(test, unix))]
+mod mp11_private_write_tests {
+    use super::*;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    #[test]
+    fn mp11_registry_staging_alias_cannot_modify_an_unrelated_file() {
+        let root =
+            std::env::temp_dir().join(format!("mp11-registry-{:016x}", rand::random::<u64>()));
+        fs::create_dir(&root).unwrap();
+        let outside = root.join("unrelated");
+        fs::write(&outside, b"unchanged").unwrap();
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o644)).unwrap();
+        let path = root.join("registration.yaml");
+        let legacy_stage = root.join(format!(".registration.yaml.{}.tmp", std::process::id()));
+        symlink(&outside, &legacy_stage).unwrap();
+        atomic_write_private(&path, b"owned", "test").unwrap();
+        let intact = fs::read(&outside).unwrap() == b"unchanged";
+        let mode = fs::metadata(&outside).unwrap().permissions().mode() & 0o777;
+        fs::remove_dir_all(root).unwrap();
+        assert!(intact, "staging symlink overwrote unrelated bytes");
+        assert_eq!(mode, 0o644, "staging symlink changed unrelated permissions");
+    }
+
+    #[test]
+    fn mp11_registry_concurrent_writers_publish_complete_private_files() {
+        let root =
+            std::env::temp_dir().join(format!("mp11-registry-race-{:016x}", rand::random::<u64>()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("registration.yaml");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let threads = (0..8)
+            .map(|index| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    atomic_write_private(&path, &vec![b'a' + index; 32768], "test").is_ok()
+                })
+            })
+            .collect::<Vec<_>>();
+        let successful = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .filter(|ok| *ok)
+            .count();
+        let bytes = fs::read(&path).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(successful, 8, "same-ID staging paths collided");
+        assert_eq!(bytes.len(), 32768);
+        assert!(bytes.iter().all(|byte| *byte == bytes[0]));
+        assert_eq!(mode, 0o600);
+    }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_registry_fifo_staging_cannot_block_publication() {
+    crate::test_support::assert_fifo_rejected(|fifo| {
+        use std::os::unix::fs::symlink;
+        let parent = fifo.parent().unwrap();
+        let destination = parent.join("registration.yaml");
+        let legacy = parent.join(format!(".registration.yaml.{}.tmp", std::process::id()));
+        symlink(&fifo, legacy).unwrap();
+        atomic_write_private(&destination, b"synthetic", "test").is_ok()
+    });
 }

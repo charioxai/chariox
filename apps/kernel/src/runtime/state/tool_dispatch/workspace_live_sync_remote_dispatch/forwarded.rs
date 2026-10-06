@@ -30,6 +30,8 @@ impl KernelRuntimeState {
         arguments: serde_json::Value,
         artifact_states: Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>,
     ) -> ForwardedWorkspaceLiveSyncResult {
+        self.with_app_side_effect(|_| self.authorize_forwarded_workspace_context(&context))
+            .await?;
         let session = self
             .owned
             .session_store
@@ -108,68 +110,72 @@ impl KernelRuntimeState {
 
         let forwarded_result = {
             let mut coordinator = self.owned.workspace_live_sync_coordinator.lock().await;
-            match tool_name.as_str() {
-                crate::transport::runtime_tools::READ_ARTIFACT_TOOL => {
-                    read::dispatch_forwarded_read(
-                        &mut coordinator,
-                        &context,
-                        arguments,
-                        &artifact_states,
-                        &workspace_context,
-                    )
+            self.with_app_side_effect(|_| {
+                self.authorize_forwarded_workspace_context(&context)?;
+                match tool_name.as_str() {
+                    crate::transport::runtime_tools::READ_ARTIFACT_TOOL => {
+                        read::dispatch_forwarded_read(
+                            &mut coordinator,
+                            &context,
+                            arguments,
+                            &artifact_states,
+                            &workspace_context,
+                        )
+                    }
+                    crate::transport::runtime_tools::EDIT_ARTIFACT_TOOL => {
+                        text::dispatch_forwarded_edit(
+                            &mut coordinator,
+                            &context,
+                            tool_name.as_str(),
+                            arguments,
+                            &artifact_states,
+                            &workspace_context,
+                        )
+                    }
+                    crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL => {
+                        text::dispatch_forwarded_write(
+                            &mut coordinator,
+                            &context,
+                            tool_name.as_str(),
+                            arguments,
+                            &artifact_states,
+                            &workspace_context,
+                        )
+                    }
+                    crate::transport::runtime_tools::APPLY_PATCH_TOOL => {
+                        mutation::dispatch_forwarded_apply_patch(
+                            &mut coordinator,
+                            &context,
+                            tool_name.as_str(),
+                            arguments,
+                            artifact_states,
+                            &workspace_context,
+                        )
+                    }
+                    crate::transport::runtime_tools::DELETE_ARTIFACT_TOOL => {
+                        mutation::dispatch_forwarded_delete(
+                            &mut coordinator,
+                            &context,
+                            tool_name.as_str(),
+                            arguments,
+                            artifact_states,
+                            &workspace_context,
+                        )
+                    }
+                    crate::transport::runtime_tools::MOVE_ARTIFACT_TOOL => {
+                        mutation::dispatch_forwarded_move(
+                            &mut coordinator,
+                            &context,
+                            tool_name.as_str(),
+                            arguments,
+                            artifact_states,
+                            &workspace_context,
+                        )
+                    }
+                    _ => Ok(unsupported_remote_workspace_live_sync_tool(&tool_name)),
                 }
-                crate::transport::runtime_tools::EDIT_ARTIFACT_TOOL => {
-                    text::dispatch_forwarded_edit(
-                        &mut coordinator,
-                        &context,
-                        tool_name.as_str(),
-                        arguments,
-                        &artifact_states,
-                        &workspace_context,
-                    )
-                }
-                crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL => {
-                    text::dispatch_forwarded_write(
-                        &mut coordinator,
-                        &context,
-                        tool_name.as_str(),
-                        arguments,
-                        &artifact_states,
-                        &workspace_context,
-                    )
-                }
-                crate::transport::runtime_tools::APPLY_PATCH_TOOL => {
-                    mutation::dispatch_forwarded_apply_patch(
-                        &mut coordinator,
-                        &context,
-                        tool_name.as_str(),
-                        arguments,
-                        artifact_states,
-                        &workspace_context,
-                    )
-                }
-                crate::transport::runtime_tools::DELETE_ARTIFACT_TOOL => {
-                    mutation::dispatch_forwarded_delete(
-                        &mut coordinator,
-                        &context,
-                        tool_name.as_str(),
-                        arguments,
-                        artifact_states,
-                        &workspace_context,
-                    )
-                }
-                crate::transport::runtime_tools::MOVE_ARTIFACT_TOOL => {
-                    mutation::dispatch_forwarded_move(
-                        &mut coordinator,
-                        &context,
-                        tool_name.as_str(),
-                        arguments,
-                        artifact_states,
-                        &workspace_context,
-                    )
-                }
-                _ => Ok(unsupported_remote_workspace_live_sync_tool(&tool_name)),
-            }
+            })
+            .await
         };
 
         let forwarded_result = match forwarded_result {
@@ -203,6 +209,8 @@ impl KernelRuntimeState {
             crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState,
         >,
     ) -> Result<(), DaemonError> {
+        self.with_app_side_effect(|_| self.authorize_forwarded_workspace_context(&context))
+            .await?;
         let session = self
             .owned
             .session_store
@@ -248,6 +256,8 @@ impl KernelRuntimeState {
             &initial_artifact_states,
             &final_artifact_states,
         )?;
+        self.with_app_side_effect(|_| self.authorize_forwarded_workspace_context(&context))
+            .await?;
         self.record_and_fanout_remote_managed_workspace_live_sync_change(
             &context,
             &workspace_context,

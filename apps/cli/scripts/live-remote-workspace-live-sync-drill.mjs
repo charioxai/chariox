@@ -15,7 +15,7 @@ import {
 import {
   assertHetznerCharioxBinaries,
   assertHetznerTcpPortAvailable,
-  remoteEnvCommand,
+  spawnRemoteEnv,
   runHetznerCommand,
   shellQuote,
   sshArgs,
@@ -546,13 +546,13 @@ async function main() {
       await assertHetznerWorkerPortsAvailable(options, ports)
     }
     if (options.hetznerWorker) {
-      relayChild = spawn('ssh', sshArgs(options, remoteEnvCommand({
+      relayChild = spawnRemoteEnv(options, {
         CHARIOX_REMOTE_REPO: options.hetznerRepo,
         CHARIOX_RELAY_HOST: '127.0.0.1',
         CHARIOX_RELAY_PORT: String(ports.relayPort),
         CHARIOX_RELAY_TOKEN: relayToken,
         CHARIOX_WORKSPACE_LIVE_SYNC_DRILL_RUN_ID: runId,
-      }, './apps/relay/target/debug/chariox-relay')), { stdio: ['ignore', 'ignore', 'inherit'] })
+      }, './apps/relay/target/debug/chariox-relay', { stdio: ['ignore', 'ignore', 'inherit'] })
       relayTunnel = spawn('ssh', [
         '-i',
         options.hetznerKey,
@@ -592,7 +592,7 @@ async function main() {
       stdio: ['ignore', 'ignore', 'inherit'],
     })
     if (options.hetznerWorker) {
-      workerChild = spawn('ssh', sshArgs(options, remoteEnvCommand({
+      workerChild = spawnRemoteEnv(options, {
         CHARIOX_REMOTE_REPO: options.hetznerRepo,
         PATH: '/root/.bun/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
         ...remoteWorkerEnv,
@@ -610,7 +610,7 @@ async function main() {
         CHARIOX_ACCEPT_REMOTE_LEASES: '1',
         CHARIOX_DAEMON_SOCKET: path.posix.join(remoteRuntimeRoot, 'worker.sock'),
         CHARIOX_SESSION_HISTORY_DIR: path.posix.join(remoteRuntimeRoot, 'worker-history'),
-      }, `mkdir -p ${shellQuote(remoteRuntimeRoot)} && ./apps/kernel/target/debug/chariox-kernel`)), {
+      }, `mkdir -p ${shellQuote(remoteRuntimeRoot)} && ./apps/kernel/target/debug/chariox-kernel`, {
         stdio: ['ignore', 'ignore', 'inherit'],
       })
     } else {
@@ -654,13 +654,13 @@ async function main() {
         await terminateChild(relayTunnel)
         await stopOwnedHetznerRelay(options, ports.relayPort, runId)
         await assertHetznerRelayPortAvailable(options, ports.relayPort)
-        relayChild = spawn('ssh', sshArgs(options, remoteEnvCommand({
+        relayChild = spawnRemoteEnv(options, {
           CHARIOX_REMOTE_REPO: options.hetznerRepo,
           CHARIOX_RELAY_HOST: '127.0.0.1',
           CHARIOX_RELAY_PORT: String(ports.relayPort),
           CHARIOX_RELAY_TOKEN: relayToken,
           CHARIOX_WORKSPACE_LIVE_SYNC_DRILL_RUN_ID: runId,
-        }, './apps/relay/target/debug/chariox-relay')), { stdio: ['ignore', 'ignore', 'inherit'] })
+        }, './apps/relay/target/debug/chariox-relay', { stdio: ['ignore', 'ignore', 'inherit'] })
         relayTunnel = spawn('ssh', [
           '-i',
           options.hetznerKey,

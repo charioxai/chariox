@@ -61,7 +61,7 @@ async function runWorkerResumeMatrix({ options, runtimeRoot, evidenceRoot, ports
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
   const homeKernelUrl = `ws://127.0.0.1:${ports.homeKernelPort}`
   const workerKernelUrl = `ws://127.0.0.1:${ports.workerKernelPort}`
-  const realProvider = realProviderEnv()
+  const realProvider = realProviderEnv(options.providers)
   let isolatedHome = null
   let isolatedWorker = null
   if (options.workerState === "isolated") {
@@ -71,10 +71,10 @@ async function runWorkerResumeMatrix({ options, runtimeRoot, evidenceRoot, ports
     } catch (error) {
       await Promise.all([
         isolatedHome?.secretRoot
-          ? rm(isolatedHome.secretRoot, { recursive: true, force: true })
+          ? isolatedHome.cleanup()
           : Promise.resolve(),
         isolatedWorker?.secretRoot
-          ? rm(isolatedWorker.secretRoot, { recursive: true, force: true })
+          ? isolatedWorker.cleanup()
           : Promise.resolve(),
       ])
       throw error
@@ -260,17 +260,17 @@ async function runWorkerResumeMatrix({ options, runtimeRoot, evidenceRoot, ports
     await terminateChild(relayChild)
     await sleep(500)
     if (isolatedWorker?.secretRoot) {
-      await rm(isolatedWorker.secretRoot, { recursive: true, force: true })
+      await isolatedWorker.cleanup()
     }
     if (isolatedHome?.secretRoot) {
-      await rm(isolatedHome.secretRoot, { recursive: true, force: true })
+      await isolatedHome.cleanup()
     }
     await sleep(250)
     if (isolatedWorker?.secretRoot) {
-      await rm(isolatedWorker.secretRoot, { recursive: true, force: true })
+      await isolatedWorker.cleanup()
     }
     if (isolatedHome?.secretRoot) {
-      await rm(isolatedHome.secretRoot, { recursive: true, force: true })
+      await isolatedHome.cleanup()
     }
   }
   return matrix

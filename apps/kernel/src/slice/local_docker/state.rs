@@ -896,19 +896,6 @@ fn stop_local_docker_container_if_running(record: &SliceRecord) -> Result<(), Da
     }
     let container = local_docker_container_name(record);
     run_local_docker_slice_screen(record, "stop", "slice.state.stop_desktop")?;
-    let _ = docker_command()
-        .args([
-            "exec",
-            "-u",
-            "slice",
-            &container,
-            "bash",
-            "-lc",
-            "screen -S chariox-slice-relay -X quit >/dev/null 2>&1 || true; screen -S chariox-slice-kernel -X quit >/dev/null 2>&1 || true; pkill -f 'codex app-server' >/dev/null 2>&1 || true; pkill -f 'opencode serve' >/dev/null 2>&1 || true",
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
     let status = docker_command()
         .args(["stop", &container])
         .status()

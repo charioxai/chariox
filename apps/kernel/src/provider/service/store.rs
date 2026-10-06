@@ -120,6 +120,60 @@ impl ProviderProcessServiceStore {
         self.read().run_actor_completion_signal()
     }
 
+    /// The same authority mutex linearizes credential-bearing spawn against run retirement/replacement.
+    /// Callbacks must not call back into this store.
+    pub(crate) fn with_current_live_launch<T>(
+        &self,
+        expected: &RuntimeProviderRun,
+        action: impl FnOnce(&RuntimeProviderRun) -> Result<T, DaemonError>,
+    ) -> Result<Option<T>, DaemonError> {
+        let service = self.read();
+        let current = service.get_run(expected.id())?;
+        if !matches!(
+            expected.state(),
+            crate::provider::ProviderRunState::Starting
+                | crate::provider::ProviderRunState::Running
+        ) || current.state() != expected.state()
+            || current.started_at_ms() != expected.started_at_ms()
+            || current.agent_instance_id() != expected.agent_instance_id()
+            || expected.agent_instance_id().is_some_and(|agent| {
+                service
+                    .get_run_for_agent(expected.session_id(), agent)
+                    .is_none_or(|run| run.id() != expected.id())
+            })
+        {
+            return Ok(None);
+        }
+        action(&current).map(Some)
+    }
+
+    pub(crate) fn finish_current_launch(
+        &self,
+        expected: &RuntimeProviderRun,
+        binding: Option<ProviderRuntimeBinding>,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let mut service = self.write();
+        let current = service.get_run(expected.id())?;
+        if current.state() != crate::provider::ProviderRunState::Starting
+            || current.started_at_ms() != expected.started_at_ms()
+            || expected.agent_instance_id().is_some_and(|agent| {
+                service
+                    .get_run_for_agent(expected.session_id(), agent)
+                    .is_none_or(|run| run.id() != expected.id())
+            })
+        {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: expected.id().into(),
+                state: current.state(),
+                operation: "finish current provider launch",
+            });
+        }
+        if let Some(binding) = binding {
+            service.apply_runtime_binding(expected.id(), binding)?;
+        }
+        service.mark_run_running(expected.id())
+    }
+
     pub fn get_run(&self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {
         self.read().get_run(run_id)
     }

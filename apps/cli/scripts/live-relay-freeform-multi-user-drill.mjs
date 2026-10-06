@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {withPrivateDrillRuntime} from "./lib/private-drill-runtime.mjs"
 import { spawn } from 'node:child_process'
 import { createHmac } from 'node:crypto'
 import { mkdir, rm } from 'node:fs/promises'
@@ -14,7 +15,7 @@ import {
 } from './lib/drill-runtime-helpers.mjs'
 import {
   assertHetznerTcpPortAvailable,
-  remoteEnvCommand,
+  spawnRemoteEnv,
   seedLocalOpenCodeRuntimeProfile,
   shellQuote,
   sshArgs,
@@ -361,10 +362,10 @@ function startAttachmentHeartbeats(bindings, intervalMs = 5_000) {
   return () => clearInterval(timer)
 }
 
-async function main() {
+async function runDrill(privateRoot) {
   const options = parseArgs()
-  const rootDir = path.join(repoRoot, '.artifacts', 'live-relay-freeform-multi-user-drill', nowStamp())
-  const workspace = path.join(rootDir, 'workspace')
+  const rootDir = path.join(os.homedir(), '.codex', 'evidence', 'live-relay-freeform-multi-user-drill', nowStamp())
+  const workspace = path.join(privateRoot, 'workspace')
   await prepareDrillArtifacts(rootDir)
   await mkdir(workspace, { recursive: true })
 
@@ -375,11 +376,11 @@ async function main() {
       : undefined,
   })
   const realHomeDir = os.homedir()
-  const xdgConfigHome = path.join(rootDir, 'xdg-config')
-  const xdgStateHome = path.join(rootDir, 'xdg-state')
-  const xdgDataHome = path.join(rootDir, 'xdg-data')
-  const xdgCacheHome = path.join(rootDir, 'xdg-cache')
-  const envs = makeEnv(ports, rootDir, {
+  const xdgConfigHome = path.join(privateRoot, 'xdg-config')
+  const xdgStateHome = path.join(privateRoot, 'xdg-state')
+  const xdgDataHome = path.join(privateRoot, 'xdg-data')
+  const xdgCacheHome = path.join(privateRoot, 'xdg-cache')
+  const envs = makeEnv(ports, privateRoot, {
     ...process.env,
     HOME: realHomeDir,
     XDG_CONFIG_HOME: xdgConfigHome,
@@ -388,8 +389,9 @@ async function main() {
     XDG_CACHE_HOME: xdgCacheHome,
     CODEX_HOME: process.env.CODEX_HOME ?? path.join(realHomeDir, '.codex'),
     OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR ?? path.join(realHomeDir, '.config', 'opencode'),
+    CHARIOX_HOME: path.join(privateRoot,'chariox-home'),
     CHARIOX_LOG_DIR: path.join(rootDir, 'logs'),
-    CHARIOX_CAPABILITY_ISOLATION_ROOT: path.join(rootDir, 'capabilities'),
+    CHARIOX_CAPABILITY_ISOLATION_ROOT: path.join(privateRoot, 'capabilities'),
   })
   let requests = null
   let relay = null
@@ -429,7 +431,7 @@ async function main() {
     ])
     await writeIsolatedKernelConfig({
       xdgConfigHome,
-      storageRoot: path.join(rootDir, 'kernel-storage'),
+      storageRoot: path.join(privateRoot, 'kernel-storage'),
     })
     if (options.provider === 'opencode') {
       const sourceXdgDataHome = process.env.XDG_DATA_HOME?.trim() || path.join(realHomeDir, '.local', 'share')
@@ -455,14 +457,14 @@ async function main() {
       if (remoteRelayCheck.code !== 0) {
         throw new Error(`Hetzner relay binary is not available in ${options.hetznerRepo}\n${remoteRelayCheck.stdout}\n${remoteRelayCheck.stderr}`)
       }
-      relay = spawn('ssh', sshArgs(options, remoteEnvCommand({
+      relay = spawnRemoteEnv(options, {
         CHARIOX_REMOTE_REPO: options.hetznerRepo,
         CHARIOX_RELAY_FREEFORM_MULTI_USER_ROOT: remoteRelayRoot,
         CHARIOX_RELAY_HOST: '127.0.0.1',
         CHARIOX_RELAY_PORT: String(ports.relayPort),
         CHARIOX_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
         CHARIOX_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
-      }, `mkdir -p ${shellQuote(remoteRelayRoot)}; echo $$ > ${shellQuote(path.posix.join(remoteRelayRoot, 'relay.pid'))}; exec ./apps/relay/target/debug/chariox-relay`)), {
+      }, `mkdir -p ${shellQuote(remoteRelayRoot)}; echo $$ > ${shellQuote(path.posix.join(remoteRelayRoot, 'relay.pid'))}; exec ./apps/relay/target/debug/chariox-relay`, {
         stdio: ['ignore', 'ignore', 'inherit'],
       })
       relayTunnel = spawn('ssh', [
@@ -764,6 +766,8 @@ async function main() {
     })
   }
 }
+
+function main() {return withPrivateDrillRuntime("relay-freeform-runtime",runDrill)}
 
 main().catch((error) => {
   console.error(error)

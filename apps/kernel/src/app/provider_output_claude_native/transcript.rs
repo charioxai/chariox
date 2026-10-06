@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 
 use serde_json::Value;
 
@@ -84,6 +86,7 @@ pub(super) fn drain_claude_transcript_file(
     drain_claude_transcript_file_since(transcript_path, cursor, None)
 }
 
+#[cfg(test)]
 pub(super) fn drain_claude_transcript_file_since(
     transcript_path: &str,
     cursor: &mut ClaudeTranscriptCursor,
@@ -93,6 +96,15 @@ pub(super) fn drain_claude_transcript_file_since(
     let Ok(raw) = fs::read_to_string(path) else {
         return ClaudeTranscriptDrain::default();
     };
+    drain_claude_transcript_raw_since(transcript_path, &raw, cursor, minimum_timestamp_ms)
+}
+
+pub(super) fn drain_claude_transcript_raw_since(
+    transcript_path: &str,
+    raw: &str,
+    cursor: &mut ClaudeTranscriptCursor,
+    minimum_timestamp_ms: Option<u64>,
+) -> ClaudeTranscriptDrain {
     let lines = raw
         .lines()
         .filter(|line| !line.trim().is_empty())

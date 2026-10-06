@@ -1308,10 +1308,13 @@ async fn activate_hosted_slice_relay_token(
                 slice_id,
                 activation_nonce: installed_nonce,
                 relay_peer_protocol_version,
-            } if slice_id == slice.id
-                && installed_nonce == activation_nonce
-                && relay_peer_protocol_version
-                    >= crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION =>
+            } if hosted_slice_token_installation_matches(
+                &slice_id,
+                &installed_nonce,
+                relay_peer_protocol_version,
+                &slice.id,
+                &activation_nonce,
+            ) =>
             {
                 wait_for_hosted_slice_relay_activation(
                     config_projection,
@@ -1346,6 +1349,19 @@ async fn activate_hosted_slice_relay_token(
         state.discard_managed_slice_relay_activation(&slice.id, &activation_nonce);
     }
     result
+}
+
+// MP-08/MP-10/MP-11: fence the authenticated install receipt before activation.
+fn hosted_slice_token_installation_matches(
+    slice_id: &str,
+    nonce: &str,
+    peer_version: u32,
+    expected_slice_id: &str,
+    expected_nonce: &str,
+) -> bool {
+    slice_id == expected_slice_id
+        && nonce == expected_nonce
+        && peer_version >= crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
 }
 
 async fn wait_for_hosted_slice_relay_activation(
@@ -1637,6 +1653,49 @@ mod tests {
 
         assert!(std::ptr::eq(relaunch_worker, &discovered));
         assert_eq!(relaunch_worker.public_key, "authenticated-worker-key");
+    }
+
+    #[test]
+    fn mp08_mp10_mp11_browser_artifact_peer_71_hosted_install_gate() {
+        // Test real encrypted peer receipts; all keys are disposable product identities.
+        let home = crate::config::DaemonConfig::for_tests();
+        let worker = crate::config::DaemonConfig::for_tests();
+        for version in [70, 73] {
+            for (slice_id, nonce) in [
+                ("slice-1", "nonce-1"),
+                ("other", "nonce-1"),
+                ("slice-1", "other"),
+            ] {
+                let response = crate::transport::relay_peer::RelayPeerResponse::ManagedSliceRelayTokenInstalled {
+                    slice_id: slice_id.into(), activation_nonce: nonce.into(), relay_peer_protocol_version: version,
+                };
+                let encrypted = crate::transport::relay_crypto::encrypt_payload_for_peer(
+                    &worker.relay_private_key,
+                    &home.relay_public_key,
+                    &serde_json::to_vec(&response).unwrap(),
+                )
+                .unwrap();
+                let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
+                    &home.relay_private_key,
+                    &encrypted,
+                )
+                .unwrap();
+                assert_eq!(decrypted.sender_public_key, worker.relay_public_key);
+                let crate::transport::relay_peer::RelayPeerResponse::ManagedSliceRelayTokenInstalled {
+                    slice_id, activation_nonce, relay_peer_protocol_version,
+                } = serde_json::from_slice(&decrypted.plaintext).unwrap() else { panic!("install receipt"); };
+                assert_eq!(
+                    hosted_slice_token_installation_matches(
+                        &slice_id,
+                        &activation_nonce,
+                        relay_peer_protocol_version,
+                        "slice-1",
+                        "nonce-1",
+                    ),
+                    version == 73 && slice_id == "slice-1" && activation_nonce == "nonce-1"
+                );
+            }
+        }
     }
 
     #[test]

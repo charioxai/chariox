@@ -42,6 +42,7 @@ export type WaitingRoomReconcileControllerDeps = {
   rebuildTranscript: () => void
   updateSessionChrome: () => void
   syncCommandCenter: () => void
+  placementChanged?: (state: WaitingRoomState) => void
   refreshProviderCatalogForSelection?: (state: WaitingRoomState) => void
   deriveStateUpdate?: typeof deriveWaitingRoomStateUpdate
 }
@@ -68,6 +69,11 @@ export function createWaitingRoomReconcileController(
     })
 
     setState(update.normalizedState)
+    if (!deps.isAttached() && setState === deps.setWaitingRoomState
+      && (currentState.selectedMachineRef !== update.normalizedState.selectedMachineRef
+      || currentState.selectedKernelRef !== update.normalizedState.selectedKernelRef)) {
+      deps.placementChanged?.(update.normalizedState)
+    }
     if (
       currentState.providerId !== update.normalizedState.providerId
       || currentState.accountProfileId !== update.normalizedState.accountProfileId

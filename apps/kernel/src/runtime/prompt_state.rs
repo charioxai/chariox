@@ -507,6 +507,52 @@ impl PromptStateOwner {
         self.complete_active_prompt_if_matches(session, agent_id, None)
     }
 
+    /// Keep prompt replacement fenced while a synchronous, authorized operation uses it.
+    pub(crate) fn with_current_prompt<R>(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        expected_prompt_id: Option<&str>,
+        operation: impl FnOnce() -> Result<R, crate::error::DaemonError>,
+    ) -> Result<R, crate::error::DaemonError> {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = owner.ensure_agent_state(session, agent_id);
+        if state.active_prompt.as_ref().map(PromptQueueItem::id) != expected_prompt_id
+            || state
+                .active_prompt
+                .as_ref()
+                .is_some_and(|prompt| prompt.status() != PromptStatus::Running)
+        {
+            return Err(crate::error::DaemonError::LocalTransport {
+                operation: "revalidate forwarded prompt",
+                message: "forwarded prompt changed before resource use".into(),
+            });
+        }
+        operation()
+    }
+
+    /// Run a synchronous ownership transition while the active prompt cannot change.
+    pub(crate) fn with_active_prompt<R>(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        operation: impl FnOnce(Option<&PromptQueueItem>) -> Result<R, DaemonError>,
+    ) -> Result<R, DaemonError> {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        operation(
+            owner
+                .ensure_agent_state(session, agent_id)
+                .active_prompt
+                .as_ref(),
+        )
+    }
+
     pub(crate) fn complete_active_prompt_if_matches(
         &self,
         session: &RuntimeSession,

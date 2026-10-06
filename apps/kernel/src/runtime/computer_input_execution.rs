@@ -7,6 +7,7 @@ type ExecutionKey = (String, String);
 #[derive(Default)]
 struct ComputerInputExecutionState {
     cancellation_requested: AtomicBool,
+    process_group_terminated: AtomicBool,
     process_group: Mutex<Option<u32>>,
     // Retained by the blocking helper's cancellation handle even if its
     // async caller is dropped. Capture resumes only after physical input settles.
@@ -39,6 +40,10 @@ impl ComputerInputCancellation {
         self.state.cancellation_requested.load(Ordering::Acquire)
     }
 
+    pub(crate) fn process_group_was_terminated(&self) -> bool {
+        self.state.process_group_terminated.load(Ordering::Acquire)
+    }
+
     pub(crate) fn register_process_group(&self, process_group: u32) {
         let mut registered = self
             .state
@@ -58,6 +63,9 @@ impl ComputerInputCancellation {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
         {
+            self.state
+                .process_group_terminated
+                .store(true, Ordering::Release);
             kill_process_group(process_group);
         }
     }
@@ -180,10 +188,27 @@ impl Drop for ComputerInputExecution {
 
 #[cfg(unix)]
 fn kill_process_group(process_group: u32) {
-    let Ok(process_group) = i32::try_from(process_group) else {
+    let Some(target) = owned_process_group_signal_target(process_group) else {
         return;
     };
-    let _ = unsafe { libc::kill(-process_group, libc::SIGKILL) };
+    // Only child groups created by the registered helper's Command::process_group(0)
+    // reach this seam. Never interpret an invalid child ID as a system-wide target.
+    let _ = unsafe { libc::kill(target, libc::SIGKILL) };
+}
+
+#[cfg(unix)]
+fn owned_process_group_signal_target(process_group: u32) -> Option<i32> {
+    let group = i32::try_from(process_group).ok()?;
+    (group > 1).then_some(-group)
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp08_mp10_mp11_computer_signal_rejects_system_and_overflow_ids() {
+    for group in [0, 1, u32::MAX, i32::MAX as u32 + 1] {
+        assert_eq!(owned_process_group_signal_target(group), None);
+    }
+    assert_eq!(owned_process_group_signal_target(12345), Some(-12345));
 }
 
 #[cfg(not(unix))]

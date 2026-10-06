@@ -392,6 +392,7 @@ prepare_home_volume() {
     --label "io.chariox.slice.id=$SLICE_ID"
     --label "io.chariox.slice.owner-kernel-id=$SLICE_OWNER_KERNEL_ID"
     --label "io.chariox.slice.owner-machine-id=$SLICE_OWNER_MACHINE_ID"
+    --label "io.chariox.slice.runtime-name=$SLICE_NAME"
   )
   if disk_quota_enabled; then
     quota_labels+=(--label "io.chariox.slice.disk-quota=xfs-project-v1")
@@ -554,6 +555,8 @@ refresh_slice_support_files() {
     || fail "failed to refresh required slice support overlay: Browser Controller events"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-files.mjs" \
     || fail "failed to refresh required slice support overlay: Browser Controller files"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-artifacts.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-artifacts.mjs" "MP-08/MP-10/MP-11 Browser artifact module"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-image.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-image.mjs" "MP-08/MP-10/MP-11 Browser artifact module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-upload-staging.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-upload-staging.mjs" "Browser Controller upload staging module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-upload-store.py" "$SLICE_NAME:/opt/chariox-slice/browser-upload-store.py" "Browser upload quota store"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-lifecycle.py" "$SLICE_NAME:/opt/chariox-slice/browser-lifecycle.py" "Browser lifecycle owner"
@@ -1011,6 +1014,7 @@ ensure_container() {
       --label "io.chariox.slice.id=$SLICE_ID"
       --label "io.chariox.slice.owner-kernel-id=$SLICE_OWNER_KERNEL_ID"
       --label "io.chariox.slice.owner-machine-id=$SLICE_OWNER_MACHINE_ID"
+      --label "io.chariox.slice.runtime-name=$SLICE_NAME"
       --ulimit core=0:0
       --ulimit "nofile=$SLICE_DOCKER_NOFILE_LIMIT:$SLICE_DOCKER_NOFILE_LIMIT"
       --pids-limit "$SLICE_DOCKER_PIDS_LIMIT"
@@ -1408,20 +1412,12 @@ copy_provider_auth_file() {
     return 0
   fi
 
-  local target_dir
-  target_dir="$(dirname "$target_path")"
-  local backup_path="${target_path}.before-slice-auth"
-  run_with_file_stdin_timeout 90 "$source_path" docker exec -i -u slice "$SLICE_NAME" bash -lc "
-    set -euo pipefail
-    mkdir -p '$target_dir'
-    rm -f '${target_path}.before-slice-auth-'*
-    if [[ -f '$target_path' ]]; then
-      cp '$target_path' '$backup_path'
-    fi
-    umask 077
-    cat > '$target_path'
-    chmod 600 '$target_path'
-  "
+  local auth_writer auth_program_q target_q
+  auth_writer="$(cat "$SCRIPT_DIR/provider-auth-file.cjs")"
+  printf -v auth_program_q '%q' "$auth_writer"
+  printf -v target_q '%q' "$target_path"
+  run_with_file_stdin_timeout 90 "$source_path" docker exec -i -u slice "$SLICE_NAME" \
+    bash -lc "node -e $auth_program_q import $target_q"
   log "imported $label auth into $target_path"
 }
 
@@ -1519,7 +1515,11 @@ import_codex_auth() {
 }
 
 remove_codex_auth() {
-  exec_slice bash -lc "rm -f '$SLICE_ACCOUNT_ROOT/codex/$SLICE_ACCOUNT_PROFILE/codex/auth.json'"
+  local auth_writer auth_program_q target_q
+  auth_writer="$(cat "$SCRIPT_DIR/provider-auth-file.cjs")"
+  printf -v auth_program_q '%q' "$auth_writer"
+  printf -v target_q '%q' "$SLICE_ACCOUNT_ROOT/codex/$SLICE_ACCOUNT_PROFILE/codex/auth.json"
+  exec_slice bash -lc "node -e $auth_program_q remove $target_q"
   log "removed Codex auth from slice"
 }
 
@@ -1758,8 +1758,6 @@ stop_container() {
       screen -S chariox-slice-relay -X quit >/dev/null 2>&1 || true
       screen -S chariox-slice-kernel -X quit >/dev/null 2>&1 || true
       /opt/chariox-slice/slice-screen.sh stop >/dev/null 2>&1 || true
-      pkill -f 'codex app-server' >/dev/null 2>&1 || true
-      pkill -f 'opencode serve' >/dev/null 2>&1 || true
     " || true
     docker stop "$SLICE_NAME" >/dev/null
   else

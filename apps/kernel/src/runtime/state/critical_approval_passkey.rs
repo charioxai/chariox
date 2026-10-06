@@ -133,11 +133,19 @@ impl CriticalApprovalPasskeys {
                     .map(|events| events.into_iter().next())
             };
             let pin = latest(PIN_EVENT)?;
+            let verifier = pin
+                .as_ref()
+                .map(|event| {
+                    serde_json::from_value(event.payload.clone()).map_err(|_| {
+                        passkey_error(PASSKEY_UNAVAILABLE, "durable passkey pin is malformed")
+                    })
+                })
+                .transpose()?;
             *pinned = match latest(PIN_MOVE_EVENT)? {
                 Some(moved) if pin.as_ref().is_none_or(|pin| moved.sequence > pin.sequence) => {
                     Some(self.settle(durable, moved.payload)?)
                 }
-                _ => pin.and_then(|event| serde_json::from_value(event.payload).ok()),
+                _ => verifier,
             };
         }
         Ok(pinned.clone())
@@ -635,15 +643,19 @@ impl KernelRuntimeState {
 
     /// Pins the verifier as soon as the kernel unlocks its boot vault, so a
     /// later change of vault path or file cannot supply the first pin.
-    pub(super) fn pin_critical_approval_verifier_after_unlock(&self, vault: &std::path::Path) {
+    pub(super) fn pin_critical_approval_verifier_after_unlock(
+        &self,
+        vault: &std::path::Path,
+    ) -> Result<(), DaemonError> {
         let presence = &self.owned.critical_approval_passkeys;
         if presence.boot_vault.as_deref() != Some(vault) {
-            return;
+            return Ok(());
         }
         let durable = &self.owned.durable_state_store;
-        if let Ok(Some(verifier)) = VaultPasskeyVerifier::from_unlocked(vault) {
-            let _ = presence.pin(durable, verifier);
+        if let Some(verifier) = VaultPasskeyVerifier::from_unlocked(vault)? {
+            presence.pin(durable, verifier)?;
         }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -979,5 +991,49 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(f.accepts(NEW) && f.vault_opens_with(NEW));
+    }
+}
+
+#[cfg(test)]
+mod mp11_pin_tests {
+    use super::*;
+    #[test]
+    fn mp11_malformed_pin_cannot_reenroll_from_replacement_vault() {
+        let root = std::env::temp_dir().join(format!("mp11-pin-{:016x}", rand::random::<u64>()));
+        std::fs::create_dir_all(&root).unwrap();
+        let vault = root.join("vault.json");
+        crate::secret::create_chariox_encrypted_vault_for_test(&vault, "synthetic-replacement")
+            .unwrap();
+        let config = crate::config::UserCredentialVaultConfig {
+            backend: crate::config::CredentialVaultBackend::CharioxEncrypted,
+            path: vault.display().to_string(),
+            ..Default::default()
+        };
+        let durable = DurableKernelStateStore::open(root.join("state.sqlite")).unwrap();
+        durable
+            .append_event(
+                PIN_EVENT,
+                Some(PIN_SUBJECT.into()),
+                serde_json::json!({"malformed": true}),
+            )
+            .unwrap();
+        let state = CriticalApprovalPasskeys::new(&config);
+        let approval_refused = state.pinned(&durable).is_err();
+        let replacement = VaultPasskeyVerifier::from_passphrase(&vault, "synthetic-replacement")
+            .unwrap()
+            .unwrap();
+        let unlock_refused = state.pin(&durable, replacement).is_err();
+        let events = durable
+            .load_subject_events_by_kind(PIN_SUBJECT, PIN_EVENT, 10)
+            .unwrap();
+        crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
+        drop(durable);
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(
+            approval_refused,
+            "malformed durable pin admitted approval enrollment"
+        );
+        assert!(unlock_refused, "unlock replaced a malformed durable pin");
+        assert_eq!(events.len(), 1, "replacement pin appended");
     }
 }

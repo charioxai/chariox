@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import {requireScopedProviderPath,withPrivateDrillRuntime} from "./lib/private-drill-runtime.mjs"
+import { privateClientEnvironment } from "./lib/native-tui-remote-execution.mjs"
 import { spawn } from 'node:child_process'
 import net from 'node:net'
 import { chmod, copyFile, mkdir, rm, stat, readFile, readdir, symlink } from 'node:fs/promises'
@@ -138,25 +140,11 @@ function liveSyncWriteToolName(provider) {
   return 'mcp__chariox__write_artifact'
 }
 
-async function seedCodexAuth(home) {
-  const sourceHome = process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex')
-  const sourceAuth = path.join(sourceHome, 'auth.json')
-  const targetDir = path.join(home, '.codex')
-  const targetAuth = path.join(targetDir, 'auth.json')
-  await stat(sourceAuth)
-  await mkdir(targetDir, { recursive: true })
-  await copyFile(sourceAuth, targetAuth)
-  await chmod(targetAuth, 0o600).catch(() => {})
+async function seedCodexAuth() {
+  requireScopedProviderPath(process.env,"CODEX_HOME")
 }
-
-async function seedClaudeAuth(home) {
-  const sourceHome = os.homedir()
-  await stat(path.join(sourceHome, '.claude'))
-    .then(() => symlink(path.join(sourceHome, '.claude'), path.join(home, '.claude'), 'dir'))
-    .catch(() => {})
-  await stat(path.join(sourceHome, '.claude.json'))
-    .then(() => symlink(path.join(sourceHome, '.claude.json'), path.join(home, '.claude.json')))
-    .catch(() => {})
+async function seedClaudeAuth() {
+  requireScopedProviderPath(process.env,"CLAUDE_CONFIG_DIR")
 }
 
 async function run(command, args, options = {}) {
@@ -462,13 +450,20 @@ function requireRemotePlacement(agent, workerKernel) {
   )
 }
 
-async function main() {
+async function runDrill(privateRoot) {
   const options = parseArgs(process.argv.slice(2))
   const provider = options.provider
+  if (provider === 'codex') requireScopedProviderPath(process.env,'CODEX_HOME')
+  if (provider.startsWith('claude')) requireScopedProviderPath(process.env,'CLAUDE_CONFIG_DIR')
+  if (provider === 'opencode') {
+    requireScopedProviderPath(process.env,'OPENCODE_CONFIG_DIR')
+    if (!process.env.OPENCODE_DATA_HOME) requireScopedProviderPath(process.env,'XDG_DATA_HOME')
+  }
   const model = options.providerModels[provider] ?? options.model ?? defaultModelForProvider(provider)
   const cliModel = cliModelForProvider(provider, model)
   const effort = options.effort ?? defaultEffortForProvider(provider)
-  const rootDir = options.rootDir ?? path.join(repoRoot, 'target', 'live-workspace-live-sync-permission-drill', `${process.pid}-${Date.now()}`)
+  const rootDir=privateRoot
+  const evidenceRoot=options.rootDir??path.join(os.homedir(),'.codex','evidence','permission',`${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   const outsideRepo = path.join(rootDir, 'outside-repo')
   const home = path.join(rootDir, 'home')
@@ -499,7 +494,7 @@ async function main() {
   let failure = null
 
   try {
-    await prepareDrillArtifacts(rootDir)
+    await mkdir(rootDir, { recursive: true, mode: 0o700 })
     await mkdir(workspace, { recursive: true })
     await mkdir(outsideRepo, { recursive: true })
     await mkdir(home, { recursive: true })
@@ -518,7 +513,7 @@ async function main() {
     const { cliDist, kernelBinary } = await ensureCliBuilt()
 
     if (!options.noSpawnDaemon) {
-      daemon = spawn(kernelBinary, [], { cwd: repoRoot, env, stdio: ['ignore', 'ignore', 'inherit'] })
+      daemon = spawn(kernelBinary, [], { cwd: repoRoot, env: privateClientEnvironment(env), stdio: ['ignore', 'ignore', 'inherit'] })
       await waitForKernel(kernelUrl, options.noSpawnDaemon ? process.env : env)
     }
     log('kernel-ready', { kernelUrl })
@@ -572,8 +567,6 @@ async function main() {
     const cliArgs = [
       '-q',
       '/dev/null',
-      'env',
-      ...Object.entries(env).map(([key, value]) => `${key}=${value}`),
       'bun',
       cliDist,
       '--kernel-url', kernelUrl,
@@ -586,7 +579,7 @@ async function main() {
       '--effort', effort,
       '--client-id', `workspace-live-sync-permission-drill-cli-${process.pid}`,
     ]
-    cli = spawn('script', cliArgs, { cwd: repoRoot, env, stdio: ['ignore', 'pipe', 'pipe'] })
+    cli = spawn('script', cliArgs, { cwd: repoRoot, env: privateClientEnvironment(env), stdio: ['ignore', 'pipe', 'pipe'] })
 
     await waitForSocket(automationSocket)
     automation = createAutomationClient(automationSocket)
@@ -686,7 +679,7 @@ async function main() {
     await terminateChild(cli).catch(() => {})
     await terminateChild(daemon).catch(() => {})
     await finalizeDrillArtifacts({
-      rootDir,
+      rootDir: evidenceRoot,
       passed: succeeded,
       preserveOnFailure: options.keepArtifactsOnFailure,
       failure,
@@ -701,6 +694,8 @@ async function main() {
     })
   }
 }
+
+function main() {return withPrivateDrillRuntime("permission-runtime",runDrill)}
 
 main().catch((error) => {
   console.error(`[workspace-live-sync-permission-drill] failed: ${error.stack || error.message}`)

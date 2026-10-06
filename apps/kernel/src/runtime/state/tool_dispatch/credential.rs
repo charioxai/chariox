@@ -599,6 +599,36 @@ impl KernelRuntimeState {
         }
     }
 
+    pub(crate) async fn forwarded_credential_http_request(
+        &self,
+        context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        service: crate::secret::RuntimeSecretService,
+        request: crate::secret::CredentialHttpRequest,
+    ) -> Result<crate::secret::CredentialHttpResponse, DaemonError> {
+        let state = self.clone();
+        let preparation_context = context.clone();
+        let prepared = self
+            .with_app_side_effect_blocking(move |_| {
+                state.authorize_home_credential_context(&preparation_context)?;
+                state.with_forwarded_binding_operation(|| {
+                    service.prepare_http_request_with_credential(request)
+                })
+            })
+            .await?;
+        // Never hold the app, session, agent or prompt-owner lock over network I/O.
+        let response = tokio::task::spawn_blocking(move || prepared.execute())
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "runtime_tool_http_request_with_credential",
+                message: error.to_string(),
+            })??;
+        self.with_app_side_effect(|_| {
+            self.authorize_home_credential_context(&context)?;
+            self.with_forwarded_binding_operation(|| Ok(response))
+        })
+        .await
+    }
+
     pub(crate) async fn dispatch_forwarded_home_credential_tool_call(
         &self,
         context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
@@ -628,6 +658,7 @@ impl KernelRuntimeState {
                         "runtime_tool_create_generated_credential",
                     )
                     .await?;
+                self.authorize_home_credential_context(&context)?;
                 let args = serde_json::from_value::<
                     crate::transport::runtime_tools::CreateGeneratedCredentialArgs,
                 >(arguments)
@@ -684,6 +715,7 @@ impl KernelRuntimeState {
                         "runtime_tool_http_request_with_credential",
                     )
                     .await?;
+                self.authorize_home_credential_context(&context)?;
                 let service = self.home_runtime_secret_service()?;
                 let args = serde_json::from_value::<
                     crate::transport::runtime_tools::HttpRequestWithCredentialArgs,
@@ -702,14 +734,7 @@ impl KernelRuntimeState {
                     timeout_ms: args.timeout_ms,
                     max_response_bytes: args.max_response_bytes,
                 };
-                let response = tokio::task::spawn_blocking(move || {
-                    service.http_request_with_credential(request)
-                })
-                .await
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_http_request_with_credential",
-                    message: error.to_string(),
-                })??;
+                let response = self.forwarded_credential_http_request(context, service, request).await?;
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::to_value(response).map_err(|error| {
@@ -836,17 +861,25 @@ impl KernelRuntimeState {
                 "home_credential_secret_resolve",
             )
             .await?;
-        let secret_input = match injection {
-            crate::transport::relay_peer::RemoteCredentialSecretInjection::Browser {
-                target_url,
-            } => service.browser_secret_input_for_target_url(&credential_id, &target_url)?,
-            crate::transport::relay_peer::RemoteCredentialSecretInjection::Pty => {
-                service.terminal_secret_input(&credential_id)?
-            }
-            crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer => {
-                unreachable!("unbound Computer secret resolution was rejected before Vault access")
-            }
-        };
+        let secret_input = self
+            .with_app_side_effect(|_| {
+                self.authorize_home_credential_context(&context)?;
+                let secret_input = self.with_forwarded_binding_operation(|| match injection {
+                    crate::transport::relay_peer::RemoteCredentialSecretInjection::Browser {
+                        target_url,
+                    } => service.browser_secret_input_for_target_url(&credential_id, &target_url),
+                    crate::transport::relay_peer::RemoteCredentialSecretInjection::Pty => {
+                        service.terminal_secret_input(&credential_id)
+                    }
+                    crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer => {
+                        unreachable!(
+                            "unbound Computer secret resolution was rejected before Vault access"
+                        )
+                    }
+                })?;
+                Ok::<_, DaemonError>(secret_input)
+            })
+            .await?;
         Ok((credential_id, secret_input))
     }
 

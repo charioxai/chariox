@@ -536,27 +536,77 @@ impl KernelRuntimeState {
         context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext,
         change: crate::git_observer::WorkspaceLiveSyncChange,
     ) -> crate::git_observer::WorkspaceLiveSyncTargetResult {
-        if let Some(message) = self.forwarded_workspace_live_sync_rejection(&context) {
-            let target_result = workspace_live_sync_remote_failed_result(&context, message);
-            self.record_forwarded_workspace_live_sync_target_result(None, &change, &target_result);
-            return target_result;
-        }
-        if let Some(message) = self.forwarded_workspace_live_sync_identity_conflict(&context) {
-            let target_result =
-                workspace_live_sync_remote_conflict_result(&context, &change, message);
-            let local_session_id = self.forwarded_workspace_live_sync_target_session_id(&context);
-            self.record_forwarded_workspace_live_sync_target_result(
-                local_session_id.as_deref(),
-                &change,
-                &target_result,
+        let Some(peer) = self.relay_peer_authority.as_ref() else {
+            return workspace_live_sync_remote_failed_result(
+                &context,
+                "missing authenticated source peer".into(),
             );
-            return target_result;
+        };
+        let source_root =
+            crate::session::normalize_workspace_link_repo_root(change.repo_root.clone());
+        let target_root =
+            crate::session::normalize_workspace_link_repo_root(context.target_repo_root.clone());
+        let config = self.owned.config_projection.snapshot();
+        if peer.authorize_worker(&peer.kernel_id).is_err()
+            || context.target_kernel_id != config.daemon_id
+            || context.target_machine_id != config.host_machine_id
+            || change.session_id != context.home_session_id
+            || change.agent_id != context.source_agent_id
+            || change.worktree_path != context.source_worktree_path
+        {
+            return workspace_live_sync_remote_failed_result(
+                &context,
+                "unauthorized source or change identity".into(),
+            );
         }
-        let local_session_id = self.forwarded_workspace_live_sync_target_session_id(&context);
+        // Link attachments cannot be revoked or replaced during the filesystem operation.
+        let sessions = self.owned.session_store.read();
+        let target = sessions
+            .list_all_sessions()
+            .into_iter()
+            .find_map(|session| {
+                session.workspace_links().iter().find_map(|link| {
+                    if link.link_id() != context.link_id
+                        || link.name() != context.link_name
+                        || !link.attachments().iter().any(|attachment| {
+                            attachment.kernel_id() == peer.kernel_id
+                                && attachment.repo_root() == source_root
+                        })
+                    {
+                        return None;
+                    }
+                    link.attachments()
+                        .iter()
+                        .find(|attachment| {
+                            forwarded_workspace_live_sync_attachment_matches_context(
+                                attachment,
+                                &context,
+                                &config.daemon_id,
+                                &target_root,
+                            )
+                        })
+                        .cloned()
+                        .map(|attachment| (session.id().to_string(), attachment))
+                })
+            });
+        let Some((local_session_id, attachment)) = target else {
+            return workspace_live_sync_remote_failed_result(
+                &context,
+                "source and target are not attached to the same current link".into(),
+            );
+        };
+        if let Some(message) = crate::git_observer::workspace_live_sync_identity_conflict(
+            std::path::Path::new(&context.target_repo_root),
+            attachment.branch(),
+            attachment.repo_fingerprint(),
+        ) {
+            return workspace_live_sync_remote_conflict_result(&context, &change, message);
+        }
         let path_results = crate::git_observer::apply_workspace_live_sync_change_to_target(
             &change,
             std::path::Path::new(&context.target_repo_root),
         );
+        drop(sessions);
         let target_result = crate::git_observer::WorkspaceLiveSyncTargetResult {
             session_id: context.home_session_id.clone(),
             link_id: context.link_id.clone(),
@@ -570,7 +620,7 @@ impl KernelRuntimeState {
             path_results,
         };
         self.record_forwarded_workspace_live_sync_target_result(
-            local_session_id.as_deref(),
+            Some(&local_session_id),
             &change,
             &target_result,
         );
@@ -646,95 +696,6 @@ impl KernelRuntimeState {
                 }),
             );
         }
-    }
-
-    fn forwarded_workspace_live_sync_rejection(
-        &self,
-        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext,
-    ) -> Option<String> {
-        let config = self.owned.config_projection.snapshot();
-        if context.target_kernel_id != config.daemon_id {
-            return Some(format!(
-                "target kernel `{}` does not match local kernel `{}`",
-                context.target_kernel_id, config.daemon_id
-            ));
-        }
-        if self
-            .forwarded_workspace_live_sync_target_attachment(context, &config.daemon_id)
-            .is_some()
-        {
-            None
-        } else {
-            Some(format!(
-                "target repo root `{}` is not attached to workspace live sync link `{}` on this kernel",
-                context.target_repo_root, context.link_id
-            ))
-        }
-    }
-
-    fn forwarded_workspace_live_sync_target_attachment(
-        &self,
-        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext,
-        local_kernel_id: &str,
-    ) -> Option<crate::session::WorkspaceLinkAttachment> {
-        let target_root =
-            crate::session::normalize_workspace_link_repo_root(context.target_repo_root.clone());
-        self.owned
-            .session_store
-            .list_all_sessions()
-            .into_iter()
-            .flat_map(|session| session.workspace_links().to_vec())
-            .flat_map(|link| link.attachments().to_vec())
-            .find(|attachment| {
-                forwarded_workspace_live_sync_attachment_matches_context(
-                    attachment,
-                    context,
-                    local_kernel_id,
-                    &target_root,
-                )
-            })
-    }
-
-    fn forwarded_workspace_live_sync_target_session_id(
-        &self,
-        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext,
-    ) -> Option<String> {
-        let config = self.owned.config_projection.snapshot();
-        let target_root =
-            crate::session::normalize_workspace_link_repo_root(context.target_repo_root.clone());
-        self.owned
-            .session_store
-            .list_all_sessions()
-            .into_iter()
-            .find_map(|session| {
-                session
-                    .workspace_links()
-                    .iter()
-                    .flat_map(|link| link.attachments())
-                    .any(|attachment| {
-                        forwarded_workspace_live_sync_attachment_matches_context(
-                            attachment,
-                            context,
-                            &config.daemon_id,
-                            &target_root,
-                        )
-                    })
-                    .then(|| session.id().to_string())
-            })
-    }
-
-    fn forwarded_workspace_live_sync_identity_conflict(
-        &self,
-        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext,
-    ) -> Option<String> {
-        let config = self.owned.config_projection.snapshot();
-        let attachment =
-            self.forwarded_workspace_live_sync_target_attachment(context, &config.daemon_id)?;
-        crate::git_observer::workspace_live_sync_identity_conflict(
-            std::path::Path::new(&context.target_repo_root),
-            attachment.branch(),
-            attachment.repo_fingerprint(),
-        )
     }
 
     fn record_workspace_live_sync_notices(
@@ -868,6 +829,8 @@ fn forwarded_workspace_live_sync_attachment_matches_context(
 ) -> bool {
     attachment.link_id() == context.link_id
         && attachment.kernel_id() == local_kernel_id
+        && attachment.user_id() == context.target_user_id
+        && attachment.machine_id() == context.target_machine_id
         && attachment.repo_root() == normalized_target_root
 }
 

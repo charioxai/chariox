@@ -83,7 +83,6 @@ test("same provider run compares identity and projected runtime metadata", () =>
     state: "running",
     client_interface: "native_tui",
     endpoint_mode: "managed",
-    process_label: "codex-native",
     structured_endpoint: "endpoint-1",
     provider_session_id: "provider-session-1",
     working_directory: "/repo",
@@ -121,7 +120,6 @@ test("same provider run compares identity and projected runtime metadata", () =>
   assert.equal(sameProviderRun(run, { ...run, state: "completed" }), false)
   assert.equal(sameProviderRun(run, { ...run, client_interface: "headless" }), false)
   assert.equal(sameProviderRun(run, { ...run, endpoint_mode: "direct" }), false)
-  assert.equal(sameProviderRun(run, { ...run, process_label: "codex-headless" }), false)
   assert.equal(sameProviderRun(run, { ...run, structured_endpoint: "endpoint-2" }), false)
   assert.equal(sameProviderRun(run, { ...run, provider_session_id: "provider-session-2" }), false)
   assert.equal(sameProviderRun(run, { ...run, working_directory: "/other" }), false)

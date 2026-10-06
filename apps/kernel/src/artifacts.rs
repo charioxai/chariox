@@ -2,15 +2,17 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::error::DaemonError;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
-use crate::error::DaemonError;
+#[path = "artifacts/blob.rs"]
+mod blob;
+pub(crate) mod inspect;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactRecord {
@@ -97,23 +99,11 @@ impl OperationalArtifactStore {
         &self,
         request: StoreArtifactRequest,
     ) -> Result<ArtifactRecord, DaemonError> {
-        let source_path = fs::canonicalize(&request.source_path)
-            .map_err(|error| artifact_error("canonicalize source artifact", error))?;
-        let (sha256, size_bytes) = hash_file(&source_path)?;
+        let (sha256, size_bytes, blob_path) = blob::store(&self.root, &request.source_path)?;
         let created_at_ms = unix_epoch_ms();
-        let artifact_id = format!("art_{created_at_ms}_{}", &sha256[..16]);
-        let blob_path = self.blob_path(&sha256);
-        if !blob_path.exists() {
-            if let Some(parent) = blob_path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|error| artifact_error("create artifact blob shard", error))?;
-            }
-            let tmp_path = blob_path.with_extension(format!("tmp-{}", std::process::id()));
-            fs::copy(&source_path, &tmp_path)
-                .map_err(|error| artifact_error("copy artifact blob", error))?;
-            fs::rename(&tmp_path, &blob_path)
-                .map_err(|error| artifact_error("promote artifact blob", error))?;
-        }
+        // Equal bytes can belong to different Rooms or attachments. Only the
+        // blob is deduplicated; each admission gets its own opaque identity.
+        let artifact_id = format!("art_{created_at_ms}_{:032x}", rand::random::<u128>());
         let record = ArtifactRecord {
             artifact_id,
             sha256,
@@ -182,7 +172,7 @@ impl OperationalArtifactStore {
         }
         let remaining = record.size_bytes - offset;
         let read_len = remaining.min(max_bytes as u64) as usize;
-        let mut file = fs::File::open(self.blob_path(&record.sha256))
+        let mut file = blob::open_regular(&self.blob_path(&record.sha256))
             .map_err(|error| artifact_error("open artifact blob", error))?;
         file.seek(SeekFrom::Start(offset))
             .map_err(|error| artifact_error("seek artifact blob", error))?;
@@ -317,10 +307,13 @@ impl OperationalArtifactStore {
                 message: error.to_string(),
             }
         })?;
-        let connection = self.lock("lock operational artifact store")?;
-        connection
+        let mut connection = self.lock("lock operational artifact store")?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| artifact_sql_error("begin artifact record", error))?;
+        transaction
             .execute(
-                "INSERT OR IGNORE INTO artifacts (
+                "INSERT INTO artifacts (
                     artifact_id, sha256, size_bytes, media_type, display_name, source_kind,
                     session_id, attachment_id, workspace_id, worktree_path, operational_path,
                     metadata_json, record_json, created_at_ms, archived_at_ms
@@ -344,9 +337,9 @@ impl OperationalArtifactStore {
             )
             .map_err(|error| artifact_sql_error("insert artifact record", error))?;
         if enqueue_archive {
-            connection
+            transaction
                 .execute(
-                    "INSERT OR IGNORE INTO artifact_archive_outbox (
+                    "INSERT INTO artifact_archive_outbox (
                         artifact_id, record_json, attempts, last_error, archived_at_ms,
                         created_at_ms, updated_at_ms
                      ) VALUES (?1, ?2, 0, NULL, NULL, ?3, ?3)",
@@ -358,7 +351,9 @@ impl OperationalArtifactStore {
                 )
                 .map_err(|error| artifact_sql_error("enqueue artifact archive record", error))?;
         }
-        Ok(())
+        transaction
+            .commit()
+            .map_err(|error| artifact_sql_error("commit artifact record", error))
     }
 
     fn lock(
@@ -373,25 +368,6 @@ impl OperationalArtifactStore {
                 message: error.to_string(),
             })
     }
-}
-
-fn hash_file(path: &Path) -> Result<(String, u64), DaemonError> {
-    let mut file =
-        fs::File::open(path).map_err(|error| artifact_error("open artifact source", error))?;
-    let mut hasher = Sha256::new();
-    let mut size = 0u64;
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|error| artifact_error("read artifact source", error))?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-        size += read as u64;
-    }
-    Ok((hex_lower(&hasher.finalize()), size))
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -472,6 +448,184 @@ CREATE INDEX IF NOT EXISTS idx_artifact_archive_outbox_pending
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // MP-08/MP-10/MP-11: a content address is not an ownership identity.
+    #[test]
+    fn artifact_id_collision_rejects_a_second_owner_without_archiving_it() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-artifact-owner-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let _cleanup = TestRootCleanup(root.clone());
+        let source = root.join("source.txt");
+        fs::write(&source, b"same bytes").unwrap();
+        let store =
+            OperationalArtifactStore::open(root.join("store"), root.join("index.db")).unwrap();
+        let original = store
+            .store_existing_file(test_request(source, "room-a"))
+            .unwrap();
+        let mut collision = original.clone();
+        collision.session_id = Some("room-b".into());
+        assert!(store.insert_record(&collision, true).is_err());
+        assert_eq!(
+            store.load_artifact(&original.artifact_id).unwrap(),
+            Some(original)
+        );
+        assert!(store.load_pending_archive_artifacts(10).unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn artifact_reuse_rejects_corrupt_content_addressed_bytes() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-artifact-integrity-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let _cleanup = TestRootCleanup(root.clone());
+        let source = root.join("source.txt");
+        fs::write(&source, b"approved bytes").unwrap();
+        let store =
+            OperationalArtifactStore::open(root.join("store"), root.join("index.db")).unwrap();
+        let first = store
+            .store_existing_file(test_request(source.clone(), "room-a"))
+            .unwrap();
+        fs::write(&first.operational_path, b"corrupted blob").unwrap();
+        assert!(store
+            .store_existing_file(test_request(source, "room-b"))
+            .is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_equal_bytes_keep_distinct_ownership_and_one_private_blob() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-artifact-concurrent-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let _cleanup = TestRootCleanup(root.clone());
+        let source = root.join("source.txt");
+        fs::write(&source, "Grüße 世界\n").unwrap();
+        let store =
+            OperationalArtifactStore::open(root.join("store"), root.join("index.db")).unwrap();
+        let records = std::thread::scope(|scope| {
+            (0..8)
+                .map(|i| {
+                    let store = &store;
+                    let source = source.clone();
+                    scope.spawn(move || {
+                        store
+                            .store_existing_file(test_request(source, &format!("room-{i}")))
+                            .unwrap()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let mut ids = std::collections::BTreeSet::new();
+        for record in &records {
+            assert!(ids.insert(&record.artifact_id));
+            assert_eq!(
+                store.load_artifact(&record.artifact_id).unwrap().as_ref(),
+                Some(record)
+            );
+            assert_eq!(record.operational_path, records[0].operational_path);
+            assert_eq!(
+                fs::read(&record.operational_path).unwrap(),
+                "Grüße 世界\n".as_bytes()
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(&record.operational_path)
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o600
+                );
+            }
+        }
+        assert!(!fs::read_dir(root.join("store/blobs"))
+            .unwrap()
+            .any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".pending-")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_archive_enqueue_rolls_back_the_ownership_record() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-artifact-rollback-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let _cleanup = TestRootCleanup(root.clone());
+        let source = root.join("source.txt");
+        fs::write(&source, b"fixture").unwrap();
+        let store =
+            OperationalArtifactStore::open(root.join("store"), root.join("index.db")).unwrap();
+        let mut record = store
+            .store_existing_file(test_request(source, "room-a"))
+            .unwrap();
+        record.artifact_id = "art_synthetic_enqueue_failure".into();
+        store.lock("fixture").unwrap().execute_batch("CREATE TRIGGER reject_archive BEFORE INSERT ON artifact_archive_outbox BEGIN SELECT RAISE(FAIL, 'fixture failure'); END;").unwrap();
+        assert!(store.insert_record(&record, true).is_err());
+        assert!(store.load_artifact(&record.artifact_id).unwrap().is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // MP-08/MP-10/MP-11: a blob substitution must never read another file.
+    #[cfg(unix)]
+    #[test]
+    fn mp08_mp10_mp11_browser_artifact_read_rejects_symlinked_blob() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-b207-blob-read-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let _cleanup = TestRootCleanup(root.clone());
+        let source = root.join("fixture.txt");
+        fs::write(&source, b"approved bytes").unwrap();
+        let store =
+            OperationalArtifactStore::open(root.join("store"), root.join("index.db")).unwrap();
+        let record = store
+            .store_existing_file(test_request(source.clone(), "room-a"))
+            .unwrap();
+        fs::remove_file(&record.operational_path).unwrap();
+        std::os::unix::fs::symlink(&source, &record.operational_path).unwrap();
+        assert!(store.read_artifact_chunk(&record, 0, 1).is_err());
+    }
+
+    struct TestRootCleanup(PathBuf);
+    impl Drop for TestRootCleanup {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn test_request(source_path: PathBuf, session_id: &str) -> StoreArtifactRequest {
+        StoreArtifactRequest {
+            source_path,
+            display_name: "fixture.txt".into(),
+            source_kind: "transfer".into(),
+            media_type: Some("text/plain".into()),
+            enqueue_archive: false,
+            session_id: Some(session_id.into()),
+            attachment_id: None,
+            workspace_id: None,
+            worktree_path: None,
+            metadata: BTreeMap::new(),
+        }
+    }
 
     #[test]
     fn stores_artifact_blob_and_loads_archive_outbox() {

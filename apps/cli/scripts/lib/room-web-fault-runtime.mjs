@@ -11,7 +11,7 @@ export function roomWebFaultHandlers(runtime) {
   const projection = async automation => {
     const value = await automation.send('snapshot')
     return { screen: value.screen, daemonDisconnected: value.daemonDisconnected,
-      statusLine: value.statusLine, sessionId: value.session?.id,
+      statusLine: value.statusLine, sessionId: value.session?.id, attachmentId: value.attachmentId,
       notices: automationNoticeEntries(value).filter(item => /^Room |screen|disconnect|reconnect|error/i.test(item.text)).slice(-18) }
   }
   const response = async (request, variant) => {
@@ -47,6 +47,7 @@ export function roomWebFaultHandlers(runtime) {
       return { submitted: true }
     },
     state: async () => ({
+      attachmentIds: (await response(requests.getSessionStateRequest(runtime.getSessionId()), 'SessionState')).session.attachment_ids,
       environment: (await response(requests.getRoomEnvironmentStateRequest(runtime.getSessionId()), 'RoomEnvironmentState')).environment,
       page: (await response(requests.listRoomEnvironmentActionHistoryRequest(runtime.getSessionId(), undefined, 100), 'RoomEnvironmentActionHistoryListed')).page,
     }),

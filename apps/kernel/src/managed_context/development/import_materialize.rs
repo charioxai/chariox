@@ -358,7 +358,7 @@ fn verify_materialized_worktree_state(
             ..
         } => {
             let (bytes, metadata) = super::overlay::read_regular_file_without_following_symlinks(
-                &absolute,
+                repository,
                 path,
                 *size_bytes,
             )?;

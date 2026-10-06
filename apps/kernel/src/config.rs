@@ -693,11 +693,43 @@ fn default_user_config_version() -> u32 {
     1
 }
 
+fn read_user_config(path: &PathBuf) -> std::io::Result<String> {
+    use std::io::Read;
+    const MAX_BYTES: u64 = 4 * 1024 * 1024;
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > MAX_BYTES {
+        return Err(std::io::Error::from(std::io::ErrorKind::InvalidData));
+    }
+    let mut payload = String::new();
+    file.take(MAX_BYTES + 1).read_to_string(&mut payload)?;
+    if payload.len() as u64 > MAX_BYTES {
+        return Err(std::io::Error::from(std::io::ErrorKind::InvalidData));
+    }
+    Ok(payload)
+}
+
 fn load_user_config_from_path(path: &PathBuf) -> CharioxUserConfig {
-    let Some(payload) = fs::read_to_string(path).ok() else {
-        return CharioxUserConfig::default();
+    let payload = match read_user_config(path) {
+        Ok(payload) => payload,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            && fs::symlink_metadata(path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) => {
+                return CharioxUserConfig::default();
+            }
+        Err(_) => panic!("existing Chariox user configuration is unreadable; refusing to default security policy"),
     };
-    let mut config = toml::from_str::<CharioxUserConfig>(&payload).unwrap_or_default();
+    let mut config = toml::from_str::<CharioxUserConfig>(&payload).unwrap_or_else(|_| {
+        panic!(
+            "existing Chariox user configuration is invalid; refusing to default security policy"
+        )
+    });
     clamp_operational_history_config(&mut config);
     reject_test_persistence_paths_in_default_user_config(path, &config);
     config
@@ -715,7 +747,7 @@ fn persist_user_config(path: &PathBuf, config: &CharioxUserConfig) -> Result<(),
         operation: "persist user config",
         message: error.to_string(),
     })?;
-    fs::write(path, payload).map_err(|error| DaemonError::LocalTransport {
+    write_private_file(path, payload.as_bytes()).map_err(|error| DaemonError::LocalTransport {
         operation: "persist user config",
         message: error.to_string(),
     })
@@ -829,3 +861,45 @@ fn validate_optional_nonzero(field: &'static str, value: Option<u32>) -> Result<
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod mp11_config_tests {
+    use super::*;
+    #[test]
+    fn mp11_existing_invalid_or_unreadable_config_never_defaults() {
+        let root = std::env::temp_dir().join(format!("mp11-config-{:016x}", rand::random::<u64>()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("config.toml");
+        fs::write(&path, "kernel_access = [ malformed").unwrap();
+        let malformed = std::panic::catch_unwind(|| load_user_config_from_path(&path)).is_err();
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        let unreadable = std::panic::catch_unwind(|| load_user_config_from_path(&path)).is_err();
+        fs::remove_dir_all(root).unwrap();
+        assert!(
+            malformed,
+            "malformed config silently replaced security policy with defaults"
+        );
+        assert!(
+            unreadable,
+            "unreadable config silently replaced security policy with defaults"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mp11_config_publication_does_not_follow_destination_symlink() {
+        use std::os::unix::fs::symlink;
+        let root =
+            std::env::temp_dir().join(format!("mp11-config-alias-{:016x}", rand::random::<u64>()));
+        fs::create_dir(&root).unwrap();
+        let unrelated = root.join("unrelated");
+        fs::write(&unrelated, "unchanged").unwrap();
+        let path = root.join("config.toml");
+        symlink(&unrelated, &path).unwrap();
+        persist_user_config(&path, &CharioxUserConfig::default()).unwrap();
+        let intact = fs::read_to_string(&unrelated).unwrap() == "unchanged";
+        fs::remove_dir_all(root).unwrap();
+        assert!(intact, "config write modified unrelated symlink target");
+    }
+}

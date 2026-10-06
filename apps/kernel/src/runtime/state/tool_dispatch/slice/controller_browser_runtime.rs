@@ -175,6 +175,29 @@ impl KernelRuntimeState {
                 self.controller_browser_downloads_tool_result(session_id, slice_id, agent_id, args)
                     .await
             }
+            SLICE_BROWSER_ARTIFACT_TOOL => {
+                let args = parse_controller_tool_arguments::<SliceBrowserArtifactArgs>(
+                    arguments,
+                    "runtime_tool_slice_browser_artifact",
+                )?;
+                self.ensure_room_observation_ready(session_id, agent_id, true)
+                    .await?;
+                let environment = super::controller_browser::ensure_controller_browser_environment(
+                    self,
+                    session_id,
+                    "runtime_tool_slice_browser_artifact",
+                )
+                .await?;
+                let tab_id =
+                    environment
+                        .focused_tab_id
+                        .ok_or_else(|| DaemonError::LocalTransport {
+                            operation: "runtime_tool_slice_browser_artifact",
+                            message: "Room browser has no focused tab".into(),
+                        })?;
+                self.execute_room_browser_artifact(session_id, &tab_id, args)
+                    .await
+            }
             SLICE_BROWSER_UPLOAD_TOOL => {
                 let args = parse_controller_tool_arguments::<SliceBrowserUploadArgs>(
                     arguments,

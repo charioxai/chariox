@@ -226,14 +226,8 @@ impl OAuthAuthorization {
     where
         F: FnOnce(&Value) -> Value,
     {
-        if let Some(error) = query.get("error") {
-            return Err(format!(
-                "provider authorization failed: {}",
-                query
-                    .get("error_description")
-                    .map(String::as_str)
-                    .unwrap_or(error)
-            ));
+        if query.contains_key("error") {
+            return Err("provider authorization failed".to_string());
         }
         let state = query
             .get("state")
@@ -270,6 +264,8 @@ impl OAuthAuthorization {
     }
 
     pub fn ready_credential(&self, connection_id: &str) -> Result<OAuthCredential, String> {
+        crate::auth::validate_credential_endpoint(&self.config.api_base_url)?;
+        crate::auth::validate_credential_endpoint(&self.config.token_url)?;
         let connection = self
             .store
             .connection(connection_id)?
@@ -309,10 +305,12 @@ impl OAuthAuthorization {
     }
 
     fn exchange_code(&self, code: &str) -> Result<Value, String> {
+        crate::auth::validate_credential_endpoint(&self.config.token_url)?;
         let callback_url = self.callback_url()?;
         let value = match self.config.token_protocol {
             OAuthTokenProtocol::AtlassianJson => http_json(
-                ureq::post(self.config.token_url.as_str())
+                crate::auth::credential_agent()
+                    .post(self.config.token_url.as_str())
                     .timeout(PROVIDER_HTTP_TIMEOUT)
                     .set("content-type", "application/json")
                     .send_json(serde_json::json!({
@@ -324,7 +322,8 @@ impl OAuthAuthorization {
                     })),
             )?,
             OAuthTokenProtocol::StandardForm | OAuthTokenProtocol::SlackForm => http_json(
-                ureq::post(self.config.token_url.as_str())
+                crate::auth::credential_agent()
+                    .post(self.config.token_url.as_str())
                     .timeout(PROVIDER_HTTP_TIMEOUT)
                     .set("accept", "application/json")
                     .send_form(&[
@@ -341,13 +340,15 @@ impl OAuthAuthorization {
     }
 
     fn refresh(&self, current: &OAuthCredential) -> Result<(OAuthCredential, Option<u64>), String> {
+        crate::auth::validate_credential_endpoint(&self.config.token_url)?;
         let refresh_token = current
             .refresh_token
             .as_deref()
             .ok_or_else(|| "provider connection expired and has no refresh token".to_string())?;
         let response = match self.config.token_protocol {
             OAuthTokenProtocol::AtlassianJson => http_json(
-                ureq::post(self.config.token_url.as_str())
+                crate::auth::credential_agent()
+                    .post(self.config.token_url.as_str())
                     .timeout(PROVIDER_HTTP_TIMEOUT)
                     .set("content-type", "application/json")
                     .send_json(serde_json::json!({
@@ -358,7 +359,8 @@ impl OAuthAuthorization {
                     })),
             )?,
             OAuthTokenProtocol::StandardForm | OAuthTokenProtocol::SlackForm => http_json(
-                ureq::post(self.config.token_url.as_str())
+                crate::auth::credential_agent()
+                    .post(self.config.token_url.as_str())
                     .timeout(PROVIDER_HTTP_TIMEOUT)
                     .set("accept", "application/json")
                     .send_form(&[
@@ -388,13 +390,7 @@ impl OAuthAuthorization {
         if self.config.token_protocol == OAuthTokenProtocol::SlackForm
             && value.get("ok").and_then(Value::as_bool) != Some(true)
         {
-            return Err(format!(
-                "Slack token {operation} failed: {}",
-                value
-                    .get("error")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown error")
-            ));
+            return Err(format!("Slack token {operation} failed"));
         }
         Ok(())
     }

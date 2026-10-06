@@ -3148,3 +3148,81 @@ exit 0
     std::env::remove_var("PARENT_DEPTH");
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+#[cfg(unix)]
+fn mp11_relay_config_has_no_host_file_even_under_foreign_paths() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    for layout in ["absent", "loose-file", "leaf-symlink", "ancestor-symlink"] {
+        let root = std::env::temp_dir().join(format!(
+            "mp11-relay-input-{layout}-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut options = test_options();
+        options.root = root.clone();
+        let record = test_record();
+        let foreign = root.join("foreign");
+        std::fs::create_dir(&foreign).unwrap();
+        let runtime = root.join("runtime");
+        let destination = runtime.join(&record.id).join("cloud-relay-config.json");
+        if layout == "ancestor-symlink" {
+            symlink(&foreign, &runtime).unwrap();
+        } else if layout != "absent" {
+            std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            if layout == "leaf-symlink" {
+                std::fs::write(foreign.join("user-file"), b"user data").unwrap();
+                symlink(foreign.join("user-file"), &destination).unwrap();
+            } else {
+                std::fs::write(&destination, b"user data").unwrap();
+                std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o644))
+                    .unwrap();
+            }
+        }
+        let relay = LocalDockerSliceRelay {
+            relay_url: "wss://relay.example.test".into(),
+            container_relay_url: None,
+            relay_token: "synthetic".into(),
+            owner_public_key: None,
+            cloud_relay_config_json: Some("synthetic non-secret config".into()),
+            worker_machine_id: None,
+        };
+        let mut command = Command::new("slice-provisioner");
+        configure_local_docker_slice_command(&mut command, &record, Some(relay), &options, true)
+            .unwrap();
+        assert!(!command
+            .get_envs()
+            .any(|(key, _)| key == "CHARIOX_SLICE_CLOUD_RELAY_CONFIG_HOST_PATH"));
+        if layout == "absent" {
+            assert!(!runtime.exists());
+        }
+        if layout == "ancestor-symlink" {
+            assert_eq!(std::fs::read_dir(&foreign).unwrap().count(), 0);
+        }
+        if layout == "loose-file" || layout == "leaf-symlink" {
+            assert_eq!(std::fs::read(&destination).unwrap(), b"user data");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn mp11_log_tail_is_bounded_and_survives_split_utf8() {
+    let root = test_root("mp11-log");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("run.log");
+    // A 4000-byte tail starts inside this multibyte scalar on the old code.
+    std::fs::write(&path, format!("{}x", "€".repeat(2000))).unwrap();
+    let result = std::panic::catch_unwind(|| command_log_preview(&path));
+    std::fs::write(&path, "a".repeat(2 * 1024 * 1024)).unwrap();
+    let projected = read_slice_log_file_entry("fixture", &path, 1);
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(result.is_ok(), "log slicing panicked inside a UTF-8 scalar");
+    assert!(
+        projected.text.len() <= 65536,
+        "single-line log projection is unbounded"
+    );
+    assert!(projected.truncated);
+}

@@ -1,5 +1,101 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 fatal Computer child settlement, b204 (2026-10-04)
+
+The shared hold adapter resets input for direct signal exits and Bash's
+128+signal child statuses129..192, before relinquishing a Failed Action. Ordinary
+exit1 pre-press denial preserves another actor's held input. Source fixtures
+kill an owned child after a synthetic press with SIGQUIT, SIGABRT, SIGSEGV and
+SIGKILL, and check release before failure acknowledgement. An opt-in physical
+fixture uses the same kernel adapter, actual X11 key/button presses, SIGQUIT
+child death, native reset and first-party trusted browser release observations.
+These are source/helper seams, not live Room/provider/Web/TUI acceptance.
+
+The Computer cancellation registry rejects system/overflow group IDs before
+forming a signal target. Fixture fault/group helpers verify IDs, start identity,
+parent ancestry and owned group membership before signalling. No managed-only
+selector, provider path or serialized shape changes; local421/relay70 remain.
+New responsibility modules are public fixture-only `computer-input-process.py`
+and `computer-input-fault.py`. Exact receipts, RED reproduction and cleanup are
+external under `b204/review846-r2/`; independent exact-head review, signed
+multidomain surface evidence and the fresh ordinary/Path-1 matrix remain open.
+No MP item gains acceptance or an independent audit disposition.
+
+## MP-08 / MP-10 / MP-11 physical Computer protection fixture, b204 (2026-10-04)
+
+A viewer-independent row supplies a synthetic value policy to the production
+observation helper. Real OCR must acknowledge two public field/canvas canaries
+before masking, then find neither afterward while two benign labels remain
+readable. Decoded screenshot pixels must cover both text boxes and all canvas
+pixels, preserve the benign marker and retain canonical geometry/native focus.
+No real secret or Vault authorization is involved. The raw baseline remains
+private to the disposable container; model delivery is explicitly NOT_RUN.
+The native reset fixture seeds Ctrl+Shift+F8, avoiding Ctrl+Shift+A's browser
+tab-search side effect. No production or serialized contract changes here.
+Live official-provider, Room/host-browser, Web/TUI and fresh Path-1 conjunctions
+remain coordinator-scheduled MP-08/MP-10/MP-11 acceptance gates.
+
+## MP-08 / MP-10 / MP-11 PR846 shared Computer review correction, b204 (2026-10-04)
+
+The safe Unicode allocation pool remains keycodes 8/92, while core and XKB
+lookup retain the pinned implementation's full inherited-overlay distrust set.
+An inherited Unicode overlay on excluded BrowserRefresh keycode 181 must be
+rebound into a safe slot; an exhausted safe pool fails before input. Focused
+tests use the actual pinned lookup/prebind/press/release methods with a fake
+display. A physical Chromium fixture reproduces document reload with the old
+policy and acknowledges trusted text with the corrected policy.
+
+The pointer fixture checks the three single/double-click effects before the
+drag. Its independent drag receipt counts press, release and any release click.
+The pointer target disables text selection so this row cannot accidentally
+start a native selected-text drag; textarea selection remains a separate row.
+The existing target-test import stub now includes XK, introduced by hold421.
+
+No managed-placement branch, provider path or serialized contract changes in
+this correction. Allocated local protocol421 and relay70 remain unchanged.
+Physical helper and source proofs remain separate from live Room/provider,
+host-browser, Web/TUI, IME and Vault observations. MP-08/MP-10/MP-11 stay open.
+
+## MP-08 / MP-10 / MP-11 bounded Computer hold continuation, b204 (2026-10-04)
+
+Coordinator-allocated local protocol421 adds keyboard and pointer holds through
+existing human and provider Room input admission. Shared validation, redacted
+Action arguments and idempotency, cancellation, bound-worker execution and
+native release remain below clients; no managed-placement selector is added.
+`runtime/computer_input_action.rs` owns validation/history metadata;
+`runtime/state/tool_dispatch/slice/computer_hold.rs` adapts the physical helper;
+`slice-keyboard.py` owns native press/hold/release without refocusing or borrowing
+Unicode overlays. The relay envelope remains70 and old Computer enums reject
+unknown hold variants. Coordinator review of aggregate peer numbering remains
+pending; no peer number was chosen by this lane.
+
+A hold reserves desktop input until bounded release or cancellation. It does
+not add persistent per-actor down/up state across Actions. Kernel tests exercise
+the existing takeover, membership, generation and idempotency seams with fake
+native helpers; Xorg/Xvfb fixtures acknowledge physical timing, release and
+Mousepad focus. These proofs remain separate from actual official-provider MCP
+pixels, multidomain host-browser surfaces, live Web/TUI, IME, human clipboard,
+Vault, signed image and ordinary-versus-managed acceptance. Exact source,
+commands, exits, resources and cleanup are retained under the lane's external
+`b204/hold421/` evidence. No MP item closes or gains independent disposition.
+
+## MP-08 / MP-10 / MP-11 shared Computer helper candidate, b204 (2026-10-04)
+
+Based on G2 `9334141d420f8a32393f206102c5b8b4a1b0b609`, the native
+`slice-keyboard.py` overlay pool now excludes hardware-action fallback keycodes.
+`slice-text-finder.py` applies Unicode NFC query matching, preserves distinct
+overlapping OCR labels and uses the Environment's installed supported language
+models under bounded enumeration/recognition. The Docker image adds the German
+model. These policies are common to ordinary and managed Computer helper paths;
+no managed selector, provider adapter or serialized kernel/client shape changes.
+The source has a physical Xorg/Xvfb and Mousepad fixture described in
+`docs/SHARED_COMPUTER_INPUT_FIXTURE.md`, plus adversarial Room/image receipt tests.
+Exact source/results and cleanup are retained externally under
+`/root/.codex/evidence/browser-resume-20260930/b204/`. Independent exact-head
+review, signed image rebuild, official-provider MCP images, Room/host-browser
+identity, physical Web/TUI and fresh ordinary/managed comparison remain open.
+No MP item closes. The historical dispositions below retain their source binding.
+
 Historical audit ledger (2026-09-26) · scoped OSS review baseline: `d3f47513bda80ea222b6cd7e4d1e6b9d106038b9` (tree `08b8cd11bd31a69c3ed0d9b7b2066b6cb07196fd`); published OSS source baseline: `4c8b979430d2dca6662de0b478a8b75b7ac3b231`; retained prior audit OSS baseline: `dbfebe394707c7b5c85a2ee02aa5999e5e9e44b4`; Cloud source baseline last inspected: `73d82d3d3b578cb3da54dbb5a58dfcffd083b58e` (stale; not refreshed in this pass).
 
 This is a source inventory for the canonical gate in
@@ -14,6 +110,123 @@ image. Fresh-equivalent evidence must bind that rebuild to the same allocation,
 new boot/machine/enrollment/relay identities, reviewed release, absence of old
 runtime residue, and retirement of the prior identity before the parity matrix
 or remaining acceptance gates run.
+
+## MP-11 shipped scanner repair and current review scope (2026-10-04)
+
+Lane b211scan repairs the product scanner against frozen OSS
+`9334141d420f8a32393f206102c5b8b4a1b0b609` (tree
+`f78d25308bd4cc012f129a86df8ff537699712df`) and Cloud
+`50eb909aa70298e16daca533a6b3a4f5b63ffeae` (tree
+`9f9c7c813af08d94da4f2f079cc60ef93b1b89d5`). Tooling source identity is separate
+from these runtime inputs; later runtime heads inherit no semantic approvals.
+
+The first shipped failure was exit 2 on the exact synthetic Claude PTY fixture.
+Native App C++/headers, storage-helper sources, plist/config and the exact
+extensionless macOS installer are now included. Six synthetic/binary fixtures
+are excluded only at their exact non-executable blob identities; future siblings,
+changed fixture contents/modes, binary source and unknown formats fail closed.
+New native/XML formats retain raw lexical candidates where the generic comment
+mask cannot prove syntax. The default HEAD scan reads immutable Git objects,
+including when Git suppresses working-copy dirt.
+
+Unified patch decoding supports standard paired headers, optional tab timestamps,
+multiple sections, additions/deletions and old/new filenames. It preserves physical
+patch offsets and source roles, rejects unsafe/unknown paths and malformed/count-
+mismatched/overlapping hunks, and retains removed controls when the new path is an
+excluded documentation format. Manual ranges use physical patch offsets too.
+Changed fragment consumers retain the existing fail-closed assembly gaps.
+
+Current declaration expectations live separately from historical source rules.
+They bind the 45 b211-reported symbol expectations plus two additional shipped
+prompt-assembly expectations to exact current commit/tree/blob/line/column/hash.
+Both platform implementations of nondumpability are retained. These point ranges
+resolve declaration presence only; neither expanding a range nor locating a
+function grants semantic approval. Historical predicates, rule records and the
+747 shipped historical semantic reviews remain unchanged. External Release F
+review records are neither imported nor repinned.
+
+The repaired exact scans enumerate 7,094 OSS and 2,936 Cloud candidates with zero
+source/fragment/declaration gaps. Counts differ from b211's 9,993 because the
+shipped historical tooling/expectations differ and the new native/XML inventory
+retains conservative raw matches. This is lexical coverage, not a defect count.
+The newly authored current module contains 81 independent runtime-source
+conclusions in 26 bounded responsibility scopes (80 OSS, one Cloud). Its author
+implemented scanner tooling only and did not author the frozen runtime; these
+are source-lane conclusions, not established reviewer-service approval of the
+scanner change. Every record has an exact source/anchor binding and explicit
+responsibility/acceptance limits. No unlisted anchor inherits a disposition.
+
+Both scans remain exit 1: **9,949 current candidates are still independently
+unreviewed**. Retained historical/other-source reviews remain visible but are
+inapplicable; missing same-source reviewed anchors explicitly block the gate.
+Exit 0 requires complete current semantic disposition and source-rule coverage,
+including rejection of removal-required findings. Complete semantic review,
+unavailable historical predicates, independent tooling review and all fresh
+ordinary/managed MP-10 evidence remain open. No MP-01 through MP-11 item closes.
+
+Evidence, exact commands/resources, independent Git-binding checks and a complete
+per-anchor pending review request index live outside the repositories at
+`/root/.codex/evidence/browser-resume-20260930/b211scan/`. No Rust build,
+provider/runtime/container creation, protocol allocation, push, deployment or
+protected-machine contact was performed.
+
+## MP-04 / MP-07 / MP-08 / MP-10 / MP-11 b212 recovery qualification (2026-10-04)
+
+The G2-based b212 lane qualifies recovery against independently supplied release
+and builder pins. `deploy/managed-kernel/managed-kernel-recovery-release.sh`
+re-verifies the selected signed immutable release before rollback execution or
+terminal journal settlement; package/journal pins do not become trust authority.
+This is the signed-deployment exception, with no provider/client/protocol fork.
+Three fail-first cases reproduced acceptance of a corrupted executable during
+interrupted activation, committed replay and terminal replay. The recovery suite
+also exercises incoming-image removal, publication interruption, foreign-command
+rejection and a synthetic signed B-to-new-to-B-to-new cycle with state inode and
+history/profile-marker continuity. Shared fixtures live in the named
+`scripts/lib/managed-kernel-upgrade-fixture.mjs` responsibility module.
+
+These are Linux-root fixtures with synthetic binaries, systemd, health and
+provider state. They do not prove execution of historical B tooling or live VM
+acceptance. Exact independent review, signed successor publication and authorized
+VM/Cloud/provider/cleanup evidence remain open. The detailed scope and owner-side
+prerequisites are in
+[`MANAGED_PATH1_UPGRADE_RECOVERY_VALIDATION.md`](MANAGED_PATH1_UPGRADE_RECOVERY_VALIDATION.md).
+No MP item is closed by this source qualification.
+## MP-07 / MP-09 / MP-10 / MP-11 b214 shutdown observations (2026-10-05)
+
+OSS base is merged G2 `358491d662330aff538bbd6d6450391332f62ac2`.
+This lane changes the Node shutdown capture, not Cloud shutdown policy, kernel
+runtime behavior or a serialized client/relay contract. The twelve existing
+scenario policies are retained. Keep-running observation now extends through
+the cancelled deadline plus 120 seconds; its minimum driver budget is 1800s.
+Automatic and manual STOP observations retain the initially observed operation
+and revision through manager retries. Even a pending STOP created before its
+idle deadline fails the automatic observation. Safe projected operation changes,
+operator acknowledgement times and workflow/cleanup read coverage survive state
+deduplication; neither operator Enter nor a successful projection read proves
+a real UI action, kernel heartbeat or admission fence.
+
+The exported driver provides an optional bounded `observeBeforeCleanup` barrier
+for a reviewed coordinator bridge to collect independent power/storage/context
+receipts and exercise normal STOP/start persistence before DELETE. Callback
+results are discarded; timeout/failure leaves the workflow incomplete and
+preserves the existing cleanup reserve. This is drill wiring, not another
+lifecycle authority or a new managed-runtime exception.
+
+Six regression cases fail against the unchanged G2 capture. The expanded Node
+shutdown suite passes 41/41 without skips using virtual clocks and owner-IPC
+fixtures only. The unchanged activation/recovery/upgrade/service-policy Node
+fixtures pass 130/130 without skips using synthetic releases and mocked host
+services. No VM or staging was contacted. Available builder2 Cloud
+`f6cfd0066d75844dbab795cdf715789ec5fa37d6` is stale/unpaired; no paired Cloud
+result is claimed. The complete trigger/cost/deletion ledger and coordinator
+commands are in `docs/MANAGED_SHUTDOWN_ACCEPTANCE_RUNBOOK.md`. Public command,
+source, resource and cleanup receipts remain external under
+`/root/.codex/evidence/browser-resume-20260930/b214/`.
+
+MP-07 signed deployment/rollback, MP-09 real timers/fences/no-ACK/UI triggers,
+MP-10 ordinary-versus-managed/fresh-machine comparison and independent provider,
+Cloud/relay absence, and MP-11 final-source semantic review remain OPEN.
+Historical signed F observations are not relabelled as G2 evidence.
 
 ## MP-07 / MP-02 / MP-10 / MP-11 managedfix recovery scope (2026-10-03)
 

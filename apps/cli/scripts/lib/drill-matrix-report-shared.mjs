@@ -359,6 +359,7 @@ export function validateExitCriteriaEvidence(scenario, source) {
 }
 
 export function validateExitCriterionEvidence(criterion, source) {
+  validatePublicDiagnosticValue(criterion)
   if (!criterion || typeof criterion !== "object" || Array.isArray(criterion)) {
     throw new Error(`${source} is not an object`)
   }
@@ -556,4 +557,18 @@ export function formatCountObject(counts) {
 export function formatRuntimeSignalScenarioRef(scenario) {
   const source = scenario.source ? ` source=${scenario.source}` : ""
   return `${scenario.matrix}/${scenario.id}(${scenario.status})${source}`
+}
+
+// MP-11: check free-text values before enum/type errors can quote them or output retains them.
+export function validatePublicDiagnosticValue(value) {
+  if (typeof value === "string") {
+    if (looksLikeDrillSecretValue(value)) throw new Error("drill evidence contains credential material")
+  } else if (Array.isArray(value)) {
+    for (const item of value) validatePublicDiagnosticValue(item)
+  } else if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      validatePublicDiagnosticValue(key)
+      validatePublicDiagnosticValue(item)
+    }
+  }
 }

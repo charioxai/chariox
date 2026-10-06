@@ -6,26 +6,22 @@ pins. The trusted helper is built here from that immutable public source.
 import argparse, grp, hashlib, json, os, pathlib, pwd, re, shutil, stat, subprocess, tempfile
 
 ENV = {'PATH': '/usr/bin:/bin', 'HOME': '/nonexistent', 'DOCKER_HOST': 'unix:///run/docker.sock', 'DOCKER_CONFIG': '/nonexistent'}
-def refuse(message): raise SystemExit('Local Docker DEV enrollment refused: ' + message)
+from local_docker_install_paths import directory, publish, refuse
 def command(args, environment=ENV):
     return subprocess.run(['/usr/bin/docker', *args], env=environment, check=True, capture_output=True, text=True, timeout=1200).stdout
 
-def directory(path, mode):
-    try: path.mkdir(mode=mode)
-    except FileExistsError: pass
-    metadata = path.lstat()
-    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or stat.S_IMODE(metadata.st_mode) != mode or path.resolve() != path:
-        refuse('incompatible existing public/control directory')
-
-def publish(path, payload, mode):
-    if path.exists() or path.is_symlink():
-        m = path.lstat()
-        if not stat.S_ISREG(m.st_mode) or m.st_uid != 0 or m.st_nlink != 1 or stat.S_IMODE(m.st_mode) != mode or path.read_bytes() != payload:
-            refuse('existing enrollment differs; private state was not changed')
-        return
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
-    try: os.write(fd, payload); os.fsync(fd)
-    finally: os.close(fd)
+def verify_worker_loader(image):
+    # MP-08/MP-11: a matching hash can still require an unavailable target ABI.
+    # Run only the public protocol probe, with no profiles/private mounts.
+    try:
+        protocol = command(['run', '--rm', '--read-only', '--network', 'none',
+                            '--cap-drop', 'ALL', '--memory', '64m', '--pids-limit', '16',
+                            '--user', '0:0', '--entrypoint', '/opt/chariox-slice/bin/chariox-kernel',
+                            image, '--print-local-daemon-protocol-version']).strip()
+    except subprocess.CalledProcessError:
+        refuse('actual worker kernel loader/protocol preflight failed')
+    if not re.fullmatch('[1-9][0-9]{0,9}', protocol) or int(protocol) > 0xffff_ffff:
+        refuse('actual worker kernel loader/protocol preflight failed')
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--allow-provider-sandbox-compatibility', action='store_true', required=True,
@@ -55,6 +51,7 @@ if worker['Id'] != a.worker_image or worker['Config']['User'] != 'slice': refuse
 if not re.fullmatch('(sha256:)?[a-f0-9]{64}', a.worker_runtime_revision) or worker['Config'].get('Labels', {}).get('io.chariox.runtime-source-revision') != a.worker_runtime_revision: refuse('worker runtime revision pin mismatch')
 proof = command(['run', '--rm', '--read-only', '--network', 'none', '--cap-drop', 'ALL', '--memory', '64m', '--pids-limit', '16', '--user', '0:0', '--entrypoint', '/usr/bin/sha256sum', a.worker_image, '/opt/chariox-slice/bin/chariox-kernel']).split()[0]
 if proof != a.worker_kernel_sha256: refuse('actual worker runtime hash mismatch')
+verify_worker_loader(a.worker_image)
 source = a.source.resolve()
 # Public CLI bytes only. The exact pin enters the immutable source manifest;
 # no Docker configuration or credential directory is copied.

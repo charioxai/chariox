@@ -59,6 +59,7 @@ def helper(connection):
     selkies = ModuleType("selkies")
     xlib = ModuleType("selkies.Xlib")
     xlib.X = SimpleNamespace(KeyRelease=3, KeyPress=2)
+    xlib.XK = SimpleNamespace(string_to_keysym=lambda _: 0)
     xdisplay = ModuleType("selkies.Xlib.display")
     xdisplay.Display = lambda: connection
     ext = ModuleType("selkies.Xlib.ext")

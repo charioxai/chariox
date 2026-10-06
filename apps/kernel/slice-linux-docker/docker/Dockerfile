@@ -130,6 +130,7 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     scrot \
     socat \
     tesseract-ocr \
+    tesseract-ocr-deu \
     tesseract-ocr-eng \
     tint2 \
     unzip \
@@ -176,6 +177,7 @@ ENV CHARIOX_SLICE_SELKIES_BIN=/opt/chariox-selkies/bin/selkies
 RUN --mount=type=bind,source=apps/kernel/slice-linux-docker/docker,target=/tmp/chariox-slice-runtime-tests \
     PYTHONDONTWRITEBYTECODE=1 /opt/chariox-selkies/bin/python -m unittest discover \
       -s /tmp/chariox-slice-runtime-tests -p 'test_*.py'
+COPY apps/kernel/slice-linux-docker/owned_process_signals.py /opt/chariox-slice/owned_process_signals.py
 COPY apps/kernel/slice-linux-docker/docker/slice-selkies.py \
      apps/kernel/slice-linux-docker/docker/slice-selkies-stream.py \
      apps/kernel/slice-linux-docker/docker/selkies_viewers.py /opt/chariox-slice/
@@ -213,6 +215,8 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controlle
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-restore.mjs /opt/chariox-slice/browser-app-restore.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs /opt/chariox-slice/browser-controller-events.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs /opt/chariox-slice/browser-controller-files.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-artifacts.mjs /opt/chariox-slice/browser-controller-artifacts.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-image.mjs /opt/chariox-slice/browser-controller-image.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-upload-staging.mjs /opt/chariox-slice/browser-controller-upload-staging.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-upload-store.py /opt/chariox-slice/browser-upload-store.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-lifecycle.py /opt/chariox-slice/browser-lifecycle.py
@@ -228,6 +232,7 @@ COPY --chown=slice:slice apps/browser-session-import/cookie-import-journal.mjs /
 COPY --chown=slice:slice apps/browser-session-import/cookie-import-transaction.mjs /opt/chariox-slice/browser-session-import/cookie-import-transaction.mjs
 COPY --chown=slice:slice apps/browser-session-import/production-destination.mjs /opt/chariox-slice/browser-session-import/production-destination.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe.mjs /opt/chariox-slice/managed-provider-isolation-probe.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/public-runtime-diagnostics.mjs /opt/chariox-slice/public-runtime-diagnostics.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe-wrapper.sh /opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/provider-port-bridge.mjs /opt/chariox-slice/provider-port-bridge.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-screen.sh /opt/chariox-slice/slice-screen.sh

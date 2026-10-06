@@ -431,6 +431,10 @@ pub enum EnvironmentError {
         max_utf8_bytes: usize,
     },
     InvalidKeyboardKey,
+    InvalidHoldDuration {
+        duration_ms: u32,
+        max_duration_ms: u32,
+    },
     InvalidKeyboardRepeat {
         repeat: u16,
         max_repeat: u16,
@@ -493,6 +497,7 @@ impl EnvironmentError {
             Self::InvalidClickCount { .. } => "environment_invalid_click_count",
             Self::InvalidScrollSteps { .. } => "environment_invalid_scroll_steps",
             Self::InvalidKeyboardText { .. } => "environment_invalid_keyboard_text",
+            Self::InvalidHoldDuration { .. } => "environment_invalid_hold_duration",
             Self::InvalidKeyboardKey => "environment_invalid_keyboard_key",
             Self::InvalidKeyboardRepeat { .. } => "environment_invalid_keyboard_repeat",
             Self::InvalidClipboardText { .. } => "environment_invalid_clipboard_text",

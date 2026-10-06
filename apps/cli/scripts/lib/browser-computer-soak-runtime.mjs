@@ -6,7 +6,7 @@ import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { performance } from "node:perf_hooks"
-import { Transform } from "node:stream"
+import { redactText as redactEvidenceText, redactingTransform } from "./evidence-redaction.mjs"
 import { promisify } from "node:util"
 
 import {
@@ -90,14 +90,7 @@ export function redactEvidence(value, { secretValues = retainedSecretValues } = 
 }
 
 function redactText(value, secretValues = retainedSecretValues) {
-  let result = String(value ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
-  for (const secret of [...secretValues].filter((entry) => typeof entry === "string" && entry.length >= 4).sort((a, b) => b.length - a.length)) {
-    result = result.split(secret).join("[REDACTED]")
-  }
-  return result
-    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "$1 [REDACTED]")
-    .replace(/\b([A-Za-z0-9_]*(?:token|secret|password|credential|cookie|authorization|api[_-]?key)[A-Za-z0-9_]*)\s*[=:]\s*([^\s,;]+)/gi, "$1=[REDACTED]")
-    .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:)[^\s/@]+(@)/gi, "$1[REDACTED]$2")
+  return redactEvidenceText(value, secretValues)
 }
 
 export async function resolveVerifiedImage({ imageRef, signatureKey, engine = "docker" }, {
@@ -1215,37 +1208,7 @@ async function captureSpawnedIdentity(name, child) {
 }
 
 export function createRedactingTransform({ secretValues = retainedSecretValues } = {}) {
-  const overlap = Math.max(512, Math.min(65_536, secretValues.reduce((maximum, value) => Math.max(maximum, value.length + 64), 0)))
-  let buffered = ""
-  let retained = 0
-  let truncated = false
-  const marker = Buffer.from("\n[REDACTED LOG TRUNCATED]\n")
-  const contentLimit = maximumRetainedProcessLogBytes - marker.length
-  const emit = function (stream, sanitized) {
-    const encoded = Buffer.from(sanitized)
-    const available = Math.max(0, contentLimit - retained)
-    const emitted = encoded.subarray(0, available)
-    retained += emitted.length
-    if (emitted.length > 0) stream.push(emitted)
-    if (emitted.length < encoded.length) truncated = true
-  }
-  return new Transform({
-    transform(chunk, _encoding, callback) {
-      buffered += chunk.toString("utf8")
-      const safeLength = Math.max(0, buffered.length - overlap)
-      if (safeLength > 0) {
-        const sanitized = redactText(buffered.slice(0, safeLength), secretValues)
-        buffered = buffered.slice(safeLength)
-        emit(this, sanitized)
-      }
-      callback()
-    },
-    flush(callback) {
-      emit(this, redactText(buffered, secretValues))
-      if (truncated) this.push(marker)
-      callback()
-    },
-  })
+  return redactingTransform({ secretValues, maximumBytes: maximumRetainedProcessLogBytes })
 }
 
 export async function terminateOwnedProcessGroup(name, child, {

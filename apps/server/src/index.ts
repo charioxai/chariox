@@ -21,6 +21,9 @@ import {
 } from "./publication-agent-app.js"
 import { validateAgentAppConfig } from "./publication-agent-app-schema.js"
 import {
+  authorizePublicationCallerRequest,
+  PublicationCallerClaimsError,
+  publicationCallerAuthorizationFailure,
   publicationCallerForRequest,
   publicationInvocationCaller,
   publicationInvocationRequestId,
@@ -109,7 +112,16 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
     }
   })
 
-  app.get("/.well-known/chariox/publication/status", async () => publicationStatusPayload(publication, deps))
+  app.get("/.well-known/chariox/publication/status", async (request, reply) => {
+    try {
+      const caller = authorizePublicationCallerRequest(request, publication)
+      return await publicationStatusPayload(publication, deps, caller)
+    } catch (error) {
+      if (!(error instanceof PublicationCallerClaimsError)) throw error
+      const failure = publicationCallerAuthorizationFailure(error)
+      return reply.code(failure.statusCode).headers({ "cache-control": "no-store" }).send(failure.body)
+    }
+  })
 
   app.post(HUMAN_HTTP_FORM_INVOKE_PATH, async (request, reply) => {
     if (!takesRequests || (publication.transport && publication.transport !== "human_http")) {

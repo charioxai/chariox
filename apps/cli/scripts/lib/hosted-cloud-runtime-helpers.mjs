@@ -9,6 +9,7 @@ export async function callRuntimeMcp(serverUrl, authToken, method, params = {}, 
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(new Error(`runtime MCP ${method} timed out after ${timeoutMs}ms`)), timeoutMs)
     try {
+      if (serverUrl?.call) return await serverUrl.call(method, params, { ...options, timeoutMs })
       const response = await fetch(serverUrl, {
         method: "POST",
         headers: {

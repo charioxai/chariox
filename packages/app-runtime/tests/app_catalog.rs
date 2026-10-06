@@ -767,3 +767,19 @@ fn quiescence_and_uninstall_fence_admission_without_changing_a_prepared_calls_co
         .require_current(&connection.transaction().unwrap(), "owner")
         .is_err());
 }
+
+#[test]
+fn installation_tool_recognition_rejects_untrusted_local_names_without_panicking() {
+    for local in [
+        format!("{}é", "a".repeat(26)),
+        "é".into(),
+        "a".repeat(28),
+        "Uppercase".into(),
+        "bad-name".into(),
+        "bad.name".into(),
+        "1starts_with_digit".into(),
+    ] {
+        let name = format!("app_{local}_{}", "0".repeat(32));
+        assert!(!is_installation_tool_name(&name, "installed"));
+    }
+}

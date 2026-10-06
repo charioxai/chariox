@@ -184,6 +184,34 @@ impl<'a> KernelAgentService<'a> {
             });
         };
 
+        let session = self.app.sessions.get_session(&session_id)?;
+        let expected_prompt = self
+            .app
+            .prompt_state_owner()
+            .active_prompt_for_agent(&session, &agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.clone(),
+            })?;
+        let revalidate = |app: &crate::DaemonApp| -> Result<(), DaemonError> {
+            let agent = app.agents().get_agent(&agent_id)?;
+            let session = app.sessions.get_session(&session_id)?;
+            if agent.session_id() != session_id
+                || agent.remote_execution() != Some(&remote_execution)
+                || app
+                    .prompt_state_owner()
+                    .active_prompt_for_agent(&session, &agent_id)
+                    .as_ref()
+                    .map(|prompt| prompt.id())
+                    != Some(expected_prompt.id())
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "complete remote prompt",
+                    message: "completion receipt was superseded".into(),
+                });
+            }
+            Ok(())
+        };
+        revalidate(self.app)?;
         let relay_config = self
             .app
             .relay_config_for_remote_execution(&remote_execution);
@@ -208,6 +236,15 @@ impl<'a> KernelAgentService<'a> {
                     workspace_live_sync_change,
                     ..
                 } => {
+                    revalidate(self.app)?;
+                    if provider_run_id.as_deref()
+                        != remote_execution.active_worker_provider_run_id.as_deref()
+                    {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "complete remote prompt",
+                            message: "completion receipt names another provider run".into(),
+                        });
+                    }
                     let _ = crate::git_observer::append_observations(
                         &self.app.operational_history_store(),
                         git_observations,
@@ -218,6 +255,7 @@ impl<'a> KernelAgentService<'a> {
                             Some(&remote_execution.worker_kernel_id),
                         );
                     }
+                    revalidate(self.app)?;
                     (provider_run_id, provider_termination)
                 }
                 other => {
@@ -243,13 +281,12 @@ impl<'a> KernelAgentService<'a> {
             }
             Err(error) => return Err(error),
         };
-        let completed = self
-            .app
-            .prompt_owner_complete_active_prompt_only(&session_id, &agent_id)?;
-        let _ = self
-            .app
-            .agents()
-            .set_remote_execution_active_worker_provider_run_id(&agent_id, None)?;
+        let completed = self.app.prompt_owner_complete_remote_receipt(
+            &session_id,
+            &agent_id,
+            expected_prompt.id(),
+            &remote_execution,
+        )?;
         let settlement_status = if provider_termination.is_some() {
             crate::git_observer::CompletedTurnSettlementStatus::Failed
         } else {

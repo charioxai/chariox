@@ -3160,7 +3160,12 @@ mod projection_drain {
             RemotePromptRunBindingRecovery::Recovered,
         );
         runtime
-            .project_remote_runtime_projection_event(output_event)
+            .project_remote_runtime_projection_event(
+                crate::runtime::relay_peer_authority::test_projection_authority(
+                    "worker-kernel-live-recovery",
+                ),
+                output_event,
+            )
             .await
             .expect("output-only worker projection should reach the home session");
         let first_output = runtime
@@ -3244,7 +3249,12 @@ mod projection_drain {
             .expect("test should restore the recovered worker binding");
 
         runtime
-            .project_remote_runtime_projection_event(completion_event)
+            .project_remote_runtime_projection_event(
+                crate::runtime::relay_peer_authority::test_projection_authority(
+                    "worker-kernel-live-recovery",
+                ),
+                completion_event,
+            )
             .await
             .expect("worker completion should settle the home prompt");
         assert!(runtime
@@ -3386,7 +3396,12 @@ mod projection_drain {
         let app = Arc::new(Mutex::new(app));
         let runtime = owned_runtime_state(&app).await;
         runtime
-            .project_remote_runtime_projection_event(output_event)
+            .project_remote_runtime_projection_event(
+                crate::runtime::relay_peer_authority::test_projection_authority(
+                    "worker-kernel-live-recovery",
+                ),
+                output_event,
+            )
             .await
             .expect("worker output projection should reach the home session");
         let output_records = runtime
@@ -3425,7 +3440,12 @@ mod projection_drain {
         let projection_before_completion = runtime.owned.session_projection.change_sequence();
 
         runtime
-            .project_remote_runtime_projection_event(completion_event)
+            .project_remote_runtime_projection_event(
+                crate::runtime::relay_peer_authority::test_projection_authority(
+                    "worker-kernel-live-recovery",
+                ),
+                completion_event,
+            )
             .await
             .expect("worker completion projection should settle the home prompt");
         assert!(

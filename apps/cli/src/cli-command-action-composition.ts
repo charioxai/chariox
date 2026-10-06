@@ -209,6 +209,7 @@ export type CliCommandActionCompositionDeps = {
   initialWorktreeTarget: string
   pendingWorkspaceTarget: AnyFn
   pendingWorktreeTarget: AnyFn
+  editWaitingRoomWorkspace: (path: string) => Promise<void>
   setPendingWorkspaceTarget: AnyFn
   setPendingWorktreeTarget: AnyFn
   isAttached: AnyFn
@@ -450,7 +451,15 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     worktree: initialWorktreeTarget,
     getWorkspaceTarget: pendingWorkspaceTarget,
     getWorktreeTarget: pendingWorktreeTarget,
-    setWorkspaceTarget: setPendingWorkspaceTarget,
+    setWorkspaceTarget: (path: string) => {
+      if (isAttached()) {
+        setPendingWorkspaceTarget(path)
+        return
+      }
+      void deps.editWaitingRoomWorkspace(path)
+        .then(() => deps.rebuildTranscript())
+        .catch(error => flashFooter(deps.formatError(error), "error"))
+    },
     setWorktreeTarget: setPendingWorktreeTarget,
     accountProfile: options.accountProfile,
     clientId: options.clientId,

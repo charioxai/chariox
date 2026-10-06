@@ -81,7 +81,7 @@ pub(super) fn import_external_provider_session(
     Ok(LocalDaemonResponse::ExternalProviderSessionImported {
         session: crate::app::KernelSessionReadService::new(app).session_snapshot(session.id())?,
         agent,
-        provider_run: Some(provider_run),
+        provider_run: Some(provider_run.into()),
     })
 }
 
@@ -149,7 +149,7 @@ pub(super) fn import_external_provider_agent(
     Ok(LocalDaemonResponse::ExternalProviderAgentImported {
         session: crate::app::KernelSessionReadService::new(app).session_snapshot(session.id())?,
         agent,
-        provider_run: Some(provider_run),
+        provider_run: Some(provider_run.into()),
     })
 }
 

@@ -232,7 +232,7 @@ impl ManifestMemoryBudget {
 }
 
 mod archive;
-mod directory;
+pub(crate) mod directory;
 mod export;
 mod git;
 mod import;

@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { artifactBytes, BrowserArtifactError, BrowserPassiveCapture, readCompletedDownload, withUploadArtifacts } from "./browser-controller-artifacts.mjs";
+import { captureProtectedBrowserImage } from "./browser-controller-image.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { BrowserInputCapture } from "./browser-controller-input.mjs";
 import {
@@ -96,6 +99,8 @@ export class BrowserCdpClient {
     this.targetsByFrame = new BrowserFrameTargets();
     this.frameSessions = new BrowserFrameSessions(this.targetsByFrame, (id) => this.targetsBySession.get(id));
     this.targetsByDownload = new Map();
+    this.downloads = new Map();
+    this.passiveCapture = new BrowserPassiveCapture();
     this.downloadCancellationReasons = new Map();
     this.downloadDiskCheckPending = false;
     this.downloadDiskCheckRequested = false;
@@ -207,6 +212,8 @@ export class BrowserCdpClient {
         this.targetsByFrame.clear();
         this.frameSessions.clear();
         this.targetsByDownload.clear();
+    this.downloads.clear();
+    this.passiveCapture.clear();
         this.downloadCancellationReasons.clear();
         this.downloadDiskCheckPending = false;
         this.downloadDiskCheckRequested = false;
@@ -233,6 +240,8 @@ export class BrowserCdpClient {
     this.targetsByFrame.clear();
     await this.frameSessions.close();
     this.targetsByDownload.clear();
+    this.downloads.clear();
+    this.passiveCapture.clear();
     this.downloadCancellationReasons.clear();
     this.downloadDiskCheckPending = false;
     this.downloadDiskCheckRequested = false;
@@ -350,6 +359,8 @@ export class BrowserCdpClient {
     this.targetsByFrame.clear();
     this.frameSessions.clear();
     this.targetsByDownload.clear();
+    this.downloads.clear();
+    this.passiveCapture.clear();
     this.downloadCancellationReasons.clear();
     this.downloadDiskCheckPending = false;
     this.downloadDiskCheckRequested = false;
@@ -852,7 +863,7 @@ export class BrowserCdpClient {
     const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
     const { connection, sessionId } = await this.resolvePageTarget(targetId);
     try {
-      return {
+      const upload = async (filePaths, uploadRoots) => ({
         browser_generation: this.browserGeneration,
         ...await withBrowserActionFrame({
           connection,
@@ -860,15 +871,73 @@ export class BrowserCdpClient {
           targetId,
           documentId,
           nodeRef: rawRequest?.node_ref,
-          filePaths: rawRequest?.file_paths,
-          uploadRoots: this.uploadRoots,
+          filePaths,
+          uploadRoots,
           fileSystem: this.fileSystem,
           stageUploads: this.stageUploads,
           signal,
         }, uploadBrowserFiles),
-      };
+      });
+      return rawRequest?.artifact_files
+        ? await withUploadArtifacts(rawRequest.artifact_files, signal, upload)
+        : await upload(rawRequest?.file_paths, this.uploadRoots);
     } catch (error) {
       throw normalizeControllerError(error);
+    }
+  }
+
+  // MP-08/MP-10/MP-11: document/viewport fences around same-tab bytes.
+  async captureArtifact(request) {
+    try {
+      const { connection, sessionId } = await this.resolvePageTarget(requiredIdentity(request?.target_id, "target_id"));
+      const targetId = request.target_id;
+      const documentId = requiredIdentity(request.document_id, "document_id");
+      const generation = this.browserGeneration;
+      if (request.browser_generation !== generation) throw new BrowserControllerError("stale_browser_generation", "Browser artifact needs the observed browser generation");
+      const viewport = canonicalViewport(request.viewport);
+      const metricsKey = JSON.stringify(deviceMetricsFor(viewport));
+      const assertBound = async () => {
+        const tree = await connection.send("Page.getFrameTree", {}, sessionId);
+        if (connection !== this.connection || generation !== this.browserGeneration || tree?.frameTree?.frame?.loaderId !== documentId)
+          throw new BrowserControllerError("stale_document_reference", "Browser artifact document changed");
+        if (this.viewportByTarget.get(targetId) !== metricsKey)
+          throw new BrowserControllerError("browser_viewport_invalid", "Browser artifact needs the canonical observed viewport");
+      };
+      await assertBound();
+      const observeGeometry = async () => {
+        const { cssVisualViewport: visual } = await connection.send("Page.getLayoutMetrics", {}, sessionId);
+        const fields = ["pageX", "pageY", "clientWidth", "clientHeight", "scale"];
+        if (!visual || fields.some(key => !Number.isFinite(visual[key])) || visual.scale !== 1)
+          throw new BrowserControllerError("browser_viewport_invalid", "Browser image requires observed unzoomed visual viewport geometry");
+        return Object.fromEntries(fields.map(key => [key, visual[key]]));
+      };
+      const geometry = await observeGeometry();
+      let artifact;
+      let redaction = "metadata_only";
+      if (request.kind === "identity") {
+        artifact = artifactBytes(Buffer.from(JSON.stringify(geometry)), "browser-identity.json", "application/json");
+      } else if (request.kind === "image") {
+        const captured = await captureProtectedBrowserImage({ connection, sessionId, targetId, documentId, viewport, protectedValues: this.protectedValues });
+        artifact = artifactBytes(captured.bytes, "browser-tab.png", "image/png");
+        redaction = captured.redaction;
+      } else if (request.kind === "network") {
+        const captured = this.passiveCapture.capture(targetId, documentId);
+        const redacted = redactObservation(JSON.parse(Buffer.from(captured.data_base64, "base64")), this.protectedValues);
+        artifact = artifactBytes(Buffer.from(JSON.stringify(redacted)), captured.display_name, captured.mime_type);
+      } else if (request.kind === "download") {
+        if (this.protectedValues.size) throw new BrowserControllerError("browser_observation_redacted", "protected Room download bytes are withheld");
+        artifact = await readCompletedDownload({ directory: this.downloadDirectory, downloads: this.downloads,
+          guid: request.guid, targetId, documentId, browserGeneration: generation });
+      } else throw new BrowserControllerError("browser_artifact_invalid", "unknown Browser artifact kind");
+      await assertBound();
+      if (JSON.stringify(geometry) !== JSON.stringify(await observeGeometry()))
+        throw new BrowserControllerError("browser_viewport_invalid", "Browser viewport moved during capture");
+      return { ...artifact, geometry, kind: request.kind, guid: request.guid ?? null, target_id: targetId,
+        document_id: documentId, browser_generation: generation, viewport: request.viewport, redaction,
+        browser_id: `browser-${createHash("sha256").update(connection.browserInstanceId).digest("hex")}` };
+    } catch (error) {
+      if (error instanceof BrowserControllerError || error instanceof BrowserArtifactError || error instanceof BrowserSnapshotError) throw normalizeControllerError(error);
+      throw new BrowserControllerError("browser_artifact_unavailable", "Browser artifact bytes are unavailable");
     }
   }
 
@@ -1027,6 +1096,10 @@ export class BrowserCdpClient {
       requests?.delete(message.params.requestId);
       if (requests?.size === 0) this.networkRequestsBySession.delete(message.sessionId);
     }
+    const observedTarget = this.targetsBySession.get(message?.sessionId);
+    this.passiveCapture.record(redactObservation(message, this.protectedValues), {
+      targetId: observedTarget, documentId: this.documentIdsByTarget.get(observedTarget),
+    });
     if (this.frameSessions.observe(message, this.connection)) return;
     const dialogTargetId = this.targetsBySession.get(message?.sessionId) ?? message?.params?.targetId;
     this.dialogDefaults.observe(redactObservation(message, this.protectedValues), dialogTargetId, this.documentIdsByTarget.get(dialogTargetId));
@@ -1060,6 +1133,9 @@ export class BrowserCdpClient {
       const guid = message.params?.guid;
       if (typeof guid === "string" && guid) {
         this.targetsByDownload.set(guid, targetId ?? null);
+        if (this.downloads.size >= 200) this.downloads.delete(this.downloads.keys().next().value);
+        this.downloads.set(guid, { targetId, documentId: this.documentIdsByTarget.get(targetId),
+          browserGeneration: this.browserGeneration, filename: message.params?.suggestedFilename, state: "inProgress" });
         this.scheduleDownloadDiskCheck();
       }
     }
@@ -1076,6 +1152,12 @@ export class BrowserCdpClient {
     ) {
       const guid = message.params?.guid;
       if (typeof guid === "string") {
+        const observed = this.downloads.get(guid);
+        if (observed) {
+          observed.state = message.params?.state;
+          if (Number.isSafeInteger(message.params?.receivedBytes) && message.params.receivedBytes >= 0)
+            observed.expectedBytes = message.params.receivedBytes;
+        }
         this.targetsByDownload.delete(guid);
         this.downloadCancellationReasons.delete(guid);
       }
@@ -1504,6 +1586,7 @@ function normalizeControllerError(error) {
   if (error instanceof BrowserControllerError) {
     return error;
   }
+  if (error instanceof BrowserArtifactError) return new BrowserControllerError(error.code, error.message);
   if (error instanceof BrowserSnapshotError) {
     return new BrowserControllerError(error.code, error.message);
   }

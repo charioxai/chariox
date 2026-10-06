@@ -101,7 +101,9 @@ impl ProviderLaunchCommandExecutor {
             .await?;
         let (started, runtime_init_delay_ms) = match start_outcome {
             ProviderLaunchStartOutcome::Reused(provider_run) => {
-                return Ok(LocalDaemonResponse::ProviderRunLaunched { provider_run });
+                return Ok(LocalDaemonResponse::ProviderRunLaunched {
+                    provider_run: provider_run.into(),
+                });
             }
             ProviderLaunchStartOutcome::Started(started, runtime_init_delay_ms) => {
                 (started, runtime_init_delay_ms)
@@ -175,7 +177,7 @@ impl ProviderLaunchCommandExecutor {
             }
         });
         Ok(LocalDaemonResponse::ProviderRunLaunchAccepted {
-            provider_run: accepted,
+            provider_run: accepted.into(),
         })
     }
 

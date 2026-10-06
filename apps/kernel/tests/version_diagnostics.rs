@@ -48,6 +48,7 @@ fn run_version(binary: &str, home: &PathBuf, port: u16) -> Output {
                 .expect("collect version diagnostic output");
         }
         if Instant::now() >= deadline {
+            assert!(child.id() > 1, "refuse to signal a reserved PID");
             child.kill().expect("stop hung version diagnostic");
             child.wait().expect("reap hung version diagnostic");
             panic!("--version did not exit before the bootstrap timeout");

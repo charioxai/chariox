@@ -72,6 +72,33 @@ test("stdio serializes same-tab mutations", { timeout: 3000 }, async t => {
   assert.deepEqual((await second).result, { call: 2 });
 });
 
+// MP-08/MP-10/MP-11: admission is not promotion. A failed predecessor must
+// release its target exactly once without draining another tab's mutations.
+test("MP-08/MP-10/MP-11 failed predecessor promotes queued work exactly once", { timeout: 3000 }, async t => {
+  const started = deferred(), release = deferred(), promoted = deferred();
+  const effects = [];
+  const server = startServer(t, { async performAction(params) {
+    if (params.tag === "first") {
+      started.resolve(); await release.promise;
+      throw new BrowserControllerError("browser_action_cancelled", "predecessor cancelled");
+    }
+    effects.push(params.tag);
+    if (params.tag === "queued") promoted.resolve();
+    return { tag: params.tag };
+  } }, () => release.resolve());
+  const first = server.request(1, "browser.action", { target_id: "same", tag: "first" });
+  await started.promise;
+  const queued = server.request(2, "browser.action", { target_id: "same", tag: "queued" });
+  assert.equal((await server.request(3, "browser.action", { target_id: "other", tag: "independent" })).ok, true);
+  await assertNotStarted(promoted, "queued work must not dispatch before predecessor settles");
+  release.resolve();
+  assert.equal((await first).error.code, "browser_action_cancelled");
+  await promoted.promise;
+  assert.deepEqual((await queued).result, { tag: "queued" });
+  assert.equal((await server.request(4, "browser.action", { target_id: "same", tag: "later" })).ok, true);
+  assert.deepEqual(effects, ["independent", "queued", "later"]);
+});
+
 test("stdio cancellation acknowledges held tab while independent tab finishes", { timeout: 3000 }, async t => {
   const started = deferred(), release = deferred();
   const server = startServer(t, { async performAction(params, { signal }) {
