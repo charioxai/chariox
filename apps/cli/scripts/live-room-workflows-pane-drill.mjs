@@ -72,7 +72,7 @@ const resources = async () => {
 await resources()
 let resourceFailure
 const resourceMonitor = setInterval(()=>resources().catch(error=>{resourceFailure=error}),5000)
-let kernel, relay, terminal, client, sessionId
+let kernel, relay, terminal, client, sessionId, noiseRoot
 let buffer = '', nextId = 0
 const pending = new Map()
 const terminalCommand = (action, fields = {}) => new Promise((resolve,reject) => {
@@ -160,6 +160,8 @@ try {
   terminal.on('close',()=>{for(const waiter of pending.values())waiter.reject(new Error('MP-08 terminal driver exited'));pending.clear()})
   await capture('01-room-inventory',text=>text.includes(heading))
   if (noisyInterruptRounds) {
+    noiseRoot = await mkdtemp('/tmp/wfpause-noisy-')
+    receipt.ownedNoiseRoot = noiseRoot
     receipt.noisyInterrupts = []
     receipt.noisyProducerFailures = []
     receipt.noisyControlFailures = []
@@ -167,7 +169,7 @@ try {
       const label = `noisy-${String(round + 1).padStart(2,'0')}`
       const action = round % 2 ? 'stop' : 'pause'
       const marker = `${label}.progress`
-      const command = `payload=$(printf '%4096s' x); i=0; end=$((SECONDS+120)); while [ "$SECONDS" -lt "$end" ]; do printf 'WFP_NOISY_OUTPUT %s %s\\n' "$i" "$payload"; i=$((i+1)); if [ $((i%1024)) -eq 0 ]; then printf '%s\\n' "$i" > ${marker}; fi; done`
+      const command = `payload=$(printf '%4096s' x); i=0; end=$((SECONDS+120)); while [ "$SECONDS" -lt "$end" ]; do printf 'WFP_NOISY_OUTPUT %s %s\\n' "$i" "$payload"; i=$((i+1)); if [ $((i%1024)) -eq 0 ]; then printf '%s\\n' "$i" > '${path.join(noiseRoot,marker)}'; fi; done`
       const previous = new Set((await stateUntil(()=>true)).room_workflows.workflows[0].runs.map(run=>run.run_id))
       await key('\x17')
       await key(`Run this exact Bash command now using exec_command with yield_time_ms=30000 as one foreground shell tool call, without a pipe, background session, or output truncation: ${command}. Keep waiting for this command; do not return a workflow envelope until it ends.`)
@@ -181,7 +183,7 @@ try {
       let progress = 0, output = []
       do {
         if(resourceFailure)throw resourceFailure
-        progress = Number(await readFile(path.join(workspace,marker),'utf8').catch(()=>0))
+        progress = Number(await readFile(path.join(noiseRoot,marker),'utf8').catch(()=>0))
         output = (await interruptTraces(path.join(state,'logs'))).filter(trace=>trace.message==='codex command output received trace' && trace.at>=noiseStartedAtMs)
         if(progress >= 8192 && output.length)break
         await sleep(100)
@@ -223,11 +225,11 @@ try {
       assert.equal(run.status.toLowerCase(),action === 'pause' ? 'paused' : 'stopped')
       await capture(label+'-settled',text=>text.includes('0 running')&&text.includes('[Start · Enter]'))
       // Output producers must have stopped, not merely their visible cards.
-      let after = await readFile(path.join(workspace,marker),'utf8')
+      let after = await readFile(path.join(noiseRoot,marker),'utf8')
       let unchangedSince = Date.now()
       do {
         await sleep(100)
-        const current = await readFile(path.join(workspace,marker),'utf8')
+        const current = await readFile(path.join(noiseRoot,marker),'utf8')
         if(current !== after) { after=current; unchangedSince=Date.now() }
         if(Date.now()-unchangedSince>=500)break
       } while(Date.now()<control.sentAtMs+5000)
@@ -385,6 +387,7 @@ try {
   for(const handle of cleanupGroups)signalOwnedProcessGroup(handle,'SIGKILL')
   await rm(state,{recursive:true,force:true})
   await rm(workspace,{recursive:true,force:true})
+  if(noiseRoot)await rm(noiseRoot,{recursive:true,force:true})
   assert.ok([terminal,kernel,relay].filter(Boolean).every(child=>child.exitCode!==null||child.signalCode!==null),'MP-11 owned process cleanup failed')
   receipt.cleanup='owned session ended, TUI/kernel/relay stopped, disposable state removed; linked account left in place'
   await resources()
