@@ -8,13 +8,12 @@ use serde_json::{json, Value};
 use crate::error::DaemonError;
 use crate::provider::{CodexClient, CodexNotification};
 
-use super::drain::CODEX_EVENT_DRAIN_MAX_LIVE_NOTIFICATIONS;
+use super::drain::{CODEX_EVENT_DRAIN_MAX_LIVE_NOTIFICATIONS, CODEX_EVENT_DRAIN_TIME_BUDGET};
 use super::turn::CodexTurnTracker;
 use super::CodexRuntimeState;
 
 const INTERRUPT_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
 const INTERRUPT_RETRY_INTERVAL: Duration = Duration::from_millis(50);
-const INTERRUPT_DRAIN_BUDGET: Duration = Duration::from_millis(10);
 
 pub fn abort_codex_turn(
     provider_run_id: &str,
@@ -33,11 +32,12 @@ pub fn abort_codex_turn(
     let deadline = Instant::now() + INTERRUPT_RETRY_TIMEOUT;
     let mut reconciliation = InterruptReconciliation::new(submitted_turn_id);
     let mut rejected_turns = BTreeSet::new();
+    let mut cleaned_turn_id = None;
     loop {
         // Use the same reconciliation before RPCs, after either RPC result, and
         // after every start-wait read. MP-08 / MP-10: a backlogged output
         // stream must not consume the cancellation deadline before its RPC.
-        let drain_deadline = deadline.min(Instant::now() + INTERRUPT_DRAIN_BUDGET);
+        let drain_deadline = deadline.min(Instant::now() + CODEX_EVENT_DRAIN_TIME_BUDGET);
         for _ in 0..CODEX_EVENT_DRAIN_MAX_LIVE_NOTIFICATIONS {
             if Instant::now() >= drain_deadline {
                 break;
@@ -64,12 +64,14 @@ pub fn abort_codex_turn(
                 // sessions. The documented provider-owned cleanup stops every
                 // running terminal in this thread, including prior turns.
                 // Keep cancellation owned until its ACK; never hide failure.
-                client.thread_background_terminals_clean(
-                    &mut state.socket,
-                    &mut state.next_request_id,
-                    &thread_id,
-                    &mut state.buffered_notifications,
-                )?;
+                if cleaned_turn_id.as_ref() != Some(&reconciliation.target) {
+                    client.thread_background_terminals_clean(
+                        &mut state.socket,
+                        &mut state.next_request_id,
+                        &thread_id,
+                        &mut state.buffered_notifications,
+                    )?;
+                }
                 // The cleanup RPC can buffer a successor start too. Apply the
                 // same ownership reconciliation before discarding notifications.
                 if reconciliation.reconcile(state) != InterruptDecision::Settled {
@@ -98,7 +100,7 @@ pub fn abort_codex_turn(
                 );
                 reconciliation.require_start = true;
                 let rpc_offset = state.buffered_notifications.len();
-                match client.turn_interrupt(
+                match client.turn_interrupt_and_clean(
                     &mut state.socket,
                     &mut state.next_request_id,
                     &thread_id,
@@ -106,6 +108,7 @@ pub fn abort_codex_turn(
                     &mut state.buffered_notifications,
                 ) {
                     Ok(()) => {
+                        cleaned_turn_id = Some(turn_id.clone());
                         // One provider thread has one active turn. Its ACK closes
                         // earlier starts; different starts buffered during this RPC
                         // can be successors and still require reconciliation.

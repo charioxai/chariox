@@ -11,6 +11,7 @@ mod approval_bodies;
 mod auth;
 mod catalog;
 mod health;
+mod interrupt_cleanup;
 mod json_rpc;
 mod json_rpc_transport;
 mod mcp_reload;

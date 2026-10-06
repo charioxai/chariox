@@ -117,3 +117,43 @@ fn mp08_terminal_cleanup_ack_cannot_hide_successor_start() {
     result.unwrap();
     assert!(state.active_turn_id.is_none());
 }
+
+#[test]
+fn mp08_cleanup_is_sent_before_interrupt_reply_and_matches_reversed_acks() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        let mut socket = accept(stream).unwrap();
+        let interrupt: Value =
+            serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+        assert_eq!(interrupt["method"], "turn/interrupt");
+        // MP-08: the noisy producer prevents an interrupt reply until cleanup.
+        let clean: Value = serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+        assert_eq!(clean["method"], "thread/backgroundTerminals/clean");
+        assert_ne!(interrupt["id"], clean["id"]);
+        for request in [clean, interrupt] {
+            socket
+                .send(Message::Text(
+                    json!({"id":request["id"],"result":{}}).to_string().into(),
+                ))
+                .unwrap();
+        }
+    });
+    let (socket, _) = connect(&endpoint).unwrap();
+    let tokio_tungstenite::tungstenite::stream::MaybeTlsStream::Plain(stream) = socket.get_ref()
+    else {
+        unreachable!()
+    };
+    let close = stream.try_clone().unwrap();
+    let mut state = CodexRuntimeState::new(endpoint, "thread".into(), socket, 1);
+    state.active_turn_id = Some("submitted".into());
+    let result = abort_codex_turn("run", &mut state);
+    close.shutdown(Shutdown::Both).unwrap();
+    server.join().unwrap();
+    result.unwrap();
+    assert!(state.active_turn_id.is_none());
+}

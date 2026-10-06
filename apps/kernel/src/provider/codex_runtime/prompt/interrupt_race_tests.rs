@@ -52,7 +52,7 @@ fn interrupt_fixture_with_event(
                         json!({"id":request["id"],"result":{}}).to_string().into(),
                     ))
                     .unwrap();
-                break;
+                continue;
             }
             methods.push(method.to_string());
             let response = match (method, methods.len()) {

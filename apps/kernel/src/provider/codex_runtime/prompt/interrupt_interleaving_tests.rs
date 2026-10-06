@@ -88,7 +88,7 @@ fn generated_interrupt_fixture(case: RaceCase) {
                         json!({"id":request["id"],"result":{}}).to_string().into(),
                     ))
                     .unwrap();
-                break;
+                continue;
             }
             calls += 1;
             assert!(calls <= 5, "{case:?}: unbounded retry");

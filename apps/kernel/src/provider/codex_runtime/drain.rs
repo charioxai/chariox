@@ -10,6 +10,7 @@ use super::{CodexPollResult, CodexRuntimeState};
 
 const CODEX_EVENT_DRAIN_READ_TIMEOUT: Duration = Duration::from_millis(1);
 pub(super) const CODEX_EVENT_DRAIN_MAX_LIVE_NOTIFICATIONS: usize = 64;
+pub(super) const CODEX_EVENT_DRAIN_TIME_BUDGET: Duration = Duration::from_millis(10);
 const CODEX_MANAGED_BACKFILL_QUIET_GRACE: Duration = Duration::from_millis(250);
 
 pub fn drain_codex_events(
@@ -42,31 +43,25 @@ pub fn drain_codex_events(
     let mut terminal_failure = None;
     let mut resolved_usage = None;
 
-    for notification in std::mem::take(&mut state.buffered_notifications) {
-        apply_notification_with_manifest(
-            notification,
-            &mut state.active_turn_id,
-            &mut state.turn_tracker,
-            &mut state.text_items,
-            &mut state.tool_items,
-            &mut chunks,
-            &mut completions,
-            &mut notices,
-            &mut prompt_completed,
-            &mut terminal_failure,
-            &mut resolved_usage,
-            run.remote_extension_manifest(),
-        );
-    }
-
-    let mut drained_to_quiet = true;
+    // MP-08 / MP-10: a queued abort shares this actor with output polls.
+    // Bound both buffered and live work; keep unread notifications in order.
+    let deadline = std::time::Instant::now() + CODEX_EVENT_DRAIN_TIME_BUDGET;
+    let mut buffered = std::mem::take(&mut state.buffered_notifications).into_iter();
+    let mut drained_to_quiet = false;
     for _ in 0..CODEX_EVENT_DRAIN_MAX_LIVE_NOTIFICATIONS {
-        let Some(notification) =
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        let notification = if let Some(notification) = buffered.next() {
+            notification
+        } else if let Some(notification) =
             client.read_notification(&mut state.socket, CODEX_EVENT_DRAIN_READ_TIMEOUT)?
-        else {
+        {
+            notification
+        } else {
+            drained_to_quiet = true;
             break;
         };
-        drained_to_quiet = false;
         apply_notification_with_manifest(
             notification,
             &mut state.active_turn_id,
@@ -82,12 +77,14 @@ pub fn drain_codex_events(
             run.remote_extension_manifest(),
         );
     }
-    if !drained_to_quiet {
+    state.buffered_notifications.extend(buffered);
+    if !drained_to_quiet
+        && state.buffered_notifications.is_empty()
+        && std::time::Instant::now() < deadline
+    {
         drained_to_quiet = client
             .read_notification(&mut state.socket, CODEX_EVENT_DRAIN_READ_TIMEOUT)?
-            .map(|notification| {
-                state.buffered_notifications.push(notification);
-            })
+            .map(|notification| state.buffered_notifications.push(notification))
             .is_none();
     }
     // Reconcile once when a turn starts, then only when provider evidence asks
@@ -200,6 +197,79 @@ mod tests {
 
     use super::super::state::CodexRuntimeState;
     use super::drain_codex_events;
+
+    #[test]
+    fn mp08_buffered_output_poll_yields_and_preserves_notification_order() {
+        use crate::provider::CodexNotification;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let (done_tx, done_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let _socket = accept(stream).unwrap();
+            done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
+        let (socket, _) = connect(&endpoint).unwrap();
+        let request = LaunchProviderRequest::new("session", "codex", "codex", "default", "default");
+        let run = RuntimeProviderRun::new(
+            "run",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "fixture".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: BTreeMap::new(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: Some(endpoint.clone()),
+            },
+        );
+        let mut state = CodexRuntimeState::new(endpoint, "thread".into(), socket, 1);
+        state.ephemeral = true;
+        state.active_turn_id = Some("turn".into());
+        for index in 0..128 {
+            state
+                .buffered_notifications
+                .push(CodexNotification::CommandExecutionOutputDelta {
+                    item_id: "tool".into(),
+                    delta: format!("{index},"),
+                });
+        }
+        state
+            .buffered_notifications
+            .push(CodexNotification::TurnCompleted {
+                turn_id: "turn".into(),
+                status: "completed".into(),
+                error_message: None,
+                items: vec![],
+            });
+        let first = drain_codex_events(&run, &mut state, None).unwrap();
+        assert!(!first.prompt_completed);
+        assert!(
+            state.buffered_notifications.len() >= 65,
+            "MP-08 buffered output must yield to queued controls"
+        );
+        let mut completed = false;
+        for _ in 0..128 {
+            let poll = drain_codex_events(&run, &mut state, None).unwrap();
+            completed |= poll.prompt_completed;
+            if state.buffered_notifications.is_empty() {
+                break;
+            }
+        }
+        assert!(completed);
+        assert!(state.buffered_notifications.is_empty());
+        assert_eq!(
+            state.tool_items["tool"].streamed_output,
+            (0..128)
+                .map(|index| format!("{index},"))
+                .collect::<String>()
+        );
+        done_tx.send(()).unwrap();
+        server.join().unwrap();
+    }
 
     #[test]
     fn mp08_mp10_mp11_ephemeral_metadata_turn_settles_without_durable_backfill() {
