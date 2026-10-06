@@ -79,7 +79,7 @@ async function diagnostics(result) {
     for(const line of lines) {
       let entry;try{entry=JSON.parse(line)}catch{continue}
       if(entry.component!=='daemon.app_events')continue
-      const error=String(entry.fields?.error??'')
+      const error=String(entry.error??'')
       records.push({component:entry.component,message:entry.message,error:/token|credential|bearer|secret|passphrase|auth/i.test(error)?'[credential-related diagnostic suppressed]':error})
     }
   }
@@ -98,6 +98,9 @@ try {
   client = new LocalIpcClient(`ws://127.0.0.1:${ports[0]}`, {localAuthEnvironment:env,controlRequestRetryDeadlineMs:1000})
   for(let i=0;;i++) {if(kernel.exitCode!==null)throw new Error(`MP-08 kernel startup exited (${kernel.exitCode})`);try{await client.send(requests.listSessionsRequest());break}catch(error){if(i>=80)throw error;await sleep(250)}}
   const profile = unwrap(await client.send(requests.linkProviderAccountProfileRequest('codex','relost-acct-686',args['account-dir'])), 'ProviderAccountProfile').profile
+  const auth=unwrap(await client.send(requests.getProviderAuthStatusRequest('codex',profile.profile_id)), 'ProviderAuthStatus').status
+  receipt.providerAuth={authState:auth.auth_state,version:auth.detected_version}
+  assert.equal(auth.auth_state,'authenticated','MP-08 linked account must pass the product auth observation before new work')
   const created=unwrap(await client.send(requests.createSessionRequest(workspace,workspace,'relost-workflows')), 'SessionCreated')
   sessionId=created.session.id
   const agent=unwrap(await client.send(requests.spawnAgentRequest(sessionId,'codex','workflow-codex',model,workspace,'low','build','yolo',undefined,undefined,undefined,profile.profile_id)), 'AgentSpawned').agent
