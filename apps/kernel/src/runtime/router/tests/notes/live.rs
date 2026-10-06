@@ -153,6 +153,12 @@ async fn check_live() {
             workspace.display().to_string(),
         ))
         .unwrap();
+    if std::env::var_os("CHARIOX_MD_HARDENING_DRILL").is_some() {
+        let mut sessions = app.sessions_mut();
+        let mut shared = sessions.get_session(session.id()).unwrap();
+        shared.add_member("collaborator-fixture", Some(first.owner_user_id().into()), crate::session::CollaborationLevel::Full);
+        sessions.restore_session(shared);
+    }
     let second = spawn_test_agent(&mut app, session.id(), "second", "dev-stub");
     let first_run = launch_test_provider(
         &mut app,
@@ -193,10 +199,11 @@ async fn check_live() {
         // path. This proves note capture in an App view, not package admission.
         use base64::Engine;
         use crate::runtime::browser_controller_app_view::{BrowserAppViewRequest, BrowserAppViewAsset};
-        router.runtime_state.notes_drill_app_view(session.id(),BrowserAppViewRequest::Open { instance_id: None,
+        let room_app_request=BrowserAppViewRequest::Open { instance_id: None,
             origin_label:"mdnotes-fixture".into(),installation_id:"mdnotes-fixture".into(),entry:"index.html".into(),page:None,
             assets:vec![BrowserAppViewAsset {path:"index.html".into(),content_type:"text/html; charset=utf-8".into(),body_base64:base64::engine::general_purpose::STANDARD.encode(format!("<!doctype html><title>MD-N5 App</title><span>🙂{}</span><p id='quote'>MD notes selected quote</p><p>{}🙂</p>","x".repeat(63),"x".repeat(63)))}],
-        }).await.unwrap();
+        };
+        router.runtime_state.notes_drill_app_view(session.id(),room_app_request.clone()).await.unwrap();
         let app_url="https://app.mdnotes-fixture.invalid/".to_string();
         let app_tab = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
@@ -208,9 +215,20 @@ async fn check_live() {
             }
         }).await.expect("MD-N5 owned App fixture document must commit");
         let app_window=NoteWindow::RoomBrowser{session_id:session.id().into(),tab_id:app_tab.tab_id.clone()};
+        let mut windows=vec![(user_window,user_root.clone(),fixture.url.clone()),(room_window,room_root.clone(),fixture.url.clone()),(app_window,room_root.clone(),app_url)];
+        if std::env::var_os("CHARIOX_MD_HARDENING_DRILL").is_some() {
+            let mut request=room_app_request;
+            if let BrowserAppViewRequest::Open{origin_label,instance_id,..}=&mut request {
+                *origin_label="md-hardening-user-app".into();
+                *instance_id=Some("md-hardening-native-view".into());
+            }
+            let shown=router.runtime_state.kernel_browser_app_view(owner.clone(),request,None).await.unwrap();
+            windows.push((NoteWindow::KernelBrowser{tab_id:shown["tab_id"].as_str().unwrap().into(),generation:shown["generation"].as_u64().unwrap()},user_root,"https://app.md-hardening-user-app.invalid/".into()));
+        }
         let mut receipts=Vec::new();
         let mut user_note=None;
-        for (index,(window,browser_root,url)) in [(user_window,user_root,fixture.url.clone()),(room_window,room_root.clone(),fixture.url.clone()),(app_window,room_root.clone(),app_url)].into_iter().enumerate() {
+        let mut hardening_notes=Vec::new();
+        for (index,(window,browser_root,url)) in windows.into_iter().enumerate() {
             println!("MD-N5 / MP-10 phase: selection/MCP/anchor/Ask window {index}");
             driver(&browser_root,&url,"select");
             let NoteResult::SelectionChanged{selection:Some(selection)}=request(&router,NoteCommand::CaptureSelection{window:window.clone()}).await else{panic!("MD-N5 selection expected")};
@@ -230,8 +248,13 @@ async fn check_live() {
             driver(&browser_root,&url,"missing");
             let NoteResult::NoteChanged{note:missing}=request(&router,NoteCommand::Read{note_id:note.note_id.clone()}).await else{panic!("missing note expected")};
             assert_eq!(missing.anchor_state,"missing");assert_eq!(missing.anchor.quote,note.anchor.quote);
-            if matches!(window,NoteWindow::KernelBrowser{..}) {user_note=Some(note.clone());}
+            hardening_notes.push(note.clone());
+            if index==0 {user_note=Some(note.clone());}
             receipts.push(json!({"window":window,"selection":true,"focused_mcp":true,"nonfocused_denied":true,"page_forgery_rejected":true,"reanchored":true,"original_quote_preserved":true,"ask_marked_attachment":true}));
+        }
+        if std::env::var_os("CHARIOX_MD_HARDENING_DRILL").is_some() {
+            let checks=super::hardening::check_native(&router,session.id(),first.id(),second.id(),a,b,&hardening_notes).await;
+            std::fs::write(root.join("MD-H-NATIVE-RECEIPT.json"),serde_json::to_vec_pretty(&checks).unwrap()).unwrap();
         }
         println!("MD-N5 / MP-10 phase: browser restart");
         let note=user_note.unwrap();
