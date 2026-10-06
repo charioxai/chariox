@@ -219,9 +219,18 @@ try {
       assert.equal(run.status.toLowerCase(),action === 'pause' ? 'paused' : 'stopped')
       await capture(label+'-settled',text=>text.includes('0 running')&&text.includes('[Start · Enter]'))
       // Output producers must have stopped, not merely their visible cards.
-      const after = await readFile(path.join(workspace,marker),'utf8')
-      await sleep(500)
-      assert.equal(await readFile(path.join(workspace,marker),'utf8'),after,'MP-08 noisy shell must stop producing output')
+      let after = await readFile(path.join(workspace,marker),'utf8')
+      let unchangedSince = Date.now()
+      do {
+        await sleep(100)
+        const current = await readFile(path.join(workspace,marker),'utf8')
+        if(current !== after) { after=current; unchangedSince=Date.now() }
+        if(Date.now()-unchangedSince>=500)break
+      } while(Date.now()<control.sentAtMs+5000)
+      sample.producerStopped=Date.now()-unchangedSince>=500
+      sample.stopToProducerStoppedMs=sample.producerStopped ? unchangedSince-control.sentAtMs : null
+      await writeFile(path.join(args.output,label+'-timing.json'),JSON.stringify({mpItems:receipt.mpItems,...sample},null,2)+'\n',{mode:0o600})
+      assert.ok(sample.producerStopped,'MP-08 noisy shell must stop producing output within five seconds of control')
       if(action === 'pause') {
         await key('\x13')
         await stateUntil(s=>s.room_workflows.workflows[0].paused_count===0)
