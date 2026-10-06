@@ -89,19 +89,27 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
   const staging = join(home, ".chariox/dev/md-staging"); await mkdir(staging, { recursive: true }); await writeFile(join(staging, "sentinel"), "keep")
   const port = await availablePort(), port2 = await availablePort()
   const probe = async (id, selectedPort, expected) => {
-    try {
-      const authPath = join(home, `.chariox/dev/ssh-machines/${id}/state/kernel-local-auth/${selectedPort}.token`)
-      let auth
-      for (let i=0;i<50;i++) { try { auth = await readFile(authPath,"utf8"); break } catch { await pause() } }
-      if (!auth) { t.diagnostic("MP-11 public status probe: own local auth unavailable"); return }
-      const ws = new WebSocket(`ws://127.0.0.1:${selectedPort}/kernel`,{headers:{authorization:`Bearer ${auth.trim()}`}})
-      await new Promise(resolve => {
-        const timer = setTimeout(() => {ws.terminate(); resolve()},5000)
-        ws.on("error",()=>{clearTimeout(timer); resolve()})
-        ws.on("open",()=>ws.send(JSON.stringify({type:"request",request_id:"byom-ready",request:{RelayStatus:null}})))
-        ws.on("message",bytes=>{const value=JSON.parse(bytes);if(value.request_id!=="byom-ready")return;const status=value.response?.RelayStatus?.status;assert.equal(status?.connected,false,"delayed relay grants force an early disconnected poll");t.diagnostic(`MP-11 own status: connected=${status?.connected}; kernelMatches=${status?.daemon_id===expected.kernelId}; machineMatches=${status?.machine_id===expected.machineId}; responseError=${Boolean(value.error)}`);clearTimeout(timer);ws.close();resolve()})
+    const authPath = join(home, `.chariox/dev/ssh-machines/${id}/state/kernel-local-auth/${selectedPort}.token`)
+    let auth
+    for (let i = 0; i < 50; i++) { try { auth = await readFile(authPath, "utf8"); break } catch { await pause() } }
+    assert.ok(auth, "MP-11 own kernel must expose its ordinary authenticated status surface")
+    const ws = new WebSocket(`ws://127.0.0.1:${selectedPort}/kernel`, { headers: { authorization: `Bearer ${auth.trim()}` } })
+    const status = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { ws.terminate(); reject(new Error("MP-11 disconnected cache seed timed out")) }, 5000)
+      ws.on("error", () => { clearTimeout(timer); reject(new Error("MP-11 disconnected cache seed failed")) })
+      ws.on("open", () => ws.send(JSON.stringify({ type: "request", request_id: "byom-ready", request: { RelayStatus: null } })))
+      ws.on("message", bytes => {
+        try {
+          const value = JSON.parse(bytes)
+          if (value.request_id !== "byom-ready") return
+          clearTimeout(timer); ws.close(); resolve(value.response?.RelayStatus?.status)
+        } catch { clearTimeout(timer); ws.terminate(); reject(new Error("MP-11 invalid own status response")) }
       })
-    } catch { t.diagnostic("MP-11 own public status probe failed") }
+    })
+    assert.equal(status?.connected, false, "delayed relay grants force an early disconnected poll")
+    assert.equal(status?.daemon_id, expected.kernelId)
+    assert.equal(status?.machine_id, expected.machineId)
+    t.diagnostic("MP-11 authenticated disconnected cache seeded; kernel and machine bindings match")
   }
   const serviceManager = async args => {
     const service = args.at(-1), id = service === "chariox-ssh-second.service" ? "second" : "local"
