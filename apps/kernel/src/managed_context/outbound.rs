@@ -106,72 +106,122 @@ pub(crate) fn random_managed_context_capability() -> RelayManagedContextCapabili
     )
 }
 
+#[cfg(test)]
 pub(crate) async fn transfer_managed_context_package(
     transport: &impl ManagedContextPeerTransport,
     request: ManagedContextOutboundTransferRequest,
+    observe: impl FnMut(&RelayManagedContextTransferStatus),
+) -> Result<ManagedContextOutboundTransferResult, DaemonError> {
+    transfer_managed_context_package_with_resume(transport, request, None, |_| Ok(()), observe)
+        .await
+}
+
+// MP-08/MP-11: private source checkpoint, written before Begin can consume it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ManagedContextOutboundResume {
+    pub transfer_id: String,
+    pub max_chunk_bytes: usize,
+}
+
+pub(crate) async fn transfer_managed_context_package_with_resume(
+    transport: &impl ManagedContextPeerTransport,
+    request: ManagedContextOutboundTransferRequest,
+    resume: Option<ManagedContextOutboundResume>,
+    mut remember_transfer: impl FnMut(&ManagedContextOutboundResume) -> Result<(), DaemonError>,
     mut observe: impl FnMut(&RelayManagedContextTransferStatus),
 ) -> Result<ManagedContextOutboundTransferResult, DaemonError> {
     validate_outbound_request(&request)?;
     let mut package = open_verified_package(&request.package)?;
     let capability = request.capability.clone();
-    let armed = transport
-        .send(RelayPeerRequest::ArmManagedContextImport {
-            destination: request.plan.destination.clone(),
-            plan: request.plan.clone(),
-            target_environment_id: request.target_environment_id,
-            target_kernel_id: request.target_kernel_id,
-            target_key_thumbprint: request.target_key_thumbprint,
-            capability: capability.clone(),
-            archive_sha256: request.package.package_sha256.clone(),
-            archive_size_bytes: request.package.package_size_bytes,
-        })
-        .await?;
-    let (transfer_id, armed_capability, max_chunk_bytes) = match armed {
-        RelayPeerResponse::ManagedContextImportArmed {
-            transfer_id,
-            capability,
-            max_chunk_bytes,
-            relay_peer_protocol_version,
-            ..
-        } => {
-            if relay_peer_protocol_version < RELAY_PEER_PROTOCOL_VERSION {
-                return Err(outbound_error(
-                    "target kernel does not support the selected managed-context protocol",
-                    false,
-                ));
-            }
-            if capability != request.capability {
-                return Err(outbound_error(
-                    "target kernel returned a different managed-context capability",
-                    false,
-                ));
-            }
-            if transfer_id.trim().is_empty()
-                || max_chunk_bytes == 0
-                || max_chunk_bytes > MAX_OUTBOUND_CHUNK_BYTES
+    let (transfer_id, armed_capability, max_chunk_bytes, resumed_status) =
+        if let Some(resume) = resume {
+            if resume.transfer_id.is_empty()
+                || resume.transfer_id.len() > 128
+                || resume.max_chunk_bytes == 0
+                || resume.max_chunk_bytes > MAX_OUTBOUND_CHUNK_BYTES
             {
                 return Err(outbound_error(
-                    "target kernel returned invalid managed-context upload limits",
+                    "invalid managed-context recovery binding",
                     false,
                 ));
             }
-            (transfer_id, capability, max_chunk_bytes)
-        }
-        RelayPeerResponse::ManagedContextImportFailed { code, retryable } => {
-            return Err(target_import_failure(code, retryable));
-        }
-        response => return Err(unexpected_response("arm", response)),
-    };
+            let status = get_status(transport, &resume.transfer_id, &capability).await?;
+            (
+                resume.transfer_id,
+                capability.clone(),
+                resume.max_chunk_bytes,
+                Some(status),
+            )
+        } else {
+            let armed = transport
+                .send(RelayPeerRequest::ArmManagedContextImport {
+                    destination: request.plan.destination.clone(),
+                    plan: request.plan.clone(),
+                    target_environment_id: request.target_environment_id,
+                    target_kernel_id: request.target_kernel_id,
+                    target_key_thumbprint: request.target_key_thumbprint,
+                    capability: capability.clone(),
+                    archive_sha256: request.package.package_sha256.clone(),
+                    archive_size_bytes: request.package.package_size_bytes,
+                })
+                .await?;
+            let (transfer_id, armed_capability, max_chunk_bytes) = match armed {
+                RelayPeerResponse::ManagedContextImportArmed {
+                    transfer_id,
+                    capability,
+                    max_chunk_bytes,
+                    relay_peer_protocol_version,
+                    ..
+                } => {
+                    if relay_peer_protocol_version < RELAY_PEER_PROTOCOL_VERSION {
+                        return Err(outbound_error(
+                            "target kernel does not support the selected managed-context protocol",
+                            false,
+                        ));
+                    }
+                    if capability != request.capability {
+                        return Err(outbound_error(
+                            "target kernel returned a different managed-context capability",
+                            false,
+                        ));
+                    }
+                    if transfer_id.trim().is_empty()
+                        || max_chunk_bytes == 0
+                        || max_chunk_bytes > MAX_OUTBOUND_CHUNK_BYTES
+                    {
+                        return Err(outbound_error(
+                            "target kernel returned invalid managed-context upload limits",
+                            false,
+                        ));
+                    }
+                    (transfer_id, capability, max_chunk_bytes)
+                }
+                RelayPeerResponse::ManagedContextImportFailed { code, retryable } => {
+                    return Err(target_import_failure(code, retryable));
+                }
+                response => return Err(unexpected_response("arm", response)),
+            };
 
-    let mut status = status_response(
-        "begin",
-        transport
-            .send(RelayPeerRequest::BeginManagedContextImport {
+            remember_transfer(&ManagedContextOutboundResume {
                 transfer_id: transfer_id.clone(),
-                capability: armed_capability.clone(),
-            })
-            .await?,
-    )?;
+                max_chunk_bytes,
+            })?;
+            (transfer_id, armed_capability, max_chunk_bytes, None)
+        };
+    let mut status = match resumed_status {
+        Some(status) if status.phase != RelayManagedContextTransferPhase::Armed => status,
+        // MP-08: a checkpoint may survive a stop before Begin reaches the target.
+        _ => status_response(
+            "begin",
+            transport
+                .send(RelayPeerRequest::BeginManagedContextImport {
+                    transfer_id: transfer_id.clone(),
+                    capability: armed_capability.clone(),
+                })
+                .await?,
+        )?,
+    };
     observe(&status);
     validate_status(&status, &transfer_id, request.package.package_size_bytes)?;
 
@@ -217,16 +267,19 @@ pub(crate) async fn transfer_managed_context_package(
         observe(&status);
     }
 
-    status = match transport
-        .send(RelayPeerRequest::FinalizeManagedContextImport {
-            transfer_id: transfer_id.clone(),
-            capability: armed_capability.clone(),
-        })
-        .await
-    {
-        Ok(response) => status_response("finalize", response)?,
-        Err(_) => get_status(transport, &transfer_id, &armed_capability).await?,
-    };
+    // MP-08: completed imports are queried, never re-armed or re-finalized.
+    if status.phase != RelayManagedContextTransferPhase::Consumed {
+        status = match transport
+            .send(RelayPeerRequest::FinalizeManagedContextImport {
+                transfer_id: transfer_id.clone(),
+                capability: armed_capability.clone(),
+            })
+            .await
+        {
+            Ok(response) => status_response("finalize", response)?,
+            Err(_) => get_status(transport, &transfer_id, &armed_capability).await?,
+        };
+    }
     observe(&status);
     validate_status(&status, &transfer_id, request.package.package_size_bytes)?;
 
@@ -504,6 +557,101 @@ mod tests {
                 .expect("fake response");
             Box::pin(async move { response })
         }
+    }
+
+    #[tokio::test]
+    async fn mp08_mp11_restart_queries_consumed_transfer_without_rearming() {
+        let fixture = outbound_fixture(10);
+        let fixture_root = fixture.root.clone();
+        let receipt = receipt(&fixture.package.package_sha256, &fixture.plan.plan_digest);
+        let transport = FakeTransport::new(vec![Ok(status(
+            RelayManagedContextTransferPhase::Consumed,
+            10,
+            Some(receipt.clone()),
+            10,
+        ))]);
+        let result = transfer_managed_context_package_with_resume(
+            &transport,
+            ManagedContextOutboundTransferRequest {
+                plan: fixture.plan,
+                target_environment_id: "environment-1".into(),
+                target_kernel_id: "target-kernel".into(),
+                target_key_thumbprint: "a".repeat(64),
+                package: fixture.package,
+                capability: RelayManagedContextCapability::new("capability".into()),
+            },
+            Some(ManagedContextOutboundResume {
+                transfer_id: "transfer-1".into(),
+                max_chunk_bytes: 512,
+            }),
+            |_| panic!("MP-08 completed retry must not arm"),
+            |_| {},
+        )
+        .await
+        .expect("MP-08 receipt must recover after source restart");
+        assert_eq!(result.receipt, receipt);
+        assert!(matches!(
+            transport.requests().as_slice(),
+            [RelayPeerRequest::GetManagedContextImportStatus { .. }]
+        ));
+        std::fs::remove_dir_all(fixture_root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn mp08_mp11_restart_begins_checkpointed_armed_transfer() {
+        let fixture = outbound_fixture(10);
+        let fixture_root = fixture.root.clone();
+        let receipt = receipt(&fixture.package.package_sha256, &fixture.plan.plan_digest);
+        let transport = FakeTransport::new(vec![
+            Ok(status(RelayManagedContextTransferPhase::Armed, 0, None, 10)),
+            Ok(status(
+                RelayManagedContextTransferPhase::Receiving,
+                0,
+                None,
+                10,
+            )),
+            Ok(status(
+                RelayManagedContextTransferPhase::ReadyToImport,
+                10,
+                None,
+                10,
+            )),
+            Ok(status(
+                RelayManagedContextTransferPhase::Consumed,
+                10,
+                Some(receipt),
+                10,
+            )),
+        ]);
+        let result = transfer_managed_context_package_with_resume(
+            &transport,
+            ManagedContextOutboundTransferRequest {
+                plan: fixture.plan,
+                target_environment_id: "environment-1".into(),
+                target_kernel_id: "target-kernel".into(),
+                target_key_thumbprint: "a".repeat(64),
+                package: fixture.package,
+                capability: RelayManagedContextCapability::new("capability".into()),
+            },
+            Some(ManagedContextOutboundResume {
+                transfer_id: "transfer-1".into(),
+                max_chunk_bytes: 512,
+            }),
+            |_| panic!("MP-08 checkpoint retry must not rearm"),
+            |_| {},
+        )
+        .await;
+        std::fs::remove_dir_all(fixture_root).unwrap();
+        result.expect("MP-08 restart before Begin must resume the existing transfer");
+        assert!(matches!(
+            transport.requests().as_slice(),
+            [
+                RelayPeerRequest::GetManagedContextImportStatus { .. },
+                RelayPeerRequest::BeginManagedContextImport { .. },
+                RelayPeerRequest::UploadManagedContextChunk { .. },
+                RelayPeerRequest::FinalizeManagedContextImport { .. },
+            ]
+        ));
     }
 
     #[tokio::test]

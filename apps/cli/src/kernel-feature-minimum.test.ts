@@ -51,3 +51,9 @@ test("Cloud owner control and terminal pivots require protocol 438", () => {
     assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 438))
   }
 })
+
+test("MP-08/MP-11 owner context copy requires its existing protocol 445", () => {
+  const request = { StartManagedContextTransfer: { interactive: true, ownerManaged: {} } }
+  assert.throws(() => requireKernelFeatureProtocol(request, 444), /Owner context copy needs protocol ≥445/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 445))
+})

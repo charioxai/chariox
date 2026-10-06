@@ -120,18 +120,18 @@ pub(crate) fn prepare_ticket(
         repositories,
     } = &selection.context_selection.development_setup
     {
-        let owner = crate::account_profile::provider_account_authority_owner_user_id(
-            config,
-            &profile.user_id,
-        );
+        // MP-08/MP-11: runtime Projects retain the authenticated user ID.
+        // `local` is accepted explicitly for Projects created before enrollment
+        // by this OS owner's local kernel, never as a credential-storage alias.
         let project = runtime
-            .list_waiting_room_projects(&owner)
+            .list_waiting_room_projects(&profile.user_id)
             .into_iter()
+            .chain(runtime.list_waiting_room_projects("local"))
             .find(|project| project.id() == project_id)
             .ok_or_else(|| {
                 admission_error("selected source Project is unavailable to this owner")
             })?;
-        if project.owner_user_id() != owner
+        if ![profile.user_id.as_str(), "local"].contains(&project.owner_user_id())
             || project.archived_at_ms().is_some()
             || repositories
                 .iter()

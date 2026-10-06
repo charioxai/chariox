@@ -1,5 +1,11 @@
+#[path = "outbound_completion.rs"]
+mod completion;
 #[path = "outbound_operation_store.rs"]
 mod operation_store;
+use completion::{
+    cleanup_durable_completion, complete_outbound_operation, load_transfer_checkpoint,
+    persist_transfer_checkpoint,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -18,7 +24,7 @@ use crate::managed_context::development::{
 };
 use crate::managed_context::kernel::{export_kernel_context, KernelContextExportRequest};
 use crate::managed_context::outbound::{
-    random_managed_context_capability, transfer_managed_context_package,
+    random_managed_context_capability, transfer_managed_context_package_with_resume,
     ManagedContextOutboundTransferRequest, RelayManagedContextPeerTransport,
 };
 use crate::managed_context::package::{
@@ -470,7 +476,7 @@ impl ManagedContextOutboundOperationStore {
         &self,
         context_id: &str,
         update: impl FnOnce(&mut ManagedContextOutboundOperationStatus),
-    ) {
+    ) -> bool {
         let mut state = self
             .state
             .lock()
@@ -483,8 +489,11 @@ impl ManagedContextOutboundOperationStore {
                 status.failure_code = Some("managed_context_status_persistence_failed".to_string());
                 status.failure_message = Some("Transfer status could not be persisted".to_string());
                 status.retryable = true;
+                return false;
             }
+            return true;
         }
+        false
     }
 
     fn finish(&self, context_id: &str) {
@@ -682,7 +691,14 @@ pub(crate) fn start_managed_context_outbound_operation(
             authoritative_ticket.target.kernel_id.clone(),
             authoritative_ticket.target.relay_public_key.clone(),
         );
-        let transfer = transfer_managed_context_package(
+        let resume = match load_transfer_checkpoint(&prepared.artifact_root) {
+            Ok(resume) => resume,
+            Err(error) => {
+                task_store.update(&task_context_id, |status| fail_status(status, &error));
+                return;
+            }
+        };
+        let transfer = transfer_managed_context_package_with_resume(
             &transport,
             ManagedContextOutboundTransferRequest {
                 plan,
@@ -692,6 +708,8 @@ pub(crate) fn start_managed_context_outbound_operation(
                 package: prepared.package,
                 capability: prepared.capability,
             },
+            resume,
+            |checkpoint| persist_transfer_checkpoint(&prepared.artifact_root, checkpoint),
             |target_status| {
                 task_store.update(&task_context_id, |status| {
                     status.accepted_bytes = target_status.accepted_bytes;
@@ -708,21 +726,12 @@ pub(crate) fn start_managed_context_outbound_operation(
         )
         .await;
         match transfer {
-            Ok(result) => match remove_artifact_root(&prepared.artifact_root) {
-                Ok(()) => task_store.update(&task_context_id, |status| {
-                    status.phase = ManagedContextOutboundOperationPhase::Completed;
-                    status.accepted_bytes = result.package_size_bytes;
-                    status.package_size_bytes = result.package_size_bytes;
-                    status.receipt = Some(result.receipt.into());
-                    status.failure_code = None;
-                    status.failure_message = None;
-                    status.retryable = false;
-                }),
-                Err(error) => task_store.update(&task_context_id, |status| {
-                    status.receipt = Some(result.receipt.into());
-                    fail_status(status, &error);
-                }),
-            },
+            Ok(result) => complete_outbound_operation(
+                &task_store,
+                &task_context_id,
+                &prepared.artifact_root,
+                result,
+            ),
             Err(error) => {
                 if error_is_retryable(&error) {
                     task_store.update(&task_context_id, |status| fail_status(status, &error));
@@ -1274,6 +1283,9 @@ fn reconcile_outbound_artifacts(
             remove_artifact_root(&root)?;
             continue;
         }
+        if cleanup_durable_completion(artifact_parent, &name, &persisted)? {
+            continue;
+        }
         let retired_marker = root.join("retired");
         if path_entry_exists(&retired_marker)? {
             if retired_marker_age_ms(&retired_marker, now_ms)? >= OUTBOUND_ARTIFACT_RETENTION_MS {
@@ -1339,14 +1351,14 @@ fn valid_artifact_name(value: &str) -> bool {
 fn validate_settled_artifact_entries(root: &Path) -> Result<(), DaemonError> {
     let entries = fs::read_dir(root)
         .map_err(|error| outbound_service_io_error("list retained outbound artifact", error))?
-        .take(4)
+        .take(5)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| outbound_service_io_error("list retained outbound artifact", error))?;
-    if entries.len() > 3
+    if entries.len() > 4
         || entries.iter().any(|entry| {
             !matches!(
                 entry.file_name().to_str(),
-                Some("state.json" | "managed-context.pkg" | "retired")
+                Some("state.json" | "managed-context.pkg" | "retired" | "transfer.json")
             )
         })
     {
@@ -1457,6 +1469,7 @@ fn retire_artifact_root(root: &Path) -> Result<(), DaemonError> {
     for path in [
         root.join("managed-context.pkg"),
         root.join("development.tar.gz"),
+        root.join("transfer.json"),
     ] {
         match fs::remove_file(path) {
             Ok(()) => {}
@@ -1921,6 +1934,23 @@ mod tests {
     }
 
     fn assert_source_refuses_inline_shell(text: &str, history: bool) {
+        assert_source_shell_result(text, history, false);
+    }
+
+    #[test]
+    fn mp08_mp11_source_accepts_ordinary_short_flags_in_overlay_and_history() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        for history in [false, true] {
+            assert_source_shell_result(
+                "set -euo pipefail\npython -u worker.py\ngit add -u\n",
+                history,
+                true,
+            );
+        }
+    }
+
+    fn assert_source_shell_result(text: &str, history: bool, accepted: bool) {
         use crate::managed_context::owner_managed::*;
         let fixture =
             crate::managed_context::credential_free::tests::InlineShellFixture::new(text, history);
@@ -1962,6 +1992,14 @@ mod tests {
         )
         .unwrap();
         let result = prepare_managed_context_package(&config, &store, &profiles, &ticket);
+        if accepted {
+            assert!(
+                result.is_ok(),
+                "MP-08 ordinary source shell refused: {:?}",
+                result.as_ref().err()
+            );
+            return;
+        }
         assert!(
             matches!(result, Err(ref error) if error.to_string().contains("credential-free context")),
             "MP-11 source must reject inline shell credentials"
@@ -2011,6 +2049,66 @@ mod tests {
         assert_eq!(reopened.get("context"), Some(status));
         drop(permit);
         store.finish("context");
+    }
+
+    #[test]
+    fn mp08_mp11_final_status_failure_retains_restart_artifact() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-final-status-{:032x}",
+            rand::random::<u128>()
+        ));
+        let _cleanup = ArtifactRootCleanup::new(root.clone());
+        let store = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
+        let ticket = persisted_test_ticket("context-final");
+        let plan = ticket.context_plan.package_binding();
+        let (_, permit) = store.start(&plan.context_id, &plan.plan_digest).unwrap();
+        let artifact = root.join(&plan.context_id);
+        write_persisted_test_artifact(
+            &artifact,
+            &ticket,
+            crate::session::unix_epoch_ms(),
+            Some(b"package"),
+        );
+        let status_path = root
+            .join(".operations")
+            .join(format!("{}.json", plan.context_id));
+        fs::remove_file(&status_path).unwrap();
+        fs::create_dir(&status_path).unwrap();
+        complete_outbound_operation(
+            &store,
+            &plan.context_id,
+            &artifact,
+            super::super::outbound::ManagedContextOutboundTransferResult {
+                transfer_id: "transfer".into(),
+                package_sha256: "c".repeat(64),
+                package_size_bytes: 7,
+                receipt: RelayManagedContextImportReceipt {
+                    destination: None,
+                    transfer_id: "transfer".into(),
+                    archive_sha256: "c".repeat(64),
+                    plan_digest: plan.plan_digest.clone(),
+                    development: RelayManagedDevelopmentContextImportReceipt::Empty,
+                    kernel_context: RelayManagedKernelContextImportReceipt::Empty,
+                    receipt_sha256: "d".repeat(64),
+                },
+            },
+        );
+        assert!(
+            artifact.join("managed-context.pkg").exists(),
+            "MP-08 final status failure must retain recovery artifacts"
+        );
+        fs::remove_dir(&status_path).unwrap();
+        drop(permit);
+        store.finish(&plan.context_id);
+        let reopened = ManagedContextOutboundOperationStore::open(root).unwrap();
+        assert!(restore_prepared_artifact(
+            &ticket,
+            plan,
+            artifact.clone(),
+            &artifact.join("state.json")
+        )
+        .is_ok());
+        drop(reopened);
     }
 
     #[tokio::test]
