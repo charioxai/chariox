@@ -114,5 +114,16 @@ class CollisionTest(unittest.TestCase):
             self.assertTrue(cache.changed_bands, 'hash collision cannot suppress publication')
         finally:module.fast_hash=original
 
+class InputWakeTest(unittest.TestCase):
+    def test_mp10_wake_is_damage_only_bounded_and_not_a_poll_loop(self):
+        self.assertFalse(module.capture_due(10,False,10.001,10.1))
+        self.assertFalse(module.capture_due(10,True,10.001,0))
+        self.assertTrue(module.capture_due(10,True,10.001,10.1))
+        self.assertFalse(module.capture_due(10,True,10.001,10.0005))
+        self.assertTrue(module.capture_due(10,True,10.016,0))
+        self.assertEqual(module.capture_wait(10,False,10.001,10.1),1)
+        self.assertEqual(module.capture_wait(10,True,10.001,10.1),0)
+        self.assertAlmostEqual(module.capture_wait(10,True,10.001,0),.015)
+
 if __name__ == '__main__':
     unittest.main()

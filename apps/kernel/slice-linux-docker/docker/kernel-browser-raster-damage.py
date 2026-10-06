@@ -141,3 +141,12 @@ def raster_payload(previous, raw, width, height, event_area, fingerprint=None):
 # MP-10/MP-11: private native geometry, no arbitrary desktop allocation.
 def capture_geometry_allowed(width, height):
     return type(width) is int and type(height) is int and (width, height) in ((1280,800),(2560,1600),(1920,1080))
+
+# MP-08/MP-10: an admitted input wake changes cadence only. No damage, no
+# readback; expiry prevents one key from disabling normal frame coalescing.
+def capture_due(last, dirty, now, urgent_until):
+    return dirty and (now < urgent_until or now-last >= .016-1e-9)
+
+def capture_wait(last, dirty, now, urgent_until):
+    if not dirty:return 1
+    return 0 if now < urgent_until else max(0,.016-(now-last))

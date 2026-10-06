@@ -182,7 +182,10 @@ export class DisplayStream {
     // Absolute time, rather than repeated relative slices: a busy event loop
     // can oversleep a timer. Charge those real milliseconds once, never again.
     this.refillAt = this.now();
-    const deadline = this.now() + Math.max(0,bytes-this.tokens)*8000/this.bitrate;
+    // MP-08/MP-10: one input frame borrows at most32KiB. Keep the debt
+    // so later input/motion repays it; large repairs never bypass the ceiling.
+    const urgent=source.input_triggered===true&&bytes<=32768&&this.tokens>=0;
+    const deadline = this.now() + (urgent?0:Math.max(0,bytes-this.tokens)*8000/this.bitrate);
     if(deadline<=this.now())await this.wait(0);
     while(this.now()<deadline){
       if(!currentBinding()){
@@ -194,7 +197,7 @@ export class DisplayStream {
       if(this.now()===before)break;
     }
     this.tokens = Math.min(16*1024, this.tokens + Math.max(0,this.now()-this.refillAt)*this.bitrate/8000)-bytes;
-    this.tokens = Math.max(0,this.tokens); this.refillAt = this.now();
+    this.tokens = Math.max(urgent?-32768:0,this.tokens); this.refillAt = this.now();
     this.timing('pacing', at);
     if (!await validate()) { if(['video','stripes'].includes(payload.kind))this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}return null; }
     this.document_id = documentId; this.previous = current; this.repair = repair?.length ? repair : null;this.repairSerial=source.refinement_serial;

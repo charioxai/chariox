@@ -449,6 +449,9 @@ export class KernelBrowserHost {
           stream.codec!=='png'&&this.protection.values.length===0&&viewport?.scale===1&&Number.isFinite(viewport.pageX)&&Number.isFinite(viewport.pageY)?{x:viewport.pageX,y:viewport.pageY,width:geometry.width,height:geometry.height,scale:1/stream.device_scale_factor,display_motion:true}:null,
           this.scrolling.get(tab.tab_id)?.document_id===tab.document_id&&this.scrolling.get(tab.tab_id).until>performance.now());
       }
+      // MP-10: only a post-dispatch native capture can claim the input burst.
+      const inputAt=this.inputChangedAt.get(tab.tab_id)??-Infinity;
+      source.input_triggered=Number.isFinite(inputAt)&&epoch!==stream.deliveredInputEpoch&&Number.isFinite(source.captured_ms)&&source.captured_ms>=performance.timeOrigin+inputAt;
       try { await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id); }
       catch (error) { stream.invalidate(); throw error; }
       assertNotCancelled(signal);
@@ -457,7 +460,7 @@ export class KernelBrowserHost {
         await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
         return source.motion || ((this.inputEpochs.get(tab.tab_id) ?? 0) === epoch&&(source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial));
       },()=>this.protection===capturePolicy&&(source.motion||((this.inputEpochs.get(tab.tab_id)??0)===epoch&&(source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial))));
-      if(frame)stream.compositorSerial=source.refinement_serial ?? source.serial;
+      if(frame){stream.compositorSerial=source.refinement_serial ?? source.serial;if(source.input_triggered)stream.deliveredInputEpoch=epoch;}
       return { generation: this.generation, frame_sent: frame !== null, display_frame: frame };
     }
     if (["poll", "unsubscribe"].includes(command.op)) {
@@ -532,9 +535,11 @@ export class KernelBrowserHost {
         dispatched = true;
         this.inputChangedAt.set(tab.tab_id, performance.now());
         this.inputEpochs.set(tab.tab_id, (this.inputEpochs.get(tab.tab_id) ?? 0) + 1);
+        this.compositors.get(tab.tab_id)?.wake?.();
       };
       try {
         await this.sampleLane(tab).run("input", () => inputHostTab(this.browser, tab, command.input, { signal, onDispatch, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+        if(dispatched)this.compositors.get(tab.tab_id)?.wake?.();
         this.timing('cdp_input', at);
       }
       catch (error) {

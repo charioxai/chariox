@@ -91,11 +91,13 @@ export class LinuxCapture {
    this.motionStreak=performance.now()-this.changedAt<90?this.motionStreak+1:1;this.changedAt=performance.now();
    this.timing('native_xshm_capture',raw.captured_ms); // includes bounded pipe delivery and source fence.
    this.latest?.raw.release?.();
-   this.latest={raw,signature:raw.signature,data_base64:raw.signature,width:raw.width,height:raw.height,serial:raw.serial,motion:true,tab_id:this.tab.tab_id,document_id:this.tab.document_id};
+   this.latest={raw,signature:raw.signature,data_base64:raw.signature,width:raw.width,height:raw.height,serial:raw.serial,captured_ms:raw.captured_ms,motion:true,tab_id:this.tab.tab_id,document_id:this.tab.document_id};
    this.publishingRaw=null;
    if(this.attested)for(const fn of this.listeners)fn(this.latest);
   }}catch{this.fence()}finally{this.publishingRaw?.release?.();this.publishingRaw=null;this.publishing=false}
  }
+ // MP-08/MP-10: only admitted physical input reaches this owned helper.
+ wake(){if(this.valid()&&this.child&&!this.child.stdin.destroyed)this.child.stdin.write(JSON.stringify({wake:true})+'\n')}
  sample(after=-1){return this.valid()&&this.attested&&this.latest?.serial>after?this.latest:null}
  fence(){this.closed=true;this.attested=false;this.latest?.raw.release?.();this.pending?.release?.();this.latest=null;this.pending=null;this.listeners.clear();if(!this.closing)this.closing=this.cleanup();this.closing.catch(()=>{})}
  pause(){} resume(){} // CDP exact reads do not mutate the native display.

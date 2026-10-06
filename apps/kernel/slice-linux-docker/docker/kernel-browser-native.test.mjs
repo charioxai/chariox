@@ -41,3 +41,11 @@ test('MD-DISPLAY raw capture rejects a hidden or replaced source before publishi
   await source.publish();assert.equal(emitted,false);assert.equal(source.sample(),null);await source.close();
  }
 });
+
+test('MP-10 input wake never writes to a fenced capture or destroyed pipe',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');
+ const writes=[],capture=new LinuxCapture({});let valid=true;capture.valid=()=>valid;
+ capture.child={stdin:{destroyed:false,write:text=>writes.push(JSON.parse(text))}};
+ capture.wake();valid=false;capture.wake();valid=true;capture.child.stdin.destroyed=true;capture.wake();
+ assert.deepEqual(writes,[{wake:true}]);
+});

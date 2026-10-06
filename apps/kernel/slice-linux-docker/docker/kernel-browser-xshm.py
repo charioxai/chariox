@@ -90,9 +90,9 @@ try:
     stage='damage'
     dam=create_damage(d,window,0) # RawRectangles; retain damage union, coalesce to60Hz.
     event=(L*24)();dirty=True;area=[0,0,width,height];last=0;signature=None;serial=0;previous=None;damage_ready_ms=time.time()*1000
-    fingerprint=raster_damage.RasterFingerprint(width,height);control=b''
+    fingerprint=raster_damage.RasterFingerprint(width,height);control=b'';urgent_until=0
     while True:
-        if not pending(d):select.select([fd(d),sys.stdin.fileno()],[],[],max(0,.016-(time.monotonic()-last)) if dirty else 1)
+        if not pending(d):select.select([fd(d),sys.stdin.fileno()],[],[],raster_damage.capture_wait(last,dirty,time.monotonic(),urgent_until))
         if select.select([sys.stdin.fileno()],[],[],0)[0]:
             data=os.read(sys.stdin.fileno(),4096)
             if not data:break
@@ -100,7 +100,11 @@ try:
             if len(control)>8192:raise ValueError('pool control bound')
             while b'\n' in control:
                 line,control=control.split(b'\n',1)
-                release=json.loads(line);slot=release.get('release')
+                release=json.loads(line)
+                if release == {'wake':True}:
+                    urgent_until=time.monotonic()+.1
+                    continue
+                slot=release.get('release')
                 if type(slot) is not int or leased.get(slot)!=release.get('serial'):raise ValueError('pool release')
                 del leased[slot];free_slots.add(slot)
         while pending(d):
@@ -111,12 +115,12 @@ try:
                 if x1>x0 and y1>y0:
                     if not dirty:damage_ready_ms=time.time()*1000
                     area=[min(area[0],x0),min(area[1],y0),max(area[2],x1),max(area[3],y1)] if dirty else [x0,y0,x1,y1];dirty=True
-        if not dirty or time.monotonic()-last<.016:continue
+        if not raster_damage.capture_due(last,dirty,time.monotonic(),urgent_until):continue
         if pool and not free_slots:
             select.select([sys.stdin.fileno()],[],[],.016);continue
         # MP-08/MP-10: pace capture starts, not completion of readback/hash.
         # Adding their cost to16ms misses the next60Hz damage notification.
-        last=time.monotonic();at=time.time()*1000
+        last=time.monotonic();urgent_until=0;at=time.time()*1000
         if pid_of(d,window)!=owner or dims(d,window)!=(ww,hh):raise ValueError('window fence')
         stage='get_image'
         get_image_ms=time.time()*1000

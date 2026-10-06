@@ -271,3 +271,15 @@ test('MD-DISPLAY lost viewer base starts large prepared exact recovery independe
   const repair=await stream.frame(source,'d',21);assert.equal(repair.kind,'tiles');assert.equal(repair.base_sequence,21);
  }finally{await stream.close()}
 });
+
+// MP-08/MP-10: input echo may borrow one bounded burst; ordinary frames repay it.
+test('MP-08/MP-10 input damage bypasses pacing once and repays bounded debt',async()=>{
+ let now=0;const waits=[];
+ const stream=new DisplayStream({...binding,bitrate:8000000},{now:()=>now,wait:async ms=>{waits.push(ms);now+=ms},encoder:{close:async()=>{}}});
+ const source=n=>({motion:true,generation:1,width:1280,height:800,data_base64:String(n),encoded:{key:true,data_base64:'A'.repeat(9000)},input_triggered:true});
+ try{
+  await stream.frame(source(1),'d',0);assert.equal(now,0,'first input frame must ship immediately');assert.ok(stream.tokens<0,'borrowed bytes must remain charged');
+  await stream.frame(source(2),'d',1);assert.ok(now>0,'continuous input cannot create an unlimited burst');assert.ok(stream.tokens>=-32768);
+  waits.length=0;const start=now;await stream.frame({...source(3),input_triggered:false},'d',2);assert.ok(now>start,'motion pays the negotiated rate');
+ }finally{await stream.close()}
+});
