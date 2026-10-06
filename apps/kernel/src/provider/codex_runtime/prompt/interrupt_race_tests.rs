@@ -45,6 +45,11 @@ fn interrupt_fixture_with_event(
         while let Ok(Message::Text(raw)) = socket.read() {
             let request: Value = serde_json::from_str(&raw).unwrap();
             let method = request["method"].as_str().unwrap();
+            if method == "thread/backgroundTerminals/clean" {
+                assert_eq!(request["params"], json!({"threadId":"thread"}));
+                socket.send(Message::Text(json!({"id":request["id"],"result":{}}).to_string().into())).unwrap();
+                break;
+            }
             methods.push(method.to_string());
             let response = match (method, methods.len()) {
                 ("turn/interrupt", 1) => {
@@ -254,6 +259,7 @@ fn round4_after_list_fixture(completed: bool) {
                     interrupted_actual = true;
                     json!({"result":{}})
                 }
+                "thread/backgroundTerminals/clean" => json!({"result":{}}),
                 _ => panic!("unexpected RPC"),
             };
             let mut response = response;

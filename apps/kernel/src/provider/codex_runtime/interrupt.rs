@@ -20,11 +20,14 @@ pub fn abort_codex_turn(
     provider_run_id: &str,
     state: &mut CodexRuntimeState,
 ) -> Result<(), DaemonError> {
-    let Some(submitted_turn_id) = state.active_turn_id.clone() else {
-        return Ok(());
-    };
     let thread_id = state.thread_id().to_string();
     let client = CodexClient::new(provider_run_id, state.endpoint())?;
+    let Some(submitted_turn_id) = state.active_turn_id.clone() else {
+        return client.thread_background_terminals_clean(
+            &mut state.socket, &mut state.next_request_id, &thread_id,
+            &mut state.buffered_notifications,
+        );
+    };
     let deadline = Instant::now() + INTERRUPT_RETRY_TIMEOUT;
     let mut reconciliation = InterruptReconciliation::new(submitted_turn_id);
     let mut rejected_turns = BTreeSet::new();
@@ -55,6 +58,14 @@ pub fn abort_codex_turn(
         let decision = reconciliation.reconcile(state);
         match decision {
             InterruptDecision::Settled => {
+                // MP-08: turn cancellation does not terminate unified-exec
+                // sessions. The documented provider-owned cleanup stops every
+                // running terminal in this thread, including prior turns.
+                // Keep cancellation owned until its ACK; never hide failure.
+                client.thread_background_terminals_clean(
+                    &mut state.socket, &mut state.next_request_id, &thread_id,
+                    &mut state.buffered_notifications,
+                )?;
                 note_codex_turn_interrupt_accepted(
                     &mut state.active_turn_id,
                     &mut state.turn_tracker,

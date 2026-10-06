@@ -81,6 +81,11 @@ fn generated_interrupt_fixture(case: RaceCase) {
         socket.flush().unwrap();
         while let Ok(Message::Text(raw)) = socket.read() {
             let request: Value = serde_json::from_str(&raw).unwrap();
+            if request["method"] == "thread/backgroundTerminals/clean" {
+                assert_eq!(request["params"], json!({"threadId":"thread"}));
+                socket.send(Message::Text(json!({"id":request["id"],"result":{}}).to_string().into())).unwrap();
+                break;
+            }
             calls += 1;
             assert!(calls <= 5, "{case:?}: unbounded retry");
             let method = request["method"].as_str().unwrap();
@@ -154,15 +159,6 @@ fn generated_interrupt_fixture(case: RaceCase) {
                 emit(&mut socket, Phase::AfterAck);
             }
             socket.flush().unwrap();
-            // Track accepted cancellation independently of runtime internals.
-            // A successor that started after an ACK for submitted stays active.
-            if method == "turn/interrupt"
-                && id == "actual"
-                && (calls > 1 || matches!(case.result, RpcResult::Accepted))
-            {
-                // The closure borrows the oracle; evaluate it after the socket loop.
-                break;
-            }
         }
         drop(emit);
         if actual_interrupts > 0 {
@@ -378,6 +374,7 @@ fn mp08_interrupt_generated_retry_results_reconcile_successor() {
                                 .unwrap();
                             json!({"result":{"data":[{"id":id,"status":"inProgress"}]}})
                         }
+                        "thread/backgroundTerminals/clean" => json!({"result":{}}),
                         "turn/interrupt" => {
                             let id = request["params"]["turnId"].as_str().unwrap();
                             interrupts.push(id.to_string());

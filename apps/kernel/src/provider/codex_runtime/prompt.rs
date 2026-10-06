@@ -889,3 +889,7 @@ mod prompt_tests {
         request
     }
 }
+
+#[cfg(test)]
+#[path = "prompt/terminal_cleanup_tests.rs"]
+mod terminal_cleanup_tests;
