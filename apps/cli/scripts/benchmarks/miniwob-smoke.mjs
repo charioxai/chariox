@@ -14,6 +14,8 @@ const clientModuleRoot = process.env.MINIWOB_CLIENT_MODULE_ROOT
 assert.ok(clientModuleRoot && path.isAbsolute(clientModuleRoot), 'MP-08 / MP-10 absolute built client module root required')
 const { LocalIpcClient } = await import(`${clientModuleRoot}/ipc.js`)
 const r = await import(`${clientModuleRoot}/ipc-requests.js`)
+const helpers = await import(`${clientModuleRoot}/session-history-fragments.js`)
+import { submitBenchmarkPrompt, getTurn } from './round2/kernel.mjs'
 import { sanitizeDrillMetadata } from '../lib/drill-secrets.mjs'
 import { roomProviderToolName, roomProviderToolOutput } from '../lib/room-provider-tool-record.mjs'
 import { observeKernelRpcErrors, rpcErrorRecord } from './round2/rpc-errors.mjs'
@@ -251,16 +253,16 @@ try {
     await client.subscribeToKernelEvents(session.id, attachment.id)
     const prompt = `MP-08 / MP-10 benchmark smoke. Solve this task in the Room browser already open: ${setup.goal}\nUse ONLY Chariox first-party slice_browser_* tools. Observe the page and use returned opaque field IDs for actions. Do not use shell, scripts, file edits, Computer tools, provider-native browser tools, or another browser. Do not inspect benchmark code or reward globals. Stop when the task is complete or unsupported. Maximum 10 mutating Browser actions; wall timeout 180 seconds. Report a short result.`
     if (interrupted) throw new Error('MP-10 interrupted before prompt submission')
-    const submitted = unwrap(await client.send(r.submitPromptRequest(session.id, attachment.id, agent.id, prompt, [])), 'PromptSubmitted')
-    row.promptId = (submitted.outcome.Started ?? submitted.outcome.Queued).prompt.id
+    const api = { client, requests: r, helpers }
+    const identity = await submitBenchmarkPrompt(api, { sessionId: session.id, attachmentId: attachment.id, agentId: agent.id, prompt })
+    Object.assign(row, identity)
     let turn = null, timedOut = false, reward = null
     const deadline = started + report.wallTimeoutMs
     while (Date.now() < deadline) {
       if (interrupted) throw new Error('MP-10 interrupted')
       await client.send({ PumpTerminalOutput: { session_id: session.id, attachment_id: attachment.id } })
       reward = await grade({ op: 'validate' })
-      const outline = unwrap(await client.send(r.getSessionHistoryOutlineRequest(session.id, [agent.id], 2)), 'SessionHistoryOutline')
-      turn = outline.agents.find(a => a.agent_id === agent.id)?.turns.find(t => t.prompt_id === row.promptId)
+      turn = await getTurn(api, identity)
       if (['completed', 'failed', 'cancelled'].includes(turn?.lifecycle)) break
       await sleep(1000)
     }
@@ -273,6 +275,7 @@ try {
     row.actions = actions.filter(a => a.actor_id === `agent:${agent.id}` && a.submitted_at_ms >= started)
     row.reward = reward.reward; row.done = reward.done; row.officialInfo = reward.info
     row.elapsedMs = Date.now() - started; row.timedOut = timedOut; row.turnLifecycle = turn?.lifecycle ?? null
+    row.promotedPromptId = identity.promotedPromptId ?? null
     row.mutatingActions = row.actions.filter(a => !observationKinds.has(a.kind)).length
     // Hydrate the official transcript to audit the tool track, retaining only
     // bounded, sanitized results from permitted first-party Browser tools.

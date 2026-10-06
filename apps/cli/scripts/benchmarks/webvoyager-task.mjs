@@ -78,10 +78,10 @@ export async function runWebVoyagerTask({ task, runtime, options }) {
     agentId = await room.spawn({ provider: 'codex', model: 'gpt-6.1-sol', effort: 'high', accountProfile: runtime.profileId })
     row.sessionId = room.owned.sessionId; row.agentId = agentId
     seam = 'prompt_submit'
-    const submitted = unwrap(await submitOnce({ directory: `${options.runtime.evidence}/admissions`, scope: 'round3-full', taskId: task.id, runId: id,
-      submit: () => client.send(requests.submitPromptRequest(room.owned.sessionId, room.owned.attachmentId, agentId, webVoyagerPrompt(task), [])) }), 'PromptSubmitted')
-    row.promptId = (submitted.outcome.Started ?? submitted.outcome.Queued).prompt.id
-    identity = { sessionId: room.owned.sessionId, agentId, promptId: row.promptId }
+    identity = await room.submit(webVoyagerPrompt(task), { submit: request => submitOnce({
+      directory: `${options.runtime.evidence}/admissions`, scope: 'round3-full', taskId: task.id, runId: id,
+      submit: () => client.send(request) }) })
+    Object.assign(row, identity)
     row.providerStartedAt = new Date().toISOString(); await checkpoint()
     const providerStart = Date.now(); let actions = [], lastCapture = 0, cancelled = false
     seam = 'provider_settlement'
@@ -110,6 +110,7 @@ export async function runWebVoyagerTask({ task, runtime, options }) {
       }
     }
     row.turnLifecycle = turn?.lifecycle ?? null
+    row.promotedPromptId = identity.promotedPromptId ?? null
     seam = 'tool_audit'; assert(turn, 'MP-10 missing original turn')
     const originals = await loadTurnHistory(api, { ...identity, turn })
     const entries = assembleTurnEntries(originals, helpers), tools = new Map()

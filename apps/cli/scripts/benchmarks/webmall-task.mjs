@@ -10,7 +10,7 @@ import {statfs} from 'node:fs/promises';
 import {roomProviderToolName} from '../lib/room-provider-tool-record.mjs';
 import {stopOwnedProcess} from './round2/owned-processes.mjs';
 import {observeKernelRpcErrors,rpcErrorRecord} from './round2/rpc-errors.mjs';
-import {loadTurnHistory,assembleTurnEntries} from './round2/kernel.mjs';
+import {loadTurnHistory,assembleTurnEntries,submitBenchmarkPrompt,getTurn} from './round2/kernel.mjs';
 import {sanitizeDrillMetadata} from '../lib/drill-secrets.mjs';
 const guard=async()=>{const mem=Number((await readFile('/proc/meminfo','utf8')).match(/MemAvailable:\s+(\d+)/)[1])*1024;const fs=await statfs('/');const disk=fs.bavail*fs.bsize;if(mem<16*1024**3||disk<10*1024**3)throw Error('MP-10 resource floor reached');};
 const exec=promisify(execFile), sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -86,15 +86,14 @@ try {
  'Finish within '+report.maxActions+' total Browser tool calls and '+report.maxSeconds+' seconds. Submit the final result through the official WebMall frontend form, as the task instructs. State failure honestly. After submitting, finish with a short factual response.',
  task.intent].join('\n');
  seam='prompt_submit';
- const submitted=one(await client.send(requests.submitPromptRequest(sessionId,attachmentId,agentId,prompt,[])),'PromptSubmitted');
- const promptId=(submitted.outcome?.Started??submitted.outcome?.Queued)?.prompt?.id;assert(promptId,'missing submitted prompt identity');report.promptId=promptId;await client.send(requests.detachFromSessionRequest(attachmentId));attachmentId=null;report.cleanup.push('prompt_attachment_detached');report.providerStartedAt=new Date().toISOString();report.status='running';await checkpoint();
+ const api={client,requests,helpers},identity=await submitBenchmarkPrompt(api,{sessionId,attachmentId,agentId,prompt});
+ Object.assign(report,identity);await client.send(requests.detachFromSessionRequest(attachmentId));attachmentId=null;report.cleanup.push('prompt_attachment_detached');report.providerStartedAt=new Date().toISOString();report.status='running';await checkpoint();
  seam='provider_settlement';
  const started=Date.now();let completed,actions=[];
  while(Date.now()-started<report.maxSeconds*1000){
   assert(!interrupted,'MP-10 interrupted');
   await guard(); await grade({op:'sample'});
-  const h=one(await client.send(requests.getSessionHistoryOutlineRequest(sessionId,[agentId],2)),'SessionHistoryOutline');
-  const t=h.agents?.find(a=>a.agent_id===agentId)?.turns?.find(t=>t.prompt_id===promptId);
+  const t=await getTurn(api,identity);
   const a=one(await client.send(requests.listRoomEnvironmentActionHistoryRequest(sessionId,null,1000)),'RoomEnvironmentActionHistoryListed').page.actions;
   actions=a.filter(x=>x.actor_id==='agent:'+agentId);report.actions=actions.length;report.providerWallSeconds=(Date.now()-started)/1000;
   if(actions.length>report.maxActions){report.budgetExhausted='actions';break}
@@ -103,6 +102,7 @@ try {
  }
  if(!completed){report.budgetExhausted??='time';attachmentId=one(await client.send(requests.attachToSessionRequest(sessionId,'benchwm-budget-cancel')),'SessionAttached').attachment.id;await client.send(requests.cancelActivePromptRequest(sessionId,attachmentId,agentId));throw Error('provider budget exhausted')}
  report.turnId=completed.turn_id;report.lifecycle=completed.lifecycle;
+ report.promotedPromptId=identity.promotedPromptId??null;
  const entries=assembleTurnEntries(await loadTurnHistory({client,requests},{sessionId,agentId,turn:completed}),helpers);
  report.providerUnauthorized=entries.some(x=>x.entry.kind==='provider_error'&&/\b401\b|unauthorized/i.test(x.entry.text??''));
  if(report.providerUnauthorized)console.log('MP-08 / MP-10 coordinator notice: linked provider returned 401/unauthorized');

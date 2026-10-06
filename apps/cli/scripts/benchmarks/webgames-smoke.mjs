@@ -15,7 +15,9 @@ const clientModuleRoot = process.env.WEBGAMES_CLIENT_MODULE_ROOT ?? `${clientRoo
 assert.ok(path.isAbsolute(clientModuleRoot), 'MP-08 / MP-10 absolute built client module root required')
 const { LocalIpcClient } = await import(`${clientModuleRoot}/ipc.js`)
 const r = await import(`${clientModuleRoot}/ipc-requests.js`)
-const { assembleSessionHistoryFinalMessage } = await import(`${clientModuleRoot}/session-history-fragments.js`)
+const helpers = await import(`${clientModuleRoot}/session-history-fragments.js`)
+const { assembleSessionHistoryFinalMessage } = helpers
+import { submitBenchmarkPrompt, getTurn } from './round2/kernel.mjs'
 import { sanitizeDrillMetadata } from '../lib/drill-secrets.mjs'
 import { roomProviderToolName, roomProviderToolOutput } from '../lib/room-provider-tool-record.mjs'
 import { observeKernelRpcErrors, rpcErrorRecord } from './round2/rpc-errors.mjs'
@@ -265,8 +267,9 @@ try {
 The supplied URL is SLICE-LOCAL: the site server runs on loopback INSIDE this same browser slice, not on the host kernel. Keep 127.0.0.1 exactly; do NOT replace it with host.docker.internal. This is not a host-local URL.
 Use ONLY Chariox first-party slice_open_url and slice_browser_* tools. Observe the rendered page; use returned opaque field IDs for actions. No shell, scripts, source inspection, HTTP, files, Computer tools, provider-native browser tools, or another browser. Do not inspect benchmark code, hidden answers, or grader data. One attempt only: do not reload or restart a failed game. Max 20 mutating Browser actions, 80 tool calls, 180 seconds. Stop if unsupported or failed and report honestly. Return the obtained password in your final reply, or state failure.`
     stage = `prompt submit ${template}`
-    const submitted = unwrap(await client.send(r.submitPromptRequest(session.id, attachment.id, agent.id, prompt, [])), 'PromptSubmitted')
-    row.promptId = (submitted.outcome.Started ?? submitted.outcome.Queued).prompt.id
+    const api = { client, requests: r, helpers }
+    const identity = await submitBenchmarkPrompt(api, { sessionId: session.id, attachmentId: attachment.id, agentId: agent.id, prompt })
+    Object.assign(row, identity)
     stage = `provider polling ${template}`
     let turn = null, timedOut = false, budgetExceeded = false
     const deadline = started + report.wallTimeoutMs
@@ -275,8 +278,7 @@ Use ONLY Chariox first-party slice_open_url and slice_browser_* tools. Observe t
       await client.send({ PumpTerminalOutput: { session_id: session.id, attachment_id: attachment.id } })
       const liveActions = unwrap(await client.send(r.listRoomEnvironmentActionHistoryRequest(session.id, null, 1000)), 'RoomEnvironmentActionHistoryListed').page.actions.filter(a => a.actor_id === `agent:${agent.id}` && a.submitted_at_ms >= started)
       if (liveActions.filter(a => !observationKinds.has(a.kind)).length > report.maxMutatingActions) { budgetExceeded = true; break }
-      const outline = unwrap(await client.send(r.getSessionHistoryOutlineRequest(session.id, [agent.id], 2)), 'SessionHistoryOutline')
-      turn = outline.agents.find(a => a.agent_id === agent.id)?.turns.find(t => t.prompt_id === row.promptId)
+      turn = await getTurn(api, identity)
       if (['completed', 'failed', 'cancelled'].includes(turn?.lifecycle)) break
       await sleep(1000)
     }
@@ -284,11 +286,11 @@ Use ONLY Chariox first-party slice_open_url and slice_browser_* tools. Observe t
       timedOut = !budgetExceeded; await client.send(r.cancelActivePromptRequest(session.id, attachment.id, agent.id))
       await wait(async () => !unwrap(await client.send(r.getSessionStateRequest(session.id)), 'SessionState').session.agents.find(a => a.id === agent.id).is_processing, 'provider cancellation')
     }
-    const settled = unwrap(await client.send(r.getSessionHistoryOutlineRequest(session.id, [agent.id], 2)), 'SessionHistoryOutline')
-    turn = settled.agents.find(a => a.agent_id === agent.id)?.turns.find(t => t.prompt_id === row.promptId)
+    turn = await getTurn(api, identity)
     const actions = unwrap(await client.send(r.listRoomEnvironmentActionHistoryRequest(session.id, null, 1000)), 'RoomEnvironmentActionHistoryListed').page.actions
     row.actions = actions.filter(a => a.actor_id === `agent:${agent.id}` && a.submitted_at_ms >= started)
     row.elapsedMs = Date.now() - started; row.timedOut = timedOut; row.turnLifecycle = turn?.lifecycle ?? null
+    row.promotedPromptId = identity.promotedPromptId ?? null
     row.mutatingActions = row.actions.filter(a => !observationKinds.has(a.kind)).length
     // Hydrate the official transcript to audit the tool track, retaining only
     // bounded, sanitized results from permitted first-party Browser tools.

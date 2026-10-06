@@ -1,5 +1,5 @@
 // MP-08 / MP-10 / MP-11. One owned Room; product lifecycle and dynamic ports.
-import { unwrap } from './kernel.mjs'
+import { unwrap, submitBenchmarkPrompt } from './kernel.mjs'
 
 export class Round2Room {
   owned = { sessionId: null, slices: [], attachmentId: null, agentId: null, portRetries: 0 }
@@ -49,12 +49,8 @@ export class Round2Room {
     return agent.id
   }
 
-  async submit(prompt) {
-    const { client, requests: r } = this.api, o = this.owned
-    const submitted = unwrap(await client.send(r.submitPromptRequest(o.sessionId, o.attachmentId, o.agentId, prompt, [])), 'PromptSubmitted')
-    const promptId = (submitted.outcome?.Started ?? submitted.outcome?.Queued)?.prompt?.id
-    if (!promptId) throw new Error('MP-10 submitted prompt identity missing; never replay')
-    return { sessionId: o.sessionId, agentId: o.agentId, promptId }
+  async submit(prompt, { submit } = {}) {
+    return submitBenchmarkPrompt(this.api, { ...this.owned, prompt }, submit)
   }
 
   async cancel() {

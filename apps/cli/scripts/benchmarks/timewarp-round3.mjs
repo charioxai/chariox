@@ -249,6 +249,7 @@ try {
         try{await guard();return null}catch{return {cause:'resource_floor_or_interruption'}}
       }})
       row.turnLifecycle=settled.turn?.lifecycle??null;row.timedOut=Boolean(settled.cancellation);row.settlementMs=settled.elapsedMs
+      row.promotedPromptId=identity.promotedPromptId??null
       stage='history_audit'
       const entries=settled.turn?await loadTurnHistory(api,{...identity,turn:settled.turn}):[]
       row.settlement=settlementRecord({...settled,...identity,entries,helpers})

@@ -30,6 +30,7 @@ export async function runRound2Episode({ api, directory, source, roomOptions, ro
     Object.assign(row, identity, { admission: 'submitted', providerStartedAt: new Date().toISOString() }); await writeEvidence(directory, 'run.json', row)
     seam = 'provider_settlement'
     const settled = await waitForSettlement(api, identity, { maxMs, guard, observe, cancel: () => room.cancel() })
+    row.promotedPromptId = identity.promotedPromptId ?? null
     row.settlement = settlementRecord({ ...settled, ...identity, entries: [], helpers: api.helpers })
     row.observationErrors = settled.observationErrors
     row.historyComplete = false
