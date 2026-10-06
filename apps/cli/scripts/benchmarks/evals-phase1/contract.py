@@ -127,4 +127,4 @@ def session_usage_visible(report, visible):
     if not usage:return False
     counters='; '.join(f'{label} {usage[key] if usage.get(key) is not None else "unavailable"}'
                       for label,key in [('input','input_tokens'),('cached','cached_input_tokens'),('output','output_tokens'),('reasoning','reasoning_tokens')])
-    return f'Session: {total.get("turns")} turns; {counters};' in visible
+    return f'Session: {total.get("turns")} turns; {counters};' in " ".join(visible.split())

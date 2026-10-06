@@ -28,6 +28,22 @@ def trial_results(job):
     return [p for p in job.glob('*/result.json') if 'task_name' in json.loads(p.read_text())]
 
 
+def resume_quota_campaign(campaign, identity):
+    """MP-08 / MP-10 / MP-11: preserve admission attempt; completed official tasks stay fixed."""
+    if any(campaign.get(k)!=v for k,v in identity.items()):
+        raise ValueError('MP-08 / MP-10: resumed campaign identity differs')
+    if campaign.get('status')!='blocked' or not campaign.get('tasks'):
+        raise ValueError('MP-08 / MP-10: only a quota-paused campaign can resume')
+    last=campaign['tasks'][-1]
+    official=json.loads(Path(last['official_result']).read_text())
+    measurement=((official.get('agent_result') or {}).get('metadata') or {}).get('chariox') or {}
+    if measurement.get('status')!='quota_exhausted' or not measurement.get('cleanup_complete') or last['cleanup']['remaining_containers']:
+        raise ValueError('MP-08 / MP-10 / MP-11: quota admission and complete cleanup required')
+    campaign.setdefault('quota_attempts',[]).append(campaign['tasks'].pop())
+    campaign['status']='running';campaign.pop('first_failing_task',None)
+    return campaign
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--phase',choices=['smoke','full','admission'],required=True)
@@ -38,26 +54,33 @@ def main():
     p.add_argument('--local-protocol',type=int,required=True)
     p.add_argument('--model',default='gpt-6.1-sol')
     p.add_argument('--admission-task',default='break-filter-js-from-html')
+    p.add_argument('--resume',action='store_true')
     args=p.parse_args()
     scripts=Path(__file__).resolve().parent
     lock=json.loads((scripts/'inputs.lock.json').read_text());validate_lock(lock)
     if command_output(['git','-C',str(args.tasks),'rev-parse','HEAD']) != lock['terminal_bench_2']['revision'] or command_output(['git','-C',str(args.tasks),'status','--porcelain']):
         raise ValueError('MP-08 / MP-10: exact clean official task checkout required')
-    if not args.output.is_absolute() or args.output.exists() or args.output.resolve().is_relative_to(scripts.parents[4]):
+    if not args.output.is_absolute() or (args.output.exists() and not args.resume) or args.output.resolve().is_relative_to(scripts.parents[4]):
         raise ValueError('MP-11: new absolute external evidence directory required')
     preflight(str(args.runtime_root),args.source_commit,args.kernel_sha256,args.local_protocol)
     ids=lock['terminal_bench_2']['task_ids']
     selected=ids[:10] if args.phase=='smoke' else [args.admission_task] if args.phase=='admission' else ids
-    args.output.mkdir(parents=True,mode=0o700)
+    args.output.mkdir(parents=True,mode=0o700,exist_ok=args.resume)
     campaign={'mp_items':['MP-08','MP-10','MP-11'],'benchmark':'terminal_bench_2','phase':args.phase,'task_ids':selected,
               'source_commit':args.source_commit,'kernel_sha256':args.kernel_sha256,'model':args.model,'harness_revision':lock['harbor']['revision'],
               'task_revision':lock['terminal_bench_2']['revision'],'runner_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'started_at':time.time(),'tasks':[],'status':'running'}
+    if args.resume:
+        identity={key:campaign[key] for key in ['benchmark','phase','task_ids','source_commit','kernel_sha256','model','harness_revision','task_revision']}
+        campaign=resume_quota_campaign(json.loads((args.output/'campaign.json').read_text()),identity)
+    attempts=args.output/'campaign-attempts';attempts.mkdir(mode=0o700,exist_ok=True)
+    (attempts/(uuid4().hex+'.json')).write_text(json.dumps({'mp_items':['MP-08','MP-10','MP-11'],'runner_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'started_at':time.time(),'resume':args.resume},indent=2)+'\n')
     def save(): (args.output/'campaign.json').write_text(json.dumps(campaign,indent=2)+'\n')
     save()
     env={**os.environ,'PYTHONPATH':str(scripts),'PYTHONDONTWRITEBYTECODE':'1','HARBOR_DISABLE_TELEMETRY':'1'}
     try:
         for task in selected:
+            if any(row['task_id']==task for row in campaign['tasks']):continue
             config=tomllib.loads((args.tasks/task/'task.toml').read_text())
             required=9*1024**3+(config['environment']['memory_mb']+1024)*1024**2
             # Wait for headroom, without running another task or holding a Rust slot.
@@ -73,11 +96,11 @@ def main():
                  'tasks':[{'path':str(args.tasks/task)}], 'agents':[{'import_path':'harbor_agent:CharioxAgent','model_name':args.model,'kwargs':options}],
                  'environment':{'type':'docker','delete':True,'mounts':[{'type':'bind','source':str(args.runtime_root),'target':'/opt/chariox','read_only':True},
                    {'type':'bind','source':str(args.profile_path),'target':str(args.profile_path)}]}}
-            config_path=args.output/(task+'-job.json');config_path.write_text(json.dumps(job,indent=2)+'\n')
+            config_path=args.output/(task+'-job-'+nonce+'.json');config_path.write_text(json.dumps(job,indent=2)+'\n')
             invocation=[str(args.harbor),'run','--config',str(config_path)]
             start=time.monotonic();samples=[]
             cleanup=[]
-            with (args.output/(task+'.log')).open('w') as log:
+            with (args.output/(task+'-'+nonce+'.log')).open('w') as log:
                 process=subprocess.Popen(invocation,env=env,stdout=log,stderr=log)
                 try:
                     while process.poll() is None:
@@ -88,7 +111,7 @@ def main():
                 finally:
                     stop_owned(process)
                     cleanup=settle_job(job_dir,task)
-                    (args.output/(task+'-cleanup.json')).write_text(json.dumps(cleanup,indent=2)+'\n')
+                    (args.output/(task+'-'+nonce+'-cleanup.json')).write_text(json.dumps(cleanup,indent=2)+'\n')
                 exit_code=process.wait()
             matches=trial_results(job_dir)
             if len(matches)!=1:raise ValueError('MP-08 / MP-10: exactly one official task receipt required')

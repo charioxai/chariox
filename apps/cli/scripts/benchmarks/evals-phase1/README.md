@@ -120,3 +120,11 @@ exact Compose projects recorded in the fresh owned job directory. A manual
 settlement or unknown retained volume makes the campaign fail; unused task
 image tags are removed only when absent before this run, pinned to the same
 image ID afterward, and used by no container. Shared caches/images are untouched.
+
+MP-08 / MP-10 / MP-11: `terminal_campaign.py --resume` accepts an unchanged
+campaign identity only when the last attempt was a clean `quota_exhausted`
+admission. It preserves that attempt and all scored official tasks, then checks
+the fresh product quota. SWE campaigns archive clean quota attempts automatically
+on re-invocation. Each invocation retains its own runner identity. Benchmark
+measurements select the submitted agent/prompt; descendants require explicit
+agent/prompt bindings. The real TUI session aggregate is validated separately.
