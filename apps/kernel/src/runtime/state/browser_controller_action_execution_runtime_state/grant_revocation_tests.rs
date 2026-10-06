@@ -177,6 +177,12 @@ async fn dispatched_computer_action_settles_after_grant_revocation() {
 async fn mp08_room_computer_revoke_denies_queued_and_new_input_and_regrants() {
     crate::test_support::isolated_env_test!();
     let room = TestRoom::new("room-computer-revoke");
+    // MP-08 / MP-10 / MP-11: session actors and transport routers construct
+    // independent states from the same kernel app; authority must be shared.
+    let owner_runtime = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+        Arc::clone(&room.runtime.app),
+        crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+    ).runtime_state();
     room.runtime
         .reconcile_room_environment_actors(&room.session_id, None)
         .unwrap();
@@ -214,7 +220,7 @@ async fn mp08_room_computer_revoke_denies_queued_and_new_input_and_regrants() {
         .unwrap()["cursor"]
         .as_u64()
         .unwrap();
-    room.runtime
+    owner_runtime
         .set_room_computer_access("local", Some(&room.agent_id), false)
         .unwrap();
     let revoked_snapshot = room
@@ -284,7 +290,7 @@ async fn mp08_room_computer_revoke_denies_queued_and_new_input_and_regrants() {
     room.runtime
         .set_room_computer_access("foreign", Some(&room.agent_id), true)
         .unwrap_err();
-    room.runtime
+    owner_runtime
         .set_room_computer_access("local", Some(&room.agent_id), true)
         .unwrap();
     room.runtime

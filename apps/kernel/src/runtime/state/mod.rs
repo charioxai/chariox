@@ -635,6 +635,8 @@ impl KernelRuntimeState {
             app_control,
             managed_kernel_registration,
             runtime_tool_call_activity,
+            kernel_browser_host,
+            room_computer_revoked,
         ) = {
             let started = Instant::now();
             loop {
@@ -649,6 +651,8 @@ impl KernelRuntimeState {
                         app.app_control_service(),
                         app.managed_kernel_registration(),
                         app.runtime_tool_call_activity.clone(),
+                        app.kernel_browser_host.clone(),
+                        app.room_computer_revoked.clone(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -809,13 +813,13 @@ impl KernelRuntimeState {
                 attached_provider_transcript_cursors,
                 slice_store,
                 notes: crate::runtime::notes::NoteStore::new(config.private_runtime_state_root()),
-                kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost::new(config.private_runtime_state_root()),
+                kernel_browser_host,
                 browser_controller_processes:
                     crate::runtime::browser_controller_process::BrowserControllerProcessStore::from_environment(),
                 browser_import_admission:
                     crate::runtime::browser_import_admission::BrowserImportAdmission::default(),
                 environment_execution_gates: Default::default(),
-                room_computer_revoked: Default::default(),
+                room_computer_revoked,
                 room_secret_observations,
                 kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations::new(
                     config.private_runtime_state_root().join("kernel-browser/observations"),
