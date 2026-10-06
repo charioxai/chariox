@@ -281,7 +281,7 @@ export class KernelBrowserHost {
           finally{if(clip)compositor?.resume()}
         };
         const policy=this.protection;
-        const {data}=await (!clip&&!policy.unknown&&!policy.values.length&&!policy.targets.length ? sample() : this.sampleLane(tab).run("capture",sample));
+        const {data}=await (!protectedCapture&&!clip&&!policy.unknown&&!policy.values.length&&!policy.targets.length ? sample() : this.sampleLane(tab).run("capture",sample));
         this.timing(clip?.scale < 1 ? 'cdp_preview' : clip ? 'cdp_crop' : 'cdp_capture', at);
         return data;
       }, scale, clip);

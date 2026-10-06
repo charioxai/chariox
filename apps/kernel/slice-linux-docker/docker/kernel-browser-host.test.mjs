@@ -734,6 +734,17 @@ test('private CDP pipe loss retires the browser generation even while child is l
   await assert.rejects(host.request({op:'screenshot',tab_id:before.tab_id,generation:before.generation}),{code:'user_domain_stale_epoch'});
 }));
 
+test('MP-08/MP-11 protected full captures cannot interrupt an in-flight pointer operation',()=>using(async({host,connection})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=host.tabs.get(opened.tab_id);
+ let release,enter,captured=false;
+ const held=new Promise(r=>release=r),entered=new Promise(r=>enter=r);
+ connection.beforeSend=async method=>{if(method==='Page.captureScreenshot')captured=true;};
+ const input=host.sampleLane(tab).run('input',async()=>{enter();await held;});await entered;
+ const screenshot=host.request({op:'screenshot',tab_id:tab.tab_id,generation:opened.generation});
+ await new Promise(r=>setImmediate(r));assert.equal(captured,false,'capture waits for paired pointer completion');
+ release();await Promise.all([input,screenshot]);assert.equal(captured,true);
+}));
+
 // MP-08/MP-10: run this bound admission check under both supported host geometries.
 test('MP-08/MP-10 #893 unsupported DPR fails before emulation/subscription mutation',()=>using(async({host,sent})=>{
  const {displayGeometry}=await import('./kernel-browser-geometry.mjs');
