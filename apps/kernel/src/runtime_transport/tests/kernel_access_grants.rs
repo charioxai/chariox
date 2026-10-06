@@ -602,7 +602,9 @@ async fn grant_for_holder(kernel: &mut Kernel, holder: &mut Client, holder_pid: 
         )),
         "{message}"
     );
-    assert!(message.contains(SESSION) && message.contains("30 minutes"));
+    // The human prompt displays the alias, which intentionally collides with
+    // another session ID. The granted authority below must retain the real ID.
+    assert!(message.contains("session other-session for 30 minutes"));
     assert!(message.contains(
         std::env::current_exe()
             .unwrap()
@@ -626,6 +628,10 @@ async fn grant_for_holder(kernel: &mut Kernel, holder: &mut Client, holder_pid: 
     assert!(approved["error"].is_null(), "{approved}");
     let result = holder.result();
     assert!(result["error"].is_null(), "{result}");
+    assert_eq!(
+        result["response"]["KernelAccessGranted"]["grant"]["session_id"],
+        SESSION
+    );
     assert_eq!(
         result["response"]["KernelAccessGranted"]["grant"]["lifetime_minutes"],
         15
