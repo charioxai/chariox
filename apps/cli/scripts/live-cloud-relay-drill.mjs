@@ -282,6 +282,16 @@ async function main() {
     const cloudMembers = await terminal.client.collaboration.sessionMembers(created.session.id)
     assert(cloudMembers.members.some(member => member.user_id === peerProfile.userId)
       && cloudMembers.members.some(member => member.user_id === thirdProfile.userId), "Cloud membership should include accepted collaborators")
+    // MP-08 / MP-10 / MP-11: distinct personal accounts must list the shared
+    // account's session using their own private CLIENT authority.
+    for (const [name, login] of [["peer", peerLogin], ["third", thirdLogin]]) {
+      stage(`cloud-${name}-session-members`)
+      assert(login.profile.accountId !== kernelProfile.accountId, "collaborator must have a distinct personal account")
+      const listed = await login.client.collaboration.sessionMembers(created.session.id)
+      assert(listed.members.some(member => member.user_id === kernelProfile.userId)
+        && listed.members.some(member => member.user_id === peerProfile.userId)
+        && listed.members.some(member => member.user_id === thirdProfile.userId), "collaborator should list all shared session members")
+    }
 
     stage("cloud-peer-relay-join")
     const peerRemoteClient = await connectSessionScopedCloudClient(modules, peerLogin, scope)

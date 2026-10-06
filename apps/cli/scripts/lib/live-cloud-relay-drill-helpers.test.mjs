@@ -25,6 +25,7 @@ async function fixture(root) {
   await new Promise(resolve => relay.once("listening", resolve))
   const relayUrl = `ws://127.0.0.1:${relay.address().port}`
   const devices = new Map(), grants = new Map(), sockets = new Map(), timers = new Set()
+  const members = [{ accountId: "account-owner", sessionId: "session-a", userId: "user-owner", email: "owner@example.com" }]
   const calls = [], errors = []
   let grantNumber = 0
   const profile = (accountSlug, family) => ({
@@ -81,10 +82,20 @@ async function fixture(root) {
       } else if (pathname === "/sessions/invites/synthetic-invite/accept") {
         const family = [...devices.values()].find(f => f.access === body.sessionToken)
         assert.ok(family)
+        // MP-08 / MP-11: Cloud 3620f1245 records invite.accountId, not caller.accountId.
+        members.push({ accountId: "account-owner", sessionId: "session-a", userId: `user-${family.accountSlug}`, email: `${family.accountSlug}@example.com` })
         send({ sessionId: "session-a", accountId: "account-owner", userId: `user-${family.accountSlug}`, invitedByUserId: "user-owner", joinedAt: new Date().toISOString() })
       } else if (pathname === "/sessions/members") {
-        assert.ok(req.headers.authorization)
-        send({ sessionId: "session-a", members: [{ userId: "user-owner", email: "owner@example.com" }, { userId: "user-peer", email: "peer@example.com" }] })
+        const family = [...devices.values()].find(f => `Bearer ${f.access}` === req.headers.authorization)
+        assert.ok(family)
+        const query = new URL(req.url, "http://localhost").searchParams
+        const accountId = query.get("accountId"), sessionId = query.get("sessionId")
+        // Match requireSharedSessionMember's exact (accountId, sessionId, caller.userId).
+        if (!members.some(m => m.accountId === accountId && m.sessionId === sessionId && m.userId === `user-${family.accountSlug}`)) {
+          send({ error: { code: "session_invite_invalid" } }, 403)
+          return
+        }
+        send({ sessionId, members: members.filter(m => m.accountId === accountId && m.sessionId === sessionId) })
       } else throw new Error("unexpected fixture route")
     })().catch(error => { errors.push(error); res.writeHead(500); res.end() })
   })
@@ -170,6 +181,8 @@ test("MP-08 / MP-10 / MP-11: drill composes kernel enrollment and private human 
     terminals.push(peer)
     assert.equal((await peer.client.collaboration.acceptSessionInvite(invitation.invite.invite_token)).acceptance.user_id, "user-peer")
     assert.equal((await deps.listCloudSessionMembers("session-a")).members.length, 2)
+    assert.equal((await peer.client.collaboration.sessionMembers("session-a")).members.length, 2)
+    assert.equal((await peer.client.profile()).accountId, "account-peer", "shared session scope cannot replace the caller's login account")
     const scoped = await connectSessionScopedCloudClient(modules, peer, { accountId: "account-owner", realmId: "realm-owner", sessionId: "session-a", targetDaemonId: "kernel-a" })
     clients.push(scoped)
     let events = 0
