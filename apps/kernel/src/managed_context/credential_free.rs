@@ -18,6 +18,26 @@ fn refused() -> DaemonError {
     )
 }
 
+fn credential_url(url: &url::Url) -> bool {
+    let public_ssh_user = url.scheme() == "ssh" && url.username() == "git";
+    (!url.username().is_empty() && !public_ssh_user)
+        || url.password().is_some()
+        || url.query_pairs().any(|(name, _)| {
+            let name = name.to_ascii_lowercase();
+            [
+                "token",
+                "password",
+                "secret",
+                "credential",
+                "api_key",
+                "apikey",
+                "authorization",
+            ]
+            .iter()
+            .any(|part| name.contains(part))
+        })
+}
+
 pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError> {
     let name = path.to_ascii_lowercase();
     if crate::project_environment::secret_looking_project_path(&name)
@@ -42,7 +62,7 @@ pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError
         }
         for word in text.split_whitespace() {
             if let Ok(url) = url::Url::parse(word.trim_matches(['\'', '"', ',', ';'])) {
-                if !url.username().is_empty() || url.password().is_some() {
+                if credential_url(&url) {
                     return Err(refused());
                 }
             }
@@ -54,6 +74,13 @@ pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError
 fn validate_json(value: &Value) -> Result<(), DaemonError> {
     match value {
         Value::Object(fields) => {
+            if fields.contains_key("ciphertext")
+                && (fields.contains_key("kdf")
+                    || fields.contains_key("nonce")
+                    || fields.contains_key("cipher"))
+            {
+                return Err(refused());
+            }
             for (key, value) in fields {
                 let lower = key.to_ascii_lowercase();
                 if [
@@ -65,6 +92,8 @@ fn validate_json(value: &Value) -> Result<(), DaemonError> {
                     "apikey",
                     "authorization",
                     "private_key",
+                    "vault_file_base64",
+                    "sealed_unlock_key",
                 ]
                 .iter()
                 .any(|part| lower.contains(part))
@@ -102,7 +131,7 @@ fn validate_json(value: &Value) -> Result<(), DaemonError> {
                 return Err(refused());
             }
             if let Ok(url) = url::Url::parse(text) {
-                if !url.username().is_empty() || url.password().is_some() {
+                if credential_url(&url) {
                     return Err(refused());
                 }
             }
@@ -305,10 +334,16 @@ mod tests {
             ("file", b"API_KEY=synthetic-canary"),
             ("file", b"-----BEGIN PRIVATE KEY-----"),
             ("file", b"https://user:synthetic-canary@example.test"),
+            ("file", b"https://example.test?token=synthetic-canary"),
+            (
+                "file",
+                br#"{"ciphertext":"synthetic-vault-canary","kdf":{}}"#,
+            ),
         ] {
             assert!(validate_bytes(path, bytes).is_err());
         }
         assert!(validate_bytes("README.md", b"ordinary project instructions").is_ok());
+        assert!(validate_bytes("origin-url", b"ssh://git@example.test/project.git").is_ok());
     }
     #[test]
     fn mp08_mp11_owner_package_refuses_credentials_in_git_history() {

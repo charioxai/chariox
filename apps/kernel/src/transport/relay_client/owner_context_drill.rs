@@ -29,6 +29,10 @@ struct EncryptedPeer<'a> {
     identity: RelayCallerIdentity,
     target_public_key: String,
     disconnect_after_chunk: AtomicBool,
+    interrupt_import: Option<(
+        &'a DaemonConfig,
+        &'a crate::managed_context::transfer::ManagedContextTransferStore,
+    )>,
 }
 impl ManagedContextPeerTransport for EncryptedPeer<'_> {
     fn send(
@@ -38,6 +42,29 @@ impl ManagedContextPeerTransport for EncryptedPeer<'_> {
         Box<dyn std::future::Future<Output = Result<RelayPeerResponse, DaemonError>> + Send + '_>,
     > {
         Box::pin(async move {
+            if let (
+                Some((target, store)),
+                RelayPeerRequest::FinalizeManagedContextImport {
+                    transfer_id,
+                    capability,
+                },
+            ) = (self.interrupt_import, &request)
+            {
+                interrupt_after_kernel_publication(
+                    store,
+                    self.source,
+                    target,
+                    &self.identity,
+                    transfer_id,
+                    &capability.clone().into_inner(),
+                )?;
+                return Err(DaemonError::ManagedContext {
+                    code: "fixture_import_interrupted",
+                    operation: "owner peer drill",
+                    message: "simulated restart after kernel component publication".into(),
+                    retryable: true,
+                });
+            }
             let chunk = matches!(request, RelayPeerRequest::UploadManagedContextChunk { .. });
             let response = send_managed_peer_request(
                 &self.harness,
@@ -59,6 +86,75 @@ impl ManagedContextPeerTransport for EncryptedPeer<'_> {
             Ok(response)
         })
     }
+}
+
+// MP-08/MP-11: simulate interruption after one real component has published,
+// before development import and durable completion. No production failpoint is added.
+fn interrupt_after_kernel_publication(
+    store: &crate::managed_context::transfer::ManagedContextTransferStore,
+    source: &DaemonConfig,
+    target: &DaemonConfig,
+    identity: &RelayCallerIdentity,
+    transfer_id: &str,
+    capability: &str,
+) -> Result<(), DaemonError> {
+    use crate::managed_context::transfer::*;
+    let caller = ManagedContextTransferCaller {
+        kernel_id: source.daemon_id.clone(),
+        key_thumbprint: public_key_thumbprint(&source.relay_public_key),
+        owner_user_id: identity.user_id.clone().unwrap(),
+        realm_id: identity.realm_id.clone(),
+        target_environment_id: None,
+        target_destination: Some(OwnerManagedDestination::OwnerManagedMachine {
+            machine_id: target.host_machine_id.clone(),
+            kernel_id: target.daemon_id.clone(),
+        }),
+        target_kernel_id: target.daemon_id.clone(),
+        target_key_thumbprint: public_key_thumbprint(&target.relay_public_key),
+    };
+    let ManagedContextImportClaim::Claimed(ready) = store.prepare_and_claim_import(
+        transfer_id,
+        capability,
+        &caller,
+        crate::session::unix_epoch_ms(),
+    )?
+    else {
+        panic!("partial import must own its durable claim")
+    };
+    let extracted = extract_managed_context_package(ManagedContextPackageImportRequest {
+        package_path: ready.archive_path.clone(),
+        expected_package_sha256: ready.archive_sha256.clone(),
+        expected_binding: ManagedContextPackageBinding {
+            plan: ready.plan.clone(),
+            target_environment_id: ready.target_environment_id.clone(),
+            source_kernel_id: ready.source_kernel_id.clone(),
+            source_key_thumbprint: ready.source_key_thumbprint.clone(),
+            target_kernel_id: ready.target_kernel_id.clone(),
+            target_key_thumbprint: ready.target_key_thumbprint.clone(),
+        },
+    })?;
+    let ManagedContextPackageKernel::FromKernel(snapshot) = extracted.kernel_context else {
+        panic!("fixture selects kernel context")
+    };
+    let parent = ready.destination_root.parent().unwrap();
+    import_kernel_context(KernelContextImportRequest {
+        snapshot: *snapshot,
+        expected_source: crate::secret::TransferredVaultSourceBinding {
+            context_id: ready.plan.context_id.clone(),
+            source_kernel_id: ready.source_kernel_id,
+            source_key_thumbprint: ready.source_key_thumbprint,
+        },
+        target_kernel_id: target.daemon_id.clone(),
+        target_private_key: target.relay_private_key.clone(),
+        capability_root: parent.join(format!("kernel-context-{}", ready.plan.context_id)),
+        vault_path: parent.join("unused-vault"),
+        publication_root: crate::mcp::CharioxMcpRegistry::user_root()
+            .and_then(|root| root.parent().map(std::path::Path::to_path_buf)),
+    })?;
+    assert!(store
+        .launch_target(&ready.plan.context_id, &ready.plan.plan_digest)
+        .is_err());
+    Ok(())
 }
 
 fn enrolled_profile(config: &DaemonConfig, api_url: &str) -> PersistedCloudRelayProfile {
@@ -207,7 +303,7 @@ async fn mp05_mp08_mp11_owner_managed_context_encrypted_peer_drill() {
     let target_id = target.daemon_id.clone();
     let plan_id = plan.context_id.clone();
     let server = tokio::spawn(async move {
-        for attempt in 0..4 {
+        for attempt in 0..9 {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut bytes = Vec::new();
             let (header, length) = loop {
@@ -241,10 +337,23 @@ async fn mp05_mp08_mp11_owner_managed_context_encrypted_peer_drill() {
             assert_eq!(body["source"]["kernelId"], source_id);
             assert_eq!(body["contextId"], plan_id);
             assert!(body.get("environmentId").is_none());
+            let mut response_ticket: serde_json::Value =
+                serde_json::from_slice(&cloud_response).unwrap();
+            let wrong_pin = match attempt {
+                1 => Some("machineId"),
+                2 => Some("kernelId"),
+                3 => Some("keyThumbprint"),
+                4 => Some("relayPublicKey"),
+                _ => None,
+            };
+            if let Some(pin) = wrong_pin {
+                response_ticket["target"][pin] = serde_json::json!("incorrect-pin");
+            }
+            let response_bytes = serde_json::to_vec(&response_ticket).unwrap();
             let (status, response) = if attempt == 0 {
                 ("403 Forbidden", b"{}".as_slice())
             } else {
-                ("200 OK", cloud_response.as_slice())
+                ("200 OK", response_bytes.as_slice())
             };
             let headers = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", response.len());
             stream.write_all(headers.as_bytes()).await.unwrap();
@@ -393,7 +502,7 @@ async fn mp05_mp08_mp11_owner_managed_context_encrypted_peer_drill() {
         &identity,
         &source.relay_private_key,
         &target.relay_public_key,
-        arm,
+        arm.clone(),
     )
     .await;
     assert!(matches!(
@@ -403,6 +512,24 @@ async fn mp05_mp08_mp11_owner_managed_context_encrypted_peer_drill() {
             ..
         }
     ));
+    for _ in 0..4 {
+        let response = send_managed_peer_request(
+            &harness,
+            &source.daemon_id,
+            &identity,
+            &source.relay_private_key,
+            &target.relay_public_key,
+            arm.clone(),
+        )
+        .await;
+        assert!(matches!(
+            response,
+            RelayPeerResponse::ManagedContextImportFailed {
+                retryable: false,
+                ..
+            }
+        ));
+    }
     let capability = random_managed_context_capability();
     let request = ManagedContextOutboundTransferRequest {
         plan: plan.clone(),
@@ -418,6 +545,7 @@ async fn mp05_mp08_mp11_owner_managed_context_encrypted_peer_drill() {
         identity: identity.clone(),
         target_public_key: target.relay_public_key.clone(),
         disconnect_after_chunk: AtomicBool::new(true),
+        interrupt_import: None,
     };
     assert!(
         transfer_managed_context_package(&peer, request.clone(), |_| {})
@@ -434,9 +562,31 @@ async fn mp05_mp08_mp11_owner_managed_context_encrypted_peer_drill() {
             outgoing_tx: &outgoing_tx,
         },
         source: &source,
+        identity: identity.clone(),
+        target_public_key: target.relay_public_key.clone(),
+        disconnect_after_chunk: AtomicBool::new(false),
+        interrupt_import: Some((&target, &store)),
+    };
+    assert!(
+        transfer_managed_context_package(&peer, request.clone(), |_| {})
+            .await
+            .is_err()
+    );
+    drop(peer);
+    drop(store);
+    drop(router);
+    let (router, store) = target_router(target.clone()).await;
+    let peer = EncryptedPeer {
+        harness: ManagedPeerRequestHarness {
+            router: &router,
+            state: &state,
+            outgoing_tx: &outgoing_tx,
+        },
+        source: &source,
         identity,
         target_public_key: target.relay_public_key.clone(),
         disconnect_after_chunk: AtomicBool::new(false),
+        interrupt_import: None,
     };
     let result = transfer_managed_context_package(&peer, request.clone(), |_| {})
         .await
