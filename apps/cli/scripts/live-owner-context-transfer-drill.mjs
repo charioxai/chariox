@@ -196,7 +196,8 @@ try {
   const ordinary='set -euo pipefail\npython -u worker.py\ngit add -u\n'
   await writeFile(path.join(workspace,'bootstrap.sh'),ordinary)
   const encodedMode=mode.startsWith('utf16-')
-  const packagedMode=mode.startsWith('packaged-')
+  const kernelOnly=mode==='kernel-only'
+  const packagedMode=mode.startsWith('packaged-')||kernelOnly
   const structuredMode=mode==='structured-header'||mode==='packaged-metadata'
   const packagedAttack=mode==='packaged-shell'
   const packagedFile=packagedAttack?'bootstrap.sh':'package.json'
@@ -246,18 +247,35 @@ try {
   await writeFile(path.join(evidence,'01-source-inventory.json'),JSON.stringify(inventory,null,2))
   const selection={target:{relayRealmId:realm,machineId:target.identity.machineId,kernelId:target.identity.kernelId,
     relayPublicKey:presences.get(target.identity.kernelId).metadata.relay_public_key,keyThumbprint:target.identity.publicKeyThumbprint},
-    contextSelection:{kernelContext:(packagedMode||structuredMode)?'source_kernel_without_credentials':'empty',developmentSetup:{kind:'source_project',projectId:session.project_id,
+    contextSelection:{kernelContext:(packagedMode||structuredMode)?'source_kernel_without_credentials':'empty',developmentSetup:kernelOnly?{kind:'empty'}:{kind:'source_project',projectId:session.project_id,
       repositories:[{role:'primary',workspaceId:session.workspace_id,worktreeId:null}]}}}
   const selectionPath=path.join(root,'selection.json');await writeFile(selectionPath,JSON.stringify(selection))
   async function cli(name,kernel,args) {
     const result=await run(name,path.join(binaryDir,'chariox-cli'),['context',...args,'--kernel-url',kernel.url],kernel.env)
     assert.equal(result.code,0,`MP-08 ${name}: ${result.output}`);return JSON.parse(result.output.trim())
   }
-  async function copy(name, inject=false) {
+  async function copy(name, inject=false, cancel=false) {
     const start=await cli(name+'-start',source,['copy',selectionPath]);const initial=start.ManagedContextTransferStarted.status
     if(inject)faultContext=initial.contextId
-    await until(async()=> (await automation({action:'snapshot'})).interactions?.some(i=>i.id.startsWith('project-environment:')),'compulsory native Project review')
-    await capture(name+'-review'); await automation({action:'interaction_submit',choiceIndex:0})
+    const prefix=kernelOnly?'owner-context:':'project-environment:'
+    const review=await until(async()=> {
+      const snapshot=await automation({action:'snapshot'})
+      if(snapshot.interactions?.some(i=>i.id.startsWith(prefix)))return snapshot
+      const status=(await cli(name+'-before-review-'+steps.length,source,['status',initial.contextId])).ManagedContextTransferStatus.status
+      if(status.phase!=='preparing'||status.packageSizeBytes>0)return {premature:status}
+    },'compulsory native owner review')
+    if(review.premature){await capture(name+'-missing-review');assert.fail('MP-11 owner copy packaged or sent before compulsory native confirmation')}
+    await capture(name+'-review')
+    if(kernelOnly) {
+      assert(review.interactions.some(i=>i.title?.includes(target.identity.machineId)),'MP-11 review names destination')
+      await sleep(500)
+      const pending=(await cli(name+'-pending',source,['status',initial.contextId])).ManagedContextTransferStatus.status
+      assert.equal(pending.phase,'preparing');assert.equal(pending.packageSizeBytes,0);assert.equal(pending.acceptedBytes,0);assert.equal(pending.receipt??null,null)
+      await assert.rejects(access(path.join(source.outbound,initial.contextId)))
+      await assert.rejects(access(path.join(target.env.HOME,'.chariox','skills','review',packagedFile)))
+      steps.push({name:name+'-no-package-or-publication-before-approval',mpItems:['MP-08','MP-10','MP-11'],status:pending})
+    }
+    await automation({action:'interaction_submit',choiceIndex:cancel?1:0})
     const terminal=await until(async()=>{
       const status=(await cli(name+'-poll-'+steps.length,source,['status',initial.contextId])).ManagedContextTransferStatus.status
       return (status.phase === 'completed' || (status.phase === 'failed' && (!inject || status.receipt || !faultInjected))) && status
@@ -265,7 +283,21 @@ try {
     await capture(name+'-result')
     return terminal
   }
-  if(encodedMode || packagedAttack) {
+  if(kernelOnly) {
+    const cancelled=await copy('02-kernel-only-cancel',false,true)
+    assert.equal(cancelled.phase,'failed');assert.equal(cancelled.failureCode,'managed_context_review_cancelled');assert.equal(cancelled.retryable,false)
+    assert.equal(cancelled.packageSizeBytes,0);assert.equal(cancelled.acceptedBytes,0);assert.equal(cancelled.receipt??null,null)
+    await assert.rejects(access(path.join(source.outbound,cancelled.contextId)))
+    await assert.rejects(access(path.join(target.env.HOME,'.chariox','skills','review',packagedFile)))
+    steps.push({name:'kernel-only-cancellation-prevents-export-and-publication',mpItems:['MP-08','MP-10','MP-11']})
+    const approved=await copy('03-kernel-only-approve')
+    assert.notEqual(approved.contextId,cancelled.contextId);assert.equal(approved.phase,'completed');assert(approved.receipt)
+    const launch=(await cli('04-kernel-only-target-launch',target,['launch-target',approved.contextId,approved.planDigest])).ManagedContextLaunchTarget.target
+    assert.equal(launch.development.kind,'empty');assert.equal(approved.receipt.kernelContext.kind,'from_kernel')
+    assert.deepEqual(await readFile(path.join(target.env.HOME,'.chariox','skills','review',packagedFile)),packagedBytes)
+    await assert.rejects(access(path.join(source.outbound,approved.contextId)))
+    steps.push({name:'kernel-only-approved-exact-bytes-published',mpItems:['MP-08','MP-10','MP-11'],launch})
+  } else if(encodedMode || packagedAttack) {
     const refused=await copy('02-encoded-refusal')
     assert.equal(refused.phase,'failed','MP-11 encoded credential must be refused on real copy path')
     assert.match(JSON.stringify(refused.error??refused),/credential-free context/)
