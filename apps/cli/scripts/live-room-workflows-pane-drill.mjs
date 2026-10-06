@@ -70,9 +70,26 @@ async function capture(step, predicate, timeout = 15000) {
   throw new Error(`MP-08 TUI assertion failed at ${step}`)
 }
 const key = bytes => terminalCommand('key',{bytes:Buffer.from(bytes).toString('base64')})
+let lastDiagnostics=0
+async function diagnostics(result) {
+  const records=[]
+  for(const name of await readdir(path.join(state,'logs')).catch(()=>[])) {
+    if(!name.endsWith('.ndjson'))continue
+    const lines=(await readFile(path.join(state,'logs',name),'utf8')).trim().split('\n').slice(-100)
+    for(const line of lines) {
+      let entry;try{entry=JSON.parse(line)}catch{continue}
+      if(entry.component!=='daemon.app_events')continue
+      const error=String(entry.fields?.error??'')
+      records.push({component:entry.component,message:entry.message,error:/token|credential|bearer|secret|passphrase|auth/i.test(error)?'[credential-related diagnostic suppressed]':error})
+    }
+  }
+  await writeFile(path.join(args.output,'runtime-pump.json'),JSON.stringify({mpItems:['MP-08','MP-11'],messages:records,
+    homeKernelId:result.room_workflows?.home_kernel_id,hostDaemonId:result.session.host_daemon_id,
+    activity:result.agent_activity,runs:result.session.workflow_runs?.map(run=>({id:run.id,status:run.status,nodes:run.node_runs?.map(node=>({id:node.id,status:node.status,agentId:node.agent_id}))}))},null,2)+'\n',{mode:0o600})
+}
 async function stateUntil(predicate, timeout=60000) {
   const deadline = Date.now()+timeout
-  do { const result=unwrap(await client.send(requests.getSessionStateRequest(sessionId)), 'SessionState'); if(predicate(result))return result; await sleep(100) }while(Date.now()<deadline)
+  do { const result=unwrap(await client.send(requests.getSessionStateRequest(sessionId)), 'SessionState'); if(predicate(result))return result; if(Date.now()-lastDiagnostics>5000){lastDiagnostics=Date.now();await diagnostics(result)} await sleep(100) }while(Date.now()<deadline)
   throw new Error('MP-08 kernel workflow state did not settle')
 }
 try {
