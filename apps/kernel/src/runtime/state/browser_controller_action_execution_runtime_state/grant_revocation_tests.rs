@@ -208,9 +208,26 @@ async fn mp08_room_computer_revoke_denies_queued_and_new_input_and_regrants() {
     else {
         panic!("queued admission")
     };
+    let before_cursor = room
+        .runtime
+        .room_computer_grant_snapshot("local", "home")
+        .unwrap()["cursor"]
+        .as_u64()
+        .unwrap();
     room.runtime
         .set_room_computer_access("local", Some(&room.agent_id), false)
         .unwrap();
+    let revoked_snapshot = room
+        .runtime
+        .room_computer_grant_snapshot("local", "home")
+        .unwrap();
+    let revoked_cursor = revoked_snapshot["cursor"].as_u64().unwrap();
+    assert!(revoked_cursor > before_cursor);
+    assert!(revoked_snapshot["room_computer"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["agent_id"] == room.agent_id && row["allowed"] == false));
     assert!(room
         .runtime
         .authorize_admitted_browser_action(&room.session_id, &queued)
@@ -273,5 +290,23 @@ async fn mp08_room_computer_revoke_denies_queued_and_new_input_and_regrants() {
     room.runtime
         .require_room_computer_access(&room.agent_id)
         .unwrap();
+    let granted_cursor = room
+        .runtime
+        .room_computer_grant_snapshot("local", "home")
+        .unwrap()["cursor"]
+        .as_u64()
+        .unwrap();
+    assert!(granted_cursor > revoked_cursor);
+    room.runtime
+        .set_room_computer_access("local", Some(&room.agent_id), true)
+        .unwrap();
+    assert_eq!(
+        room.runtime
+            .room_computer_grant_snapshot("local", "home")
+            .unwrap()["cursor"]
+            .as_u64(),
+        Some(granted_cursor),
+        "idempotent grants do not manufacture changes"
+    );
     assert!(matches!(submit(), ActionAdmission::Accepted { .. }));
 }

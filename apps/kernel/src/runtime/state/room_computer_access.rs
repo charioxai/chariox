@@ -28,6 +28,7 @@ impl KernelRuntimeState {
             .lock()
             .map_err(|_| access_error())?;
         let mut found = reference.is_none();
+        let mut changed = false;
         for agent in agents {
             if !aliases.iter().any(|owner| owner == agent.owner_user_id()) {
                 continue;
@@ -39,20 +40,37 @@ impl KernelRuntimeState {
             }
             found = true;
             if allowed {
-                revoked.remove(agent.id());
+                changed |= revoked.remove(agent.id());
             } else {
-                revoked.insert(agent.id().into());
+                changed |= revoked.insert(agent.id().into());
             }
         }
         if !found && allowed {
             return Err(access_error());
         }
+        if changed {
+            self.owned
+                .kernel_browser_host
+                .access_projection_changed(user);
+        }
         Ok(())
     }
-    pub(super) fn room_computer_access_projection(&self, user: &str) -> serde_json::Value {
+    // Same lock order as mutation: Room permissions, then the shared cursor.
+    pub(super) fn room_computer_grant_snapshot(
+        &self,
+        user: &str,
+        kernel: &str,
+    ) -> Result<serde_json::Value, DaemonError> {
         let aliases = self.user_domain_owner_aliases(user);
         let agents = self.owned.agent_store.list_agents();
-        serde_json::json!(agents.iter().filter(|agent| aliases.iter().any(|owner| owner == agent.owner_user_id())).map(|agent| serde_json::json!({"agent_id":agent.id(),"session_id":agent.session_id(),"allowed":self.require_room_computer_access(agent.id()).is_ok()})).collect::<Vec<_>>())
+        let revoked = self
+            .owned
+            .room_computer_revoked
+            .lock()
+            .map_err(|_| access_error())?;
+        let mut snapshot = self.owned.kernel_browser_host.grant_snapshot(user, kernel);
+        snapshot["room_computer"] = serde_json::json!(agents.iter().filter(|agent| aliases.iter().any(|owner| owner == agent.owner_user_id())).map(|agent| serde_json::json!({"agent_id":agent.id(),"session_id":agent.session_id(),"allowed":!revoked.contains(agent.id())})).collect::<Vec<_>>());
+        Ok(snapshot)
     }
     pub(super) fn require_room_computer_actor(&self, actor: &str) -> Result<(), DaemonError> {
         if let Some(agent_id) = actor.strip_prefix("agent:") {

@@ -213,12 +213,7 @@ impl KernelRuntimeState {
                             }
                         }
                         let kernel = self.owned.config_projection.snapshot().daemon_id;
-                        let mut snapshot = self
-                            .owned
-                            .kernel_browser_host
-                            .grant_snapshot(&user, &kernel);
-                        snapshot["room_computer"] = self.room_computer_access_projection(&user);
-                        return Ok(snapshot);
+                        return self.room_computer_grant_snapshot(&user, &kernel);
                     }
                     _ => {}
                 }
