@@ -72,14 +72,14 @@ async function worker() {
       if (requiresCampaignPause(row)) {
         interrupted = true
         report.stopPoint ??= { taskId: row.taskId, admitted: next, firstFailingSeam: row.firstFailingSeam ?? null,
-          providerUnauthorized: !!row.providerUnauthorized, providerUsageExhausted: !!row.providerUsageExhausted,
+          providerUnauthorized: !!(row.providerUnauthorized || row.judgeFailure?.unauthorized), providerUsageExhausted: !!(row.providerUsageExhausted || row.judgeFailure?.usageExhausted),
           judgeFailure: !!row.judgeFailure, cleanupValid: row.cleanupValid }
       }
       rows.push(row); await save()
       console.log(JSON.stringify({ mpItems: report.mpItems, observationPolicy: 'vision-allowed', taskId: task.id,
         settled: report.settled, valid: report.valid, invalid: report.invalid, wins: report.wins,
         screenshotToolCalls: row.toolTrace?.filter(t => t.tool === 'slice_screenshot').length ?? 0,
-        firstFailingSeam: row.firstFailingSeam ?? null, providerUnavailable: !!(row.providerUnauthorized || row.providerUsageExhausted) }))
+        firstFailingSeam: row.firstFailingSeam ?? null, providerUnavailable: !!(row.providerUnauthorized || row.providerUsageExhausted || row.judgeFailure?.unauthorized || row.judgeFailure?.usageExhausted) }))
     }
   } catch (error) { interrupted = true; throw error }
 }

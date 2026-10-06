@@ -38,8 +38,8 @@ async function fixture(kind) {
       if (specifier === './webvoyager-task.mjs') return synthetic(specifier, { runWebVoyagerTask: async ({ task }) => {
         calls.push(task.id)
         const good = { taskId: task.id, source, observationPolicy: 'vision-allowed', cleanupValid: true, turnLifecycle: 'completed', harnessValid: true, judgeValid: true, judgeVerdict: 'NOT SUCCESS' }
-        if (['quota', 'auth'].includes(kind)) {
-          if (calls.length === 1) return { ...good, harnessValid: false, providerUsageExhausted: kind === 'quota', providerUnauthorized: kind === 'auth' }
+        if (['quota', 'auth', 'judge-quota', 'judge-auth'].includes(kind)) {
+          if (calls.length === 1) return { ...good, harnessValid: false, providerUsageExhausted: kind === 'quota', providerUnauthorized: kind === 'auth', ...(kind.startsWith('judge-') ? { judgeFailure: { usageExhausted: kind === 'judge-quota', unauthorized: kind === 'judge-auth' } } : {}) }
           await new Promise(r => setTimeout(r, 10))
         }
         return good
@@ -52,11 +52,11 @@ async function fixture(kind) {
     const rows = JSON.parse(await readFile(`${evidence}/RESULTS.json`, 'utf8'))
     assert(closed); assert.equal(campaign.observationPolicy, 'vision-allowed')
     assert(rows.every(r => r.observationPolicy === 'vision-allowed'))
-    if (['quota', 'auth'].includes(kind)) {
+    if (['quota', 'auth', 'judge-quota', 'judge-auth'].includes(kind)) {
       assert.deepEqual(calls, ['S--0', 'S--1']); assert.equal(campaign.completed, false)
       assert.equal(campaign.settled, 2); assert.equal(campaign.invalid, 1); assert.equal(context.process.exitCode, 1)
       assert.equal(campaign.stopPoint.taskId, 'S--0')
-      assert(campaign.stopPoint[kind === 'quota' ? 'providerUsageExhausted' : 'providerUnauthorized'])
+      assert(campaign.stopPoint[kind.endsWith('quota') ? 'providerUsageExhausted' : 'providerUnauthorized'])
     } else {
       assert.equal(campaign.completed, true); assert.equal(campaign.settled, smoke ? 10 : 632)
       assert.equal(rows.length, smoke ? 10 : 643)
@@ -64,6 +64,6 @@ async function fixture(kind) {
   } finally { await rm(root, { recursive: true }) }
 }
 if (process.argv[2] === '--fixture') await fixture(process.argv[3])
-else for (const kind of ['smoke', 'full', 'quota', 'auth', 'incomplete-smoke']) test(`MP-08/MP-10/MP-11 round4 vision-allowed campaign ${kind}`, async () => {
+else for (const kind of ['smoke', 'full', 'quota', 'auth', 'judge-quota', 'judge-auth', 'incomplete-smoke']) test(`MP-08/MP-10/MP-11 round4 vision-allowed campaign ${kind}`, async () => {
   await exec(process.execPath, ['--experimental-vm-modules', fileURLToPath(import.meta.url), '--fixture', kind], { maxBuffer: 65536 })
 })

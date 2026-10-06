@@ -64,7 +64,8 @@ async function report(directory) {
   for (const row of rows.filter(r => !r.excluded)) assertSameController(baselineCampaign.source, row.source)
   const result = { ...compareRound4(JSON.parse(original), rows), scope: campaign.scope,
     completed: campaign.completed, harnessCommit: campaign.harnessCommit, source: campaign.source,
-    stopPoint: campaign.stopPoint ?? null, cleanup: campaign.cleanup ?? null }
+    stopPoint: campaign.stopPoint ?? null, cleanup: campaign.cleanup ?? null,
+    providerAvailabilityFailures: rows.filter(r => r.providerUnauthorized || r.providerUsageExhausted || r.judgeFailure?.unauthorized || r.judgeFailure?.usageExhausted).map(r => ({ taskId: r.taskId, firstFailingSeam: r.firstFailingSeam, unauthorized: !!(r.providerUnauthorized || r.judgeFailure?.unauthorized), usageExhausted: !!(r.providerUsageExhausted || r.judgeFailure?.usageExhausted) })) }
   const samples = (await readFile(`${directory}/runtime-resources.jsonl`, 'utf8')).trim().split('\n').map(JSON.parse)
   result.resources = { samples: samples.length,
     minimumMemAvailableGiB: Math.min(...samples.map(s => s.memAvailable)) / 1024 ** 3,
