@@ -1,9 +1,9 @@
 // MP-07 / MP-08 / MP-11: CLI projects a setup offer; the generic installer owns installation.
 import { spawn } from "node:child_process"
 import { readdirSync } from "node:fs"
-import { access, realpath } from "node:fs/promises"
+import { access, lstat, readFile, realpath } from "node:fs/promises"
 import { homedir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, join, relative } from "node:path"
 import { createInterface } from "node:readline/promises"
 import { loadLocalKernelPresences } from "./local-kernel-presence.js"
 import { isKernelEndpointReachable } from "./kernel-endpoint.js"
@@ -25,18 +25,41 @@ export async function hasLocalKernel(): Promise<boolean> {
   return Number.isInteger(port) && port > 0 && port <= 65535
     ? isKernelEndpointReachable(`ws://127.0.0.1:${port}/kernel`) : false
 }
-async function setupExecutable(): Promise<string> {
-  const executable = await realpath(process.execPath)
-  const candidates = [join(dirname(executable), "chariox-setup"), join(process.env.HOME ?? "", ".local/bin/chariox-setup")]
-  for (const candidate of candidates) { try { await access(candidate); return candidate } catch { /* next install */ } }
+// MP-07 / MP-08 / MP-11: resolve the marked CLI release before choosing Setup defaults.
+async function setupCommand(profile: RelayCloudProfile): Promise<{ executable: string; args: string[] }> {
+  const invoking = await realpath(process.execPath), home = homedir()
+  const installs = join(home, ".local/share/chariox/ssh-machines")
+  const path = relative(installs, invoking).split("/")
+  const marked = path.length === 5 && path[1] === "releases" && path[3] === "bin" && path[4] === "chariox"
+  const installId = marked ? path[0]! : "local"
+  if (!/^[a-z][a-z0-9-]{0,47}$/.test(installId)) throw new Error("Invoking CLI has an invalid Chariox install ID")
+  const root = join(installs, installId), markerPath = join(root, "install.json")
+  let selection: { installId: string; port: number } | undefined
+  const metadata = await lstat(markerPath).catch(error => {
+    if (error.code === "ENOENT" && !marked) return null
+    throw new Error("Invoking Chariox install marker is missing")
+  })
+  if (metadata) {
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.uid !== process.getuid?.() || (metadata.mode & 0o022) || metadata.size > 65536) throw new Error("Chariox install marker must be a bounded user-owned regular file")
+    const marker = JSON.parse(await readFile(markerPath, "utf8"))
+    const service = process.platform === "darwin" ? `com.chariox.kernel.${installId}.plist` : `chariox-ssh-${installId}.service`
+    if (marker.format !== "chariox.ssh-machine-install.v1" || marker.installId !== installId || marker.service !== service || !Number.isInteger(marker.port) || marker.port < 1024 || marker.port > 65534 || [43117, 43118, 43119, 43120].includes(marker.port) || !/^sha256:[a-f0-9]{64}$/.test(marker.releaseDigest ?? "")) throw new Error("Chariox install marker has an invalid identity or port")
+    selection = { installId, port: marker.port }
+  }
+  const candidates = marked
+    ? [join(root, "current/bin/chariox-setup")]
+    : [join(dirname(invoking), "chariox-setup"), join(home, ".local/bin/chariox-setup")]
+  for (const executable of candidates) {
+    try { await access(executable) } catch { continue }
+    // Account/user/API are public binding inputs, never terminal session credentials.
+    const args = ["--api-url", profile.apiUrl, "--user-id", profile.userId]
+    if (selection) args.push("--id", selection.installId, "--port", String(selection.port), "--repair")
+    return { executable, args }
+  }
   throw new Error("Chariox Setup is missing. Download the signed Chariox Setup installer from chariox.com.")
 }
 export async function startLocalKernelSetup(profile: RelayCloudProfile, notice?: (message: string) => void): Promise<void> {
-  const executable = await setupExecutable()
-  // Account/user/API are public display/binding inputs, never terminal session credentials.
-  const args = ["--api-url", profile.apiUrl, "--user-id", profile.userId]
-  const marker = join(process.env.HOME ?? "", ".local/share/chariox/ssh-machines/local/install.json")
-  try { await access(marker); args.push("--repair") } catch { /* fresh install */ }
+  const { executable, args } = await setupCommand(profile)
   const env = { ...process.env }
   // A terminal launched from a managed/slice kernel must not redirect this install's state.
   for (const key of Object.keys(env)) if (key.startsWith("CHARIOX_")) delete env[key]

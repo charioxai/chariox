@@ -111,20 +111,23 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
     assert.equal(status?.machine_id, expected.machineId)
     t.diagnostic("MP-11 authenticated disconnected cache seeded; kernel and machine bindings match")
   }
+  const enabledServices = new Set()
   const serviceManager = async args => {
     const service = args.at(-1), id = service === "chariox-ssh-second.service" ? "second" : "local"
     if (args[0] === "show") {
       const path = join(home, ".config/systemd/user", args[1]); let exists = true
       try { await readFile(path) } catch { exists = false }
-      return `LoadState=${exists ? "loaded" : "not-found"}\nFragmentPath=${exists ? path : ""}\nDropInPaths=\n`
+      return `LoadState=${exists ? "loaded" : "not-found"}\nFragmentPath=${exists ? path : ""}\nDropInPaths=\nActiveState=${services.has(id) ? "active" : "inactive"}\nUnitFileState=${enabledServices.has(id) ? "enabled" : "disabled"}\n`
     }
-    if (args[0] === "enable" && !services.has(id)) {
+    if (args[0] === "enable") enabledServices.add(id)
+    if (args[0] === "start" && !services.has(id)) {
       const selectedPort = id === "local" ? port : port2
       const env = { PATH: process.env.PATH, LANG: "C.UTF-8", HOME: home, CHARIOX_HOME: `${home}/.chariox/dev/ssh-machines/${id}`, CHARIOX_KERNEL_HOST: "127.0.0.1", CHARIOX_KERNEL_PORT: String(selectedPort), CHARIOX_MCP_HOST: "127.0.0.1", CHARIOX_MCP_PORT: String(selectedPort + 1), CHARIOX_PROVIDER_PROCESS_ORPHAN_TTL_MS: "18446744073709551615", CODEX_HOME: `${home}/.codex`, CLAUDE_CONFIG_DIR: `${home}/.claude`, OPENCODE_CONFIG_DIR: `${home}/.config/opencode`, XDG_CONFIG_HOME: `${home}/.config`, XDG_DATA_HOME: `${home}/.local/share`, XDG_STATE_HOME: `${home}/.local/state` }
       const child = spawn(`${home}/.local/share/chariox/ssh-machines/${id}/current/bin/chariox-kernel`, [], { env, stdio: ["ignore","ignore","pipe"] });
       child.stderr.on("data", chunk => { const match = chunk.toString().match(/operation: "([a-zA-Z0-9 _.-]{1,80})"/); if (match) operations.push(match[1]); for (const category of ["panicked","public key","token","credential","bind","Address already in use"]) if (chunk.toString().includes(category)) operations.push(`contains-${category.replaceAll(" ","-")}`) }); children.add(child); services.set(id, child); calls.push(`start-${id}`); t.diagnostic(`MP-07/MP-08/MP-11 start ${id}, public kernel port=${selectedPort}`); await probe(id, selectedPort, {...lastIdentity})
     }
-    if (args[0] === "disable" && services.has(id)) { await stopOwned(services.get(id)); services.delete(id); calls.push(`stop-${id}`) }
+    if (args[0] === "disable") enabledServices.delete(id)
+    if ((args[0] === "stop" || (args[0] === "disable" && args.includes("--now"))) && services.has(id)) { await stopOwned(services.get(id)); services.delete(id); calls.push(`stop-${id}`) }
     return ""
   }
   const notices = [], options = { home, port, version: f.version, publicKeyHex: f.publicKeyHex, apiUrl, releaseBase: `http://127.0.0.1:${release.address().port}`, extractorSource: await readFile(new URL("../../deploy/managed-kernel/extract-release.py", import.meta.url), "utf8"), serviceManager, notice: value => notices.push(value), openBrowser: async url => { assert.equal(url, `${apiUrl}/approve`); for (const device of devices.values()) device.approved = true; calls.push("open-browser") } }

@@ -21,7 +21,7 @@ test("MP-07 generic unsigned Setup verifies and installs with a system Python pr
   const binary = join(output, "chariox-setup"), home = join(root, "home"), tools = join(root, "tools")
   await mkdir(home); await mkdir(tools)
   await symlink("/usr/bin/python3", join(tools, "python3"))
-  await writeFile(join(tools, "systemctl"), '#!/bin/sh\n[ "$1" = "--user" ] || exit 1\nif [ "$2" = "show" ]; then printf "LoadState=not-found\\nFragmentPath=\\nDropInPaths=\\n"; fi\n', { mode: 0o755 })
+  await writeFile(join(tools, "systemctl"), '#!/bin/sh\n[ "$1" = "--user" ] || exit 1\nif [ "$2" = "show" ]; then printf "LoadState=not-found\\nFragmentPath=\\nDropInPaths=\\nActiveState=inactive\\nUnitFileState=disabled\\n"; fi\n', { mode: 0o755 })
   const env = { HOME: home, PATH: tools }
   assert.equal((await execute(binary, ["--version"], { env })).stdout, `Chariox Setup ${f.version}\n`)
   const result = await execute(binary, ["--install-only", "--release-base", `http://127.0.0.1:${server.address().port}`, "--api-url", "http://127.0.0.1:1"], { env, timeout: 30_000 })

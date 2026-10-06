@@ -23,7 +23,7 @@ async function harness(t, overrides = {}) {
   const server = createServer((req, res) => { requests.push(req.url); if (!responses.has(req.url)) { res.writeHead(404); return res.end() }; res.end(responses.get(req.url)) })
   await new Promise(r => server.listen(0, "127.0.0.1", r)); t.after(() => new Promise(r => server.close(r)))
   const root = join(home, ".local/share/chariox/ssh-machines/local")
-  const options = { home, platform: f.platform, version: f.version, publicKeyHex: f.publicKeyHex, releaseBase: `http://127.0.0.1:${server.address().port}`, apiUrl: "http://127.0.0.1:1", extractorSource, installOnly: true, serviceManager: async args => { calls.push(args); return "LoadState=not-found\nFragmentPath=\nDropInPaths=\n" } }
+  const options = { home, platform: f.platform, version: f.version, publicKeyHex: f.publicKeyHex, releaseBase: `http://127.0.0.1:${server.address().port}`, apiUrl: "http://127.0.0.1:1", extractorSource, installOnly: true, serviceManager: async args => { calls.push(args); return "LoadState=not-found\nFragmentPath=\nDropInPaths=\nActiveState=inactive\nUnitFileState=disabled\n" } }
   return { dir, home, f, responses, requests, calls, root, options, serve }
 }
 test("MP-07 platform and URL admission reject credential URLs and unsupported targets", () => {
@@ -138,4 +138,35 @@ test("MP-07 invalid release selection is refused before creating install or stat
   await assert.rejects(installLocal({ ...h.options, version: "invalid" }), /pinned release/)
   assert.deepEqual(await readdir(h.home), [])
   assert.deepEqual(h.requests, [])
+})
+
+test("MP-08/MP-11 launchd preserves independent active/enabled state during rollback operations", async () => {
+  const id = "second", home = "/home/user", label = "com.chariox.kernel.second"
+  const domain = `gui/${process.getuid()}`, calls = []
+  let loaded = true, enabled = true
+  const manager = launchdManager(home, id, async (_program, args) => {
+    calls.push(args)
+    if (args[0] === "print" && args[1] === `${domain}/${label}`) {
+      if (!loaded) throw new Error("job absent")
+      return `path = ${home}/Library/LaunchAgents/${label}.plist\n`
+    }
+    if (args[0] === "print-disabled") return `disabled services = {\n "${label}" => ${!enabled}\n}\n`
+    if (args[0] === "bootout") loaded = false
+    if (args[0] === "bootstrap") loaded = true
+    if (args[0] === "disable") enabled = false
+    if (args[0] === "enable") enabled = true
+    return ""
+  })
+  const unit = `${label}.plist`, show = ["show", unit, "--property=ActiveState", "--property=UnitFileState"]
+  assert.match(await manager(show), /ActiveState=active\nUnitFileState=enabled/)
+  await manager(["disable", unit])
+  assert.equal(loaded, true, "disable without --now must preserve running job")
+  assert.match(await manager(show), /ActiveState=active\nUnitFileState=disabled/)
+  await manager(["stop", unit])
+  assert.match(await manager(show), /ActiveState=inactive\nUnitFileState=disabled/)
+  await manager(["enable", unit])
+  assert.equal(loaded, false, "enable without --now must not bootstrap a job")
+  await manager(["start", unit])
+  assert.match(await manager(show), /ActiveState=active\nUnitFileState=enabled/)
+  assert.ok(calls.filter(args => ["bootout", "bootstrap", "disable", "enable"].includes(args[0])).every(args => args.includes(`${domain}/${label}`) || args.includes(`${home}/Library/LaunchAgents/${label}.plist`)))
 })
