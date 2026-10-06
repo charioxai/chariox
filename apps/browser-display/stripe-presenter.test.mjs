@@ -26,3 +26,29 @@ test('MP-11 partial bootstrap and overlapping rows reject before decoding',async
  await assert.rejects(p.decode({...f,stripes:[row(0)]},()=>new Uint8Array()),/incomplete/);
  await assert.rejects(p.decode({...f,stripes:[row(0),{...row(1),y:0}]},()=>new Uint8Array()),/geometry/);
 });
+
+test('MP-08/MP-10 independent rows decode together; failure closes all outputs before any draw',async()=>{
+ const previous=globalThis.Worker,workers=[],closed=[];
+ class HeldWorker {
+  constructor(){workers.push(this)}
+  postMessage(data){this.data=data}
+  finish(error=false){this.onmessage({data:{id:this.data.id,...(error?{error:'decode failed'}:{frame:{displayWidth:this.data.width,displayHeight:this.data.height,close:()=>closed.push(this)}})}})}
+  terminate(){}
+ }
+ globalThis.Worker=HeldWorker;
+ const draws=[],canvas={width:1280,height:800,getContext:()=>({drawImage:()=>draws.push(true)})};
+ const p=new BrowserDisplayPresenter(canvas,{subscription_id:'s',generation:1,tab_id:'t'});
+ try {
+  const pending=p.present(frame());pending.catch(()=>{});
+  await new Promise(r=>setImmediate(r));
+  const queued=workers.length;
+  // Release the sequential base too so a RED assertion leaves no decode timers.
+  for(let i=0;i<8;i++){
+   while(!workers[i])await new Promise(r=>setImmediate(r));
+   workers[i].finish(i===7);await new Promise(r=>setImmediate(r));
+  }
+  await assert.rejects(pending,/decode failed/);
+  assert.equal(queued,8,'independent row chains should not serialize worker round trips');
+  assert.equal(draws.length,0);assert.equal(closed.length,7);assert.equal(p.sequence,0);
+ } finally {p.close();globalThis.Worker=previous}
+});

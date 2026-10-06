@@ -17,13 +17,17 @@ export class StripePresenter {
   if(this.rows.size===0&&(ordered[0].y!==0||bottom!==frame.height||ordered.some((r,i)=>!r.key||(i>0&&r.y!==ordered[i-1].y+ordered[i-1].height))))throw Error('MP-11: incomplete stripe bootstrap');
   const decoded=[];
   try{
-   for(const row of ordered){
+   // MP-08/MP-10: rows have independent decoder chains. Wait for every job
+   // even on failure so no transferred output survives an atomic abort.
+   const jobs=await Promise.allSettled(ordered.map(async row=>{
     let state=this.rows.get(row.row);
     if(!state){state={decoder:new WorkerVideoDecoder()};this.rows.set(row.row,state)}
     const output=await state.decoder.decode({...row,width:frame.width,height:row.height},decodeBytes(row.data_base64));
     decoded.push({row,output});
     if(output.displayWidth!==frame.width||output.displayHeight!==row.height)throw Error('MP-11: stripe decoded geometry');
-   }
+   }));
+   const failed=jobs.find(job=>job.status==='rejected');
+   if(failed)throw failed.reason;
    return decoded;
   }catch(error){for(const {output} of decoded)output.close();this.close();throw error}
  }

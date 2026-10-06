@@ -26,7 +26,8 @@ export class CpuSampler {
    if(pid===this.harnessPid)role='harness';
    else if(command.includes(this.viewerRoot))role='viewer';
    else if(command.includes(this.root))role=/chrome|chromium/.test(command.split('\0')[0])?'source':'pipeline';
-   inventory.push({pid,ppid:Number(f[1]),start,ticks:Number(f[11])+Number(f[12]),rss_bytes:Number(f[21])*4096});
+   // MP-10: process names only, never raw command lines or environment values.
+   inventory.push({pid,ppid:Number(f[1]),start,component:s.slice(s.indexOf('(')+1,s.lastIndexOf(')')),ticks:Number(f[11])+Number(f[12]),rss_bytes:Number(f[21])*4096});
    if(role)this.known.set(pid+':'+start,role);
   }catch{}
   const byPid=new Map(inventory.map(r=>[r.pid,r]));

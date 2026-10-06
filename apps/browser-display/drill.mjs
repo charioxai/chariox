@@ -98,7 +98,16 @@ try {
  const python=path.join(root,'python');await mkdir(python);
  for(const name of ['av','av.libs'])await cp(path.join(pytools,name),path.join(python,name),{recursive:true});
  const pythonWrapper=path.join(root,'encoder-python');
- await writeFile(pythonWrapper,`#!/bin/sh\nPYTHONPATH=${quote(python)} exec ${quote(process.env.MD_PYTHON || '/usr/bin/python3')} "$@"\n`,{mode:0o755});
+ const profiles=path.join(root,'profiles');let profiling='';
+ if(process.env.MD_PROFILE==='1'){
+  await mkdir(profiles,{mode:0o700});await chown(profiles,runUid,runGid);
+  profiling=`case "$1" in\n *kernel-browser-encoder.py) set -- -m cProfile -o ${quote(path.join(profiles,'encoder.prof'))} "$@" ;;\n *kernel-browser-xshm.py) set -- -m cProfile -o ${quote(path.join(profiles,'capture.prof'))} "$@" ;;\nesac\n`;
+  const nodeWrapper=path.join(root,'controller-node');
+  await writeFile(nodeWrapper,`#!/bin/sh\nexec ${quote(process.execPath)} --cpu-prof --cpu-prof-dir=${quote(profiles)} "$@"\n`,{mode:0o755});
+  override.CHARIOX_BROWSER_CONTROLLER_NODE=nodeWrapper;
+  receipt.profiling='MP-10: V8/cProfile diagnostics enabled; timing overhead, separate from final comparison';
+ }
+ await writeFile(pythonWrapper,`#!/bin/sh\n${profiling}PYTHONPATH=${quote(python)} exec ${quote(process.env.MD_PYTHON || '/usr/bin/python3')} "$@"\n`,{mode:0o755});
  display=await launchOwned('/usr/bin/Xvfb',['-displayfd','3','-screen','0','2560x1600x24','-nolisten','tcp','-ac'],{detached:true,stdio:['ignore','ignore','ignore','pipe']});groups.push(display.pid);await cpu.track(display.pid);
  let screen='';display.stdio[3].on('data',bytes=>screen+=bytes);await until(()=>{checkChild(display,'Xvfb');return screen.includes('\n')},'display');
  const sourceText=await readFile(path.resolve(here,'../../docs/MULTIDOMAIN_KERNEL_BROWSER.md'),'utf8');
@@ -337,6 +346,9 @@ finally {
  const traces=[];
  async function collectTiming(directory){for(const entry of await readdir(directory,{withFileTypes:true}).catch(()=>[])){const p=path.join(directory,entry.name);if(entry.isDirectory()&&entry.name!=='profile')await collectTiming(p);else if(entry.name==='display-timing.jsonl'){const lines=(await readFile(p,'utf8')).trim().split('\n');for(const line of lines)if(line)traces.push(JSON.parse(line));}}}
  await collectTiming(path.join(root,'home','chariox'));
+ if(process.env.MD_PROFILE==='1')for(const name of await readdir(path.join(root,'profiles')).catch(()=>[])){
+  if(/^(CPU\.[\w.-]+\.cpuprofile|encoder\.prof|capture\.prof)$/.test(name))await cp(path.join(root,'profiles',name),path.join(output,name));
+ }
  receipt.host_timings=traces;receipt.kernel_timings=Buffer.concat(log).toString().split('\n').filter(line=>line.startsWith('MD-DISPLAY-TIMING ')).map(line=>JSON.parse(line.slice('MD-DISPLAY-TIMING '.length)));
  receipt.stage_breakdown=summarizeStages(receipt);
  if(shaped)try{receipt.netem_stats=await shaped.close();receipt.cleanup.push('owned proxy and namespace-local qdisc removed')}catch{receipt.cleanup.push('RED: owned netem cleanup failed');receipt.status='RED';process.exitCode=1}
