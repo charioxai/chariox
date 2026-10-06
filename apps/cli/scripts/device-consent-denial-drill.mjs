@@ -29,6 +29,10 @@ const apiUrl = `http://127.0.0.1:${server.address().port}`
 let polls = 0
 const advertised = []
 let forceUnadvertisedDenial = false
+let legacyServer = false
+let legacyPolls = 0
+let rejectedPoll
+const legacyRequests = []
 server.on("request", async (request, response) => {
   try {
     assert.equal(request.method, "POST")
@@ -44,9 +48,28 @@ server.on("request", async (request, response) => {
       const body = JSON.parse(raw)
       assert.equal(body.deviceCode, "synthetic-device-code")
       assert.ok(body.supportsAccessDenied === undefined || typeof body.supportsAccessDenied === "boolean")
-      advertised.push(body.supportsAccessDenied === true)
-      polls += 1
-      result = { status: (body.supportsAccessDenied === true || forceUnadvertisedDenial) ? "access_denied" : "expired_token" }
+      if (legacyServer || rejectedPoll) {
+        legacyRequests.push(body)
+        if (rejectedPoll || "supportsAccessDenied" in body) {
+          const rejection = rejectedPoll ?? { status: 400, code: "invalid_request", message: "Request validation failed" }
+          response.writeHead(rejection.status, { "Content-Type": "application/json" })
+          response.end(JSON.stringify({ error: { code: rejection.code, message: rejection.message } }))
+          return
+        }
+        assert.deepEqual(body, { deviceCode: "synthetic-device-code" })
+        legacyPolls += 1
+        result = legacyPolls % 2 === 1
+          ? { status: "authorization_pending", intervalSeconds: 1, expiresAt: "2030-01-01T00:00:00Z" }
+          : { status: "approved", profile: {
+              email: "fixture@example.invalid", accountId: "fixture-account", userId: "fixture-user",
+              accountSlug: "fixture", realmId: "fixture-realm", relayUrl: "wss://relay.example.invalid",
+              issuerId: "fixture-issuer", machineId: "fixture-machine", machineAlias: "Legacy server drill",
+            }, cloudSessionToken: "synthetic-cloud-session", cloudSessionExpiresAt: "2030-01-01T00:00:00Z" }
+      } else {
+        advertised.push(body.supportsAccessDenied === true)
+        polls += 1
+        result = { status: (body.supportsAccessDenied === true || forceUnadvertisedDenial) ? "access_denied" : "expired_token" }
+      }
     }
     response.writeHead(200, { "Content-Type": "application/json" })
     response.end(JSON.stringify(result))
@@ -148,10 +171,49 @@ try {
   assert.equal(polls, 8)
   assert.deepEqual(advertised, [false, false, false, true, true, true, true, false])
   assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 436)
+  // Upgraded kernels and direct CLIs must also work before Cloud is upgraded.
+  rejectedPoll = undefined
+  legacyServer = true
+  legacyRequests.length = 0
+  for (const poll of [
+    () => pollCloudRelayLogin(client, apiUrl, "synthetic-device-code"),
+    () => pollCloudDeviceLogin(apiUrl, "synthetic-device-code"),
+  ]) {
+    assert.equal((await poll()).status, "authorization_pending")
+    const approved = await poll()
+    assert.equal(approved.status, "approved")
+    assert.equal(approved.profile.accountId, "fixture-account")
+  }
+  const approvedProfile = (await client.send(cloudRelayStatusRequest())).CloudRelayStatus.profile
+  assert.equal(approvedProfile.account_id, "fixture-account")
+  assert.equal((await client.send(relayStatusRequest())).RelayStatus.status.configured, false)
+  assert.deepEqual(legacyRequests, [true, false, true, false, true, false, true, false].map((advertised) => ({
+    deviceCode: "synthetic-device-code", ...(advertised ? { supportsAccessDenied: true } : {}),
+  })))
+  for (const [status, code, message, expectedRequests] of [
+    [401, "invalid_request", "Request validation failed", 1],
+    [403, "authorization_denied", "Forbidden", 1],
+    [500, "invalid_request", "Request validation failed", 1],
+    [400, "authorization_denied", "Request validation failed", 1],
+    [400, "invalid_request", "Invalid device code", 1],
+    [400, "invalid_request", "Request validation failed", 2],
+  ]) {
+    legacyRequests.length = 0
+    rejectedPoll = { status, code, message }
+    await assert.rejects(pollCloudRelayLogin(client, apiUrl, "synthetic-device-code"), (error) => {
+      assert.ok(String(error).includes(`cloud relay request failed with ${status}: cloud_api_code=${code}:`))
+      assert.ok(String(error).includes(message))
+      return true
+    })
+    assert.equal(legacyRequests.length, expectedRequests, `${status} ${code}: ${message}`)
+    assert.deepEqual((await client.send(cloudRelayStatusRequest())).CloudRelayStatus.profile, approvedProfile)
+  }
+  rejectedPoll = undefined
   console.log(JSON.stringify({ passed: true, protocolVersion: LOCAL_DAEMON_PROTOCOL_VERSION,
     legacyKernelCliStatus: "expired_token", legacyDirectCliStatus: "expired_token", unadvertisedDenialRetainsLegacyStatus: true,
     advertised, kernelStatus: wire.CloudRelayLoginPolled.result.status, directCliStatus: "access_denied",
-    lifecyclePolls, notice: notices.at(-1), credentialsSaved: false, relayConfigured: false,
+    lifecyclePolls, notice: notices.at(-1), denialCredentialsSaved: false, relayConfigured: false,
+    legacyServerKernelStatus: "approved", legacyServerDirectCliStatus: "approved", boundedValidationFallback: true,
     privateHome }, null, 2))
 } finally {
   await client?.close()

@@ -6,7 +6,7 @@ use crate::local::{
 };
 use crate::runtime::cloud_api_client::{
     cloud_profile_from_persisted, normalize_cloud_api_url, post_cloud_acknowledged,
-    post_cloud_json, CloudDevicePollResponse, CloudDeviceStartResponse,
+    post_cloud_device_poll, post_cloud_json, CloudDevicePollResponse, CloudDeviceStartResponse,
 };
 use crate::runtime::cloud_relay_logout::request_cloud_logout;
 use crate::runtime::cloud_relay_profile_store::{clear_cloud_profile, persist_cloud_profile};
@@ -46,12 +46,9 @@ pub(crate) async fn execute_poll_cloud_relay_login_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let api_url = normalize_cloud_api_url(&request.api_url)?;
     let supports_access_denied = request.supports_access_denied == Some(true);
-    let mut body = serde_json::json!({ "deviceCode": request.device_code });
-    if supports_access_denied {
-        body["supportsAccessDenied"] = serde_json::json!(true);
-    }
     let response: CloudDevicePollResponse =
-        post_cloud_json(api_url.clone(), "/auth/device/poll", body).await?;
+        post_cloud_device_poll(api_url.clone(), request.device_code, supports_access_denied)
+            .await?;
     let result = match response.status.as_str() {
         "authorization_pending" => CloudRelayLoginPoll {
             status: CloudRelayLoginPollStatus::AuthorizationPending,
