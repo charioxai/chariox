@@ -1,9 +1,16 @@
 # MP-08 / MP-10: accounting and MP-11 signal guards, no real browser required.
 import unittest
 from unittest.mock import patch
-from measure import quantile, summarize, stop_owned, process_tree
+from measure import quantile, summarize, stop_owned, process_tree, resource
 
 class Accounting(unittest.TestCase):
+    def test_cleanup_can_record_resources_below_the_floor(self):
+        from types import SimpleNamespace
+        with patch('measure.pathlib.Path.read_text', return_value='MemAvailable: 1024 kB\n'), \
+             patch('measure.shutil.disk_usage', return_value=SimpleNamespace(free=1024)):
+            with self.assertRaises(RuntimeError): resource()
+            self.assertEqual(resource(check=False), {'mem_available_kib':1024,'disk_free_bytes':1024})
+
     def test_nearest_rank_and_simultaneous_class_totals(self):
         self.assertEqual(quantile([1024,2048,3072,4096], .95), 4)
         samples = [{'topology':'host','views':4,'activity':'idle','processes':[

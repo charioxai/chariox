@@ -70,12 +70,12 @@ def stop_owned(pid, identity, sig):
     row = process(pid)
     if row and row['start'] == identity: os.kill(pid, sig)
 
-def resource():
+def resource(check=True):
     fields = pathlib.Path('/proc/meminfo').read_text().splitlines()
     available = int(next(v for v in fields if v.startswith('MemAvailable:')).split()[1])
     disk = shutil.disk_usage('/').free
-    if available < 9 * 1024**2 or disk < 10 * 1024**3:
-        raise RuntimeError('MP-08 / MP-10: resource floor reached')
+    if check and (available < 10 * 1024**2 or disk < 12 * 1024**3):
+        raise RuntimeError('MP-08 / MP-10: resource buffer reached (floor9GiB RAM/10GiB disk)')
     return {'mem_available_kib': available, 'disk_free_bytes': disk}
 
 def quantile(values, q):
@@ -211,7 +211,7 @@ def run(args):
                     subprocess.run(['docker','rm','-f',name] if kind=='container' else ['docker','volume','rm',name],check=True,stdout=subprocess.DEVNULL)
         alive=[pid for pid,identity in owned.items() if (r:=process(pid)) and r['start']==identity and r['cmd']]
         receipt['remaining_owned_pids']=alive
-        receipt['finished']=time.time();receipt['resources_after']=resource()
+        receipt['finished']=time.time();receipt['resources_after']=resource(check=False)
         receipt['cleanup']=not alive
         # Runtime-generated identities are confined to this known disposable root.
         shutil.rmtree(root)
