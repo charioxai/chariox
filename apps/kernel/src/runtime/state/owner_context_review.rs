@@ -21,7 +21,7 @@ impl KernelRuntimeState {
                 .map(crate::managed_context::outbound_service::resolve_repository_selection)
                 .collect::<Result<Vec<_>, _>>()?;
             return self
-                .review_credential_free_project_context(project_id, &selections, target)
+                .review_credential_free_project_context(project_id, &selections, context_id, target)
                 .await;
         }
         // A kernel-only copy has no selected Project. Use an existing owner
@@ -101,7 +101,8 @@ impl KernelRuntimeState {
 
 // MP-11: compulsory content review cannot be delegated, including through sudo.
 pub(super) fn is_owner_context_review(interaction: &RuntimeInteraction) -> bool {
-    interaction
-        .kernel_operation_id()
-        .is_some_and(|id| id.starts_with("owner-context:"))
+    interaction.id().starts_with("owner-context:")
+        || interaction
+            .kernel_operation_id()
+            .is_some_and(|id| id.starts_with("owner-context:"))
 }

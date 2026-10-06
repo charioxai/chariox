@@ -7,7 +7,22 @@ fn mp08_mp11_kernel_only_owner_review_rejects_meta_and_agent_answers() {
     run_large_stack_async_test("kernel-only-human-review", kernel_only_human_review);
 }
 
+// MP-08/MP-11: the Project branch must enforce the same owner-only rule.
+#[test]
+fn mp08_mp11_source_project_owner_review_rejects_meta_and_agent_answers() {
+    crate::test_support::isolated_env_test!();
+    run_large_stack_async_test("project-human-review", source_project_human_review);
+}
+
 async fn kernel_only_human_review() {
+    human_review(false).await;
+}
+
+async fn source_project_human_review() {
+    human_review(true).await;
+}
+
+async fn human_review(source_project: bool) {
     let env = TestMetaRuntimeEnv::new("kernel-only-human-review");
     let worktree = crate::test_support::TestWorktree::new("kernel-only-human-review");
     let mut config = DaemonConfig::for_tests();
@@ -44,12 +59,26 @@ async fn kernel_only_human_review() {
 
     for choice in ["cancel", "continue"] {
         let context = format!("human-only-{choice}");
-        let id = format!("owner-context:{context}");
+        let development = if source_project {
+            crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
+                project_id: session.project_id().into(),
+                repositories: vec![
+                    crate::managed_context::development::DevelopmentSourceRepositoryBinding {
+                        role:
+                            crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                        workspace_id: session.workspace_id().into(),
+                        worktree_id: None,
+                    },
+                ],
+            }
+        } else {
+            crate::managed_context::package::ManagedContextDevelopmentSelection::Empty
+        };
         let reviewer = runtime.clone();
         let task = tokio::spawn(async move {
             reviewer
                 .review_credential_free_owner_context(
-                    &crate::managed_context::package::ManagedContextDevelopmentSelection::Empty,
+                    &development,
                     &context,
                     "Owner target machine",
                 )
@@ -58,7 +87,10 @@ async fn kernel_only_human_review() {
         let interaction = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
                 let snapshot = runtime.session_snapshot(session.id()).await.unwrap();
-                if let Some(review) = snapshot.active_interactions().iter().find(|i| i.id() == id) {
+                if let Some(review) = snapshot.active_interactions().iter().find(|i| {
+                    i.id().starts_with("owner-context:")
+                        || i.id().starts_with("project-environment:")
+                }) {
                     break review.clone();
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -66,6 +98,7 @@ async fn kernel_only_human_review() {
         })
         .await
         .unwrap();
+        let id = interaction.id().to_string();
         let attempted = router
             .dispatch_authenticated_runtime_tool_call(
                 &auth,
@@ -79,8 +112,16 @@ async fn kernel_only_human_review() {
             "MP-11 Meta approval bypassed owner review: {:?}",
             attempted.payload
         );
-        assert!(interaction.agent_id().is_none());
-        assert!(interaction.kernel_operation_id().is_some());
+        if source_project {
+            assert_eq!(interaction.agent_id(), Some(worker.id()));
+            assert!(
+                serde_json::to_value(&interaction).unwrap()["project_environment_review"]
+                    .is_object()
+            );
+        } else {
+            assert!(interaction.agent_id().is_none());
+            assert!(interaction.kernel_operation_id().is_some());
+        }
         assert!(runtime
             .resolve_runtime_interaction(session.id(), &id, "continue", None)
             .await

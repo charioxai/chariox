@@ -197,7 +197,8 @@ try {
   await writeFile(path.join(workspace,'bootstrap.sh'),ordinary)
   const encodedMode=mode.startsWith('utf16-')
   const kernelOnly=mode==='kernel-only'
-  const packagedMode=mode.startsWith('packaged-')||kernelOnly
+  const projectReview=mode==='project-only'||mode==='project-with-kernel'
+  const packagedMode=mode.startsWith('packaged-')||kernelOnly||mode==='project-with-kernel'
   const structuredMode=mode==='structured-header'||mode==='packaged-metadata'
   const packagedAttack=mode==='packaged-shell'
   const packagedFile=packagedAttack?'bootstrap.sh':'package.json'
@@ -257,38 +258,45 @@ try {
   async function copy(name, inject=false, cancel=false) {
     const start=await cli(name+'-start',source,['copy',selectionPath]);const initial=start.ManagedContextTransferStarted.status
     if(inject)faultContext=initial.contextId
-    const prefix=kernelOnly?'owner-context:':'project-environment:'
+    const prefix='owner-context:'
     const review=await until(async()=> {
       const snapshot=await automation({action:'snapshot'})
-      if(snapshot.interactions?.some(i=>i.id.startsWith(prefix)))return snapshot
+      if(snapshot.interactions?.some(i=>i.id.startsWith(prefix)||i.id.startsWith('project-environment:')))return snapshot
       const status=(await cli(name+'-before-review-'+steps.length,source,['status',initial.contextId])).ManagedContextTransferStatus.status
       if(status.phase!=='preparing'||status.packageSizeBytes>0)return {premature:status}
     },'compulsory native owner review')
     if(review.premature){await capture(name+'-missing-review');assert.fail('MP-11 owner copy packaged or sent before compulsory native confirmation')}
+    await capture(name+'-review-pending')
+    assert(review.interactions.some(i=>i.id.startsWith(prefix)),
+      'MP-11 owner copy review must use the owner-bound human-only path')
     if(kernelOnly) {
-      await capture(name+'-review-pending')
       assert(review.interactions.some(i=>i.id.startsWith(prefix)&&i.agentId===undefined),
-        'MP-11 kernel-only review must be a human-only kernel decision, never an agent Choice')
-      tui.stdin.write('\x1b[19~') // MP-10: real owner's F8 opens the kernel approval panel.
+        'MP-11 kernel-only review must never be an agent Choice')
+      tui.stdin.write('\x1b[19~') // MP-10: real owner F8 opens kernel approvals.
       await until(()=>tui.output.includes('Chariox approval 1 of 1'),'owner approval panel')
       await sleep(250)
     }
     await capture(name+'-review')
-    if(kernelOnly) {
+    if(name!=='05-recovery') {
       assert(review.interactions.some(i=>i.title?.includes(target.identity.machineId)),'MP-11 review names destination')
       await sleep(500)
       const pending=(await cli(name+'-pending',source,['status',initial.contextId])).ManagedContextTransferStatus.status
       assert.equal(pending.phase,'preparing');assert.equal(pending.packageSizeBytes,0);assert.equal(pending.acceptedBytes,0);assert.equal(pending.receipt??null,null)
       await assert.rejects(access(path.join(source.outbound,initial.contextId)))
-      await assert.rejects(access(path.join(target.env.HOME,'.chariox','skills','review',packagedFile)))
+      if(packagedMode)await assert.rejects(access(path.join(target.env.HOME,'.chariox','skills','review',packagedFile)))
       steps.push({name:name+'-no-package-or-publication-before-approval',mpItems:['MP-08','MP-10','MP-11'],status:pending})
     }
     if(kernelOnly) {
-      // MP-10: opening selects nothing. Real Up selects Cancel, Down Continue.
+      // MP-10: opening selects nothing. Up selects Cancel, Down Continue.
       tui.stdin.write(cancel?'\x1b[A':'\x1b[B')
       await sleep(250)
       tui.stdin.write('\r')
-    } else await automation({action:'interaction_submit',choiceIndex:cancel?1:0})
+    } else {
+      const interaction=review.interactions.find(i=>i.id.startsWith(prefix))
+      const choice=interaction.choices.findIndex(i=>i.id===(cancel?'cancel':'continue'))
+      assert(choice>=0&&choice<9,'MP-10 human choice available')
+      tui.stdin.write(String(choice+1)) // MP-10: real number key selects owner choice.
+    }
     const terminal=await until(async()=>{
       const status=(await cli(name+'-poll-'+steps.length,source,['status',initial.contextId])).ManagedContextTransferStatus.status
       return (status.phase === 'completed' || (status.phase === 'failed' && (!inject || status.receipt || !faultInjected))) && status
@@ -296,20 +304,25 @@ try {
     await capture(name+'-result')
     return terminal
   }
-  if(kernelOnly) {
-    const cancelled=await copy('02-kernel-only-cancel',false,true)
+  if(kernelOnly||projectReview) {
+    const cancelled=await copy('02-owner-cancel',false,true)
     assert.equal(cancelled.phase,'failed');assert.equal(cancelled.failureCode,'managed_context_review_cancelled');assert.equal(cancelled.retryable,false)
     assert.equal(cancelled.packageSizeBytes,0);assert.equal(cancelled.acceptedBytes,0);assert.equal(cancelled.receipt??null,null)
     await assert.rejects(access(path.join(source.outbound,cancelled.contextId)))
-    await assert.rejects(access(path.join(target.env.HOME,'.chariox','skills','review',packagedFile)))
-    steps.push({name:'kernel-only-cancellation-prevents-export-and-publication',mpItems:['MP-08','MP-10','MP-11']})
-    const approved=await copy('03-kernel-only-approve')
+    if(packagedMode)await assert.rejects(access(path.join(target.env.HOME,'.chariox','skills','review',packagedFile)))
+    steps.push({name:'owner-cancellation-prevents-export-and-publication',mpItems:['MP-08','MP-10','MP-11']})
+    const approved=await copy('03-owner-approve')
     assert.notEqual(approved.contextId,cancelled.contextId);assert.equal(approved.phase,'completed');assert(approved.receipt)
-    const launch=(await cli('04-kernel-only-target-launch',target,['launch-target',approved.contextId,approved.planDigest])).ManagedContextLaunchTarget.target
-    assert.equal(launch.development.kind,'empty');assert.equal(approved.receipt.kernelContext.kind,'from_kernel')
-    assert.deepEqual(await readFile(path.join(target.env.HOME,'.chariox','skills','review',packagedFile)),packagedBytes)
+    const launch=(await cli('04-owner-target-launch',target,['launch-target',approved.contextId,approved.planDigest])).ManagedContextLaunchTarget.target
+    assert.equal(launch.development.kind,kernelOnly?'empty':'from_source');assert.equal(approved.receipt.kernelContext.kind,packagedMode?'from_kernel':'empty')
+    if(projectReview) {
+      const imported=launch.development.repositories[0].workspacePath
+      assert.equal(await readFile(path.join(imported,'bootstrap.sh'),'utf8'),ordinary)
+      assert.equal(await readFile(path.join(imported,'README.md'),'utf8'),'MP-05 owner context overlay\n')
+    }
+    if(packagedMode)assert.deepEqual(await readFile(path.join(target.env.HOME,'.chariox','skills','review',packagedFile)),packagedBytes)
     await assert.rejects(access(path.join(source.outbound,approved.contextId)))
-    steps.push({name:'kernel-only-approved-exact-bytes-published',mpItems:['MP-08','MP-10','MP-11'],launch})
+    steps.push({name:'owner-approved-exact-bytes-published',mpItems:['MP-08','MP-10','MP-11'],launch})
   } else if(encodedMode || packagedAttack) {
     const refused=await copy('02-encoded-refusal')
     assert.equal(refused.phase,'failed','MP-11 encoded credential must be refused on real copy path')
@@ -340,7 +353,7 @@ try {
   }
   assert.deepEqual(await readFile(path.join(imported,'bootstrap.ps1')),safeScript)
   if(packagedMode) {
-    assert.deepEqual(await readFile(path.join(target.env.HOME,'.chariox','skills','review',packagedFile)),packagedBytes)
+    if(packagedMode)assert.deepEqual(await readFile(path.join(target.env.HOME,'.chariox','skills','review',packagedFile)),packagedBytes)
     steps.push({name:'packaged-skill-bytes-unchanged-in-ordinary-registry',mpItems:['MP-08','MP-10','MP-11'],path:packagedFile})
   }
   if(structuredMode) {
