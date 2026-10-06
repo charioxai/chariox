@@ -56,15 +56,7 @@ fn credential_word(word: &str) -> bool {
                     .any(|part| {
                         matches!(
                             part,
-                            "user"
-                                | "username"
-                                | "login"
-                                | "auth"
-                                | "oauth"
-                                | "oauth2"
-                                | "bearer"
-                                | "cookie"
-                                | "cookies"
+                            "auth" | "oauth" | "oauth2" | "bearer" | "cookie" | "cookies"
                         )
                     }))
         {
@@ -96,10 +88,8 @@ fn credential_word(word: &str) -> bool {
     {
         return true;
     }
-    // MP-11: short Basic/proxy authentication flags may be attached or bundled.
-    word.strip_prefix('-').is_some_and(|flags| {
-        !flags.starts_with('-') && (sensitive(flags) || flags.contains(['u', 'U']))
-    })
+    word.strip_prefix('-')
+        .is_some_and(|flags| !flags.starts_with('-') && sensitive(flags))
 }
 
 fn raw_credential_words(text: &str) -> bool {
@@ -120,14 +110,15 @@ fn shell_word_input(text: &str) -> String {
     let mut quote = None;
     let mut escaped = false;
     for ch in text.chars() {
-        input.push(
-            if quote.is_none() && !escaped && matches!(ch, ';' | '|' | '&' | '(' | ')' | '<' | '>')
-            {
+        if quote.is_none() && !escaped && matches!(ch, ';' | '|' | '&' | '(' | ')' | '\n') {
+            input.push_str(" ; ");
+        } else {
+            input.push(if quote.is_none() && !escaped && matches!(ch, '<' | '>') {
                 ' '
             } else {
                 ch
-            },
-        );
+            });
+        }
         if escaped {
             escaped = false;
         } else if ch == '\\' && quote != Some('\'') {
@@ -141,21 +132,90 @@ fn shell_word_input(text: &str) -> String {
     input
 }
 
+// MP-11: short options have meaning only for their executable. Stop curl
+// bundles at options taking a value, so -ooutput and -XPUT remain ordinary.
+fn command_credentials(words: &[String]) -> bool {
+    let mut command = None;
+    for word in words {
+        if word == ";" {
+            command = None;
+            continue;
+        }
+        let executable = word.rsplit('/').next().unwrap_or(word);
+        if matches!(executable, "curl" | "wget") {
+            command = Some(executable);
+            continue;
+        }
+        match command {
+            Some("curl") => {
+                if word == "--" {
+                    command = None;
+                    continue;
+                }
+                if word == "--user"
+                    || word.starts_with("--user=")
+                    || word == "--proxy-user"
+                    || word.starts_with("--proxy-user=")
+                {
+                    return true;
+                }
+                if let Some(flags) = word
+                    .strip_prefix('-')
+                    .filter(|flags| !flags.starts_with('-'))
+                {
+                    for flag in flags.chars() {
+                        if matches!(flag, 'u' | 'U' | 'b') {
+                            return true;
+                        }
+                        if "ACdDeEFHKmopPrtTwXxyYz".contains(flag) {
+                            break;
+                        }
+                    }
+                }
+            }
+            Some("wget") => {
+                if word == "--user"
+                    || word.starts_with("--user=")
+                    || word == "--http-user"
+                    || word.starts_with("--http-user=")
+                    || word == "--ftp-user"
+                    || word.starts_with("--ftp-user=")
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 fn inspect_words(text: &str, depth: usize) -> bool {
     // MP-11: raw candidates survive comments and syntax the POSIX lexer cannot
     // decode. ANSI-C/localized quoting is unsupported and fails closed.
-    if raw_credential_words(text) || text.contains("$'") || text.contains("$\"") {
+    let raw_words = shell_word_input(text)
+        .split(|ch: char| {
+            ch.is_whitespace() || matches!(ch, '\'' | '"' | ',' | '{' | '}' | '[' | ']')
+        })
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if raw_credential_words(text)
+        || command_credentials(&raw_words)
+        || text.contains("$'")
+        || text.contains("$\"")
+    {
         return true;
     }
     let Ok(words) = shell_words::split(&shell_word_input(text)) else {
         return false; // MP-11: raw candidates above remain checked for non-shell files.
     };
-    words.iter().any(|word| {
-        credential_word(word)
-            || (word != text
-                && word.contains([' ', '\t', '\n', ';', '|', '&', '\'', '"', '\\'])
-                && (depth >= 4 || inspect_words(word, depth + 1)))
-    })
+    command_credentials(&words)
+        || words.iter().any(|word| {
+            credential_word(word)
+                || (word != text
+                    && word.contains([' ', '\t', '\n', ';', '|', '&', '\'', '"', '\\'])
+                    && (depth >= 4 || inspect_words(word, depth + 1)))
+        })
 }
 
 pub(super) fn credential_text(text: &str) -> bool {

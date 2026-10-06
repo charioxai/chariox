@@ -226,6 +226,79 @@ mod tests {
             },
         };
         let store = ManagedContextOutboundOperationStore::open(root.join("outbound")).unwrap();
+        // MP-08/MP-11: enrolled local clients create runtime Projects as the
+        // authenticated owner, even though provider credentials use `local`.
+        let worktree = crate::test_support::TestWorktree::new("owner-source-project");
+        let caller = router
+            .local_command_caller(
+                crate::runtime::command::KernelCommandSource::LocalCli,
+                crate::local::KernelConnectionClass::Terminal,
+            )
+            .await;
+        let response = runtime
+            .create_session_response(
+                worktree
+                    .session_request()
+                    .with_owner_user_id(caller.user_id.unwrap()),
+            )
+            .await
+            .unwrap();
+        let crate::local::LocalDaemonResponse::SessionCreated { session, .. } = response else {
+            panic!("session response")
+        };
+        assert_eq!(session.owner_user_id(), "owner");
+        let mut project_selection = selection.clone();
+        project_selection.context_selection.development_setup =
+            OwnerManagedDevelopmentSelection::SourceProject {
+                project_id: session.project_id().to_string(),
+                repositories: vec![OwnerManagedRepositorySelection {
+                    role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                    workspace_id: session.workspace_id().to_string(),
+                    worktree_id: None,
+                }],
+            };
+        let project_ticket = store
+            .prepare_owner_ticket(&config, &runtime, project_selection)
+            .expect("MP-08 enrolled runtime owner Project must be admitted");
+        let project_plan = project_ticket.context_plan.package_binding();
+        let (_, project_permit) = store
+            .start(&project_plan.context_id, &project_plan.plan_digest)
+            .unwrap();
+        assert!(project_permit.is_some());
+        drop(project_permit);
+        store.finish(&project_plan.context_id);
+        for (runtime_owner, allowed) in [("local", true), ("foreign-owner", false)] {
+            let workspace =
+                crate::test_support::TestWorktree::new("owner-admission-legacy-foreign");
+            let response = runtime
+                .create_session_response(
+                    workspace
+                        .session_request()
+                        .with_owner_user_id(runtime_owner),
+                )
+                .await
+                .unwrap();
+            let crate::local::LocalDaemonResponse::SessionCreated { session, .. } = response else {
+                panic!("session response")
+            };
+            let mut selection = selection.clone();
+            selection.context_selection.development_setup =
+                OwnerManagedDevelopmentSelection::SourceProject {
+                    project_id: session.project_id().to_string(),
+                    repositories: vec![OwnerManagedRepositorySelection {
+                        role:
+                            crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                        workspace_id: session.workspace_id().to_string(),
+                        worktree_id: None,
+                    }],
+                };
+            assert_eq!(
+                store
+                    .prepare_owner_ticket(&config, &runtime, selection)
+                    .is_ok(),
+                allowed
+            );
+        }
         let mut ticket = store
             .prepare_owner_ticket(&config, &runtime, selection.clone())
             .unwrap();

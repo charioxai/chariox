@@ -41,6 +41,9 @@ fn mp08_mp11_inline_shell_credential_arguments_are_all_inspected() {
         "curl --user", // MP-11: unsupported/missing credential arguments fail closed.
         "curl --client-secret-file ./public-looking-file https://example.test",
         "curl -fsSu owner:synthetic-canary https://example.test",
+        "/usr/bin/curl -fsSUowner:synthetic-canary https://example.test",
+        "# curl -u owner:synthetic-canary https://example.test",
+        "wget --user owner:synthetic-canary https://example.test",
         "curl --${AUTH_OPTION} owner:synthetic-canary https://example.test",
         "curl $'--us\\x65r' owner:synthetic-canary https://example.test",
         "curl --us\"er owner:synthetic-canary https://example.test",
@@ -62,6 +65,15 @@ fn mp08_mp11_inline_shell_credential_arguments_are_all_inspected() {
         "--max-tokens=4096",
         r#"{"args":["--max-tokens=4096"]}"#,
         "printf '%s\\n' 'ordinary project instructions'",
+        "set -euo pipefail",
+        "python -u worker.py",
+        "git add -u",
+        "curl -ooutput.txt https://example.test",
+        "curl -XPUT https://example.test",
+        "pip install --user package",
+        "wget -U chariox https://example.test",
+        "curl https://example.test\npython -u worker.py",
+        "curl -- -u",
     ]
     .iter()
     .enumerate()
@@ -131,6 +143,10 @@ impl InlineShellFixture {
     }
 
     fn assert_target_refuses(&self) {
+        self.assert_target_result(false);
+    }
+
+    fn assert_target_result(&self, accepted: bool) {
         use crate::managed_context::{development::*, owner_managed::*, package::*};
         let development = export_development_context(DevelopmentContextExportRequest {
             project_id: "project".into(),
@@ -188,7 +204,7 @@ impl InlineShellFixture {
         })
         .unwrap();
         let target = self.root.join("target");
-        let error = apply_managed_context_package(ManagedContextPackageApplicationRequest {
+        let result = apply_managed_context_package(ManagedContextPackageApplicationRequest {
             transfer_id: "transfer".into(),
             package_path: package.package_path,
             expected_package_sha256: package.package_sha256,
@@ -198,8 +214,16 @@ impl InlineShellFixture {
             project_environment_target: None,
             provider_account_target: None,
             git_credential_target: None,
-        })
-        .expect_err("MP-11 target must reject inline shell credentials");
+        });
+        if accepted {
+            assert!(
+                result.is_ok(),
+                "MP-08 ordinary shell copy refused: {result:?}"
+            );
+            assert!(target.exists());
+            return;
+        }
+        let error = result.expect_err("MP-11 target must reject inline shell credentials");
         assert!(error.to_string().contains("credential-free context"));
         assert!(!target.exists(), "MP-11 refusal precedes target mutation");
         assert!(!self.root.join("kernel-context-context").exists());
@@ -335,4 +359,17 @@ fn mp08_mp11_target_refuses_basic_auth_in_history() {
         true,
     )
     .assert_target_refuses();
+}
+
+#[test]
+fn mp08_mp11_target_accepts_ordinary_short_flags_in_overlay_and_history() {
+    crate::test_support::isolated_env_test!();
+    let _lock = crate::env_lock::lock();
+    for history in [false, true] {
+        InlineShellFixture::new(
+            "set -euo pipefail\npython -u worker.py\ngit add -u\n",
+            history,
+        )
+        .assert_target_result(true);
+    }
 }

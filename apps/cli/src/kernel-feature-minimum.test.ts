@@ -63,3 +63,9 @@ test("MP-08 / MP-10 / MP-11 kernel-wide access decisions require allocated proto
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ RespondToInteraction: { session_id: "ordinary" } }, 435))
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ RespondToInteraction: { session_id: "kernel-access", choice_id: "refuse" } }, 451))
 })
+
+test("MP-08/MP-11 owner context copy requires its existing protocol 445", () => {
+  const request = { StartManagedContextTransfer: { interactive: true, ownerManaged: {} } }
+  assert.throws(() => requireKernelFeatureProtocol(request, 444), /Owner context copy needs protocol ≥445/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 445))
+})
