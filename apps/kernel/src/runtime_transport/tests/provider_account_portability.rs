@@ -10,20 +10,30 @@ fn provider_account_portability_websocket_drill() {
     let _guard = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!("chx-kp-{:x}", rand::random::<u64>()));
     std::fs::create_dir(&root).unwrap();
-    struct Cleanup(PathBuf);
+    // The isolated child has a nested TMPDIR, which can exceed sockaddr_un.
+    // Keep only the disposable listener at a short, uniquely owned path.
+    let socket_path = PathBuf::from("/tmp").join(format!(
+        "cx-kp-{}-{:x}.sock", std::process::id(), rand::random::<u64>()
+    ));
+    struct Cleanup(PathBuf, PathBuf);
     impl Drop for Cleanup {
         fn drop(&mut self) {
+            use std::os::unix::fs::FileTypeExt;
+            if let Ok(metadata) = std::fs::symlink_metadata(&self.1) {
+                assert!(metadata.file_type().is_socket());
+                std::fs::remove_file(&self.1).unwrap();
+            }
             std::fs::remove_dir_all(&self.0).unwrap();
         }
     }
-    let _cleanup = Cleanup(root.clone());
+    let _cleanup = Cleanup(root.clone(), socket_path.clone());
     std::env::set_var("CHARIOX_HOME", &root);
     tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 * 1024 * 1024).build().unwrap().block_on(async {
         let tcp = StdTcpListener::bind("127.0.0.1:0").unwrap();
         let addr = tcp.local_addr().unwrap();
         let mcp = StdTcpListener::bind("127.0.0.1:0").unwrap();
         let mut config = daemon_config_for_runtime_mcp_listener(&mcp);
-        config.local_socket_path = root.join("run/k.sock");
+        config.local_socket_path = socket_path;
         config.user_config.state.path = Some(root.join("state.db").to_string_lossy().into());
         config.user_config_path = root.join("config.toml");
         config.cloud_relay = Some(PersistedCloudRelayProfile {
