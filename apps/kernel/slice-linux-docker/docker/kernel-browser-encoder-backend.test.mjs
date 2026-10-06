@@ -7,6 +7,8 @@ test('MP-10 actual SIMD conversion survives the browser encoder adapter',{skip:!
  try{
   const packet=await e.encodeStripes({width:128,height:128,format:'bgr0',length:128*128*4,pixels:Buffer.alloc(128*128*4)},8000000,true,'avc1.420033');
   assert.equal(packet.stripes.length,8);assert.equal(e.backend,'x264');assert.equal(e.converter,'libyuv');
+  await e.encode(encodePng(128,128,Buffer.alloc(128*128*4,255)),8000000,true,'avc1.420033');
+  assert.equal(e.converter,null,'a full-video fallback cannot retain the previous stripe converter receipt');
  }finally{await e.close()}
 });
 test('MP-11 OpenH264 protected PNG fallback never silently chooses x264',async()=>{
