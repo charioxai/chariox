@@ -1,40 +1,54 @@
-# MP-08 / MP-10 / MP-11 — NOT READY for publication
+# MP-08 / MP-10 / MP-11 — real acceptance BLOCKED; not staging-ready
 
-The source changes implement whole-LOCAL-kernel external grants, but required real live acceptance is BLOCKED. Do not stage or call this feature done from supplementary results. The coordinator publishes; this lane has not pushed or contacted GitHub, Cloud staging, the shared relay or Apps machine.
+Round 2 started exactly at `ca3b8293e85d3efb469bd65bd856fed51750fd58` on `ka/external-agent-kernel-scope`. Review fixes are committed as `06b9f180631daeb14f7c4a065d88e7a50ac29239`; the additional raw credential-header seam is fixed in `f0d355b2d8e8a5891cbb9e5d8d00bf516506b08f` (after-fix checks and real raw-read drill pass). No push, PR action, deployment or GitHub CI was performed. The supplied private validation endpoints were used only for lane-owned device registrations and kernels; the shared smoke unit was untouched.
 
-## MP-08 / MP-10 / MP-11 — source and protocol
-- Branch `ka/external-agent-kernel-scope`, base `e325afa580d81954e2c179757fc53fa02ed2a2b3` (local435/peer73).
-- Implementation `5c05f8f0f95c192c9a2bc971d4834654fe1cc537`; final TUI label `0fc289663bf008fe81e4edbd19f36285b42e9dca`; smoke/docs follow-up `dcb35fd5337ee406abfa3520e77e8e75b7a41f2f` (runtime binaries unchanged).
-- Allocated local451. Request/grant session fields removed, new no-session decision response and shape hashes updated. Feature minimum451 only for the new access behavior; peer73 unchanged.
-- Kernel-owned ordinary authority spans local sessions, workflows, Apps, routine decisions and credential-use flows. Human-only critical/passkey/secret/grant-authority and remote-kernel boundaries retained. Every sudo request requires fresh user confirmation; defaults480/max1440, notice5.
+## MP-08 / MP-10 / MP-11 — review inbox mapping
 
-## MP-08 / MP-10 / MP-11 — supplementary evidence
-Evidence root: `/root/.codex/evidence/browser-resume-20260930/kaext/`; `commands.md`, exit files, logs, `artifact-manifest.json`, resource samples, cleanup inventory and terminal screenshots.
+The absolute inbox `/root/.chariox/dev/browser-resume-20260930/agents/kaext/REVIEW_INBOX.md` contains two findings at `ca3b8293e`. Both are addressed by `06b9f1806`; the same raw-read exclusion is extended to credential get/list by `f0d355b2d`. The full inbox was read again after each source milestone, with no additional entry.
 
-| Check | Result | Establishes |
+| Finding | Change | Fail-first and final evidence |
 | --- | --- | --- |
-| Final Rust access filter | 78 pass, 4 ignored, exit0 | Focused policy/process/popup regressions, including real OS subprocesses; not official-provider live acceptance |
-| Final Rust sudo filter | 33 pass, 1 ignored, exit0 | Focused sudo fresh-confirmation/authority regressions; filters overlap |
-| Final protocol snapshots | 182 pass, exit0 | Source shape/hash agreement at451 |
-| Node focused parser/minimum/Unix/replay | 25 pass, exit0 | CLI/client regression checks |
-| Bun popup renderer | 8 pass, exit0 | Component rendering checks |
-| Smoke kit on final cfg(test) kernel | exit0 | Global grant popup/approval, cross-session access, OS holder boundaries, sudo refusals/revoke/receipts/cleanup; fixture-backed supplementary check |
-| CLI type check / builds | exit0 | Final TUI, Rust launcher and kernel build successfully |
-| Compiled real entry RED/GREEN | Base kernel435 rejects missing session; candidate451 shows global popup and user refusal | Real kernel + compiled CLI/TUI, no sessions, external Python holder; NO passkey typed or official provider |
+| P1: raw MCP config exposes env/header credentials | External grants and sudo authority refuse GetMcpServer, ListMcpServers and ImportMcpServers; Sudo GetCredential exclusion retained. The completed f0d follow-up also refuses raw credential get/list for external grants and raw list for sudo. Registered literal env/header regression added. | Scoped Rust fail-first: 2 fail, exit101. Official outside Codex on original binaries exposed both canaries through get/list, boolean-only RED receipt. On final binaries with a live grant: all three reads denied, neither field exposed; ordinary two-session reads/create/spawn still pass. |
+| P2: legacy popup replies lose real session id | Select kernel-wide reply and Local kernel label only when the routing id is kernel-access and kind is access grant/extension. Preserve legacy RespondToInteraction and actual session label. | Before: 4 reply-contract failures and 2 label failures. Final popup suite: 57 pass. Real base435 kernel plus old TUI could not refuse; replacing only TUI refused the same pending request. Final TUI visibly shows the actual session and returns refusal on base435. |
 
-The first intermediate Rust43-pass suite is not final-source evidence. Initial cargo-check failures and popup-harness setup failures were corrected and retained honestly. The diagnostic `bun-unix-red` filename contains a passing two-test diagnostic; it is not a RED result.
+Focused final Rust filters pass: access79/4 ignored and sudo34/1 ignored (filters overlap). CLI build/lint, compiled native TUI, real kernel and both Rust launcher binaries exit0. No serialized shape changed in this review batch; allocated local451 and peer73 stay unchanged. Earlier round1 protocol snapshots182 pass belong to their recorded source, not a rerun on this commit.
 
-## MP-08 / MP-10 / MP-11 — acceptance blockers and exact actions
-1. Provide an approved product-materialized CODEX_HOME path or documented materialization command for the official standalone Codex CLI. Safe account-status APIs omit host paths; prohibited account-state files and root/.codex-agents were not used for drills.
-2. Provide a permitted real App package/service for install/bind acceptance; the shared Apps machine is off limits.
-3. Provide an authorized hosted-relay endpoint, drill identity and network path; the reserved relay machine is off limits.
+## MP-10 — real drill results and boundaries
 
-Then run the user-typed-passkey official-provider matrix: multi-session actions/spawns/App install-bind, critical/mint/secret/remote refusals, fresh popup on repeated sudo, expiry/extension/process-exit/restart/explicit revocation. Real hosted/public-service conditions and durations must meet the owner rule. No such acceptance result is claimed here.
+Evidence: `/root/.codex/evidence/browser-resume-20260930/kaext/round2/`; command index `COMMANDS.md`, source-bound artifact manifests, exit logs, public receipts and per-step PNG/ANSI captures.
 
-## MP-08 / MP-10 / MP-11 — Cloud follow-up
-Read-only audit of `/root/work/cloud` at `d1be0aa1a5328c646003771761f30cdcd1e8e01f` found no external-grant/session popup text in `apps/web/src`; Cloud not changed. Coordinator must audit its actual publishing head. Adoption needs whole-kernel wording, removed grant/request session fields, `kernel-access` reply routing, `KernelAccessDecisionResponded` handling without SessionState and feature minimum451. Sudo/critical target-session attribution stays.
+- Real official outside Codex CLI0.159.3 on its own explicitly authorized login; no mock provider. Lane-generated test Vault passphrase entered through the real compiled TUI and masked popup. The human operator is the lane harness, not an owner usability study.
+- Original runtime source `5c05f8f0`, TUI `0fc289663`, included at starting ca3: whole-local grant, several sessions/create/spawn, fresh repeated sudo refusals, critical/grant-mint/Vault/config/remote refusals, natural six-minute expiry, extension, explicit revoke, restart and normal holder-exit revocation. Exact audit receipts are in `original-live-summary.json`. Real managed-provider turns were not run.
+- RED on real base `e325afa580d81954e2c179757fc53fa02ed2a2b3` (local435): the no-session access request fails for missing session_id. Final source preserves the protocol435 reply contract as described above.
+- Final source06: live passkey-approved grant, normal actions across two real sessions, real agent creation, boolean-only MCP GREEN, grant mint/Vault/remote resolution/relay-token/connect refusals, and two distinct fresh sudo popup refusals. Final source06 extension/expiry/explicit-revoke/restart/normal-exit receipts pass in final-live/summary.json, without relabeling the original run. Its missing-id GetCredential marker probe was a not-found diagnostic, not a secret-refusal result.
+- Two own real kernels paired through HTTPS device flow to the authorized hosted wss relay. Owner encrypted transport reaches the second kernel; the outside agent is refused remote resolution and relay token issuance. Both kernels are on this builder. The final positive request took53ms; this is an individual transport measurement, not UI P95 or shaped-network acceptance.
+- A real first-party App bundle was packaged, signed with an ephemeral lane test-publisher key, validated and publisher-enrolled through product flows. External AppFileInstaller uploaded it; real TUI reviewed and approved installation. Operation `app-install-bd76481a-330c-4212-912d-c5655e4bedf5` failed at app_lifecycle_preparation, diagnostic step=enrolled_runtime, OS NotFound. It never installed/bound successfully.
 
-## MP-11 — review inbox mapping and cleanup
-- Absolute inbox `/root/.chariox/dev/browser-resume-20260930/agents/kaext/REVIEW_INBOX.md` absent after `5c05f8f0`, `0fc289663`, `dcb35fd53`, and the subsequent pre-handoff check. No entries awaiting handling; post-follow-up check absent; final report milestone checked again at handoff.
-- No exact-blob review requirement asserted for unrelated source. Security-critical KA/passkey, Vault, relay and signal boundaries remain subject to current semantic review.
-- Lane popup scratch states/processes removed using positive-PID/exact-child guards. Obsolete intermediate test binary/wrapper removed; final source-bound artifacts retained externally for review. Shared target/caches/processes, key stores, profiles and reviewer state preserved.
+## MP-08 / MP-10 / MP-11 — additional raw credential seam
+
+GetCredential/ListCredentials return stored UserCredentialConfig, whose injection header can contain a literal secret. A product-registered lane canary exposed that header through both requests to another real outside Codex holder39702 on source06, with ordinary session reads working. Safe helpers emit booleans only. The first list probe had an incorrect projection and the session-call shorthand was malformed; both setup diagnostics remain, and corrected receipts reproduce both leaks. A missing marker id did not test this case.
+
+`f0d355b2d` refuses both raw credential reads for external grants and adds ListCredentials to sudo's existing GetCredential exclusion. Kernel-owned credential-use/discovery flows remain available. The registered-literal and sudo regressions both fail before this fix (scoped2fail/exit101). After-fix f0d Rust filters79/34 and kernel/launcher builds pass. The same official holder39702 obtains a fresh TUI-passkey grant on that kernel: both raw credential reads AND3MCP reads deny with no canary exposure; two-session reads and agent object creation pass. Mint/Vault management deny, two fresh sudo prompts refuse, normal holder exit0 revokes the grant with process_exit. registry-live/summary.json and span-filtered audit bind these results to f0d. Source06's lifecycle receipts stay bound to06; they are not relabeled as f0d results. No new protocol fields or number.
+
+## MP-08 / MP-10 / MP-11 — exact owner prerequisites
+
+1. Install the approved signed Linux App runtime through its normal installer; `/etc/chariox/apps/runtime-enrollment.json` is absent. Do not transfer durable signing keys to this builder or bypass enrollment trust.
+2. Supply the approved product-linked builder Codex profile path or documented materialization command for kernel-managed target runs. The disposable default profile reports not_logged_in. The outside login exception does not authorize using that account as a kernel-managed target.
+
+These block App install/bind, actual managed-provider agent execution/no-inheritance, and approved sudo-turn acceptance. No provider401 was observed. The earlier three outside-agent/App-source/endpoint questions were superseded by round2 resources; these are the newly reached real seams. No separate-machine, shaped8Mbit/s uplink/RTT≥60ms, multi-hour stability, real public-site/DPR1+2 browser coverage or interaction-P95/fps acceptance is claimed. Successful bounded legs and source tests do not close MP-10. Nothing is staging-ready.
+
+## MP-11 — runner scope incident, diagnostics and cleanup
+
+The first supplemental Rust fail-first run inherited CODEX_HOME=/root/.codex-agents. Fixture bootstrap's provider default migration consequently read/rewrote native credential-store configuration and may have ensured default provider directories. No account-file contents were printed or copied to evidence. Native profiles were not inspected, compared, restored or removed. This run is retained as an unscoped diagnostic, excluded from accepted regression validation. All subsequent Rust test batches explicitly scope provider/XDG homes and TMPDIR under disposable lane-owned state. Their environment/resource receipts and scoped fail-first result are retained. A cancellation attempt raced process completion and sent no signal.
+
+The missing-tempfile compile failure, the initial default-stack overflow, and premature popup-capture setup frames remain diagnostic artifacts, not passing results. Final access/sudo runs use64MiB Rust worker stacks. Cargo used the shared compile lock and jobs4; measured resources remained above the lane floor. No shared cache/image/service/reviewer state was cleaned. Only exactly owned disposable state/workspaces and checked positive-PID processes were eligible for cleanup; credential/Vault/runtime identity/test-publisher state is removed with its owned roots. Public cleanup receipts are retained. The native-profile incident above is explicitly excluded from any claim that all shared provider configuration stayed untouched.
+
+## MP-08 / MP-10 / MP-11 — coordinator client follow-up
+
+Round1 read-only Cloud audit at d1be0aa1a5328c646003771761f30cdcd1e8e01f found no external-grant/session text; Cloud was not changed. Coordinator must audit its actual publishing head. Adoption needs whole-kernel wording, removed request/grant session fields, kernel-access routing and KernelAccessDecisionResponded handling, with feature minimum451. Preserve legacy session-scoped access replies and sudo/critical target-session attribution. MP-11 narrowed security-anchor scope applies; unrelated source is not an exact-blob review blocker.
+
+## MP-08 / MP-10 / MP-11 — final source/evidence and cleanup
+
+Final implementation f0d355b2d8e8a5891cbb9e5d8d00bf516506b08f; kernel/launcher binary hashes in artifact-manifest-registry-fixed.json. Actual TUI source06b9f1806, client tree unchanged through f0d. Source06 binaries archived under source06-fixed with identical hashes; original and relocated manifests plus artifact-relocation.json preserve provenance. registry-live/audit-final.json includes only the verified f0d time span, excluding earlier source06 events in the same disposable database.
+
+All own Cloud registrations logged out; own disposable states, Vault/runtime identities/test-publisher key and scratch workspaces removed. Exact-home process inventory0 and terminal passphrase assertion pass; cleanup-final.json records final resources (26.3GiB available memory,103GiB free disk). No shared service/cache/image/reviewer cleanup. Native-config incident above remains disclosed, with no protected-profile cleanup or restore attempt. The full absolute review inbox still contains only P1/P2 after the final check. Source fixes have bounded real RED/GREEN evidence; full feature acceptance remains BLOCKED on the exact prerequisites above.
