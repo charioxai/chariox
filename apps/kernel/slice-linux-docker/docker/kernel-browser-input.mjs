@@ -8,7 +8,7 @@ const keyCodes = { Tab: 9, Enter: 13, Escape: 27, Backspace: 8, Delete: 46,
 export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror } = {}) {
     assertNotCancelled(signal);
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
-    const mirrorInput = input.kind === "mirror";
+    let observedFrameInput = false;
     const check = async () => {
       assertNotCancelled(signal);
       await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
@@ -30,7 +30,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
           if(e.type === 'password' || /password|one-time-code|cc-/i.test(e.autocomplete || '') || e.closest('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')) return true;
           if(e.shadowRoot?.activeElement) { e = e.shadowRoot.activeElement; continue; }
           if(e.tagName === 'IFRAME') {
-            if(!${mirrorInput}) return true;
+            if(!${observedFrameInput}) return true;
             try { const leaf = e.contentDocument?.activeElement; if(!leaf) return true; e = leaf; continue; } catch { return true; }
           }
           return false;
@@ -58,6 +58,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
     if(input.kind==='mirror') {
       if(!resolveMirror)throw new Error('MP-11: mirror input resolver unavailable');
       await check();resolved=await resolveMirror(input);
+      observedFrameInput=resolved.observedFrameInput===true;
     }
     return browser.inputCapture.run(connection, sessionId, async () => {
       await check();

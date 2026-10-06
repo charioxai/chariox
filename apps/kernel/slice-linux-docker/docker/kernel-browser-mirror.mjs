@@ -274,9 +274,9 @@ export class MirrorService {
           if(focused!==id)throw new Error('MP-11: changed native mirror text focus');
           checked=true;
         };
-        if(!editable)return {input:action.input,guard};
+        if(!editable)return {input:action.input,guard,observedFrameInput:true};
         if(typeof action.input.text!=='string'||action.input.text.length>16384)throw new Error('MP-11: invalid native mirror text');
-        return {guard,perform:send=>send('Input.insertText',{text:action.input.text})};
+        return {guard,observedFrameInput:true,perform:send=>send('Input.insertText',{text:action.input.text})};
       }
       let checked=false;
       const guard=async()=>{
@@ -297,7 +297,7 @@ export class MirrorService {
     const point=await call('locate');
     if(action.kind==='click')return {input:{kind:'click',...point},guard:assertEpoch};
     if(action.kind==='scroll')return {input:{kind:'scroll',...point,delta_x:action.delta_x,delta_y:action.delta_y},guard:assertEpoch};
-    if(action.kind==='text'||action.kind==='composition')return {perform:async (send,mark)=>{
+    if(action.kind==='text'||action.kind==='composition')return {observedFrameInput:true,perform:async (send,mark)=>{
       mark?.();await call('focus');assertNotCancelled(signal);assertEpoch();
       if(action.kind==='text')return send('Input.insertText',{text:action.text});
       return send('Input.imeSetComposition',{text:action.text,selectionStart:action.selection_start,selectionEnd:action.selection_end});

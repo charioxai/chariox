@@ -25,15 +25,16 @@ test('MP-08/MP-11: admitted same-origin mirror frames inspect the live leaf and 
     ['protected ancestor',element({closest:()=>({})}),true],
     ['shadow password',element({shadowRoot:{activeElement:element({type:'password'})}}),true],
     ['opaque',null,true],
-  ]) for(const mirror of [false,true]) {
+  ]) for(const mode of ['direct','fallback','observed']) {
+    const mirror=mode!=='direct',observed=mode==='observed';
     const {browser,sent}=fixture();const {connection}=await browser.resolvePageTarget();const send=connection.send;
     connection.send=async(method,params)=>method==='Runtime.evaluate'
       ? {result:{value:runInNewContext(params.expression,{document:{activeElement:element({tagName:'IFRAME',contentDocument:leaf&&{activeElement:leaf}})}})}}
       : send(method,params);
     const input={kind:'text',text:'fixture'};
     const pending=inputHostTab(browser,tab,mirror?{kind:'mirror'}:input,
-      mirror?{resolveMirror:async()=>({input,guard:async()=>{}})}:{});
-    if(protectedTarget||!mirror) {await assert.rejects(pending,{code:'user_domain_sensitive_requires_focus'},name);assert.equal(sent.filter(x=>x.method.startsWith('Input.')).length,0);}
+      mirror?{resolveMirror:async()=>({input,guard:async()=>{},observedFrameInput:observed})}:{});
+    if(protectedTarget||!observed) {await assert.rejects(pending,{code:'user_domain_sensitive_requires_focus'},name);assert.equal(sent.filter(x=>x.method.startsWith('Input.')).length,0);}
     else {await pending;assert.equal(sent.filter(x=>x.method==='Input.insertText').length,1);}
   }
 });
