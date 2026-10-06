@@ -46,7 +46,7 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
       assert.equal(body.enrollmentKind, "KERNEL")
       assert.ok(Object.keys(body).every(k => ["enrollmentKind","kernelId","machineId","publicKeyThumbprint","kernelAlias","machineAlias"].includes(k)))
       const deviceCode = randomBytes(24).toString("hex"); devices.set(deviceCode, { ...body, approved: false }); calls.push("device-start")
-      return send(200, { deviceCode, userCode: "PUBLIC", verificationUrl: `${apiUrl}/approve`, expiresAt: new Date(Date.now() + 60_000).toISOString(), intervalSeconds: 1 })
+      return send(201, { deviceCode, userCode: "PUBLIC", verificationUrl: `${apiUrl}/approve`, expiresAt: new Date(Date.now() + 60_000).toISOString(), intervalSeconds: 1 })
     }
     if (req.url === "/auth/device/poll") {
       let identity
@@ -134,6 +134,8 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
   phase = "device install/start/readiness"
   const first = await installLocal(options)
   assert.equal(first.status, "ready"); assert.equal(first.userId, "owner")
+  assert.ok(calls.indexOf("device-start") < calls.indexOf("open-browser"))
+  assert.ok(calls.indexOf("open-browser") < calls.indexOf("device-approved"))
   const active = join(home, ".chariox/dev/ssh-machines/local/kernels/active")
   const records = await Promise.all((await readdir(active)).filter(name => name.endsWith(".json")).map(async name => JSON.parse(await readFile(join(active,name),"utf8"))))
   assert.ok(records.some(record => record.kernel_id === first.kernelId && Date.now() - record.heartbeat_at_ms < 30_000), "ordinary fresh presence supports repeat-login setup suppression")

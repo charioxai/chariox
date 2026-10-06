@@ -87,9 +87,10 @@ async fn enroll(
         identity["ticketConsumed"] = json!(false);
         return Ok(identity);
     }
-    let response: CloudDevicePollResponse = redeem_ticket(
+    let response: CloudDevicePollResponse = enrollment_exchange(
         api_url.clone(),
         "/auth/device/poll",
+        200,
         ticket_enrollment_body(config, ticket.as_str()),
     )
     .await
@@ -119,10 +120,11 @@ fn ticket_enrollment_body(config: &DaemonConfig, ticket: &str) -> Value {
     }
     body
 }
-// A ticket must not follow redirects or decode an unbounded control-plane body.
-async fn redeem_ticket<T: DeserializeOwned + Send + 'static>(
+// Enrollment must use the endpoint's expected status without redirects or unbounded decoding.
+async fn enrollment_exchange<T: DeserializeOwned + Send + 'static>(
     api_url: String,
     path: &'static str,
+    expected_status: u16,
     body: Value,
 ) -> Result<T, DaemonError> {
     tokio::task::spawn_blocking(move || {
@@ -134,7 +136,7 @@ async fn redeem_ticket<T: DeserializeOwned + Send + 'static>(
             .set("content-type", "application/json")
             .send_string(&body.to_string())
             .map_err(|_| error())?;
-        if response.status() != 200 {
+        if response.status() != expected_status {
             return Err(error());
         }
         let mut bytes = Zeroizing::new(Vec::new());
@@ -204,9 +206,10 @@ pub async fn enroll_device_from_stdin() -> Result<(), DaemonError> {
         return Ok(());
     }
     let request = serde_json::from_value(json!({"api_url":api_url})).map_err(|_| error())?;
-    let started: CloudDeviceStartResponse = redeem_ticket(
+    let started: CloudDeviceStartResponse = enrollment_exchange(
         api_url.clone(),
         "/auth/device/start",
+        201,
         crate::runtime::cloud_relay_login_executor::kernel_device_enrollment_body(
             &config, &request,
         ),
@@ -240,9 +243,10 @@ pub async fn enroll_device_from_stdin() -> Result<(), DaemonError> {
     let mut interval = started.interval_seconds.clamp(1, 10);
     while tokio::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
-        let response: CloudDevicePollResponse = redeem_ticket(
+        let response: CloudDevicePollResponse = enrollment_exchange(
             api_url.clone(),
             "/auth/device/poll",
+            200,
             json!({"deviceCode":code.as_str()}),
         )
         .await?;
@@ -377,37 +381,108 @@ mod tests {
 }
 
 #[cfg(test)]
-mod ticket_transport_tests {
+mod enrollment_transport_tests {
     use super::*;
-    #[tokio::test]
-    async fn byom_mp11_ticket_redemption_never_follows_redirects() {
-        use std::io::{Read, Write};
+    fn response_fixture(status: u16, body: String) -> (String, std::thread::JoinHandle<()>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
+        let api_url = format!("http://{}", listener.local_addr().unwrap());
         let fixture = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0u8; 8192];
-            let _ = stream.read(&mut request).unwrap();
-            write!(stream,"HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{address}/must-not-receive-ticket\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
-            drop(stream);
-            listener.set_nonblocking(true).unwrap();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
-            while std::time::Instant::now() < deadline {
-                if listener.accept().is_ok() {
-                    return true;
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            // Consume the complete request without printing enrollment inputs.
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut length = 0;
+            loop {
+                use std::io::BufRead;
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
             }
-            false
+            reader.read_exact(&mut vec![0; length]).unwrap();
+            write!(stream,"HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
         });
-        assert!(redeem_ticket::<CloudDevicePollResponse>(
-            format!("http://{address}"),
-            "/auth/device/poll",
-            json!({"ticket":"fixture-single-use"})
+        (api_url, fixture)
+    }
+    #[tokio::test]
+    async fn byom_mp11_device_start_accepts_created() {
+        let (api_url, fixture) = response_fixture(
+            201,
+            json!({"deviceCode":"synthetic-device-code","userCode":"PUBLIC","verificationUrl":"http://127.0.0.1/approve","expiresAt":"2099-01-01T00:00:00Z","intervalSeconds":1}).to_string(),
+        );
+        let result = enrollment_exchange::<CloudDeviceStartResponse>(
+            api_url,
+            "/auth/device/start",
+            201,
+            json!({"enrollmentKind":"KERNEL"}),
         )
-        .await
-        .is_err());
-        assert!(!fixture.join().unwrap());
+        .await;
+        fixture.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "Cloud device start creates a login with HTTP 201"
+        );
+    }
+    #[tokio::test]
+    async fn byom_mp11_enrollment_transport_keeps_bounded_json() {
+        for length in [65536, 65537] {
+            let (api_url, fixture) =
+                response_fixture(200, format!("\"{}\"", "a".repeat(length - 2)));
+            let result =
+                enrollment_exchange::<Value>(api_url, "/auth/device/poll", 200, json!({})).await;
+            fixture.join().unwrap();
+            assert_eq!(result.is_ok(), length == 65536);
+        }
+    }
+    #[tokio::test]
+    async fn byom_mp11_enrollment_uses_endpoint_success_status() {
+        for (path, expected) in [("/auth/device/start", 201), ("/auth/device/poll", 200)] {
+            for status in [200, 201, 202, 204, 400] {
+                let (api_url, fixture) = response_fixture(status, "{}".into());
+                let result = enrollment_exchange::<Value>(api_url, path, expected, json!({})).await;
+                fixture.join().unwrap();
+                assert_eq!(result.is_ok(), status == expected, "{path}: HTTP {status}");
+            }
+        }
+    }
+    #[tokio::test]
+    async fn byom_mp11_enrollment_never_follows_redirects() {
+        for (path, expected) in [("/auth/device/start", 201), ("/auth/device/poll", 200)] {
+            use std::io::{Read, Write};
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let fixture = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0u8; 8192];
+                let _ = stream.read(&mut request).unwrap();
+                write!(stream,"HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{address}/must-not-receive-ticket\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                drop(stream);
+                listener.set_nonblocking(true).unwrap();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+                while std::time::Instant::now() < deadline {
+                    if listener.accept().is_ok() {
+                        return true;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                false
+            });
+            assert!(enrollment_exchange::<Value>(
+                format!("http://{address}"),
+                path,
+                expected,
+                json!({"ticket":"fixture-single-use"})
+            )
+            .await
+            .is_err());
+            assert!(!fixture.join().unwrap());
+        }
     }
 }
 
