@@ -184,8 +184,8 @@ async function kernel(name) {
 let cloudUrl
 try {
   await mkdir(evidence,{recursive:true}); await sample()
-  const scratch='/root/.chariox/dev/browser-resume-20260930';await mkdir(scratch,{recursive:true});root=await mkdtemp(path.join(scratch,'byomctx-r3-live-'))
-  workRoot=await mkdtemp('/root/work/agent-byomctx-r3-live-')
+  const scratch='/root/.chariox/dev/browser-resume-20260930';await mkdir(scratch,{recursive:true});root=await mkdtemp(path.join(scratch,'byomctx-r4-live-'))
+  workRoot=await mkdtemp('/root/work/agent-byomctx-r4-live-')
   cloud=createServer((req,res)=>{void handleCloud(req,res)})
   await new Promise(r=>cloud.listen(0,'127.0.0.1',r));cloudUrl=`http://127.0.0.1:${cloud.address().port}`
   const rp=await port();relayUrl=`ws://127.0.0.1:${rp}`
@@ -195,9 +195,27 @@ try {
   const workspace=path.join(workRoot,'source-project');await mkdir(workspace)
   const ordinary='set -euo pipefail\npython -u worker.py\ngit add -u\n'
   await writeFile(path.join(workspace,'bootstrap.sh'),ordinary)
-  for(const args of [['init','-b','main'],['config','user.name','Chariox Drill'],['config','user.email','drill@example.test'],['add','bootstrap.sh'],['commit','-m','ordinary setup']]) {
+  const encodedMode=mode.startsWith('utf16-')
+  const utf16=text=>Buffer.concat([Buffer.from([0xff,0xfe]),Buffer.from(text,'utf16le')])
+  const canary=utf16("$env:API_KEY = 'synthetic-canary'\n")
+  const safeScript=utf16("Write-Output 'MP-08 ordinary 🦀'\n")
+  const metadata={
+    'package.json':JSON.stringify({dependencies:{'js-tokens':'^4.0.0','secret-tool':'^1.0.0'},devDependencies:{'@example/tokenizer':'^2.0.0'}}),
+    'package-lock.json':JSON.stringify({lockfileVersion:3,packages:{'':{dependencies:{'js-tokens':'^4.0.0'}},'node_modules/js-tokens':{version:'4.0.0',resolved:'https://registry.npmjs.org/js-tokens/-/js-tokens-4.0.0.tgz',integrity:'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}}}),
+    'usage.json':JSON.stringify({input_tokens:42,output_tokens:7,total_tokens:49,token_count:49,max_tokens:4096})
+  }
+  if(mode==='utf16-history')await writeFile(path.join(workspace,'bootstrap.ps1'),canary)
+  if(!encodedMode)for(const [name,contents] of Object.entries(metadata))await writeFile(path.join(workspace,name),contents)
+  for(const args of [['init','-b','main'],['config','user.name','Chariox Drill'],['config','user.email','drill@example.test'],['add','.'],['commit','-m','ordinary setup']]) {
     const result=await run(`git-${steps.length}`,'git',['-C',workspace,...args],source.env);assert.equal(result.code,0)
   }
+  if(mode==='utf16-history') {
+    await writeFile(path.join(workspace,'bootstrap.ps1'),safeScript)
+    for(const args of [['add','bootstrap.ps1'],['commit','-m','replace encoded fixture']]) {
+      assert.equal((await run(`git-${steps.length}`,'git',['-C',workspace,...args],source.env)).code,0)
+    }
+  } else await writeFile(path.join(workspace,'bootstrap.ps1'),encodedMode?canary:safeScript)
+  if(!encodedMode) {await mkdir(path.join(workspace,'overlay'));await writeFile(path.join(workspace,'overlay','package.json'),metadata['package.json']);await writeFile(path.join(workspace,'overlay','package-lock.json'),metadata['package-lock.json'])}
   await writeFile(path.join(workspace,'README.md'),'MP-05 owner context overlay\n')
   automationSocket=path.join(root,'automation.sock')
   tui=start('source-tui','python3',[path.join(repo,'apps/cli/scripts/lib/owner-context-terminal.py'),path.join(binaryDir,'chariox-cli'),
@@ -225,11 +243,18 @@ try {
     await capture(name+'-review'); await automation({action:'interaction_submit',choiceIndex:0})
     const terminal=await until(async()=>{
       const status=(await cli(name+'-poll-'+steps.length,source,['status',initial.contextId])).ManagedContextTransferStatus.status
-      return (status.phase === 'completed' || (status.phase === 'failed' && (!inject || status.receipt))) && status
+      return (status.phase === 'completed' || (status.phase === 'failed' && (!inject || status.receipt || !faultInjected))) && status
     },'owner copy terminal status',90000)
     await capture(name+'-result')
     return terminal
   }
+  if(encodedMode) {
+    const refused=await copy('02-encoded-refusal')
+    assert.equal(refused.phase,'failed','MP-11 encoded credential must be refused on real copy path')
+    assert.match(JSON.stringify(refused.error??refused),/credential-free context/)
+    assert.equal(refused.receipt??null,null,'MP-11 no destination receipt on source refusal')
+    steps.push({name:'encoded-source-refusal-before-transfer',mpItems:['MP-08','MP-10','MP-11'],mode})
+  } else {
   // MP-08/MP-10: inject on the first copy into a fresh target. A separate fresh
   // copy of an already-imported Project conflicts with its Workspace binding.
   const broken=await copy('02-storage-fault',true);assert.equal(broken.phase,'failed');assert(broken.retryable&&broken.receipt);assert(faultInjected)
@@ -247,14 +272,21 @@ try {
   const targetReceipt=(await cli('06-recovered-target-launch',target,['launch-target',recovered.contextId,recovered.planDigest])).ManagedContextLaunchTarget.target
   assert.equal(targetReceipt.contextId,recovered.contextId)
   await assert.rejects(access(path.join(source.outbound,recovered.contextId)))
+  for(const [name,contents] of Object.entries(metadata)) {
+    assert.equal(await readFile(path.join(imported,name),'utf8'),contents)
+    if(name!=='usage.json')assert.equal(await readFile(path.join(imported,'overlay',name),'utf8'),contents)
+  }
+  assert.deepEqual(await readFile(path.join(imported,'bootstrap.ps1')),safeScript)
+  steps.push({name:'package-lock-counter-and-encoded-overlay-bytes-unchanged',mpItems:['MP-05','MP-08','MP-10','MP-11']})
+  }
   await sample()
 } catch(e) {failed=sanitize(e.stack??String(e))}
 finally {
   for(const child of [...children].reverse()) {try{await stop(child);await writeFile(path.join(evidence,child.name+'-process.log'),child.output)}catch(e){failed??=sanitize(e.message)}}
   if(cloud)await new Promise(r=>cloud.close(r))
   // Only the exact mkdtemp root owned by this run contains disposable runtime keys.
-  if(root){assert(path.dirname(root)==='/root/.chariox/dev/browser-resume-20260930'&&path.basename(root).startsWith('byomctx-r3-live-'));await rm(root,{recursive:true,force:true});cleanup=true}
-  if(workRoot){assert(path.dirname(workRoot)==='/root/work'&&path.basename(workRoot).startsWith('agent-byomctx-r3-live-'));await rm(workRoot,{recursive:true,force:true})}
+  if(root){assert(path.dirname(root)==='/root/.chariox/dev/browser-resume-20260930'&&path.basename(root).startsWith('byomctx-r4-live-'));await rm(root,{recursive:true,force:true});cleanup=true}
+  if(workRoot){assert(path.dirname(workRoot)==='/root/work'&&path.basename(workRoot).startsWith('agent-byomctx-r4-live-'));await rm(workRoot,{recursive:true,force:true})}
   await sample()
   const report={mpItems:['MP-05','MP-08','MP-10','MP-11'],mode,sourceHead:process.env.OWNER_DRILL_SOURCE_HEAD??null,binaryDir,
     result:failed?'RED':'PASS',failure:failed,steps,samples,cleanup,

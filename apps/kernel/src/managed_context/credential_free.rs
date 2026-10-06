@@ -1,13 +1,17 @@
 //! MP-08 / MP-11: fail-closed checks before packaging and before target mutation.
+#[path = "credential_free/json.rs"]
+mod json;
 #[path = "credential_free/shell.rs"]
 mod shell;
+#[path = "credential_free/text.rs"]
+mod text;
 use shell::{credential_text, unsupported_shell};
 
 use super::kernel::{KernelContextPayload, KernelExtensionDependency};
 use super::owner_managed::admission_error;
 use crate::error::DaemonError;
-use base64::Engine;
 use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -57,90 +61,24 @@ pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError
     {
         return Err(refused());
     }
-    if let Ok(text) = std::str::from_utf8(bytes) {
-        if credential_text(text) || unsupported_shell(&name, text) {
-            return Err(refused());
-        }
-        if let Ok(value) = serde_json::from_str::<Value>(text) {
-            validate_json(&value)?;
-        }
-        for word in text.split_whitespace() {
-            if let Ok(url) = url::Url::parse(word.trim_matches(['\'', '"', ',', ';'])) {
-                if credential_url(&url) {
-                    return Err(refused());
-                }
-            }
-        }
+    let text = text::decode(bytes)?;
+    if text.contains("PRIVATE KEY-----") {
+        return Err(refused());
     }
-    Ok(())
-}
-
-fn validate_json(value: &Value) -> Result<(), DaemonError> {
-    match value {
-        Value::Object(fields) => {
-            if fields.contains_key("ciphertext")
-                && (fields.contains_key("kdf")
-                    || fields.contains_key("nonce")
-                    || fields.contains_key("cipher"))
-            {
+    // Inspect valid JSON structurally: object keys may name dependencies or
+    // numeric counters. Scanning JSON syntax as shell assignments loses that role.
+    if let Ok(value) = serde_json::from_str::<Value>(&text) {
+        return json::validate(&value, json::Role::for_path(&name));
+    }
+    if credential_text(&text) || unsupported_shell(&name, &text) {
+        return Err(refused());
+    }
+    for word in text.split_whitespace() {
+        if let Ok(url) = url::Url::parse(word.trim_matches(['\'', '"', ',', ';'])) {
+            if credential_url(&url) {
                 return Err(refused());
             }
-            for (key, value) in fields {
-                let lower = key.to_ascii_lowercase().replace('-', "_");
-                if [
-                    "password",
-                    "secret",
-                    "token",
-                    "credential",
-                    "api_key",
-                    "apikey",
-                    "authorization",
-                    "private_key",
-                    "vault_file_base64",
-                    "sealed_unlock_key",
-                ]
-                .iter()
-                .any(|part| lower.contains(part))
-                    && !value.is_null()
-                    && value != ""
-                {
-                    return Err(refused());
-                }
-                if key == "path" {
-                    validate_bytes(value.as_str().ok_or_else(refused)?, b"")?;
-                }
-                if matches!(
-                    key.as_str(),
-                    "content_base64" | "contentBase64" | "source_base64"
-                ) {
-                    let decoded = base64::engine::general_purpose::STANDARD
-                        .decode(value.as_str().ok_or_else(refused)?)
-                        .map_err(|_| refused())?;
-                    if decoded.len() as u64 > MAX_FILE {
-                        return Err(refused());
-                    }
-                    validate_bytes("package-content", &decoded)?;
-                } else {
-                    validate_json(value)?;
-                }
-            }
         }
-        Value::Array(values) => {
-            for value in values {
-                validate_json(value)?;
-            }
-        }
-        Value::String(text) => {
-            if credential_text(text) {
-                return Err(refused());
-            }
-            if let Ok(url) = url::Url::parse(text) {
-                if credential_url(&url) {
-                    return Err(refused());
-                }
-            }
-        }
-        _ => {}
     }
     Ok(())
 }
@@ -157,7 +95,7 @@ pub(crate) fn validate_kernel_payload(payload: &KernelContextPayload) -> Result<
     // MP-11: inspect decoded package files as well as metadata; never echo content.
     let value = serde_json::to_value((&payload.extensions, &payload.dependencies))
         .map_err(|_| refused())?;
-    validate_json(&value)
+    json::validate(&value, json::Role::Fields)
 }
 
 struct ScanRoot(PathBuf);
@@ -264,6 +202,7 @@ pub(crate) fn validate_development_archive(path: &Path) -> Result<(), DaemonErro
     let mut budget = 0u64;
     let mut bundles = Vec::new();
     let mut manifest_seen = false;
+    let mut object_paths: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (index, entry) in archive.entries().map_err(|_| refused())?.enumerate() {
         if index > 100_000 {
             return Err(refused());
@@ -274,6 +213,11 @@ pub(crate) fn validate_development_archive(path: &Path) -> Result<(), DaemonErro
             .map_err(|_| refused())?
             .to_string_lossy()
             .into_owned();
+        // The canonical exporter writes the manifest first. Refuse unknown
+        // ordering rather than classify content-addressed overlays without it.
+        if index == 0 && name != "manifest.json" {
+            return Err(refused());
+        }
         let size = entry.size();
         budget = budget.saturating_add(size);
         if budget > MAX_SCAN || !entry.header().entry_type().is_file() {
@@ -309,10 +253,27 @@ pub(crate) fn validate_development_archive(path: &Path) -> Result<(), DaemonErro
             for repository in manifest.repositories {
                 for overlay in repository.overlay {
                     validate_bytes(&overlay.path, b"")?;
+                    for state in [overlay.index, overlay.worktree] {
+                        if let super::development::DevelopmentFileState::File {
+                            object_path, ..
+                        } = state
+                        {
+                            object_paths
+                                .entry(object_path)
+                                .or_default()
+                                .insert(overlay.path.clone());
+                        }
+                    }
                 }
                 if let Some(origin) = repository.origin_url {
                     validate_bytes("origin-url", origin.as_bytes())?;
                 }
+            }
+        } else if let Some(paths) = object_paths.get(&name) {
+            // The same object can serve multiple logical files; inspect every
+            // role, including both index and worktree overlay references.
+            for path in paths {
+                validate_bytes(path, &bytes)?;
             }
         } else {
             validate_bytes(&name, &bytes)?;
