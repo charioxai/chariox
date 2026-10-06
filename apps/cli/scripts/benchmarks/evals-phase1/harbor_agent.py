@@ -130,5 +130,6 @@ class CharioxAgent(BaseAgent):
             context.n_output_tokens = usage['output_tokens']
             if usage['api_equivalent_nanodollars'] is not None:
                 context.cost_usd = usage['api_equivalent_nanodollars'] / 1_000_000_000
-        if result.return_code != 0 or measurement['status'] != 'completed':
+        from contract import settled_measurement
+        if result.return_code not in {0,1} or not settled_measurement(measurement):
             raise RuntimeError('MP-08 / MP-10: Chariox task did not settle; retain failed task in campaign ledger')

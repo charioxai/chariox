@@ -128,3 +128,12 @@ def session_usage_visible(report, visible):
     counters='; '.join(f'{label} {usage[key] if usage.get(key) is not None else "unavailable"}'
                       for label,key in [('input','input_tokens'),('cached','cached_input_tokens'),('output','output_tokens'),('reasoning','reasoning_tokens')])
     return f'Session: {total.get("turns")} turns; {counters};' in " ".join(visible.split())
+
+
+def settled_measurement(measurement):
+    """MP-08 / MP-10 / MP-11: an accounted provider failure is scored by the official verifier."""
+    if measurement.get('status') not in {'completed','provider_failed'} or not measurement.get('cleanup_complete') or not measurement.get('tui_usage_visible'):
+        return False
+    try:admit_token_usage(measurement.get('usage') or {},measurement['session_id'])
+    except (ValueError,KeyError):return False
+    return True

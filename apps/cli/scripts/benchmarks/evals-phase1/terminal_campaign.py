@@ -10,7 +10,7 @@ import time
 import tomllib
 from uuid import uuid4
 
-from contract import validate_lock
+from contract import validate_lock, settled_measurement
 from harbor_cleanup import settle_job
 from turn import preflight, resource_sample, stop_owned
 
@@ -89,12 +89,12 @@ def main():
             image=config['environment']['docker_image']; before=image_identity(image)
             nonce=uuid4().hex[:12]; name='chariox-evals-'+args.phase+'-'+nonce
             job_dir=args.output/'jobs'/name
-            options={'runtime_root':'/opt/chariox','profile_path':str(args.profile_path),'source_commit':args.source_commit,
-                     'kernel_sha256':args.kernel_sha256,'local_protocol':args.local_protocol,'relay_binary':'/opt/chariox/bin/chariox-relay',
+            options={'runtime_root':str(args.runtime_root),'profile_path':str(args.profile_path),'source_commit':args.source_commit,
+                     'kernel_sha256':args.kernel_sha256,'local_protocol':args.local_protocol,'relay_binary':str(args.runtime_root/'bin/chariox-relay'),
                      'timeout_seconds':max(60,int(config['agent']['timeout_sec'])-60)}
             job={'job_name':name,'jobs_dir':str(args.output/'jobs'),'n_concurrent_trials':1,'retry':{'max_retries':0},
                  'tasks':[{'path':str(args.tasks/task)}], 'agents':[{'import_path':'harbor_agent:CharioxAgent','model_name':args.model,'kwargs':options}],
-                 'environment':{'type':'docker','delete':True,'mounts':[{'type':'bind','source':str(args.runtime_root),'target':'/opt/chariox','read_only':True},
+                 'environment':{'type':'docker','delete':True,'mounts':[{'type':'bind','source':str(args.runtime_root),'target':str(args.runtime_root),'read_only':True},
                    {'type':'bind','source':str(args.profile_path),'target':str(args.profile_path)}]}}
             config_path=args.output/(task+'-job-'+nonce+'.json');config_path.write_text(json.dumps(job,indent=2)+'\n')
             invocation=[str(args.harbor),'run','--config',str(config_path)]
@@ -132,7 +132,7 @@ def main():
             campaign['tasks'].append(row);save()
             rewards=(official.get('verifier_result') or {}).get('rewards')
             print('MP-08 / MP-10:',args.phase,task,'reward',rewards,'settlement',metadata.get('status'),flush=True)
-            if any(r['removed_containers'] or r['retained_volumes'] for r in cleanup) or official.get('exception_info') or not metadata.get('cleanup_complete') or metadata.get('status')!='completed' or not metadata.get('tui_usage_visible'):
+            if any(r['removed_containers'] or r['retained_volumes'] for r in cleanup) or official.get('exception_info') or not settled_measurement(metadata):
                 campaign['status']='blocked'; campaign['first_failing_task']=task;break
         else: campaign['status']='completed'
     except BaseException as error:

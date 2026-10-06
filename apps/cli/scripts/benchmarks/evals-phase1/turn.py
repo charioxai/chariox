@@ -199,6 +199,7 @@ def run(request, evidence):
                    'resources_before': resources_before,
                    'usage_unavailable_reason': 'kernel has not reported a priced complete turn'}
 
+    kernel = None
     stage = 'launch'
 
     def screenshot(name):
@@ -208,6 +209,8 @@ def run(request, evidence):
 
     def tick():
         resource_sample()
+        if kernel is not None and kernel.poll() is not None:
+            raise RuntimeError('MP-08 / MP-10: owned kernel exited before task settlement')
         for process in processes:
             if process.poll() is None:
                 descendants.update(descendant_identities(process.pid))
@@ -258,6 +261,12 @@ def run(request, evidence):
             processes.append(kernel)
             setup = launch_cli(['--detached'], 'setup')
             setup.send('wait_for', daemonDisconnected=False, timeoutMs=30000)
+            stage = 'kernel_ready'
+            ready_command = [str(root / 'bin/bun'), str(Path(__file__).with_name('product_status.mjs')), str(root), endpoint, 'Evals', provider, '--ready']
+            def kernel_ready():
+                result = subprocess.run(ready_command, env=env, capture_output=True, text=True, timeout=15)
+                return result.returncode == 0
+            wait_owned(kernel_ready, time.monotonic() + 90)
             stage = 'profile_link'
             setup.send('submit_prompt', prompt=f'/provider accounts link {provider} Evals {shlex.quote(profile)}')
             status_command = [str(root / 'bin/bun'), str(Path(__file__).with_name('product_status.mjs')), str(root), endpoint, 'Evals', provider]
@@ -372,6 +381,11 @@ def run(request, evidence):
         measurement['failure_kind'] = type(error).__name__
         measurement['first_failing_seam'] = stage
     finally:
+        if kernel is not None:
+            measurement['kernel_exit_code_before_cleanup'] = kernel.poll()
+        if measurement.get('status') != 'completed' and (evidence / 'setup.terminal.log').exists():
+            from terminal_screen import capture
+            capture(evidence / 'setup.terminal.log', evidence / '00-setup-failed.png')
         for process in processes:
             if process.poll() is None:
                 descendants.update(descendant_identities(process.pid))

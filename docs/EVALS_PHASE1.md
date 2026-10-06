@@ -44,7 +44,21 @@ builder had no Compose plugin. A SHA-256-verified, pinned Compose v2.39.4 plugin
 is now scoped to the lane's Docker CLI tooling. The unchanged pinned official
 Bookworm task then reproduced the native loader failure through Harbor runtime
 preflight, before provider launch. These attempts have no benchmark score.
-A compatible native kernel/relay build is queued under the shared compile lock.
+A Bullseye native build failed first on its own memory cap, then at linking:
+the frozen source uses `posix_spawn_file_actions_addclosefrom_np`, introduced
+after Bullseye. Host resource floors remained intact. Its owned compiler
+container was removed. A hash-bound public ELF loader/library bundle now keeps
+the frozen source and official task images unchanged; real-path validation is
+in progress. ELF packaging changes have separate original/packaged hashes.
+The real Ubuntu admission passed the official verifier (reward 1) with visible
+input193504 / cached171392 / output5734 / reasoning368 and cleanup true.
+Bookworm startup exposed an early account-link command, corrected by an
+allowlisted readiness read before the real TUI link. That task then reached
+Codex, whose `cyber_policy` rejection is retained as a provider failure with
+known counters. Settled provider failures proceed to official verification and
+remain in the denominator; transport, quota and accounting admission failures
+still stop the campaign. These diagnostic admissions are separate from smoke
+and fresh full results.
 The serial campaign retains exact task and harness pins, official verifier
 results, real TUI/relay/kernel/provider evidence, fresh quota checks, resource
 samples and exact owned-resource cleanup. Missing tasks never become zeros or

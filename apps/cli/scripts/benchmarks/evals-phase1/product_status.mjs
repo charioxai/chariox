@@ -7,6 +7,9 @@ const client = new LocalIpcClient(endpoint)
 try {
   const response = await client.send({ ListProviderAccountProfiles: { provider } })
   const profile = response.ProviderAccountProfilesListed?.profiles?.find(p => p.label === label)
+  if (process.argv.includes('--ready')) {
+    process.stdout.write(JSON.stringify({ ready: true }) + '\n')
+  } else {
   if (!profile) throw new Error('profile_missing')
   if (process.argv.includes('--refresh')) {
     await client.send({ RefreshProviderAccountProfile: { provider, account_profile: profile.profile_id } })
@@ -17,6 +20,7 @@ try {
     provider: profile.provider, profile_id: profile.profile_id, auth_state: profile.auth_state,
     meters: (profile.usage?.meters ?? []).map(m => ({ kind: m.kind, state: m.state, resets_at_ms: m.resets_at_ms, observed_at_ms: m.observed_at_ms })),
   }) + '\n')
+  }
 } catch {
   process.stderr.write('MP-08 / MP-10: product-linked account status unavailable\n')
   process.exitCode = 1
