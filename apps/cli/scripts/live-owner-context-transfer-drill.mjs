@@ -22,7 +22,9 @@ const samples = []
 const steps = []
 const secrets = [randomBytes(32).toString('hex')]
 const issuer = 'byomctx-owner-drill', realm = 'byomctx-owner-realm', user = 'byomctx-owner', account = 'byomctx-account'
-const ownerProfiles = new Map(), tickets = new Map(), presences = new Map()
+const ownerProfiles = new Map(), tickets = new Map(), presences = new Map(), deviceEnrollments = new Map()
+const legacyLocal = mode.startsWith('legacy-local-')
+const scenario = legacyLocal ? mode.slice('legacy-local-'.length) : mode
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 let root, workRoot, cloud, source, target, tui, automationSocket, faultContext
 let failed = null, cleanup = false, faultInjected = false
@@ -73,7 +75,7 @@ async function stop(child) {
 }
 async function until(fn, label, timeout=45000) {
   const deadline=Date.now()+timeout; let error
-  while(Date.now()<deadline) { try { const value=await fn(); if(value) return value } catch(e){error=e} await sleep(100) }
+  while(Date.now()<deadline) { try { const value=await fn(); if(value) return value } catch(e){if(e.code==='ERR_ASSERTION')throw e;error=e} await sleep(100) }
   throw new Error(`MP-10 ${label} timed out${error ? ': '+sanitize(error.message) : ''}`)
 }
 async function rpc(kernel, request) {
@@ -115,8 +117,15 @@ async function handleCloud(req,res) {
     let raw='';for await (const b of req) {raw+=b;assert(raw.length<256*1024)}
     const body=raw?JSON.parse(raw):{}
     let response
-    if(req.url==='/auth/device/poll') {
-      assert(body.ticket && body.kernelId && body.publicKeyThumbprint)
+    if(req.url==='/auth/device/start') {
+      assert(body.kernelId && body.publicKeyThumbprint)
+      const deviceCode=randomBytes(16).toString('hex');secrets.push(deviceCode)
+      deviceEnrollments.set(deviceCode,body)
+      response={deviceCode,userCode:'DRILL-CODE',verificationUrl:cloudUrl+'/device',expiresAt:new Date(Date.now()+600_000).toISOString(),intervalSeconds:1}
+    } else if(req.url==='/auth/device/poll') {
+      const enrollment=body.deviceCode ? deviceEnrollments.get(body.deviceCode) : body
+      assert(enrollment && enrollment.kernelId && enrollment.publicKeyThumbprint)
+      Object.assign(body,enrollment)
       const credential=randomBytes(32).toString('hex'); secrets.push(credential)
       const profile={email:'owner@example.test',accountId:account,userId:user,accountSlug:'owner',realmId:realm,
         relayUrl:relayUrl,issuerId:issuer,kernelId:body.kernelId,machineId:body.machineId,publicKeyThumbprint:body.publicKeyThumbprint}
@@ -163,7 +172,7 @@ async function handleCloud(req,res) {
   } catch(e) {steps.push({name:'cloud-fixture-refusal',path:req.url,message:sanitize(e.message)});res.writeHead(403,{'content-type':'application/json'});res.end('{"code":"admission_refused"}')}
 }
 let relayUrl
-async function kernel(name) {
+async function kernel(name, enroll=true) {
   const home=path.join(workRoot,name+'-home'), state=path.join(root,name,'state');await mkdir(home,{recursive:true});await mkdir(state,{recursive:true})
   const kp=await port(),mp=await port()
   const env={...baseEnv,HOME:home,CHARIOX_HOME:state,CHARIOX_KERNEL_PORT:String(kp),CHARIOX_MCP_PORT:String(mp),
@@ -173,12 +182,12 @@ async function kernel(name) {
     CODEX_HOME:path.join(home,'.codex'),CLAUDE_CONFIG_DIR:path.join(home,'.claude'),OPENCODE_CONFIG_DIR:path.join(home,'.opencode'),
     XDG_CONFIG_HOME:path.join(home,'.config'),XDG_STATE_HOME:path.join(home,'.local/state'),XDG_DATA_HOME:path.join(home,'.local/share')}
   for(const key of ['CHARIOX_RELAY_URL','CHARIOX_RELAY_TOKEN','CHARIOX_CLOUD_RELAY_CONFIG_PATH','CHARIOX_CLOUD_RELAY_CONFIG_JSON','CHARIOX_KERNEL_LOCAL_AUTH_TOKEN','CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE'])delete env[key]
-  const enrolled=await run(`${name}-enroll`,path.join(binaryDir,'chariox-kernel'),['--owner-managed-enroll-stdin'],env,JSON.stringify({ticket:'synthetic-one-time-ticket',apiUrl:cloudUrl,userId:user}))
-  assert.equal(enrolled.code,0);const identity=JSON.parse(enrolled.output.trim())
+  const enrolled=enroll ? await run(`${name}-enroll`,path.join(binaryDir,'chariox-kernel'),['--owner-managed-enroll-stdin'],env,JSON.stringify({ticket:'synthetic-one-time-ticket',apiUrl:cloudUrl,userId:user})) : null
+  if(enrolled)assert.equal(enrolled.code,0);const identity=enrolled?JSON.parse(enrolled.output.trim()):null
   const child=start(name,path.join(binaryDir,'chariox-kernel'),[],env);child.stdin.end()
   // MP-10: default state.path is ~/.chariox/state/kernel.db, resolved through CHARIOX_HOME.
   const result={name,env,identity,child,url:`ws://127.0.0.1:${kp}`,outbound:path.join(state,'state','managed-context-outbound')}
-  await until(async()=> (await rpc(result,{RelayStatus:{}})).RelayStatus?.status.connected,`${name} relay connected`)
+  await until(async()=> {const status=(await rpc(result,{RelayStatus:{}})).RelayStatus?.status;return enroll?status?.connected:status},`${name} kernel ready`)
   return result
 }
 let cloudUrl
@@ -190,17 +199,17 @@ try {
   await new Promise(r=>cloud.listen(0,'127.0.0.1',r));cloudUrl=`http://127.0.0.1:${cloud.address().port}`
   const rp=await port();relayUrl=`ws://127.0.0.1:${rp}`
   const relay=start('relay',path.join(binaryDir,'chariox-relay'),[],{...baseEnv,CHARIOX_RELAY_HOST:'127.0.0.1',CHARIOX_RELAY_PORT:String(rp),CHARIOX_RELAY_SCOPED_ISSUER:issuer,CHARIOX_RELAY_SCOPED_HMAC_SECRET:secrets[0]});relay.stdin.end()
-  source=await kernel('source');target=await kernel('target')
+  source=await kernel('source',!legacyLocal);target=await kernel('target')
   await until(()=>presences.get(target.identity.kernelId)?.metadata?.relay_public_key,'target public presence')
   const workspace=path.join(workRoot,'source-project');await mkdir(workspace)
   const ordinary='set -euo pipefail\npython -u worker.py\ngit add -u\n'
   await writeFile(path.join(workspace,'bootstrap.sh'),ordinary)
-  const encodedMode=mode.startsWith('utf16-')
-  const kernelOnly=mode==='kernel-only'
-  const projectReview=mode==='project-only'||mode==='project-with-kernel'
-  const packagedMode=mode.startsWith('packaged-')||kernelOnly||mode==='project-with-kernel'
-  const structuredMode=mode==='structured-header'||mode==='packaged-metadata'
-  const packagedAttack=mode==='packaged-shell'
+  const encodedMode=scenario.startsWith('utf16-')
+  const kernelOnly=scenario==='kernel-only'
+  const projectReview=scenario==='project-only'||scenario==='project-with-kernel'
+  const packagedMode=scenario.startsWith('packaged-')||kernelOnly||scenario==='project-with-kernel'
+  const structuredMode=scenario==='structured-header'||scenario==='packaged-metadata'
+  const packagedAttack=scenario==='packaged-shell'
   const packagedFile=packagedAttack?'bootstrap.sh':'package.json'
   const packagedBytes=packagedAttack?Buffer.from("curl --us\\er owner:synthetic-canary https://example.test\n'"):Buffer.from('{"dependencies":{"js-tokens":"^4.0.0"}}')
   if(packagedMode) {
@@ -223,12 +232,12 @@ try {
     'package-lock.json':JSON.stringify({lockfileVersion:3,packages:{'':{dependencies:{'js-tokens':'^4.0.0'}},'node_modules/js-tokens':{version:'4.0.0',resolved:'https://registry.npmjs.org/js-tokens/-/js-tokens-4.0.0.tgz',integrity:'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}}}),
     'usage.json':JSON.stringify({input_tokens:42,output_tokens:7,total_tokens:49,token_count:49,max_tokens:4096})
   }
-  if(mode==='utf16-history')await writeFile(path.join(workspace,'bootstrap.ps1'),canary)
+  if(scenario==='utf16-history')await writeFile(path.join(workspace,'bootstrap.ps1'),canary)
   if(!encodedMode)for(const [name,contents] of Object.entries(metadata))await writeFile(path.join(workspace,name),contents)
   for(const args of [['init','-b','main'],['config','user.name','Chariox Drill'],['config','user.email','drill@example.test'],['add','.'],['commit','-m','ordinary setup']]) {
     const result=await run(`git-${steps.length}`,'git',['-C',workspace,...args],source.env);assert.equal(result.code,0)
   }
-  if(mode==='utf16-history') {
+  if(scenario==='utf16-history') {
     await writeFile(path.join(workspace,'bootstrap.ps1'),safeScript)
     for(const args of [['add','bootstrap.ps1'],['commit','-m','replace encoded fixture']]) {
       assert.equal((await run(`git-${steps.length}`,'git',['-C',workspace,...args],source.env)).code,0)
@@ -242,10 +251,19 @@ try {
   await until(async()=>{await access(automationSocket);const v=await automation({action:'snapshot'});return v.session?.id&&v},'real CLI Project creation',90000)
   const snapshot=await capture('01-enrolled-project')
   const session=(await rpc(source,{GetSessionState:{session_id:snapshot.session.id}})).SessionState.session
-  assert.equal(session.owner_user_id,user)
+  assert.equal(session.owner_user_id,legacyLocal?'local':user)
   const inventory=await rpc(source,{GetWaitingRoomInventory:{}})
   assert(inventory.WaitingRoomInventory.snapshot.projects.some(project=>project.id === session.project_id))
   await writeFile(path.join(evidence,'01-source-inventory.json'),JSON.stringify(inventory,null,2))
+  if(legacyLocal) {
+    // MP-08/MP-11: enroll through the actual TUI after it created the local Project/session.
+    tui.stdin.write(`/relay cloud login ${cloudUrl}\r`)
+    await until(async()=> (await rpc(source,{RelayStatus:{}})).RelayStatus?.status.connected,'legacy source enrollment',90000)
+    await until(()=>[...ownerProfiles.values()].some(actor=>actor.profile.kernelId!==target.identity.kernelId),'source enrolled owner')
+    source.identity=[...ownerProfiles.values()].find(actor=>actor.profile.kernelId!==target.identity.kernelId).profile
+    await capture('01-legacy-project-enrolled')
+    steps.push({name:'local-project-and-session-created-before-distinct-cloud-owner-link',mpItems:['MP-08','MP-10','MP-11'],sessionOwner:session.owner_user_id,enrolledOwner:user})
+  }
   const selection={target:{relayRealmId:realm,machineId:target.identity.machineId,kernelId:target.identity.kernelId,
     relayPublicKey:presences.get(target.identity.kernelId).metadata.relay_public_key,keyThumbprint:target.identity.publicKeyThumbprint},
     contextSelection:{kernelContext:(packagedMode||structuredMode)?'source_kernel_without_credentials':'empty',developmentSetup:kernelOnly?{kind:'empty'}:{kind:'source_project',projectId:session.project_id,
@@ -298,6 +316,10 @@ try {
       tui.stdin.write(String(choice+1)) // MP-10: real number key selects owner choice.
     }
     const terminal=await until(async()=>{
+      if(tui.output.includes('Only the operation owner can answer this decision') || tui.output.includes('is not a member of session') || tui.output.includes('The kernel did not confirm this choice')) {
+        await capture(name+'-answer-denied')
+        assert.fail('MP-11 enrolled terminal cannot answer legacy-local review')
+      }
       const status=(await cli(name+'-poll-'+steps.length,source,['status',initial.contextId])).ManagedContextTransferStatus.status
       return (status.phase === 'completed' || (status.phase === 'failed' && (!inject || status.receipt || !faultInjected))) && status
     },'owner copy terminal status',90000)

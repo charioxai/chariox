@@ -241,16 +241,6 @@ impl KernelRuntimeOwnedState {
             ));
         }
         if pending
-            .kernel_operation_owner
-            .as_deref()
-            .or(pending.terminal_credential_owner.as_deref())
-            .is_some_and(|owner| Some(owner) != caller_user_id)
-        {
-            return Err(interaction_error(
-                "Only the operation owner can answer this decision",
-            ));
-        }
-        if pending
             .kernel_operation_deadline
             .is_some_and(|deadline| std::time::Instant::now() >= deadline)
         {
@@ -276,6 +266,25 @@ impl KernelRuntimeOwnedState {
                 operation: "resolve runtime interaction",
                 message: format!("interaction {interaction_id} is not active in session"),
             })?;
+        let review = super::owner_context_review::is_owner_context_review(&interaction);
+        if let Some(owner) = pending
+            .kernel_operation_owner
+            .as_deref()
+            .or(pending.terminal_credential_owner.as_deref())
+        {
+            let owner = if review {
+                self.owner_context_review_owner(owner)
+            } else {
+                owner.to_owned()
+            };
+            if Some(owner.as_str()) != caller_user_id
+                || (review && self.owner_context_review_owner(session.owner_user_id()) != owner)
+            {
+                return Err(interaction_error(
+                    "Only the operation owner can answer this decision",
+                ));
+            }
+        }
         if !passkey_verified
             && interaction
                 .choice(choice_id)

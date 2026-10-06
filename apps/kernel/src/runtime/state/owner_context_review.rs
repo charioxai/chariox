@@ -106,3 +106,37 @@ pub(super) fn is_owner_context_review(interaction: &RuntimeInteraction) -> bool 
             .kernel_operation_id()
             .is_some_and(|id| id.starts_with("owner-context:"))
 }
+
+// MP-08/MP-11: owner-managed admission explicitly accepts this OS owner's
+// pre-enrollment `local` content. Resolve only that alias for human copy reviews.
+impl KernelRuntimeOwnedState {
+    pub(super) fn owner_context_review_owner(&self, owner: &str) -> String {
+        if owner == crate::session::DEFAULT_LOCAL_USER_ID {
+            if let Some(profile) = self.config_projection.snapshot().cloud_relay {
+                if !profile.user_id.is_empty() {
+                    return profile.user_id;
+                }
+            }
+        }
+        owner.to_owned()
+    }
+}
+
+impl KernelRuntimeState {
+    pub(in crate::runtime) fn is_legacy_local_terminal_owner(
+        &self,
+        session_id: &str,
+        user_id: &str,
+    ) -> bool {
+        self.owned
+            .session_store
+            .get_session(session_id)
+            .is_ok_and(|session| {
+                session.owner_user_id() == crate::session::DEFAULT_LOCAL_USER_ID
+                    && self
+                        .owned
+                        .owner_context_review_owner(session.owner_user_id())
+                        == user_id
+            })
+    }
+}
