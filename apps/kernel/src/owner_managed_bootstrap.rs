@@ -200,8 +200,10 @@ async fn ready_once(config: &DaemonConfig) -> Result<(), DaemonError> {
     let (mut ws, _) = tokio_tungstenite::connect_async(request)
         .await
         .map_err(|_| error())?;
+    // MP-07 / MP-08: each observation must bypass prior command receipts.
+    let request_id = format!("byom-ready-{:016x}", rand::random::<u64>());
     ws.send(Message::Text(
-        json!({"type":"request","request_id":"byom-ready","request":{"RelayStatus":null}})
+        json!({"type":"request","request_id":request_id,"request":{"RelayStatus":null}})
             .to_string()
             .into(),
     ))
@@ -211,7 +213,7 @@ async fn ready_once(config: &DaemonConfig) -> Result<(), DaemonError> {
         let frame = frame.map_err(|_| error())?;
         if let Message::Text(text) = frame {
             let value: Value = serde_json::from_str(&text).map_err(|_| error())?;
-            if value["request_id"] != "byom-ready" {
+            if value["request_id"] != request_id {
                 continue;
             }
             let status = &value["response"]["RelayStatus"]["status"];
