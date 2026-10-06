@@ -596,6 +596,44 @@ pub(crate) fn start_managed_context_outbound_operation(
                 }
             },
         };
+        // MP-08/MP-11: owner confirmation gates every selection, including
+        // kernel-only copies, before either development preparation or packaging.
+        let owner_copy = authoritative_ticket
+            .context_plan
+            .package_binding()
+            .destination
+            .is_some();
+        if owner_copy {
+            let review = match (runtime.as_ref(), interactive) {
+                (Some(runtime), true) => {
+                    runtime
+                        .review_credential_free_owner_context(
+                            &authoritative_ticket
+                                .context_plan
+                                .package_binding()
+                                .development,
+                            &context_id,
+                            &authoritative_ticket.target.machine_id,
+                        )
+                        .await
+                }
+                _ => Err(crate::managed_context::owner_managed::admission_error(
+                    "Owner-managed context copy requires native source confirmation",
+                )),
+            };
+            if let Err(error) = review {
+                let retirement_error = retire_matching_artifact_after_terminal_preflight(
+                    &config,
+                    &store,
+                    &authoritative_ticket,
+                )
+                .err();
+                store.update(&context_id, |status| {
+                    fail_terminal_preflight_status(status, &error, retirement_error.as_ref())
+                });
+                return;
+            }
+        }
         let environment = match (
             &authoritative_ticket
                 .context_plan
@@ -609,28 +647,12 @@ pub(crate) fn start_managed_context_outbound_operation(
                     repositories,
                 },
                 Some(runtime),
-            ) => {
-                let selections = repositories
+            ) if !owner_copy => {
+                let result = match repositories
                     .iter()
                     .map(resolve_repository_selection)
-                    .collect::<Result<Vec<_>, _>>();
-                let result = match selections {
-                    Ok(selections)
-                        if authoritative_ticket
-                            .context_plan
-                            .package_binding()
-                            .destination
-                            .is_some() =>
-                    {
-                        runtime
-                            .review_credential_free_project_context(
-                                project_id,
-                                &selections,
-                                &authoritative_ticket.target.machine_id,
-                            )
-                            .await
-                            .map(|_| None)
-                    }
+                    .collect::<Result<Vec<_>, _>>()
+                {
                     Ok(selections) => runtime
                         .prepare_project_environment_layer(
                             project_id,
