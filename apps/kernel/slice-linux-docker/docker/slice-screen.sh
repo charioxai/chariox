@@ -456,6 +456,9 @@ PYTHON
     require_process "websockify.*$NOVNC_PORT" "noVNC websockify" "$LOGS/novnc.log"
   fi
   require_process "^(/[^[:space:]]*/)?chromium[[:space:]].*--user-data-dir=$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
+  # MP-08 / MP-11: Xorg/desktop clients may install Mode_switch on code8.
+  # Prepare one inert text slot after startup, before publishing readiness.
+  CHARIOX_OWNED_VIRTUAL_DISPLAY=1 /usr/bin/python3 "$ROOT/slice-keyboard.py" prepare-owned-keymap
   status
 }
 

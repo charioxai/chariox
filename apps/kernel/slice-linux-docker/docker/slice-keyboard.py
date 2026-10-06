@@ -3,6 +3,7 @@
 
 import json
 import logging
+import os
 import signal
 import sys
 import time
@@ -30,6 +31,38 @@ except ModuleNotFoundError as error:
     _XTestKeyboard = backend._XTestKeyboard
     character_to_layout_keysym = backend.character_to_layout_keysym
     universal_text_keysym = backend.universal_text_keysym
+
+
+def prepare_owned_text_keymap():
+    """MP-08 / MP-11: reserve code8 only during owned virtual-display boot."""
+    if os.environ.get('CHARIOX_OWNED_VIRTUAL_DISPLAY') != '1':
+        raise ValueError('owned virtual display required')
+    connection=display.Display()
+    connection.grab_server()
+    original_modifiers=None
+    original_row=None
+    try:
+        if any(connection.query_keymap()):
+            raise ValueError('held physical keys prevent keymap preparation')
+        original_modifiers=[list(row) for row in connection.get_modifier_mapping()]
+        original_row=list(connection.get_keyboard_mapping(8,1)[0])
+        modifiers=[[0 if code==8 else code for code in row] for row in original_modifiers]
+        if connection.set_modifier_mapping(modifiers) != Xlib.X.MappingSuccess:
+            raise ValueError('virtual keymap modifier preparation refused')
+        connection.change_keyboard_mapping(8,[[0]*len(original_row)])
+        connection.sync()
+        if any(connection.get_keyboard_mapping(8,1)[0]) or any(8 in row for row in connection.get_modifier_mapping()):
+            raise ValueError('virtual text slot unavailable')
+    except Exception:
+        if original_row is not None:
+            connection.change_keyboard_mapping(8,[original_row])
+            connection.set_modifier_mapping(original_modifiers)
+            connection.sync()
+        raise
+    finally:
+        connection.ungrab_server()
+        connection.sync()
+        connection.close()
 
 
 class SecretTargetChanged(Exception):
@@ -262,7 +295,9 @@ if __name__ == "__main__":
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, terminate)
     try:
-        if len(sys.argv) == 3 and sys.argv[1] == "hold-key":
+        if sys.argv[1:] == ["prepare-owned-keymap"]:
+            prepare_owned_text_keymap()
+        elif len(sys.argv) == 3 and sys.argv[1] == "hold-key":
             hold_input("key", sys.stdin.buffer.read(129).decode("ascii", errors="strict"), int(sys.argv[2]))
         elif len(sys.argv) == 6 and sys.argv[1] == "hold-button":
             hold_input("button", sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]))

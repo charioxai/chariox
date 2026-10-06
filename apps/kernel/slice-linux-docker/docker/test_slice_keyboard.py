@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace, ModuleType
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 
 class Display:
@@ -108,5 +108,36 @@ class KeyboardTextTests(unittest.TestCase):
         connection = self.type("日本語甲乙丙丁戊己庚辛壬")
         self.assertLess(len(set(connection.delivered)), len(connection.delivered))
 
+
+class OwnedKeymapTests(unittest.TestCase):
+    def connection(self):
+        c=MagicMock();c.query_keymap.return_value=bytes(32)
+        modifiers=[[50],[8,92],[],[],[],[],[],[]]
+        c.get_modifier_mapping.side_effect=lambda:modifiers
+        def set_modifiers(rows):
+            modifiers[:]=rows
+            return 0
+        c.set_modifier_mapping.side_effect=set_modifiers
+        row=[65406,0,65406,0]
+        c.get_keyboard_mapping.side_effect=lambda lo,n:[row[:]]
+        c.change_keyboard_mapping.side_effect=lambda lo,rows:row.__setitem__(slice(None),rows[0])
+        return c
+    def test_mp08_reserve_only_inert_owned_virtual_slot(self):
+        c=self.connection();m=helper(c);m.Xlib.X.MappingSuccess=0
+        with patch.dict(m.os.environ,{'CHARIOX_OWNED_VIRTUAL_DISPLAY':'1'}):m.prepare_owned_text_keymap()
+        self.assertEqual(c.set_modifier_mapping.call_args.args[0],[[50],[0,92],[],[],[],[],[],[]])
+        c.change_keyboard_mapping.assert_called_once_with(8,[[0,0,0,0]])
+        c.ungrab_server.assert_called_once();c.close.assert_called_once()
+    def test_mp11_held_key_refuses_before_any_keymap_change(self):
+        c=self.connection();c.query_keymap.return_value=bytes([0,1])+bytes(30);m=helper(c)
+        with patch.dict(m.os.environ,{'CHARIOX_OWNED_VIRTUAL_DISPLAY':'1'}):
+            with self.assertRaises(ValueError):m.prepare_owned_text_keymap()
+        c.set_modifier_mapping.assert_not_called();c.change_keyboard_mapping.assert_not_called()
+        c.ungrab_server.assert_called_once()
+    def test_mp11_real_desktop_is_never_implicitly_remapped(self):
+        c=self.connection();m=helper(c)
+        with patch.dict(m.os.environ,{},clear=True):
+            with self.assertRaises(ValueError):m.prepare_owned_text_keymap()
+        c.grab_server.assert_not_called();c.change_keyboard_mapping.assert_not_called()
 
 if __name__ == "__main__": unittest.main()
