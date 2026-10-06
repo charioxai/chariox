@@ -16,7 +16,7 @@ parser.add_argument('drill',choices=['linux-owned-desktop','native-computer','na
 parser.add_argument('--evidence',required=True)
 args=parser.parse_args()
 source=Path(__file__).resolve().parent
-files=['kernel-browser-refusal.mjs','native-keyboard-channel.mjs','browser-controller-snapshot.mjs','linux-owned-desktop.mjs','linux-owned-process.mjs','native-computer.mjs','native-computer.py','slice-keyboard.py','slice-text-finder.py','x11-text-keyboard.py']
+files=['kernel-browser-refusal.mjs','native-keyboard-channel.mjs','browser-controller-snapshot.mjs','linux-owned-desktop.mjs','linux-owned-process.mjs','linux-desktop-session.py','native-computer.mjs','native-computer.py','slice-keyboard.py','slice-text-finder.py','x11-text-keyboard.py']
 files += [name for name in ['native-accessibility.mjs','native-accessibility.py'] if (source/'docker'/name).exists()]
 head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()
 evidence=Path(args.evidence);evidence.mkdir(parents=True,exist_ok=True)

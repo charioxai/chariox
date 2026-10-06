@@ -18,5 +18,6 @@ test('MP-11 standalone Computer drill bundles every imported accessibility depen
    execFileSync(process.execPath,['--input-type=module','-e','await import(process.argv[1])',url],{stdio:'pipe',timeout:10000});
   }
   assert(names.includes('kernel-browser-refusal.mjs'));
+  assert(names.includes('linux-desktop-session.py'), 'MP-08 / MP-11 detached desktop supervisor must ship in the standalone drill');
  } finally {await rm(root,{recursive:true,force:true});}
 });
