@@ -38,6 +38,83 @@ fn credential_url(url: &url::Url) -> bool {
         })
 }
 
+fn credential_text(text: &str) -> bool {
+    let sensitive = |key: &str| {
+        let key = key.to_ascii_lowercase().replace('-', "_");
+        [
+            "password",
+            "passwd",
+            "secret",
+            "token",
+            "credential",
+            "private_key",
+            "api_key",
+            "apikey",
+            "authorization",
+            "access_key",
+        ]
+        .iter()
+        .any(|name| key.contains(name))
+    };
+    text.lines().any(|line| {
+        let line = line.trim();
+        let line = line
+            .strip_prefix("export ")
+            .or_else(|| line.strip_prefix("set "))
+            .unwrap_or(line);
+        let line = line.strip_prefix("$env:").unwrap_or(line);
+        let Some(index) = line.find(['=', ':']) else {
+            return false;
+        };
+        let key = line[..index].trim().trim_matches(['\'', '"', '{', ' ']);
+        let key = key.rsplit('.').next().unwrap_or(key);
+        key.bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            && sensitive(key)
+    }) || text.split_whitespace().any(|word| {
+        let word = word.trim_matches(['\'', '"', ',', ';']);
+        if word.to_ascii_lowercase().starts_with("authorization:") {
+            return true;
+        }
+        let Some(flag) = word.strip_prefix("--") else {
+            return false;
+        };
+        let flag = flag
+            .split('=')
+            .next()
+            .unwrap_or(flag)
+            .to_ascii_lowercase()
+            .replace('-', "_");
+        matches!(
+            flag.as_str(),
+            "token"
+                | "password"
+                | "passwd"
+                | "secret"
+                | "credential"
+                | "credentials"
+                | "authorization"
+                | "api_key"
+                | "apikey"
+                | "private_key"
+                | "access_key"
+                | "client_secret"
+                | "access_token"
+                | "auth_token"
+        ) || [
+            "_token",
+            "_password",
+            "_secret",
+            "_credential",
+            "_api_key",
+            "_private_key",
+            "_access_key",
+        ]
+        .iter()
+        .any(|suffix| flag.ends_with(suffix))
+    })
+}
+
 pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError> {
     let name = path.to_ascii_lowercase();
     if crate::project_environment::secret_looking_project_path(&name)
@@ -54,7 +131,7 @@ pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError
         return Err(refused());
     }
     if let Ok(text) = std::str::from_utf8(bytes) {
-        if crate::project_environment::contains_secret_configuration(text) {
+        if credential_text(text) {
             return Err(refused());
         }
         if let Ok(value) = serde_json::from_str::<Value>(text) {
@@ -82,7 +159,7 @@ fn validate_json(value: &Value) -> Result<(), DaemonError> {
                 return Err(refused());
             }
             for (key, value) in fields {
-                let lower = key.to_ascii_lowercase();
+                let lower = key.to_ascii_lowercase().replace('-', "_");
                 if [
                     "password",
                     "secret",
@@ -127,7 +204,7 @@ fn validate_json(value: &Value) -> Result<(), DaemonError> {
             }
         }
         Value::String(text) => {
-            if crate::project_environment::contains_secret_configuration(text) {
+            if credential_text(text) {
                 return Err(refused());
             }
             if let Ok(url) = url::Url::parse(text) {
@@ -332,6 +409,10 @@ mod tests {
             (".env", b"canary-value".as_slice()),
             ("auth.json", b"canary-value"),
             ("file", b"API_KEY=synthetic-canary"),
+            ("file", b"export API_KEY=synthetic-canary:with-colon"),
+            ("file", b"Authorization: Bearer synthetic-canary"),
+            ("file", br#"{"args":["--api-key","synthetic-canary"]}"#),
+            ("file", br#"{"x-api-key":"synthetic-canary"}"#),
             ("file", b"-----BEGIN PRIVATE KEY-----"),
             ("file", b"https://user:synthetic-canary@example.test"),
             ("file", b"https://example.test?token=synthetic-canary"),
@@ -344,6 +425,7 @@ mod tests {
         }
         assert!(validate_bytes("README.md", b"ordinary project instructions").is_ok());
         assert!(validate_bytes("origin-url", b"ssh://git@example.test/project.git").is_ok());
+        assert!(validate_bytes("file", br#"{"args":["--max-tokens","4096"]}"#).is_ok());
     }
     #[test]
     fn mp08_mp11_owner_package_refuses_credentials_in_git_history() {
