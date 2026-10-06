@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { access, mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { processIdentity, settleOwned, descendants } from './linux-owned-process.mjs';
@@ -16,6 +17,8 @@ export function desktopEnvironment(source, runtime, uid = process.getuid?.()) {
   return { ...env, TMPDIR: runtime, XAUTHORITY: path.join(runtime, 'Xauthority'), XDG_RUNTIME_DIR: runtime, NO_AT_BRIDGE: '0', GTK_A11Y: 'always', ACCESSIBILITY_ENABLED: '1' };
 }
 export const desktopBusAddress = () => `unix:abstract=chariox-desktop-${randomUUID()}`;
+export const desktopCommand = (binary, args) => ({ binary: '/usr/bin/python3',
+  args: [fileURLToPath(new URL('./linux-desktop-session.py', import.meta.url)), binary, ...args] });
 function authorityCookie(cookie, display) {
   // FamilyWild; the cookie is valid only on this server, whose displayfd is not yet known.
   const field = value => { const size = Buffer.alloc(2); size.writeUInt16BE(value.length); return Buffer.concat([size, value]); };
@@ -39,10 +42,13 @@ export class LinuxOwnedDesktop {
   }
   binding() { return this.current; }
   async launch(name, args, env, stdio = ['ignore', 'ignore', 'ignore']) {
-    const child = spawn(this.commands[name] ?? name, args, { env, stdio });
+    const core = ['Xvfb', 'bwrap', 'openbox', 'dbus-daemon'].includes(name);
+    const command = core ? desktopCommand(this.commands[name] ?? name, args)
+      : { binary: this.commands[name] ?? name, args };
+    const child = spawn(command.binary, command.args, { env, stdio });
     // Attach before the first asynchronous boundary to prevent unhandled spawn errors.
     child.on('error', () => {});
-    const record = { child, identity: null, core: ['Xvfb', 'bwrap', 'openbox', 'dbus-daemon'].includes(name) }; this.children.push(record);
+    const record = { child, identity: null, core }; this.children.push(record);
     if (!child.pid) throw new Error('MP-08: desktop executable unavailable');
     record.identity = await processIdentity(child.pid);
     if (!record.identity) throw new Error('MP-11: desktop child ownership unavailable');

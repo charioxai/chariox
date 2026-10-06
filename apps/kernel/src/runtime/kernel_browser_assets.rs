@@ -17,6 +17,7 @@ const ASSETS: &[(&str, &[u8])] = &[
 
     ("linux-owned-desktop.mjs", include_bytes!("../../slice-linux-docker/docker/linux-owned-desktop.mjs")),
     ("linux-owned-process.mjs", include_bytes!("../../slice-linux-docker/docker/linux-owned-process.mjs")),
+    ("linux-desktop-session.py", include_bytes!("../../slice-linux-docker/docker/linux-desktop-session.py")),
     (
         "kernel-browser-mirror-styles.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror-styles.mjs"),

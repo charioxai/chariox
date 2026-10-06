@@ -5,7 +5,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import * as linux from "./kernel-browser-linux.mjs";
 import * as macos from "./kernel-browser-macos.mjs";
-import { LinuxOwnedDesktop } from './linux-owned-desktop.mjs';
+import { LinuxOwnedDesktop, desktopCommand } from './linux-owned-desktop.mjs';
 import { connectCdpPipe } from './kernel-browser-cdp-pipe.mjs';
 
 function platformPolicy(platform) {
@@ -82,8 +82,10 @@ export class HostChromium {
       this.temporaryDirectory = await open(this.desktop?.runtime ?? this.root, 'r');
       environment = chromiumTemporaryEnvironment(environment, this.temporaryDirectory.fd);
     }
-    const child = spawn(binary, launchArguments(profile,
-      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1", Boolean(this.desktop?.binding())), {
+    const args = launchArguments(profile,
+      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1", Boolean(this.desktop?.binding()));
+    const command = this.desktop?.binding() ? desktopCommand(binary, args) : { binary, args };
+    const child = spawn(command.binary, command.args, {
       stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env: environment,
     });
     this.child = child;

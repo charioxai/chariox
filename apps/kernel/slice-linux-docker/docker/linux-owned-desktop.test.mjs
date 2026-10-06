@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
+import readline from 'node:readline';
 import os from 'node:os';
 import path from 'node:path';
 import { LinuxOwnedDesktop, desktopEnvironment, desktopBusAddress } from './linux-owned-desktop.mjs';
@@ -41,6 +42,39 @@ test('MP-08 desktop is lazy and failed start cleans its private runtime', async 
     assert.equal((await stat(root)).isDirectory(), true);
     await desktop.stop();
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('MP-08 / MP-11 detached GUI launch remains an owned descendant', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'culinux-session-test-'));
+  const desktop = new LinuxOwnedDesktop(root, { commands: { openbox: '/usr/bin/python3' } });
+  let detached;
+  try {
+    const code = `import os,json,time
+r,w=os.pipe()
+first=os.fork()
+if first==0:
+ os.close(r)
+ if os.fork()!=0:os._exit(0)
+ fields=open('/proc/self/stat').read().rsplit(') ',1)[1].split()
+ os.write(w,json.dumps({'pid':os.getpid(),'started':fields[19]}).encode())
+ os.close(w);time.sleep(30);os._exit(0)
+os.close(w);data=os.read(r,4096);os.close(r);os.waitpid(first,0)
+time.sleep(.2);print(data.decode(),flush=True);time.sleep(30)
+`;
+    const child = await desktop.launch('openbox', ['-c', code], process.env, ['ignore','pipe','ignore']);
+    const lines = readline.createInterface({ input: child.stdout });
+    detached = await new Promise((resolve,reject) => {
+      const timer=setTimeout(()=>reject(new Error('MP-08: fixture launch timeout')),5000);
+      lines.once('line',line=>{clearTimeout(timer);resolve(JSON.parse(line));});
+    });
+    lines.close();
+    assert((await desktop.ownedProcesses()).some(item=>item.pid===detached.pid));
+  } finally {
+    // The base deliberately loses this child; the creating fixture supplied
+    // its exact PID/start fingerprint, so cleanup never signals a foreign PID.
+    if(detached){const orphan=await processIdentity(detached.pid,1);if(orphan?.started===detached.started)await signalOwned(orphan,'SIGTERM');}
+    await desktop.stop();await rm(root,{recursive:true,force:true});
+  }
 });
 
 test('MP-11 stale root identity cannot acquire descendants or signal a replacement',async()=>{
