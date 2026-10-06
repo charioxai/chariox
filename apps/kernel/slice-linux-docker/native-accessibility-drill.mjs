@@ -28,13 +28,13 @@ try {
  const target=snapshot.nodes.find(node=>node.name==='Public action');assert(target);
  await assert.rejects(accessibility.action('agent:b',{target_id:target.target_id,tree_revision:snapshot.tree_revision,action:target.actions[0]},{}));
  await writeFile(path.join(root,'change'),'change');await delay(200);
- await assert.rejects(accessibility.action('agent:a',{target_id:target.target_id,tree_revision:snapshot.tree_revision,action:target.actions[0]},{}),/stale/);
+ await assert.rejects(accessibility.action('agent:a',{target_id:target.target_id,tree_revision:snapshot.tree_revision,action:target.actions[0]},{}),error=>error.code==='user_domain_stale_reference');
  let applied=false;
  for(let attempt=0;attempt<5;attempt++){
   await delay(100);snapshot=await accessibility.snapshot('agent:a',{});
   const fresh=snapshot.nodes.find(node=>node.name==='Changed public action');assert(fresh);
   try{await accessibility.action('agent:a',{target_id:fresh.target_id,tree_revision:snapshot.tree_revision,action:fresh.actions[0]},{});applied=true;break;}
-  catch(error){if(!/stale accessibility target/.test(error.message))throw error;}
+  catch(error){if(error.code!=='user_domain_stale_reference')throw error;}
  }
  assert(applied,'rediscovery must find a settled fresh target');
  await delay(100);assert.equal(await readFile(path.join(root,'clicked'),'utf8'),'public effect');

@@ -8,9 +8,9 @@ test('MP-11 handles are scoped to observer, surface, app identity and current re
  let current=structuredClone(tree),actions=0;
  const native=new NativeAccessibility({binding:()=>binding,execute:async request=>{if(request.op==='accessibility_action'){actions++;return {applied:true};}return current;}});
  const observed=await native.snapshot('agent:a',{});const target=observed.nodes[0].target_id;
- await assert.rejects(native.action('agent:b',{target_id:target,tree_revision:observed.tree_revision,action:'click'},{}),/target/);
+ await assert.rejects(native.action('agent:b',{target_id:target,tree_revision:observed.tree_revision,action:'click'},{}),error=>error.code==='user_domain_stale_reference');
  current.nodes[0].started='2';
- await assert.rejects(native.action('agent:a',{target_id:target,tree_revision:observed.tree_revision,action:'click'},{}),/stale/);
+ await assert.rejects(native.action('agent:a',{target_id:target,tree_revision:observed.tree_revision,action:'click'},{}),error=>error.code==='user_domain_stale_reference');
  assert.equal(actions,0);
 });
 test('MP-08 unavailable accessibility explicitly falls back to protected OCR',async()=>{
@@ -38,4 +38,11 @@ test('MP-11 target protection invalidates cached snapshots and direct old handle
   assert.equal(after.nodes[0].name, '[protected]');
   assert.deepEqual(after.nodes[0].actions, []);
   assert.equal(actions, 0);
+});
+
+test('MP-08 stale handles expose the existing typed refusal instead of a generic backend failure', async () => {
+ const native=new NativeAccessibility({binding:()=>binding,execute:async()=>structuredClone(tree)});
+ const observed=await native.snapshot('agent:a',{});const command={target_id:observed.nodes[0].target_id,tree_revision:observed.tree_revision,action:'click'};
+ await native.action('agent:a',command,{});
+ await assert.rejects(native.action('agent:a',command,{}), error=>error.code==='user_domain_stale_reference');
 });

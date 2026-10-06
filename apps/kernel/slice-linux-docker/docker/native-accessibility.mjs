@@ -1,4 +1,5 @@
 // MP-08 / MP-11: revision-bound opaque AT-SPI handles; the bus never crosses MCP.
+import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { executeNative } from './native-computer.mjs';
 import { redactObservation } from './browser-controller-snapshot.mjs';
@@ -34,9 +35,10 @@ export class NativeAccessibility {
   }
   async action(observer,command,policy,{signal}={}){
     const observed=this.observers.get(observer),target=observed?.handles.get(command.target_id);
-    if(!target || observed.revision!==command.tree_revision || target.protected || policy?.targets?.length || !target.actions.includes(command.action))throw new Error('MP-11: inaccessible or foreign target');
+    if(!target || observed.revision!==command.tree_revision)throw new UserDomainRefusal('stale_reference');
+    if(target.protected || policy?.targets?.length || !target.actions.includes(command.action))throw new UserDomainRefusal('not_granted');
     const {digest,binding,processes,rawDigest}=await this.read(policy,signal);
-    if(digest!==observed.digest){this.observers.delete(observer);throw new Error('MP-11: stale accessibility target; rediscover');}
+    if(digest!==observed.digest){this.observers.delete(observer);throw new UserDomainRefusal('stale_reference');}
     const result=await this.execute({op:'accessibility_action',processes,path:target.path,pid:target.pid,started:target.started,action:command.action,expected_tree_digest:rawDigest},binding.environment,signal);
     // Handles cannot be reused after a potentially mutating accessibility action.
     this.observers.delete(observer);
