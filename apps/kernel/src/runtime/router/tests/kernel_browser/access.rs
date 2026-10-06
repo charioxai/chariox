@@ -309,16 +309,19 @@ async fn check(native: bool) {
     )
     .await
     .unwrap();
-    assert!(tool(
-        &router,
-        token,
-        "chariox.kernel_browser_paste_secret",
-        json!({})
-    )
-    .await
-    .unwrap_err()
-    .to_string()
-    .contains("Vault fill requires focus"));
+    assert!(matches!(
+        tool(
+            &router,
+            token,
+            "chariox.kernel_browser_paste_secret",
+            json!({})
+        )
+        .await
+        .unwrap_err(),
+        crate::error::DaemonError::UserDomainRefused {
+            reason: crate::error::UserDomainRefusalReason::SensitiveRequiresFocus
+        }
+    ));
     if !native {
         assert!(
             root.join("input").exists(),

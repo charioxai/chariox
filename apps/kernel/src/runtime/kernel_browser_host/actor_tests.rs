@@ -70,9 +70,10 @@ done
     let policy = json!({"values":[],"targets":[],"unknown":false});
     std::thread::scope(|scope| {
         let running = scope.spawn(|| {
-            host.protected_request(
+            let admission = host.admit("alice", "agent").unwrap();
+            host.protected_request_admitted(
                 "alice",
-                Some("agent"),
+                Some(&admission),
                 "host.browser",
                 mutation.clone(),
                 policy.clone(),
@@ -120,11 +121,19 @@ done
         if focus_change {
             result.unwrap();
         } else {
-            assert!(result.unwrap_err().contains(if revoke {
-                "revoked"
+            let error = result.unwrap_err();
+            if revoke {
+                assert!(matches!(
+                    error,
+                    crate::error::HostFailure::Refused(
+                        crate::error::UserDomainRefusalReason::NotGranted
+                    )
+                ));
             } else {
-                "browser_action_cancelled"
-            }));
+                assert!(
+                    matches!(error, crate::error::HostFailure::Other(message) if message.contains("browser_action_cancelled"))
+                );
+            }
         }
     });
     assert_eq!(root.join("cancelled").exists(), !focus_change);
