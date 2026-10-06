@@ -4001,6 +4001,7 @@ mod tests {
         );
         let arm_request = |plan: ManagedContextPlanBinding, target_environment_id: &str| {
             RelayPeerRequest::ArmManagedContextImport {
+                destination: None,
                 plan,
                 target_environment_id: target_environment_id.to_string(),
                 target_kernel_id: target_kernel_id.to_string(),

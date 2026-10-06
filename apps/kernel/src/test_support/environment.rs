@@ -72,18 +72,41 @@ pub(crate) fn isolate_environment_test() -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        command.process_group(0);
+        // MP-11: retain an exclusive-session launch witness for safe timeout cleanup.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
     }
     let mut child = command
         .spawn()
         .expect("isolated environment test should start");
+    #[cfg(unix)]
+    let mut signals =
+        crate::runtime::owned_process_signals::OwnedProcessSignals::for_session_child(&child)
+            .expect("isolated test must retain its process identity");
     let status = child.wait_timeout(Duration::from_secs(180)).unwrap();
     if status.is_none() {
         #[cfg(unix)]
-        unsafe {
-            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        {
+            if signals.kill_group().is_err() {
+                signals
+                    .kill_owned_processes()
+                    .expect("stop only witnessed test descendants");
+            }
+            signals.kill_child().expect("stop the witnessed test child");
         }
-        let _ = child.kill();
+        #[cfg(not(unix))]
+        {
+            if child.id() > 1 {
+                let _ = child.kill();
+            }
+        }
         let _ = child.wait();
     }
     let stdout = std::fs::read_to_string(stdout).unwrap();
