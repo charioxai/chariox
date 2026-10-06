@@ -20,6 +20,42 @@ def row_geometry(height):
     edges=[2*((height//2*i)//8) for i in range(9)]
     return [(edges[i],edges[i+1]-edges[i]) for i in range(8)]
 
+class BgrConverter:
+    """MP-08/MP-10: write SIMD I420 directly into AV planes; no BGR AV copy.
+    Optional BSD libyuv stays in the helper. Missing auto discovery uses PyAV.
+    An explicit library failure is surfaced rather than changing that choice.
+    """
+    def __init__(self,library=None):
+        explicit=library or os.environ.get('CHARIOX_BROWSER_DISPLAY_LIBYUV')
+        name=None if library is False or explicit=='off' else explicit or ctypes.util.find_library('yuv')
+        self.convert_native=None
+        if name:
+            try:
+                self.library=ctypes.CDLL(name)
+                self.convert_native=self.library.ARGBToI420
+                self.convert_native.argtypes=[ctypes.c_void_p,ctypes.c_int]*4+[ctypes.c_int]*2
+                self.convert_native.restype=ctypes.c_int
+            except OSError:
+                if explicit:raise
+        self.reformatter=av.video.reformatter.VideoReformatter()
+
+    def convert(self,data,width,height):
+        if width<16 or width>2560 or height<2 or height>1600 or width%2 or height%2 or len(data)!=width*height*4:
+            raise ValueError('BGR conversion geometry')
+        if not self.convert_native:
+            frame=av.VideoFrame(width,height,'bgr0');plane=frame.planes[0]
+            if plane.line_size!=width*4:
+                padded=bytearray(plane.buffer_size)
+                for row in range(height):padded[row*plane.line_size:row*plane.line_size+width*4]=data[row*width*4:(row+1)*width*4]
+                plane.update(padded)
+            else:plane.update(data)
+            return self.reformatter.reformat(frame,format='yuv420p')
+        frame=av.VideoFrame(width,height,'yuv420p')
+        args=[ctypes.cast(ctypes.c_char_p(data),ctypes.c_void_p),width*4]
+        for plane in frame.planes:args.extend([plane.buffer_ptr,plane.line_size])
+        if self.convert_native(*args,width,height)!=0:raise ValueError('BGR conversion failed')
+        return frame
+
 class StripeEncoder:
     def __init__(self):
         self.rows={};self.config=None
@@ -55,9 +91,9 @@ class StripeEncoder:
                     codec.options={'preset':'ultrafast','tune':'zerolatency','profile':'baseline','level':'5.1','crf':'23','g':'120','bf':'0','forced-idr':'1','x264-params':f'sync-lookahead=0:repeat-headers=1:annexb=1:rc-lookahead=0:vbv-maxrate={max(16,codec.bit_rate//1000)}:vbv-bufsize={max(16,codec.bit_rate//20000)}'}
                 elif backend=='libopenh264':codec.options={'profile':'constrained_baseline','allow_skip_frames':'0','rc_mode':'bitrate','max_nal_size':'0'}
                 else:codec.options={'deadline':'realtime','cpu-used':'8','lag-in-frames':'0','g':'120','error-resilient':'1','bufsize':str(max(16000,codec.bit_rate//20)),'maxrate':str(codec.bit_rate),'minrate':'0','undershoot-pct':'95','overshoot-pct':'5','qmin':'4','qmax':'48','rc_init_occupancy':str(max(16000,codec.bit_rate//20)),'max-intra-rate':'200'}
-                old={'codec':codec,'sequence':0};self.rows[row]=old
-            codec=old['codec'];frame=av.VideoFrame(width,h,'bgr0');frame.planes[0].update(data)
-            frame=frame.reformat(format='yuv420p');frame.time_base=codec.time_base;frame.pts=old['sequence']
+                old={'codec':codec,'sequence':0,'converter':BgrConverter()};self.rows[row]=old
+            codec=old['codec'];frame=old['converter'].convert(data,width,h)
+            frame.time_base=codec.time_base;frame.pts=old['sequence']
             frame.pict_type=av.video.frame.PictureType.I if old['sequence']==0 else av.video.frame.PictureType.NONE
             packets=list(codec.encode(frame))
             if len(packets)!=1:raise ValueError('stripe packet count')

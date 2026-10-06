@@ -6,6 +6,22 @@ sys.dont_write_bytecode=True
 spec=importlib.util.spec_from_file_location('stripes',Path(__file__).with_name('kernel-browser-stripes.py'))
 s=importlib.util.module_from_spec(spec);spec.loader.exec_module(s)
 class StripeTests(unittest.TestCase):
+ def test_mp10_direct_bgrx_conversion_channel_order_stride_and_fallback(self):
+  # MP-08/MP-10: compare actual SIMD planes with the portable converter.
+  import os
+  library=os.environ.get('CHARIOX_BROWSER_DISPLAY_LIBYUV')
+  if not library:self.skipTest('explicit libyuv path required for SIMD comparison')
+  fast=s.BgrConverter(library);portable=s.BgrConverter(False)
+  for colour in [(0,0,0,0),(255,255,255,0),(255,0,0,0),(0,255,0,0),(0,0,255,0)]:
+   data=bytes(colour)*(130*18)
+   a=fast.convert(data,130,18);b=portable.convert(data,130,18)
+   for pa,pb in zip(a.planes,b.planes):
+    for y in range(pa.height):
+     aa=bytes(pa)[y*pa.line_size:y*pa.line_size+pa.width]
+     bb=bytes(pb)[y*pb.line_size:y*pb.line_size+pb.width]
+     self.assertTrue(all(abs(x-y)<=1 for x,y in zip(aa,bb)),colour)
+  with self.assertRaises(ValueError):fast.convert(b'bad',130,18)
+
  def test_real_row_chains_loss_and_idle(self):
   e=s.StripeEncoder();pixels=bytearray(128*128*4);decoders={}
   first=e.encode(pixels,128,128,8000000)

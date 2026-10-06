@@ -6,7 +6,13 @@ test('MD-DISPLAY invalidation and close retire in-flight encoding',async()=>{con
 test('MD-DISPLAY exact repair retains a fully delivered video reference, avoiding a key per click',async()=>{const f=fixture();f.offer(1);await f.m.active;assert.equal(f.m.take().encoded.key,true);f.m.retireUnsent();f.offer(2);await f.m.active;assert.equal(f.m.take().encoded.key,false);await f.m.close()});
 test('MD-DISPLAY full queue preserves decoder references and coalesces only unencoded source work',async()=>{const f=fixture();for(let n=1;n<=5;n++){f.offer(n);await f.m.active}assert.deepEqual(f.calls.map(x=>x.image),['1','2']);assert.equal(f.m.frames.length,2);assert.equal(f.m.take().serial,1);await f.m.active;assert.deepEqual(f.calls.map(x=>x.image),['1','2','5']);assert.equal(f.m.take().serial,2);assert.equal(f.m.take().serial,5);assert.equal(f.calls[2].key,false);await f.m.close()});
 
-test('MD-DISPLAY credit pressure has hysteresis, bounded rate and recovery',()=>{let time=0;const r=new CreditBudget(2000000,()=>time);assert.equal(r.feedback(4),false);time=500;assert.equal(r.feedback(4),true);assert.equal(r.bitrate,1600000);for(let i=0;i<20;i++){time+=500;r.feedback(8)}assert.equal(r.bitrate,500000);r.feedback(0);time+=2000;r.feedback(0);assert.equal(r.bitrate,550000);assert.equal(r.feedback(NaN),false);for(let i=0;i<30;i++){time+=2000;r.feedback(0)}assert.equal(r.bitrate,2000000)});
+test('MD-DISPLAY credit pressure has hysteresis, bounded rate and recovery',()=>{let time=0;const r=new CreditBudget(2000000,()=>time);assert.equal(r.feedback(6),false);time=500;assert.equal(r.feedback(6),true);assert.equal(r.bitrate,1600000);for(let i=0;i<20;i++){time+=500;r.feedback(8)}assert.equal(r.bitrate,500000);r.feedback(0);time+=2000;r.feedback(0);assert.equal(r.bitrate,550000);assert.equal(r.feedback(NaN),false);for(let i=0;i<30;i++){time+=2000;r.feedback(0)}assert.equal(r.bitrate,2000000)});
+
+test('MP-08/MP-10 ordinary four-credit pipelining does not ratchet encoding to its bitrate floor',()=>{
+ let now=0;const rate=new CreditBudget(8000000,()=>now);
+ for(;now<10000;now+=16)rate.feedback(3);
+ assert.equal(rate.bitrate,8000000,'three unacknowledged frames are a normal admitted window');
+});
 test('MD-DISPLAY exact refinement retires stale work without re-encoding the same source serial',async()=>{const f=fixture();f.offer(1);await f.m.active;f.m.retireUnsent();f.offer(1);await f.m.active;assert.equal(f.calls.length,1);assert.equal(f.m.take(),null);f.offer(2);await f.m.active;assert.equal(f.m.take().encoded.key,true);await f.m.close()});
 
 test('MD-DISPLAY stale encoded queue recovers latest source with a key and bounds memory',async()=>{

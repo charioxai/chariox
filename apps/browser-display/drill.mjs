@@ -96,12 +96,17 @@ try {
   openh264Adapter=path.join(destination,'chariox-openh264.so');receipt.openh264_mode='Cisco2.6.0 native SCREEN_CONTENT_REAL_TIME, verified by GetOption; externally runtime-downloaded library';
  }
  const python=path.join(root,'python');await mkdir(python);
+ if(process.env.MD_LIBYUV){
+  const contents=await readFile(process.env.MD_LIBYUV),destination=path.join(python,'libyuv.so.0');await writeFile(destination,contents);
+  override.CHARIOX_BROWSER_DISPLAY_LIBYUV=destination;
+  receipt.colour_converter={name:'libyuv ARGBToI420 (little-endian BGRx)',sha256:createHash('sha256').update(contents).digest('hex')};
+ }
  for(const name of ['av','av.libs'])await cp(path.join(pytools,name),path.join(python,name),{recursive:true});
  const pythonWrapper=path.join(root,'encoder-python');
  const profiles=path.join(root,'profiles');let profiling='';
  if(process.env.MD_PROFILE==='1'){
   await mkdir(profiles,{mode:0o700});await chown(profiles,runUid,runGid);
-  profiling=`if [ "$1" = "-u" ]; then shift; fi\ncase "$1" in\n *kernel-browser-encoder.py) set -- -m cProfile -o ${quote(path.join(profiles,'encoder.prof'))} "$@" ;;\n *kernel-browser-xshm.py) set -- -m cProfile -o ${quote(path.join(profiles,'capture.prof'))} "$@" ;;\nesac\n`;
+  profiling=`if [ "$1" = "-u" ]; then shift; fi\ncase "$1" in\n *kernel-browser-encoder.py) set -- -m cProfile -o ${quote(profiles)}/encoder.$$.prof "$@" ;;\n *kernel-browser-xshm.py) set -- -m cProfile -o ${quote(profiles)}/capture.$$.prof "$@" ;;\nesac\n`;
   const nodeWrapper=path.join(root,'controller-node');
   await writeFile(nodeWrapper,`#!/bin/sh\nexec ${quote(process.execPath)} --cpu-prof --cpu-prof-dir=${quote(profiles)} "$@"\n`,{mode:0o755});
   override.CHARIOX_BROWSER_CONTROLLER_NODE=nodeWrapper;
@@ -347,7 +352,7 @@ finally {
  async function collectTiming(directory){for(const entry of await readdir(directory,{withFileTypes:true}).catch(()=>[])){const p=path.join(directory,entry.name);if(entry.isDirectory()&&entry.name!=='profile')await collectTiming(p);else if(entry.name==='display-timing.jsonl'){const lines=(await readFile(p,'utf8')).trim().split('\n');for(const line of lines)if(line)traces.push(JSON.parse(line));}}}
  await collectTiming(path.join(root,'home','chariox'));
  if(process.env.MD_PROFILE==='1')for(const name of await readdir(path.join(root,'profiles')).catch(()=>[])){
-  if(/^(CPU\.[\w.-]+\.cpuprofile|encoder\.prof|capture\.prof)$/.test(name))await cp(path.join(root,'profiles',name),path.join(output,name));
+  if(/^(CPU\.[\w.-]+\.cpuprofile|(?:encoder|capture)\.\d+\.prof)$/.test(name))await cp(path.join(root,'profiles',name),path.join(output,name));
  }
  receipt.host_timings=traces;receipt.kernel_timings=Buffer.concat(log).toString().split('\n').filter(line=>line.startsWith('MD-DISPLAY-TIMING ')).map(line=>JSON.parse(line.slice('MD-DISPLAY-TIMING '.length)));
  receipt.stage_breakdown=summarizeStages(receipt);

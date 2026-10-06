@@ -31,7 +31,7 @@ export class MotionEncoder {
   // independently decodable base a bounded300ms; stale deltas still retire
   // their entire reference chain after100ms, and older keys also retire.
   if(oldest && age>((oldest.encoded.key||oldest.encoded.stripes?.every(r=>r.key))?300:100) && this.source.sample()?.serial>oldest.serial){
-   this.rate.feedback(4);this.invalidateRows();this.pump();return null;
+   this.rate.feedback(8);this.invalidateRows();this.pump();return null;
   }
   const frame=this.frames.shift()??null;this.pump();return frame;
  }
@@ -47,7 +47,9 @@ export class CreditBudget {
  constructor(ceiling,now=()=>performance.now()){this.ceiling=ceiling;this.bitrate=ceiling;this.floor=Math.min(ceiling,500000);this.now=now;this.changedAt=now();this.pressureAt=null;this.clearAt=null;}
  feedback(lag){
   const now=this.now();if(!Number.isSafeInteger(lag)||lag<0||lag>8)return false;
-  if(lag>=3){this.clearAt=null;this.pressureAt??=now;if(now-this.pressureAt<500||now-this.changedAt<500)return false;this.pressureAt=now;return this.set(Math.max(this.floor,Math.round(this.bitrate*.8)),now)}
+  // MP-08/MP-10: up to four pipelined credits are ordinary scheduling, not
+  // evidence of congestion. Reserve adaptation for a nearly full8-frame window.
+  if(lag>=6){this.clearAt=null;this.pressureAt??=now;if(now-this.pressureAt<500||now-this.changedAt<500)return false;this.pressureAt=now;return this.set(Math.max(this.floor,Math.round(this.bitrate*.8)),now)}
   this.pressureAt=null;if(lag<=1){this.clearAt??=now;if(now-this.clearAt>=2000&&now-this.changedAt>=2000){this.clearAt=now;return this.set(Math.min(this.ceiling,Math.round(this.bitrate*1.1)),now)}}else this.clearAt=null;return false;
  }
  set(value,now){if(value===this.bitrate)return false;this.bitrate=value;this.changedAt=now;return true;}
