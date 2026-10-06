@@ -503,7 +503,7 @@ fn mdaccess_retained_browser_scope_allows_input_but_no_new_resources_or_vault() 
         )
         .unwrap();
     }
-    for op in ["state", "start", "stop", "navigate", "close"] {
+    for op in ["state", "start", "navigate", "close"] {
         host.scope_browser_request(
             Some(&admission),
             "host.browser",
@@ -528,6 +528,43 @@ fn mdaccess_retained_browser_scope_allows_input_but_no_new_resources_or_vault() 
         .check_admission(Some(&admission))
         .unwrap_err()
         .contains("not_granted"));
+}
+
+#[test]
+fn mdaccess_global_stop_requires_current_focus_even_with_retained_tabs() {
+    for retained_tab in [false, true] {
+        let host = KernelBrowserHost::new(PathBuf::from("/tmp/mdaccess-global-stop"));
+        host.set_focus("owner", Some("first"));
+        host.load("owner", "first").unwrap();
+        let first = host.admit("owner", "first").unwrap();
+        if retained_tab {
+            host.claim_resource(
+                Some(&first),
+                UserDomainResource::BrowserTab {
+                    tab_id: "tab".into(),
+                },
+                false,
+            )
+            .unwrap();
+        }
+        host.set_focus("owner", Some("second"));
+        host.load("owner", "second").unwrap();
+        let second = host.admit("owner", "second").unwrap();
+        // Stop is global, including when a caller supplies an unrelated tab_id.
+        for command in [json!({"op":"stop"}), json!({"op":"stop","tab_id":"tab"})] {
+            assert!(host
+                .scope_browser_request(Some(&first), "host.browser", &command)
+                .unwrap_err()
+                .contains("not_focused_agent"));
+        }
+        host.scope_browser_request(Some(&second), "host.browser", &json!({"op":"stop"}))
+            .unwrap();
+        host.scope_browser_request(None, "host.browser", &json!({"op":"stop"}))
+            .unwrap();
+        host.set_focus("owner", Some("first"));
+        host.scope_browser_request(Some(&first), "host.browser", &json!({"op":"stop"}))
+            .unwrap();
+    }
 }
 
 #[test]

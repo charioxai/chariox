@@ -254,6 +254,17 @@ impl KernelBrowserHost {
             .lock()
             .map_err(|_| "MP-11: grant lock unavailable")?;
         Self::check_admission_epoch(&state, admission)?;
+        // Stop affects the entire owner's controller, including tabs and App
+        // views outside this agent's retained resource set. A tab_id supplied
+        // by the caller cannot turn it into a resource-scoped operation.
+        if method == "host.browser"
+            && params["op"] == "stop"
+            && state.access.focused(&admission.user) != Some(agent)
+        {
+            return Err(
+                "MP-11: not_focused_agent: stopping the user browser requires current focus".into(),
+            );
+        }
         state
             .access
             .prune_subscriptions(&admission.user, agent, Instant::now());
