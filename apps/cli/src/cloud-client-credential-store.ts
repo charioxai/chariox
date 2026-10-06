@@ -1,4 +1,5 @@
 import { withCloudClientProfileLock } from "./cloud-client-profile-lock.js"
+import { cloudClientCallerScope, validCloudClientSessionScopes, type CloudClientSessionScope } from "./cloud-client-collaboration-scope.js"
 import { randomBytes } from "node:crypto"
 import { constants } from "node:fs"
 import { mkdir, open, rename, rm } from "node:fs/promises"
@@ -15,6 +16,8 @@ export type CloudClientCredential = {
   accessToken: string
   expiresAtMs: number
   pendingRotationId?: string
+  loginId?: string
+  collaborationScopes?: CloudClientSessionScope[]
 }
 
 /** This file contains client authority only; never expose it as kernel status
@@ -31,14 +34,30 @@ export class CloudClientCredentialStore {
       let value: CloudClientCredential
       try { value = JSON.parse(await handle.readFile("utf8")) as CloudClientCredential } catch { throw new CloudClientAuthError("invalid_credential_file") }
       if (!value.profile?.accountId || !value.profile.apiUrl || !value.clientId || !/^[0-9a-f]{64}$/.test(value.publicKeyThumbprint) || !value.refreshCredential || !value.accessToken || !Number.isFinite(value.expiresAtMs)) throw new CloudClientAuthError("invalid_credential_file")
+      if (!validCloudClientSessionScopes(value.collaborationScopes)) throw new CloudClientAuthError("invalid_credential_file")
+      if (value.loginId !== undefined && !/^[0-9a-f]{32}$/.test(value.loginId)) throw new CloudClientAuthError("invalid_credential_file")
       return value
     } finally { await handle.close() }
   }
   async saveLogin(value: CloudClientCredential): Promise<void> {
     await this.lock(async () => {
       const previous = await this.load()
-      if (previous && (previous.profile.accountId !== value.profile.accountId || previous.clientId !== value.clientId || previous.publicKeyThumbprint !== value.publicKeyThumbprint)) throw new CloudClientAuthError("profile_conflict")
-      await this.write(value)
+      if (previous && cloudClientCallerScope(previous) !== cloudClientCallerScope(value)) throw new CloudClientAuthError("profile_conflict")
+      await this.write({...value, loginId: previous?.loginId ?? randomBytes(16).toString("hex"), ...(previous?.collaborationScopes ? {collaborationScopes: previous.collaborationScopes} : {})})
+    })
+  }
+  async rememberSessionScope(credential: CloudClientCredential, session: {sessionId: string; accountId: string}): Promise<void> {
+    if (![session.sessionId, session.accountId].every(field => typeof field === "string" && field.length > 0)) throw new CloudClientAuthError("invalid_collaboration_scope")
+    await this.lock(async () => {
+      const current = await this.load()
+      if (!current) throw new CloudClientAuthError("login_required")
+      const caller = cloudClientCallerScope(credential)
+      if (cloudClientCallerScope(current) !== caller || current.loginId !== credential.loginId) throw new CloudClientAuthError("profile_conflict")
+      // Merge against the latest file under the refresh/logout lock. Retain
+      // previous namespaces for contacts; the last hint selects member lookup.
+      const scopes = (current.collaborationScopes ?? []).filter(scope => !(scope.caller === caller && scope.sessionId === session.sessionId && scope.accountId === session.accountId))
+      current.collaborationScopes = [...scopes, {caller, sessionId: session.sessionId, accountId: session.accountId}]
+      await this.write(current)
     })
   }
   async clear(): Promise<void> { await this.lock(() => rm(this.filePath, { force: true })) }
@@ -72,11 +91,13 @@ export class CloudClientCredentialStore {
     })
   }
   private async write(value: CloudClientCredential) {
+    const serialized = JSON.stringify({ ...value, profile: publicRelayCloudProfile(value.profile) })
+    if (Buffer.byteLength(serialized) > 64*1024) throw new CloudClientAuthError("credential_file_too_large")
     await mkdir(path.dirname(this.filePath), { recursive: true, mode: 0o700 })
     const temporary = `${this.filePath}.${randomBytes(16).toString("hex")}.tmp`
     const handle = await open(temporary, "wx", 0o600)
     try {
-      try { await handle.writeFile(JSON.stringify({ ...value, profile: publicRelayCloudProfile(value.profile) })); await handle.sync() }
+      try { await handle.writeFile(serialized); await handle.sync() }
       finally { await handle.close() }
       await rename(temporary, this.filePath)
       const directory = await open(path.dirname(this.filePath), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)

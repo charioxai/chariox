@@ -19,7 +19,7 @@ type LoginResult = { status: string; intervalSeconds?: number; profile?: RelayCl
 /** Client authority handles Cloud bootstrap only. Runtime requests always use
  * the ordinary encrypted LocalIpcClient path to the selected kernel. */
 export class CloudClient {
-  readonly collaboration = new CloudClientCollaboration(request => this.authenticated(request))
+  readonly collaboration = new CloudClientCollaboration(request => this.authenticated(request), (credential, session) => this.store.rememberSessionScope(credential, session))
   private renewal: RelayAuthRenewal | undefined
   private clients = new Set<LocalIpcClient>()
   private onRevoked: (() => void) | undefined

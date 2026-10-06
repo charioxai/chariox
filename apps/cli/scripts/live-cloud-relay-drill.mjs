@@ -244,7 +244,7 @@ async function main() {
       "SessionInviteCreated",
     )
     const cloudInvite = await terminal.client.collaboration.createSessionInvite(created.session.id, {
-      displayName: "Cloud relay shared session drill", maxUses: 3,
+      displayName: "Cloud relay shared session drill", maxUses: 2,
     })
     const localInviteToken = localInvite.invite?.invite_token
     const cloudInviteToken = cloudInvite.invite?.invite_token
@@ -258,7 +258,7 @@ async function main() {
     scopedClients.push(ownerScopedClient)
 
     stage("cloud-peer-login")
-    const peerLogin = await loginCloudDrillUser(apiUrl, {
+    let peerLogin = await loginCloudDrillUser(apiUrl, {
       modules, stateRoot, name: "peer-terminal", email: `${runId}-peer@example.com`, accountSlug: `${runId}-peer`,
     })
     terminals.push(peerLogin)
@@ -266,7 +266,7 @@ async function main() {
     const peerClientId = peerProfile.clientId
 
     stage("cloud-third-login")
-    const thirdLogin = await loginCloudDrillUser(apiUrl, {
+    let thirdLogin = await loginCloudDrillUser(apiUrl, {
       modules, stateRoot, name: "third-terminal", email: `${runId}-third@example.com`, accountSlug: `${runId}-third`,
     })
     terminals.push(thirdLogin)
@@ -294,10 +294,10 @@ async function main() {
     }
 
     stage("cloud-peer-relay-join")
-    const peerRemoteClient = await connectSessionScopedCloudClient(modules, peerLogin, scope)
+    let peerRemoteClient = await connectSessionScopedCloudClient(modules, peerLogin, scope)
     lifecycle.guardClient(peerRemoteClient)
     scopedClients.push(peerRemoteClient)
-    const thirdRemoteClient = await connectSessionScopedCloudClient(modules, thirdLogin, scope)
+    let thirdRemoteClient = await connectSessionScopedCloudClient(modules, thirdLogin, scope)
     lifecycle.guardClient(thirdRemoteClient)
     scopedClients.push(thirdRemoteClient)
     try {
@@ -313,6 +313,31 @@ async function main() {
         "SessionAttached",
       )
       assert(thirdAttached.attachment?.session_id === created.session.id, "third user should attach to joined session", thirdAttached)
+
+      await peerRemoteClient.close(); await thirdRemoteClient.close()
+      // MP-08 / MP-10 / MP-11: the two-use invite is exhausted. Reconstruct
+      // both terminals from their saved private profiles without accepting again.
+      stage("cloud-collaborator-terminal-restart")
+      peerLogin.client.stop(); thirdLogin.client.stop()
+      peerLogin = {...createCloudDrillClient(modules, stateRoot, "peer-terminal"), profile: peerProfile}
+      thirdLogin = {...createCloudDrillClient(modules, stateRoot, "third-terminal"), profile: thirdProfile}
+      terminals.push(peerLogin, thirdLogin)
+      await peerLogin.client.resume(); await thirdLogin.client.resume()
+
+      peerRemoteClient = await connectSessionScopedCloudClient(modules, peerLogin, scope)
+      thirdRemoteClient = await connectSessionScopedCloudClient(modules, thirdLogin, scope)
+      for (const [client, clientId] of [[peerRemoteClient, peerClientId], [thirdRemoteClient, thirdClientId]]) {
+        lifecycle.guardClient(client); scopedClients.push(client)
+        const reattached = unwrap(await client.send(requests.attachToSessionRequest(created.session.id, `${clientId}-restarted`)), "SessionAttached")
+        assert(reattached.attachment?.session_id === created.session.id, "restarted collaborator should reattach without rejoining")
+      }
+      for (const [name, login] of [["peer", peerLogin], ["third", thirdLogin]]) {
+        stage(`cloud-${name}-restored-members-and-contacts`)
+        const restored = await login.client.collaboration.sessionMembers(created.session.id)
+        assert(restored.members.some(member => member.user_id === login.profile.userId), "restarted collaborator should list shared members without accepting again")
+        const contacts = await login.client.collaboration.collaborators()
+        assert(contacts.some(contact => contact.user_id === kernelProfile.userId), "restarted collaborator should list the inviter from its shared account")
+      }
       const members = unwrap(
         await peerRemoteClient.send(requests.listSessionMembersRequest(created.session.id)),
         "SessionMembersListed",

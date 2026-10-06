@@ -112,3 +112,71 @@ test("lost reply recovery persists an expired successor before rotating again, i
     assert.equal(calls, 4)
   } finally { globalThis.fetch = before; await rm(root, { recursive: true, force: true }) }
 })
+
+// MP-08 / MP-11: restart, concurrent profile rotation, and collaboration
+// persistence share one private file/lock; public profile authority is separate.
+test("MP-08 / MP-11: concurrent scope writes merge with refresh and survive profile reload/login resume", async t => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-client-scope-"))
+  t.after(() => rm(root, {recursive: true, force: true}))
+  const store = new CloudClientCredentialStore(join(root, "client.json")), other = new CloudClientCredentialStore(store.filePath)
+  await store.saveLogin(credential())
+  const original = (await store.load())!
+  t.mock.method(globalThis, "fetch", async () => {
+    await new Promise(resolve => setTimeout(resolve, 25))
+    return Response.json({refreshCredential: "synthetic-next", cloudSessionToken: "synthetic-next-access", cloudSessionExpiresAt: new Date(Date.now()+900_000).toISOString()})
+  })
+  await Promise.all([
+    store.session(key),
+    store.rememberSessionScope(original, {sessionId: "shared", accountId: "owner-A"}),
+    other.rememberSessionScope(original, {sessionId: "second", accountId: "owner-C"}),
+  ])
+  await other.rememberSessionScope(original, {sessionId: "shared", accountId: "personal"})
+  await other.rememberSessionScope(original, {sessionId: "shared", accountId: "owner-A"})
+  let current = (await new CloudClientCredentialStore(store.filePath).load())!
+  assert.equal(current.accessToken, "synthetic-next-access", "stale acceptance must not overwrite refresh")
+  assert.equal(current.loginId, original.loginId)
+  assert.equal(current.collaborationScopes!.length, 3, "repeat hints replace only the exact caller/session/account tuple")
+  assert.deepEqual(current.collaborationScopes!.filter(scope => scope.sessionId === "shared").map(scope => scope.accountId), ["personal", "owner-A"])
+  await store.saveLogin({...current, collaborationScopes: []})
+  current = (await store.load())!
+  assert.equal(current.collaborationScopes!.length, 3)
+  assert.equal((await stat(store.filePath)).mode & 0o777, 0o600)
+  t.mock.method(globalThis, "fetch", async () => Response.json({error: {code: "client_revoked"}}, {status: 401}))
+  await assert.rejects(store.session(key, true), /client_revoked/)
+  assert.equal(await store.load(), null, "revocation removes private hints with authority")
+})
+
+test("MP-08 / MP-11: scope persistence rejects stale callers after logout, relogin or profile replacement", async t => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-client-scope-isolation-"))
+  t.after(() => rm(root, {recursive: true, force: true}))
+  const store = new CloudClientCredentialStore(join(root, "client.json"))
+  await store.saveLogin(credential())
+  const original = (await store.load())!
+  await store.rememberSessionScope(original, {sessionId: "shared", accountId: "owner"})
+  const saved = (await store.load())!
+  for (const changed of [
+    {...saved, profile: {...saved.profile, apiUrl: "https://foreign.example.test"}},
+    {...saved, profile: {...saved.profile, userId: "foreign"}},
+    {...saved, profile: {...saved.profile, accountId: "foreign"}},
+    {...saved, clientId: "foreign"},
+    {...saved, publicKeyThumbprint: "b".repeat(64)},
+  ]) {
+    await assert.rejects(store.rememberSessionScope(changed, {sessionId: "shared", accountId: "foreign"}), /profile_conflict/)
+    await assert.rejects(store.saveLogin(changed), /profile_conflict/)
+  }
+  await store.clear()
+  await assert.rejects(store.rememberSessionScope(original, {sessionId: "shared", accountId: "owner"}), /login_required/)
+  await store.saveLogin(credential())
+  assert.equal((await store.load())!.collaborationScopes, undefined)
+  await assert.rejects(store.rememberSessionScope(original, {sessionId: "shared", accountId: "owner"}), /profile_conflict/, "a new login family cannot inherit a late acceptance from the revoked family")
+})
+
+test("MP-08 / MP-11: oversized scope writes fail without corrupting the readable private profile", async t => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-client-scope-bound-"))
+  t.after(() => rm(root, {recursive: true, force: true}))
+  const store = new CloudClientCredentialStore(join(root, "client.json"))
+  await store.saveLogin(credential())
+  const original = (await store.load())!
+  await assert.rejects(store.rememberSessionScope(original, {sessionId: "shared", accountId: "x".repeat(64*1024)}), /credential_file_too_large/)
+  assert.equal((await store.load())!.collaborationScopes, undefined)
+})
