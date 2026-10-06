@@ -511,6 +511,7 @@ impl Kernel {
             .request(serde_json::json!({"GetSessionState":{"session_id":session}}))
             .await;
         assert!(response["error"].is_null(), "{response}");
+        assert_eq!(response["response"]["SessionState"]["session"]["id"], session);
         response["response"]["SessionState"]["session"]["active_interactions"]
             .as_array()
             .cloned()
@@ -956,7 +957,7 @@ async fn external_sudo_unix_socket_requires_grant_projects_identity_and_expires_
     let id = popup["id"].as_str().unwrap();
     let message = popup["message"].as_str().unwrap();
     assert!(message.contains(&format!("OS pid {}", holder.child.id())));
-    assert!(message.contains("access-vault-agent") && message.contains(SESSION));
+    assert!(message.contains("agent access-vault-agent in session other-session"));
     assert!(message.contains("Requester-supplied prompt:\nfull external\nprompt"));
     let refused = kernel.request(serde_json::json!({"RespondToInteraction":{"session_id":SESSION,"interaction_id":id,"choice_id":"refuse"}})).await;
     assert!(refused["error"].is_null(), "{refused}");
@@ -968,13 +969,7 @@ async fn external_sudo_unix_socket_requires_grant_projects_identity_and_expires_
     holder.send(request);
     kernel.control("sudo-timeout").await;
     let expired = holder.result();
-    assert!(
-        expired["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("sudo request expired"),
-        "{expired}"
-    );
+    assert_eq!(expired["error"]["code"], "owner_request_expired", "{expired}");
 }
 
 #[tokio::test]
