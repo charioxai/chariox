@@ -985,7 +985,7 @@ async fn external_sudo_revoked_holder_cancels_popup_and_busy_queue() {
 }
 
 #[tokio::test]
-async fn external_sudo_only_granted_target_is_allowed_and_terminal_cannot_request() {
+async fn external_sudo_cross_session_request_is_allowed_and_terminal_cannot_request() {
     let f = fixture();
     let request = external_request(&f);
     assert!(f
@@ -996,15 +996,13 @@ async fn external_sudo_only_granted_target_is_allowed_and_terminal_cannot_reques
     let other = crate::session::RuntimeSession::new("ungranted", None, "w", "wt", "m", "k");
     f.state.owned.session_store.write().restore_session(other);
     let grant = f.state.insert_access_grant_for_test("ungranted");
-    assert!(!f.state.external_request_in_session(
-        "ungranted",
-        &LocalDaemonRequest::RequestKernelSudo(request.clone())
-    ));
     assert!(f
         .state
-        .request_kernel_sudo(&grant, request.clone())
-        .await
-        .is_err());
+        .authorize_external_request(
+            &grant,
+            &LocalDaemonRequest::RequestKernelSudo(request.clone())
+        )
+        .is_ok());
     let request = LocalDaemonRequest::RequestKernelSudo(request);
     let mut command = crate::runtime::command::KernelCommand::from_local_request(
         "external-sudo-tcp",

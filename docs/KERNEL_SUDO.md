@@ -48,7 +48,7 @@ flows remain available through the ordinary runtime tools.
 provider run, exact prompt, target interaction and choice. Command correlation
 and causation also point to that turn and entry. Receipts contain no passkey.
 
-External agents holding a process-bound session grant can request a turn over
+External agents holding a process-bound local-kernel grant can request a turn over
 that kernel's Unix socket:
 
 ```sh
@@ -58,8 +58,7 @@ chariox sudo request --agent <agent-id> --prompt "<full prompt>" [--socket /abso
 The host's popup names the grant holder's OS executable and PID, the target
 agent and session, and the full requester-supplied prompt. Only the host's
 terminals can answer it. The external client receives the submission outcome;
-it never receives or sends the passkey. TCP, relay, ungranted peers and targets
-outside the granted session are refused. One requester can have one pending
+it never receives or sends the passkey. TCP, relay and ungranted peers are refused. Any local session’s agent may be targeted; each request needs a fresh host passkey. One requester can have one pending
 sudo request, which expires with a clear error if no terminal answers.
 Grant expiry, process exit or revocation cancels a pending or queued external
 request. The final dispatch boundary checks that the grant is still live.

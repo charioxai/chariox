@@ -159,8 +159,7 @@ pub(super) fn requester_grant_live(
 ) -> bool {
     turn.requester.as_ref().is_none_or(|requester| {
         access.grants.get(&requester.grant_id).is_some_and(|grant| {
-            grant.summary.session_id == turn.session_id
-                && grant.summary.owner_user_id == turn.owner_user_id
+            grant.summary.owner_user_id == turn.owner_user_id
                 && std::time::Instant::now() < grant.deadline
                 && grant.holder.alive()
         })

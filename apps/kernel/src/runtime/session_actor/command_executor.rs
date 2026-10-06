@@ -309,7 +309,12 @@ impl SessionRuntimeCommandExecutor {
                 // refuses host passkeys and credential-prompt answers.
                 let owner_caller = terminal_caller
                     || (caller_metaagent_id.is_none()
-                        && connection_class == Some(KernelConnectionClass::Host));
+                        && matches!(
+                            connection_class,
+                            Some(
+                                KernelConnectionClass::Host | KernelConnectionClass::ExternalAgent
+                            )
+                        ));
                 self.store
                     .respond_to_interaction(
                         request,

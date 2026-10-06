@@ -1,5 +1,7 @@
 //! Process-bound access policy. Grants contain no transferable credential.
 pub(crate) mod process;
+/// Routing identity for kernel-wide access popups; never a session or grant scope.
+pub(crate) const ACCESS_INTERACTION_SCOPE: &str = "kernel-access";
 use crate::local::KernelAccessGrant;
 use process::ProcessIdentity;
 use std::collections::BTreeMap;
