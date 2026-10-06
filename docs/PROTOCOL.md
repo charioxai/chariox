@@ -3246,7 +3246,7 @@ inherits 73 from the ownership base; native/web minimums are unchanged for exist
 commands themselves require a local-444-capable kernel/client pair.
 
 MP-07 / MP-08 / MP-11 self-setup reuses the owner-managed install core and
-existing device enrollment; local 444/relay 70 are unchanged. Generic Setup
+existing device enrollment; local 444/relay 73 are retained. Generic Setup
 creates a separate user service/root/ports and invokes a pre-daemon stdin
 bootstrap. Kernel device flow uses the existing `KERNEL` start/poll exchange,
 public verification URL/code and #888 key/machine/owner profile admission.
