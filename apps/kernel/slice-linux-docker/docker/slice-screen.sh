@@ -683,17 +683,13 @@ computer_key_stdin() {
     return 2
   fi
   if [[ -z "$key" || ${#key} -gt 128 || "$key" == -* || "$key" =~ [[:space:]] ]]; then
-    printf 'computer key must be a non-whitespace xdotool key name of at most 128 bytes\n' >&2
+    printf 'computer key must be a non-whitespace native key name of at most 128 bytes\n' >&2
     return 2
   fi
-  # DOM callers use Enter; X11's ordinary Enter keysym is Return. Translate
-  # whole chord components only, preserving native names such as KP_Enter.
-  local chord="+$key+"
-  while [[ "$chord" == *"+Enter+"* ]]; do
-    chord="${chord//+Enter+/+Return+}"
-  done
-  key="${chord:1:${#chord}-2}"
-  run_xdotool key --clearmodifiers --repeat "$repeat" --delay 40 "$key"
+  # MP-08/MP-11: use the same strict XTEST chords as host native input.
+  # xdotool can return success for unknown lowercase keysyms without input.
+  printf '%s' "$key" | timeout --foreground 10s /opt/chariox-selkies/bin/python \
+    "${BASH_SOURCE[0]%/*}/slice-keyboard.py" key-repeat "$repeat"
 }
 
 computer_input_reset() {

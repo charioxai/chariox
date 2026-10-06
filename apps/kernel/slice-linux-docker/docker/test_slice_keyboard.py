@@ -140,4 +140,40 @@ class OwnedKeymapTests(unittest.TestCase):
             with self.assertRaises(ValueError):m.prepare_owned_text_keymap()
         c.grab_server.assert_not_called();c.change_keyboard_mapping.assert_not_called()
 
+class PhysicalChordTests(unittest.TestCase):
+    def native(self):
+        c=MagicMock();c.query_keymap.return_value=bytes(32)
+        c.screen.return_value.root.query_pointer.return_value.mask=0
+        m=helper(c)
+        names={'Down':116,'Return':36,'Control_L':37,'s':39}
+        m.XK.string_to_keysym=lambda name:names.get(name,0)
+        c.keysym_to_keycode.side_effect=lambda key:key
+        c.keycode_to_keysym.side_effect=lambda code,level:code
+        return m,c
+    def test_mp08_lowercase_provider_navigation_dispatches_real_base_keys(self):
+        for name,code in [('down',116),('return',36)]:
+            m,c=self.native()
+            with patch.object(m.xtest,'fake_input') as inject, patch.object(m.time,'sleep'), patch.object(m.signal,'signal'):
+                m.hold_input('key',name,1)
+            self.assertEqual([x.args[1:] for x in inject.call_args_list],[(2,code),(3,code)])
+    def test_mp11_unknown_key_never_reports_applied(self):
+        m,c=self.native()
+        with patch.object(m.xtest,'fake_input') as inject, patch.object(m.signal,'signal'):
+            with self.assertRaises(ValueError):m.hold_input('key','not_a_key',1)
+        inject.assert_not_called();c.close.assert_called_once()
+    def test_mp08_repeat_is_bounded_and_restores_cancellation_handlers(self):
+        m,c=self.native()
+        with patch.object(m,'hold_input') as hold, patch.object(m.time,'sleep'), patch.object(m.signal,'getsignal',return_value='handler'), patch.object(m.signal,'signal') as signals:
+            m.key_repeat('CTRL+S',2)
+            self.assertEqual(hold.call_count,2)
+            self.assertTrue(all(x.args[1]=='handler' for x in signals.call_args_list))
+            for repeat in [0,33]:
+                with self.assertRaises(ValueError):m.key_repeat('s',repeat)
+            self.assertEqual(hold.call_count,2)
+    def test_mp11_cancelled_repeat_restores_handlers_and_never_retries(self):
+        m,c=self.native()
+        with patch.object(m,'hold_input',side_effect=SystemExit(143)) as hold, patch.object(m.signal,'getsignal',return_value='handler'), patch.object(m.signal,'signal') as signals:
+            with self.assertRaises(SystemExit):m.key_repeat('s',2)
+            hold.assert_called_once();self.assertEqual(signals.call_count,2)
+
 if __name__ == "__main__": unittest.main()

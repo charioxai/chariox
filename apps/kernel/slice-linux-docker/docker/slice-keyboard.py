@@ -231,11 +231,22 @@ def hold_input(kind, value, duration_ms, x=None, y=None):
         if kind == "key":
             if not value or len(value.encode("utf-8")) > 128 or not value.isascii():
                 raise ValueError("invalid chord")
-            aliases = {"ctrl": "Control_L", "Control": "Control_L", "alt": "Alt_L",
-                       "shift": "Shift_L", "super": "Super_L", "space": "space"}
+            # MP-08: chords name physical base keys; provider casing is not Shift.
+            aliases = {"ctrl": "Control_L", "control": "Control_L", "alt": "Alt_L",
+                       "shift": "Shift_L", "super": "Super_L", "meta": "Super_L",
+                       "enter": "Return", "return": "Return", "esc": "Escape",
+                       "escape": "Escape", "tab": "Tab", "space": "space",
+                       "backspace": "BackSpace", "delete": "Delete", "left": "Left",
+                       "right": "Right", "up": "Up", "down": "Down", "home": "Home",
+                       "end": "End", "pageup": "Prior", "pagedown": "Next"}
             codes = []
             for name in value.split("+"):
-                keysym = XK.string_to_keysym(aliases.get(name, name))
+                base = aliases.get(name.lower(), name)
+                if len(base) == 1 and base.isalpha():
+                    base = base.lower()
+                elif base.lower().startswith("f") and base[1:].isdigit():
+                    base = base.upper()
+                keysym = XK.string_to_keysym(base)
                 code = connection.keysym_to_keycode(keysym) if keysym else 0
                 # No implicit shifted symbol or Unicode hardware fallback.
                 if code < 8 or connection.keycode_to_keysym(code, 0) != keysym or code in codes:
@@ -274,6 +285,22 @@ def hold_input(kind, value, duration_ms, x=None, y=None):
         connection.close()
 
 
+def key_repeat(value, repeat):
+    """MP-08/MP-11: strict shared native chords, bounded repeat, cancellable."""
+    if not 1 <= repeat <= 32:
+        raise ValueError("invalid key repeat")
+    for index in range(repeat):
+        handlers = {number: signal.getsignal(number) for number in (signal.SIGTERM, signal.SIGINT)}
+        try:
+            hold_input("key", value, 1)
+        finally:
+            # hold_input shields key-up cleanup; restore cancellation between chords.
+            for number, handler in handlers.items():
+                signal.signal(number, handler)
+        if index + 1 < repeat:
+            time.sleep(0.04)
+
+
 def reset_input():
     connection = display.Display()
     try:
@@ -297,6 +324,8 @@ if __name__ == "__main__":
     try:
         if sys.argv[1:] == ["prepare-owned-keymap"]:
             prepare_owned_text_keymap()
+        elif len(sys.argv) == 3 and sys.argv[1] == "key-repeat":
+            key_repeat(sys.stdin.buffer.read(129).decode("ascii", errors="strict"), int(sys.argv[2]))
         elif len(sys.argv) == 3 and sys.argv[1] == "hold-key":
             hold_input("key", sys.stdin.buffer.read(129).decode("ascii", errors="strict"), int(sys.argv[2]))
         elif len(sys.argv) == 6 and sys.argv[1] == "hold-button":

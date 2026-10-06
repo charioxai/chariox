@@ -31,13 +31,22 @@ slice text finder. Unicode input reuses the slice keyboard helper, including
 its accelerator-safe overlay fence; a portable Xlib backend supports the host
 without installing a slice's Python package. The placement adapter requires
 explicit `host` or `slice`; it never silently redirects to another desktop.
-Slice image helper dependencies are prepared, but no image was built here.
+MP-08 / MP-10: round 3 built and drilled an exact-source Linux slice image.
+Full slice acceptance still needs bounded AT-SPI operations on the Room peer path.
 The existing Room/slice request authority is unchanged.
 
 Physical X11 keycodes are individual down/up messages through a warmed helper,
 with no event batching. `text` and committed `composition` are separate from
 physical events. Preedit remains with the client/input method. The virtual
 keymap starts as US; clients must map physical events to this display keymap.
+MP-08 / MP-11: after booting its owned virtual desktop, the slice prepares
+keycode 8 as an inert text overlay slot. This requires explicit owned-display
+intent, rejects held keys, preserves other modifiers and restores the previous
+mapping on failure; it never remaps a user's real display implicitly.
+MP-08 / MP-11: Room slice key chords use the same strict native XTEST helper
+as host input, with case-independent navigation names, bounded repeats and
+cancellation handlers restored between chords. Unknown or unmapped keys fail
+before dispatch; they cannot be acknowledged as applied.
 Each successful native input calls `wakeCapture` with its surface/generation.
 This is the display lane's capture-wake seam. PR5 must bind client keyboards,
 IME, capture, glyph/caret tiles and viewer lifetime to the reused display
@@ -48,7 +57,12 @@ Exact PNG, OCR, clipboard, finite keyboard/pointer holds and pointer operations
 share the native adapter. Persistent physical key presses are a human channel;
 agents use finite key chords/holds. Cancellation releases finite holds before
 completion. Clipboard writers remain owned foreground processes until replaced
-or shutdown. Warm keyboard helpers remain owned after key-up and are reaped. MP-08 / MP-11: text/composition actions accept at most 128 Unicode characters, checked before dispatch to fit the existing execution deadline; longer text must be split into blocks. Clipboard limits remain independent. Browser recovery retires held keys and helpers before replacing the desktop; fresh bindings get fresh keyboard channels.
+or shutdown. Warm keyboard helpers remain owned after key-up and are reaped.
+MP-08 / MP-11: text/composition actions accept at most 128 Unicode characters,
+checked before dispatch to fit the existing execution deadline; longer text
+must be split into blocks. Clipboard limits remain independent. Browser recovery
+retires held keys and helpers before replacing the desktop; fresh bindings get
+fresh keyboard channels.
 
 ## MP-08 AT-SPI and MP-11 observation protection
 
@@ -57,7 +71,11 @@ on the private bus. Public opaque handles are observer-bound and revision-bound;
 PID, bus names and object paths remain internal. Both the JS adapter and Python
 action helper revalidate the tree before dispatch. Mutation retires handles;
 stale denial requires rediscovery, never blind mutation replay. MP-11: protection policy participates in cache revisions, policy updates clear observers, and actions recheck current target protection. Missing or
-incomplete accessibility coverage reports OCR fallback.
+incomplete accessibility coverage reports OCR fallback. MP-08 / MP-11: the
+public projection is bounded to 64 nodes and 14 KiB of node JSON, prioritizing
+visible actionable or editable controls. Pruning reports incomplete coverage
+and OCR fallback. The complete private tree still fences actions and
+observation protection, including changes in omitted nodes.
 
 Password roles expose no text/actions. Protected registry values/targets,
 unknown visible windows, incomplete AT-SPI coverage or password widgets cause
@@ -108,9 +126,16 @@ cancelled-hold key release, real OCR, protected PNG pixel contents, scoped GTK
 AT-SPI actions and cleanup. Evidence records each source hash and command;
 working-tree trials are explicitly labelled as such.
 
-These do not establish native Chromium on this builder, provider MCP image
-receipts, Codex/OpenCode/Claude paid control, an exact-source slice image, real
-slice transport, optimized stream, Web/TUI input/IME or MP-10 fresh-machine
-ordinary/managed Path-1 parity. Those acceptance cells and PR5 remain deferred
-as directed. MP-11 review scope is security-critical anchors and behavioral
+MP-08 / MP-10 / MP-11 round 3 real-path drills additionally establish
+Codex and OpenCode controlling a kernel-owned Chromium/native desktop through
+local and remote real TUIs: Unicode save with independent UTF-8 bytes, AT-SPI
+action and stale refusal, pixel-canvas OCR, human takeover and grant revoke.
+An exact-source slice image also supports the existing Room Unicode, OCR and
+human takeover flow through real provider runs. Full slice cells remain blocked
+on the Room AT-SPI extension and a defined per-agent revoke contract. Claude
+cells need an owner-linked profile.
+
+These do not establish optimized display transport, Web input/IME, type-to-echo
+performance, OSWorld or MP-10 fresh-machine ordinary/managed Path-1 parity.
+Web/display acceptance awaits PR5 as directed. MP-11 review scope is security-critical anchors and behavioral
 parity; this document does not require non-security exact-blob audits.
