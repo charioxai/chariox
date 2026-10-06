@@ -248,8 +248,9 @@ try {
       const tail=progressSamples.filter(entry=>entry.at>=control.sentAtMs+1000)
       sample.producerStopped=Boolean(firstAfterBudget && tail.at(-1).at-firstAfterBudget.at>=500
         && tail.every(entry=>entry.value===firstAfterBudget.value))
-      let lastChange=control.sentAtMs
+      let lastChange=progressSamples[0]?.at ?? control.sentAtMs
       for(let i=1;i<progressSamples.length;i++)if(progressSamples[i].value!==progressSamples[i-1].value)lastChange=progressSamples[i].at
+      sample.producerStopped &&= lastChange-control.sentAtMs<=1000
       sample.stopToProducerStoppedMs=sample.producerStopped ? lastChange-control.sentAtMs : null
       await writeFile(path.join(args.output,label+'-timing.json'),JSON.stringify({mpItems:receipt.mpItems,...sample},null,2)+'\n',{mode:0o600})
       if(!sample.producerStopped)receipt.noisyProducerFailures.push({round:round+1,action,

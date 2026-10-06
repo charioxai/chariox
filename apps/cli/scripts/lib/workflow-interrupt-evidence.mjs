@@ -10,7 +10,7 @@ export async function interruptTraces(logDir) {
       let entry; try { entry = JSON.parse(line) } catch { continue }
       if (entry.component !== 'daemon.provider.codex' || ![
         'codex turn interrupt sent trace', 'codex turn completion received trace',
-        'codex command output received trace',
+        'codex command output received trace', 'codex thread terminals cleaned trace',
       ].includes(entry.message)) continue
       traces.push({ at: entry.timestamp_ms, message: entry.message,
         providerRunId: entry.provider_run_id, turnId: entry.turn_id,
