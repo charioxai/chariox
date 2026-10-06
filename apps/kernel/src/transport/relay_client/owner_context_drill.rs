@@ -475,7 +475,6 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
         "machine",
         "kernel",
         "target_key",
-        "source_key",
         "mixed_binding",
         "missing_binding",
     ] {
@@ -500,7 +499,6 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
             }
             "kernel" => request.target_kernel_id = "different-kernel".into(),
             "target_key" => request.target_key_thumbprint = "f".repeat(64),
-            "source_key" => request.identity.public_key_thumbprint = Some("f".repeat(64)),
             "mixed_binding" => request.target_environment_id = "managed-environment".into(),
             _ => request.destination = None,
         }
@@ -512,6 +510,26 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
             "{mismatch}"
         );
     }
+    // MP-11: sender-key binding belongs to encrypted-peer admission, before
+    // the router assumes an authenticated identity or calls Cloud.
+    let mut wrong_source_key = identity.clone();
+    wrong_source_key.public_key_thumbprint = Some("f".repeat(64));
+    let key_refusal = send_managed_peer_request(
+        &harness,
+        &source.daemon_id,
+        &wrong_source_key,
+        &source.relay_private_key,
+        &target.relay_public_key,
+        arm.clone(),
+    )
+    .await;
+    assert!(matches!(
+        key_refusal,
+        RelayPeerResponse::ManagedContextImportFailed {
+            retryable: false,
+            ..
+        }
+    ));
     let refused = send_managed_peer_request(
         &harness,
         &source.daemon_id,
