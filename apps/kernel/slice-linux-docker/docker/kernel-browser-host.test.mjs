@@ -134,7 +134,7 @@ test("MD-2: latest-frame subscription is bounded and invalidated by recovery", (
   chromium.child.exitCode = 1;
   await assert.rejects(host.request({ op: "poll", ...subscription }), /unavailable/);
   await host.request({ op: "start" });
-  await assert.rejects(host.request({ op: "poll", ...subscription }), /stale/);
+  await assert.rejects(host.request({ op: "poll", ...subscription }), {code:'user_domain_stale_reference'});
 }));
 test("MD-4: reconciliation retries a navigation race without recreating a tab", () => using(async ({ host, sent }) => {
   await host.request({ op: "open", url: "about:blank" });
@@ -646,5 +646,5 @@ test('private CDP pipe loss retires the browser generation even while child is l
   const after=await host.request({op:'start'});
   assert.equal(after.generation,before.generation+1);
   assert.equal(after.tabs[0].tab_id,before.tab_id);
-  await assert.rejects(host.request({op:'screenshot',tab_id:before.tab_id,generation:before.generation}),/stale/);
+  await assert.rejects(host.request({op:'screenshot',tab_id:before.tab_id,generation:before.generation}),{code:'user_domain_stale_epoch'});
 }));

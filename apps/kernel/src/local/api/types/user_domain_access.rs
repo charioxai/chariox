@@ -1,4 +1,4 @@
-//! MP-08/MP-11: owner-only, value-free grant visibility (local 432).
+//! MP-08/MP-11: owner-only, value-free grant visibility (local 443).
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

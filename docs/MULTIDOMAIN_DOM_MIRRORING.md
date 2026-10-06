@@ -1,5 +1,9 @@
 # MP-08/MP-10/MP-11: kernel browser DOM mirroring
 
+MP-08/MP-10/MP-11: the main-based round-2 successor uses local443 / relay86.
+See `MULTIDOMAIN_ROUND2_ON_MAIN.md` for the exact imported source heads and
+validation limits; earlier allocations below describe their branch history.
+
 The user-domain browser now has a DOM transport and a shared reference renderer.
 The screen tiers are native App views, mirrored web pages, then protected video.
 This implementation targets host Chromium on Linux. It does not introduce a

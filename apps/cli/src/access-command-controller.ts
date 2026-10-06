@@ -49,7 +49,7 @@ export function createAccessCommandController(deps: { client: AccessTransport; a
         : { op: "list_grants" } } })
       if (client !== selectedClient()) throw new Error("Kernel changed during access command; refresh access.")
       const snapshot = response.KernelBrowser?.result
-      if (!snapshot || snapshot.event !== "user_domain_grants_changed") throw new Error(response.Error?.message ?? "Access grants require kernel protocol 432.")
+      if (!snapshot || snapshot.event !== "user_domain_grants_changed") throw new Error(response.Error?.message ?? "Access grants require kernel protocol 443.")
       deps.appendNotice([
         args[0] === "revoke" ? `Revoked access for ${args[1]}.` : "User-domain access:",
         ...snapshot.grants.map(g => `${g.agent_id} · session ${g.session_id || "pending"} · kernel ${g.kernel_id} · ${g.focused ? "focused" : "retained"}\n  resources: ${g.resources.map(userDomainResourceLabel).join(", ") || "none touched"}\n  expiry: ${userDomainGrantExpiry(g)}`),

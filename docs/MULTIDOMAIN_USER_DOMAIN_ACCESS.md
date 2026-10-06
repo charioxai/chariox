@@ -1,5 +1,9 @@
 # MP-08 / MP-10 / MP-11: user-domain access
 
+MP-08/MP-10/MP-11: the main-based round-2 successor uses local443 / relay86.
+See `MULTIDOMAIN_ROUND2_ON_MAIN.md` for the exact imported source heads and
+validation limits; earlier allocations below describe their branch history.
+
 Owner decision, 2026-10-05. Local protocol **432**, relay peer **78**. This
 contract supersedes the focus-revocation text in earlier multidomain receipts.
 The kernel owns it equally on ordinary and managed placements.

@@ -3,7 +3,7 @@ import { mirrorSandboxCsp,validateMirrorPacket,mirrorTreeCanonicalJson } from '.
 import type { KernelBrowserMirrorAction, MirrorNode, MirrorPacket, MirrorResource, MirrorTile } from './browser-mirror-types.js'
 export * from './browser-mirror-types.js'
 export { mirrorSandboxCsp } from './browser-mirror-security.js'
-export const browserMirrorMinimumProtocolVersion = 433
+export const browserMirrorMinimumProtocolVersion = 443
 export interface MirrorTransport { protocolVersion: number; request(request: unknown): Promise<unknown> }
 type TileRaster = {tile:MirrorTile;url:string;image?:HTMLImageElement;placement?:string}
 type Binding = { tab_id: string; generation: number; device_scale_factor: 1 | 2 }
@@ -312,7 +312,7 @@ export class BrowserMirrorRenderer {
   close():void {this.disposed=true;this.releaseDocuments(new Set());this.localFocus=null;this.nativeFocus=null;this.doc=null;this.clearResources();this.dom.clear();this.records.clear();this.overlays=[];this.frame.remove()}
 }
 export async function attachBrowserMirror(transport:MirrorTransport,container:HTMLElement,binding:Binding,onFailure:(error:unknown)=>void):Promise<{next():Promise<MirrorPacket>;input(action:KernelBrowserMirrorAction):Promise<unknown>;takeover():Promise<unknown>;release():Promise<unknown>;actors():Promise<unknown>;close():Promise<void>;renderer:BrowserMirrorRenderer}> {
-  if(!Number.isInteger(transport.protocolVersion)||transport.protocolVersion<browserMirrorMinimumProtocolVersion)throw Error('MP-08: DOM mirroring requires protocol 433')
+  if(!Number.isInteger(transport.protocolVersion)||transport.protocolVersion<browserMirrorMinimumProtocolVersion)throw Error('MP-08: DOM mirroring requires protocol 443')
   const request=async(command:unknown):Promise<any>=>{const response=await transport.request({KernelBrowser:{command}}) as {KernelBrowser?:{result?:unknown}};if(!response.KernelBrowser?.result)throw Error('MP-08: invalid mirror response');return response.KernelBrowser.result}
   const subscribed=await request({op:'mirror_subscribe',...binding});const subscription_id=subscribed.subscription_id as string
   let sequence=0,document_id='',closed=false,busy=false

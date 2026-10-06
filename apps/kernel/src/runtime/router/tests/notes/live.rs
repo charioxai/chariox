@@ -162,7 +162,11 @@ async fn check_live() {
     if std::env::var_os("CHARIOX_MD_HARDENING_DRILL").is_some() {
         let mut sessions = app.sessions_mut();
         let mut shared = sessions.get_session(session.id()).unwrap();
-        shared.add_member("collaborator-fixture", Some(first.owner_user_id().into()), crate::session::CollaborationLevel::Full);
+        shared.add_member(
+            "collaborator-fixture",
+            Some(first.owner_user_id().into()),
+            crate::session::CollaborationLevel::Full,
+        );
         sessions.restore_session(shared);
     }
     let second = spawn_test_agent(&mut app, session.id(), "second", "dev-stub");
@@ -282,7 +286,7 @@ async fn check_live() {
         assert!(router.dispatch(terminal_command("MD-N5-stale-selection",&stale_request),stale_request).await.is_err());
         receipts.push(json!({"browser_restart_reanchored":true,"stale_selection_denied":true}));
         assert!(!router.runtime_state.session_snapshot(session.id()).await.unwrap().has_active_prompt());
-        std::fs::write(root.join("MD-N5-RECEIPT.json"),serde_json::to_vec_pretty(&json!({"MD":"MD-N5","MP":["MP-08","MP-10","MP-11"],"topology":"native user browser, local Room tab and App view; no Docker/relay/provider model or App package admission","protocol":434,"checks":receipts})).unwrap()).unwrap();
+        std::fs::write(root.join("MD-N5-RECEIPT.json"),serde_json::to_vec_pretty(&json!({"MD":"MD-N5","MP":["MP-08","MP-10","MP-11"],"topology":"native user browser, local Room tab and App view; no Docker/relay/provider model or App package admission","protocol":443,"checks":receipts})).unwrap()).unwrap();
     })).catch_unwind().await;
     router.runtime_state.shutdown_cleanup().await.unwrap();
     if let Err(panic) = assertions {

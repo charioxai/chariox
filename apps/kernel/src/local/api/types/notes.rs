@@ -1,4 +1,4 @@
-//! MD-N1–N3 / MP-08 / MP-11: owner notes, protocol 427. Payloads never broadcast.
+//! MD-N1–N3 / MP-08 / MP-11: owner notes, protocol 443. Payloads never broadcast.
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

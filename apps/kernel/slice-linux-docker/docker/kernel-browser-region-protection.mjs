@@ -49,6 +49,8 @@ async function regions(connection, sessionId, mirrorStructured = false) {
   return result;
 }
 
+export const protectedHostRegions = (connection, sessionId) => regions(connection, sessionId);
+
 export async function captureRegionMasks(connection, sessionId, { mirrorStructured = false } = {}) {
   // Layout changes or failed metadata checks cannot reveal an unmapped field.
   const before = await regions(connection, sessionId, mirrorStructured);

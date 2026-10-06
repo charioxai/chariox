@@ -1,4 +1,4 @@
-//! Human screenshot selection, local protocol 427. Coordinates are relative
+//! Human screenshot selection, local protocol 443. Coordinates are relative
 //! to the painted surface, excluding letterboxing, never the page viewport.
 use super::*;
 

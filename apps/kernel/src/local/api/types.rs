@@ -259,6 +259,6 @@ pub use workspace::*;
 /// Version 413 adds terminal sudo turns and critical approval receipts.
 /// Version 415 adds external sudo requests and requester attribution.
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
-/// Version 435 combines Apps, Browser artifacts, bounded Computer holds, and
-/// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 435;
+/// MP-08/MP-10/MP-11: version 443 combines main 435 with the multidomain
+/// host browser, App views, Notes, grants, captures and DOM mirror contract.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 443;

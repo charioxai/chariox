@@ -27,7 +27,9 @@ impl KernelRuntimeState {
         request: CaptureVisibleRegionRequest,
     ) -> Result<VisibleRegionCapture, DaemonError> {
         if !command.is_terminal_caller() {
-            return Err(DaemonError::UserDomainRefused { reason: crate::error::UserDomainRefusalReason::NotGranted });
+            return Err(DaemonError::UserDomainRefused {
+                reason: crate::error::UserDomainRefusalReason::NotGranted,
+            });
         }
         if request.capture_id.is_empty()
             || request.capture_id.len() > 64
@@ -106,8 +108,8 @@ impl KernelRuntimeState {
                                 .app_control()
                                 .user_views()
                                 .get(&owner, view_id)
-                                .ok_or_else(|| {
-                                    DaemonError::UserDomainRefused { reason: crate::error::UserDomainRefusalReason::NotGranted }
+                                .ok_or_else(|| DaemonError::UserDomainRefused {
+                                    reason: crate::error::UserDomainRefusalReason::NotGranted,
                                 })?;
                             let browser = view.browser.ok_or_else(|| {
                                 capture_error(
@@ -115,7 +117,9 @@ impl KernelRuntimeState {
                                 )
                             })?;
                             if browser.generation != *generation {
-                                return Err(DaemonError::UserDomainRefused { reason: crate::error::UserDomainRefusalReason::StaleEpoch });
+                                return Err(DaemonError::UserDomainRefused {
+                                    reason: crate::error::UserDomainRefusalReason::StaleEpoch,
+                                });
                             }
                             (browser.tab_id, browser.generation)
                         }

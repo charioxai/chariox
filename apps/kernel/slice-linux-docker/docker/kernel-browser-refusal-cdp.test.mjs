@@ -16,6 +16,8 @@ async function withAdapter(run) {
       if (method === 'Target.getTargets') return { targetInfos: [{ targetId: 'target', type: 'page', url: 'https://fixture.invalid' }] };
       if (method === 'Target.attachToTarget') return { sessionId: 'session' };
       if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'frame', loaderId: this.document } } };
+      if (method === 'DOMSnapshot.captureSnapshot') return {strings:['frame'],documents:[{frameId:0,nodes:{backendNodeId:[42]}}]};
+      if (method === 'Page.createIsolatedWorld') return {executionContextId:7};
       if (method === 'DOM.resolveNode' && this.resolveError) throw this.resolveError;
       return {}; // A detached backend node resolves to no object.
     },

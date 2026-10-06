@@ -152,8 +152,8 @@ mod user_domain_admission_tests {
             .build()
             .unwrap();
         runtime.block_on(async {
-            let app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
-                .unwrap();
+            let app =
+                crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
             let router = CommandRouter::with_interactive_capacity(
                 std::sync::Arc::new(tokio::sync::Mutex::new(app)),
                 4,
@@ -182,9 +182,12 @@ mod user_domain_admission_tests {
                     let error = router
                         .authorize_external_request(&command, &mut request.clone())
                         .unwrap_err();
-                    assert!(matches!(error, DaemonError::UserDomainRefused {
-                        reason: crate::error::UserDomainRefusalReason::NotGranted
-                    }));
+                    assert!(matches!(
+                        error,
+                        DaemonError::UserDomainRefused {
+                            reason: crate::error::UserDomainRefusalReason::NotGranted
+                        }
+                    ));
                     assert_eq!(error.to_string(), "User-domain request refused");
                 }
             }

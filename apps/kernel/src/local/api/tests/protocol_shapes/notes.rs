@@ -1,9 +1,9 @@
-//! MD-N3 / MP-08 / MP-11: protocol 427 freezes every note request/event seam.
+//! MD-N3 / MP-08 / MP-11: protocol 443 freezes every note request/event seam.
 use super::*;
 use crate::local::{NoteAnchor, NoteCommand, NoteResult, NoteTextQuote, NoteWindow, NotesRequest};
 #[test]
-fn notes_protocol_427_shapes_and_rejected_authority_claims() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 434);
+fn notes_protocol_443_shapes_and_rejected_authority_claims() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 443);
     let window = NoteWindow::Panel {
         window_id: "message-42".into(),
     };
@@ -54,7 +54,7 @@ fn notes_protocol_427_shapes_and_rejected_authority_claims() {
             serde_json::to_value(LocalDaemonRequest::Notes(NotesRequest { command })).unwrap()
         })
         .collect::<Vec<_>>();
-    let expected: serde_json::Value = serde_json::from_str(include_str!("notes-427.json")).unwrap();
+    let expected: serde_json::Value = serde_json::from_str(include_str!("notes-443.json")).unwrap();
     assert_eq!(serde_json::json!(values), expected);
     for value in values {
         let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
@@ -77,9 +77,9 @@ fn notes_protocol_427_shapes_and_rejected_authority_claims() {
 }
 
 #[test]
-fn notes_protocol_427_response_snapshots() {
+fn notes_protocol_443_response_snapshots() {
     use crate::local::{NoteRecord, NoteReply, NoteSelection, NoteSummary};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 434);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 443);
     let window = NoteWindow::Panel {
         window_id: "message-42".into(),
     };
@@ -145,6 +145,6 @@ fn notes_protocol_427_response_snapshots() {
         .map(|result| serde_json::to_value(LocalDaemonResponse::Notes { result }).unwrap())
         .collect::<Vec<_>>();
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("notes-events-427.json")).unwrap();
+        serde_json::from_str(include_str!("notes-events-443.json")).unwrap();
     assert_eq!(serde_json::json!(values), expected);
 }

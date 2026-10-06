@@ -766,7 +766,7 @@ fn project_summary(id: &str, name: &str) -> crate::local::WaitingRoomPublicProje
 
 #[test]
 fn mp08_mp10_terminal_workflow_updates_have_one_authoritative_stream() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 435);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 443);
     let previous = session_snapshot_with_workflow_status(WorkflowRunStatus::Running);
     for status in [
         WorkflowRunStatus::Completed,
@@ -785,12 +785,12 @@ fn mp08_mp10_terminal_workflow_updates_have_one_authoritative_stream() {
 }
 
 #[test]
-fn user_domain_refusals_protocol_434_snapshot() {
+fn user_domain_refusals_protocol_443_snapshot() {
     use crate::error::UserDomainRefusalReason as Reason;
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 434);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 443);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        80
+        86
     );
     let values = [
         Reason::NotFocusedAgent,
@@ -805,12 +805,12 @@ fn user_domain_refusals_protocol_434_snapshot() {
     assert_eq!(
         format!(
             "{:x}",
-            Sha256::digest(include_bytes!("user-domain-refusals-434.json"))
+            Sha256::digest(include_bytes!("user-domain-refusals-443.json"))
         ),
         "a0404cb11a870cd5a843adb8060aa7a0892e9a7365c2f823f1455b02bc789102"
     );
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("user-domain-refusals-434.json")).unwrap();
+        serde_json::from_str(include_str!("user-domain-refusals-443.json")).unwrap();
     assert_eq!(serde_json::json!(actual), expected);
     // Neither unknown controller text nor a generic local error can acquire authority.
     let generic = map_kernel_error(&DaemonError::LocalTransport {

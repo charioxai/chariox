@@ -3,9 +3,9 @@ import test from "node:test"
 import { notesRequest, noteOverlayBox, notePromptDraft, notesMinimumProtocolVersion } from "./notes.js"
 
 test("MD-N3 / MP-08: reject old/unknown kernels before notes requests", () => {
-  for (const version of [417, 423, NaN, Infinity, 434.5]) assert.throws(() => notesRequest({ op: "ask", note_id: "n" }, version))
-  assert.equal(notesMinimumProtocolVersion, 434)
-  assert.deepEqual(notesRequest({ op: "list", window: { kind: "panel", window_id: "transcript" } }, 434), { Notes: { command: { op: "list", window: { kind: "panel", window_id: "transcript" } } } })
+  for (const version of [417, 423, NaN, Infinity, 443.5]) assert.throws(() => notesRequest({ op: "ask", note_id: "n" }, version))
+  assert.equal(notesMinimumProtocolVersion, 443)
+  assert.deepEqual(notesRequest({ op: "list", window: { kind: "panel", window_id: "transcript" } }, 443), { Notes: { command: { op: "list", window: { kind: "panel", window_id: "transcript" } } } })
 })
 test("MD-N2 / MP-08: overlay maps page coordinates, clips and rejects invalid geometry", () => {
   assert.deepEqual(noteOverlayBox({ x: -10, y: 40, width: 30, height: 20 }, { width: 1280, height: 800 }, { x: 200, y: 100, width: 640, height: 400 }), { x: 200, y: 120, width: 10, height: 10 })

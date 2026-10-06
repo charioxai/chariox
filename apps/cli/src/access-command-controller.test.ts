@@ -5,7 +5,7 @@ import { parseSlashCommand } from "./commands.js"
 const snapshot = { event: "user_domain_grants_changed", cursor: 1, grants: [{ agent_id: "holder", session_id: "session", kernel_id: "kernel", resources: [{ kind: "note", note_id: "note" }], since_ms: 100, focused: false, idle_since_ms: null, idle_timeout_seconds: 1800 }], notice: null }
 function fixture() {
   const requests: any[] = [], lines: string[] = []
-  const controller = createAccessCommandController({ client: { localDaemonProtocolVersion: 432, async send<T>(request: unknown): Promise<T> { requests.push(request); if ((request as any).KernelBrowser.command.op === "subscribe_grants") return new Promise(() => {}); return { KernelBrowser: { result: snapshot } } as T } }, appendNotice: message => lines.push(message) })
+  const controller = createAccessCommandController({ client: { localDaemonProtocolVersion: 443, async send<T>(request: unknown): Promise<T> { requests.push(request); if ((request as any).KernelBrowser.command.op === "subscribe_grants") return new Promise(() => {}); return { KernelBrowser: { result: snapshot } } as T } }, appendNotice: message => lines.push(message) })
   return { controller, requests, lines }
 }
 test("access parser has a word boundary and passes revoke arguments", () => {
@@ -31,7 +31,7 @@ test("invalid syntax issues no mutations", async () => {
 })
 test("retained-use feed prints the shared notice once and stops after cleanup", async () => {
   const lines: string[] = [], pending: ((response: unknown) => void)[] = []
-  const controller = createAccessCommandController({ client: { localDaemonProtocolVersion: 432, async send<T>(request: any): Promise<T> {
+  const controller = createAccessCommandController({ client: { localDaemonProtocolVersion: 443, async send<T>(request: any): Promise<T> {
     if (request.KernelBrowser.command.op === "subscribe_grants") return new Promise(resolve => pending.push(value => resolve(value as T)))
     return { KernelBrowser: { result: snapshot } } as T
   } }, appendNotice: line => lines.push(line) })

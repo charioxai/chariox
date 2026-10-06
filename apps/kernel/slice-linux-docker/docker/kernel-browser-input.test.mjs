@@ -52,7 +52,7 @@ test("MP-11: protected targets refuse every text-producing input in both grant m
     {kind:'text',text:'fixture'}, ...['a','é','😀',' ', 'Enter','Space'].map(key=>({kind:'key',key})),
   ]) {
     const {browser,sent}=fixture(true);
-    await assert.rejects(inputHostTab(browser,tab,input,{retained}), /secret field input requires the Vault path/);
+    await assert.rejects(inputHostTab(browser,tab,input,{retained}), {code:'user_domain_sensitive_requires_focus'});
     assert.equal(sent.filter(({method})=>method.startsWith('Input.')).length,0);
   }
 });
@@ -78,7 +78,7 @@ test('MP-11: an asynchronous live mirror guard fences physical dispatch',async()
 test('MP-08/MP-11: native navigation and editing keys carry their Chromium virtual key codes',async()=>{
  const codes={Tab:9,Enter:13,Escape:27,Backspace:8,Delete:46,ArrowLeft:37,ArrowRight:39,ArrowUp:38,ArrowDown:40,Home:36,End:35};
  for(const [key,code]of Object.entries(codes)){
-   const events=[];const connection={async send(method,params){if(method==='Page.getFrameTree')return {frameTree:{frame:{loaderId:'d'}}};if(method==='Input.dispatchKeyEvent'){events.push(params);return {}};throw Error(`unexpected ${method}`)}};
+   const events=[];const connection={async send(method,params){if(method==='Page.getFrameTree')return {frameTree:{frame:{loaderId:'d'}}};if(method==='Input.dispatchKeyEvent'){events.push(params);return {}};if(method==='Page.createIsolatedWorld')return {executionContextId:7};if(method==='Runtime.evaluate')return {result:{value:false}};throw Error(`unexpected ${method}`)}};
    const browser={async resolvePageTarget(){return {connection,sessionId:'s'}},inputCapture:{run(_c,_s,fn){return fn()}}};
    await inputHostTab(browser,{target_id:'t',document_id:'d'},{kind:'key',key});
    assert.deepEqual(events.map(e=>e.windowsVirtualKeyCode),[code,code]);assert.deepEqual(events.map(e=>e.type),['keyDown','keyUp']);

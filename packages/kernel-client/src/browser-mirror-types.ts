@@ -1,4 +1,4 @@
-// MP-08/MP-10/MP-11 — local protocol 433; kernel remains browser authority.
+// MP-08/MP-10/MP-11 — local protocol 443; kernel remains browser authority.
 import type { KernelBrowserInput } from './kernel-types-kernel-browser.js'
 export type KernelBrowserMirrorAction =
   | { kind: 'click' | 'focus'; node_id: string }
