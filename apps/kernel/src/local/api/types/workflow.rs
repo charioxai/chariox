@@ -1087,3 +1087,25 @@ pub struct WorkflowDesignOpForwarded {
     pub op_id: String,
     pub op: WorkflowDesignOp,
 }
+
+/// Protocol 436: control only the explicit current-room run ids captured by a client.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlRoomWorkflowRunsRequest {
+    pub session_id: String,
+    pub workflow_id: String,
+    pub action: RoomWorkflowRunAction,
+    pub run_ids: Vec<String>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomWorkflowRunAction { Pause, Resume, Stop }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomWorkflowRunControlResult {
+    pub run_id: String,
+    pub outcome: RoomWorkflowRunControlOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomWorkflowRunControlOutcome { Applied, Unchanged, Failed }

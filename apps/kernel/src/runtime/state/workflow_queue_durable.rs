@@ -3,7 +3,7 @@
 //! provider preparation run after the short transition/session guards release.
 use super::*;
 use crate::durable_state::workflow_dispatch_intents::WorkflowDispatchIntent;
-use crate::session::WorkflowQueueRun;
+use crate::session::{WorkflowQueueRun, WorkflowRunStatus};
 
 #[derive(Clone, Default)]
 pub(super) struct WorkflowEntryClaims(Arc<std::sync::Mutex<BTreeSet<(String, String)>>>);
@@ -115,7 +115,7 @@ impl KernelRuntimeOwnedState {
         let (run, workflow, endpoint) = {
             let sessions = self.session_store.read();
             let run = sessions.resolve_workflow_run_ref(session, run_id)?;
-            if run.status().is_terminal() {
+            if run.status().is_terminal() || run.status() == WorkflowRunStatus::Paused {
                 return Ok(Some(WorkflowPromptDispatches::default()));
             }
             let workflow = sessions.resolve_workflow_ref(session, run.workflow_id())?;
@@ -175,6 +175,9 @@ impl KernelRuntimeOwnedState {
         }
         let sessions = self.session_store.read();
         let run = sessions.resolve_workflow_run_ref(session, &intent.run_id)?;
+        if run.status() == WorkflowRunStatus::Paused {
+            return Ok(None);
+        }
         let node = run.node_runs().first().ok_or_else(entry_conflict)?;
         if run.status().is_terminal()
             || node.id() != intent.node_id

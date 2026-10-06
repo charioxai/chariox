@@ -123,8 +123,9 @@ export async function getSessionState(client: LocalIpcClient, sessionId: string)
     session: RuntimeSession
     agent_activity?: RuntimeSession["agent_activity"] | null
     agent_activity_revision?: number | null
+    room_workflows?: import("@chariox/kernel-client/kernel-types").RoomWorkflowInventory
   }>(response, "SessionState")
-  return normalizeRuntimeSessionWithAgentActivity(payload)
+  return normalizeRuntimeSessionWithAgentActivity({ ...payload, session: { ...payload.session, room_workflows: payload.room_workflows, room_workflows_fresh: true } })
 }
 
 export async function updateMetaagentTask(

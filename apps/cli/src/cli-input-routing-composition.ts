@@ -32,6 +32,8 @@ import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-c
 type AnyFn = (...args: any[]) => any
 
 export type CliInputRoutingCompositionDeps = {
+  roomWorkflowsOwnsInput?: () => boolean
+  handleRoomWorkflowsKey?: (event: import("./global-keyboard-shortcut-controller.js").GlobalKeyboardShortcutEvent) => boolean
   handleKernelApprovalKey?: (event: import("./kernel-approval-controller.js").KernelApprovalKey) => boolean
   openKernelApprovals: () => void
   kernelApprovalOwnsInput?: (event?: CliStdinKeyEvent) => boolean
@@ -523,7 +525,10 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     },
     hasActiveTurnWork: deps.hasActiveTurnWork,
   })
-  useKeyboard(globalKeyboardShortcutController.handleKey)
+  useKeyboard(event => {
+    if (globalKeyboardShortcutController.handleKey(event)) return
+    if (!deps.kernelApprovalOwnsInput?.()) deps.handleRoomWorkflowsKey?.(event)
+  })
   const handleSigint = globalKeyboardShortcutController.handleSigint
 
   const promptKeyDownController = createPromptKeyDownController({
@@ -671,6 +676,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   }
 
   const stdinKeyController = createCliStdinKeyController({
+    roomWorkflowsOwnsInput: () => deps.roomWorkflowsOwnsInput?.() ?? false,
     kernelApprovalOwnsInput: (event) => deps.kernelApprovalOwnsInput?.(event) ?? false,
     parseKeypress: (chunk, options) => parseKeypress(chunk, options),
     dialogOverlayOpen: deps.dialogOverlayOpen,

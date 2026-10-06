@@ -280,6 +280,17 @@ fn logged_event(event_id: u64, event: KernelEvent) -> LoggedEvent<KernelEvent> {
 
 fn session_snapshot_event(session_id: &str, alias: &str) -> KernelEvent {
     KernelEvent::SessionSnapshot {
+        room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
+            &RuntimeSession::new(
+                session_id,
+                Some(alias.into()),
+                "workspace-a",
+                "worktree-a",
+                "machine-a",
+                "daemon-a",
+            ),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        ),
         session: Box::new(RuntimeSession::new(
             session_id,
             Some(alias.to_string()),
@@ -313,4 +324,86 @@ fn terminal_output_event(session_id: &str, marker: &str) -> KernelEvent {
             external_observation_metadata: None,
         }],
     }
+}
+
+#[tokio::test]
+async fn room_workflows_local_drill_initial_inventory_other_client_creation_and_last_deletion() {
+    let mut app = crate::DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace",
+            "worktree",
+        ))
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "room-workflows",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let app = Arc::new(tokio::sync::Mutex::new(app));
+    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        app.clone(),
+        1,
+    ));
+    let runtime = Arc::new(KernelTransportRuntime::default());
+    let (priority_tx, _priority_rx) = mpsc::channel(1);
+    let (event_tx, mut event_rx) = mpsc::channel(256);
+    let (close_tx, _close_rx) = mpsc::unbounded_channel();
+    let task = tokio::spawn(run_subscription_loop(
+        router,
+        runtime,
+        KernelOutgoingSender::new(priority_tx, event_tx),
+        close_tx,
+        Arc::new(AtomicBool::new(false)),
+        KernelSubscription {
+            session_id: session.id().into(),
+            attachment_id: attachment.id().into(),
+            subscription_scope: KernelSubscriptionScope::Session,
+            connection_class: crate::local::KernelConnectionClass::Terminal,
+        },
+    ));
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let KernelOutgoingFrame::Event { event, .. } = event_rx.recv().await.unwrap() {
+                if let KernelEvent::SessionSnapshot { room_workflows, .. } = *event {
+                    assert_eq!(room_workflows.workflow_count, 0);
+                    break;
+                }
+            }
+        }
+        let workflow_id = {
+            let mut app = app.lock().await;
+            let workflow = app
+                .sessions_mut()
+                .create_workflow(session.id(), Some("other-client".into()))
+                .unwrap();
+            let room = app.sessions().get_session(session.id()).unwrap();
+            app.session_state_projection_store().update(room);
+            workflow.id().to_string()
+        };
+        for count in [1, 0] {
+            loop {
+                if let KernelOutgoingFrame::Event { event, .. } = event_rx.recv().await.unwrap() {
+                    if let KernelEvent::RoomWorkflowsChanged { inventory } = *event {
+                        assert_eq!(inventory.workflow_count, count);
+                        assert_eq!(inventory.session_id, session.id());
+                        break;
+                    }
+                }
+            }
+            if count == 1 {
+                let mut app = app.lock().await;
+                let mut room = app.sessions().get_session(session.id()).unwrap();
+                room.remove_workflow(&workflow_id);
+                app.sessions_mut().restore_session(room.clone());
+                app.session_state_projection_store().update(room);
+            }
+        }
+    })
+    .await;
+    task.abort();
+    let _ = task.await;
+    result.expect("one subscription delivers authoritative inventory changes");
 }

@@ -80,7 +80,12 @@ pub enum LocalDaemonResponse {
     ProjectEnvironmentSetupRetried { status: ProjectEnvironmentSetupStatus, },
     SessionsListed { sessions: Vec<RuntimeSession>, },
     SessionResolved { session: RuntimeSession, },
+    RoomWorkflowRunsControlled {
+        results: Vec<RoomWorkflowRunControlResult>,
+        inventory: crate::runtime::projection::RoomWorkflowInventory,
+    },
     SessionState {
+        room_workflows: crate::runtime::projection::RoomWorkflowInventory,
         session: RuntimeSession,
         agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
         #[serde(default)]

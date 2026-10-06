@@ -1102,3 +1102,43 @@ export type ReadDirectoryTreeResult = {
   root_path: string
   entries: unknown[]
 }
+
+/** Protocol 436: public room-local inventory; independent of trigger admission. */
+export type RoomWorkflowInventory = {
+  session_id: string
+  home_kernel_id: string
+  revision: string
+  workflow_count: number
+  workflows: RoomWorkflowSummary[]
+}
+export type RoomWorkflowSummary = {
+  workflow_id: string
+  workflow_revision: number
+  label: string
+  state: "idle" | "running" | "paused" | "mixed"
+  running_count: number
+  paused_count: number
+  queued_count: number
+  runs: RoomWorkflowRunSummary[]
+  endpoints: RoomWorkflowEndpointSummary[]
+}
+export type RoomWorkflowRunSummary = {
+  run_id: string
+  endpoint_id: string
+  status: WorkflowRun["status"]
+  can_pause: boolean
+  can_resume: boolean
+  can_stop: boolean
+}
+export type RoomWorkflowEndpointSummary = {
+  endpoint_id: string
+  label: string
+  entry_node_id: string
+  can_start: boolean
+  start_disabled_reason?: string | null
+}
+export type RoomWorkflowRunAction = "pause" | "resume" | "stop"
+export type RoomWorkflowRunsControlled = {
+  inventory: RoomWorkflowInventory
+  results: { run_id: string; outcome: "applied" | "unchanged" | "failed"; error?: string | null }[]
+}

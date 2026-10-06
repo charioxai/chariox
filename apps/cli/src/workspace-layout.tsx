@@ -1,5 +1,5 @@
 import type { KeyBinding, RGBA } from "@opentui/core"
-import { For } from "solid-js"
+import { For, Show, type JSX } from "solid-js"
 
 import { PaneGridBorderChars, theme } from "./theme.js"
 
@@ -7,6 +7,11 @@ type RefHandler = (value: any) => void
 type IndexedRefHandler = (index: number, value: any) => void
 
 export type WorkspaceLayoutProps = {
+  roomWorkflowsPane?: (() => JSX.Element) | undefined
+  roomWorkflowsVisible?: (() => boolean) | undefined
+  roomWorkflowsAvailable?: (() => boolean) | undefined
+  roomWorkflowsOpen?: (() => void) | undefined
+  roomWorkflowsFocused?: (() => boolean) | undefined
   width: number
   height: number
   fatalError: boolean
@@ -249,8 +254,12 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
       backgroundColor={palette().background}
       onMouseUp={props.onRootMouseUp}
     >
+      <Show when={props.roomWorkflowsAvailable?.()}><text fg={palette().textMuted} onMouseDown={() => props.roomWorkflowsOpen?.()}>Workflows · Ctrl+W</text></Show>
+      <box flexGrow={1} flexDirection="row">
       <box
+        visible={!(props.roomWorkflowsVisible?.() && props.width < 110)}
         flexGrow={1}
+        flexBasis={0}
         backgroundColor={palette().backgroundPanel}
         onMouseUp={props.onResponseSurfaceMouseUp}
       >
@@ -299,8 +308,12 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
         </box>
       </box>
 
+      <Show when={props.roomWorkflowsVisible?.()}>{props.roomWorkflowsPane?.()}</Show>
+      </box>
+
       <box ref={props.onKernelApprovalBannerRef} flexShrink={0} flexDirection="column" visible={false} />
       <box
+        visible={!(props.roomWorkflowsVisible?.() && props.width < 110)}
         flexShrink={0}
         overflow="visible"
         border={false}

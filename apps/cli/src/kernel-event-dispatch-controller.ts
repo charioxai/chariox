@@ -100,7 +100,7 @@ export function createKernelEventDispatchController(
     deps.scheduleSharedPromptInputHistoryRefresh()
     await deps.applyKernelSessionSnapshot(
       normalizeRuntimeSessionWithAgentActivity({
-        session: event.session as RuntimeSession,
+        session: { ...event.session, room_workflows: event.room_workflows } as RuntimeSession,
         agent_activity: isRecord(event.agent_activity)
           ? event.agent_activity as RuntimeSession["agent_activity"]
           : null,

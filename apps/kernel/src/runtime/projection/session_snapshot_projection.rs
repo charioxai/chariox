@@ -15,6 +15,7 @@ pub(crate) const SESSION_SNAPSHOT_PROJECTION_VERSION: u64 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSnapshotProjection {
+    pub room_workflows: super::RoomWorkflowInventory,
     pub metadata: ProjectionMetadata,
     pub session: RuntimeSession,
     pub provider_run: Option<RuntimeProviderRun>,
@@ -138,6 +139,10 @@ impl SessionSnapshotProjection {
         app.session_state_projection_store()
             .project_external_observed_activity(session.id(), &mut agent_activity);
         Ok(Self {
+            room_workflows: super::RoomWorkflowInventory::project(
+                &session,
+                unread_for_user_id.unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID),
+            ),
             metadata: ProjectionMetadata::new(SESSION_SNAPSHOT_PROJECTION_VERSION, last_event_id),
             session,
             provider_run,

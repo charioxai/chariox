@@ -13,6 +13,7 @@ const features: Record<string, FeatureMinimum> = {
   ConnectCloudRelay: { feature: "Kernel Cloud ownership", minimum: 438 },
   ResolveKernelClientConnection: { feature: "Key-bound kernel pivot", minimum: 438 },
   IssueCloudRelayClientToken: { feature: "Kernel terminal delegation", minimum: 438 },
+  ControlRoomWorkflowRuns: { feature: "Room workflow run controls", minimum: 439 },
   AcceptAppHostAction: { feature: "App host actions", minimum: requests.appHostActionMinimumProtocolVersion },
   RevokeAppFileGrants: { feature: "App file revocation", minimum: requests.appFileRevokeMinimumProtocolVersion },
   RestoreAppDataSnapshot: { feature: "App data snapshot restore", minimum: requests.appDataSnapshotRestoreMinimumProtocolVersion },

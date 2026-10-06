@@ -32,6 +32,12 @@ async fn remote_session_requests_require_membership() {
         } if denied_session == session_id && user_id == "user-2"
     ));
 
+    let control = LocalDaemonRequest::ControlRoomWorkflowRuns(crate::local::ControlRoomWorkflowRunsRequest {
+        session_id: session_id.clone(), workflow_id: "workflow".into(), action: crate::local::RoomWorkflowRunAction::Stop, run_ids: vec!["run".into()],
+    });
+    assert!(matches!(router.dispatch(remote_command_for_request(&control, Some("user-2")), control).await,
+        Err(DaemonError::SessionAccessDenied { .. })));
+
     let request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest { session_id });
     let missing = router
         .dispatch(remote_command_for_request(&request, None), request)

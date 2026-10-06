@@ -139,6 +139,7 @@ pub use api::{
     ObserveEventConnectionAuthorizationRequest, ObserveManagedEnvironmentPreReimageRequest,
     PairCloudRelayClientRequest, PairCloudRelayMachineRequest, PairedClientRecord,
     PairingInviteIntent, PairingInviteRecord, PairingJoinRecord, PauseMetaagentTaskRequest,
+    ControlRoomWorkflowRunsRequest, RoomWorkflowRunAction, RoomWorkflowRunControlResult, RoomWorkflowRunControlOutcome,
     PauseWorkflowRunRequest, PollCloudRelayLoginRequest, PollRuntimeNoticesRequest,
     PrepareManagedEnvironmentContextTransferRequest,
     PrepareManagedEnvironmentGitCredentialEnrollmentRequest, PreviewPromptSettingRequest,

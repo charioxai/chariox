@@ -257,5 +257,6 @@ pub use workspace::*;
 /// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
 /// Version 436 adds opt-in terminal Cloud device-login denial outcomes.
 /// Version 437 adds kernel-emitted, owner-private workflow notifications.
+/// Version 439 also includes Room workflow inventory and captured run controls.
 /// Version 439 adds Cloud-free kernel-owned key-bound terminal admission.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 439;

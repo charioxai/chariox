@@ -12,6 +12,7 @@ export type CliStdinKeypressParser = (
 ) => CliStdinKeyEvent | null
 
 export type CliStdinKeyControllerDeps = {
+  roomWorkflowsOwnsInput?: () => boolean
   parseKeypress: CliStdinKeypressParser
   kernelApprovalOwnsInput?: (event?: CliStdinKeyEvent) => boolean
   dialogOverlayOpen: () => boolean
@@ -92,6 +93,15 @@ export function createCliStdinKeyController(
         }
         return true
       }
+      if (event.ctrl && event.name === "c") {
+        if (deps.hasActiveTurnWork()) {
+          deps.requestPromptStop()
+        } else {
+          deps.requestExit()
+        }
+        return true
+      }
+      if (deps.roomWorkflowsOwnsInput?.()) return true
       if (event.eventType !== "release" && event.ctrl && event.name === "p") {
         if (deps.dialogOverlayOpen()) {
           return true
@@ -114,14 +124,6 @@ export function createCliStdinKeyController(
         return true
       }
       if (event.eventType !== "release" && event.meta && event.name === "c" && deps.copyPromptSelection()) {
-        return true
-      }
-      if (event.ctrl && event.name === "c") {
-        if (deps.hasActiveTurnWork()) {
-          deps.requestPromptStop()
-        } else {
-          deps.requestExit()
-        }
         return true
       }
       if (deps.dialogOverlayOpen()) {
