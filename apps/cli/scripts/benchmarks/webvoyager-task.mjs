@@ -5,7 +5,8 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
+import { captureFinalEvidence } from './webvoyager-final-capture.mjs'
 import { Round2Room } from './round2/room.mjs'
 import { unwrap, getTurn, loadTurnHistory, assembleTurnEntries } from './round2/kernel.mjs'
 import { finalAnswer, settlementRecord } from './round2/export.mjs'
@@ -18,15 +19,22 @@ import { sanitizeDrillMetadata } from '../lib/drill-secrets.mjs'
 const exec = promisify(execFile), pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 const observations = new Set(['browser_status', 'browser_find', 'browser_text', 'browser_wait_for_text', 'browser_wait_for_selector', 'browser_wait_for_idle', 'browser_events', 'browser_downloads', 'browser_history'])
 
-export function webVoyagerPrompt(task) {
-  return `MP-08 / MP-10 WebVoyager diagnostic smoke. Solve this task in the Room browser.\nTask: ${task.ques}\nStart URL: ${task.web}\nUse ONLY Chariox first-party slice_open_url and slice_browser_* tools. Open the start URL first. Observe before acting and use observed opaque field IDs. No shell, files, scripts, direct HTTP, provider-native browser, other MCPs, Computer tools, benchmark code or expected answers. Read-only browsing only: no logins, sign-ups, purchases, cart changes, bookings, posts, messages, uploads, account changes or other submissions that change state. Search/filter forms that only retrieve public information are allowed. If the task needs a forbidden action, stop and state SKIPPED_STATE_CHANGE. If blocked by login, CAPTCHA, robots, access denial, expired dates or missing data, stop and state the blocker. Do not bypass restrictions or change the task. Stay within 15 mutating Browser actions, 80 Browser tool calls and 600 seconds. Return a concise factual final answer with source URLs; state failures honestly.`
+export function webVoyagerPrompt(task, variant = 'frozen') {
+  assert(['frozen', 'recovery-v1'].includes(variant), 'MP-10 unknown prompt variant')
+  const frozen = `MP-08 / MP-10 WebVoyager diagnostic smoke. Solve this task in the Room browser.\nTask: ${task.ques}\nStart URL: ${task.web}\nUse ONLY Chariox first-party slice_open_url and slice_browser_* tools. Open the start URL first. Observe before acting and use observed opaque field IDs. No shell, files, scripts, direct HTTP, provider-native browser, other MCPs, Computer tools, benchmark code or expected answers. Read-only browsing only: no logins, sign-ups, purchases, cart changes, bookings, posts, messages, uploads, account changes or other submissions that change state. Search/filter forms that only retrieve public information are allowed. If the task needs a forbidden action, stop and state SKIPPED_STATE_CHANGE. If blocked by login, CAPTCHA, robots, access denial, expired dates or missing data, stop and state the blocker. Do not bypass restrictions or change the task. Stay within 15 mutating Browser actions, 80 Browser tool calls and 600 seconds. Return a concise factual final answer with source URLs; state failures honestly.`
+  if (variant === 'frozen') return frozen
+  return frozen.replace('If blocked by login, CAPTCHA, robots, access denial, expired dates or missing data, stop and state the blocker.',
+    'You may dismiss sign-in invitations and informational overlays without signing in, and reject nonessential cookies using observed controls such as Reject all, I do not agree, or necessary-only settings. These privacy-preserving navigation choices are permitted; do not stop solely because they save a local browser preference. Do not accept optional tracking. Do not change delivery addresses or invent a location. If blocked by mandatory login, CAPTCHA, robots, access denial or expired dates, stop and state the blocker. Before declaring missing data, wait for the requested result and read the relevant section. For image-only results, look for an observed Plain Text or accessible alternative; never infer values from an unreadable image.')
+    + '\nNavigation recovery: if an element is obscured or disabled, inspect the current page for a dismissible overlay before retrying. Refresh observed field IDs after navigation or a stale-element error. Use the visible control, not a hidden duplicate. Allow one recovery attempt after a wait for idle; avoid repeating an unchanged failing action. Read the required content with targeted browser_text queries and pagination within the tool limits. Verify each requested filter, date, unit, count and ranking on the resulting page before answering. For latest/recent items verify dates and compare candidates. Give only verified facts and identify any unmet requirement; never claim full success from a partial result.'
 }
 
 export async function runWebVoyagerTask({ task, runtime, options }) {
-  const id = `r2next-wv-${randomUUID().slice(0, 8)}`
+  const id = `${options.runtime.laneName ?? 'r2next'}-wv-${randomUUID().slice(0, 8)}`
   const directory = `${options.runtime.evidence}/attempts/${task.id}`
   await mkdir(directory, { recursive: false, mode: 0o700 })
-  const row = { mpItems: ['MP-08', 'MP-10', 'MP-11'], benchmark: 'WebVoyager', scope: 'round3-full',
+  const promptVariant = options.promptVariant ?? 'frozen'
+  const prompt = webVoyagerPrompt(task, promptVariant)
+  const row = { promptVariant, promptSha256: createHash('sha256').update(prompt).digest('hex'), mpItems: ['MP-08', 'MP-10', 'MP-11'], benchmark: 'WebVoyager', scope: options.scope ?? 'round3-full',
     taskId: task.id, runId: id, taskRevision: '5a7896738c10bfb8b9edccce6bb0e0411f8ae569',
     model: 'gpt-6.1-sol', effort: 'high', judgeModel: 'gpt-6.1-sol', judgeEffort: 'low',
     source: runtime.source, dateStatus: task.dateStatus, maxMutatingActions: 15, maxToolCalls: 80, wallTimeoutMs: 600000,
@@ -78,8 +86,8 @@ export async function runWebVoyagerTask({ task, runtime, options }) {
     agentId = await room.spawn({ provider: 'codex', model: 'gpt-6.1-sol', effort: 'high', accountProfile: runtime.profileId })
     row.sessionId = room.owned.sessionId; row.agentId = agentId
     seam = 'prompt_submit'
-    const submitted = unwrap(await submitOnce({ directory: `${options.runtime.evidence}/admissions`, scope: 'round3-full', taskId: task.id, runId: id,
-      submit: () => client.send(requests.submitPromptRequest(room.owned.sessionId, room.owned.attachmentId, agentId, webVoyagerPrompt(task), [])) }), 'PromptSubmitted')
+    const submitted = unwrap(await submitOnce({ directory: `${options.runtime.evidence}/admissions`, scope: options.scope ?? 'round3-full', taskId: task.id, runId: id,
+      submit: () => client.send(requests.submitPromptRequest(room.owned.sessionId, room.owned.attachmentId, agentId, prompt, [])) }), 'PromptSubmitted')
     row.promptId = (submitted.outcome.Started ?? submitted.outcome.Queued).prompt.id
     identity = { sessionId: room.owned.sessionId, agentId, promptId: row.promptId }
     row.providerStartedAt = new Date().toISOString(); await checkpoint()
@@ -131,7 +139,7 @@ export async function runWebVoyagerTask({ task, runtime, options }) {
     row.answer = finalAnswer(turn, originals, helpers)
     await writeFile(`${directory}/answer.txt`, row.answer, { mode: 0o600 })
     row.actions = actions.map(action => ({ id: action.action_id, kind: action.kind, mode: action.mode, state: action.state, actorId: action.actor_id }))
-    seam = 'final_capture'; await capture()
+    seam = 'final_capture'; row.finalCapture = await captureFinalEvidence({ capture })
     row.harnessValid = !cancelled && turn.lifecycle === 'completed' && !row.providerError && !!row.answer
       && !!tools.size && !row.forbiddenTools.length && tools.size <= 80 && !!actions.length && actions.every(action => action.mode === 'browser')
     const state = unwrap(await client.send(requests.getSessionStateRequest(identity.sessionId)), 'SessionState')
