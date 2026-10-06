@@ -102,9 +102,9 @@ async function capture(name) {
 function jwt(body) {
   const encode=value=>Buffer.from(JSON.stringify(value)).toString('base64url')
   const now=Math.floor(Date.now()/1000)
-  const claims={iss:issuer,sub:body.subject,subject_kind:'kernel',realm_id:realm,
-    allowed_actions:['daemon.register','daemon.heartbeat','packet.route','peer.request','peer.event','client.metadata.read','client.connect'],
-    allowed_targets:null,iat:now-1,exp:now+3600,jti:randomBytes(12).toString('hex'),account_id:account,
+  const claims={iss:issuer,sub:body.subject,subject_kind:body.subjectKind,realm_id:realm,
+    allowed_actions:body.allowedActions??['daemon.register','daemon.heartbeat','packet.route','peer.request','peer.event','client.metadata.read','client.connect'],
+    allowed_targets:body.allowedTargets??null,iat:now-1,exp:now+3600,jti:randomBytes(12).toString('hex'),account_id:account,
     organization_id:null,user_id:user,device_id:body.subject,machine_id:body.machineId,client_id:null,
     public_key_thumbprint:body.publicKeyThumbprint,entitlements_version:'drill'}
   const data=encode({alg:'HS256',typ:'JWT'})+'.'+encode(claims)
@@ -123,9 +123,12 @@ async function handleCloud(req,res) {
       ownerProfiles.set(body.kernelId,{profile,credential})
       response={status:'approved',profile,kernelCredential:credential}
     } else if(req.url==='/relay/token') {
-      assert.equal(ownerProfiles.get(body.subject)?.credential,body.kernelCredential)
-      assert.equal(body.subjectKind,'kernel')
-      assert.equal(body.publicKeyThumbprint,ownerProfiles.get(body.subject).profile.publicKeyThumbprint)
+      const actor=[...ownerProfiles.values()].find(actor=>actor.credential===body.kernelCredential)
+      assert(actor,'token requester must be an enrolled kernel')
+      assert.equal(body.accountId,account);assert.equal(body.userId,user);assert.equal(body.realmId,realm)
+      if(body.subjectKind==='kernel')assert.equal(body.subject,actor.profile.kernelId)
+      else {assert.equal(body.subjectKind,'client');assert.equal(body.subject,`relay-inventory:${actor.profile.kernelId}`)}
+      assert.equal(body.publicKeyThumbprint,actor.profile.publicKeyThumbprint)
       response={token:jwt(body),expiresAt:new Date(Date.now()+3600_000).toISOString()}
     } else if(req.url.startsWith('/relay/targets?')) {
       response={targets:[]}
@@ -173,7 +176,8 @@ async function kernel(name) {
   const enrolled=await run(`${name}-enroll`,path.join(binaryDir,'chariox-kernel'),['--owner-managed-enroll-stdin'],env,JSON.stringify({ticket:'synthetic-one-time-ticket',apiUrl:cloudUrl,userId:user}))
   assert.equal(enrolled.code,0);const identity=JSON.parse(enrolled.output.trim())
   const child=start(name,path.join(binaryDir,'chariox-kernel'),[],env);child.stdin.end()
-  const result={name,env,identity,child,url:`ws://127.0.0.1:${kp}`,outbound:path.join(state,'kernels',identity.kernelId,'managed-context-outbound')}
+  // MP-10: default state.path is ~/.chariox/state/kernel.db, resolved through CHARIOX_HOME.
+  const result={name,env,identity,child,url:`ws://127.0.0.1:${kp}`,outbound:path.join(state,'state','managed-context-outbound')}
   await until(async()=> (await rpc(result,{RelayStatus:{}})).RelayStatus?.status.connected,`${name} relay connected`)
   return result
 }
