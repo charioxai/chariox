@@ -70,7 +70,7 @@ type KernelCloudRelayLoginStart = {
 }
 
 type KernelCloudRelayLoginPoll = {
-  status: "authorization_pending" | "expired_token" | "approved"
+  status: "authorization_pending" | "expired_token" | "access_denied" | "approved"
   interval_seconds?: number | null
   expires_at?: string | null
   profile?: KernelCloudRelayProfile | null
@@ -138,7 +138,7 @@ export async function pollCloudRelayLogin(
   apiUrl: string,
   deviceCode: string,
 ) {
-  const response = await client.send<Record<string, unknown>>(pollCloudRelayLoginRequest(apiUrl, deviceCode))
+  const response = await client.send<Record<string, unknown>>(pollCloudRelayLoginRequest(apiUrl, deviceCode, true))
   const payload = expectVariant<{ result: KernelCloudRelayLoginPoll }>(response, "CloudRelayLoginPolled").result
   if (payload.status === "authorization_pending") {
     return {
@@ -149,6 +149,9 @@ export async function pollCloudRelayLogin(
   }
   if (payload.status === "expired_token") {
     return { status: "expired_token" as const }
+  }
+  if (payload.status === "access_denied") {
+    return { status: "access_denied" as const }
   }
   if (!payload.profile) {
     throw new Error("cloud device login approval response was incomplete")

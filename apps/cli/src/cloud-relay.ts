@@ -59,6 +59,9 @@ export type CloudDeviceLoginPollResult =
     status: "expired_token"
   }
   | {
+    status: "access_denied"
+  }
+  | {
     status: "approved"
     profile: RelayCloudProfile
   }
@@ -119,14 +122,14 @@ export async function pollCloudDeviceLogin(
   deviceCode: string,
 ): Promise<CloudDeviceLoginPollResult> {
   const payload = await postJson<{
-    status: "authorization_pending" | "expired_token" | "approved"
+    status: "authorization_pending" | "expired_token" | "access_denied" | "approved"
     intervalSeconds?: number
     expiresAt?: string
     profile?: RelayCloudProfile & { email: string }
     cloudSessionToken?: string
     cloudSessionExpiresAt?: string
     machineCredential?: string
-  }>(apiUrl, "/auth/device/poll", { deviceCode })
+  }>(apiUrl, "/auth/device/poll", { deviceCode, supportsAccessDenied: true })
   if (payload.status === "authorization_pending") {
     return {
       status: "authorization_pending",
@@ -136,6 +139,9 @@ export async function pollCloudDeviceLogin(
   }
   if (payload.status === "expired_token") {
     return { status: "expired_token" }
+  }
+  if (payload.status === "access_denied") {
+    return { status: "access_denied" }
   }
   if (!payload.profile || !payload.cloudSessionToken || !payload.cloudSessionExpiresAt) {
     throw new Error("cloud device login approval response was incomplete")

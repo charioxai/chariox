@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { pairCloudRelayClient, pairCloudRelayMachine } from "./cloud-relay.js"
+import { pairCloudRelayClient, pairCloudRelayMachine, pollCloudDeviceLogin } from "./cloud-relay.js"
 import type { RelayCloudProfile } from "./preferences.js"
 
 function profile(): RelayCloudProfile {
@@ -72,4 +72,12 @@ test("denied pairing-token admission does not redeem a token or replace a linked
   await assert.rejects(pairCloudRelayMachine(linked, "new-machine"), /account operate access denied/)
   assert.equal(requests, 2, "each denied admission stops before token redemption")
   assert.deepEqual(linked, before)
+})
+
+test("device denial is a terminal direct CLI poll result without an approval profile", async (t) => {
+  t.mock.method(globalThis, "fetch", async (_url: unknown, init?: RequestInit) => {
+    assert.deepEqual(JSON.parse(String(init?.body)), { deviceCode: "synthetic-device-code", supportsAccessDenied: true })
+    return Response.json({ status: "access_denied" })
+  })
+  assert.deepEqual(await pollCloudDeviceLogin("https://cloud.example.test", "synthetic-device-code"), { status: "access_denied" })
 })

@@ -45,12 +45,13 @@ pub(crate) async fn execute_poll_cloud_relay_login_request(
     request: PollCloudRelayLoginRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let api_url = normalize_cloud_api_url(&request.api_url)?;
-    let response: CloudDevicePollResponse = post_cloud_json(
-        api_url.clone(),
-        "/auth/device/poll",
-        serde_json::json!({ "deviceCode": request.device_code }),
-    )
-    .await?;
+    let supports_access_denied = request.supports_access_denied == Some(true);
+    let mut body = serde_json::json!({ "deviceCode": request.device_code });
+    if supports_access_denied {
+        body["supportsAccessDenied"] = serde_json::json!(true);
+    }
+    let response: CloudDevicePollResponse =
+        post_cloud_json(api_url.clone(), "/auth/device/poll", body).await?;
     let result = match response.status.as_str() {
         "authorization_pending" => CloudRelayLoginPoll {
             status: CloudRelayLoginPollStatus::AuthorizationPending,
@@ -60,6 +61,16 @@ pub(crate) async fn execute_poll_cloud_relay_login_request(
         },
         "expired_token" => CloudRelayLoginPoll {
             status: CloudRelayLoginPollStatus::ExpiredToken,
+            interval_seconds: None,
+            expires_at: None,
+            profile: None,
+        },
+        "access_denied" => CloudRelayLoginPoll {
+            status: if supports_access_denied {
+                CloudRelayLoginPollStatus::AccessDenied
+            } else {
+                CloudRelayLoginPollStatus::ExpiredToken
+            },
             interval_seconds: None,
             expires_at: None,
             profile: None,
