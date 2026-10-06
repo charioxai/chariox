@@ -231,3 +231,17 @@ test('MP-11: native keyboard unknown/protected focus refuses with no retry marke
  const result=await service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:first.sequence,action:{kind:'coordinate',input:{kind:'key',key:'Backspace'}}},'a');
  await assert.rejects(result.guard(),error=>!error.message.includes('stale mirror input epoch'));
 });
+
+test('opaque SVG tile does not apply its already captured opacity a second time',async()=>{
+ const {service,state}=fixture();state.snapshot.nodes[0].children.push('n3');state.snapshot.nodes.push({id:'n3',parent:'n1',children:[],kind:'tile',tag:'img',reason:'opaque_media',box:{x:0,y:0,width:20,height:20},style:{opacity:'0.6',width:'20px',height:'20px'}});
+ const stream=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');const packet=await service.next(next(stream.subscription_id),'a');
+ assert(packet.nodes.some(n=>n.id==='n2'&&n.kind==='text'),'Ordinary text must stay mirrored beside the SVG logo');
+ assert.equal(packet.nodes.find(n=>n.id==='n3').style.opacity,'1','Captured pixels already include the tile opacity');
+});
+
+test('composited ancestors and transformed tiles still require protected full fallback',async()=>{
+ for(const mode of ['ancestorOpacity','tileTransform']){
+  const {service,state}=fixture();state.snapshot.nodes[0].children.push('n3');state.snapshot.nodes[0].style=mode==='ancestorOpacity'?{opacity:'0.6'}:{};state.snapshot.nodes.push({id:'n3',parent:'n1',children:[],kind:'tile',tag:'img',reason:'opaque_media',box:{x:0,y:0,width:20,height:20},style:mode==='tileTransform'?{transform:'rotate(10deg)'}:{}});
+  const stream=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');const packet=await service.next(next(stream.subscription_id),'a');assert(packet.nodes.some(n=>n.reason==='observer_bounds_or_unavailable'));
+ }
+});

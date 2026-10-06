@@ -128,6 +128,10 @@ export class MirrorService {
     source.fonts=source.fonts.flatMap(f=>{const resource=material.mapped.get(f.resource);return resource?[{...f,resource}]:[];});
     const sourceRevision=source.revision??0;
     delete source.resources;delete source.revision;source.selection??=null;
+    // A local raster tile already includes its own opacity against the native
+    // backdrop. Applying that opacity again in the inert renderer is incorrect.
+    // Keep ancestor opacity/transforms fenced: their compositing spans siblings.
+    for(const node of source.nodes)if(node.kind==='tile'&&node.style?.opacity&&node.style.opacity!=='1')node.style={...node.style,opacity:'1'};
     const compositingNodes=new Map(source.nodes.map(n=>[n.id,n]));
     const unsupportedTile=source.nodes.some(n=>{if(n.kind!=='tile')return false;for(let e=n;e;e=compositingNodes.get(e.parent)){const style=e.style??{};if(['transform','filter','backdrop-filter','perspective'].some(key=>style[key]&&style[key]!=='none')||style.opacity&&style.opacity!=='1')return true;}return false;});
     if(unsupportedTile){stream.fullFallback=true;source=videoSnapshot();delete source.resources;}
