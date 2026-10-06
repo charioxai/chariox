@@ -2,6 +2,12 @@
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 const ASSETS: &[(&str, &[u8])] = &[
+    ("native-computer.mjs", include_bytes!("../../slice-linux-docker/docker/native-computer.mjs")),
+    ("native-computer.py", include_bytes!("../../slice-linux-docker/docker/native-computer.py")),
+    ("x11-text-keyboard.py", include_bytes!("../../slice-linux-docker/docker/x11-text-keyboard.py")),
+    ("slice-keyboard.py", include_bytes!("../../slice-linux-docker/docker/slice-keyboard.py")),
+    ("slice-text-finder.py", include_bytes!("../../slice-linux-docker/docker/slice-text-finder.py")),
+
     ("linux-owned-desktop.mjs", include_bytes!("../../slice-linux-docker/docker/linux-owned-desktop.mjs")),
     ("linux-owned-process.mjs", include_bytes!("../../slice-linux-docker/docker/linux-owned-process.mjs")),
     (

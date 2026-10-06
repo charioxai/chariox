@@ -9,18 +9,27 @@ import time
 
 logging.disable(logging.CRITICAL)
 
-from selkies import Xlib
-from selkies.Xlib import XK
-from selkies.Xlib import display
-from selkies.Xlib.ext import xtest
-# Internal API is intentionally tied to selkies.lock.json revision
-# 3f87241fcd6abc44e205b22f6596e78ef4946670. Any pin upgrade must rerun the
-# physical keyboard X11 drill, including Unicode recycling and cancellation.
-from selkies.input_handler import (
-    _XTestKeyboard,
-    character_to_layout_keysym,
-    universal_text_keysym,
-)
+try:
+    from selkies import Xlib
+    from selkies.Xlib import XK, display
+    from selkies.Xlib.ext import xtest
+    from selkies.input_handler import (
+        _XTestKeyboard, character_to_layout_keysym, universal_text_keysym,
+    )
+except ModuleNotFoundError as error:
+    if not error.name.startswith("selkies"):
+        raise
+    import Xlib
+    from Xlib import XK, display
+    from Xlib.ext import xtest
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("x11_text_keyboard", Path(__file__).with_name("x11-text-keyboard.py"))
+    backend = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(backend)
+    _XTestKeyboard = backend._XTestKeyboard
+    character_to_layout_keysym = backend.character_to_layout_keysym
+    universal_text_keysym = backend.universal_text_keysym
 
 
 class SecretTargetChanged(Exception):

@@ -39,7 +39,7 @@ export class LinuxOwnedDesktop {
     const child = spawn(this.commands[name] ?? name, args, { env, stdio });
     // Attach before the first asynchronous boundary to prevent unhandled spawn errors.
     child.on('error', () => {});
-    const record = { child, identity: null }; this.children.push(record);
+    const record = { child, identity: null, core: ['Xvfb', 'openbox', 'dbus-daemon'].includes(name) }; this.children.push(record);
     if (!child.pid) throw new Error('MP-08: desktop executable unavailable');
     record.identity = await processIdentity(child.pid);
     if (!record.identity) throw new Error('MP-11: desktop child ownership unavailable');
@@ -47,7 +47,7 @@ export class LinuxOwnedDesktop {
   }
   async start() {
     if (this.current) {
-      if (this.children.some(({ child }) => child.exitCode !== null || child.signalCode !== null)) throw new Error('MP-08: owned desktop unavailable; explicitly stop/start');
+      if (this.children.some(({ child, core }) => core && (child.exitCode !== null || child.signalCode !== null))) throw new Error('MP-08: owned desktop unavailable; explicitly stop/start');
       return this.current;
     }
     if (this.starting) return this.starting;
@@ -75,7 +75,7 @@ export class LinuxOwnedDesktop {
       env.DBUS_SESSION_BUS_ADDRESS = address;
       await this.launch('openbox', ['--sm-disable'], env);
       await delay(100);
-      if (this.children.some(({child}) => child.exitCode !== null || child.signalCode !== null)) throw new Error('MP-08: desktop failed to become ready');
+      if (this.children.some(({child,core}) => core && (child.exitCode !== null || child.signalCode !== null))) throw new Error('MP-08: desktop failed to become ready');
       this.current = Object.freeze({ surface_id: `desktop-${randomUUID()}`, generation: randomUUID(), width: 1280, height: 800, environment: Object.freeze(env) });
       return this.current;
     } catch (error) { await this.stop(); throw error; }

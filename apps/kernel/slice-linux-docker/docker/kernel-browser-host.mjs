@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { displayTiming, timestamp } from './kernel-browser-timing.mjs';
 import { BrowserCdpClient, isTrustedStaleReferenceError } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
+import { NativeComputer } from './native-computer.mjs';
 import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
@@ -52,6 +53,10 @@ export class KernelBrowserHost {
     this.observedDocuments = new Map();
     this.mirror = new MirrorService(this);
     this.protection = { values: [], targets: [], unknown: false };
+    this.nativeComputer = new NativeComputer({ placement: 'host',
+      binding: () => this.chromium.desktop?.binding(),
+      wakeCapture: event => this.onNativeInput?.(event),
+    });
   }
   async protect(policy) {
     if (!Array.isArray(policy.values) || policy.values.length > 256 || policy.values.some(value => typeof value !== "string" || !value) || !Array.isArray(policy.targets)) throw new Error("MD-5: invalid protection policy");
@@ -131,6 +136,7 @@ export class KernelBrowserHost {
     finally { this.restoring = false; }
   }
   async stop() {
+    await this.nativeComputer.close();
     await this.chromium.stop(this.browser?.connection);
     for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
@@ -443,6 +449,17 @@ export class KernelBrowserHost {
           node_ref: request.params.node_ref, action: request.params.action, timeout_ms: 10_000 }, { signal });
         await this.save();
         return { id: request.id, ok: true, result: { inserted: true } };
+      }
+      if (request.method === "host.computer") {
+        if (request.params.op === 'start') {
+          await this.start({ signal });
+          return { id: request.id, ok: true, result: await this.nativeComputer.request({op:'state'}, this.protection, {signal}) };
+        }
+        return { id: request.id, ok: true, result: await this.nativeComputer.request(request.params, this.protection, {signal}) };
+      }
+      if (request.method === "host.computer.reset") {
+        await this.nativeComputer.reset();
+        return { id: request.id, ok: true, result: { released: true } };
       }
       if (request.method === "host.browser") {
         const at = timestamp();
