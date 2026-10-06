@@ -488,6 +488,7 @@ fn schema_v3_pruned_import_recovers_launch_target_from_confirmed_publication() {
     consumed_context_ids.insert("context-1".to_string());
     consumed_context_ids.insert("legacy-context".to_string());
     let schema_v3 = PersistedTransferState {
+        owner_context_authorities: BTreeMap::new(),
         schema_version: 3,
         entries: std::collections::BTreeMap::new(),
         consumed_context_ids,
@@ -647,6 +648,7 @@ fn schema_v3_pruned_import_rejects_legacy_publication_without_source_bindings() 
     drop(store);
 
     let schema_v3 = PersistedTransferState {
+        owner_context_authorities: BTreeMap::new(),
         schema_version: 3,
         entries: std::collections::BTreeMap::new(),
         consumed_context_ids: std::collections::BTreeSet::from(["context-1".to_string()]),
@@ -923,6 +925,7 @@ fn schema_v3_near_capacity_migration_compacts_receipts_and_keeps_launch_targets(
     drop(store);
 
     let mut state = PersistedTransferState {
+        owner_context_authorities: BTreeMap::new(),
         schema_version: 3,
         entries: std::collections::BTreeMap::new(),
         consumed_context_ids: std::collections::BTreeSet::new(),
@@ -1021,6 +1024,7 @@ fn transfer_rejects_wrong_bindings_conflicts_expiry_and_oversize_chunks() {
     let source_thumbprint = sha256_bytes(b"source-key");
     let caller = caller(&source_thumbprint);
     let wrong = ManagedContextTransferCaller {
+        target_destination: None,
         kernel_id: "kernel-wrong".to_string(),
         ..caller.clone()
     };
@@ -1841,6 +1845,7 @@ fn write_legacy_consumed_state(root: &std::path::Path, count: usize, now: u64) {
     drop(store);
 
     let mut state = PersistedTransferState {
+        owner_context_authorities: BTreeMap::new(),
         schema_version: 2,
         entries: std::collections::BTreeMap::new(),
         consumed_context_ids: std::collections::BTreeSet::new(),
@@ -1870,6 +1875,7 @@ fn claimed(claim: ManagedContextImportClaim) -> ReadyManagedContextImport {
 fn arm_request(archive: &[u8], expires_at_ms: u64) -> ArmManagedContextTransfer {
     ArmManagedContextTransfer {
         plan: crate::managed_context::package::ManagedContextPlanBinding {
+            destination: None,
             context_id: "context-1".to_string(),
             plan_digest: format!("sha256:{}", "1".repeat(64)),
             kernel_context:
@@ -1911,6 +1917,7 @@ fn managed_package_receipt(
     destination_root: &std::path::Path,
 ) -> String {
     serde_json::to_string(&crate::managed_context::package::ManagedContextPackageImportReceipt {
+        destination: None,
         schema_version: 2,
         transfer_id: transfer_id.to_string(),
         package_sha256: sha256_bytes(archive),
@@ -1957,6 +1964,7 @@ fn large_launch_target(context_id: &str) -> crate::local::ManagedContextLaunchTa
     let destination_root = std::env::temp_dir().join("chariox-large-managed-context-target");
     let repositories = large_imported_repositories(&destination_root);
     crate::local::ManagedContextLaunchTarget {
+        destination: None,
         environment_id: "environment-1".to_string(),
         kernel_id: "kernel-target".to_string(),
         context_id: context_id.to_string(),
@@ -1991,6 +1999,7 @@ fn large_managed_package_receipt(
     let repositories = large_imported_repositories(destination_root);
     let receipt = serde_json::to_string(
         &crate::managed_context::package::ManagedContextPackageImportReceipt {
+            destination: None,
             schema_version: 2,
             transfer_id: transfer_id.to_string(),
             package_sha256: sha256_bytes(archive),
@@ -2104,6 +2113,7 @@ fn source_binding_sha256(
 
 fn caller(source_thumbprint: &str) -> ManagedContextTransferCaller {
     ManagedContextTransferCaller {
+        target_destination: None,
         kernel_id: "kernel-source".to_string(),
         key_thumbprint: source_thumbprint.to_string(),
         owner_user_id: "user-1".to_string(),

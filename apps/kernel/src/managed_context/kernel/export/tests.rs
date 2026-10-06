@@ -1,5 +1,74 @@
 use super::*;
 
+#[test]
+fn mp11_credential_free_export_never_reads_provider_git_vault_or_credential_registry() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    let root = test_root(format!(
+        "chariox-owner-context-{:016x}",
+        rand::random::<u64>()
+    ));
+    let isolation = root.join("capabilities");
+    let home = root.join("home");
+    fs::create_dir_all(isolation.join("user/skills/review")).unwrap();
+    fs::create_dir_all(home.join(".codex")).unwrap();
+    fs::create_dir_all(home.join("credentials")).unwrap();
+    std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation);
+    std::env::set_var("CHARIOX_HOME", &home);
+    // MP-11: malformed registry/Vault canaries prove these stores are not read.
+    for (path, bytes) in [
+        (home.join(".codex/auth.json"), "provider-credential-canary"),
+        (home.join(".git-credentials"), "git-credential-canary"),
+        (home.join("vault.json"), "vault-credential-canary"),
+        (
+            home.join("credentials/broken.json"),
+            "credential-dependency-canary",
+        ),
+    ] {
+        fs::write(path, bytes).unwrap();
+    }
+    fs::write(
+        isolation.join("user/skills/review/SKILL.md"),
+        "---\nname: review\ndescription: Review code\n---\nRead the diff.\n",
+    )
+    .unwrap();
+    let mut request = test_export_request();
+    request.vault = None;
+    let snapshot = export_kernel_context_without_credentials(request.clone()).unwrap();
+    assert!(snapshot.payload.vault.is_none());
+    assert!(snapshot
+        .payload
+        .dependencies
+        .iter()
+        .all(|dependency| !matches!(dependency, KernelExtensionDependency::Credential { .. })));
+    assert_eq!(snapshot.payload.extensions.len(), 1);
+    let bytes = serde_json::to_vec(&snapshot).unwrap();
+    for canary in [
+        "provider-credential-canary",
+        "git-credential-canary",
+        "vault-credential-canary",
+        "credential-dependency-canary",
+    ] {
+        assert!(!bytes
+            .windows(canary.len())
+            .any(|window| window == canary.as_bytes()));
+    }
+    assert!(
+        export_kernel_context(request).is_err(),
+        "Path-1 still requires its Vault binding"
+    );
+    let mut credential_bearing = test_export_request();
+    assert!(export_kernel_context_without_credentials(credential_bearing.clone()).is_err());
+    credential_bearing.vault = None;
+    fs::write(
+        isolation.join("user/skills/review/private.env"),
+        "API_KEY=synthetic-canary",
+    )
+    .unwrap();
+    assert!(export_kernel_context_without_credentials(credential_bearing).is_err());
+    fs::remove_dir_all(root).unwrap();
+}
+
 fn test_vault_snapshot() -> crate::secret::TransferredVaultSnapshot {
     let source_private = crate::transport::relay_crypto::generate_private_key_base64();
     let source_public =
@@ -55,7 +124,7 @@ fn test_export_request() -> KernelContextExportRequest {
         source_key_thumbprint: vault.source_key_thumbprint.clone(),
         target_kernel_id: vault.target_kernel_id.clone(),
         target_key_thumbprint: vault.target_key_thumbprint.clone(),
-        vault,
+        vault: Some(vault),
     }
 }
 
@@ -695,18 +764,19 @@ fn kernel_context_rejects_structurally_invalid_vault_snapshot() {
     );
     std::env::set_var("CHARIOX_HOME", root.join("home"));
     let mut request = test_export_request();
-    request.vault.vault_sha256 = "0".repeat(64);
+    request.vault.as_mut().unwrap().vault_sha256 = "0".repeat(64);
     let error = export_kernel_context(request).expect_err("invalid Vault digest should reject");
     assert!(error.to_string().contains("declared digest"));
     let mut request = test_export_request();
-    request.vault.sealed_unlock_key.nonce = "not-base64".to_string();
+    request.vault.as_mut().unwrap().sealed_unlock_key.nonce = "not-base64".to_string();
     let error = export_kernel_context(request).expect_err("invalid sealed payload should reject");
     assert!(error.to_string().contains("relay nonce"));
     let mut request = test_export_request();
     let malformed = b"not-json";
-    request.vault.vault_file_base64 = base64::engine::general_purpose::STANDARD.encode(malformed);
-    request.vault.vault_size_bytes = malformed.len() as u64;
-    request.vault.vault_sha256 = sha256_hex(malformed);
+    request.vault.as_mut().unwrap().vault_file_base64 =
+        base64::engine::general_purpose::STANDARD.encode(malformed);
+    request.vault.as_mut().unwrap().vault_size_bytes = malformed.len() as u64;
+    request.vault.as_mut().unwrap().vault_sha256 = sha256_hex(malformed);
     let error = export_kernel_context(request)
         .expect_err("self-consistent malformed Vault file should reject");
     assert!(error

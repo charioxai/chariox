@@ -155,6 +155,8 @@ pub(crate) fn cloud_kernel_presence_body(
             "port": config.kernel_websocket_port,
             "relay_public_key": config.relay_public_key,
             "local_daemon_protocol_version": crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+            "owner_managed_context_transfer_protocol_version": 1,
+            "relay_peer_protocol_version": crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
             "managed_context_source_protocol_version":
                 crate::managed_context::MANAGED_CONTEXT_SOURCE_PROTOCOL_VERSION,
             "kernel_started_at_ms": registration.map(|registration| registration.kernel_started_at_ms),
@@ -312,6 +314,11 @@ mod tests {
             serde_json::Value::Null
         );
         assert_eq!(body["metadata"]["accepting_remote_leases"], true);
+        assert_eq!(
+            body["metadata"]["owner_managed_context_transfer_protocol_version"],
+            1
+        );
+        assert_eq!(body["metadata"]["relay_peer_protocol_version"], 88);
 
         let mut session_profile = profile();
         session_profile.machine_credential = None;

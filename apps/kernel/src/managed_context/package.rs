@@ -83,6 +83,8 @@ pub enum ManagedContextPackageGitCredentials {
 pub struct ManagedContextPlanBinding {
     pub context_id: String,
     pub plan_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<super::owner_managed::OwnerManagedDestination>,
     pub kernel_context: ManagedContextKernelSelection,
     pub development: ManagedContextDevelopmentSelection,
     #[serde(default)]
@@ -111,6 +113,7 @@ impl ManagedContextPlanBinding {
 pub enum ManagedContextKernelSelection {
     Empty,
     SourceKernel,
+    SourceKernelWithoutCredentials,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,6 +263,8 @@ impl std::fmt::Debug for ManagedContextPackageApplicationRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ManagedContextPackageImportReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<crate::managed_context::owner_managed::OwnerManagedDestination>,
     pub schema_version: u32,
     pub transfer_id: String,
     pub package_sha256: String,
@@ -472,7 +477,11 @@ pub fn export_managed_context_package(
             (None, KernelContextComponentManifest::Empty, None)
         }
         ManagedContextPackageKernel::FromKernel(snapshot) => {
-            if binding.plan.kernel_context != ManagedContextKernelSelection::SourceKernel {
+            if !matches!(
+                binding.plan.kernel_context,
+                ManagedContextKernelSelection::SourceKernel
+                    | ManagedContextKernelSelection::SourceKernelWithoutCredentials
+            ) {
                 return Err(package_error(
                     "managed context package includes unselected kernel context",
                 ));
@@ -648,6 +657,38 @@ pub fn export_managed_context_package(
     })
 }
 
+// MP-08/MP-11: isolate owner imports, including preflight and recovery paths.
+fn context_import_paths(
+    plan: &ManagedContextPlanBinding,
+    development_root: &Path,
+) -> Result<(PathBuf, PathBuf), DaemonError> {
+    if plan.destination.is_some() {
+        let parent = development_root
+            .parent()
+            .ok_or_else(|| package_error("owner context root has no parent"))?;
+        Ok((
+            parent.join(format!("kernel-context-{}", plan.context_id)),
+            parent.join("unused-vault"),
+        ))
+    } else {
+        configured_managed_kernel_context_paths()
+    }
+}
+
+fn owner_publication_root(
+    plan: &ManagedContextPlanBinding,
+) -> Result<Option<PathBuf>, DaemonError> {
+    if plan.destination.is_some() {
+        Ok(Some(
+            crate::mcp::CharioxMcpRegistry::user_root()
+                .and_then(|root| root.parent().map(Path::to_path_buf))
+                .ok_or_else(|| package_error("target ordinary registry root is unavailable"))?,
+        ))
+    } else {
+        Ok(None)
+    }
+}
+
 pub(crate) fn apply_managed_context_package(
     request: ManagedContextPackageApplicationRequest,
 ) -> Result<ManagedContextPackageImportReceipt, DaemonError> {
@@ -656,6 +697,13 @@ pub(crate) fn apply_managed_context_package(
         expected_package_sha256: request.expected_package_sha256.clone(),
         expected_binding: request.expected_binding.clone(),
     })?;
+    if request.expected_binding.plan.destination.is_some() {
+        if let ExtractedManagedContextDevelopment::FromSource { archive_path, .. } =
+            &extracted.development
+        {
+            super::credential_free::validate_development_archive(archive_path)?;
+        }
+    }
     preflight_import_receipt_capacity(&request, &extracted)?;
     let provider_accounts = import_provider_accounts(&request, &extracted.provider_accounts)?;
     let git_credentials = match import_git_credentials(&request, &extracted.git_credentials) {
@@ -679,10 +727,14 @@ pub(crate) fn apply_managed_context_package(
         let kernel_context = match &extracted.kernel_context {
             ManagedContextPackageKernel::Empty => ManagedContextImportedKernelContext::Empty,
             ManagedContextPackageKernel::FromKernel(snapshot) => {
-                let (capability_root, vault_path) = configured_managed_kernel_context_paths()?;
+                let (capability_root, vault_path) = context_import_paths(
+                    &request.expected_binding.plan,
+                    &request.development_destination_root,
+                )?;
                 let context_existed = capability_root.exists();
                 let rollback_vault_path = vault_path.clone();
                 let receipt = import_kernel_context(KernelContextImportRequest {
+                    publication_root: owner_publication_root(&request.expected_binding.plan)?,
                     snapshot: snapshot.as_ref().clone(),
                     expected_source: TransferredVaultSourceBinding {
                         context_id: request.expected_binding.plan.context_id.clone(),
@@ -815,6 +867,7 @@ pub(crate) fn apply_managed_context_package(
         }
     };
     Ok(ManagedContextPackageImportReceipt {
+        destination: request.expected_binding.plan.destination.clone(),
         schema_version: PACKAGE_SCHEMA_VERSION,
         transfer_id: request.transfer_id,
         package_sha256: request.expected_package_sha256,
@@ -978,7 +1031,15 @@ pub(crate) fn rollback_managed_context_package_application(
         failures.push(error);
     }
     if let ManagedContextImportedKernelContext::FromKernel { receipt } = &receipt.kernel_context {
-        match configured_managed_kernel_context_paths() {
+        let paths = if receipt.without_credentials {
+            Ok((
+                receipt.capability_root.clone(),
+                receipt.capability_root.with_extension("unused-vault"),
+            ))
+        } else {
+            configured_managed_kernel_context_paths()
+        };
+        match paths {
             Ok((_, vault_path)) => {
                 if let Err(error) =
                     cleanup_kernel_context_import(receipt, &vault_path, target_private_key)
@@ -1014,11 +1075,13 @@ pub(crate) fn rollback_managed_context_package_application(
 
 pub(crate) fn rollback_persisted_managed_context_publication(
     request: ManagedContextPackageImportRequest,
+    development_destination_root: &Path,
     target_private_key: &str,
     provider_account_target: Option<&ManagedContextProviderAccountImportTarget>,
     git_credential_target: Option<&ManagedContextGitCredentialImportTarget>,
 ) -> Result<(), DaemonError> {
-    let context_id = request.expected_binding.plan.context_id.clone();
+    let plan = request.expected_binding.plan.clone();
+    let context_id = plan.context_id.clone();
     let package_sha256 = request.expected_package_sha256.clone();
     let extracted = extract_managed_context_package(request)?;
     let provider_accounts = match &extracted.provider_accounts {
@@ -1063,10 +1126,12 @@ pub(crate) fn rollback_persisted_managed_context_publication(
         failures.push(error);
     }
     if let ManagedContextPackageKernel::FromKernel(snapshot) = &extracted.kernel_context {
-        match configured_managed_kernel_context_paths() {
+        match context_import_paths(&plan, development_destination_root) {
             Ok((capability_root, vault_path)) => {
                 if let Err(error) = cleanup_kernel_context_import(
                     &KernelContextImportReceipt {
+                        publication_root: owner_publication_root(&plan)?,
+                        without_credentials: snapshot.payload.vault.is_none(),
                         schema_version: 1,
                         context_id: snapshot.payload.context_id.clone(),
                         source_kernel_id: snapshot.payload.source_kernel_id.clone(),
@@ -1141,9 +1206,14 @@ fn preflight_import_receipt_capacity(
     let kernel_context = match &extracted.kernel_context {
         ManagedContextPackageKernel::Empty => ManagedContextImportedKernelContext::Empty,
         ManagedContextPackageKernel::FromKernel(snapshot) => {
-            let (capability_root, _) = configured_managed_kernel_context_paths()?;
+            let (capability_root, _) = context_import_paths(
+                &request.expected_binding.plan,
+                &request.development_destination_root,
+            )?;
             ManagedContextImportedKernelContext::FromKernel {
                 receipt: KernelContextImportReceipt {
+                    publication_root: owner_publication_root(&request.expected_binding.plan)?,
+                    without_credentials: snapshot.payload.vault.is_none(),
                     schema_version: 1,
                     context_id: snapshot.payload.context_id.clone(),
                     source_kernel_id: snapshot.payload.source_kernel_id.clone(),
@@ -1197,6 +1267,7 @@ fn preflight_import_receipt_capacity(
         }
     };
     let receipt = ManagedContextPackageImportReceipt {
+        destination: request.expected_binding.plan.destination.clone(),
         schema_version: PACKAGE_SCHEMA_VERSION,
         transfer_id: request.transfer_id.clone(),
         package_sha256: request.expected_package_sha256.clone(),
@@ -1503,7 +1574,8 @@ fn validate_manifest(
                 sha256,
                 snapshot_sha256,
             },
-            ManagedContextKernelSelection::SourceKernel,
+            ManagedContextKernelSelection::SourceKernel
+            | ManagedContextKernelSelection::SourceKernelWithoutCredentials,
         ) => {
             if *size_bytes == 0 || *size_bytes > MAX_KERNEL_CONTEXT_BYTES {
                 return Err(package_error(
@@ -1579,6 +1651,16 @@ fn validate_snapshot_binding(
     binding: &ManagedContextPackageBinding,
 ) -> Result<(), DaemonError> {
     let payload = &snapshot.payload;
+    if binding.plan.destination.is_some()
+        || binding.plan.kernel_context
+            == ManagedContextKernelSelection::SourceKernelWithoutCredentials
+    {
+        super::credential_free::validate_kernel_payload(payload)?;
+    } else if payload.vault.is_none() {
+        return Err(package_error(
+            "Path-1 kernel context requires the selected Vault binding",
+        ));
+    }
     if payload.context_id != binding.plan.context_id
         || payload.source_kernel_id != binding.source_kernel_id
         || payload.source_key_thumbprint != binding.source_key_thumbprint
@@ -1594,11 +1676,12 @@ fn validate_snapshot_binding(
 
 fn validate_binding(binding: &ManagedContextPackageBinding) -> Result<(), DaemonError> {
     validate_plan_binding(&binding.plan)?;
+    super::owner_managed::validate_destination_binding(
+        &binding.target_environment_id,
+        binding.plan.destination.as_ref(),
+        &binding.target_kernel_id,
+    )?;
     for (label, value) in [
-        (
-            "target environment id",
-            binding.target_environment_id.as_str(),
-        ),
         ("source kernel id", binding.source_kernel_id.as_str()),
         ("target kernel id", binding.target_kernel_id.as_str()),
     ] {
@@ -1617,6 +1700,9 @@ pub(crate) fn validate_plan_binding(plan: &ManagedContextPlanBinding) -> Result<
         .ok_or_else(|| package_error("managed context plan digest is invalid"))?;
     validate_sha256(digest, "plan digest")?;
     validate_development_selection(&plan.development)?;
+    if plan.destination.is_some() {
+        super::owner_managed::validate_credential_free_plan(plan)?;
+    }
     match &plan.provider_accounts {
         ManagedContextProviderAccountSelection::None => {}
         ManagedContextProviderAccountSelection::Selected { accounts } => {

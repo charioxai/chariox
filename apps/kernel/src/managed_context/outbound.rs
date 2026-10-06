@@ -116,6 +116,7 @@ pub(crate) async fn transfer_managed_context_package(
     let capability = request.capability.clone();
     let armed = transport
         .send(RelayPeerRequest::ArmManagedContextImport {
+            destination: request.plan.destination.clone(),
             plan: request.plan.clone(),
             target_environment_id: request.target_environment_id,
             target_kernel_id: request.target_kernel_id,
@@ -237,6 +238,7 @@ pub(crate) async fn transfer_managed_context_package(
                 })?;
                 if receipt.transfer_id != transfer_id
                     || receipt.archive_sha256 != request.package.package_sha256
+                    || receipt.destination != request.plan.destination
                     || receipt.plan_digest != request.plan.plan_digest
                     || !valid_sha256_hex(&receipt.receipt_sha256)
                 {
@@ -315,8 +317,12 @@ fn target_import_failure(code: String, retryable: bool) -> DaemonError {
 fn validate_outbound_request(
     request: &ManagedContextOutboundTransferRequest,
 ) -> Result<(), DaemonError> {
+    crate::managed_context::owner_managed::validate_destination_binding(
+        &request.target_environment_id,
+        request.plan.destination.as_ref(),
+        &request.target_kernel_id,
+    )?;
     if request.plan != request.package.plan
-        || request.target_environment_id.trim().is_empty()
         || request.target_kernel_id.trim().is_empty()
         || request.target_key_thumbprint.len() != 64
         || !request
@@ -811,6 +817,7 @@ mod tests {
         let bytes = vec![7_u8; size];
         std::fs::write(&package_path, &bytes).expect("fixture package");
         let plan = ManagedContextPlanBinding {
+            destination: None,
             context_id: "context-1".to_string(),
             plan_digest: format!("sha256:{}", "1".repeat(64)),
             kernel_context: ManagedContextKernelSelection::Empty,
@@ -875,6 +882,7 @@ mod tests {
 
     fn receipt(package_sha256: &str, plan_digest: &str) -> RelayManagedContextImportReceipt {
         RelayManagedContextImportReceipt {
+            destination: None,
             transfer_id: "transfer-1".to_string(),
             archive_sha256: package_sha256.to_string(),
             plan_digest: plan_digest.to_string(),

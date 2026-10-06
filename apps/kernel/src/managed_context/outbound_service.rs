@@ -1,3 +1,6 @@
+#[path = "outbound_operation_store.rs"]
+mod operation_store;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::fs::OpenOptions;
@@ -60,6 +63,7 @@ pub struct ManagedContextTransferTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedContextTransferTicket {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub environment_id: String,
     pub context_plan: ManagedKernelContextPlan,
     pub target: ManagedContextTransferTarget,
@@ -71,6 +75,8 @@ pub struct ManagedContextTransferTicket {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedContextOutboundImportReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<crate::managed_context::owner_managed::OwnerManagedDestination>,
     pub transfer_id: String,
     pub archive_sha256: String,
     pub plan_digest: String,
@@ -133,6 +139,7 @@ pub enum ManagedContextOutboundKernelContextImportReceipt {
 impl From<RelayManagedContextImportReceipt> for ManagedContextOutboundImportReceipt {
     fn from(receipt: RelayManagedContextImportReceipt) -> Self {
         Self {
+            destination: receipt.destination.clone(),
             transfer_id: receipt.transfer_id,
             archive_sha256: receipt.archive_sha256,
             plan_digest: receipt.plan_digest,
@@ -282,14 +289,6 @@ impl ManagedContextOutboundOperationStore {
         Ok(store)
     }
 
-    pub(crate) fn get(&self, context_id: &str) -> Option<ManagedContextOutboundOperationStatus> {
-        self.state
-            .lock()
-            .expect("managed-context outbound operation lock")
-            .get(context_id)
-            .cloned()
-    }
-
     pub(crate) fn remember_prepared_git_enrollment_ticket(
         &self,
         ticket: &ManagedContextTransferTicket,
@@ -377,10 +376,25 @@ impl ManagedContextOutboundOperationStore {
         ),
         DaemonError,
     > {
+        let recovered = self.get(context_id);
         let mut state = self
             .state
             .lock()
             .expect("managed-context outbound operation lock");
+        if let Some(mut recovered) = recovered {
+            if !state.contains_key(context_id) {
+                if matches!(
+                    recovered.phase,
+                    ManagedContextOutboundOperationPhase::Preparing
+                        | ManagedContextOutboundOperationPhase::Uploading
+                        | ManagedContextOutboundOperationPhase::Importing
+                ) {
+                    recovered.phase = ManagedContextOutboundOperationPhase::Failed;
+                    recovered.retryable = true;
+                }
+                state.insert(context_id.to_string(), recovered);
+            }
+        }
         if let Some(existing) = state.get(context_id) {
             if existing.plan_digest != plan_digest {
                 return Err(outbound_service_error(
@@ -442,6 +456,7 @@ impl ManagedContextOutboundOperationStore {
             updated_at_ms: crate::session::unix_epoch_ms(),
         };
         state.insert(context_id.to_string(), status.clone());
+        self.persist_status(&status)?;
         self.active
             .lock()
             .expect("managed-context outbound active lock")
@@ -461,6 +476,12 @@ impl ManagedContextOutboundOperationStore {
         if let Some(status) = state.get_mut(context_id) {
             update(status);
             status.updated_at_ms = crate::session::unix_epoch_ms();
+            if self.persist_status(status).is_err() {
+                status.phase = ManagedContextOutboundOperationPhase::Failed;
+                status.failure_code = Some("managed_context_status_persistence_failed".to_string());
+                status.failure_message = Some("Transfer status could not be persisted".to_string());
+                status.retryable = true;
+            }
         }
     }
 
@@ -583,22 +604,37 @@ pub(crate) fn start_managed_context_outbound_operation(
                     .map(resolve_repository_selection)
                     .collect::<Result<Vec<_>, _>>();
                 let result = match selections {
-                    Ok(selections) => {
+                    Ok(selections)
+                        if authoritative_ticket
+                            .context_plan
+                            .package_binding()
+                            .destination
+                            .is_some() =>
+                    {
                         runtime
-                            .prepare_project_environment_layer(
+                            .review_credential_free_project_context(
                                 project_id,
                                 &selections,
-                                &context_id,
-                                &authoritative_ticket.target.kernel_id,
-                                &authoritative_ticket.target.relay_public_key,
-                                interactive,
+                                &authoritative_ticket.target.machine_id,
                             )
                             .await
+                            .map(|_| None)
                     }
+                    Ok(selections) => runtime
+                        .prepare_project_environment_layer(
+                            project_id,
+                            &selections,
+                            &context_id,
+                            &authoritative_ticket.target.kernel_id,
+                            &authoritative_ticket.target.relay_public_key,
+                            interactive,
+                        )
+                        .await
+                        .map(Some),
                     Err(error) => Err(error),
                 };
                 match result {
-                    Ok(layer) => Some(layer),
+                    Ok(layer) => layer,
                     Err(error) => {
                         store.update(&context_id, |status| fail_status(status, &error));
                         return;
@@ -730,18 +766,44 @@ async fn fetch_authoritative_ticket(
         // Only legacy/managed-worker profiles retain Machine authority.
         body["machineCredential"] = serde_json::json!(credential);
     }
+    if requested
+        .context_plan
+        .package_binding()
+        .destination
+        .is_some()
+    {
+        body.as_object_mut()
+            .expect("ticket body")
+            .remove("environmentId");
+        body["contextPlan"] = serde_json::to_value(&requested.context_plan)
+            .map_err(|_| outbound_service_error("invalid owner context plan", false))?;
+        body["target"] = serde_json::to_value(&requested.target)
+            .map_err(|_| outbound_service_error("invalid owner target", false))?;
+        body["userId"] = serde_json::json!(cloud.user_id);
+        body["admission"] = serde_json::json!("source");
+    }
     post_cloud_json(
         cloud.api_url.clone(),
-        "/v1/managed-kernels/context/ticket",
+        if requested
+            .context_plan
+            .package_binding()
+            .destination
+            .is_some()
+        {
+            crate::managed_context::owner_managed::TICKET_ENDPOINT
+        } else {
+            "/v1/managed-kernels/context/ticket"
+        },
         body,
     )
     .await
     .map_err(|error| {
         let retryable = cloud_error_is_retryable(&error);
-        outbound_service_error(
-            format!("Cloud could not authorize the managed-context transfer ticket: {error}"),
-            retryable,
-        )
+        if requested.context_plan.package_binding().destination.is_some() {
+            DaemonError::ManagedContext { code: "owner_managed_context_unauthorized", operation: "reauthorize owner-managed transfer", message: "Cloud refused the owner-managed ticket; source or target is offline, stale, revoked or belongs to another owner".into(), retryable }
+        } else {
+            outbound_service_error(format!("Cloud could not authorize the managed-context transfer ticket: {error}"), retryable)
+        }
     })
 }
 
@@ -884,7 +946,11 @@ fn prepare_managed_context_package_with_environment(
                     repositories: selections,
                     archive_path: artifact_root.join("development.tar.gz"),
                 },
-                environment,
+                if plan.destination.is_some() {
+                    None
+                } else {
+                    environment
+                },
             )?;
             ManagedContextPackageDevelopment::FromSource {
                 archive_path: exported.archive_path,
@@ -951,6 +1017,20 @@ fn prepare_managed_context_package_with_environment(
     let source_key_thumbprint = public_key_thumbprint(&config.relay_public_key);
     let kernel_context = match plan.kernel_context {
         ManagedContextKernelSelection::Empty => ManagedContextPackageKernel::Empty,
+        ManagedContextKernelSelection::SourceKernelWithoutCredentials => {
+            ManagedContextPackageKernel::FromKernel(Box::new(
+                crate::managed_context::kernel::export_kernel_context_without_credentials(
+                    KernelContextExportRequest {
+                        context_id: plan.context_id.clone(),
+                        source_kernel_id: config.daemon_id.clone(),
+                        source_key_thumbprint: source_key_thumbprint.clone(),
+                        target_kernel_id: ticket.target.kernel_id.clone(),
+                        target_key_thumbprint: ticket.target.key_thumbprint.clone(),
+                        vault: None,
+                    },
+                )?,
+            ))
+        }
         ManagedContextKernelSelection::SourceKernel => {
             let vault = export_transferred_vault_snapshot(
                 &config.user_config.credential_vault.path,
@@ -967,11 +1047,16 @@ fn prepare_managed_context_package_with_environment(
                     source_key_thumbprint: source_key_thumbprint.clone(),
                     target_kernel_id: ticket.target.kernel_id.clone(),
                     target_key_thumbprint: ticket.target.key_thumbprint.clone(),
-                    vault,
+                    vault: Some(vault),
                 },
             )?))
         }
     };
+    if plan.destination.is_some() {
+        if let ManagedContextPackageDevelopment::FromSource { archive_path, .. } = &development {
+            crate::managed_context::credential_free::validate_development_archive(archive_path)?;
+        }
+    }
     let development_archive_path = match &development {
         ManagedContextPackageDevelopment::Empty => None,
         ManagedContextPackageDevelopment::FromSource { archive_path, .. } => {
@@ -998,6 +1083,7 @@ fn prepare_managed_context_package_with_environment(
     }
     let capability = random_managed_context_capability();
     let persisted = PersistedOutboundArtifact {
+        destination: ticket.context_plan.package_binding().destination.clone(),
         schema_version: OUTBOUND_ARTIFACT_SCHEMA_VERSION,
         created_at_ms: crate::session::unix_epoch_ms(),
         environment_id: ticket.environment_id.clone(),
@@ -1070,6 +1156,8 @@ struct PersistedOutboundArtifact {
     schema_version: u32,
     created_at_ms: u64,
     environment_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    destination: Option<crate::managed_context::owner_managed::OwnerManagedDestination>,
     plan_digest: String,
     target_kernel_id: String,
     target_key_thumbprint: String,
@@ -1092,6 +1180,7 @@ fn persisted_artifact_matches_ticket(
     plan: &crate::managed_context::package::ManagedContextPlanBinding,
 ) -> bool {
     persisted.schema_version == OUTBOUND_ARTIFACT_SCHEMA_VERSION
+        && persisted.destination == plan.destination
         && persisted.environment_id == ticket.environment_id
         && persisted.plan_digest == plan.plan_digest
         && persisted.target_kernel_id == ticket.target.kernel_id
@@ -1112,10 +1201,10 @@ fn reconcile_outbound_artifacts(
     create_private_directory(artifact_parent)?;
     let entries = fs::read_dir(artifact_parent)
         .map_err(|error| outbound_service_io_error("list outbound artifacts", error))?
-        .take(MAX_OUTBOUND_ARTIFACT_SCAN_ENTRIES + 1)
+        .take(MAX_OUTBOUND_ARTIFACT_SCAN_ENTRIES + 2)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| outbound_service_io_error("list outbound artifacts", error))?;
-    if entries.len() > MAX_OUTBOUND_ARTIFACT_SCAN_ENTRIES {
+    if entries.len() > MAX_OUTBOUND_ARTIFACT_SCAN_ENTRIES + 1 {
         return Err(outbound_service_error(
             "managed-context outbound artifact inventory exceeds its scan limit",
             false,
@@ -1133,6 +1222,10 @@ fn reconcile_outbound_artifacts(
                 false,
             )
         })?;
+        if name == ".operations" {
+            validate_artifact_root(&entry.path())?;
+            continue;
+        }
         if !valid_artifact_name(&name) {
             return Err(outbound_service_error(
                 "managed-context outbound artifact name is invalid",
@@ -1471,8 +1564,23 @@ pub(crate) fn validate_ticket(
             false,
         ));
     }
-    if ticket.environment_id.trim().is_empty()
-        || ticket.target.machine_id.trim().is_empty()
+    let binding = ticket.context_plan.package_binding();
+    crate::managed_context::owner_managed::validate_destination_binding(
+        &ticket.environment_id,
+        binding.destination.as_ref(),
+        &ticket.target.kernel_id,
+    )?;
+    if binding
+        .destination
+        .as_ref()
+        .is_some_and(|destination| destination.machine_id() != ticket.target.machine_id)
+    {
+        return Err(outbound_service_error(
+            "owner context machine pin does not match destination",
+            false,
+        ));
+    }
+    if ticket.target.machine_id.trim().is_empty()
         || ticket.target.kernel_id.trim().is_empty()
         || public_key_thumbprint(&ticket.target.relay_public_key) != ticket.target.key_thumbprint
     {
@@ -1764,6 +1872,15 @@ mod tests {
 
     #[tokio::test]
     async fn kernel_only_profile_requests_authoritative_transfer_ticket() {
+        assert_kernel_ticket_authority(false).await;
+    }
+
+    #[tokio::test]
+    async fn mp08_mp11_owner_transfer_reauthorizes_without_an_environment() {
+        assert_kernel_ticket_authority(true).await;
+    }
+
+    async fn assert_kernel_ticket_authority(owner_managed: bool) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut config = DaemonConfig::for_tests();
@@ -1775,7 +1892,20 @@ mod tests {
             kernel_credential: Some("synthetic-kernel-only-ticket-credential".into()),
             ..Default::default()
         });
-        let ticket = git_enrollment_test_ticket(&config, "ticket-request", "public-target-key");
+        let mut ticket = git_enrollment_test_ticket(&config, "ticket-request", "public-target-key");
+        if owner_managed {
+            let selection = crate::managed_context::owner_managed::OwnerManagedTransfer {
+                target: ticket.target.clone(),
+                context_selection: crate::managed_context::owner_managed::OwnerManagedContextSelection {
+                    kernel_context: crate::managed_context::owner_managed::OwnerManagedKernelSelection::SourceKernelWithoutCredentials,
+                    development_setup: crate::managed_context::owner_managed::OwnerManagedDevelopmentSelection::Empty,
+                },
+            };
+            ticket.context_plan =
+                ManagedKernelContextPlan::for_owner_managed(&config, &selection).unwrap();
+            ticket.environment_id.clear();
+        }
+        let expected_plan = serde_json::to_value(&ticket.context_plan).unwrap();
         let response = serde_json::to_vec(&ticket).unwrap();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -1796,11 +1926,22 @@ mod tests {
                         })
                         .unwrap();
                     if request.len() >= end + 4 + len {
-                        assert!(headers.starts_with("POST /v1/managed-kernels/context/ticket "));
+                        let endpoint = if owner_managed {
+                            crate::managed_context::owner_managed::TICKET_ENDPOINT
+                        } else {
+                            "/v1/managed-kernels/context/ticket"
+                        };
+                        assert!(headers.starts_with(&format!("POST {endpoint} ")));
                         let body: serde_json::Value =
                             serde_json::from_slice(&request[end + 4..end + 4 + len]).unwrap();
                         assert!(body.get("kernelCredential").is_some());
                         assert!(body.get("machineCredential").is_none());
+                        if owner_managed {
+                            assert!(body.get("environmentId").is_none());
+                            assert_eq!(body["admission"], "source");
+                            assert_eq!(body["contextPlan"], expected_plan);
+                            assert!(body.get("target").is_some());
+                        }
                         let header = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", response.len());
                         stream.write_all(header.as_bytes()).await.unwrap();
                         stream.write_all(&response).await.unwrap();
@@ -1886,6 +2027,7 @@ mod tests {
         package_size_bytes: u64,
     ) -> PersistedOutboundArtifact {
         PersistedOutboundArtifact {
+            destination: None,
             schema_version: OUTBOUND_ARTIFACT_SCHEMA_VERSION,
             created_at_ms,
             environment_id: ticket.environment_id.clone(),
@@ -2462,6 +2604,7 @@ mod tests {
             "restart-capability-canary".to_string(),
         );
         let persisted = PersistedOutboundArtifact {
+            destination: None,
             schema_version: OUTBOUND_ARTIFACT_SCHEMA_VERSION,
             created_at_ms: crate::session::unix_epoch_ms(),
             environment_id: ticket.environment_id.clone(),
