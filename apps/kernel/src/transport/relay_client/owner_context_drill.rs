@@ -734,10 +734,29 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
             .windows(canary.len())
             .any(|window| window == canary));
     }
-    let replay = transfer_managed_context_package(&peer, request, |_| {})
+    // MP-08/MP-11: completion is replayable through status; the consumed
+    // import authorization cannot be re-armed (the existing Path-1 rule).
+    let completed = peer
+        .send(RelayPeerRequest::GetManagedContextImportStatus {
+            transfer_id: result.receipt.transfer_id.clone(),
+            capability: request.capability.clone(),
+        })
         .await
         .unwrap();
-    assert_eq!(replay.receipt, result.receipt);
+    let RelayPeerResponse::ManagedContextImportStatus { status } = completed else {
+        panic!("completed receipt missing")
+    };
+    assert_eq!(status.receipt, Some(result.receipt));
+    let replay = transfer_managed_context_package(&peer, request, |_| {})
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        replay,
+        DaemonError::ManagedContext {
+            retryable: false,
+            ..
+        }
+    ));
     assert!(std::fs::read(&target.user_config_path).unwrap() == target_config_canary);
     server.await.unwrap();
     // MP-10: synthetic bound identities and mocked admission are local evidence only.
