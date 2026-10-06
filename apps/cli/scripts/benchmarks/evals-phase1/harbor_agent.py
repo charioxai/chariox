@@ -67,6 +67,19 @@ class CharioxAgent(BaseAgent):
         result = await environment.exec(command=f'mkdir -m 700 {shlex.quote(self._runner_root)}')
         if result.return_code != 0:
             raise RuntimeError('MP-11: task runner directory creation failed')
+        if self.placement == 'local':
+            # MP-11: official Harbor chmods writable mount roots 0777. Restore
+            # this supplied Chariox-linked directory's required private mode;
+            # do not read/copy credentials or alter files below it.
+            permission_command = ['sh', '-c',
+                'test -d "$1" && test "$(stat -c %u -- "$1")" = "$(id -u)" && '
+                'chmod 700 -- "$1" && test "$(stat -c %a -- "$1")" = 700',
+                'chariox-evals-private-profile', self.profile_path]
+            private = await environment.exec(command=shlex.join(permission_command))
+            (self.logs_dir / 'profile-permission-receipt.json').write_text(json.dumps({'mp_items':['MP-08','MP-10','MP-11'], 'operation':'restore supplied linked directory 0700 after Harbor writable-mount initialization', 'exit_code':private.return_code, 'credential_contents_accessed':False}))
+            if private.return_code != 0:
+                raise RuntimeError('MP-11: linked profile directory must retain private permissions')
+
         cwd = await environment.exec(command='pwd')
         if cwd.return_code != 0 or not cwd.stdout.strip().startswith('/'):
             raise RuntimeError('MP-08 / MP-10: task workspace unavailable')
@@ -88,18 +101,6 @@ class CharioxAgent(BaseAgent):
         if install.return_code != 0:
             raise RuntimeError('MP-08 / MP-10: task runner dependencies unavailable')
         self._python = venv_root + '/bin/python'
-        if self.placement == 'local':
-            # MP-11: official Harbor chmods writable mount roots 0777. Restore
-            # this supplied Chariox-linked directory's required private mode;
-            # do not read/copy credentials or alter files below it.
-            permission_command = [self._python, '-c',
-                'import os,stat,sys; p=sys.argv[1]; s=os.stat(p); '
-                'assert stat.S_ISDIR(s.st_mode) and s.st_uid==os.geteuid(); '
-                'os.chmod(p,0o700); assert os.stat(p).st_mode & 0o777 == 0o700', self.profile_path]
-            private = await environment.exec(command=shlex.join(permission_command))
-            (self.logs_dir / 'profile-permission-receipt.json').write_text(json.dumps({'mp_items':['MP-08','MP-10','MP-11'], 'operation':'restore supplied linked directory 0700 after Harbor writable-mount initialization', 'exit_code':private.return_code, 'credential_contents_accessed':False}))
-            if private.return_code != 0:
-                raise RuntimeError('MP-11: linked profile directory must retain private permissions')
 
         command = [self._python, f'{self._runner_root}/turn.py', '--preflight',
                    '--runtime-root', self.runtime_root, '--source-commit', self.source_commit,
