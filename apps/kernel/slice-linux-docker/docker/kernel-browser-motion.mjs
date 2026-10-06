@@ -11,7 +11,7 @@ export class MotionEncoder {
   while(this.pending&&!this.closed&&!this.failure&&this.frames.length<2){
    const sample=this.pending;this.pending=null;const revision=this.revision,key=this.independent||this.key;this.key=false;const reset=key?true:[...this.resetRows];this.resetRows.clear();const at=performance.timeOrigin+this.now();
    let encoded;try{encoded=this.stripes&&sample.raw?await this.encoder.encodeStripes({...sample.raw,motion:true},this.rate.bitrate,reset,this.codec):await this.encoder.encode(sample.raw?{...sample.raw,motion:true}:sample.data_base64,this.rate.bitrate,key,this.codec)}finally{sample.raw?.release?.()}this.timing('motion_encode',at);
-   if(['vaapi','x264','vp9','webcodecs'].includes(this.encoder.backend))this.timing('motion_backend_'+this.encoder.backend,performance.timeOrigin+this.now());
+   if(['vaapi','x264','openh264','vp8','vp9','webcodecs'].includes(this.encoder.backend))this.timing('motion_backend_'+this.encoder.backend,performance.timeOrigin+this.now());
    if(this.closed||!this.valid())return;
    if(encoded.stripes?.length===0)continue;
    if(revision!==this.revision){if(this.stripes&&!this.key)for(const row of encoded.stripes??[])this.resetRows.add(row.row);else this.key=true;continue;}

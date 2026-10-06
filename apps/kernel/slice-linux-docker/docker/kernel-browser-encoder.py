@@ -136,7 +136,7 @@ def main():
                 try:rows=stripes.encode(pixels,w,h,request['bitrate'],request.get('reset',False),request.get('codec','avc1.420033'))
                 finally:
                     if raw.get('shared'):mapping.close()
-                print(json.dumps({'stripes':rows,'backend':stripes.backend}),flush=True);continue
+                print(json.dumps({'stripes':rows,'backend':stripes.effective_backend}),flush=True);continue
             if request.get('raw',{}).get('shared'):mapping.close()
             if request.get('operation')=='fingerprint':
                 signature=hashlib.sha256(frame.format.name.encode())

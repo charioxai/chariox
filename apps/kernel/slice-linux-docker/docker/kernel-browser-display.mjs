@@ -41,7 +41,7 @@ export class PortableEncoder {
           if(reply.error)return fail();
           if(this.pending?.stripes){
             if(!Array.isArray(reply.stripes)||reply.stripes.length>8)return fail();
-            this.backend=reply.backend;this.pending.resolve({stripes:reply.stripes});
+            this.backend=({libx264:'x264',libopenh264:'openh264',libvpx:'vp8'})[reply.backend];this.pending.resolve({stripes:reply.stripes});
           }else if(this.pending?.hash){
             if(!/^[a-f0-9]{64}$/.test(reply.signature)||!Number.isInteger(reply.width)||!Number.isInteger(reply.height)||reply.width<1||reply.height<1||reply.width>2560||reply.height>1600)return fail();
             this.pending.resolve(reply);

@@ -28,6 +28,7 @@ class StripeEncoder:
         if type(width) is not int or width<16 or width>2560 or width%2 or height>1600 or len(pixels)!=width*height*4:raise ValueError('stripe geometry')
         backend="libvpx" if selected=="vp8" else self.backend
         if selected not in ("vp8","avc1.420033") or (selected=="avc1.420033" and backend=="libvpx"):raise ValueError("stripe codec selection")
+        self.effective_backend=backend
         config=(width,height,bitrate,backend)
         if config!=self.config:self.rows={};self.config=config;reset=True
         resets=set(range(8)) if reset is True else set(reset or [])

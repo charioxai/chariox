@@ -9,3 +9,14 @@ test('MP-11 writer cannot reuse a slot while any encoder holds its raster',()=>{
  const next=p.apply({...header,serial:2});next.release();assert.deepEqual(releases,[[0,1],[0,2]]);
  assert(!JSON.stringify(raw).includes('pixels'));assert.throws(()=>p.apply({...header,slot:3}),/bound/);
 });
+
+test('MP-10 attestation reads one snapshot rather than one file per channel',async()=>{
+ const {mkdtemp,writeFile,rm}=await import('node:fs/promises');const {tmpdir}=await import('node:os');const path=await import('node:path');
+ const root=await mkdtemp(path.join(tmpdir(),'chariox-pool-test-'));
+ try{
+  const data=Buffer.alloc(1280*800*4,12);await writeFile(path.join(root,'0'),data,{mode:0o600});
+  const raw=new SharedRasterPool(root,()=>{}).apply({slot:0,serial:1,width:1280,height:800});
+  const snapshot=raw.pixels;assert.strictEqual(raw.pixels,snapshot);assert.equal(snapshot.length,data.length);raw.release();
+  assert.throws(()=>raw.pixels,/retired/);
+ }finally{await rm(root,{recursive:true,force:true})}
+});
