@@ -46,7 +46,7 @@ export type CloudRelayLoginStart = {
 }
 
 export type CloudRelayLoginPoll = {
-  status: "authorization_pending" | "expired_token" | "approved"
+  status: "authorization_pending" | "expired_token" | "access_denied" | "approved"
   interval_seconds?: number | null
   expires_at?: string | null
   profile?: CloudRelayProfile | null

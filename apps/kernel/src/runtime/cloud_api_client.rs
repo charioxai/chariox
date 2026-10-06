@@ -8,7 +8,9 @@ use crate::runtime::cloud_relay_control::CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS;
 mod account_client_token;
 pub(crate) use account_client_token::issue_cloud_account_client_runtime_token;
 
+mod device_poll;
 mod http;
+pub(crate) use device_poll::post_cloud_device_poll;
 pub(crate) use http::{
     cloud_error_is_retryable, cloud_url_component, delete_cloud_json_authenticated, get_cloud_json,
     get_cloud_json_authenticated, is_stale_cloud_link_error, normalize_cloud_api_url,

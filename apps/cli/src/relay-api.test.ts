@@ -3,7 +3,7 @@ import test from "node:test"
 
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client/kernel-types"
 
-import { issueKernelCloudRelayClientToken, joinKernelTerminalPairingLink } from "./relay-api.js"
+import { issueKernelCloudRelayClientToken, joinKernelTerminalPairingLink, pollCloudRelayLogin } from "./relay-api.js"
 import type { LocalIpcClient } from "./ipc.js"
 
 function fakeClient(send: (request: unknown) => Promise<unknown>): LocalIpcClient {
@@ -38,7 +38,7 @@ function tokenResponse(thumbprint = "bootstrap-thumbprint", allowedTargets?: unk
 }
 
 test("CLI token and terminal join requests bind the actual bootstrap thumbprint", async () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 435)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 436)
   const requests: unknown[] = []
   const client = fakeClient(async (request) => {
     requests.push(request)
@@ -114,4 +114,12 @@ test("alias-scoped and ambiguous client tokens preserve the requested alias", as
     )
     assert.equal(issued.targetDaemonId, undefined)
   }
+})
+
+test("device denial survives the kernel-to-CLI poll projection without a profile", async () => {
+  const client = fakeClient(async (request) => {
+    assert.deepEqual(request, { PollCloudRelayLogin: { api_url: "https://cloud.example.test", device_code: "synthetic-device-code", supports_access_denied: true } })
+    return { CloudRelayLoginPolled: { result: { status: "access_denied", interval_seconds: null, expires_at: null, profile: null } } }
+  })
+  assert.deepEqual(await pollCloudRelayLogin(client, "https://cloud.example.test", "synthetic-device-code"), { status: "access_denied" })
 })
