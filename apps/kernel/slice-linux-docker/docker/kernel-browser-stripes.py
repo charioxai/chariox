@@ -60,7 +60,7 @@ class BgrConverter:
 class StripeEncoder:
     def __init__(self):
         self.rows={};self.config=None
-        self.workers=int(os.environ.get('CHARIOX_BROWSER_DISPLAY_STRIPE_WORKERS','2'))
+        self.workers=int(os.environ.get('CHARIOX_BROWSER_DISPLAY_STRIPE_WORKERS','1'))
         if self.workers not in (1,2,4):raise ValueError('stripe workers')
         self.pool=ThreadPoolExecutor(max_workers=self.workers) if self.workers>1 else None
         self.backend=os.environ.get('CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER','libx264')
