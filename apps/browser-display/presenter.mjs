@@ -1,6 +1,6 @@
-// MD-DISPLAY-04: protocol 419 presentation only. Cloud supplies its existing
+// MD-DISPLAY-04: MP-10 protocol 443 presentation only. Cloud supplies its existing
 // admitted/encrypted kernel request and event adapter; never a Cloud media proxy.
-export const minimumProtocolVersion = 427;
+export const minimumProtocolVersion = 443;
 const VP9 = 'vp09.00.10.08';
 function bytes(base64) {
   if (typeof base64 !== 'string' || base64.length > 4 * 1024 * 1024) throw new Error('MD-DISPLAY: payload bound');
