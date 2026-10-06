@@ -63,6 +63,7 @@ def report(campaign_dir, output):
              'known_token_subtotal':{key:sum(r[key] for r in rows if type(r[key]) is int) for key in tokens},
              'unknown_token_tasks':{key:sum(type(r[key]) is not int for r in rows) for key in tokens},
              'provider_failures':sum(r['status']=='provider_failed' for r in rows),
+             'provider_timeouts':sum(r['status']=='provider_timed_out' for r in rows),
              'measured_tasks':sum(type(r['input_tokens']) is int for r in rows),
              'known_proxy_subtotal':{'label':'proxy measured subtotal; excludes unknown tasks',
                            'lower_usd':str(sum(Decimal(r['proxy_usd_lower']) for r in rows if r['proxy_usd_lower']!='')),

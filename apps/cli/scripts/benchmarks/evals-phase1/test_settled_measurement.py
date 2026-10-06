@@ -27,3 +27,9 @@ class SettledMeasurementTests(unittest.TestCase):
         entries.append({'id':5,'role':'error','promptId':'p','text':'HTTP 401 Unauthorized'})
         self.assertEqual(provider_failure_class(entries,'p',{1}),'auth_unauthorized')
         self.assertEqual(provider_failure_class([{'id':6,'role':'error','text':"You've hit your usage limit"}],'p'),'quota_or_rate_limit')
+
+    def test_settled_timeout_can_be_scored_without_inventing_tokens(self):
+        m={'status':'provider_timed_out','provider_turn_settled':True,'cleanup_complete':True,
+           'session_id':'s','agent_id':'a','prompt_id':'p','usage':None,'tui_usage_visible':False}
+        self.assertTrue(settled_measurement(m))
+        self.assertFalse(settled_measurement(dict(m,provider_turn_settled=False)))

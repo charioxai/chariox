@@ -106,6 +106,10 @@ def stop_owned(process):
             process.wait(timeout=5)
 
 
+class DeadlineExceeded(TimeoutError):
+    """MP-08 / MP-10: distinguish our turn deadline from transport timeouts."""
+
+
 def wait_until(predicate, deadline, tick=None):
     while time.monotonic() < deadline:
         if tick:
@@ -114,7 +118,7 @@ def wait_until(predicate, deadline, tick=None):
         if value:
             return value
         time.sleep(0.2)
-    raise TimeoutError('MP-08 / MP-10: runtime operation timed out')
+    raise DeadlineExceeded('MP-08 / MP-10: runtime operation timed out')
 
 
 def process_identity(pid):
@@ -240,6 +244,7 @@ def run(request, evidence):
         thread = threading.Thread(target=drain, daemon=True); thread.start()
         wait_owned(lambda: automation.exists(), time.monotonic() + 30)
         connection = Automation(automation); connections.append(connection)
+        connection.pty_master = master
         return connection
 
     try:
@@ -354,9 +359,21 @@ def run(request, evidence):
                 return {'answer': answer}
             return None
         stage = 'provider_turn'
-        final = wait_owned(settled, deadline)
+        try:
+            final = wait_owned(settled, deadline)
+        except DeadlineExceeded:
+            # MP-08 / MP-10: ordinary user Ctrl+C stops this focused agent.
+            # Keep the incomplete task for the official verifier; no retry.
+            screenshot('02-deadline-before-stop')
+            os.write(client.pty_master,b'\x03')
+            def stopped():
+                s=client.send('snapshot')
+                a=next((a for a in s.get('session',{}).get('agents',[]) if a.get('id')==agent_id),{})
+                return a.get('state') in {'Idle','Done','Error','Failed'}
+            wait_owned(stopped,time.monotonic()+30)
+            final={'answer':None,'provider_timed_out':True}
         screenshot('02-turn-completed')
-        measurement.update(status='provider_failed' if final.get('provider_failed') else 'completed', answer=final['answer'], provider_turn_settled=True)
+        measurement.update(status='provider_timed_out' if final.get('provider_timed_out') else 'provider_failed' if final.get('provider_failed') else 'completed', answer=final['answer'], provider_turn_settled=True)
         failure_class = measurement.get('provider_failure_class')
         if failure_class == 'auth_unauthorized':
             measurement.update(status='provider_auth_failed',first_failing_seam='official provider unauthorized; coordinator action required')

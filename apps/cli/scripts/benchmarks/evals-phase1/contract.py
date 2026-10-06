@@ -132,9 +132,9 @@ def session_usage_visible(report, visible):
 
 def settled_measurement(measurement):
     """MP-08 / MP-10 / MP-11: settled rejections are scored even when counters are unknown."""
-    if measurement.get('status') not in {'completed','provider_failed'} or not measurement.get('cleanup_complete'):
+    if measurement.get('status') not in {'completed','provider_failed','provider_timed_out'} or not measurement.get('cleanup_complete'):
         return False
-    if measurement.get('status') == 'provider_failed' and measurement.get('usage') is None:
+    if measurement.get('status') in {'provider_failed','provider_timed_out'} and measurement.get('usage') is None:
         return measurement.get('provider_turn_settled') is True and all(measurement.get(key) for key in ['session_id','agent_id','prompt_id'])
     if not measurement.get('tui_usage_visible'):
         return False
