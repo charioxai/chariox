@@ -1,3 +1,4 @@
+import { validatePublicDiagnosticValue } from "./drill-matrix-report-shared.mjs"
 import { readFile } from "node:fs/promises"
 import {
   countDrillAggregateNextAction,
@@ -77,6 +78,7 @@ export async function findDrillMatrixReportPaths(roots, { maxDepth = 8 } = {}) {
 }
 
 export function validateDrillMatrixReport(report, source = "report") {
+  validatePublicDiagnosticValue(report)
   if (!report || typeof report !== "object") {
     throw new Error(`${source} is not an object`)
   }

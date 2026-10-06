@@ -133,14 +133,27 @@ impl AppLifecycleService {
     }
 
     /// Native inbox fixture, on the same owner/registration/health path.
+    pub(crate) fn fixture_inbox_automation_workers(&self) -> Arc<Mutex<Vec<Observation>>> {
+        self.fixture_inbox_workers_with_mode(
+            chariox_app_runtime::worker_process::test_fixture::Mode::LifecycleInboxAutomation,
+        )
+    }
+
     pub(crate) fn fixture_inbox_workers(&self) -> Arc<Mutex<Vec<Observation>>> {
+        self.fixture_inbox_workers_with_mode(
+            chariox_app_runtime::worker_process::test_fixture::Mode::LifecycleInbox,
+        )
+    }
+
+    fn fixture_inbox_workers_with_mode(
+        &self,
+        mode: chariox_app_runtime::worker_process::test_fixture::Mode,
+    ) -> Arc<Mutex<Vec<Observation>>> {
         let observations = Arc::new(Mutex::new(Vec::new()));
         *self.0.fixture.lock().unwrap() = Some(start::FixturePlatform {
             native: Arc::new(NativeFixture::compile().unwrap()),
             fail_health: false,
-            lifecycle: Some(
-                chariox_app_runtime::worker_process::test_fixture::Mode::LifecycleInbox,
-            ),
+            lifecycle: Some(mode),
             fail_migration: false,
             stop_after_commit: false,
             observations: observations.clone(),

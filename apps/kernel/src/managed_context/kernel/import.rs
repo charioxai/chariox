@@ -35,8 +35,18 @@ use super::{
     KERNEL_CONTEXT_SCHEMA_VERSION,
 };
 
+#[path = "ordinary_publication.rs"]
+mod ordinary_publication;
+#[cfg(any(test, not(unix)))]
+use ordinary_publication::record_ordinary_entries;
+use ordinary_publication::{publish_ordinary_entries, remove_ordinary_entries};
+#[path = "import_ownership.rs"]
+mod import_ownership;
+#[cfg(unix)]
+#[path = "registry_paths.rs"]
+mod registry_paths;
+
 const IMPORT_RECEIPT_NAME: &str = "kernel-context-import.json";
-const PUBLISHED_ENTRIES_NAME: &str = "published-entries.json";
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const RUNTIME_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_RUNTIME_PROBE_BYTES: u64 = 64 * 1024;
@@ -120,6 +130,10 @@ pub fn import_kernel_context(
     )?;
     validate_import_paths(&request.capability_root, &request.vault_path)?;
 
+    #[cfg(unix)]
+    let ordinary_root = ordinary_user_root()?
+        .map(|home| registry_paths::RegistryDirectory::root(&home))
+        .transpose()?;
     let parent = request
         .capability_root
         .parent()
@@ -149,6 +163,11 @@ pub fn import_kernel_context(
             false,
             &mut budget,
         )?;
+        #[cfg(unix)]
+        if let Some(home) = ordinary_root.as_ref() {
+            ordinary_publication::record_ordinary_entries_at(&staging, home, &mut budget)?;
+        }
+        #[cfg(not(unix))]
         if let Some(home) = ordinary_user_root()? {
             record_ordinary_entries(&staging, &home, &mut budget)?;
         }
@@ -169,6 +188,11 @@ pub fn import_kernel_context(
             }
             Err(error) => return Err(error),
         }
+        #[cfg(unix)]
+        if let Some(home) = ordinary_root.as_ref() {
+            ordinary_publication::publish_ordinary_entries_at(&request.capability_root, home)?;
+        }
+        #[cfg(not(unix))]
         if let Some(home) = ordinary_user_root()? {
             publish_ordinary_entries(&request.capability_root, &home)?;
         }
@@ -1137,123 +1161,6 @@ fn final_user_root(final_root: &Path) -> Result<PathBuf, DaemonError> {
     Ok(ordinary_user_root()?.unwrap_or_else(|| final_root.join("user")))
 }
 
-/// Registry directories an import may share with the user; only their
-/// children are published, so rollback never removes the directory itself.
-const ORDINARY_REGISTRY_DIRECTORIES: &[&str] = &[
-    "mcps",
-    "skills",
-    "scripts",
-    "credentials",
-    "envs",
-    "envs/.portable",
-    "connectors",
-    "connectors/definitions",
-    "connectors/adapters",
-];
-
-/// List every staged extension entry and reject any that already exists in the
-/// ordinary registries, before the Vault or capability root is installed.
-fn record_ordinary_entries(
-    staging: &Path,
-    home: &Path,
-    budget: &mut MaterializationBudget,
-) -> Result<(), DaemonError> {
-    let mut entries = Vec::new();
-    let staged = staging.join("user");
-    if staged.exists() {
-        collect_ordinary_entries(&staged, home, Path::new(""), &mut entries)?;
-    }
-    write_json_file(
-        &staging.join(PUBLISHED_ENTRIES_NAME),
-        &entries,
-        false,
-        budget,
-    )
-}
-
-fn collect_ordinary_entries(
-    staged: &Path,
-    home: &Path,
-    relative: &Path,
-    entries: &mut Vec<String>,
-) -> Result<(), DaemonError> {
-    let mut children = fs::read_dir(staged.join(relative))
-        .and_then(|entries| entries.collect::<Result<Vec<_>, _>>())
-        .map_err(|error| import_io_error("read staged kernel context", error))?;
-    children.sort_by_key(|entry| entry.file_name());
-    for child in children {
-        let path = relative.join(child.file_name());
-        let path_text = path
-            .to_str()
-            .ok_or_else(|| import_error("kernel context entry is not UTF-8"))?
-            .to_string();
-        if ORDINARY_REGISTRY_DIRECTORIES.contains(&path_text.as_str()) {
-            collect_ordinary_entries(staged, home, &path, entries)?;
-            continue;
-        }
-        match fs::symlink_metadata(home.join(&path)) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => entries.push(path_text),
-            Ok(_) => {
-                return Err(import_error(format!(
-                    "kernel context entry `{path_text}` already exists in the ordinary registry"
-                )))
-            }
-            Err(error) => return Err(import_io_error("inspect ordinary registry", error)),
-        }
-    }
-    Ok(())
-}
-
-/// Move the recorded entries into the ordinary registries without replacing
-/// any. A replay finishes the same set; an entry already moved is skipped.
-fn publish_ordinary_entries(root: &Path, home: &Path) -> Result<(), DaemonError> {
-    let staged = root.join("user");
-    for relative in read_published_entries(root)? {
-        let source = staged.join(&relative);
-        if fs::symlink_metadata(&source).is_err() {
-            continue;
-        }
-        let destination = home.join(&relative);
-        let parent = destination
-            .parent()
-            .ok_or_else(|| import_error("published kernel context entry has no parent"))?;
-        fs::create_dir_all(parent)
-            .map_err(|error| import_io_error("create ordinary registry directory", error))?;
-        publish_directory_no_clobber(&source, &destination)?;
-        sync_directory(parent)?;
-    }
-    Ok(())
-}
-
-fn read_published_entries(root: &Path) -> Result<Vec<String>, DaemonError> {
-    let bytes = read_bounded_file(&root.join(PUBLISHED_ENTRIES_NAME), 4 * 1024 * 1024)?;
-    let entries = serde_json::from_slice::<Vec<String>>(&bytes)
-        .map_err(|_| import_error("published kernel context entries are invalid"))?;
-    for entry in &entries {
-        validate_portable_package_path(entry)?;
-    }
-    Ok(entries)
-}
-
-/// Remove only entries this import moved: one still staged was never published.
-fn remove_ordinary_entries(root: &Path, home: &Path) -> Result<(), DaemonError> {
-    let staged = root.join("user");
-    for relative in read_published_entries(root)? {
-        if fs::symlink_metadata(staged.join(&relative)).is_ok() {
-            continue;
-        }
-        let path = home.join(&relative);
-        let removed = match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&path),
-            Ok(_) => fs::remove_file(&path),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
-        };
-        removed.map_err(|error| import_io_error("remove published kernel context entry", error))?;
-    }
-    Ok(())
-}
-
 fn acquire_import_lock(parent: &Path) -> Result<ImportLock, DaemonError> {
     let path = parent.join(".kernel-context-import.lock");
     let mut options = OpenOptions::new();
@@ -1683,11 +1590,23 @@ fn wait_for_child(
     maximum_entries: u64,
     allow_python_venv_symlink: bool,
 ) -> Result<ExitStatus, DaemonError> {
+    let mut signals =
+        crate::runtime::owned_process_signals::OwnedProcessSignals::for_session_child(child)
+            .map_err(|error| import_io_error(operation, error))?;
     let started = std::time::Instant::now();
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                terminate_child_descendants(child.id());
+        signals
+            .refresh()
+            .map_err(|error| import_io_error(operation, error))?;
+        match child_exited_without_reaping(child) {
+            Ok(true) => {
+                if let Err(error) = signals.kill_group() {
+                    terminate_child_tree(child, &mut signals);
+                    return Err(import_io_error(operation, error));
+                }
+                let status = child
+                    .wait()
+                    .map_err(|error| import_io_error(operation, error))?;
                 ensure_tree_within_limits(
                     budget_root,
                     maximum_bytes,
@@ -1696,9 +1615,9 @@ fn wait_for_child(
                 )?;
                 return Ok(status);
             }
-            Ok(None) => {}
+            Ok(false) => {}
             Err(error) => {
-                terminate_child_tree(child);
+                terminate_child_tree(child, &mut signals);
                 return Err(import_io_error(operation, error));
             }
         }
@@ -1708,38 +1627,68 @@ fn wait_for_child(
             maximum_entries,
             allow_python_venv_symlink,
         ) {
-            terminate_child_tree(child);
+            terminate_child_tree(child, &mut signals);
             return Err(error);
         }
         if started.elapsed() >= timeout {
-            terminate_child_tree(child);
+            terminate_child_tree(child, &mut signals);
             return Err(import_error(format!("{operation} timed out")));
         }
         std::thread::sleep(Duration::from_millis(100));
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn child_exited_without_reaping(child: &mut Child) -> io::Result<bool> {
+    let mut status: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            child.id(),
+            &mut status,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // Retain the exited session leader until its descendants have been checked and stopped.
+    Ok(unsafe { status.si_pid() } != 0)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn child_exited_without_reaping(child: &mut Child) -> io::Result<bool> {
+    child.try_wait().map(|status| status.is_some())
+}
+
 #[cfg(unix)]
 fn configure_child_process_group(command: &mut Command) {
     use std::os::unix::process::CommandExt;
-    command.process_group(0);
+    // An exclusive session proves fast reparented descendants while the leader is retained.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
 }
 
 #[cfg(not(unix))]
 fn configure_child_process_group(_command: &mut Command) {}
 
-#[cfg(unix)]
-fn terminate_child_descendants(process_group: u32) {
-    let _ = unsafe { libc::kill(-(process_group as i32), libc::SIGKILL) };
-}
-
-#[cfg(not(unix))]
-fn terminate_child_descendants(_process_group: u32) {}
-
-fn terminate_child_tree(child: &mut Child) {
-    terminate_child_descendants(child.id());
-    let _ = child.kill();
-    let _ = child.wait();
+fn terminate_child_tree(
+    child: &mut Child,
+    signals: &mut crate::runtime::owned_process_signals::OwnedProcessSignals,
+) {
+    if signals.kill_group().is_err() {
+        let _ = signals.kill_owned_processes();
+    }
+    if signals.kill_child().is_ok() {
+        let _ = child.wait();
+    }
 }
 
 struct TemporaryDirectoryCleanup(PathBuf);
@@ -2150,6 +2099,113 @@ fn import_error(message: impl Into<String>) -> DaemonError {
 mod tests {
     use super::*;
     use crate::secret::{TransferredVaultSourceBinding, VaultUnlockLease};
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn mp11_review_import_retains_exited_session_leader_until_child_cleanup() {
+        use crate::runtime::owned_process_signals::OwnedProcessSignals;
+        let root = test_root("exited-parent-descendant");
+        fs::create_dir_all(&root).unwrap();
+        let release = root.join("release");
+        let pid_file = root.join("child-pid");
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg(
+            "sleep 30 & printf '%s' $! > \"$1\"; while [ ! -f \"$2\" ]; do sleep 0.01; done; exit 0",
+        ).arg("mp11-fixture").arg(&pid_file).arg(&release);
+        configure_child_process_group(&mut command);
+        let child = command.spawn().unwrap();
+        // A separate retained guard cleans the fixture even if the regression fails.
+        struct Cleanup(Child, OwnedProcessSignals, PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = self.1.kill_group();
+                let _ = self.1.kill_child();
+                let _ = self.0.wait();
+                let _ = fs::remove_dir_all(&self.2);
+            }
+        }
+        let signals = OwnedProcessSignals::for_child(&child).unwrap();
+        let mut cleanup = Cleanup(child, signals, root.clone());
+        let started = std::time::Instant::now();
+        while !pid_file.exists() || fs::read_to_string(&pid_file).unwrap().is_empty() {
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let descendant = fs::read_to_string(&pid_file)
+            .unwrap()
+            .parse::<u32>()
+            .unwrap();
+        cleanup.1.refresh().unwrap();
+        fs::write(&release, "release parent").unwrap();
+        while !child_exited_without_reaping(&mut cleanup.0).unwrap() {
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // The import's new guard has never seen the child attached to its parent.
+        let status = wait_for_child(
+            &mut cleanup.0,
+            "test exited parent",
+            &root,
+            Duration::from_secs(5),
+            1024 * 1024,
+            100,
+            false,
+        )
+        .unwrap();
+        assert!(status.success());
+        let stopped = std::time::Instant::now();
+        loop {
+            let inspection = Command::new("/bin/ps")
+                .args(["-o", "stat=", "-p", &descendant.to_string()])
+                .output()
+                .unwrap();
+            let state = String::from_utf8(inspection.stdout).unwrap();
+            if state.trim().is_empty() || state.trim().starts_with('Z') {
+                break;
+            }
+            assert!(
+                stopped.elapsed() < Duration::from_secs(2),
+                "fast-exiting import left a live descendant"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mp11_ordinary_registry_symlink_is_rejected_before_publication_and_rollback() {
+        let root = test_root("registry-parent-symlink");
+        let home = root.join("home/.chariox");
+        let outside = root.join("outside");
+        let staging = root.join("staging");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(staging.join("user/skills/imported")).unwrap();
+        fs::write(outside.join("untouched"), "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, home.join("skills")).unwrap();
+        assert!(
+            record_ordinary_entries(&staging, &home, &mut MaterializationBudget::new()).is_err(),
+            "symlinked registry parent was admitted before Vault publication"
+        );
+        fs::write(
+            staging.join("published-entries.json"),
+            b"[\"skills/imported\"]",
+        )
+        .unwrap();
+        fs::create_dir_all(outside.join("imported")).unwrap();
+        fs::write(outside.join("imported/user-entry"), "user").unwrap();
+        fs::remove_dir_all(staging.join("user")).unwrap();
+        assert!(remove_ordinary_entries(&staging, &home).is_err());
+        assert_eq!(
+            fs::read_to_string(outside.join("untouched")).unwrap(),
+            "outside"
+        );
+        assert_eq!(
+            fs::read_to_string(outside.join("imported/user-entry")).unwrap(),
+            "user"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn imports_unified_kernel_context_and_replays_exact_receipt() {
@@ -2592,6 +2648,55 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn ordinary_rollback_preserves_replaced_and_edited_entries() {
+        for case in [
+            "replaced-directory",
+            "replaced-file",
+            "edited-directory",
+            "edited-file",
+        ] {
+            let root = test_root(case);
+            let context = root.join("context");
+            let home = root.join("home");
+            fs::create_dir_all(context.join("user/skills")).unwrap();
+            fs::create_dir_all(home.join("skills")).unwrap();
+            let staged = context.join("user/skills/imported");
+            if case.ends_with("directory") {
+                fs::create_dir_all(&staged).unwrap();
+                fs::write(staged.join("original"), b"imported").unwrap();
+            } else {
+                fs::write(&staged, b"imported").unwrap();
+            }
+            fs::write(home.join("skills/unrelated"), b"mine").unwrap();
+            record_ordinary_entries(&context, &home, &mut MaterializationBudget::new()).unwrap();
+            publish_ordinary_entries(&context, &home).unwrap();
+            let destination = home.join("skills/imported");
+            if case.starts_with("replaced") {
+                // Keep the old inode alive to rule out inode reuse in the fixture.
+                fs::rename(&destination, root.join("old-import")).unwrap();
+                if case.ends_with("directory") {
+                    fs::create_dir(&destination).unwrap();
+                }
+            }
+            let replacement = if case.ends_with("directory") {
+                destination.join("user-added")
+            } else {
+                destination.clone()
+            };
+            fs::write(&replacement, b"user-owned replacement").unwrap();
+            let _ = remove_ordinary_entries(&context, &home);
+            assert_eq!(
+                fs::read(&replacement).unwrap(),
+                b"user-owned replacement",
+                "{case}"
+            );
+            assert_eq!(fs::read(home.join("skills/unrelated")).unwrap(), b"mine");
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn runtime_probe_rejects_burst_output_after_the_process_exits() {
         crate::test_support::isolated_env_test!();
         use std::os::unix::fs::PermissionsExt;
@@ -2917,4 +3022,81 @@ mod tests {
         fs::create_dir_all(&root).expect("test root should create");
         root
     }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_kernel_rollback_preserves_replaced_credentials_and_edited_packages() {
+    let root =
+        std::env::temp_dir().join(format!("mp11-kernel-owned-{:016x}", rand::random::<u64>()));
+    let staged = root.join("context");
+    let home = root.join("home");
+    fs::create_dir_all(staged.join("user/credentials")).unwrap();
+    fs::create_dir_all(staged.join("user/scripts/package")).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        staged.join("user/credentials/fixture.json"),
+        b"synthetic-original",
+    )
+    .unwrap();
+    fs::write(
+        staged.join("user/scripts/package/source"),
+        b"original package",
+    )
+    .unwrap();
+    record_ordinary_entries(&staged, &home, &mut MaterializationBudget::new()).unwrap();
+    publish_ordinary_entries(&staged, &home).unwrap();
+    fs::rename(
+        home.join("credentials/fixture.json"),
+        root.join("prior-credential"),
+    )
+    .unwrap();
+    fs::write(
+        home.join("credentials/fixture.json"),
+        b"synthetic-replacement",
+    )
+    .unwrap();
+    fs::write(home.join("scripts/package/user-file"), b"user addition").unwrap();
+    assert!(remove_ordinary_entries(&staged, &home).is_err());
+    assert_eq!(
+        fs::read(home.join("credentials/fixture.json")).unwrap(),
+        b"synthetic-replacement"
+    );
+    assert!(home.join("scripts/package/user-file").exists());
+    // Recovery retries retain the same conflicts and the ownership journal.
+    assert!(remove_ordinary_entries(&staged, &home).is_err());
+    assert!(staged.join("published-entries.json").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_kernel_retirement_restart_finds_quarantine_and_preserves_a_later_user_publication() {
+    let root = std::env::temp_dir().join(format!(
+        "mp11-kernel-retirement-{:016x}",
+        rand::random::<u64>()
+    ));
+    let context = root.join("context");
+    let home = root.join("home");
+    fs::create_dir_all(context.join("user/credentials")).unwrap();
+    fs::create_dir(&home).unwrap();
+    fs::write(
+        context.join("user/credentials/fixture.json"),
+        b"synthetic original",
+    )
+    .unwrap();
+    record_ordinary_entries(&context, &home, &mut MaterializationBudget::new()).unwrap();
+    publish_ordinary_entries(&context, &home).unwrap();
+    let published = home.join("credentials/fixture.json");
+    // MP-11: simulate interruption after private detachment, before deletion.
+    let rollback = context.join(".ordinary-rollback");
+    ensure_private_directory(&rollback).unwrap();
+    let quarantine = rollback.join("0");
+    publish_directory_no_clobber(&published, &quarantine).unwrap();
+    fs::write(&published, b"synthetic user replacement").unwrap();
+    remove_ordinary_entries(&context, &home).unwrap();
+    assert!(!quarantine.exists());
+    assert!(published.is_file());
+    assert_eq!(fs::read(published).unwrap(), b"synthetic user replacement");
+    fs::remove_dir_all(root).unwrap();
 }

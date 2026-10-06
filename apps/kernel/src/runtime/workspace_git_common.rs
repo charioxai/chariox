@@ -67,23 +67,45 @@ pub(crate) fn run_git(repo_root: &Path, args: &[&str]) -> Result<(), DaemonError
 }
 
 pub(crate) fn resolve_repo_root(workspace_path: &str) -> Result<PathBuf, DaemonError> {
+    find_repo_root(workspace_path)?.ok_or_else(|| DaemonError::LocalTransport {
+        operation: "resolve repo root",
+        message: format!("No git repository in workspace {workspace_path}"),
+    })
+}
+
+pub(crate) fn find_repo_root(workspace_path: &str) -> Result<Option<PathBuf>, DaemonError> {
+    match std::fs::metadata(workspace_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(DaemonError::LocalTransport {
+                operation: "resolve repo root",
+                message: format!("cannot inspect workspace {workspace_path}: {error}"),
+            })
+        }
+        Ok(_) => {}
+    }
     let output = std::process::Command::new("git")
+        .env("LC_ALL", "C")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(workspace_path)
         .output()
         .map_err(|error| DaemonError::LocalTransport {
             operation: "resolve repo root",
-            message: error.to_string(),
+            message: format!("cannot inspect workspace {workspace_path}: {error}"),
         })?;
     if !output.status.success() {
+        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if message.contains("not a git repository") {
+            return Ok(None);
+        }
         return Err(DaemonError::LocalTransport {
             operation: "resolve repo root",
-            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            message: format!("cannot inspect workspace {workspace_path}: {message}"),
         });
     }
-    Ok(PathBuf::from(
+    Ok(Some(PathBuf::from(
         String::from_utf8_lossy(&output.stdout).trim(),
-    ))
+    )))
 }
 
 pub(crate) fn git_ref_exists(repo_root: &Path, reference: &str) -> Result<bool, DaemonError> {

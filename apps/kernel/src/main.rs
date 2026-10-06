@@ -1,6 +1,8 @@
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use std::time::Instant;
 
+mod kernel_arguments;
+
 #[cfg(all(not(test), not(debug_assertions)))]
 const _: () = chariox_app_runtime::assert_production_build();
 
@@ -14,51 +16,52 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 // Tokio is the M1 async runtime baseline for the daemon because upcoming PTY,
 // process, and signal-handling work all need a shared async execution model.
 fn main() -> Result<(), chariox_kernel::DaemonError> {
-    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--version")) {
-        println!("chariox-kernel {}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
-    }
-    if std::env::args_os().nth(1).as_deref()
-        == Some(std::ffi::OsStr::new(
-            "--print-local-daemon-protocol-version",
-        ))
-    {
-        println!("{}", chariox_kernel::local::LOCAL_DAEMON_PROTOCOL_VERSION);
-        return Ok(());
-    }
-    if std::env::args_os().nth(1).as_deref()
-        == Some(std::ffi::OsStr::new("--prepare-protected-slice-identity"))
-    {
-        let port = std::env::args()
-            .nth(2)
-            .and_then(|value| value.parse::<u16>().ok())
-            .ok_or_else(|| chariox_kernel::DaemonError::LocalTransport {
-                operation: "prepare protected slice identity",
-                message: "a valid local kernel port is required".to_string(),
-            })?;
-        let proof = chariox_kernel::config::prepare_protected_slice_identity("127.0.0.1", port)?;
-        println!("{}", proof);
-        return Ok(());
-    }
-    let bootstrap_mode = std::env::args().nth(1);
-    if matches!(
-        bootstrap_mode.as_deref(),
-        Some("--owner-managed-enroll-stdin" | "--owner-managed-ready")
-    ) {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|_| chariox_kernel::DaemonError::LocalTransport {
-                operation: "owner-managed bootstrap",
-                message: "runtime unavailable".into(),
-            })?;
-        return runtime.block_on(async {
-            if bootstrap_mode.as_deref() == Some("--owner-managed-enroll-stdin") {
-                chariox_kernel::owner_managed_bootstrap::enroll_from_stdin().await
-            } else {
-                chariox_kernel::owner_managed_bootstrap::wait_ready().await
-            }
+    let command =
+        kernel_arguments::parse(std::env::args_os().skip(1).collect()).unwrap_or_else(|message| {
+            eprintln!("error: {message}\nRun chariox-kernel --help for usage.");
+            std::process::exit(2);
         });
+    match command {
+        kernel_arguments::Command::Help => {
+            println!("{}", kernel_arguments::USAGE);
+            return Ok(());
+        }
+        kernel_arguments::Command::Version => {
+            println!("chariox-kernel {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        kernel_arguments::Command::ProtocolVersion => {
+            println!("{}", chariox_kernel::local::LOCAL_DAEMON_PROTOCOL_VERSION);
+            return Ok(());
+        }
+        kernel_arguments::Command::PrepareProtectedSliceIdentity(port) => {
+            let proof =
+                chariox_kernel::config::prepare_protected_slice_identity("127.0.0.1", port)?;
+            println!("{}", proof);
+            return Ok(());
+        }
+        mode @ (kernel_arguments::Command::OwnerManagedEnroll
+        | kernel_arguments::Command::OwnerManagedReady) => {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|_| chariox_kernel::DaemonError::LocalTransport {
+                    operation: "owner-managed bootstrap",
+                    message: "runtime unavailable".into(),
+                })?;
+            return runtime.block_on(async {
+                match mode {
+                    kernel_arguments::Command::OwnerManagedEnroll => {
+                        chariox_kernel::owner_managed_bootstrap::enroll_from_stdin().await
+                    }
+                    kernel_arguments::Command::OwnerManagedReady => {
+                        chariox_kernel::owner_managed_bootstrap::wait_ready().await
+                    }
+                    _ => unreachable!(),
+                }
+            });
+        }
+        kernel_arguments::Command::Run => {}
     }
     chariox_kernel::slice::initialize_managed_docker_broker();
     chariox_kernel::runtime_transport::initialize_kernel_local_auth_from_env()?;

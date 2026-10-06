@@ -276,7 +276,7 @@ async function waitForProviderRun(client, requests, providerRunId, timeoutMs, po
   let last = null
   while (Date.now() < deadline) {
     last = unwrap(await client.send(requests.getProviderRunRequest(providerRunId)), 'ProviderRun').provider_run
-    if (last?.state === 'Running' || last?.state === 'Active' || last?.runtime_mcp_server_url) return last
+    if (last?.state === 'Running' || last?.state === 'Active') return last
     if (last?.state === 'Ended') throw new Error(`provider run ended before becoming active: ${JSON.stringify(last)}`)
     await sleep(pollMs)
   }

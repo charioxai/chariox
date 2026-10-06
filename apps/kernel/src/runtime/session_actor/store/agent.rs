@@ -613,7 +613,7 @@ impl SessionRuntimeStore {
                     Ok(()) => Ok(LocalDaemonResponse::AgentForked {
                         source_agent_id,
                         agent,
-                        provider_run,
+                        provider_run: provider_run.into(),
                         session,
                     }),
                     Err(error) => Err(error),

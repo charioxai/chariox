@@ -5,9 +5,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { INDEPENDENT_REVIEW_GROUPS } from "./lib/managed-parity-semantic-reviews.mjs";
-import { SOURCE_AUDIT_RULES } from "./lib/managed-parity-source-rules.mjs";
+import { CURRENT_DECLARATION_EXPECTATIONS, currentDeclarationCandidates } from "./lib/managed-parity-current-declarations.mjs";
+import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { CURRENT_REVIEW_GROUPS, CURRENT_SEMANTIC_REVIEWS } from "./lib/managed-parity-current-reviews.mjs";
+import { sourceRuleCandidates, SOURCE_AUDIT_RULES } from "./lib/managed-parity-source-rules.mjs";
 import {
   collectSourceInventory,
+  classifyProductionPath,
   DEFAULT_SOURCE_REF,
   DEFAULT_SEMANTIC_DISPOSITIONS,
   DEFAULT_REVIEWED_PREDICATES,
@@ -870,7 +875,7 @@ test("an inspected blob gets only provisional grouping and never independent app
       .every((entry) => entry.semanticDisposition.gateEffect === "fail_closed"));
     assert.equal(report.status, "fail");
     assert.equal(report.summary.allowedReleaseDeployment, 0);
-    assert.equal(report.inventoryTool.modules.length, 7);
+    assert.equal(report.inventoryTool.modules.length, 9);
     assert.match(report.inventoryTool.bundleSha256, /^[a-f0-9]{64}$/);
   });
 });
@@ -2161,5 +2166,336 @@ test("MP-02/MP-08/MP-11 enrolled Cloud launch scopes do not require missing OSS 
   withFixture({}, fixture => {
     const report = collect(fixture);
     assert.ok(!report.sourceAuditGaps.some(gap => rules.some(rule => rule.id === gap.ruleId)));
+  });
+});
+
+// MP-11: exact exclusions must not hide a future executable sibling.
+test("MP-11 native source/config/installer formats and exact fixture exclusions", () => {
+  for (const [path, format] of [
+    ["apps/app-worker/src/worker.cc", "c"], ["apps/app-worker/src/record.h", "c"],
+    ["apps/app-storage-helper/src/permission.rs", "rust"],
+    ["deploy/local-macos/dev.example.plist", "config"], ["scripts/macos-pkg/postinstall", "shell"],
+  ]) assert.equal(classifyProductionPath(path), format);
+  for (const path of ["archive/0", "signed/0", "signed/1", "signed/2", "signed/3"]) {
+    assert.equal(classifyProductionPath("packages/app-package/fuzz/seeds/" + path), null);
+  }
+  assert.equal(classifyProductionPath("packages/app-package/fuzz/seeds/signed/execution.rs"), "rust");
+  assert.equal(classifyProductionPath("apps/kernel/src/runtime/state/testdata/claude-setup-token-2.1.281-start.pty"), null);
+  for (const path of ["packages/app-package/fuzz/seeds/signed/4", "apps/kernel/src/runtime/state/testdata/other.pty",
+    "apps/app-worker/src/unknown.selector", "apps/app-storage-helper/src/unknown.selector", "scripts/macos-pkg/preinstall"]) {
+    assert.throws(() => classifyProductionPath(path), /unclassified production/);
+  }
+  withFixture({}, (fixture) => {
+    for (const [path, text] of [
+      ["apps/app-worker/src/control.cc", 'const char *control = "CHARIOX_MANAGED_NATIVE";'],
+      ["apps/app-worker/src/control.h", '#define CONTROL "CHARIOX_MANAGED_HEADER"'],
+      ["deploy/local-macos/control.plist", '<string>CHARIOX_MANAGED_PLIST</string>'],
+      ["scripts/macos-pkg/postinstall", 'control="$CHARIOX_MANAGED_INSTALLER"'],
+      ["apps/app-storage-helper/src/control.rs", 'let control = "CHARIOX_MANAGED_STORAGE";'],
+    ]) fixture.addFile(path, text + "\n");
+    const report = collect(fixture);
+    for (const selector of ["NATIVE", "HEADER", "PLIST", "INSTALLER", "STORAGE"]) {
+      const entry = report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_" + selector);
+      assert.ok(entry, selector);
+      assert.equal(entry.semanticDisposition.status, "unreviewed");
+    }
+    assert.equal(report.status, "fail");
+  });
+});
+
+test("MP-11 binary source is rejected rather than silently omitted", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("apps/app-worker/src/control.cc", Buffer.from([0, 65, 66]));
+    assert.throws(() => collect(fixture), /unsupported binary source/);
+  });
+});
+
+test("MP-11 BOM fixture decoding retains the first-line physical column", () => {
+  withFixture({}, (fixture) => {
+    const path = "apps/cli/src/bom-control.ts";
+    const selector = "CHARIOX_MANAGED_BOM_FIXTURE";
+    const text = '\ufeffconst control = "' + selector + '";\r\n';
+    fixture.addFile(path, text);
+    const report = collect(fixture);
+    const entry = report.entries.find((entry) => entry.selector === selector);
+    assert.equal(entry?.line, 1);
+    assert.equal(entry?.column, text.indexOf(selector) + 1);
+    assert.equal(entry?.contextHash, createHash("sha256").update(text.trim()).digest("hex"));
+    assert.equal(entry?.semanticDisposition.status, "unreviewed");
+    assert.equal(report.status, "fail");
+    fixture.addFile(path, Buffer.from([0xef, 0xbb, 0xbf, 0xc3, 0x28]));
+    assert.throws(() => collect(fixture), { code: "ERR_ENCODING_INVALID_ENCODED_DATA" });
+  });
+});
+
+test("MP-11 BOM Git blob decoding retains exact identity and first-line physical column", () => {
+  const root = mkdtempSync(join(tmpdir(), "chariox-mp11-bom-"));
+  const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
+  try {
+    git("init", "--quiet");
+    mkdirSync(join(root, "apps/cli/src"), { recursive: true });
+    const path = "apps/cli/src/bom-control.ts";
+    const selector = "CHARIOX_MANAGED_BOM_GIT";
+    const text = '\ufeffconst control = "' + selector + '";\r\n';
+    const commit = () => {
+      git("add", path);
+      git("-c", "user.name=MP-11 fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "MP-11 BOM fixture");
+      return git("rev-parse", "HEAD").trim();
+    };
+    writeFileSync(join(root, path), text);
+    const sourceCommit = commit();
+    const blob = git("rev-parse", "HEAD:" + path).trim();
+    const report = collectSourceInventory({ sourceRoot: root, expectedCommit: sourceCommit });
+    const entry = report.entries.find((entry) => entry.selector === selector);
+    assert.equal(report.source.commit, sourceCommit);
+    assert.equal(entry?.blob, blob);
+    assert.equal(entry?.line, 1);
+    assert.equal(entry?.column, text.indexOf(selector) + 1);
+    assert.equal(entry?.contextHash, createHash("sha256").update(text.trim()).digest("hex"));
+    assert.equal(entry?.semanticDisposition.status, "unreviewed");
+    assert.equal(report.status, "fail");
+    writeFileSync(join(root, path), Buffer.from([0xef, 0xbb, 0xbf, 0xc3, 0x28]));
+    const malformedCommit = commit();
+    assert.throws(() => collectSourceInventory({ sourceRoot: root, expectedCommit: malformedCommit }),
+      { code: "ERR_ENCODING_INVALID_ENCODED_DATA" });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+for (const suffix of [".tsfrag", ".mjsfrag"]) {
+  test("MP-11 BOM at an assembled " + suffix + " boundary retains physical and assembled columns", () => {
+    withFixture({}, (fixture) => {
+      const selector = "CHARIOX_MANAGED_BOM_FRAGMENT";
+      const fragments = ['const selector = "', '\ufeff' + selector + '";\nselector;'];
+      assert.equal(runInNewContext(fragments.join("")), "\ufeff" + selector);
+      const directory = fragmentFixture(fixture, suffix, fragments);
+      const report = collect(fixture);
+      const entry = report.entries.find((entry) => entry.selector === selector);
+      assert.equal(entry?.path, directory + "/part-002" + suffix);
+      assert.equal(entry?.line, 1);
+      assert.equal(entry?.column, 2);
+      assert.equal(entry?.fragmentSource.assembledColumn, fragments[0].length + 2);
+      assert.equal(entry?.fragmentSource.matchSegments[0].column, 2);
+      assert.equal(entry?.semanticDisposition.status, "unreviewed");
+      assert.equal(report.status, "fail");
+    });
+  });
+}
+
+test("MP-11 standard unified sections retain exact physical lines and old/new paths", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/native-controls.patch", [
+      "--- a/apps/app-worker/src/old.c\t2026-10-04", "+++ b/apps/app-worker/src/new.cc\t2026-10-04", "@@ -1 +1 @@",
+      '-const char *old = "CHARIOX_MANAGED_OLD";', '+const char *next = "CHARIOX_MANAGED_NEXT";',
+      "--- /dev/null", "+++ apps/app-worker/src/two.h", "@@ -0,0 +1 @@",
+      '+const char *next = "CHARIOX_MANAGED_SECOND";',
+      "--- apps/app-worker/src/deleted.cc", "+++ /dev/null", "@@ -2 +0,0 @@",
+      '-const char *old = "CHARIOX_MANAGED_DELETED";',
+    ].join("\n") + "\n");
+    const report = collect(fixture);
+    const entry = (selector) => report.entries.find((entry) => entry.selector === "CHARIOX_MANAGED_" + selector);
+    assert.equal(entry("OLD").line, 4);
+    assert.equal(entry("OLD").patchSource.path, "apps/app-worker/src/old.c");
+    assert.equal(entry("OLD").patchSource.change, "removed");
+    assert.equal(entry("OLD").sourceRoleHints.executionRole, "removed_patch_source_candidate");
+    assert.equal(entry("NEXT").line, 5);
+    assert.equal(entry("NEXT").patchSource.path, "apps/app-worker/src/new.cc");
+    assert.equal(entry("SECOND").line, 9);
+    assert.equal(entry("SECOND").patchSource.path, "apps/app-worker/src/two.h");
+    assert.equal(entry("DELETED").line, 13);
+    assert.equal(entry("DELETED").patchSource.oldLine, 2);
+    assert.ok(["OLD", "NEXT", "SECOND", "DELETED"].every((selector) => entry(selector).semanticDisposition.status === "unreviewed"));
+  });
+});
+
+for (const path of ["../escape.ts", "foo/../escape.ts", "/absolute.ts", "foo//control.ts", "./control.ts", "foo\\control.ts", "C:/control.ts"]) {
+  test("MP-11 unsafe standard patch path rejected: " + path, () => {
+    withFixture({}, (fixture) => {
+      fixture.addFile("deploy/unsafe.patch", ["--- a/" + path, "+++ b/apps/api/src/control.ts", "@@ -1 +1 @@", "-old", "+new"].join("\n"));
+      assert.throws(() => collect(fixture), /unsafe patch source path/);
+    });
+  });
+}
+for (const [name, lines] of [
+  ["missing new header", ["--- a/apps/api/src/control.ts", "@@ -1 +1 @@", "-old", "+new"]],
+  ["unsafe Git header", ["diff --git a/../control.ts b/apps/api/src/control.ts", "@@ -1 +1 @@", "-old", "+new"]],
+  ["mismatching Git header", ["diff --git a/apps/api/src/control.ts b/apps/api/src/control.ts", "--- a/apps/api/src/other.ts", "+++ b/apps/api/src/control.ts", "@@ -1 +1 @@", "-old", "+new"]],
+  ["count underflow", ["--- a/apps/api/src/control.ts", "+++ b/apps/api/src/control.ts", "@@ -1 +1 @@", "-old", "-extra", "+new"]],
+  ["empty section", ["--- a/apps/api/src/control.ts", "+++ b/apps/api/src/control.ts"]],
+  ["unknown old format", ["--- a/apps/api/src/control.unknown", "+++ b/apps/api/src/control.ts", "@@ -1 +1 @@", "-old", "+new"]],
+  ["unmatched new header", ["+++ b/apps/api/src/control.ts", "@@ -1 +1 @@", "-old", "+new"]],
+]) test("MP-11 malformed/unsupported patch rejects " + name, () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/invalid.patch", lines.join("\n") + "\n");
+    assert.throws(() => collect(fixture), /patch|unclassified production/);
+  });
+});
+
+
+test("MP-11 every current declaration binds exact Git identity/range/physical hash", () => {
+  for (const record of CURRENT_DECLARATION_EXPECTATIONS) {
+    // The Cloud expectation is checked in the paired exact-source scan. This
+    // OSS repository intentionally does not assume Cloud objects are present.
+    if (record.path.startsWith("apps/web/")) continue;
+    const root = new URL("../../..", import.meta.url).pathname;
+    const blob = execFileSync("git", ["rev-parse", record.sourceCommit + ":" + record.path], { cwd: root, encoding: "utf8" }).trim();
+    assert.equal(blob, record.blob);
+    assert.equal(execFileSync("git", ["rev-parse", record.sourceCommit + "^{tree}"], { cwd: root, encoding: "utf8" }).trim(), record.sourceTree);
+    const text = execFileSync("git", ["cat-file", "blob", blob], { cwd: root, encoding: "utf8" });
+    const source = { commit: record.sourceCommit, tree: record.sourceTree };
+    const file = { path: record.path, blob, text };
+    for (const anchor of record.declarations) {
+      assert.ok(record.range.some(([start, end]) => start === anchor.line && end === anchor.line));
+      assert.equal(createHash("sha256").update(text.split(/\r?\n/)[anchor.line - 1].trim()).digest("hex"), anchor.contextHash);
+      assert.ok(currentDeclarationCandidates(file, source).some((candidate) => candidate.ruleId === record.ruleId
+        && candidate.symbol === record.symbol && candidate.lineIndex + 1 === anchor.line));
+    }
+    assert.equal(record.semanticApproval, false);
+    assert.equal(currentDeclarationCandidates({ ...file, blob: "a".repeat(40) }, source).length, 0);
+    assert.equal(currentDeclarationCandidates(file, { ...source, commit: "a".repeat(40) }).length, 0);
+    assert.equal(currentDeclarationCandidates(file, { ...source, tree: "a".repeat(40) }).length, 0);
+    const renamed = text.replaceAll(record.symbol, "changed_" + record.symbol);
+    assert.ok(!currentDeclarationCandidates({ ...file, text: renamed }, source).some((candidate) => candidate.symbol === record.symbol));
+  }
+});
+
+test("MP-11 new native/config formats retain selectors after literal/hash boundaries", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("apps/app-worker/src/raw.cc", 'const char *raw = R"(\" // CHARIOX_MANAGED_RAW)";\n');
+    fixture.addFile("deploy/local-macos/raw.plist", '<string>#CHARIOX_MANAGED_XML</string>\n');
+    const report = collect(fixture);
+    for (const selector of ["CHARIOX_MANAGED_RAW", "CHARIOX_MANAGED_XML"]) {
+      const entry = report.entries.find((entry) => entry.selector === selector);
+      assert.ok(entry);
+      assert.equal(entry.semanticDisposition.status, "unreviewed");
+    }
+  });
+});
+
+
+test("MP-11 current bounded reviews do not repin the historical review module", () => {
+  const root = new URL("../../..", import.meta.url).pathname;
+  const path = "apps/cli/scripts/lib/managed-parity-semantic-reviews.mjs";
+  const original = execFileSync("git", ["show", "9334141d420f8a32393f206102c5b8b4a1b0b609:" + path], { cwd: root });
+  assert.deepEqual(readFileSync(join(root, path)), original);
+  for (const review of CURRENT_SEMANTIC_REVIEWS) {
+    assert.ok(review.independentReview.rationale.startsWith("MP-"));
+    assert.ok(review.independentReview.reviewer.includes("scanner implementer"));
+    assert.ok(!INDEPENDENT_REVIEW_GROUPS.some((group) => group.sourceCommit === review.sourceCommit));
+    assert.equal(evaluateSemanticDisposition(review.anchor, { commit: review.sourceCommit, tree: review.sourceTree }, [review]).status, "reviewed");
+    assert.equal(evaluateSemanticDisposition({ ...review.anchor, contextHash: "f".repeat(64) }, { commit: review.sourceCommit, tree: review.sourceTree }, [review]).status, "unreviewed");
+    if (review.anchor.path.startsWith("apps/web/")) continue;
+    const blob = execFileSync("git", ["rev-parse", review.sourceCommit + ":" + review.anchor.path], { cwd: root, encoding: "utf8" }).trim();
+    assert.equal(blob, review.anchor.blob);
+    const line = execFileSync("git", ["cat-file", "blob", blob], { cwd: root, encoding: "utf8" }).split(/\r?\n/)[review.anchor.line - 1];
+    assert.equal(createHash("sha256").update(line.trim()).digest("hex"), review.anchor.contextHash);
+    const group = CURRENT_REVIEW_GROUPS.find((group) => group.path === review.anchor.path && group.anchors.some((anchor) => anchor[0] === review.anchor.line && anchor[1] === review.anchor.column && anchor[3] === review.anchor.category));
+    assert.ok(group.inspectedRanges.some(([start, end]) => start <= review.anchor.line && review.anchor.line <= end));
+  }
+});
+
+test("MP-11 manual patch declaration range uses the physical patch offset", () => {
+  const rule = SOURCE_AUDIT_RULES.find((rule) => !rule.embeddedPath && rule.ranges && rule.anchors.length);
+  const [category, symbol] = rule.anchors[0];
+  const line = rule.ranges[0][0];
+  const file = { path: rule.path, blob: rule.blob };
+  const relative = ["", "function " + symbol + "() {}"];
+  const candidates = sourceRuleCandidates(file, relative, rule.embeddedPath ?? null, line - 2);
+  assert.ok(candidates.some((candidate) => candidate.symbol === symbol && candidate.category === category && candidate.lineIndex === 1));
+});
+
+test("MP-11 renamed production patch retains old controls when the new suffix is excluded", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/renamed.patch", ["--- a/apps/api/src/control.ts", "+++ b/apps/api/src/control.md", "@@ -1 +1 @@",
+      '-const control = "CHARIOX_MANAGED_OLD_VISIBLE";', '+new documentation'].join("\n"));
+    const entry = collect(fixture).entries.find((entry) => entry.selector === "CHARIOX_MANAGED_OLD_VISIBLE");
+    assert.ok(entry);
+    assert.equal(entry.patchSource.path, "apps/api/src/control.ts");
+    assert.equal(entry.sourceRoleHints.executionRole, "removed_patch_source_candidate");
+    assert.equal(entry.semanticDisposition.status, "unreviewed");
+  });
+});
+
+test("MP-11 HEAD scan reads committed blobs when Git suppresses worktree dirt", () => {
+  const root = mkdtempSync(join(tmpdir(), "chariox-mp11-immutable-"));
+  const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
+  try {
+    git("init", "--quiet");
+    mkdirSync(join(root, "apps/kernel/src"), { recursive: true });
+    const path = "apps/kernel/src/control.rs";
+    writeFileSync(join(root, path), 'const CONTROL: &str = "CHARIOX_MANAGED_COMMITTED";\n');
+    git("add", ".");
+    git("-c", "user.name=MP-11 fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "MP-11 immutable fixture");
+    const commit = git("rev-parse", "HEAD").trim();
+    const blob = git("rev-parse", "HEAD:" + path).trim();
+    git("update-index", "--assume-unchanged", path);
+    writeFileSync(join(root, path), 'const CONTROL: &str = "CHARIOX_MANAGED_UNCOMMITTED";\n');
+    assert.equal(git("status", "--porcelain"), "");
+    const report = collectSourceInventory({ sourceRoot: root, expectedCommit: commit });
+    assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_COMMITTED" && entry.blob === blob));
+    assert.ok(!report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_UNCOMMITTED"));
+    assert.equal(report.status, "fail");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+
+test("MP-11 disappeared same-source approval remains an explicit gate blocker", () => {
+  withFixture({}, (fixture) => {
+    const review = CURRENT_SEMANTIC_REVIEWS[0];
+    const runGit = (args, root) => args[0] === "rev-parse"
+      ? (args[1] === "HEAD" ? review.sourceCommit : review.sourceTree) + "\n"
+      : fixture.runGit(args, root);
+    const report = collect(fixture, { runGit, expectedCommit: review.sourceCommit, expectedTree: review.sourceTree });
+    assert.ok(report.semanticReviews.some((record) => record.id === review.id && record.status === "source_drift"));
+    assert.ok(report.summary.unappliedCurrentSemanticReviews > 0);
+    assert.equal(report.status, "fail");
+    assert.ok(report.entries.every((entry) => entry.semanticDisposition.status === "unreviewed"));
+  });
+});
+
+for (const [name, lines] of [
+  ["orphan newline marker", ["--- a/apps/api/src/control.ts", "+++ b/apps/api/src/control.ts", "\\ No newline at end of file", "@@ -1 +1 @@", "-old", "+new"]],
+  ["empty hunk", ["--- a/apps/api/src/control.ts", "+++ b/apps/api/src/control.ts", "@@ -0,0 +0,0 @@"]],
+  ["overlapping hunks", ["--- a/apps/api/src/control.ts", "+++ b/apps/api/src/control.ts", "@@ -1 +1 @@", "-old", "+new", "@@ -1 +1 @@", "-other", "+other"]],
+]) test("MP-11 malformed standard patch rejects " + name, () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("deploy/invalid.patch", lines.join("\n") + "\n");
+    assert.throws(() => collect(fixture), /patch/);
+  });
+});
+
+
+for (const [path, blob] of [
+  ["apps/kernel/src/runtime/state/testdata/claude-setup-token-2.1.281-start.pty", "d95a0f81eeed8d1ed7d7c015148db4ae94fcecba"],
+  ["packages/app-package/fuzz/seeds/archive/0", "26bc3530acf221ec9be6f0aec5dac3afa24ea72c"],
+  ["packages/app-package/fuzz/seeds/signed/0", "cc0d165b5ec9e865402a8192fce4003e3a0095a4"],
+  ["packages/app-package/fuzz/seeds/signed/1", "d8313ed338ac58bed4f958eed6ed672edc6daabd"],
+  ["packages/app-package/fuzz/seeds/signed/2", "c7e62e2614e5743c93982528642ae423805099c9"],
+  ["packages/app-package/fuzz/seeds/signed/3", "1fad10dc55a0499ba151d40adfc82277fa5f771d"],
+]) test("MP-11 exact fixture exclusion rejects changed blob or executable mode: " + path, () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile(path, Buffer.from([0]), "100644", blob);
+    assert.ok(!collect(fixture).entries.some((entry) => entry.path === path));
+    fixture.addFile(path, 'control="CHARIOX_MANAGED_NEW_HIDDEN_CONTROL"\n');
+    assert.throws(() => collect(fixture), /excluded fixture source drift/);
+    fixture.addFile(path, Buffer.from([0]), "100755", blob);
+    assert.throws(() => collect(fixture), /excluded fixture source drift/);
+  });
+});
+
+
+for (const path of ["src/new.selector", "packages/app-package/fuzz/seeds/signed/0"]) {
+  test("MP-11 patch cannot silently ignore unsupported embedded source: " + path, () => {
+    withFixture({}, (fixture) => {
+      fixture.addFile("deploy/unsupported.patch", ["--- a/" + path, "+++ b/" + path, "@@ -1 +1 @@", "-old", "+CHARIOX_MANAGED_HIDDEN"].join("\n"));
+      assert.throws(() => collect(fixture), /unsupported patch fixture|unclassified production/);
+    });
+  });
+}
+
+
+test("MP-11 native source symlink cannot be mistaken for an inventoried implementation", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("apps/app-worker/src/control.cc", "outside/control.cc", "120000");
+    assert.throws(() => collect(fixture), /unsupported source mode/);
   });
 });

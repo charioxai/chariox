@@ -658,8 +658,11 @@ fn stop_child(child: &mut Child) -> Result<(), DaemonError> {
         .map_err(|error| worker_error(format!("inspect worker kernel: {error}")))?
         .is_none()
     {
-        child
-            .kill()
+        let mut signals =
+            crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(child)
+                .map_err(|error| worker_error(format!("record worker kernel identity: {error}")))?;
+        signals
+            .kill_child()
             .map_err(|error| worker_error(format!("stop worker kernel: {error}")))?;
         child
             .wait()
@@ -1398,7 +1401,10 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    struct RestartLoopDriver(Option<Child>);
+    struct RestartLoopDriver(
+        Option<Child>,
+        crate::runtime::owned_process_signals::OwnedProcessSignals,
+    );
 
     #[cfg(target_os = "linux")]
     impl RestartLoopDriver {
@@ -1410,10 +1416,7 @@ mod tests {
             let Some(mut child) = self.0.take() else {
                 return;
             };
-            let process_group = -(child.id() as i32);
-            unsafe {
-                libc::kill(process_group, libc::SIGKILL);
-            }
+            self.1.kill_group().expect("owned restart driver group");
             let _ = child.wait();
         }
     }
@@ -1497,15 +1500,20 @@ mod tests {
         for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
             command.env(name, "contaminated-shared-host-selector");
         }
-        let mut driver = RestartLoopDriver(Some(
-            command
-                .spawn()
-                .expect("restart-loop test driver should start"),
-        ));
+        let child = command
+            .spawn()
+            .expect("restart-loop test driver should start");
+        let signals = crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(&child)
+            .expect("record restart driver identity");
+        let mut driver = RestartLoopDriver(Some(child), signals);
         let second_capture = PathBuf::from(format!("{}.2", capture.display()));
         let deadline = Instant::now() + Duration::from_secs(8);
         let mut early_status = None;
         while !second_capture.is_file() && Instant::now() < deadline {
+            driver
+                .1
+                .refresh()
+                .expect("refresh restart driver descendants");
             if let Some(status) = driver
                 .child_mut()
                 .try_wait()

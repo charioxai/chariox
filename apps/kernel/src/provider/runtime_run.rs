@@ -19,7 +19,7 @@ use super::types::{
     ProviderRunState,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeProviderRun {
     id: String,
     session_id: String,
@@ -122,6 +122,16 @@ pub struct RuntimeProviderRun {
     terminal_diagnostic: Option<String>,
     started_at_ms: u64,
     last_activity_at_ms: u64,
+}
+
+impl std::fmt::Debug for RuntimeProviderRun {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeProviderRun")
+            .field("id", &self.id)
+            .field("state", &self.state)
+            .finish_non_exhaustive()
+    }
 }
 
 impl RuntimeProviderRun {
@@ -979,4 +989,25 @@ mod tests {
             None,
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn mp11_runtime_provider_run_debug_excludes_execution_capabilities() {
+    let request = LaunchProviderRequest::new("session", "codex", "codex", "default", "default");
+    let secret = "mp11-synthetic-execution-capability";
+    let launch = ProviderLaunchResult {
+        endpoint_mode: AgentEndpointMode::Managed,
+        process_label: "codex".into(),
+        pty_target: None,
+        pty_program: None,
+        pty_args: vec![secret.into()],
+        pty_env: BTreeMap::from([("UNRELATED".into(), secret.into())]),
+        pty_env_remove: Vec::new(),
+        working_directory: None,
+        structured_endpoint: None,
+    };
+    let mut run = RuntimeProviderRun::new("provider-run-1", &request, launch);
+    run.set_runtime_mcp_auth_token(Some(secret.into()));
+    assert!(!format!("{run:?}").contains(secret));
 }

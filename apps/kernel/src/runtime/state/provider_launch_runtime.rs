@@ -304,7 +304,7 @@ impl KernelRuntimeState {
                 let _ = self.owned.session_snapshot(&request.session_id)?;
                 Ok(Some(
                     crate::local::LocalDaemonResponse::ProviderRunLaunched {
-                        provider_run: projected_run,
+                        provider_run: projected_run.into(),
                     },
                 ))
             }

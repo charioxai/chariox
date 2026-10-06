@@ -7,6 +7,8 @@ use futures_util::FutureExt;
 
 mod capability_request_grant;
 mod capability_response_ordering;
+#[path = "controller_artifacts.rs"]
+mod controller_artifacts;
 mod meta_forwarding_lock;
 
 fn install_room_pointer_screen_tool(
@@ -992,7 +994,7 @@ async fn check_room_browser_on_environment_worker_serves_remote_agent_and_web_vi
         assert!(
             forged_worker_error
                 .to_string()
-                .contains("relay sender does not match the bound worker kernel"),
+                .contains("authenticated peer does not match the current remote worker"),
             "forged worker Browser call must fail at home admission: {forged_worker_error}"
         );
 
@@ -1455,6 +1457,22 @@ fn provider_lifecycle_diagnostics(
 
 async fn check_forwarded_room_browser_rejects_wrong_authenticated_worker() {
     let mut fixture = LiveWorker::start().await;
+    let (_agent_worker_state, agent_worker) = start_agent_worker(&mut fixture).await;
+    wait_for_agent_worker(&fixture).await;
+    let leased =
+        launch_leased_room_provider(&fixture, &agent_worker, "wrong worker admission fixture")
+            .await;
+    let binding = fixture
+        .home
+        .app
+        .lock()
+        .await
+        .agents()
+        .get_agent(&leased.home_agent_id)
+        .unwrap()
+        .remote_execution()
+        .unwrap()
+        .clone();
     let result = send_peer_request_via_temporary_connection(
         &fixture._worker_state.config,
         ClientTarget {
@@ -1465,11 +1483,11 @@ async fn check_forwarded_room_browser_rejects_wrong_authenticated_worker() {
             context: crate::transport::relay_peer::RemoteExtensionInvocationContext {
                 home_kernel_id: fixture.home_state.config.daemon_id.clone(),
                 home_session_id: fixture.rooms[0].clone(),
-                home_agent_id: "home-agent".to_string(),
-                leased_agent_id: "leased-agent".to_string(),
-                worker_provider_run_id: "provider-run".to_string(),
-                worker_kernel_id: Some("agent-worker".to_string()),
-                worker_machine_id: Some("agent-worker-machine".to_string()),
+                home_agent_id: leased.home_agent_id,
+                leased_agent_id: binding.leased_agent_id,
+                worker_provider_run_id: leased.worker_provider_run_id,
+                worker_kernel_id: Some(binding.worker_kernel_id),
+                worker_machine_id: Some(binding.worker_machine_id),
             },
             call: crate::transport::relay_peer::RemoteRoomBrowserRuntimeToolCall {
                 tool_name: "slice_browser_status".to_string(),
@@ -1478,13 +1496,19 @@ async fn check_forwarded_room_browser_rejects_wrong_authenticated_worker() {
         },
     )
     .await;
+    let cleanup = agent_worker
+        .app
+        .lock()
+        .await
+        .teardown_provider_processes(Some("managed-dev-stub"), true);
     fixture.stop().await;
+    cleanup.expect("stop the actual leased provider after wrong-worker admission");
 
     let error = result.expect_err("a different authenticated worker must be rejected");
     assert!(
         error
             .to_string()
-            .contains("relay sender does not match the bound worker kernel"),
+            .contains("authenticated peer does not match the current remote worker"),
         "the home dispatch must reject the wrong bound worker: {error}"
     );
 }
@@ -1571,63 +1595,55 @@ async fn launch_leased_room_provider(
         .as_str()
         .expect("home agent ID")
         .to_string();
-    let leased_agent_id = spawned["AgentSpawned"]["agent"]["remote_execution"]["leased_agent_id"]
-        .as_str()
-        .expect("leased agent ID")
-        .to_string();
-    let remote_execution: crate::agent::RemoteAgentBinding =
-        serde_json::from_value(spawned["AgentSpawned"]["agent"]["remote_execution"].clone())
-            .expect("worker binding");
-    let (worker_relay_config, expected_profile, remote_extension_manifest) = {
+    let remote_extension_manifest = {
         let app = fixture.home.app.lock().await;
         let agent = app.agents().get_agent(&home_agent_id).expect("home agent");
-        (
-            app.relay_config_for_remote_execution(&remote_execution),
-            crate::transport::relay_peer::RelayAgentExecutionProfile::from(&agent),
-            app.remote_extension_manifest_for_agent(&agent)
-                .expect("build the Room browser capability from home state"),
-        )
+        app.remote_extension_manifest_for_agent(&agent)
+            .expect("build the Room browser capability from home state")
     };
-    let response = send_peer_request_via_temporary_connection(
-        &worker_relay_config,
-        ClientTarget {
-            daemon_id: Some(worker_kernel_id),
-            daemon_alias: None,
-        },
-        RelayPeerRequest::SubmitLeasedPrompt {
-            leased_agent_id: leased_agent_id.clone(),
-            expected_profile,
-            prompt: prompt.to_string(),
-            hidden_system_context: String::new(),
-            attachments: Vec::new(),
-            workflow_context: None,
-            git_context: None,
-            required_mcps: Vec::new(),
-            required_skills: None,
-            remote_extension_manifest: remote_extension_manifest.clone(),
-            provider_launch_credential: None,
-        },
+    // MP-08/MP-11: retain the home turn so catalog updates cannot treat this
+    // live worker as idle and reload its provider while the next tool is admitted.
+    let attached = dispatch_json(
+        &fixture.home,
+        json!({"AttachToSession": {
+            "session_id": room, "client_id": "leased-room-provider",
+            "capability_level": "FullTerminal"
+        }}),
     )
     .await
-    .expect("launch the leased provider through the relay");
-    let RelayPeerResponse::LeasedPromptSubmitted {
-        provider_run_id: worker_provider_run_id,
-        ..
-    } = response
-    else {
-        panic!("unexpected leased prompt response: {response:?}")
-    };
-    fixture
-        .home
-        .app
-        .lock()
-        .await
-        .agents()
-        .set_remote_execution_active_worker_provider_run_id(
-            &home_agent_id,
-            Some(worker_provider_run_id.clone()),
-        )
-        .expect("record the active leased provider");
+    .expect("attach the prompt origin to the home Room");
+    let attachment_id = attached["SessionAttached"]["attachment"]["id"]
+        .as_str()
+        .expect("home attachment ID");
+    dispatch_json(
+        &fixture.home,
+        json!({"SubmitPrompt": {
+            "session_id": room, "attachment_id": attachment_id,
+            "target_agent_id": home_agent_id, "prompt": prompt
+        }}),
+    )
+    .await
+    .expect("launch the leased provider through the home prompt path");
+    let worker_provider_run_id = timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(run_id) = fixture
+                .home
+                .app
+                .lock()
+                .await
+                .agents()
+                .get_agent(&home_agent_id)
+                .expect("home agent")
+                .remote_execution()
+                .and_then(|binding| binding.active_worker_provider_run_id.clone())
+            {
+                break run_id;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("home records the active worker provider run");
 
     LeasedRoomProvider {
         home_agent_id,
@@ -2653,7 +2669,7 @@ pub(super) async fn check(fixture: &LiveWorker, placement: Value) {
         assert!(
             denied
                 .to_string()
-                .contains("relay sender does not match the bound worker kernel"),
+                .contains("authenticated peer does not match the current remote worker"),
             "{denied}"
         );
         let url = "https://worker-agent.worker.test/path?runtime=mcp";

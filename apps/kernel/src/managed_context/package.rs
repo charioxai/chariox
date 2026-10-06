@@ -786,21 +786,30 @@ pub(crate) fn apply_managed_context_package(
     let (development, kernel_context) = match imported_components {
         Ok(imported) => imported,
         Err(error) => {
-            if let Some((receipt, vault_path)) = kernel_context_rollback {
-                cleanup_kernel_context_import(&receipt, &vault_path, &request.target_private_key)?;
-            }
-            let git_rollback = rollback_imported_git_credentials(
-                request.git_credential_target.as_ref(),
-                &git_credentials,
+            let rollback = run_import_rollbacks(
+                || match kernel_context_rollback {
+                    Some((receipt, vault_path)) => cleanup_kernel_context_import(
+                        &receipt,
+                        &vault_path,
+                        &request.target_private_key,
+                    ),
+                    None => Ok(()),
+                },
+                || {
+                    rollback_imported_git_credentials(
+                        request.git_credential_target.as_ref(),
+                        &git_credentials,
+                    )
+                },
+                || {
+                    rollback_imported_provider_accounts(
+                        request.provider_account_target.as_ref(),
+                        &provider_accounts,
+                    )
+                },
             );
-            let provider_rollback = rollback_imported_provider_accounts(
-                request.provider_account_target.as_ref(),
-                &provider_accounts,
-            );
-            if let Err(rollback_error) = git_rollback.and(provider_rollback) {
-                return Err(package_unavailable(format!(
-                    "{error}; roll back imported credentials: {rollback_error}"
-                )));
+            if let Err(rollback_error) = rollback {
+                return Err(package_unavailable(format!("{error}; {rollback_error}")));
             }
             return Err(error);
         }
@@ -1872,7 +1881,7 @@ fn configure_no_follow(options: &mut OpenOptions) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
     }
     #[cfg(windows)]
     {
@@ -2164,3 +2173,56 @@ fn package_io_error(operation: &'static str, error: io::Error) -> DaemonError {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_fifo_input_fails_without_waiting_for_a_writer() {
+    crate::test_support::assert_fifo_rejected(|path| open_regular_file_no_follow(&path).is_err());
+}
+
+fn run_import_rollbacks(
+    kernel: impl FnOnce() -> Result<(), DaemonError>,
+    git: impl FnOnce() -> Result<(), DaemonError>,
+    provider: impl FnOnce() -> Result<(), DaemonError>,
+) -> Result<(), DaemonError> {
+    let failures = [kernel(), git(), provider()]
+        .into_iter()
+        .filter_map(Result::err)
+        .map(|error| error.to_string())
+        .collect::<Vec<_>>();
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(package_unavailable(format!(
+            "import rollback failed: {}",
+            failures.join("; ")
+        )))
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn mp11_import_rollback_attempts_every_credential_family_after_kernel_failure() {
+    let seen = std::cell::Cell::new(0_u8);
+    let result = run_import_rollbacks(
+        || {
+            seen.set(seen.get() | 1);
+            Err(package_error("synthetic kernel cleanup failure"))
+        },
+        || {
+            seen.set(seen.get() | 2);
+            Err(package_error("synthetic Git cleanup failure"))
+        },
+        || {
+            seen.set(seen.get() | 4);
+            Ok(())
+        },
+    );
+    assert_eq!(
+        seen.get(),
+        7,
+        "a failed cleanup suppressed later credential cleanup"
+    );
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("kernel cleanup failure") && error.contains("Git cleanup failure"));
+}

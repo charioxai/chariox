@@ -1301,3 +1301,117 @@ async fn healthy_display_viewer_drains_bursts_without_false_backpressure() {
         (0..64).map(|index| index.to_string()).collect::<Vec<_>>()
     );
 }
+
+#[tokio::test]
+async fn foreign_daemon_and_realm_cannot_close_display_stream() {
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let owner = DaemonKey::new("owner-realm", "owner");
+    let (tx, mut rx) = mpsc::channel(4);
+    registry
+        .write()
+        .await
+        .insert_pending_display_stream("owned".into(), owner.clone(), tx);
+    for foreign in [
+        DaemonKey::new("owner-realm", "foreign"),
+        DaemonKey::new("foreign-realm", "owner"),
+    ] {
+        close_display_stream_from_daemon(&registry, &foreign, "owned", None).await;
+        assert!(registry
+            .read()
+            .await
+            .display_stream_sender_for_daemon("owned", &owner)
+            .is_some());
+        assert!(rx.try_recv().is_err());
+    }
+    close_display_stream_from_daemon(&registry, &owner, "owned", None).await;
+    assert!(matches!(
+        rx.recv().await,
+        Some(DisplayStreamEvent::Close { .. })
+    ));
+    assert!(rx.recv().await.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_subscription_admission_has_one_owner() {
+    let key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
+    let mut registry = RelayRegistry::default();
+    let (daemon_tx, _daemon_rx) = mpsc::channel(8);
+    let reg = daemon_registration("daemon-1");
+    registry.daemons.insert(key.clone(), reg.clone());
+    registry
+        .peers
+        .insert(peer_addr(18000), daemon_peer(daemon_tx.clone(), reg));
+    registry.daemon_peers.insert(key.clone(), peer_addr(18000));
+    let routes = registry.route_index();
+    routes.set_daemon_sender(key.clone(), daemon_tx);
+    let mut clients = Vec::new();
+    for port in [18001, 18002] {
+        let (tx, rx) = mpsc::channel(8);
+        let addr = peer_addr(port);
+        let mut peer = client_peer(tx.clone());
+        peer.client_daemon_key = Some(key.clone());
+        peer.allowed_actions = vec![RelayAction::PacketRoute];
+        registry.peers.insert(addr, peer);
+        routes.set_client_sender(addr, tx.clone());
+        clients.push((addr, tx, rx));
+    }
+    let registry = Arc::new(RwLock::new(registry));
+    let counter = Arc::new(AtomicU64::new(0));
+    let held = registry.read().await;
+    let verifier = RelayAuthVerifier::shared(None);
+    let envelope = |addr| RelayEnvelope::ClientSubscribe {
+        request_id: format!("request-{addr}"),
+        subscription_id: "shared-subscription".into(),
+        target: ClientTarget {
+            daemon_id: Some("daemon-1".into()),
+            daemon_alias: None,
+        },
+        session_id: "session".into(),
+        attachment_id: "attachment".into(),
+        client_public_key: "key".into(),
+        subscription_scope: None,
+        resume_from_event_id: None,
+    };
+    {
+        let first = handle_client_packet_route_envelope(
+            envelope(clients[0].0),
+            &registry,
+            &routes,
+            &verifier,
+            clients[0].0,
+            &clients[0].1,
+            &counter,
+        );
+        let second = handle_client_packet_route_envelope(
+            envelope(clients[1].0),
+            &registry,
+            &routes,
+            &verifier,
+            clients[1].0,
+            &clients[1].1,
+            &counter,
+        );
+        tokio::pin!(first, second);
+        // Both clients reach the same held mutation barrier; no timeout selects the race.
+        std::future::poll_fn(|cx| {
+            use std::future::Future;
+            assert!(
+                first.as_mut().poll(cx).is_pending(),
+                "subscription reservation must require exclusive registry access"
+            );
+            assert!(second.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert_eq!(routes.pending_request_count(), 0);
+        drop(held);
+        let (first_result, second_result) = tokio::join!(first, second);
+        first_result.unwrap();
+        second_result.unwrap();
+    }
+    assert_eq!(routes.pending_request_count(), 1);
+    let conflict_count = clients.iter_mut().filter_map(|(_, _, rx)| rx.try_recv().ok()).filter(|message| {
+        matches!(message, Message::Text(text) if matches!(serde_json::from_str::<RelayEnvelope>(text).unwrap(), RelayEnvelope::ClientResponse { error: Some(error), .. } if error.code == "subscription_conflict"))
+    }).count();
+    assert_eq!(conflict_count, 1);
+}

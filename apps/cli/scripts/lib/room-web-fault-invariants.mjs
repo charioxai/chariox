@@ -2,8 +2,10 @@
 import assert from 'node:assert/strict'
 export function controllerFaultAttributed(environment, replay, actions = []) {
   return (environment?.health ?? []).some(item => item.component === 'browser_controller' && (item.state !== 'ready' || item.diagnostic_code))
-    || (replay?.Events?.events ?? []).some(event => event.kind === 'HealthChanged')
-    || actions.some(action => action.state === 'failed' && /controller|process.lost/i.test(JSON.stringify(action.outcome)))
+    // HealthChanged has no component payload. Streamer/browser transitions also
+    // produce it, so replay alone cannot identify the failed component.
+    || actions.some(action => action.state === 'failed'
+      && action.outcome?.code === 'controller_failure')
 }
 export function assertWebFaultRecovery(before, after) {
   for (const key of ['session_id', 'environment_id']) assert.equal(after.environment[key], before.environment[key], `${key} changed`)
@@ -17,5 +19,15 @@ export function assertWebFaultRecovery(before, after) {
     assert.ok(retained, 'completed Action disappeared')
     assert.equal(retained.state, 'completed', 'completed Action was replayed or reopened')
     assert.equal(retained.sequence, action.sequence, 'Action sequence changed')
+  }
+}
+
+export function assertTuiFaultRecovery(clients, sessionId, attachmentIds) {
+  assert.equal(new Set(clients.map(client => client.side)).size, clients.length, 'duplicate TUI observer')
+  assert.equal(new Set(clients.map(client => client.attachmentId)).size, clients.length, 'distinct TUIs share an attachment identity')
+  for (const client of clients) {
+    assert.equal(client.sessionId, sessionId, 'TUI changed Room')
+    assert.equal(client.daemonDisconnected, false, 'TUI remains disconnected')
+    assert.ok(client.attachmentId && attachmentIds.includes(client.attachmentId), 'TUI attachment is absent from kernel state')
   }
 }

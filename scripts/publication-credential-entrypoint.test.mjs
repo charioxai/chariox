@@ -6,9 +6,28 @@ import { join, resolve } from "node:path"
 import { promisify } from "node:util"
 import { test } from "node:test"
 
-const execFileAsync = promisify(execFile)
+const rawExecFileAsync = promisify(execFile)
 const repositoryRoot = resolve(import.meta.dirname, "..")
 const entrypoint = await readFile(join(repositoryRoot, "docker/publication/entrypoint.sh"), "utf8")
+
+// Host fixtures exercise import/admission only. Container users and /home,/run
+// mounts belong to the image; keep every writable path inside this run's root.
+async function execFileAsync(command, args, options) {
+  if (command !== "bash" || args[0] !== join(repositoryRoot, "docker/publication/entrypoint.sh")) {
+    return rawExecFileAsync(command, args, options)
+  }
+  const root = resolve(options.env.HOME, "..")
+  const script = join(root, "entrypoint-fixture.sh")
+  const fixture = entrypoint
+    .replace("readonly CHARIOX_ACTION_HOME=/home/chariox-action", `readonly CHARIOX_ACTION_HOME=${JSON.stringify(join(root, "action-home"))}`)
+    .replace("readonly CHARIOX_GATEWAY_HOME=/home/chariox-gateway", `readonly CHARIOX_GATEWAY_HOME=${JSON.stringify(join(root, "gateway-home"))}`)
+    .replace("readonly CHARIOX_CAPABILITY_ROOT=/run/chariox-publication-capabilities", `readonly CHARIOX_CAPABILITY_ROOT=${JSON.stringify(join(root, "capabilities"))}`)
+    .replace(/\bchariox(?:-action|-gateway)?:chariox(?:-action|-gateway)?\b/g, "$(id -u):$(id -g)")
+  await writeFile(script, fixture, {mode: 0o600, flag: "wx"})
+  try { return await rawExecFileAsync(command, [script, ...args.slice(1)], options) }
+  finally { await rm(script, {force:true}) }
+}
+
 
 test("publication entrypoint keeps builder actions outside credential and transport environments", () => {
   assert.match(entrypoint, /^umask 077$/m)
@@ -326,3 +345,27 @@ function publicationEntrypointEnvironment({ root, home, bindings }) {
     CHARIOX_WORKSPACE_DIR: join(root, "workspace"),
   }
 }
+
+test('MP-11 F5 bootstrap capability reader refuses FIFOs before a writer arrives', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mp11-bootstrap-fifo-'))
+  try {
+    const input = join(root, 'input')
+    await execFileAsync('mkfifo', ['-m', '600', input])
+    const fn = entrypoint.match(/^read_bootstrap_capability_file\(\) \{[^]*?^\}/m)[0]
+    await assert.rejects(execFileAsync('bash', ['-c', `${fn}\nread_bootstrap_capability_file "$1" "$2"`, 'fixture', input, 'audit URL'],
+      { timeout: 2000, maxBuffer: 256 * 1024 }), error => error.killed === false && /private regular file/.test(error.stderr))
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('MP-11 F5 bootstrap capability reader bounds audit URLs and caller claims', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mp11-bootstrap-limit-'))
+  try {
+    const input = join(root, 'input')
+    const fn = entrypoint.match(/^read_bootstrap_capability_file\(\) \{[^]*?^\}/m)[0]
+    for (const [label, maximum] of [['audit URL', 8192], ['caller claims configuration', 65536]]) {
+      await writeFile(input, 'x'.repeat(maximum + 1), { mode: 0o600 })
+      await assert.rejects(execFileAsync('bash', ['-c', `${fn}\nread_bootstrap_capability_file "$1" "$2"`, 'fixture', input, label],
+        { timeout: 2000, maxBuffer: 256 * 1024 }), error => /size limit/.test(error.stderr) && error.stdout === '')
+    }
+  } finally { await rm(root, { recursive: true, force: true }) }
+})

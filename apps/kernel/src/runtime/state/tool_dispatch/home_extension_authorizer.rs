@@ -54,11 +54,7 @@ impl<'a> HomeExtensionAuthorizationService<'a> {
         context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
         tool: &crate::extension::RemoteExtensionTool,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        let agent = self
-            .state
-            .owned
-            .agent_store
-            .get_agent(&context.home_agent_id)?;
+        let agent = self.authorize_invocation_context(context)?;
         if agent.session_id() != context.home_session_id {
             return Err(DaemonError::LocalTransport {
                 operation: "home extension invocation",
@@ -79,11 +75,12 @@ impl<'a> HomeExtensionAuthorizationService<'a> {
     }
 }
 
-pub(in crate::runtime::state::tool_dispatch) fn authorize_remote_home_context(
+pub(in crate::runtime::state) fn authorize_remote_home_context(
     state: &KernelRuntimeState,
     context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
     operation: &'static str,
 ) -> Result<crate::agent::AgentInstance, DaemonError> {
+    state.authorize_current_forwarded_binding()?;
     let config = state.owned.config_projection.snapshot();
     if config.daemon_id != context.home_kernel_id {
         return Err(DaemonError::LocalTransport {
@@ -122,6 +119,7 @@ pub(in crate::runtime::state::tool_dispatch) fn authorize_remote_home_context(
             message: "worker machine does not match home agent binding".to_string(),
         });
     }
+    state.authorize_forwarded_worker(&remote_execution.worker_kernel_id)?;
     match remote_execution.active_worker_provider_run_id.as_deref() {
         Some(active_provider_run_id)
             if !active_provider_run_id.is_empty()

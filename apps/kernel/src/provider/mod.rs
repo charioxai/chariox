@@ -28,10 +28,13 @@ mod opencode_client;
 mod opencode_runtime;
 mod process_info;
 mod prompt_signals;
+mod public_run;
 mod registry;
 pub(crate) mod renewal_failure;
+mod reported_transcript_file;
 mod run_actor;
 mod runtime_run;
+pub use public_run::PublicProviderRun;
 mod service;
 pub(crate) mod startup_diagnostic;
 mod termination;
@@ -97,7 +100,7 @@ pub(crate) use managed_isolation::{
     managed_isolated_utility_command, managed_isolated_utility_launch,
     managed_provider_control_env_remove, managed_provider_isolation_env_remove,
     managed_provider_isolation_required, managed_provider_parent_credential_env_remove,
-    provider_reported_path_on_kernel, MANAGED_SLICE_PUBLICATION_ROOT_ENV,
+    provider_reported_transcript_on_kernel, MANAGED_SLICE_PUBLICATION_ROOT_ENV,
     MANAGED_SLICE_SERVICE_ROOT_ENV,
 };
 #[cfg(test)]

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { bindProviderMcpFixture, PROVIDER_MCP_FIXTURE_MODEL } from './lib/provider-mcp-fixture.mjs'
+import { publicRuntimeDiagnostic, publicProviderRun } from "../../kernel/slice-linux-docker/docker/public-runtime-diagnostics.mjs"
+import { spawnOwned, signalOwnedProcessGroup, signalOwnedProcess } from "../../kernel/slice-linux-docker/owned-process-signals.mjs"
 
 import assert from "node:assert/strict"
 import { createRoomWebFaultControl } from "./lib/room-web-fault-control.mjs"
@@ -7,7 +10,6 @@ import { assertRoomDrillCompletedActionNotice } from "./lib/room-drill-action-no
 import { validatePrebuiltSliceImage } from "./lib/prebuilt-slice-image.mjs"
 import { roomTuiPtyInvocation } from "./lib/room-tui-pty.mjs"
 import { createRetainedRoomRuntime, stopOrDeleteRoomSlice, roomCleanupComplete, verifyRetainedRoomArchive, roomDrillLeakScanRoots } from "./lib/room-provider-retention.mjs"
-import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { createWriteStream } from "node:fs"
 import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
@@ -317,7 +319,7 @@ async function run() {
   const startRelayGeneration = async () => {
     const logName = relayGeneration === 0 ? "relay.log" : `relay-reconnect-${relayGeneration}.log`
     const relayLog = createWriteStream(path.join(evidenceRoot, logName), { flags: "a" })
-    const child = spawn(relayBinary, [], {
+    const child = spawnOwned(relayBinary, [], {
       cwd: repoRoot,
       env: {
         ...process.env,
@@ -373,7 +375,7 @@ async function run() {
     XDG_STATE_HOME: path.join(tempRoot, "xdg-state"),
     XDG_CACHE_HOME: path.join(tempRoot, "xdg-cache"),
   }
-  let kernel = spawn(kernelBinary, [], {
+  let kernel = spawnOwned(kernelBinary, [], {
     cwd: repoRoot,
     env: kernelEnv,
     stdio: ["ignore", "pipe", "pipe"],
@@ -403,7 +405,7 @@ async function run() {
         restartKernel: async () => {
           assert.ok(kernel.exitCode !== null || kernel.signalCode !== null, "fault kernel is already running")
           const nextLog = createWriteStream(path.join(evidenceRoot, "kernel-restarted.log"), { flags: "a" })
-          kernel = spawn(kernelBinary, [], { cwd: repoRoot, env: kernelEnv, stdio: ["ignore", "pipe", "pipe"] })
+          kernel = spawnOwned(kernelBinary, [], { cwd: repoRoot, env: kernelEnv, stdio: ["ignore", "pipe", "pipe"] })
           kernel.stdout.pipe(nextLog); kernel.stderr.pipe(nextLog); kernel.once("exit", () => nextLog.end()); children.push(kernel)
           await waitForTcpPort("127.0.0.1", kernelPort, 60_000, "restarted kernel unavailable")
           client.close(); observerClient.close()
@@ -2050,7 +2052,7 @@ async function launchComputerSecretAgent() {
       sessionId,
       "dev-stub",
       "computer-secret-agent",
-      "native-tui-idle",
+      PROVIDER_MCP_FIXTURE_MODEL,
       repoRoot,
       "low",
       "build",
@@ -2098,9 +2100,9 @@ async function launchComputerSecretAgent() {
         "ProviderRun",
       ).provider_run
       if (["ended", "failed", "error"].includes(String(current.state ?? "").toLowerCase())) {
-        throw new Error(`slice provider run ended before MCP became ready: ${JSON.stringify(current)}`)
+        throw new Error(`slice provider run ended before MCP became ready: ${publicRuntimeDiagnostic(current)}`)
       }
-      if (!current.runtime_mcp_server_url || !current.runtime_mcp_auth_token) {
+      if (current.state !== "Running") {
         await candidate.close().catch(() => undefined)
         return false
       }
@@ -2111,41 +2113,17 @@ async function launchComputerSecretAgent() {
     }
   }, 120_000, "slice provider runtime MCP did not become ready")
   workerClient = ready.client
-  return { agent: spawned, providerRun: ready.providerRun }
+  const state = unwrapOneOf(await client.send(requests.getSessionStateRequest(sessionId)), "SessionStateLoaded", "SessionState")
+  const remote = state.session.agents.find(candidate => candidate.id === spawned.id)?.remote_execution
+  assert.ok(remote?.leased_agent_id, "slice fixture run has no home lease")
+  const providerRun = bindProviderMcpFixture({ ...ready.providerRun, id: `leased:${remote.leased_agent_id}:${workerProviderRunId}` }, {
+    client, requests, sessionId, attachmentId: attachment.id,
+  })
+  return { agent: spawned, providerRun }
 }
 
 async function mcpToolCall(providerRun, name, argumentsValue) {
-  const payload = JSON.stringify({
-    url: providerRun.runtime_mcp_server_url,
-    token: providerRun.runtime_mcp_auth_token,
-    body: {
-      jsonrpc: "2.0",
-      id: `${name}-${Date.now()}`,
-      method: "tools/call",
-      params: { name, arguments: argumentsValue },
-    },
-  })
-  const helper = [
-    "let input='';",
-    "process.stdin.setEncoding('utf8');",
-    "process.stdin.on('data',chunk=>{input+=chunk});",
-    "process.stdin.on('end',async()=>{",
-    "const request=JSON.parse(input);",
-    "const response=await fetch(request.url,{method:'POST',headers:{authorization:'Bearer '+request.token,'content-type':'application/json'},body:JSON.stringify(request.body)});",
-    "const text=await response.text();",
-    "process.stdout.write(JSON.stringify({status:response.status,ok:response.ok,body:text}));",
-    "});",
-  ].join("")
-  const response = await runCommandWithStdin(
-    "docker",
-    ["exec", "-i", "-u", "slice", containerName, "node", "-e", helper],
-    payload,
-    90_000,
-  )
-  assert.equal(response.code, 0, `runtime MCP ${name} transport failed: ${response.stderr}`)
-  const envelope = JSON.parse(response.stdout)
-  assert.equal(envelope.ok, true, `runtime MCP ${name} returned HTTP ${envelope.status}`)
-  const result = JSON.parse(envelope.body)
+  const result = await providerRun.fixtureMcp.call("tools/call", { name, arguments: argumentsValue }, { rawEnvelope: true })
   if (result.error) return { ok: false, error: result.error, raw: result }
   return {
     ok: result.result?.isError !== true,
@@ -2515,7 +2493,7 @@ async function startRemoteTui({ tempRoot }) {
     env,
     connectionArgs: [
       "--relay-url", `ws://127.0.0.1:${relayPort}`,
-      "--relay-token", remoteTuiRelayToken,
+      "--relay-token-env", "CHARIOX_DRILL_ROOM_RELAY_TOKEN",
       "--target-daemon-id", homeDaemonId,
     ],
   })
@@ -2544,7 +2522,7 @@ async function startTui({ kind, tempRoot, env, connectionArgs }) {
     "--model", `room-activity-${kind}-tui-drill`,
     "--client-id", `${runId}-${kind}-tui`,
   ])
-  const tui = spawn(invocation.command, invocation.args, {
+  const tui = spawnOwned(invocation.command, invocation.args, {
     cwd: repoRoot,
     env,
     detached: true,
@@ -2585,6 +2563,7 @@ function remoteTuiEnvironment(tempRoot) {
   return {
     ...env,
     HOME: remoteTuiHome,
+    CHARIOX_DRILL_ROOM_RELAY_TOKEN: remoteTuiRelayToken,
   }
 }
 
@@ -3501,9 +3480,9 @@ async function terminateChild(child) {
     return
   }
   if (child.exitCode != null) return
-  child.kill("SIGTERM")
+  signalOwnedProcess(child, "SIGTERM")
   if (await waitForChildExit(child, 5_000)) return
-  child.kill("SIGKILL")
+  signalOwnedProcess(child, "SIGKILL")
   await waitForChildExit(child, 1_000)
 }
 
@@ -3535,8 +3514,7 @@ async function waitForProcessGroupExit(processGroupId, timeoutMs) {
 
 function processGroupExists(processGroupId) {
   try {
-    process.kill(-processGroupId, 0)
-    return true
+    return signalOwnedProcessGroup(processGroupId, 0)
   } catch (error) {
     if (error?.code === "ESRCH") return false
     throw error
@@ -3545,7 +3523,7 @@ function processGroupExists(processGroupId) {
 
 function signalProcessGroup(processGroupId, signal) {
   try {
-    process.kill(-processGroupId, signal)
+    signalOwnedProcessGroup(processGroupId, signal)
   } catch (error) {
     if (error?.code !== "ESRCH") throw error
   }
@@ -3571,10 +3549,10 @@ async function waitFor(operation, timeoutMs, message) {
 function runCommand(command, args, timeoutMs) {
   interruption.check()
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: repoRoot, env: process.env, stdio: ["ignore", "pipe", "pipe"] })
+    const child = spawnOwned(command, args, { cwd: repoRoot, env: process.env, stdio: ["ignore", "pipe", "pipe"] })
     const stdout = []
     const stderr = []
-    const timeout = setTimeout(() => child.kill("SIGTERM"), timeoutMs)
+    const timeout = setTimeout(() => signalOwnedProcess(child, "SIGTERM"), timeoutMs)
     child.stdout.on("data", (chunk) => { stdout.push(chunk) })
     child.stderr.on("data", (chunk) => { stderr.push(chunk) })
     child.once("error", reject)
@@ -3593,10 +3571,10 @@ function runCommand(command, args, timeoutMs) {
 function runCommandWithStdin(command, args, stdin, timeoutMs) {
   interruption.check()
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: repoRoot, env: process.env, stdio: ["pipe", "pipe", "pipe"] })
+    const child = spawnOwned(command, args, { cwd: repoRoot, env: process.env, stdio: ["pipe", "pipe", "pipe"] })
     const stdout = []
     const stderr = []
-    const timeout = setTimeout(() => child.kill("SIGTERM"), timeoutMs)
+    const timeout = setTimeout(() => signalOwnedProcess(child, "SIGTERM"), timeoutMs)
     child.stdout.on("data", (chunk) => { stdout.push(chunk) })
     child.stderr.on("data", (chunk) => { stderr.push(chunk) })
     child.once("error", reject)
@@ -3618,7 +3596,7 @@ function actionState(environment, actionId) {
 }
 
 function unwrap(response, variant) {
-  assert.ok(response && typeof response === "object" && variant in response, `expected ${variant}, got ${JSON.stringify(response)}`)
+  assert.ok(response && typeof response === "object" && variant in response, `expected ${variant}, got ${publicRuntimeDiagnostic(response)}`)
   return response[variant]
 }
 
@@ -3626,7 +3604,7 @@ function unwrapOneOf(response, ...variants) {
   for (const variant of variants) {
     if (response && typeof response === "object" && variant in response) return response[variant]
   }
-  assert.fail(`expected ${variants.join(" or ")}, got ${JSON.stringify(response)}`)
+  assert.fail(`expected ${variants.join(" or ")}, got ${publicRuntimeDiagnostic(response)}`)
 }
 
 function sleep(ms) {

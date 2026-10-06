@@ -3,8 +3,9 @@ use crate::session::{
 };
 use crate::transport::room_browser_controller::{
     RoomComputerInputAction, RoomComputerPointerButton, ROOM_COMPUTER_CLIPBOARD_MAX_UTF8_BYTES,
-    ROOM_COMPUTER_KEYBOARD_KEY_MAX_REPEAT, ROOM_COMPUTER_KEYBOARD_KEY_MAX_UTF8_BYTES,
-    ROOM_COMPUTER_KEYBOARD_TEXT_MAX_UTF8_BYTES, ROOM_COMPUTER_SCROLL_MAX_STEPS,
+    ROOM_COMPUTER_HOLD_MAX_DURATION_MS, ROOM_COMPUTER_KEYBOARD_KEY_MAX_REPEAT,
+    ROOM_COMPUTER_KEYBOARD_KEY_MAX_UTF8_BYTES, ROOM_COMPUTER_KEYBOARD_TEXT_MAX_UTF8_BYTES,
+    ROOM_COMPUTER_SCROLL_MAX_STEPS,
 };
 
 pub(crate) struct ComputerInputActionMetadata {
@@ -77,6 +78,27 @@ pub(crate) fn computer_input_action_metadata(
         RoomComputerInputAction::KeyboardKey { repeat, .. } => (
             "keyboard_key",
             Some(EnvironmentActionArguments::KeyboardKey { repeat: *repeat }),
+        ),
+        RoomComputerInputAction::KeyboardHold { duration_ms, .. } => (
+            "keyboard_hold",
+            Some(EnvironmentActionArguments::KeyboardHold {
+                duration_ms: *duration_ms,
+            }),
+        ),
+        RoomComputerInputAction::PointerHold {
+            x,
+            y,
+            button,
+            duration_ms,
+        } => (
+            "pointer_hold",
+            Some(EnvironmentActionArguments::PointerHold {
+                x: *x,
+                y: *y,
+                button: environment_pointer_button(*button),
+                duration_ms: *duration_ms,
+                viewport_revision,
+            }),
         ),
         RoomComputerInputAction::ClipboardWrite { text } => (
             "clipboard_write",
@@ -184,6 +206,22 @@ pub(crate) fn validate_computer_input_action(
                 Ok(())
             }
         }
+        RoomComputerInputAction::KeyboardHold { input, duration_ms } => {
+            validate_computer_input_action(
+                viewport,
+                &RoomComputerInputAction::KeyboardKey {
+                    input: input.clone(),
+                    repeat: 1,
+                },
+            )?;
+            validate_hold_duration(*duration_ms)
+        }
+        RoomComputerInputAction::PointerHold {
+            x, y, duration_ms, ..
+        } => {
+            validate_point(*x, *y)?;
+            validate_hold_duration(*duration_ms)
+        }
         RoomComputerInputAction::ClipboardWrite { text } => {
             let utf8_byte_count = text.as_str().len();
             if utf8_byte_count > ROOM_COMPUTER_CLIPBOARD_MAX_UTF8_BYTES {
@@ -219,6 +257,17 @@ pub(crate) fn validate_computer_input_action(
                 })
             }
         }
+    }
+}
+
+pub(crate) fn validate_hold_duration(duration_ms: u32) -> Result<(), EnvironmentError> {
+    if duration_ms == 0 || duration_ms > ROOM_COMPUTER_HOLD_MAX_DURATION_MS {
+        Err(EnvironmentError::InvalidHoldDuration {
+            duration_ms,
+            max_duration_ms: ROOM_COMPUTER_HOLD_MAX_DURATION_MS,
+        })
+    } else {
+        Ok(())
     }
 }
 
@@ -273,5 +322,67 @@ mod tests {
             ),
             Err(crate::session::EnvironmentError::PointerOutOfBounds { .. })
         ));
+    }
+    #[test]
+    fn mp08_mp10_mp11_holds_validate_bounds_and_redact_keyboard_history() {
+        for duration_ms in [0, 10001, u32::MAX] {
+            for input in [
+                RoomComputerInputAction::KeyboardHold {
+                    input:
+                        crate::transport::room_browser_controller::RoomComputerKeyboardInput::new(
+                            "ctrl+a".into(),
+                        ),
+                    duration_ms,
+                },
+                RoomComputerInputAction::PointerHold {
+                    x: 10,
+                    y: 20,
+                    button: RoomComputerPointerButton::Right,
+                    duration_ms,
+                },
+            ] {
+                assert!(matches!(
+                    validate_computer_input_action(&viewport(), &input),
+                    Err(EnvironmentError::InvalidHoldDuration { .. })
+                ));
+            }
+        }
+        for duration_ms in [1, 10000] {
+            let input = RoomComputerInputAction::KeyboardHold {
+                input: crate::transport::room_browser_controller::RoomComputerKeyboardInput::new(
+                    "ctrl+shift+a".into(),
+                ),
+                duration_ms,
+            };
+            validate_computer_input_action(&viewport(), &input).unwrap();
+            let metadata = computer_input_action_metadata(&input, 1);
+            assert_eq!(metadata.kind, "keyboard_hold");
+            let wire = serde_json::to_value(metadata.arguments.unwrap()).unwrap();
+            assert_eq!(
+                wire,
+                serde_json::json!({"kind":"keyboard_hold", "duration_ms": duration_ms})
+            );
+            assert!(!format!("{input:?}").contains("ctrl+shift+a"));
+        }
+        assert!(validate_computer_input_action(
+            &viewport(),
+            &RoomComputerInputAction::PointerHold {
+                x: 1280,
+                y: 0,
+                button: RoomComputerPointerButton::Left,
+                duration_ms: 1,
+            }
+        )
+        .is_err());
+        assert!(validate_computer_input_action(
+            &viewport(),
+            &RoomComputerInputAction::KeyboardHold {
+                input: crate::transport::room_browser_controller::RoomComputerKeyboardInput::new(
+                    "-invalid".into()
+                ),
+                duration_ms: 1,
+            }
+        )
+        .is_err());
     }
 }

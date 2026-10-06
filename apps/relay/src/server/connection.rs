@@ -64,7 +64,7 @@ async fn try_forward_display_stream_event(
     registry
         .write()
         .await
-        .remove_pending_display_stream(stream_id);
+        .remove_display_stream_for_daemon(stream_id, daemon_key);
     let _ = send_envelope(
         daemon_sender,
         &RelayEnvelope::DaemonDisplayTunnelClientClose {
@@ -86,9 +86,7 @@ async fn close_display_stream_from_daemon(
 ) {
     let sender = {
         let mut guard = registry.write().await;
-        let sender = guard.display_stream_sender_for_daemon(stream_id, daemon_key);
-        guard.remove_pending_display_stream(stream_id);
-        sender
+        guard.remove_display_stream_for_daemon(stream_id, daemon_key)
     };
     let Some(sender) = sender else {
         return;
@@ -692,6 +690,8 @@ pub(crate) async fn handle_connection(
                                 );
                                 break;
                             };
+                            // Keep the pending ownership reservation until the active route is installed.
+                            let mut response_guard = registry.write().await;
                             let pending = routes.take_pending_client_if(
                                 &relay_request_id,
                                 |pending| pending.daemon_key == current_daemon_key,
@@ -704,7 +704,7 @@ pub(crate) async fn handle_connection(
                                                 subscription_id,
                                                 client_public_key,
                                             } => {
-                                                let mut guard = registry.write().await;
+                                                let guard = &mut response_guard;
                                                 if guard.peers.contains_key(&pending.client_addr) {
                                                     guard.subscriptions.insert(
                                                         subscription_id.clone(),
@@ -733,7 +733,7 @@ pub(crate) async fn handle_connection(
                                                 }
                                             }
                                             PendingRequestKind::Unsubscribe { subscription_id } => {
-                                                let mut guard = registry.write().await;
+                                                let guard = &mut response_guard;
                                                 guard.subscriptions.remove(subscription_id);
                                                 routes.remove_subscription(subscription_id);
                                             }
@@ -833,13 +833,16 @@ pub(crate) async fn handle_connection(
                             } else {
                                 let mut guard = registry.write().await;
                                 guard.prune_expired_display_tunnels(current_unix_ms());
-                                guard.register_display_tunnel(
+                                if guard.register_display_tunnel(
                                     current_daemon_key,
                                     tunnel_id.clone(),
                                     expires_at_ms,
                                     registration.capabilities,
-                                );
-                                None
+                                ) {
+                                    None
+                                } else {
+                                    Some(relay_error("display_tunnel_conflict", "display tunnel belongs to another daemon", false))
+                                }
                             };
                             send_envelope(
                                 &outgoing_tx,
@@ -984,6 +987,15 @@ pub(crate) async fn handle_connection(
         Ok(())
     }
     .await;
+
+    // Admission failures happen before a request can carry an error response.
+    // Send the existing close envelope so clients do not mistake a refusal for
+    // a transient socket loss and retry the same credential until readiness expires.
+    if let Err(error) = &connection_result {
+        if error.kind() == std::io::ErrorKind::PermissionDenied {
+            send_close(&outgoing_tx, error.to_string());
+        }
+    }
 
     let (
         disconnect_errors,

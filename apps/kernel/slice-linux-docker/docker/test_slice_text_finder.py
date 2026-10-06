@@ -1,4 +1,5 @@
 import csv
+import importlib.util
 import json
 import os
 import shutil
@@ -7,6 +8,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 SCRIPT = Path(os.environ.get("CHARIOX_TEST_TEXT_FINDER", Path(__file__).with_name("slice-text-finder.py")))
@@ -124,6 +127,44 @@ class SliceTextFinderTests(unittest.TestCase):
         self.assertEqual(match["left"], 30)
         self.assertEqual(match["width"], 128)
 
+    def test_matches_composed_screen_text_with_decomposed_query(self):
+        # MP-08/MP-10/MP-11: IME and clipboard text can have different Unicode
+        # normalization from the OCR engine without being different labels.
+        completed = self.run_finder("Gru\u0308ße", [word(1, 1, 30, 40, 70, 24, "Grüße")])
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)["text"], "Grüße")
+
+    def test_segmentation_does_not_merge_different_overlapping_labels(self):
+        # Both are valid substring hits, but a large block detection must not
+        # swallow the smaller, distinct visible label from the other pass.
+        finder = load_finder()
+        small = finder.match_for_rows([word(1, 1, 30, 40, 70, 24, "Büro")])
+        broad = finder.match_for_rows([word(1, 1, 30, 40, 140, 24, "Großbüro")])
+        self.assertFalse(finder.same_target(small, broad))
+
+    def test_segmentation_only_coalesces_nearly_identical_geometry(self):
+        finder = load_finder()
+        match = finder.match_for_rows([word(1, 1, 30, 40, 100, 24, "Open")])
+        shifted = finder.match_for_rows([word(1, 1, 31, 40, 100, 24, "Open")])
+        separate = finder.match_for_rows([word(1, 1, 80, 40, 100, 24, "Open")])
+        self.assertTrue(finder.same_target(match, shifted))
+        self.assertFalse(finder.same_target(match, separate))
+
+    def test_ocr_uses_installed_non_english_models_and_excludes_script_data(self):
+        finder = load_finder()
+        with patch.object(finder.subprocess, "run", return_value=SimpleNamespace(
+                stdout="List of available languages (4):\neng\ndeu\nosd\nscript/Latin\n")) as command:
+            self.assertEqual(finder.recognition_languages(), "eng+deu")
+        self.assertEqual(command.call_args.args[0], ["tesseract", "--list-langs"])
+        self.assertEqual(command.call_args.kwargs["timeout"], 2)
+
+    def test_ocr_model_limit_fails_explicitly_instead_of_silently_omitting_languages(self):
+        finder = load_finder()
+        with patch.object(finder.subprocess, "run", return_value=SimpleNamespace(
+                stdout="eng\ndeu\nfra\nspa\nita\npor\nrus\nukr\njpn\n")):
+            with self.assertRaisesRegex(ValueError, "too many OCR"):
+                finder.recognition_languages()
+
     def test_repeated_substrings_in_one_ocr_word_are_one_visual_target(self):
         completed = self.run_finder(
             "aa",
@@ -225,6 +266,13 @@ def word(line, number, left, top, width, height, text):
         "conf": 95,
         "text": text,
     }
+
+
+def load_finder():
+    spec = importlib.util.spec_from_file_location("text_finder", SCRIPT)
+    finder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(finder)
+    return finder
 
 
 def write_executable(path, content):

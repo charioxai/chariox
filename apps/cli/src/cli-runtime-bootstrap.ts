@@ -78,7 +78,7 @@ import {
   type ThemeRegistry,
 } from "./theme-registry.js"
 import {
-  primeWaitingRoomWorktreeInventory,
+  clearWaitingRoomWorktreeInventory,
 } from "./waiting-room-worktrees.js"
 import {
   describeCliError,
@@ -110,11 +110,7 @@ export type CliRuntimeBootstrapDeps = {
   resolvePairingBootstrapToken?: (relayUrl: string, kernelId: string, identity: RelayClientIdentity) => Promise<string>
   getRelayIdentity: (createIfMissing: boolean) => RelayClientIdentity | null
   inferWorkspaceTargetsFromLaunchDirectory: (cwd: string) => Promise<{ workspace: string; worktree: string }>
-  primeWaitingRoomWorktreeInventory: (options: {
-    cwd: string
-    workspacePath: string
-    currentWorktreePath: string
-  }) => Promise<void>
+  clearWaitingRoomWorktreeInventory: () => void
   loadThemeRegistry: (options: {
     workspace?: string
     onWarning?: (warning: ThemeLoadWarning) => void
@@ -164,7 +160,7 @@ export const defaultCliRuntimeBootstrapDeps: CliRuntimeBootstrapDeps = {
     return createIfMissing ? store.getOrCreate() : store.load()
   },
   inferWorkspaceTargetsFromLaunchDirectory,
-  primeWaitingRoomWorktreeInventory,
+  clearWaitingRoomWorktreeInventory,
   loadThemeRegistry,
   deleteSessionByRef,
   isNoArgDefaultKernelLaunch,
@@ -228,11 +224,7 @@ export async function bootstrapCliRuntime(
   const inferredTargets = await deps.inferWorkspaceTargetsFromLaunchDirectory(options.cwd)
   const workspace = cliOptions.workspace ?? inferredTargets.workspace
   const worktree = cliOptions.worktree ?? inferredTargets.worktree
-  await deps.primeWaitingRoomWorktreeInventory({
-    cwd: options.cwd,
-    workspacePath: workspace,
-    currentWorktreePath: worktree,
-  })
+  deps.clearWaitingRoomWorktreeInventory()
   const themeRegistry = await deps.loadThemeRegistry({
     workspace,
     onWarning: (warning) => {

@@ -20,6 +20,7 @@ pub(crate) struct BrowserImportDomainResult {
     pub(crate) cookie_count: u16,
 }
 
+pub(crate) const ROOM_COMPUTER_HOLD_MAX_DURATION_MS: u32 = 10_000;
 pub(crate) const ROOM_COMPUTER_SCROLL_MAX_STEPS: u16 = 120;
 pub(crate) const ROOM_COMPUTER_KEYBOARD_TEXT_MAX_UTF8_BYTES: usize = 64 * 1024;
 pub(crate) const ROOM_COMPUTER_KEYBOARD_KEY_MAX_UTF8_BYTES: usize = 128;
@@ -184,6 +185,16 @@ pub(crate) enum RoomComputerInputAction {
         input: RoomComputerKeyboardInput,
         repeat: u16,
     },
+    KeyboardHold {
+        input: RoomComputerKeyboardInput,
+        duration_ms: u32,
+    },
+    PointerHold {
+        x: u32,
+        y: u32,
+        button: RoomComputerPointerButton,
+        duration_ms: u32,
+    },
     ClipboardWrite {
         text: RoomComputerClipboardText,
     },
@@ -237,6 +248,9 @@ pub(crate) enum RoomBrowserControllerCommand {
         /// windows as they are.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         browser_bar_visible: bool,
+    },
+    Artifact {
+        request: crate::runtime::browser_artifact::BrowserArtifactRequest,
     },
     Snapshot {
         target_id: String,
@@ -426,6 +440,7 @@ pub(crate) enum RoomBrowserControllerResult {
     SecretObservationCleared,
     CookieImportRecovered,
     CookieImportRolledBack,
+    Artifact { capture: Option<crate::runtime::browser_artifact::BrowserArtifactCapture> },
     Snapshot {
         snapshot: Option<
             crate::runtime::browser_controller_snapshot::BrowserControllerStructuredSnapshot,

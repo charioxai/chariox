@@ -26,7 +26,8 @@ pub(crate) use prompt_lifecycle::PreparedLeasedProviderRun;
 pub(crate) use turn_capacity::LeasedTurnWaitingForCapacity;
 
 // Keep only small worker-generated IDs, not completed agents or prompt history.
-// Expiry or a worker restart must fail closed rather than infer successful cleanup.
+// Unknown IDs still return not-found; the home may reconcile only an authenticated
+// absence reply from the worker bound to its own retained execution lease.
 const COMPLETED_WORKER_CLEANUP_LIMIT: usize = 256;
 // Worker heartbeats intentionally do not renew this absolute safety ceiling.
 pub(crate) const REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS: u64 = 60 * 60 * 1_000;
@@ -221,6 +222,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .or_else(|| self.app.completed_execution_lease_callers.get(lease_id));
         if owner == Some(caller) {
             Ok(())
+        } else if owner.is_none() && !self.app.execution_leases.contains_key(lease_id) {
+            Err(DaemonError::ExecutionLeaseNotFound {
+                lease_id: lease_id.to_string(),
+            })
         } else {
             Err(DaemonError::LeaseCallerUnauthorized {
                 resource_id: lease_id.to_string(),
@@ -251,6 +256,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             });
         if owner.as_ref() == Some(caller) {
             Ok(())
+        } else if owner.is_none() && !self.app.leased_agents.contains_key(leased_agent_id) {
+            Err(DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })
         } else {
             Err(DaemonError::LeaseCallerUnauthorized {
                 resource_id: leased_agent_id.to_string(),
@@ -1280,6 +1289,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 self.app.providers.clear_runtime(run.id());
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn forget_live_leases_for_test(&mut self) {
+        // Simulate loss of volatile leases while durable caller receipts survive.
+        self.app.execution_leases.clear();
+        self.app.leased_agents.clear();
     }
 
     #[cfg(test)]

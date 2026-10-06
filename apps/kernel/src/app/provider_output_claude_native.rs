@@ -51,9 +51,9 @@ use permission::{
     write_claude_permission_response,
 };
 #[cfg(test)]
-use transcript::drain_claude_transcript_file;
+use transcript::{drain_claude_transcript_file, drain_claude_transcript_file_since};
 use transcript::{
-    drain_claude_transcript_file_since, known_claude_transcript_paths,
+    drain_claude_transcript_raw_since, known_claude_transcript_paths,
     load_claude_transcript_cursor, save_claude_transcript_cursor,
 };
 
@@ -713,11 +713,11 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
     ) -> Result<Option<String>, DaemonError> {
         let provider_run = self.app.providers.get_run(provider_run_id)?;
         let Some(transcript_path) =
-            crate::provider::provider_reported_path_on_kernel(&provider_run, transcript_path)
+            crate::provider::provider_reported_transcript_on_kernel(&provider_run, transcript_path)
         else {
             crate::logging::warn_with_fields(
                 "daemon.claude_headless",
-                "rejected provider transcript path outside managed bindings",
+                "provider transcript unavailable or outside managed bindings",
                 serde_json::json!({
                     "session_id": session_id,
                     "provider_run_id": provider_run_id,
@@ -725,7 +725,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             );
             return Ok(None);
         };
-        let transcript_path = transcript_path.to_string_lossy();
+        let path = transcript_path.path.to_string_lossy().into_owned();
+        let Ok(raw) = transcript_path.read() else {
+            return Ok(None);
+        };
         let minimum_timestamp_ms = self
             .app
             .providers
@@ -747,11 +750,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     .map(|run| run.started_at_ms())
             });
         let mut cursor = load_claude_transcript_cursor(context_file);
-        let drain = drain_claude_transcript_file_since(
-            transcript_path.as_ref(),
-            &mut cursor,
-            minimum_timestamp_ms,
-        );
+        let drain =
+            drain_claude_transcript_raw_since(&path, &raw, &mut cursor, minimum_timestamp_ms);
         save_claude_transcript_cursor(context_file, &cursor);
         let terminal_failure = drain.terminal_failure.clone();
         let active_prompt_id = self

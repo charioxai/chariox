@@ -309,7 +309,7 @@ function createDeps(overrides: Partial<CliRuntimeBootstrapDeps> = {}): CliRuntim
       workspace: cwd,
       worktree: cwd,
     }),
-    primeWaitingRoomWorktreeInventory: async () => {},
+    clearWaitingRoomWorktreeInventory: () => {},
     loadThemeRegistry: async () => DEFAULT_THEME_REGISTRY,
     deleteSessionByRef: async () => {},
     isNoArgDefaultKernelLaunch: () => false,

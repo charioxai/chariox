@@ -6,10 +6,10 @@ use crate::runtime::projection::SessionSnapshotProjection;
 use crate::runtime_transport::WatchResult;
 use crate::skill::CharioxSkillPackage;
 use crate::transport::relay_peer::{
-    RelayPeerEvent, RelayProjectEnvironmentSetupStatus, RelayProjectedCompletion,
-    RelayProjectedOutputChunk, RelayProjectedPrompt, RelayPromptAttachment, RemoteGitObservation,
-    RemoteGitTurnContext, RemoteMcpAvailability, RemoteMcpCheckContext, RemoteSkillMaterialization,
-    RemoteSkillSyncContext, RequiredRemoteMcp, REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
+    RelayPeerEvent, RelayProjectEnvironmentSetupStatus, RelayPromptAttachment,
+    RemoteGitObservation, RemoteGitTurnContext, RemoteMcpAvailability, RemoteMcpCheckContext,
+    RemoteSkillMaterialization, RemoteSkillSyncContext, RequiredRemoteMcp,
+    REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
 };
 
 use super::*;
@@ -1362,18 +1362,20 @@ impl KernelRuntimeState {
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn project_relay_remote_runtime_projection(
         &self,
-        session_id: &str,
-        agent_id: &str,
-        provider_run_id: &str,
-        provider_run: Option<crate::provider::RuntimeProviderRun>,
-        prompts: Vec<RelayProjectedPrompt>,
-        output_chunks: Vec<RelayProjectedOutputChunk>,
-        notices: Vec<String>,
-        completions: Vec<RelayProjectedCompletion>,
+        authority: crate::runtime::relay_peer_authority::RemoteProjectionAuthority,
+        event: crate::transport::relay_peer::RelayPeerEvent,
     ) -> Result<(), DaemonError> {
+        let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+            home_session_id,
+            home_agent_id,
+            provider_run,
+            output_chunks,
+            completions,
+            ..
+        } = &event;
+
         let provider_auth_observation = provider_run.as_ref().and_then(|run| {
             remote_provider_auth_observation(
                 run,
@@ -1382,23 +1384,11 @@ impl KernelRuntimeState {
                 }) || !completions.is_empty(),
             )
         });
-        let session_id = session_id.to_string();
-        let agent_id = agent_id.to_string();
-        let projection_session_id = session_id.clone();
-        let projection_agent_id = agent_id.clone();
-        let projection_provider_run_id = provider_run_id.to_string();
+        let session_id = home_session_id.clone();
+        let agent_id = home_agent_id.clone();
         let outcome = self
             .with_app_side_effect(move |app| {
-                RemoteLeaseRuntime::new(app).project_remote_runtime_projection(
-                    &projection_session_id,
-                    &projection_agent_id,
-                    &projection_provider_run_id,
-                    provider_run,
-                    prompts,
-                    output_chunks,
-                    notices,
-                    completions,
-                )
+                RemoteLeaseRuntime::new(app).project_remote_runtime_projection(authority, event)
             })
             .await?;
         if !outcome.accepted {

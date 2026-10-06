@@ -31,7 +31,7 @@ impl KernelRuntimeState {
             return Ok(result);
         }
         let registry = global_mcp_registry()?;
-        let path = registry.install(&args.config)?;
+        let path = self.with_forwarded_binding_operation(|| registry.install(&args.config))?;
         self.append_extension_registration_audit_event(
             "extension.registration.created",
             session,
@@ -94,7 +94,8 @@ impl KernelRuntimeState {
             return Ok(result);
         }
         let registry = global_skill_registry()?;
-        let (skill, path) = registry.upsert_from_path(&source_path)?;
+        let (skill, path) =
+            self.with_forwarded_binding_operation(|| registry.upsert_from_path(&source_path))?;
         self.append_extension_registration_audit_event(
             "extension.registration.created",
             session,
@@ -155,7 +156,7 @@ impl KernelRuntimeState {
             return Ok(result);
         }
         let registry = global_environment_registry()?;
-        let path = registry.install(&args.config)?;
+        let path = self.with_forwarded_binding_operation(|| registry.install(&args.config))?;
         self.append_extension_registration_audit_event(
             "extension.registration.created",
             session,
@@ -213,7 +214,9 @@ impl KernelRuntimeState {
                 })?;
         let registry = global_script_registry()?;
         let previous_catalog = self.runtime_catalog_signature_for_agent(agent);
-        let (script, path) = registry.install(&source_path, args.name.as_deref(), &env)?;
+        let (script, path) = self.with_forwarded_binding_operation(|| {
+            registry.install(&source_path, args.name.as_deref(), &env)
+        })?;
         self.runtime_catalog_registration_changed(agent, &previous_catalog);
         self.append_extension_registration_audit_event(
             "extension.registration.created",
@@ -277,7 +280,9 @@ impl KernelRuntimeState {
         let registry = connector_registry()?;
         let adapters = connector_adapter_registry()?;
         let previous_catalog = self.runtime_catalog_signature_for_agent(agent);
-        let (connector, path) = registry.install_from_file(&source_path, &adapters)?;
+        let (connector, path) = self.with_forwarded_binding_operation(|| {
+            registry.install_from_file(&source_path, &adapters)
+        })?;
         self.runtime_catalog_registration_changed(agent, &previous_catalog);
         self.append_extension_registration_audit_event(
             "extension.registration.created",
@@ -343,7 +348,8 @@ impl KernelRuntimeState {
             return Ok(result);
         }
         let registry = connector_adapter_registry()?;
-        let (adapter, path) = registry.install_from_file(&source_path)?;
+        let (adapter, path) =
+            self.with_forwarded_binding_operation(|| registry.install_from_file(&source_path))?;
         self.append_extension_registration_audit_event(
             "extension.registration.created",
             session,
@@ -429,6 +435,7 @@ impl KernelRuntimeState {
                     "extension registration approval dropped before resolution: {error}"
                 ),
             })?;
+        self.authorize_current_forwarded_binding()?;
         if resolution.choice_id.as_deref() == Some("allow") {
             self.append_extension_registration_audit_event(
                 "extension.registration.approved",

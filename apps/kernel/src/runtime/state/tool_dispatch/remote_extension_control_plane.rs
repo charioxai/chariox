@@ -175,28 +175,12 @@ impl KernelRuntimeState {
         tool_name: String,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        let agent = self.owned.agent_store.get_agent(&context.home_agent_id)?;
-        let Some(remote) = agent.remote_execution() else {
-            return Err(DaemonError::LocalTransport {
-                operation: "dispatch forwarded metaagent runtime tool",
-                message: format!(
-                    "home agent `{}` is not remote-backed",
-                    context.home_agent_id
-                ),
-            });
-        };
-        if agent.session_id() != context.home_session_id
-            || remote.leased_agent_id != context.leased_agent_id
-            || remote.worker_kernel_id != context.worker_kernel_id
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "dispatch forwarded metaagent runtime tool",
-                message: "forwarded metaagent context does not match the home remote binding"
-                    .to_string(),
-            });
-        }
+        self.with_app_side_effect(|_| self.authorize_forwarded_workspace_context(&context))
+            .await?;
         #[cfg(test)]
         self.pause_forwarded_meta_request_before_dispatch_for_test();
+        self.with_app_side_effect(|_| self.authorize_forwarded_workspace_context(&context))
+            .await?;
         self.dispatch_meta_runtime_tool_call_for_agent(
             &context.home_session_id,
             &context.home_agent_id,
@@ -365,43 +349,21 @@ impl KernelRuntimeState {
         ),
         DaemonError,
     > {
-        if crate::transport::runtime_tools::canonical_agent_messaging_tool_name(&tool_name)
-            == Some(crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL)
-        {
-            let session = self
-                .owned
-                .session_store
-                .get_session(&context.home_session_id)?;
-            let sender = self.owned.agent_store.get_agent(&context.home_agent_id)?;
-            let origin_is_current = sender.session_id() == context.home_session_id
-                && self.owned.config_projection.snapshot().daemon_id == context.home_kernel_id
-                && sender.remote_execution().is_some_and(|binding| {
-                    binding.leased_agent_id == context.leased_agent_id
-                        && binding.worker_kernel_id == context.worker_kernel_id
-                        && binding.worker_machine_id == context.worker_machine_id
-                        && binding.active_worker_provider_run_id.as_deref()
-                            == Some(context.worker_provider_run_id.as_str())
-                })
-                && context
-                    .home_prompt_id
-                    .as_deref()
-                    .is_some_and(|home_prompt_id| {
-                        self.owned
-                            .prompt_state_owner
-                            .active_prompt_for_agent(&session, sender.id())
-                            .is_some_and(|prompt| {
-                                prompt.id() == home_prompt_id
-                                    && prompt.status() == crate::session::PromptStatus::Running
-                            })
-                    });
-            if !origin_is_current {
+        self.with_app_side_effect(|_| {
+            self.authorize_forwarded_workspace_context(&context)?;
+            // Agent messages retain the exact home-turn origin contract.
+            if crate::transport::runtime_tools::canonical_agent_messaging_tool_name(&tool_name)
+                == Some(crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL)
+                && context.home_prompt_id.is_none()
+            {
                 return Err(DaemonError::LocalTransport {
                     operation: "dispatch forwarded agent message",
-                    message: "sender prompt or leased worker binding is no longer current"
-                        .to_string(),
+                    message: "sender prompt or leased worker binding is no longer current".into(),
                 });
             }
-        }
+            Ok(())
+        })
+        .await?;
         let (result, package) = self
             .dispatch_capability_runtime_tool_call_for_agent(
                 &context.home_session_id,

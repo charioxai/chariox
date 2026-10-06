@@ -1,3 +1,4 @@
+import { publicRuntimeDiagnostic, publicProviderRun } from "../../kernel/slice-linux-docker/docker/public-runtime-diagnostics.mjs"
 import { spawn, execFile } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { access, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
@@ -27,7 +28,7 @@ const STEP_TIMEOUT_MS = 15_000
 
 function unwrap(response, variant) {
   if (!response || !(variant in response)) {
-    throw new Error(`expected ${variant}, got ${JSON.stringify(response)}`)
+    throw new Error(`expected ${variant}, got ${publicRuntimeDiagnostic(response)}`)
   }
   return response[variant]
 }
@@ -35,7 +36,7 @@ function unwrap(response, variant) {
 function unwrapProviderRunLaunch(response) {
   if (response && "ProviderRunLaunched" in response) return response.ProviderRunLaunched
   if (response && "ProviderRunLaunchAccepted" in response) return response.ProviderRunLaunchAccepted
-  throw new Error(`expected provider run launch response, got ${JSON.stringify(response)}`)
+  throw new Error(`expected provider run launch response, got ${publicRuntimeDiagnostic(response)}`)
 }
 
 function makePort() {
@@ -470,7 +471,7 @@ async function runCharioxOwnedProviderSessionDrill(client, artifactRoot, runtime
       native_turn: nativeTurnResult,
       steps: {
         create_session: createResult,
-        launch_provider_run: launchResult,
+        launch_provider_run: { ok: launchResult.ok, value: publicRuntimeDiagnostic(launchResult.value) },
         observe_native_turn: observedHistoryResult,
       },
     },
@@ -487,7 +488,7 @@ async function step(name, fn) {
     ])
     return { ok: true, value }
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    return { ok: false, error: `${name}_failed` }
   }
 }
 

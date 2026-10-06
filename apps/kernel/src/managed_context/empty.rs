@@ -350,7 +350,7 @@ fn read_receipt(path: &Path) -> Result<Option<(EmptyManagedContextReceipt, Strin
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
     }
     let mut file = match options.open(path) {
         Ok(file) => file,
@@ -719,4 +719,10 @@ mod tests {
             rand::random::<u64>()
         ))
     }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_fifo_input_fails_without_waiting_for_a_writer() {
+    crate::test_support::assert_fifo_rejected(|path| read_receipt(&path).is_err());
 }

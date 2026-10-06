@@ -1,7 +1,9 @@
 // Run the production Chariox controller. Only external Chromium/CDP responses
 // are synthetic; kernel routing, relay encryption and controller stdio are real.
 import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { createHash } from "node:crypto";
+import { deflateSync, crc32 } from "node:zlib";
 import { pathToFileURL } from "node:url";
 import { fixtureUploadBrowser } from "./upload-browser.fixture.mjs";
 
@@ -34,7 +36,10 @@ const emit = (message) => {
   for (const subscriber of subscribers) subscriber(message);
 };
 persist();
+// MP-08/MP-10/MP-11: synthetic CDP pixels; runtime routing stays production.
+const { blackPng } = await import(pathToFileURL(join(directory, "browser-controller-image.mjs")));
 const chromium = {
+  browserInstanceId: "fixture-physical-browser",
   isOpen: () => state.open,
   subscribe(listener) {
     subscribers.add(listener);
@@ -81,6 +86,26 @@ const chromium = {
         ] };
       }
       case "Target.attachToTarget": return { sessionId: params.targetId === "worker-popup" ? "worker-popup-session" : "worker-cdp-session" };
+      case "Page.getLayoutMetrics": return { cssVisualViewport: { pageX:0, pageY:0, clientWidth:1280, clientHeight:800, scale:1 } };
+      case "Page.captureScreenshot": {
+        if (!existsSync(join(dirname(pidFile), "large-browser-image"))) return { data: blackPng(1280, 800).toString("base64") };
+        // MP-08/MP-10/MP-11: deterministic unprotected RGB pixels with low
+        // compressibility, valid PNG chunks/CRCs and canonical dimensions.
+        const pixels = Buffer.alloc((1280 * 3 + 1) * 800); let random = 17;
+        for (let row = 0; row < 800; row++) for (let column = 1; column <= 1280 * 3; column++) {
+          random ^= random << 13; random ^= random >>> 17; random ^= random << 5;
+          pixels[row * (1280 * 3 + 1) + column] = random & 255;
+        }
+        const chunk = (name, body) => {
+          const kind = Buffer.from(name), size = Buffer.alloc(4), crc = Buffer.alloc(4);
+          size.writeUInt32BE(body.length); crc.writeUInt32BE(crc32(Buffer.concat([kind, body])));
+          return Buffer.concat([size, kind, body, crc]);
+        };
+        const header = Buffer.alloc(13); header.writeUInt32BE(1280); header.writeUInt32BE(800, 4); header[8] = 8; header[9] = 2;
+        const bytes = Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), chunk("IHDR", header), chunk("IDAT", deflateSync(pixels)), chunk("IEND", Buffer.alloc(0))]);
+        writeFileSync(join(dirname(pidFile), "large-browser-image.png"), bytes);
+        return { data: bytes.toString("base64") };
+      }
       case "Page.getFrameTree": return { frameTree: { frame: {
         id: sessionId === "worker-popup-session" ? "worker-popup-frame" : "worker-frame",
         loaderId: sessionId === "worker-popup-session" ? "worker-popup-document" : state.documentId,
@@ -157,14 +182,14 @@ const chromium = {
         properties: [{ name: "focused", value: { value: state.focused === "worker-note" } }],
       }] };
       case "DOMSnapshot.captureSnapshot": return {
-        strings: ["#document", "BUTTON", "", "Save on worker", "https://worker.test/", "INPUT", "type", existsSync(join(dirname(pidFile), "secret-input-mode")) ? "password" : "file", "IFRAME", "DIV", "#document-fragment", "open", "https://frame.worker.test/"],
-        documents: [{ documentURL: 4, nodes: {
+        strings: ["#document", "BUTTON", "", "Save on worker", "https://worker.test/", "INPUT", "type", existsSync(join(dirname(pidFile), "secret-input-mode")) ? "password" : "file", "IFRAME", "DIV", "#document-fragment", "open", "https://frame.worker.test/", "worker-frame", "worker-child-frame"],
+        documents: [{ documentURL: 4, frameId: 13, nodes: {
           parentIndex: [-1, 0, 0, 0, 0, 4, 5], nodeType: [9, 1, 1, 1, 1, 11, 1], nodeName: [0, 1, 5, 8, 9, 10, 1],
           nodeValue: [2, 3, 2, 2, 2, 2, 2], backendNodeId: [100, 103, 104, 105, 106, 107, 108], attributes: [[], [], [6, 7], [], [], [], []],
           contentDocumentIndex: { index: [3], value: [1] },
           shadowRootType: { index: [5], value: [11] },
         }, layout: { nodeIndex: [1, 2, 3, 4, 5, 6], bounds: [[10, 20, 100, 30], [10, 60, 100, 30], [10, 100, 200, 80], [230, 100, 200, 80], [230, 100, 200, 80], [240, 110, 100, 30]] } }, {
-          documentURL: 12, nodes: {
+          documentURL: 12, frameId: 14, nodes: {
             parentIndex: [-1, 0], nodeType: [9, 1], nodeName: [0, 1],
             nodeValue: [2, 2], backendNodeId: [200, 201], attributes: [[], []],
           }, layout: { nodeIndex: [1], bounds: [[20, 110, 100, 30]] },
@@ -303,7 +328,10 @@ const chromium = {
         persist();
         emit({ method: "Browser.downloadProgress", params: { guid: params.guid, state: "canceled", receivedBytes: 4, totalBytes: 100 } });
         return {};
-      case "DOM.setFileInputFiles": state.uploadCount = (state.uploadCount ?? 0) + 1; state.upload = { backendNodeId: params.objectId === "worker-note" ? 104 : params.backendNodeId, fileCount: params.files.length }; persist(); return {};
+      case "DOM.setFileInputFiles": state.uploadCount = (state.uploadCount ?? 0) + 1; state.upload = { backendNodeId: params.objectId === "worker-note" ? 104 : params.backendNodeId, fileCount: params.files.length, receipts: params.files.map(file => {
+        const bytes = readFileSync(file);
+        return { filename: basename(file), size_bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+      }) }; persist(); return {};
       case "Browser.setPermission":
         state.permissionCount = (state.permissionCount ?? 0) + 1;
         state.permission = params;

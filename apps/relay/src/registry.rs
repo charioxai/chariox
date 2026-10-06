@@ -490,7 +490,14 @@ impl RelayRegistry {
         tunnel_id: String,
         expires_at_ms: u64,
         capabilities: Vec<String>,
-    ) {
+    ) -> bool {
+        if self
+            .display_tunnels
+            .get(&tunnel_id)
+            .is_some_and(|entry| entry.daemon_key != daemon_key)
+        {
+            return false;
+        }
         self.display_tunnels.insert(
             tunnel_id,
             DisplayTunnelRegistration {
@@ -499,6 +506,7 @@ impl RelayRegistry {
                 capabilities,
             },
         );
+        true
     }
 
     pub(crate) fn revoke_display_tunnel(&mut self, tunnel_id: &str) -> bool {
@@ -602,6 +610,17 @@ impl RelayRegistry {
 
     pub(crate) fn remove_pending_display_stream(&mut self, stream_id: &str) {
         self.pending_display_streams.remove(stream_id);
+    }
+
+    pub(crate) fn remove_display_stream_for_daemon(
+        &mut self,
+        stream_id: &str,
+        daemon_key: &DaemonKey,
+    ) -> Option<mpsc::Sender<DisplayStreamEvent>> {
+        self.display_stream_sender_for_daemon(stream_id, daemon_key)?;
+        self.pending_display_streams
+            .remove(stream_id)
+            .map(|entry| entry.sender)
     }
 
     pub(crate) fn display_stream_sender_for_daemon(
@@ -930,5 +949,36 @@ mod tests {
         assert_eq!(registry.remove_display_tunnels_for_daemon(&daemon_a), 1);
         assert!(registry.display_tunnel("a-2", 1).is_none());
         assert!(registry.display_tunnel("b-1", 1).is_some());
+    }
+    #[test]
+    fn display_tunnel_collision_preserves_owner_and_allows_owner_renewal() {
+        let mut registry = RelayRegistry::default();
+        let owner = DaemonKey::new("realm-a", "owner");
+        registry.register_display_tunnel(owner.clone(), "shared".into(), 1000, vec!["view".into()]);
+        for foreign in [
+            DaemonKey::new("realm-a", "other"),
+            DaemonKey::new("realm-b", "owner"),
+        ] {
+            registry.register_display_tunnel(
+                foreign,
+                "shared".into(),
+                2000,
+                vec!["foreign".into()],
+            );
+            let entry = registry.display_tunnel("shared", 1).unwrap();
+            assert_eq!(entry.daemon_key, owner);
+            assert_eq!(entry.expires_at_ms, 1000);
+            assert_eq!(entry.capabilities, vec!["view"]);
+        }
+        registry.register_display_tunnel(
+            owner.clone(),
+            "shared".into(),
+            3000,
+            vec!["renewed".into()],
+        );
+        assert_eq!(
+            registry.display_tunnel("shared", 1).unwrap().expires_at_ms,
+            3000
+        );
     }
 }

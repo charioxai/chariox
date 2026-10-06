@@ -119,7 +119,10 @@ fn home_extension_script_router(
         .clone();
     let agent_id = agent.id().to_string();
     let app = Arc::new(Mutex::new(app));
-    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4)
+        .with_relay_peer_authority(crate::runtime::relay_peer_authority::test_peer_authority(
+            "worker-kernel",
+        ));
     let metadata = crate::extension::RemoteExtensionInvocationMetadata::new(
         "provider-run-1",
         "home-tool",
@@ -204,7 +207,9 @@ fn remote_home_invocation_router_with_active_prompt(
     let agent_id = agent.id().to_string();
     let app = Arc::new(Mutex::new(app));
     (
-        CommandRouter::with_interactive_capacity(Arc::clone(&app), 4),
+        CommandRouter::with_interactive_capacity(Arc::clone(&app), 4).with_relay_peer_authority(
+            crate::runtime::relay_peer_authority::test_peer_authority("worker-kernel"),
+        ),
         context,
         agent_id,
     )

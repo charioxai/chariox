@@ -25,6 +25,9 @@ jobs:
       - name: Verify source revision
         run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
+      - name: Fetch MP-11 frozen inventory source
+        run: git fetch --no-tags --depth=1 origin 9334141d420f8a32393f206102c5b8b4a1b0b609
+
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -54,9 +57,9 @@ jobs:
       - name: Test
         run: pnpm test
 
-      - name: Managed upgrade recovery ownership regression
+      - name: MP-07 signed upgrade recovery and ownership regressions
         # MP-07: the root journal ownership fixture would skip as the runner user.
-        run: sudo "$(command -v node)" --test --test-concurrency=1 deploy/managed-kernel/managed-update-recovery.test.mjs
+        run: sudo "$(command -v node)" --test --test-concurrency=1 deploy/managed-kernel/managed-update-recovery.test.mjs scripts/managed-kernel-upgrade-recovery.test.mjs
 
   python:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
@@ -90,11 +93,12 @@ jobs:
       - name: Test Python scripts
         # Every tracked Python test runs as its own script with the runner's
         # stdlib python3, unprivileged; one failure does not hide the others.
-        # Excluded: both import the hash-pinned Selkies runtime (aiohttp,
+        # Excluded: these import the hash-pinned Selkies runtime (aiohttp,
         # psutil), which exists only in the slice image venv. The slice image
         # build runs docker/test_*.py (test_slice_selkies.py) in that venv.
         #   apps/kernel/slice-linux-docker/docker/canonical-display.test.py
         #   apps/kernel/slice-linux-docker/docker/test_slice_selkies.py
+        #   apps/kernel/slice-linux-docker/docker/test_slice_keyboard_overlays.py
         env:
           PYTHONDONTWRITEBYTECODE: 1
         run: |
@@ -103,7 +107,8 @@ jobs:
           while IFS= read -r test_file; do
             case "$test_file" in
               apps/kernel/slice-linux-docker/docker/canonical-display.test.py | \
-              apps/kernel/slice-linux-docker/docker/test_slice_selkies.py) continue ;;
+              apps/kernel/slice-linux-docker/docker/test_slice_selkies.py | \
+              apps/kernel/slice-linux-docker/docker/test_slice_keyboard_overlays.py) continue ;;
             esac
             count=$((count + 1))
             echo "::group::$test_file"

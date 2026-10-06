@@ -197,7 +197,7 @@ fn read_bounded(mut file: File, limit: u64) -> Result<(Vec<u8>, fs::Metadata), D
 }
 
 #[cfg(unix)]
-fn open_root(path: &Path) -> Result<File, DaemonError> {
+pub(crate) fn open_root(path: &Path) -> Result<File, DaemonError> {
     use std::os::unix::fs::OpenOptionsExt;
     OpenOptions::new()
         .read(true)
@@ -207,7 +207,7 @@ fn open_root(path: &Path) -> Result<File, DaemonError> {
 }
 
 #[cfg(unix)]
-fn open_relative(root: &File, path: &Path) -> io::Result<File> {
+pub(crate) fn open_relative(root: &File, path: &Path) -> io::Result<File> {
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::ffi::OsStrExt;
     let mut parent = root.try_clone()?;
@@ -239,12 +239,33 @@ fn open_relative(root: &File, path: &Path) -> io::Result<File> {
 }
 
 #[cfg(not(unix))]
-fn open_root(_: &Path) -> Result<File, DaemonError> {
+pub(crate) fn open_root(_: &Path) -> Result<File, DaemonError> {
     Err(context_error(
         "directory workspace export requires a Unix host",
     ))
 }
 #[cfg(not(unix))]
-fn open_relative(_: &File, _: &Path) -> io::Result<File> {
+pub(crate) fn open_relative(_: &File, _: &Path) -> io::Result<File> {
     Err(io::Error::from(io::ErrorKind::Unsupported))
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_pinned_root_refuses_leaf_and_ancestor_replacements() {
+    use std::os::unix::fs::symlink;
+    let fixture = std::env::temp_dir().join(format!("mp11-pinned-{:016x}", rand::random::<u64>()));
+    let workspace = fixture.join("workspace");
+    let outside = fixture.join("outside");
+    fs::create_dir_all(workspace.join("nested")).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(workspace.join("nested/input"), b"inside").unwrap();
+    fs::write(outside.join("input"), b"outside").unwrap();
+    let root = open_root(&workspace).unwrap();
+    fs::rename(workspace.join("nested/input"), workspace.join("original")).unwrap();
+    symlink(outside.join("input"), workspace.join("nested/input")).unwrap();
+    assert!(open_relative(&root, Path::new("nested/input")).is_err());
+    fs::rename(workspace.join("nested"), workspace.join("previous")).unwrap();
+    symlink(&outside, workspace.join("nested")).unwrap();
+    assert!(open_relative(&root, Path::new("nested/input")).is_err());
+    fs::remove_dir_all(fixture).unwrap();
 }

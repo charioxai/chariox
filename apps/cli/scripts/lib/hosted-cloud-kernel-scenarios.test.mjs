@@ -32,7 +32,7 @@ test("hosted kernels keep state isolated while preserving explicit provider home
 })
 
 test("hosted home-proxy runs use an idle managed provider model", () => {
-  assert.equal(HOSTED_HOME_PROXY_MODEL, "native-tui-idle")
+  assert.equal(HOSTED_HOME_PROXY_MODEL, "runtime-mcp-fixture")
 })
 
 test("hosted home-proxy runtime starts through the Chariox prompt path", async () => {
@@ -69,8 +69,9 @@ test("hosted home-proxy runtime starts through the Chariox prompt path", async (
           ProviderRun: {
             provider_run: {
               id: "leased:lease-agent-1:worker-run-1",
-              runtime_mcp_server_url: "http://127.0.0.1:9000/mcp",
-              runtime_mcp_auth_token: "test-token",
+              provider: "dev-stub",
+              model: "runtime-mcp-fixture",
+              state: "Running",
             },
           },
         }

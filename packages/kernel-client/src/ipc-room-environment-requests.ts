@@ -232,6 +232,18 @@ export type RoomEnvironmentHumanAction =
       readonly repeat: number
     }
   | {
+      readonly kind: "keyboard_hold"
+      readonly key: string
+      readonly duration_ms: number
+    }
+  | {
+      readonly kind: "pointer_hold"
+      readonly x: number
+      readonly y: number
+      readonly button: "left" | "middle" | "right"
+      readonly duration_ms: number
+    }
+  | {
       readonly kind: "clipboard_write"
       readonly text: string
     }
@@ -307,4 +319,14 @@ export function submitRoomEnvironmentBrowserActionRequest(
       action,
     },
   }
+}
+
+// MP-08/MP-10/MP-11: provider/Web/TUI share opaque Browser attachments.
+export const roomBrowserArtifactMinimumProtocolVersion = 435
+export type RoomBrowserArtifactOperation =
+  | { action: "capture"; kind: "image" | "network" | "download"; browser_generation: number; guid?: string; return_image_base64?: boolean }
+  | { action: "read"; artifact_id: string; offset?: number; max_bytes: number }
+  | { action: "inspect"; artifact_id: string }
+export function roomBrowserArtifactRequest(sessionId: string, attachmentId: string, tabId: string, operation: RoomBrowserArtifactOperation) {
+  return { RoomBrowserArtifact: { session_id: sessionId, attachment_id: attachmentId, tab_id: tabId, operation } }
 }

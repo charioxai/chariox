@@ -7,6 +7,15 @@ use std::path::Path;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
+struct ShellDrillShutdown(Option<tokio::sync::oneshot::Sender<()>>);
+impl Drop for ShellDrillShutdown {
+    fn drop(&mut self) {
+        if let Some(stop) = self.0.take() {
+            let _ = stop.send(());
+        }
+    }
+}
+
 struct ShellDrillScratch(std::path::PathBuf);
 
 impl ShellDrillScratch {
@@ -179,12 +188,37 @@ async fn sudo_shell_piped_claude_has_dedicated_session_and_tracked_identity() {
     // Fixture teardown owns the provider service and its piped child.
 }
 
-struct SiblingCleanup(Vec<u32>);
+fn cleanup_pid(pid: u32) -> Option<i32> {
+    i32::try_from(pid).ok().filter(|pid| *pid > 1)
+}
+
+#[test]
+fn sudo_shell_cleanup_rejects_special_and_overflow_pids() {
+    for pid in [0, 1, u32::MAX, i32::MAX as u32 + 1] {
+        assert_eq!(cleanup_pid(pid), None, "unsafe signal target {pid}");
+    }
+    assert_eq!(cleanup_pid(2), Some(2));
+}
+
+struct SiblingCleanup(Vec<ProcessIdentity>);
+impl SiblingCleanup {
+    fn new(pids: Vec<u32>) -> Self {
+        Self(
+            pids.into_iter()
+                .filter_map(|pid| inspect(pid).ok().map(|p| p.0))
+                .collect(),
+        )
+    }
+}
 impl Drop for SiblingCleanup {
     fn drop(&mut self) {
-        for pid in &self.0 {
-            unsafe {
-                libc::kill(*pid as i32, libc::SIGKILL);
+        for identity in &self.0 {
+            // No process groups or special PIDs; recheck birth identity before
+            // signaling only the exact descendants this fixture started.
+            if let Some(pid) = cleanup_pid(identity.pid).filter(|_| identity.alive()) {
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
             }
         }
     }
@@ -228,7 +262,7 @@ while True: time.sleep(1)
         .await
         .parse::<u32>()
         .unwrap();
-    let _children = SiblingCleanup(vec![target, sibling]);
+    let _children = SiblingCleanup::new(vec![target, sibling]);
     assert_eq!(unsafe { libc::getpgid(target as i32) }, unsafe {
         libc::getpgid(sibling as i32)
     });
@@ -328,6 +362,7 @@ done
         f.state.owned.config_projection.update(config);
     }
     let (stop, stopped) = tokio::sync::oneshot::channel();
+    let mut shutdown = ShellDrillShutdown(Some(stop));
     let router = Arc::new(f.router.clone());
     let server = tokio::spawn(
         crate::runtime_transport::run_kernel_websocket_server_with_router_on_listener(
@@ -395,11 +430,16 @@ done
         .session_store
         .get_session(&f.request.session_id)
         .unwrap();
+    // Settle through the actual completion seam, rather than cancellation.
     f.state
         .owned
-        .prompt_state_owner
-        .cancel_active_prompt_only(&session, f.request.target_agent_id.as_deref().unwrap())
-        .unwrap();
+        .complete_local_prompt_without_advance(
+            session.id(),
+            f.request.target_agent_id.as_deref().unwrap(),
+            Some(f.run.id()),
+        )
+        .unwrap()
+        .expect("completed sudo prompt");
     std::fs::remove_file(scratch_root.join("result")).unwrap();
     std::fs::write(scratch_root.join("probe"), "probe").unwrap();
     let denied: serde_json::Value =
@@ -416,7 +456,7 @@ done
         println!("chariox-shell after yield: {}", output.trim());
     }
     println!("live shell CLI: test passkey admitted; setsid root={}; ListSessions accepted; same command after yield refused", root(&f).pid);
-    let _ = stop.send(());
+    let _ = shutdown.0.take().unwrap().send(());
     server.await.unwrap().unwrap();
 }
 
@@ -473,7 +513,7 @@ idle()
         .await
         .parse::<u32>()
         .unwrap();
-    let _children = SiblingCleanup(vec![old, new, grandchild]);
+    let _children = SiblingCleanup::new(vec![old, new, grandchild]);
     assert!(f.state.sudo_for_peer(&inspect(old).unwrap().0).is_err());
     assert!(f
         .state
@@ -489,4 +529,52 @@ idle()
             .unwrap(),
         turn
     );
+}
+
+#[tokio::test]
+async fn sudo_shell_interrupt_and_rotation_drop_process_authority() {
+    for rotate in [false, true] {
+        let f = fixture_with_provider(Some("while :; do sleep 1; done"));
+        let turn = running(&f);
+        let identity = root(&f);
+        assert_eq!(f.state.sudo_for_peer(&identity).unwrap(), turn);
+        if rotate {
+            // The verifier uses the fixture's product-created encrypted Vault.
+            let vault = f
+                .state
+                .owned
+                .config_projection
+                .snapshot()
+                .user_config
+                .credential_vault
+                .path;
+            f.state
+                .change_vault_passphrase(
+                    "local",
+                    Path::new(&vault),
+                    zeroize::Zeroizing::new(PASSKEY.into()),
+                    zeroize::Zeroizing::new("rotated shell fixture".into()),
+                )
+                .await
+                .unwrap();
+        } else {
+            let session = f
+                .state
+                .owned
+                .session_store
+                .get_session(&turn.session_id)
+                .unwrap();
+            f.state
+                .owned
+                .prompt_state_owner
+                .begin_cancelling_active_prompt(&session, &turn.agent_id)
+                .unwrap();
+        }
+        assert!(
+            identity.alive(),
+            "test must leave the provider process alive"
+        );
+        assert!(f.state.sudo_for_peer(&identity).is_err());
+        assert!(!f.state.sudo_peer_live(&turn.entry_id, &identity));
+    }
 }

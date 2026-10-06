@@ -26,7 +26,10 @@ async function runShell(root, body, { input = "", deadline = 4000, environment =
   let stdout = "", stderr = "", expired = false, closed = false
   child.stdout.on("data", chunk => { stdout += chunk })
   child.stderr.on("data", chunk => { stderr += chunk })
-  child.stdin.end(input)
+  let inputError
+  child.stdin.on("error", error => { inputError = error })
+  if (input.length) child.stdin.end(input)
+  else child.stdin.end()
   const started = Date.now()
   const interrupt = signalAfter === undefined ? undefined : setTimeout(() => child.kill("SIGTERM"), signalAfter)
   const timer = setTimeout(() => {
@@ -38,6 +41,7 @@ async function runShell(root, body, { input = "", deadline = 4000, environment =
       child.once("error", reject)
       child.once("close", (status) => { closed = true; resolve(status) })
     })
+    if (inputError && (inputError.code !== "EPIPE" || (input.length && status === 0))) throw inputError
     return { status, stdout, stderr, expired, elapsed: Date.now() - started }
   } finally {
     clearTimeout(timer)

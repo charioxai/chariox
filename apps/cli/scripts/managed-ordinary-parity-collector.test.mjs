@@ -1,10 +1,10 @@
 import assert from "node:assert/strict"
 import { once } from "node:events"
 import { createHash } from "node:crypto"
-import { unlink } from "node:fs/promises"
+import { realpath, unlink, writeFile } from "node:fs/promises"
 import { createServer } from "node:net"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join, relative } from "node:path"
 import { after, before, test } from "node:test"
 
 import {
@@ -16,6 +16,7 @@ import {
   SHUTDOWN_EXPECTATIONS,
   MATRIX_SCHEMA,
   compareManifests,
+  createSignedManifest,
   validateManifest,
 } from "./managed-ordinary-parity-matrix.mjs"
 import {
@@ -246,13 +247,13 @@ function genericResult(rowId, checkId, topology) {
     }
   }
   if (rowId === "MP-01" && checkId === "provider_ancestry") {
-    return { observed: true, provider_observed: true, bwrap_ancestor: false, fresh_worker: true, ancestry_complete: true }
+    return { observed: true, provider_observed: true, bwrap_ancestor: false, observed_bwrap_ancestor: false, fresh_worker: true, ancestry_complete: true }
   }
   if (rowId === "MP-01" && checkId === "managed_isolation_environment") {
     return { observed: true, managed_marker_absent: true, bwrap_environment_absent: true }
   }
   if (rowId === "MP-01" && checkId === "privilege_state") {
-    return { observed: true, no_new_privs: false, capabilities_match_ordinary: true, umask_matches_ordinary: true }
+    return { observed: true, no_new_privs: false, observed_no_new_privs: false, capabilities_match_ordinary: true, umask_matches_ordinary: true }
   }
   if (rowId === "MP-07") {
     return topology === "ordinary"
@@ -597,6 +598,31 @@ test("collects a fresh Path-1 managed snapshot and the comparator accepts ordina
     command === process.execPath && args[0].endsWith("verify-image-release.mjs"),
   )
   assert.deepEqual(releaseVerification[1].slice(-2), ["path1", KERNEL_BUILDER_PUBLIC_KEY])
+  // MP-10: optional external receipts are explicitly synthetic. They exercise
+  // the existing matrix/HMAC producer and cannot be admitted as live captures.
+  const evidenceDirectory = process.env.CHARIOX_PARITY_FIXTURE_EVIDENCE_DIR
+  if (evidenceDirectory) {
+    assert.ok(isAbsolute(evidenceDirectory))
+    const directory = await realpath(evidenceDirectory)
+    const repository = await realpath(new URL("../../../", import.meta.url))
+    assert.ok(relative(repository, directory).startsWith("../"), "MP-10 fixture receipts must be outside the repository")
+    const fixtures = [ordinary.manifest, path1.manifest].map(manifest => createSignedManifest({
+      ...manifest, collection: {...manifest.collection, fixture: true},
+    }, SIGNING_KEY))
+    const fixtureReport = compareManifests(...fixtures, {
+      expectedReviewedCommit: REVIEWED_COMMIT, expectedBuildId: BUILD_ID,
+      signingKey: SIGNING_KEY, allowFixture: true,
+    })
+    assert.equal(fixtureReport.status, "pass")
+    assert.equal(compareManifests(...fixtures, {
+      expectedReviewedCommit: REVIEWED_COMMIT, expectedBuildId: BUILD_ID, signingKey: SIGNING_KEY,
+    }).status, "fail", "synthetic receipts must fail live admission")
+    for (const [name, value] of [["ordinary-fixture.json", fixtures[0]], ["path1-fixture.json", fixtures[1]],
+      ["fixture-row-comparison.json", {mp_items:["MP-01","MP-02","MP-03","MP-04","MP-05","MP-06","MP-08","MP-10"],
+        evidence_kind: "synthetic-source-fixture", acceptance: "OPEN", report:fixtureReport}]]) {
+      await writeFile(join(directory, name), `${JSON.stringify(value, null, 2)}\n`, {mode:0o600, flag:"wx"})
+    }
+  }
 })
 
 test("Path-1 capture requires an external builder trust root", async () => {
@@ -944,6 +970,25 @@ test("unsupported platform fails before any command can claim parity", async () 
   })
 })
 
+for (const topology of ["ordinary", "path1"]) {
+  test(`MP-01/MP-10 ${topology} forwards the selected provider without an environment fallback`, async () => {
+    const h = makeHarness(topology, {
+      environment: { CHARIOX_DAEMON_SOCKET: LIVE_KERNEL_SOCKET },
+    })
+    await h.collector.collect(h.options)
+    for (const [rowId, checkId] of [["MP-01", "provider_ancestry"], ["MP-10", "capture_boundary"]]) {
+      const call = h.calls.find(([, args]) => args[0] === "/repo/apps/cli/scripts/managed-ordinary-parity-probe.mjs"
+        && args[args.indexOf("--parity-row") + 1] === rowId
+        && args[args.indexOf("--parity-check") + 1] === checkId)
+      assert.ok(call, `${rowId}/${checkId} probe must run`)
+      const [, args, options] = call
+      assert.equal(options.env.CHARIOX_PARITY_PROVIDER, undefined)
+      assert.ok(args.includes("--provider"), `${rowId}/${checkId} must receive --provider`)
+      assert.equal(args[args.indexOf("--provider") + 1], h.options.provider)
+    }
+  })
+}
+
 // MP-10: real LocalIpcClient unlinks/removes auth before child probes run.
 for (const topology of ["ordinary", "path1"]) {
   test(`MP-10 ${topology} probes retain admitted one-shot loopback auth`, async () => {
@@ -992,4 +1037,27 @@ test("MP-10 evidence redacts admitted bearer bytes even without a secret label",
   })
   await h.collector.collect(h.options)
   assert.ok(![...h.filesystem.files.values()].some(value => String(value).includes("fixture-local-bearer")))
+})
+
+test("MP-10 custom HMAC input is never inherited by commands, probes or evidence", async () => {
+  const h = makeHarness("ordinary", {
+    environment: { CHARIOX_DAEMON_SOCKET: LIVE_KERNEL_SOCKET, CAMPAIGN_HMAC: SIGNING_KEY.toString() },
+    command: async (command, args, fallback) => {
+      const result = await fallback(command, args)
+      if (args[0]?.endsWith("managed-ordinary-parity-probe.mjs")) result.stderr = SIGNING_KEY.toString()
+      return result
+    },
+  })
+  await h.collector.collect(h.options)
+  for (const [, , options] of h.calls) assert.equal(options.env.CAMPAIGN_HMAC, undefined)
+  assert.ok(![...h.filesystem.files.values()].some(value => String(value).includes(SIGNING_KEY.toString())))
+})
+
+test("MP-04 provider environment probe runs from the selected cwd, independently of source checkout", async () => {
+  const h = makeHarness("ordinary", { processCwd: "/workspace-new" })
+  h.options.expectedCwd = "/workspace-new"
+  await h.collector.collect(h.options)
+  const [, args, options] = h.calls.find(([, args]) => args.includes("provider_environment"))
+  assert.equal(options.cwd, "/workspace-new")
+  assert.equal(args[args.indexOf("--expected-cwd") + 1], "/workspace-new")
 })

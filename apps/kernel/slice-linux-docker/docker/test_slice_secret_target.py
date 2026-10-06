@@ -13,13 +13,14 @@ def load_keyboard():
     xlib = types.ModuleType("selkies.Xlib")
     xlib.X = types.SimpleNamespace(KeyRelease=3, KeyPress=2, AnyPropertyType=0)
     modules = {name: types.ModuleType(name) for name in (
-        "selkies", "selkies.Xlib.display", "selkies.Xlib.ext", "selkies.Xlib.ext.xtest",
+        "selkies", "selkies.Xlib.XK", "selkies.Xlib.display", "selkies.Xlib.ext", "selkies.Xlib.ext.xtest",
         "selkies.input_handler")}
     modules["selkies.Xlib"] = xlib
     modules["selkies"].Xlib = xlib
     xlib.display = modules["selkies.Xlib.display"]
+    xlib.XK = modules["selkies.Xlib.XK"]
     modules["selkies.Xlib.ext"].xtest = modules["selkies.Xlib.ext.xtest"]
-    modules["selkies.input_handler"]._XTestKeyboard = object
+    modules["selkies.input_handler"]._XTestKeyboard = type("TestKeyboard", (), {})
     modules["selkies.input_handler"].character_to_layout_keysym = ord
     modules["selkies.input_handler"].universal_text_keysym = ord
     spec = importlib.util.spec_from_file_location("secret_keyboard", pathlib.Path(__file__).with_name("slice-keyboard.py"))
@@ -37,7 +38,7 @@ class SecretTargetTests(unittest.TestCase):
         self.connection.get_modifier_mapping.return_value = []
         self.module.display.Display = Mock(return_value=self.connection)
         self.keyboard = Mock()
-        self.module._BrowserSafeTextKeyboard = Mock(return_value=self.keyboard)
+        self.module.ComputerTextKeyboard = Mock(return_value=self.keyboard)
         self.target = {"focus_window": 101, "active_window": 100,
                        "geometry": [20, 30, 200, 40], "window_geometry": [0, 0, 800, 600]}
 
@@ -99,6 +100,23 @@ class SecretTargetTests(unittest.TestCase):
         self.type_with_targets([self.target] * 4)
         self.assertEqual(events, ["grab", "press", "release", "ungrab"] * 3)
         self.assertEqual(self.keyboard.press.call_count, 3)
+
+    def test_computer_text_rejects_native_hardware_action_keycodes(self):
+        module = load_keyboard()
+        keyboard = module.ComputerTextKeyboard()
+        def discovered(spares):
+            # Upstream records every reclaimable overlay for lookup distrust,
+            # even when Computer cannot safely allocate its hardware keycode.
+            keyboard._spare_set = frozenset(spares)
+            return spares
+        with patch.object(module._XTestKeyboard, "_find_spare_keycodes", create=True,
+                          side_effect=lambda: discovered([8, 92, 93, 120, 181, 255])):
+            self.assertEqual(keyboard._find_spare_keycodes(), [8, 92])
+            self.assertEqual(keyboard._spare_set, frozenset([8, 92, 93, 120, 181, 255]))
+        # Occupied/modifier slots excluded upstream must never be reintroduced.
+        with patch.object(module._XTestKeyboard, "_find_spare_keycodes", create=True,
+                          side_effect=lambda: discovered([93, 181])):
+            self.assertEqual(keyboard._find_spare_keycodes(), [])
 
 
 if __name__ == "__main__":

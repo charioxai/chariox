@@ -396,20 +396,60 @@ impl KernelRuntimeOwnedState {
         next_queued_prompt: Option<&crate::session::PromptQueueItem>,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
     ) -> Result<crate::session::PromptCompletion, DaemonError> {
-        let agent = self.agent_store.get_agent(agent_id)?;
+        self.complete_remote_prompt_owner_for_receipt(
+            session_id,
+            agent_id,
+            remote_provider_run_id,
+            next_queued_prompt,
+            provider_termination,
+            None,
+        )
+    }
+
+    pub(super) fn complete_remote_prompt_owner_for_receipt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        remote_provider_run_id: &str,
+        next_queued_prompt: Option<&crate::session::PromptQueueItem>,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
+        receipt: Option<(&str, &crate::agent::RemoteAgentBinding)>,
+    ) -> Result<crate::session::PromptCompletion, DaemonError> {
+        let sessions = self.session_store.read();
+        let mut agents = self.agent_store.write();
+        let agent = agents.get_agent(agent_id)?;
         if agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
                 session_id: session_id.to_string(),
                 agent_id: agent_id.to_string(),
             });
         }
-        let session = self.session_store.get_session(session_id)?;
+        let session = sessions.get_session(session_id)?;
+        if receipt.is_some_and(|(_, expected)| {
+            agent.remote_execution() != Some(expected)
+                || expected
+                    .active_worker_provider_run_id
+                    .as_deref()
+                    .is_some_and(|run| run != remote_provider_run_id)
+        }) {
+            return Err(DaemonError::LocalTransport {
+                operation: "settle remote prompt receipt",
+                message: "remote binding changed before completion settled".into(),
+            });
+        }
         let completed = self
             .prompt_state_owner
-            .complete_active_prompt_only(&session, agent_id)
+            .complete_active_prompt_if_matches(
+                &session,
+                agent_id,
+                receipt.map(|(prompt, _)| prompt),
+            )
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
+        agents.set_remote_execution_active_worker_provider_run_id(agent_id, None)?;
+        drop(agents);
+        drop(sessions);
         let settled_at_ms = crate::session::unix_epoch_ms();
         let archive_enabled = self
             .config_projection
@@ -499,9 +539,6 @@ impl KernelRuntimeOwnedState {
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
-        let _ = self
-            .agent_store
-            .set_remote_execution_active_worker_provider_run_id(agent_id, None)?;
         let _ = self.session_snapshot(session_id)?;
         Ok(crate::session::PromptCompletion {
             completed,
@@ -690,6 +727,874 @@ mod tests {
             metaagent_events,
             workspace_coordinator,
         )
+    }
+
+    async fn mp11_fixture(
+        config: crate::DaemonConfig,
+    ) -> (
+        KernelRuntimeState,
+        String,
+        String,
+        String,
+        RemoteAgentBinding,
+    ) {
+        let mut app = DaemonApp::bootstrap(config).unwrap();
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("mp11-home", "mp11-home"))
+            .unwrap();
+        let attachment = KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "mp11-client",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        let binding = RemoteAgentBinding {
+            worker_kernel_id: "worker-kernel-1".into(),
+            worker_machine_id: "worker-machine-1".into(),
+            execution_lease_id: "mp11-lease".into(),
+            leased_agent_id: "mp11-leased".into(),
+            active_worker_provider_run_id: Some("worker-run-1".into()),
+            relay_url: None,
+            relay_token: None,
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
+        };
+        app.agents
+            .bind_remote_execution(agent.id(), binding.clone())
+            .unwrap();
+        let runtime = owned_runtime_state(&Arc::new(Mutex::new(app))).await;
+        (
+            runtime,
+            session.id().into(),
+            agent.id().into(),
+            attachment.id().into(),
+            binding,
+        )
+    }
+
+    fn mp11_submit(
+        runtime: &KernelRuntimeState,
+        session: &str,
+        agent: &str,
+        attachment: &str,
+        text: &str,
+    ) -> PromptQueueItem {
+        let submission = runtime
+            .owned
+            .submit_remote_prepared_prompt(&KernelPreparedPromptSubmission {
+                session_id: session.into(),
+                prompt: PromptQueueItem::new(text, attachment, agent, text, PromptStatus::Queued),
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .unwrap()
+            .unwrap();
+        match submission.outcome {
+            crate::session::PromptSubmissionOutcome::Started { prompt }
+            | crate::session::PromptSubmissionOutcome::Queued { prompt } => prompt,
+        }
+    }
+
+    #[tokio::test]
+    async fn mp11_projection_drain_rebind_barrier_rejects_old_lease_without_notices() {
+        let (runtime, session, agent, attachment, binding) =
+            mp11_fixture(crate::DaemonConfig::for_tests()).await;
+        let prompt = mp11_submit(&runtime, &session, &agent, &attachment, "drained prompt");
+        let mut authority =
+            crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1");
+        authority.expected_binding = Some(binding.clone());
+        authority.expected_prompt_id = Some(prompt.id().into());
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let task = tokio::spawn({
+            let barrier = barrier.clone();
+            let runtime = runtime.clone();
+            let session = session.clone();
+            let agent = agent.clone();
+            async move {
+                barrier.wait().await;
+                barrier.wait().await;
+                runtime
+                    .with_app_side_effect(|app| {
+                        crate::app::RemoteLeaseRuntime::new(app).project_remote_runtime_projection(
+                            authority,
+                            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                                home_session_id: session.to_string(),
+                                home_agent_id: agent.to_string(),
+                                provider_run_id: "worker-run-1".to_string(),
+                                provider_run: None,
+                                prompts: vec![],
+                                output_chunks: vec![],
+                                notices: vec!["must not project".into()],
+                                completions: vec![],
+                            },
+                        )
+                    })
+                    .await
+            }
+        });
+        barrier.wait().await;
+        let mut replacement = binding;
+        replacement.execution_lease_id = "new lease during drain".into();
+        runtime
+            .owned
+            .agent_store
+            .bind_remote_execution(&agent, replacement)
+            .unwrap();
+        barrier.wait().await;
+        assert!(!task.await.unwrap().unwrap().accepted);
+        assert!(runtime
+            .drain_notice_records(&session, &attachment)
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mp11_review_credential_http_stall_allows_prompt_progress_and_revocation() {
+        use crate::config::{
+            UserCredentialConfig, UserCredentialInjectionConfig, UserCredentialSourceConfig,
+            UserCredentialUse,
+        };
+        use std::io::{Read, Write};
+        #[derive(Debug)]
+        struct SyntheticVault;
+        impl crate::secret::CredentialVaultStore for SyntheticVault {
+            fn get_secret(&self, _: &str, _: &str) -> Result<String, DaemonError> {
+                Ok("synthetic-http-test-value".into())
+            }
+            fn set_secret(&self, _: &str, _: &str, _: &str) -> Result<(), DaemonError> {
+                unreachable!()
+            }
+            fn delete_secret(&self, _: &str, _: &str) -> Result<(), DaemonError> {
+                unreachable!()
+            }
+        }
+        let (runtime, session, agent, attachment, binding) =
+            mp11_fixture(crate::DaemonConfig::for_tests()).await;
+        mp11_submit(&runtime, &session, &agent, &attachment, "caller prompt");
+        let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
+            home_kernel_id: runtime.owned.config_projection.snapshot().daemon_id,
+            home_session_id: session.clone(),
+            home_agent_id: agent.clone(),
+            leased_agent_id: binding.leased_agent_id.clone(),
+            worker_kernel_id: Some(binding.worker_kernel_id.clone()),
+            worker_machine_id: Some(binding.worker_machine_id.clone()),
+            worker_provider_run_id: "worker-run-1".into(),
+        };
+        let admitted = runtime
+            .with_relay_peer_authority(crate::runtime::relay_peer_authority::test_peer_authority(
+                "worker-kernel-1",
+            ))
+            .prepare_forwarded_peer_request(
+                &crate::transport::relay_peer::RelayPeerRequest::InvokeHomeCredentialTool {
+                    context: context.clone(),
+                    tool_name: crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL
+                        .into(),
+                    arguments: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let arrived = Arc::new(tokio::sync::Notify::new());
+        let (release, wait) = std::sync::mpsc::channel();
+        let server = std::thread::spawn({
+            let arrived = arrived.clone();
+            move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                    .unwrap();
+                let mut input = [0; 4096];
+                let count = stream.read(&mut input).unwrap();
+                assert!(
+                    String::from_utf8_lossy(&input[..count]).contains("synthetic-http-test-value")
+                );
+                arrived.notify_one();
+                let _ = wait.recv_timeout(std::time::Duration::from_secs(15));
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK",
+                );
+            }
+        });
+        let service = crate::secret::RuntimeSecretService::with_vault_store(
+            vec![UserCredentialConfig {
+                id: "synthetic".into(),
+                description: None,
+                metadata: None,
+                source: UserCredentialSourceConfig::Vault {
+                    key: "synthetic".into(),
+                },
+                allowed_hosts: vec![address.to_string()],
+                allowed_uses: vec![UserCredentialUse::Http],
+                injection: UserCredentialInjectionConfig::Header {
+                    name: "authorization".into(),
+                    value: "Bearer ${secret}".into(),
+                },
+            }],
+            "synthetic",
+            Arc::new(SyntheticVault),
+        );
+        let request = crate::secret::CredentialHttpRequest {
+            credential_id: "synthetic".into(),
+            method: "GET".into(),
+            url: format!("http://{address}/stall"),
+            headers: Default::default(),
+            body_text: None,
+            body_json: None,
+            timeout_ms: 30_000,
+            max_response_bytes: 1024,
+        };
+        let http = tokio::spawn(async move {
+            admitted
+                .forwarded_credential_http_request(context, service, request)
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(10), arrived.notified())
+            .await
+            .unwrap();
+        let mut progress = tokio::spawn({
+            let runtime = runtime.clone();
+            move || async move {
+                runtime
+                    .clone()
+                    .with_app_side_effect_blocking(move |app| {
+                        let (other_session, other_agent) = KernelSessionService::new(app)
+                            .create_session(CreateSessionRequest::new("unrelated", "unrelated"))?;
+                        let other_attachment =
+                            KernelSessionService::new(app).attach(AttachRequest::new(
+                                other_session.id(),
+                                "other-client",
+                                ClientCapabilityLevel::FullTerminal,
+                            ))?;
+                        app.agents
+                            .bind_remote_execution(other_agent.id(), binding.clone())?;
+                        let prompt = mp11_submit(
+                            &runtime,
+                            other_session.id(),
+                            other_agent.id(),
+                            other_attachment.id(),
+                            "unrelated prompt progresses",
+                        );
+                        assert_eq!(prompt.status(), PromptStatus::Running);
+                        let mut revoked = binding;
+                        revoked.execution_lease_id = "revoked while HTTP stalls".into();
+                        app.agents.bind_remote_execution(&agent, revoked)?;
+                        Ok(())
+                    })
+                    .await
+            }
+        }());
+        let advanced_while_stalled =
+            tokio::time::timeout(std::time::Duration::from_secs(2), &mut progress).await;
+        release.send(()).unwrap();
+        let progressed = advanced_while_stalled.is_ok();
+        if let Ok(result) = advanced_while_stalled {
+            result.unwrap().unwrap();
+        } else {
+            progress.await.unwrap().unwrap();
+        }
+        let response = http.await.unwrap();
+        server.join().unwrap();
+        assert!(
+            progressed,
+            "stalled credential HTTP blocked unrelated prompt and caller revocation"
+        );
+        assert!(response.is_err(), "revoked caller received HTTP response");
+    }
+
+    #[tokio::test]
+    async fn mp11_credential_release_revalidates_after_vault_unlock_deduplication() {
+        mp11_vault_wait_revocation(true).await;
+    }
+
+    #[tokio::test]
+    async fn mp11_project_environment_reauthorizes_after_vault_unlock() {
+        mp11_vault_wait_revocation(false).await;
+    }
+
+    async fn mp11_vault_wait_revocation(credential: bool) {
+        let root =
+            std::env::temp_dir().join(format!("chariox-mp11-vault-wait-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&root).unwrap();
+        let vault = root.join("synthetic-vault.json");
+        let mut config = crate::DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = vault.display().to_string();
+        config.user_config.credential_vault.unlock_policy =
+            crate::config::CredentialVaultUnlockPolicy::KernelInit;
+        crate::secret::unlock_chariox_encrypted_vault(
+            &vault,
+            "synthetic MP11 passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+        crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
+        let (runtime, session, agent, attachment, binding) = mp11_fixture(config).await;
+        let grant = runtime.insert_access_grant_for_test(&session);
+        let request =
+            crate::local::LocalDaemonRequest::SubmitPrompt(crate::local::SubmitPromptRequest {
+                session_id: session.clone(),
+                attachment_id: attachment,
+                target_agent_id: Some(agent.clone()),
+                prompt: "must not enter runtime".into(),
+                attachments: vec![],
+            });
+        let admitted = if credential {
+            runtime
+                .with_relay_peer_authority(
+                    crate::runtime::relay_peer_authority::test_peer_authority("worker-kernel-1"),
+                )
+                .prepare_forwarded_peer_request(
+                    &crate::transport::relay_peer::RelayPeerRequest::ResolveHomeCredentialSecret {
+                        context: crate::transport::relay_peer::RemoteExtensionInvocationContext {
+                            home_kernel_id: runtime.owned.config_projection.snapshot().daemon_id,
+                            home_session_id: session.clone(),
+                            home_agent_id: agent.clone(),
+                            leased_agent_id: binding.leased_agent_id.clone(),
+                            worker_kernel_id: Some(binding.worker_kernel_id.clone()),
+                            worker_machine_id: Some(binding.worker_machine_id.clone()),
+                            worker_provider_run_id: "worker-run-1".into(),
+                        },
+                        credential_id: "synthetic".into(),
+                        injection:
+                            crate::transport::relay_peer::RemoteCredentialSecretInjection::Pty,
+                    },
+                )
+                .await
+                .unwrap()
+        } else {
+            let project_id = runtime
+                .owned
+                .session_store
+                .get_session(&session)
+                .unwrap()
+                .project_id()
+                .to_string();
+            let evidence = crate::project_environment::ProjectEnvironmentEvidence::default();
+            crate::project_environment::ProjectEnvironmentStore::new(
+                &runtime
+                    .owned
+                    .config_projection
+                    .snapshot()
+                    .private_runtime_state_root(),
+            )
+            .save(&crate::project_environment::StoredProjectEnvironment {
+                source: None,
+                manifest: crate::project_environment::ProjectEnvironmentManifest {
+                    schema_version: 1,
+                    project_id,
+                    evidence_digest: evidence.digest(),
+                    entries: vec![],
+                    private_files: vec![],
+                    toolchain_hints: vec![],
+                    package_hints: vec![],
+                    service_hints: vec![],
+                },
+                evidence,
+                reported_missing: Default::default(),
+                reviewed_manifest: None,
+                last_review: None,
+            })
+            .unwrap();
+            runtime.with_external_command_authority(Some((&grant, &request)))
+        };
+        // The first request holds the real Vault deduplication mutex while its card waits.
+        let first = if credential {
+            Some(tokio::spawn({
+                let runtime = runtime.clone();
+                let session = session.clone();
+                let agent = agent.clone();
+                async move {
+                    runtime
+                        .ensure_vault_unlocked_for_agent(&session, &agent, "MP11 initial unlock")
+                        .await
+                        .map(|_| ())
+                }
+            }))
+        } else {
+            None
+        };
+        let pending_card = |runtime: &KernelRuntimeState| {
+            runtime
+                .owned
+                .session_snapshot(&session)
+                .unwrap()
+                .active_interactions()
+                .iter()
+                .find(|card| card.id().starts_with("vault-unlock-"))
+                .map(|card| card.id().to_string())
+        };
+        if credential {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while pending_card(&runtime).is_none() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let operation_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task = tokio::spawn({
+            let entered = entered.clone();
+            let operation_ran = operation_ran.clone();
+            let session = session.clone();
+            let agent = agent.clone();
+            async move {
+                entered.notify_one();
+                if credential {
+                    let _unlock = admitted
+                        .ensure_vault_unlocked_for_agent(
+                            &session,
+                            &agent,
+                            "MP11 credential release",
+                        )
+                        .await?;
+                    admitted.with_forwarded_binding_operation(|| {
+                        operation_ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Ok(())
+                    })
+                } else {
+                    admitted
+                        .with_project_prompt_environment(&session, &agent, |_| {
+                            operation_ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                            Ok(())
+                        })
+                        .await
+                }
+            }
+        });
+        entered.notified().await;
+        let card = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let Some(card) = pending_card(&runtime) {
+                    break card;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        if credential {
+            let mut replacement = binding;
+            replacement.execution_lease_id = "revoked during Vault wait".into();
+            runtime
+                .owned
+                .agent_store
+                .bind_remote_execution(&agent, replacement)
+                .unwrap();
+        } else {
+            runtime
+                .revoke_kernel_access(None, Some(&grant), "explicit_revoke")
+                .unwrap();
+        }
+        let owner = runtime
+            .owned
+            .session_store
+            .get_session(&session)
+            .unwrap()
+            .owner_user_id()
+            .to_string();
+        runtime
+            .owned
+            .resolve_runtime_interaction(
+                &session,
+                &card,
+                "passphrase",
+                Some("synthetic MP11 passphrase"),
+                Some(&owner),
+                true,
+            )
+            .unwrap();
+        if let Some(first) = first {
+            first.await.unwrap().unwrap();
+        }
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(10), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            !operation_ran.load(std::sync::atomic::Ordering::SeqCst),
+            "resource operation ran after authority revocation"
+        );
+        crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn mp11_completion_receipt_cannot_settle_successor_or_rebound_prompt() {
+        let (runtime, session, agent, attachment, binding) =
+            mp11_fixture(crate::DaemonConfig::for_tests()).await;
+        let first = mp11_submit(&runtime, &session, &agent, &attachment, "first");
+        runtime
+            .owned
+            .complete_remote_prompt_owner_for_receipt(
+                &session,
+                &agent,
+                "worker-run-1",
+                None,
+                None,
+                Some((first.id(), &binding)),
+            )
+            .unwrap();
+        runtime
+            .owned
+            .agent_store
+            .bind_remote_execution(&agent, binding.clone())
+            .unwrap();
+        let second = mp11_submit(&runtime, &session, &agent, &attachment, "successor");
+        assert!(runtime
+            .owned
+            .complete_remote_prompt_owner_for_receipt(
+                &session,
+                &agent,
+                "worker-run-1",
+                None,
+                None,
+                Some((first.id(), &binding))
+            )
+            .is_err());
+        let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
+        assert_eq!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&snapshot, &agent)
+                .unwrap()
+                .id(),
+            second.id()
+        );
+        let mut replacement = binding.clone();
+        replacement.execution_lease_id = "new-lease".into();
+        runtime
+            .owned
+            .agent_store
+            .bind_remote_execution(&agent, replacement.clone())
+            .unwrap();
+        assert!(runtime
+            .owned
+            .complete_remote_prompt_owner_for_receipt(
+                &session,
+                &agent,
+                "worker-run-1",
+                None,
+                None,
+                Some((second.id(), &binding))
+            )
+            .is_err());
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent)
+                .unwrap()
+                .remote_execution(),
+            Some(&replacement)
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&snapshot, &agent)
+                .unwrap()
+                .id(),
+            second.id()
+        );
+    }
+
+    #[tokio::test]
+    async fn mp11_completion_wait_barrier_preserves_independently_started_successor() {
+        let (runtime, session, agent, attachment, binding) =
+            mp11_fixture(crate::DaemonConfig::for_tests()).await;
+        let first = mp11_submit(&runtime, &session, &agent, &attachment, "first");
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let receipt = tokio::spawn({
+            let runtime = runtime.clone();
+            let session = session.clone();
+            let agent = agent.clone();
+            let binding = binding.clone();
+            let first = first.clone();
+            let barrier = barrier.clone();
+            async move {
+                barrier.wait().await;
+                barrier.wait().await;
+                runtime.owned.complete_remote_prompt_owner_for_receipt(
+                    &session,
+                    &agent,
+                    "worker-run-1",
+                    None,
+                    None,
+                    Some((first.id(), &binding)),
+                )
+            }
+        });
+        barrier.wait().await;
+        runtime
+            .owned
+            .complete_remote_prompt_owner_for_receipt(
+                &session,
+                &agent,
+                "worker-run-1",
+                None,
+                None,
+                Some((first.id(), &binding)),
+            )
+            .unwrap();
+        runtime
+            .owned
+            .agent_store
+            .bind_remote_execution(&agent, binding.clone())
+            .unwrap();
+        let successor = mp11_submit(
+            &runtime,
+            &session,
+            &agent,
+            &attachment,
+            "successor while awaiting receipt",
+        );
+        barrier.wait().await;
+        assert!(receipt.await.unwrap().is_err());
+        let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
+        assert_eq!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&snapshot, &agent)
+                .unwrap()
+                .id(),
+            successor.id()
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent)
+                .unwrap()
+                .remote_execution(),
+            Some(&binding)
+        );
+    }
+
+    #[tokio::test]
+    async fn mp11_forwarded_capability_admission_rejects_local_stale_and_foreign_session() {
+        let (runtime, session, agent, attachment, binding) =
+            mp11_fixture(crate::DaemonConfig::for_tests()).await;
+        let prompt = mp11_submit(&runtime, &session, &agent, &attachment, "active");
+        let admitted = runtime.with_relay_peer_authority(
+            crate::runtime::relay_peer_authority::test_peer_authority("worker-kernel-1"),
+        );
+        let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext {
+            home_kernel_id: runtime.owned.config_projection.snapshot().daemon_id,
+            home_session_id: session.clone(),
+            home_agent_id: agent.clone(),
+            home_prompt_id: Some(prompt.id().into()),
+            leased_agent_id: binding.leased_agent_id.clone(),
+            worker_kernel_id: binding.worker_kernel_id.clone(),
+            worker_machine_id: binding.worker_machine_id.clone(),
+            worker_provider_run_id: "worker-run-1".into(),
+            worker_worktree_path: "fixture".into(),
+            worker_workspace_identity: crate::io::WorkspaceIdentity::local("fixture"),
+        };
+        for tool in [
+            crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL,
+            "extension.list",
+            "extension.register",
+        ] {
+            let request = |context| RelayPeerRequest::ForwardCapabilityRuntimeTool {
+                context,
+                tool_name: tool.into(),
+                arguments: serde_json::json!({}),
+            };
+            assert!(admitted
+                .prepare_forwarded_peer_request(&request(context.clone()))
+                .await
+                .is_ok());
+            let mut stale = context.clone();
+            stale.worker_provider_run_id = "stale-run".into();
+            assert!(admitted
+                .prepare_forwarded_peer_request(&request(stale))
+                .await
+                .is_err());
+            let mut foreign = context.clone();
+            foreign.home_session_id = "foreign-session".into();
+            assert!(admitted
+                .prepare_forwarded_peer_request(&request(foreign))
+                .await
+                .is_err());
+            runtime
+                .owned
+                .agent_store
+                .clear_remote_execution(&agent)
+                .unwrap();
+            assert!(admitted
+                .prepare_forwarded_peer_request(&request(context.clone()))
+                .await
+                .is_err());
+            runtime
+                .owned
+                .agent_store
+                .bind_remote_execution(&agent, binding.clone())
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn mp11_immediate_steer_wrong_run_preserves_queue() {
+        let (runtime, session, agent, attachment, _) =
+            mp11_fixture(crate::DaemonConfig::for_tests()).await;
+        mp11_submit(&runtime, &session, &agent, &attachment, "active");
+        let queued = mp11_submit(&runtime, &session, &agent, &attachment, "queued");
+        let prepared = runtime
+            .owned
+            .prepare_remote_queued_prompt_steer(&session, &agent, &attachment, queued.id(), None)
+            .unwrap()
+            .unwrap();
+        let reservation = runtime
+            .owned
+            .reserve_remote_queued_prompt_steer(
+                &session,
+                &agent,
+                &attachment,
+                queued.id(),
+                &prepared,
+            )
+            .unwrap();
+        let prepared = runtime
+            .owned
+            .prepare_remote_queued_prompt_steer(
+                &session,
+                &agent,
+                &attachment,
+                queued.id(),
+                Some(reservation),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(runtime
+            .owned
+            .finish_remote_queued_prompt_steer(
+                &session,
+                &agent,
+                &attachment,
+                &prepared,
+                &prepared.remote_execution,
+                reservation,
+                "unrelated-run"
+            )
+            .is_err());
+        let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
+        assert!(runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&snapshot, &agent)
+            .1
+            .iter()
+            .any(|prompt| prompt.id() == queued.id()));
+    }
+
+    #[tokio::test]
+    async fn mp11_credential_release_revalidates_after_approval_wait() {
+        let (runtime, session, agent, _, binding) =
+            mp11_fixture(crate::DaemonConfig::for_tests()).await;
+        let request = crate::transport::relay_peer::RelayPeerRequest::ResolveHomeCredentialSecret {
+            context: crate::transport::relay_peer::RemoteExtensionInvocationContext {
+                home_kernel_id: runtime.owned.config_projection.snapshot().daemon_id,
+                home_session_id: session,
+                home_agent_id: agent.clone(),
+                leased_agent_id: binding.leased_agent_id.clone(),
+                worker_kernel_id: Some(binding.worker_kernel_id.clone()),
+                worker_machine_id: Some(binding.worker_machine_id.clone()),
+                worker_provider_run_id: "worker-run-1".into(),
+            },
+            credential_id: "synthetic".into(),
+            injection: crate::transport::relay_peer::RemoteCredentialSecretInjection::Pty,
+        };
+        let admitted = runtime
+            .with_relay_peer_authority(crate::runtime::relay_peer_authority::test_peer_authority(
+                "worker-kernel-1",
+            ))
+            .prepare_forwarded_peer_request(&request)
+            .await
+            .unwrap();
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let operation_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task = tokio::spawn({
+            let barrier = barrier.clone();
+            let operation_ran = operation_ran.clone();
+            async move {
+                barrier.wait().await;
+                barrier.wait().await;
+                admitted.with_forwarded_binding_operation(|| {
+                    operation_ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok("synthetic")
+                })
+            }
+        });
+        barrier.wait().await;
+        let mut replacement = binding;
+        replacement.execution_lease_id = "revoked-lease".into();
+        runtime
+            .owned
+            .agent_store
+            .bind_remote_execution(&agent, replacement)
+            .unwrap();
+        barrier.wait().await;
+        assert!(task.await.unwrap().is_err());
+        assert!(!operation_ran.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn mp11_project_environment_reauthorizes_after_app_mutex_wait() {
+        let (runtime, session, agent, attachment, _) =
+            mp11_fixture(crate::DaemonConfig::for_tests()).await;
+        let grant = runtime.insert_access_grant_for_test(&session);
+        let request =
+            crate::local::LocalDaemonRequest::SubmitPrompt(crate::local::SubmitPromptRequest {
+                session_id: session.clone(),
+                attachment_id: attachment,
+                target_agent_id: Some(agent.clone()),
+                prompt: "revoked".into(),
+                attachments: vec![],
+            });
+        let probe = Arc::new(tokio::sync::Notify::new());
+        let mut admitted = runtime.with_external_command_authority(Some((&grant, &request)));
+        admitted.app_lock_wait_probe = Some(probe.clone());
+        let operation_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let app = runtime.app.lock().await;
+        let task = tokio::spawn({
+            let operation_ran = operation_ran.clone();
+            let session = session.clone();
+            async move {
+                admitted
+                    .with_project_prompt_environment(&session, &agent, |_| {
+                        operation_ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Ok(())
+                    })
+                    .await
+            }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(3), probe.notified())
+            .await
+            .unwrap();
+        runtime
+            .revoke_kernel_access(None, Some(&grant), "explicit_revoke")
+            .unwrap();
+        drop(app);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(3), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        assert!(!operation_ran.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[tokio::test]

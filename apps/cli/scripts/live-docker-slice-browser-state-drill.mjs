@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict"
-import { spawn } from "node:child_process"
-import { createHash } from "node:crypto"
+import { spawnOwned, signalOwnedProcess } from "../../kernel/slice-linux-docker/owned-process-signals.mjs"
+import { createHash, randomUUID } from "node:crypto"
 import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { browserStateCleanupFailure, cleanupBrowserStateImages } from "./lib/browser-state-drill-cleanup.mjs"
+import { browserStateCleanupFailure, cleanupBrowserStateImages, assertBrowserStateDockerNamesAvailable, captureBrowserStateDockerOwnership, cleanupBrowserStateDockerResources } from "./lib/browser-state-drill-cleanup.mjs"
 import { browserStateDrillImageConfig } from "./lib/browser-state-drill-image.mjs"
+import { assertLocalDevOwnedWorkspace } from "./lib/browser-state-local-dev-workspace.mjs"
 import { resolveBrowserStateDrillPaths } from "./lib/browser-state-drill-paths.mjs"
 import { startBrowserComputerFixture } from "./lib/browser-computer-fixture.mjs"
 import { startBrowserStateFixtureSidecar } from "./lib/browser-state-drill-fixture-sidecar.mjs"
@@ -17,7 +18,7 @@ import { finalizeDrillArtifacts } from "./lib/drill-artifacts.mjs"
 import { resolveBuiltBinary } from "./lib/drill-runtime-helpers.mjs"
 import { completeBrowserStateEditorHandoff, createBrowserStateEditorDrill } from "./lib/browser-state-drill-editor.mjs"
 import { createDrillInterruption } from "./lib/drill-interruption.mjs"
-import { verifyRetainedRoomArchive } from "./lib/room-provider-retention.mjs"
+import { createBrowserStateArchiveFixture } from "./lib/browser-state-drill-archive.mjs"
 import {
   browserStateDrillWorkspaceSliceOptions,
   cleanupBrowserStateDrillWorkspace,
@@ -38,7 +39,7 @@ if (usePrebuilt) {
 }
 const startedAt = new Date().toISOString()
 const stamp = startedAt.replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z")
-const runId = `m20-docker-state-${process.pid}-${stamp}`
+const runId = `m20-docker-state-${randomUUID()}`
 const { artifactDir, tempRoot } = resolveBrowserStateDrillPaths({
   homeDir: os.homedir(),
   runId,
@@ -60,7 +61,7 @@ function parseFixturePort(args = process.argv.slice(2)) {
 }
 
 const fixturePort = parseFixturePort()
-const sliceName = `m20-${process.pid}`
+const sliceName = runId
 const containerName = `chariox-slice-${sliceName}`
 const homeVolume = `${containerName}-home`
 const email = "agent@chariox.test"
@@ -89,6 +90,7 @@ let savedState = null
 let namedBackup = null
 let corruptBackup = null
 let cleanupResult = null
+let dockerOwnership = null
 let sourceIdentity = null
 let stateImagesBefore = new Set()
 let rollbackImagesBefore = new Set()
@@ -140,6 +142,7 @@ if (failure) {
 }
 
 async function run() {
+  await assertBrowserStateDockerNamesAvailable({ containerName, homeVolume, inspect: inspectDrillDockerObject })
   workspaceFixture = await prepareBrowserStateDrillWorkspace({
     env: process.env,
     repositoryRoot: repoRoot,
@@ -210,16 +213,21 @@ async function run() {
     displayMode: "headed",
     displayBackend: "selkies",
     ...browserStateDrillWorkspaceSliceOptions(workspaceFixture),
-    workerKernelRef: `m20-worker-${process.pid}`,
   })), "SliceCreated").slice
   log("starting slice")
   await client.send(requests.startSliceRequest(slice.id))
   slice = await waitForSliceRunning(slice.id)
+  dockerOwnership = await captureBrowserStateDockerOwnership({ runId, containerName, homeVolume, slice, inspect: inspectDrillDockerObject })
   workspaceFixture = await finalizeBrowserStateDrillWorkspace({
     fixture: workspaceFixture,
     slice,
     repositoryRoot: repoRoot,
   })
+  if (workspaceFixture.localDev) {
+    const mounts = JSON.parse(await dockerText(["inspect", containerName, "--format", "{{json .Mounts}}"]));
+    const labels = JSON.parse(await dockerText(["volume", "inspect", `${containerName}-workspace`, "--format", "{{json .Labels}}"]));
+    assertLocalDevOwnedWorkspace({ mounts, labels, containerName, sliceId: slice.id, ownerUid: process.getuid() })
+  }
   const initialSlicePorts = structuredClone(slice.local_docker_ports)
   const initialDisplayUrl = slice.display_endpoint?.url
   assert.ok(initialSlicePorts?.novnc, "slice must retain its allocated display port")
@@ -261,7 +269,10 @@ async function run() {
   assert.ok(saved.state?.id, "save-state should create a saved state record")
   savedState = saved.state
   await writeFile(path.join(artifactDir, "save-state-response.json"), JSON.stringify(saved, null, 2))
-  const verifiedArchive = await verifyRetainedRoomArchive(savedState)
+  const archiveFixture = createBrowserStateArchiveFixture({
+    helper: process.env.M20_STORAGE_FIXTURE_HELPER, localDev: workspaceFixture.localDev === true, runCommand,
+  })
+  const verifiedArchive = await archiveFixture.verify(savedState)
   await writeFile(path.join(artifactDir, "saved-home-verification.json"),
     `${JSON.stringify({ stateId: savedState.id, ...verifiedArchive }, null, 2)}\n`)
   log("removing container and home volume to force saved-state restore")
@@ -270,6 +281,7 @@ async function run() {
   log("starting restored slice")
   await client.send(requests.startSliceRequest(slice.id))
   slice = await waitForSliceRunning(slice.id)
+  dockerOwnership = await captureBrowserStateDockerOwnership({ runId, containerName, homeVolume, slice, inspect: inspectDrillDockerObject })
   assert.deepEqual(
     slice.local_docker_ports,
     initialSlicePorts,
@@ -345,14 +357,16 @@ async function run() {
     "SliceBackupCreated",
   )
   corruptBackup = corruptBackupResult.backup
+  await writeFile(path.join(artifactDir, "corrupt-candidate-response.json"), JSON.stringify(corruptBackupResult, null, 2))
   assert.equal(corruptBackupResult.slice.status, "running")
   await client.send(requests.stopSliceRequest(slice.id))
   slice = await waitForSliceStatus(slice.id, "stopped")
   const containerBeforeRejectedRestore = await inspectContainerId()
-  await writeFile(corruptBackup.home_archive_path, "deliberately corrupted backup archive")
+  if (process.env.M20_STORAGE_FIXTURE_HELPER) log("MP-03/MP-10: awaiting isolated root operator corruption authorization (at most ten minutes)")
+  await archiveFixture.corrupt(corruptBackup)
   await assert.rejects(
     client.send(requests.restoreSliceBackupRequest(slice.id, corruptBackup.id)),
-    /archive integrity check failed.*quarantined/,
+    archiveFixture.corruptionRejection,
   )
   slice = await waitForSliceStatus(slice.id, "stopped")
   assert.equal(
@@ -360,18 +374,7 @@ async function run() {
     containerBeforeRejectedRestore,
     "corrupt backup rejection must happen before container replacement",
   )
-  assert.equal(
-    await access(corruptBackup.home_archive_path).then(() => true, () => false),
-    false,
-    "the corrupt archive must leave its restore path",
-  )
-  assert.equal(
-    (await readdir(path.dirname(corruptBackup.home_archive_path)))
-      .filter((entry) => entry.startsWith(`${path.basename(corruptBackup.home_archive_path)}.corrupt-`))
-      .length,
-    1,
-    "the corrupt archive must remain in one owned quarantine file",
-  )
+  await archiveFixture.verifyRejectedArchive(corruptBackup)
 
   log("restoring the named backup by its human-readable name")
   const firstBackupRestore = unwrap(
@@ -382,6 +385,7 @@ async function run() {
   assert.equal(firstBackupRestore.slice.status, "stopped")
   await client.send(requests.startSliceRequest(slice.id))
   slice = await waitForSliceRunning(slice.id)
+  dockerOwnership = await captureBrowserStateDockerOwnership({ runId, containerName, homeVolume, slice, inspect: inspectDrillDockerObject })
   await verifyUserPersistenceMarkers()
   await verifyLocalBrowserStateAfterRestore()
   await screenshot("04-after-named-backup-restore")
@@ -398,6 +402,7 @@ async function run() {
   assert.equal(secondBackupRestore.slice.status, "stopped")
   await client.send(requests.startSliceRequest(slice.id))
   slice = await waitForSliceRunning(slice.id)
+  dockerOwnership = await captureBrowserStateDockerOwnership({ runId, containerName, homeVolume, slice, inspect: inspectDrillDockerObject })
   await verifyUserPersistenceMarkers()
   await verifyLocalBrowserStateAfterRestore()
   await screenshot("05-after-repeated-backup-restore")
@@ -778,16 +783,19 @@ async function assertFixtureAlive() {
   await fixture.health()
 }
 
-async function removeContainerAndHomeVolume() {
-  let removalError = null
-  for (const args of [["rm", "-f", containerName], ["volume", "rm", "-f", homeVolume]]) {
-    try {
-      await docker(args)
-    } catch (error) {
-      removalError ??= error
-    }
+async function inspectDrillDockerObject(kind, name) {
+  const result = await runCommand("docker", [kind, "inspect", name], { timeoutMs: 20_000 })
+  if (result.code === 0) {
+    const records = JSON.parse(result.stdout)
+    if (!Array.isArray(records) || records.length !== 1) throw new Error(`ambiguous Docker ${kind} identity`)
+    return records[0]
   }
-  if (removalError) throw removalError
+  if (result.code === 1 && /(?:No such|not found)/i.test(result.stderr)) return null
+  throw new Error(`Docker ${kind} inspection failed`)
+}
+
+async function removeContainerAndHomeVolume() {
+  await cleanupBrowserStateDockerResources({ containerName, homeVolume, ownership: dockerOwnership, inspect: inspectDrillDockerObject, remove: docker })
 }
 
 async function buildKernel() {
@@ -827,6 +835,8 @@ async function captureSourceIdentity(kernelBinary) {
     trackedWorktreeClean: trackedStatus.stdout.trim().length === 0,
     buildMode: usePrebuilt ? "explicit-prebuilt" : "local-build",
     drillSha256: createHash("sha256").update(await readFile(fileURLToPath(import.meta.url))).digest("hex"),
+    storageFixtureHelperSha256: process.env.M20_STORAGE_FIXTURE_HELPER
+      ? createHash("sha256").update(await readFile(process.env.M20_STORAGE_FIXTURE_HELPER)).digest("hex") : null,
     editorDrillSha256: createHash("sha256").update(await readFile(new URL("./lib/browser-state-drill-editor.mjs", import.meta.url))).digest("hex"),
     editorMenuSha256: createHash("sha256").update(await readFile(new URL("./fixtures/browser-state-editor/menu.xml", import.meta.url))).digest("hex"),
     editorLaunchSha256: createHash("sha256").update(await readFile(new URL("./fixtures/browser-state-editor/launch.sh", import.meta.url))).digest("hex"),
@@ -915,7 +925,7 @@ async function verifyBrowserStateDockerEngineAccess(target, { writable }) {
 }
 
 function start(label, command, args, options = {}) {
-  const child = spawn(command, args, {
+  const child = spawnOwned(command, args, {
     cwd: options.cwd ?? repoRoot,
     env: options.env ?? process.env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -987,7 +997,7 @@ async function runCommand(command, args, options = {}) {
   interruption.check()
   return await new Promise((resolve, reject) => {
     let settled = false
-    const child = spawn(command, args, {
+    const child = spawnOwned(command, args, {
       cwd: options.cwd ?? repoRoot,
       env: options.env ?? process.env,
       stdio: ["pipe", "pipe", "pipe"],
@@ -999,9 +1009,9 @@ async function runCommand(command, args, options = {}) {
       timeout = setTimeout(() => {
         if (settled) return
         stderr += `\n[timed out after ${options.timeoutMs}ms: ${command} ${args.join(" ")}]\n`
-        child.kill("SIGTERM")
+        signalOwnedProcess(child, "SIGTERM")
         setTimeout(() => {
-          if (!settled) child.kill("SIGKILL")
+          if (!settled) signalOwnedProcess(child, "SIGKILL")
         }, 2_000).unref()
       }, options.timeoutMs)
       timeout.unref()
@@ -1071,6 +1081,11 @@ async function cleanup() {
   if (workspaceFixture) {
     try {
       await cleanupBrowserStateDrillWorkspace(workspaceFixture)
+      if (workspaceFixture.localDev) {
+        const volume = await runCommand("docker", ["volume", "inspect", `${containerName}-workspace`], { timeoutMs: 20_000 })
+        assert.equal(volume.code, 1, "local DEV workspace volume must be removed by DeleteSlice")
+        assert.match(volume.stderr, /No such volume/i, "workspace absence must be a Docker absence response")
+      }
       fixtureWorkspaceRemoved = true
     } catch (error) {
       workspaceCleanupError = error
@@ -1165,7 +1180,9 @@ async function writeManifest(ok, error = null) {
       "message before save and message after restore were each submitted exactly once",
       "external service invalidation showed the exact login prompt while persisted browser state remained intact",
       "reauthentication restored service use and submitted its message exactly once",
-      "named backup integrity metadata was recorded, a corrupt archive was quarantined before container replacement, and the named backup remained restorable",
+      workspaceFixture?.localDev
+        ? "named backup integrity metadata was recorded, broker-owned corruption was refused without moving its archive or replacing the container, and the named backup remained restorable"
+        : "named backup integrity metadata was recorded, a corrupt archive was quarantined before container replacement, and the named backup remained restorable",
       "the same immutable named backup restored browser and application state twice, once by name and once by id",
     ],
     cleanup: cleanupResult,
@@ -1184,9 +1201,9 @@ async function closeFixtureServer() {
 
 async function terminateChild(child) {
   if (!child || child.exitCode != null) return
-  child.kill("SIGTERM")
+  signalOwnedProcess(child, "SIGTERM")
   if (await waitForChildExit(child, 5_000)) return
-  child.kill("SIGKILL")
+  signalOwnedProcess(child, "SIGKILL")
   await waitForChildExit(child, 1_000)
 }
 

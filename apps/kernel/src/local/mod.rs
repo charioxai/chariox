@@ -258,8 +258,8 @@ pub use api::{
 };
 pub use api::{
     BindRoomEnvironmentSliceRequest, CaptureRoomEnvironmentScreenshotRequest,
-    ReadRoomEnvironmentScreenshotChunkRequest, RoomEnvironmentScreenshotArtifact,
-    RoomEnvironmentScreenshotChunk, RoomEnvironmentSliceBinding,
+    ReadRoomEnvironmentScreenshotChunkRequest, RoomBrowserArtifactRequest,
+    RoomEnvironmentScreenshotArtifact, RoomEnvironmentScreenshotChunk, RoomEnvironmentSliceBinding,
 };
 pub use api::{
     GetKernelResourceTelemetryRequest, KernelResourceTelemetryDisk, KernelResourceTelemetryLogs,

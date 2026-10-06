@@ -119,6 +119,9 @@ async function handleBrowserControllerRequestInner(
     if (request.method === "browser.downloads.cancel") {
       return successResponse(request.id, await browser.cancelDownload(request.params));
     }
+    if (request.method === "browser.artifact") {
+      return successResponse(request.id, await browser.captureArtifact(request.params));
+    }
     if (request.method === "browser.upload") {
       return successResponse(
         request.id,
@@ -425,7 +428,7 @@ function classifyScheduling(request, browser) {
   if (["health", "browser.reconcile", "browser.tab", "browser.downloads.configure",
     "browser.downloads.cancel", "browser.permission", "browser.cookies.import",
     "browser.cookies.recover", "shutdown"].includes(method)) return { kind: "barrier" };
-  if (["browser.snapshot", "browser.wait"].includes(method)) return targetScheduling(request, "read");
+  if (["browser.snapshot", "browser.wait", "browser.artifact"].includes(method)) return targetScheduling(request, "read");
   if (["browser.action", "browser.navigate", "browser.history", "browser.dialog", "browser.upload"].includes(method)) {
     return targetScheduling(request, "mutation");
   }

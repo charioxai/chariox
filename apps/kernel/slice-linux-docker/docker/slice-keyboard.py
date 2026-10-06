@@ -10,6 +10,7 @@ import time
 logging.disable(logging.CRITICAL)
 
 from selkies import Xlib
+from selkies.Xlib import XK
 from selkies.Xlib import display
 from selkies.Xlib.ext import xtest
 # Internal API is intentionally tied to selkies.lock.json revision
@@ -22,25 +23,28 @@ from selkies.input_handler import (
 )
 
 
-class _BrowserSafeTextKeyboard(_XTestKeyboard):
-    """Keep text overlays away from Chromium's physical accelerators.
+class SecretTargetChanged(Exception):
+    pass
 
-    Xorg can report browser/media and function keycodes as NoSymbol. Chromium
-    still handles their physical code: an overlay character on BrowserRefresh
-    reloads the page rather than typing it. Keep the main text-key range only,
-    excluding controls and F1..F12. Selkies retains its bounded recycling.
-    """
+
+class ComputerTextKeyboard(_XTestKeyboard):
+    def _find_spare_keycodes(self):
+        # MP-08/MP-10/MP-11: a NoSymbol keycode is not necessarily inert.
+        # Chromium can fall back to its hardware meaning (e.g. BrowserRefresh)
+        # when it cannot translate an overlay Unicode keysym. X11 keycodes 8
+        # and 92 have no hardware fallback in Chromium's core keycode table.
+        # Recycle these slots under the existing mapping-settle guard rather
+        # than lending text input media/navigation keycodes. Modifier-mapped
+        # or occupied slots remain excluded by the upstream discovery.
+        # Keep upstream's full _spare_set: both core and XKB lookup must
+        # distrust inherited overlays on excluded media/navigation keycodes.
+        # Only the allocation pool is restricted to safe hardware codes.
+        return [code for code in super()._find_spare_keycodes() if code in (8, 92)]
 
     @staticmethod
     def _text_accelerator(keycode):
         return (keycode >= 104 or keycode in (9, 22, 23, 36, 66, 95, 96)
                 or 67 <= keycode <= 78)
-
-    def _find_spare_keycodes(self):
-        slots = [code for code in super()._find_spare_keycodes()
-                 if not self._text_accelerator(code)]
-        self._spare_set = frozenset(slots)
-        return slots
 
     def _resolve(self, keysym):
         code, modifiers, group = super()._resolve(keysym)
@@ -55,10 +59,6 @@ class _BrowserSafeTextKeyboard(_XTestKeyboard):
                 raise ValueError("no safe physical text keycode")
             return code, (), None
         return code, modifiers, group
-
-
-class SecretTargetChanged(Exception):
-    pass
 
 
 def focused_target(connection):
@@ -108,7 +108,7 @@ def assert_secret_target(connection, expected_target):
 
 def type_text(text, expected_target=None):
     connection = display.Display()
-    keyboard = _BrowserSafeTextKeyboard(connection)
+    keyboard = ComputerTextKeyboard(connection)
     lifted = []
     active_keysym = None
     try:
@@ -175,6 +175,63 @@ def type_text(text, expected_target=None):
         connection.close()
 
 
+def hold_input(kind, value, duration_ms, x=None, y=None):
+    """MP-08/MP-10/MP-11: press/hold/release within one owned Action.
+
+    Hold only existing base-layout keys; text overlays stay in type_text.
+    Reject pre-existing native holds instead of releasing another actor's input.
+    """
+    if not 1 <= duration_ms <= 10000:
+        raise ValueError("invalid hold duration")
+    connection = display.Display()
+    pressed = []
+    try:
+        if kind == "key":
+            if not value or len(value.encode("utf-8")) > 128 or not value.isascii():
+                raise ValueError("invalid chord")
+            aliases = {"ctrl": "Control_L", "Control": "Control_L", "alt": "Alt_L",
+                       "shift": "Shift_L", "super": "Super_L", "space": "space"}
+            codes = []
+            for name in value.split("+"):
+                keysym = XK.string_to_keysym(aliases.get(name, name))
+                code = connection.keysym_to_keycode(keysym) if keysym else 0
+                # No implicit shifted symbol or Unicode hardware fallback.
+                if code < 8 or connection.keycode_to_keysym(code, 0) != keysym or code in codes:
+                    raise ValueError("unmapped or duplicate chord key")
+                codes.append(code)
+            event_type, release_type = Xlib.X.KeyPress, Xlib.X.KeyRelease
+        elif kind == "button":
+            codes = [{"left": 1, "middle": 2, "right": 3}[value]]
+            if x is None or y is None or not (0 <= x < connection.screen().width_in_pixels
+                                              and 0 <= y < connection.screen().height_in_pixels):
+                raise ValueError("invalid pointer coordinates")
+            event_type, release_type = Xlib.X.ButtonPress, Xlib.X.ButtonRelease
+        else:
+            raise ValueError("invalid hold kind")
+        connection.grab_server()
+        try:
+            if any(connection.query_keymap()) or connection.screen().root.query_pointer().mask & 7936:
+                raise ValueError("native input already held")
+            if kind == "button":
+                xtest.fake_input(connection, Xlib.X.MotionNotify, x=x, y=y)
+            for code in codes:
+                # Track before queuing so exceptional/cancelled presses release too.
+                pressed.append(code)
+                xtest.fake_input(connection, event_type, code)
+            connection.sync()
+        finally:
+            connection.ungrab_server()
+            connection.sync()
+        time.sleep(duration_ms / 1000)
+    finally:
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(signum, signal.SIG_IGN)
+        for code in reversed(pressed):
+            xtest.fake_input(connection, release_type, code)
+        connection.sync()
+        connection.close()
+
+
 def reset_input():
     connection = display.Display()
     try:
@@ -196,7 +253,11 @@ if __name__ == "__main__":
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, terminate)
     try:
-        if sys.argv[1:] == ["reset"]:
+        if len(sys.argv) == 3 and sys.argv[1] == "hold-key":
+            hold_input("key", sys.stdin.buffer.read(129).decode("ascii", errors="strict"), int(sys.argv[2]))
+        elif len(sys.argv) == 6 and sys.argv[1] == "hold-button":
+            hold_input("button", sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]))
+        elif sys.argv[1:] == ["reset"]:
             reset_input()
         elif sys.argv[1:] == ["secret-target"]:
             connection = display.Display()

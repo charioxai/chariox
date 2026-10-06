@@ -74,7 +74,8 @@ throw new Error("unexpected Docker call: " + args[0]);
     const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("CHARIOX_SLICE_")))
     const result = spawnSync("bash", [provisioner, "start-runtime"], {
       encoding: "utf8",
-      timeout: 15_000,
+      // Includes owned-process inspection on shared builders.
+      timeout: 45_000,
       env: {
         ...env,
         PATH: `${root}:${env.PATH}`,

@@ -164,6 +164,36 @@ impl DaemonApp {
         Ok(completed)
     }
 
+    pub(crate) fn prompt_owner_complete_remote_receipt(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        binding: &crate::agent::RemoteAgentBinding,
+    ) -> Result<PromptQueueItem, DaemonError> {
+        let sessions = self.sessions.read();
+        let session = sessions.get_session(session_id)?;
+        let mut agents = self.agents.write();
+        let agent = agents.get_agent(agent_id)?;
+        if agent.session_id() != session_id || agent.remote_execution() != Some(binding) {
+            return Err(DaemonError::LocalTransport {
+                operation: "settle remote prompt receipt",
+                message: "completion binding changed".into(),
+            });
+        }
+        let completed = self
+            .prompt_state_owner
+            .complete_active_prompt_if_matches(&session, agent_id, Some(prompt_id))
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.into(),
+            })?;
+        agents.set_remote_execution_active_worker_provider_run_id(agent_id, None)?;
+        drop(agents);
+        drop(sessions);
+        self.mirror_prompt_owner_agent_state(session_id, agent_id)?;
+        Ok(completed)
+    }
+
     pub(crate) fn prompt_owner_cancel_active_prompt_only(
         &mut self,
         session_id: &str,

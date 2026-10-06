@@ -1510,11 +1510,11 @@ test("observer failure after the actual create receipt preserves ownership and a
   assert.equal(requests.some((request) => Object.hasOwn(request, "StartSlice")), false)
   await assert.rejects(transport.run("cleanup.perform", {}), /host census unavailable/)
   assert.equal(requests.some((request) => Object.hasOwn(request, "DeleteSlice")), true)
-  assert.equal(requests.some((request) => Object.hasOwn(request, "DeleteSession")), true)
+  assert.equal(requests.some((request) => Object.hasOwn(request, "DeleteSession")), false)
   assert.deepEqual(observations.map(({ kind }) => kind), ["slice.create", "run.cleanup"])
 })
 
-test("cleanup removes the owned Room after slice deletion and proves no public residue", async () => {
+test("cleanup preserves the borrowed Room after slice deletion and proves no owned residue", async () => {
   const { transport, requests } = createCleanupTransport()
   await transport.run("selkies.create", {
     runId: "run-1",
@@ -1537,7 +1537,7 @@ test("cleanup removes the owned Room after slice deletion and proves no public r
       || Object.hasOwn(request, "DeleteSession"))
     .map((request) => Object.keys(request)[0])
   assert.deepEqual(cleanupLifecycle, [
-    "DeleteSlice", "GetRoomEnvironmentSlice", "EndSession", "DeleteSession",
+    "DeleteSlice", "GetRoomEnvironmentSlice",
   ])
   assert.equal(inspection.zeroResidue, true)
   assert.equal(inspection.owned.sliceId, "slice-1")
@@ -1864,4 +1864,30 @@ test("cleanup inspection rejects missing and malformed managed residue metrics",
       label,
     )
   }
+})
+
+test("MP11 partial slice creation preserves a borrowed Room and its foreign membership", async () => {
+  const calls = []
+  const room = { id: "borrowed-room", status: "active", agent_ids: ["foreign-agent"], attachment_ids: ["foreign-attachment"] }
+  const api = {
+    ...moduleRequestApi,
+    createSliceRequest: (options) => ({ CreateSlice: options }),
+    listSessionsRequest: () => ({ ListSessions: null }),
+    endSessionRequest: (id) => ({ EndSession: { session_id: id } }),
+    deleteSessionRequest: (id) => ({ DeleteSession: { session_id: id } }),
+  }
+  const client = { async send(request) {
+    calls.push(Object.keys(request)[0])
+    if (request.CreateSlice) throw new Error("synthetic partial create failure")
+    if (Object.hasOwn(request, "ListSessions")) return { SessionsListed: { sessions: [room] } }
+    if (request.EndSession) return { SessionEnded: { session: { ...room, status: "ended" } } }
+    if (request.DeleteSession) return { SessionDeleted: { session: room } }
+    throw new Error("unexpected request")
+  } }
+  const transport = createManagedBrowserComputerParityTransportFromPublicClient({ client, requestApi: api, targetKernelRef: "worker", targetMachineRef: "machine" })
+  await assert.rejects(transport.run("selkies.create", { binding: { kernelId: "worker", machineId: "machine", roomId: room.id, environmentId: "environment" }, kernelOwnedDefault: true, runId: "mp11-partial-create" }))
+  await transport.run("cleanup.perform", { scope: "run_owned_resources" }).catch(() => {})
+  assert.ok(!calls.includes("EndSession") && !calls.includes("DeleteSession"), "borrowed Room was destructively adopted")
+  assert.deepEqual(room.agent_ids, ["foreign-agent"])
+  assert.deepEqual(room.attachment_ids, ["foreign-attachment"])
 })

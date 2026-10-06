@@ -350,6 +350,9 @@ impl KernelRuntimeState {
             RoomEnvironmentHumanAction::KeyboardKey { key, .. } => {
                 (b"key".as_slice(), key.as_str())
             }
+            RoomEnvironmentHumanAction::KeyboardHold { key, .. } => {
+                (b"hold".as_slice(), key.as_str())
+            }
             RoomEnvironmentHumanAction::ClipboardWrite { text } => {
                 (b"clipboard".as_slice(), text.as_str())
             }
@@ -463,6 +466,23 @@ fn computer_input_action(
                 repeat: *repeat,
             }
         }
+        RoomEnvironmentHumanAction::KeyboardHold { key, duration_ms } => {
+            RoomComputerInputAction::KeyboardHold {
+                input: RoomComputerKeyboardInput::new(key.as_str().to_string()),
+                duration_ms: *duration_ms,
+            }
+        }
+        RoomEnvironmentHumanAction::PointerHold {
+            x,
+            y,
+            button,
+            duration_ms,
+        } => RoomComputerInputAction::PointerHold {
+            x: *x,
+            y: *y,
+            button: computer_pointer_button(*button),
+            duration_ms: *duration_ms,
+        },
         RoomEnvironmentHumanAction::ClipboardWrite { text } => {
             RoomComputerInputAction::ClipboardWrite {
                 text: RoomComputerClipboardText::new(text.as_str().to_string()),

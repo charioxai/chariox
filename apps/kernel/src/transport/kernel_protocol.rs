@@ -9,7 +9,7 @@ use crate::local::{
     LocalDaemonRequest, PasskeyPrompt, RelayStatus, RemoteMachineRecord, WaitingRoomLaunchTarget,
     WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot, WorkflowDesignOpForwarded,
 };
-use crate::provider::{OpenCodeProviderCatalog, RuntimeProviderRun};
+use crate::provider::{OpenCodeProviderCatalog, PublicProviderRun};
 use crate::runtime::projection::{AgentRuntimeActivity, SessionSnapshotProjection};
 use crate::session::{RuntimeInteraction, RuntimeSession, WorkflowRun};
 use crate::slice::SliceRecord;
@@ -95,7 +95,7 @@ pub(crate) enum KernelEvent {
     },
     SessionSnapshot {
         session: Box<RuntimeSession>,
-        provider_run: Box<Option<RuntimeProviderRun>>,
+        provider_run: Box<Option<PublicProviderRun>>,
         agent_activity: Box<BTreeMap<String, AgentRuntimeActivity>>,
         #[serde(default)]
         agent_activity_revision: u64,
@@ -108,7 +108,7 @@ pub(crate) enum KernelEvent {
     },
     ProviderRunChanged {
         session_id: String,
-        provider_run: Option<RuntimeProviderRun>,
+        provider_run: Option<PublicProviderRun>,
     },
     SessionMetadataChanged {
         session_id: String,
@@ -532,7 +532,7 @@ pub(crate) fn provider_run_changed_event(
     }
     Some(KernelEvent::ProviderRunChanged {
         session_id: snapshot.session.id().to_string(),
-        provider_run: snapshot.provider_run.clone(),
+        provider_run: snapshot.provider_run.as_ref().map(PublicProviderRun::from),
     })
 }
 
@@ -836,6 +836,9 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::RelayTransport { retryable, .. } => {
             kernel_error("local_transport_error", error, *retryable)
         }
+        DaemonError::RelayPeerCleanupAbsent { .. } => {
+            kernel_error("local_transport_error", error, false)
+        }
         DaemonError::LocalTransport { .. } => kernel_error("local_transport_error", error, true),
         DaemonError::PtySpawn { .. } => kernel_error("pty_spawn_failed", error, true),
         DaemonError::PtyCleanup { .. } => kernel_error("pty_cleanup_failed", error, true),
@@ -862,8 +865,24 @@ pub(crate) fn serialize_frame(frame: &KernelOutgoingFrame) -> Result<String, Dae
         message: error.to_string(),
     })?;
     crate::local::redact_client_response_value(&mut value);
-    serde_json::to_string(&value).map_err(|error| DaemonError::LocalTransport {
-        operation: "serialize kernel websocket frame",
-        message: error.to_string(),
-    })
+    let encode = |value: &Value| {
+        serde_json::to_string(value).map_err(|error| DaemonError::LocalTransport {
+            operation: "serialize kernel websocket frame",
+            message: error.to_string(),
+        })
+    };
+    let encoded = encode(&value)?;
+    // MP-08/MP-10/MP-11: kernel WebSocket transports share this budget. Large
+    // artifacts remain readable in chunks; provider-native delivery is separate.
+    if encoded.len() > 1024 * 1024 {
+        if let Some(payload) = value
+            .pointer_mut("/response/RoomBrowserArtifact/result/payload")
+            .and_then(Value::as_object_mut)
+        {
+            if payload.remove("image_base64").is_some() {
+                return encode(&value);
+            }
+        }
+    }
+    Ok(encoded)
 }

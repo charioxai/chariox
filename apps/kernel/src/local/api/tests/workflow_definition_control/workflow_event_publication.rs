@@ -806,8 +806,10 @@ fn app_inbox_routes_are_checked_with_the_generator_before_they_are_stored() {
     };
     let undeclared = message(route("dummy.unknown", "free"));
     assert!(undeclared.contains("is not declared"), "{undeclared}");
+    // App interests fan out: another App's matching route is not exclusive.
+    // Both filters pass generator admission and reach the missing installation.
     let taken = message(route("dummy.test", "taken"));
-    assert!(taken.contains("already receives these events"), "{taken}");
+    assert!(taken.contains("AppRequestFailed"), "{taken}");
     // Past every generator check, the App lane answers: nothing is installed.
     let free = message(route("dummy.test", "free"));
     assert!(free.contains("AppRequestFailed"), "{free}");

@@ -3321,6 +3321,107 @@ mod tests {
             .expect("replacement prompt should remain active");
         assert_eq!(active.id(), prompt.id());
     }
+    async fn mp11_retirement_launch_fixture(during_delay: bool) {
+        crate::test_support::isolated_env_test!();
+        let worktree = crate::test_support::TestWorktree::new("mp11-launch-retirement");
+        let mut config = DaemonConfig::for_tests();
+        config.provider_runtime_init_delay_ms = 300;
+        let mut app = DaemonApp::bootstrap(config).unwrap();
+        let (session, _) = KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        let agent = KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub").with_alias("mp11-workflow"),
+            )
+            .unwrap();
+        let app = Arc::new(Mutex::new(app));
+        let mut runtime = owned_runtime_state(&app).await;
+        let (run_id, _) = runtime
+            .owned
+            .workflow_ensure_provider_run(session.id(), agent.id(), false, None)
+            .unwrap();
+        let probe = crate::provider::ProviderCredentialDeliveryProbe::install(
+            &run_id,
+            &[("SYNTHETIC_CREDENTIAL", "synthetic")],
+        );
+        let mut credential = crate::provider::ProviderCredentialEnvironment::default();
+        credential.insert(
+            "SYNTHETIC_CREDENTIAL",
+            zeroize::Zeroizing::new("synthetic".to_string()),
+        );
+        runtime
+            .owned
+            .retain_pending_provider_launch_credentials(&run_id, credential);
+        if during_delay {
+            runtime.spawn_detached_workflow_provider_launch(run_id.clone());
+            tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                while !probe.observed_exactly("pty_spawn") {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            runtime
+                .owned
+                .provider_store
+                .terminate_run_provider_only(session.id(), &run_id)
+                .unwrap();
+        } else {
+            let wait = Arc::new(tokio::sync::Notify::new());
+            runtime.observe_app_lock_wait_for_test(wait.clone());
+            let held = app.lock().await;
+            runtime.spawn_detached_workflow_provider_launch(run_id.clone());
+            tokio::time::timeout(std::time::Duration::from_secs(3), wait.notified())
+                .await
+                .unwrap();
+            runtime
+                .owned
+                .provider_store
+                .terminate_run_provider_only(session.id(), &run_id)
+                .unwrap();
+            drop(held);
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while runtime
+                .detached_workflow_provider_launches
+                .lock()
+                .unwrap()
+                .contains(&run_id)
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        if !during_delay {
+            assert!(
+                !probe.observed_exactly("pty_spawn"),
+                "retired run received spawn credentials"
+            );
+        }
+        assert!(
+            !probe.observed_exactly("runtime_binding"),
+            "retired run received delayed binding credentials"
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run(&run_id)
+                .unwrap()
+                .state(),
+            crate::provider::ProviderRunState::Ended
+        );
+    }
+    #[tokio::test]
+    async fn mp11_retirement_while_app_admission_waits_prevents_credential_spawn() {
+        mp11_retirement_launch_fixture(false).await;
+    }
+    #[tokio::test]
+    async fn mp11_retirement_during_init_delay_prevents_credential_binding() {
+        mp11_retirement_launch_fixture(true).await;
+    }
 }
 
 impl KernelRuntimeState {
@@ -4379,6 +4480,20 @@ impl KernelRuntimeState {
             if runtime_init_delay_ms > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(runtime_init_delay_ms)).await;
             }
+            let initialization_permit =
+                state.provider_runtime_lanes.acquire(&provider_run_id).await;
+            if current_starting_workflow_provider_run(&state.owned.provider_store, &provider_run_id)
+                .is_none_or(|current| current.started_at_ms() != started.run.started_at_ms())
+            {
+                drop(initialization_permit);
+                let cleanup_id = provider_run_id.clone();
+                let _ = state
+                    .with_app_side_effect(move |app| {
+                        crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&cleanup_id)
+                    })
+                    .await;
+                return;
+            }
             let provider_credential_env = started.provider_credential_env.clone();
             let binding = tokio::task::spawn_blocking(move || {
                 crate::provider::ProviderProcessService::initialize_runtime_binding_with_credentials(
@@ -4391,6 +4506,7 @@ impl KernelRuntimeState {
                 operation: "initialize workflow provider runtime",
                 message: error.to_string(),
             });
+            drop(initialization_permit);
             match binding {
                 Ok(Ok(binding)) => state.finish_provider_launch(&started, binding).await,
                 Ok(Err(error)) | Err(error) => {

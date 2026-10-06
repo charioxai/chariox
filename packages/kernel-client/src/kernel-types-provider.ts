@@ -6,10 +6,12 @@ import type {
   ProjectEnvironmentSetupUtilityInput,
 } from "./kernel-types-project-environment.js"
 
+// MP-11 F7: public DTO; launch environment, MCP credentials and private resume data stay in the kernel.
 export type RuntimeProviderRun = {
   id: string
   session_id: string
   agent_instance_id: string | null
+  owner_user_id?: string
   adapter_key: string
   provider: string
   account_profile: string
@@ -25,7 +27,6 @@ export type RuntimeProviderRun = {
   state: string
   endpoint_mode?: string
   client_interface?: "chariox" | "native_tui" | string
-  process_label?: string
   structured_endpoint?: string | null
   provider_session_id?: string | null
   working_directory?: string | null

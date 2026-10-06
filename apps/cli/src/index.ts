@@ -4,6 +4,20 @@
 // imports Solid, then start the CLI.
 import { readFile } from "node:fs/promises"
 
+import { parseArgs } from "./cli-options.js"
+
+// Admit ordinary TUI arguments before loading rendering, logging or runtime
+// modules. Subcommands own their parsers and validate before runtime actions.
+const argv = process.argv.slice(2)
+if (!["app", "logs", "codex", "claude", "opencode", "publication", "deployments", "deployed", "cloud"].includes(argv[0] ?? "")) {
+  try {
+    parseArgs(argv)
+  } catch (error) {
+    process.stderr.write(`error: ${error instanceof Error ? error.message : String(error)}\n`)
+    process.exit(1)
+  }
+}
+
 type OnLoad = (args: { path: string }) => Promise<{ contents: string; loader: "js" }>
 declare const Bun: {
   plugin(plugin: { name: string; setup(build: { onLoad(options: { filter: RegExp }, load: OnLoad): void }): void }): void

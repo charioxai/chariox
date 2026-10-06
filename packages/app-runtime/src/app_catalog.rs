@@ -258,7 +258,15 @@ impl AppCatalog {
 pub fn is_installation_tool_name(name: &str, installation: &str) -> bool {
     name.strip_prefix("app_")
         .and_then(|rest| rest.rsplit_once('_'))
-        .is_some_and(|(local, _)| !local.is_empty() && tool_name(installation, local) == name)
+        .is_some_and(|(local, _)| {
+            !local.is_empty()
+                && local.len() <= 27
+                && local.as_bytes()[0].is_ascii_lowercase()
+                && local
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+                && tool_name(installation, local) == name
+        })
 }
 
 fn tool_name(installation: &str, local: &str) -> String {

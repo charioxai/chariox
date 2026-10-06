@@ -340,7 +340,7 @@ fn open_verified_package(package: &ManagedContextPackageExportResult) -> Result<
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
     }
     #[cfg(windows)]
     {
@@ -789,6 +789,17 @@ mod tests {
         package: ManagedContextPackageExportResult,
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn mp11_outbound_package_fifo_is_rejected_without_waiting() {
+        crate::test_support::assert_fifo_rejected(|path| {
+            let mut fixture = outbound_fixture(1);
+            fixture.package.package_path = path;
+            let result = open_verified_package(&fixture.package).is_err();
+            std::fs::remove_dir_all(fixture.root).unwrap();
+            result
+        });
+    }
     fn outbound_fixture(size: usize) -> OutboundFixture {
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-context-outbound-test-{}-{}",

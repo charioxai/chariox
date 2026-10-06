@@ -1213,7 +1213,7 @@ fn read_materialization_ownership(path: &Path) -> Result<MaterializationOwnershi
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
     }
     let file = options
         .open(path)
@@ -1294,7 +1294,7 @@ pub(super) fn snapshot_and_hash_archive(
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
     }
     #[cfg(windows)]
     {
@@ -1676,7 +1676,7 @@ fn read_publication_receipt(
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
     }
     let file = match options.open(path) {
         Ok(file) => file,
@@ -1901,7 +1901,8 @@ impl Drop for ImportCleanup {
     fn drop(&mut self) {
         if !self.committed {
             if let Err(error) = cleanup_materialization_transaction(&self.staging_root) {
-                tracing::error!(error = %error, "managed materialization rollback during import drop failed");
+                tracing::error!(error = %error, "managed materialization rollback during import drop failed; recovery journal retained");
+                return;
             }
             if let Some(path) = self.ownership_path.as_deref() {
                 match fs::remove_file(path) {
@@ -1967,4 +1968,68 @@ pub(crate) fn recover_development_context_publication_with_environment(
         }
     }
     Ok(receipt)
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_fifo_input_fails_without_waiting_for_a_writer() {
+    crate::test_support::assert_fifo_rejected(|path| {
+        read_materialization_ownership(&path).is_err()
+    });
+}
+
+#[cfg(test)]
+#[test]
+fn mp11_failed_materialization_cleanup_keeps_recovery_journal_and_ownership() {
+    let root = std::env::temp_dir().join(format!("mp11-recovery-{:016x}", rand::random::<u64>()));
+    let staging = root.join("staging");
+    fs::create_dir_all(&staging).unwrap();
+    let journal = staging.join(MATERIALIZATION_TRANSACTION_FILE);
+    let ownership = root.join("ownership.json");
+    fs::write(&journal, b"invalid synthetic journal").unwrap();
+    fs::write(&ownership, b"synthetic ownership").unwrap();
+    drop(ImportCleanup::new(staging, Some(ownership.clone())));
+    let preserved = journal.exists() && ownership.exists();
+    fs::remove_dir_all(root).unwrap();
+    assert!(preserved, "failed rollback destroyed its recovery proof");
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_fifo_archive_and_publication_receipt_inputs_fail_without_a_writer() {
+    crate::test_support::assert_fifo_rejected(|path| {
+        let snapshot = path.with_extension("snapshot");
+        snapshot_and_hash_archive(&path, &snapshot).is_err()
+    });
+    crate::test_support::assert_fifo_rejected(|path| read_publication_receipt(&path).is_err());
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_identity_conflict_keeps_recovery_proof_across_restart() {
+    let root = std::env::temp_dir().join(format!(
+        "mp11-identity-recovery-{:016x}",
+        rand::random::<u64>()
+    ));
+    let staging = root.join("staging");
+    let materializations = root.join("workspace");
+    let source = root.join("source");
+    let destination = materializations.join("repo");
+    let replacement = root.join("replacement");
+    for directory in [&staging, &materializations, &source, &replacement] {
+        fs::create_dir_all(directory).unwrap();
+    }
+    fs::write(replacement.join("user-file"), b"synthetic replacement").unwrap();
+    assert!(
+        test_reject_replaced_materialization(&staging, &source, &destination, &replacement)
+            .is_err()
+    );
+    let ownership = root.join("ownership.json");
+    fs::write(&ownership, b"synthetic ownership").unwrap();
+    drop(ImportCleanup::new(staging.clone(), Some(ownership.clone())));
+    assert!(staging.join(MATERIALIZATION_TRANSACTION_FILE).is_file() && ownership.is_file());
+    assert!(cleanup_materialization_transaction(&staging).is_err());
+    assert!(destination.join("user-file").is_file());
+    assert!(staging.join(MATERIALIZATION_TRANSACTION_FILE).is_file() && ownership.is_file());
+    fs::remove_dir_all(root).unwrap();
 }

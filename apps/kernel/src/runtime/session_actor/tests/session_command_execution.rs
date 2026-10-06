@@ -283,7 +283,10 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
             &session_id,
             "00000000000000000000000000000004",
             &first_snapshot.dom_nodes[0].element_ref,
-            vec![std::path::PathBuf::from("/workspace/report.txt")],
+            crate::runtime::browser_controller_file_transfer::BrowserUploadFiles::new(vec![
+                std::path::PathBuf::from("/workspace/report.txt"),
+            ])
+            .unwrap(),
         )
         .await
         .expect("upload should cross the controller boundary");

@@ -236,20 +236,7 @@ jobs:
           NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER }}
         run: |
-          trap 'rm -f "$RUNNER_TEMP/identity.p12" "$RUNNER_TEMP/notary.p8"' EXIT
-          keychain="$RUNNER_TEMP/release.keychain-db"
-          password=$(uuidgen)
-          security create-keychain -p "$password" "$keychain"
-          security set-keychain-settings -lut 3600 "$keychain"
-          security unlock-keychain -p "$password" "$keychain"
-          (umask 077; printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/identity.p12"; printf '%s' "$NOTARY_KEY" > "$RUNNER_TEMP/notary.p8")
-          security import "$RUNNER_TEMP/identity.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
-          security list-keychains -d user -s "$keychain"
-          security default-keychain -d user -s "$keychain"
-          xcrun notarytool store-credentials "$CHARIOX_NOTARY_PROFILE" --key "$RUNNER_TEMP/notary.p8" \
-            --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --keychain "$keychain"
-          echo "RELEASE_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          bash scripts/setup-release-keychain.sh
       # #678: Developer ID codesigning and notarization of a copy; #681: the runtime
       # inventory is then signed over the codesigned bytes, never before.
       - name: Codesign and notarize the executables
@@ -300,7 +287,7 @@ jobs:
       - name: Remove the temporary keychain
         if: always()
         run: |
-          [[ -z "${RELEASE_KEYCHAIN:-}" ]] || security delete-keychain "$RELEASE_KEYCHAIN"
+          node scripts/release-keychain-state.mjs cleanup "$RUNNER_TEMP"
       - uses: actions/upload-artifact@v4
         with:
           name: bundle-darwin-arm64

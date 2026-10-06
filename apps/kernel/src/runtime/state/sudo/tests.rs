@@ -64,12 +64,13 @@ pub(super) fn fixture_with_provider(script: Option<&str>) -> Fixture {
     );
     run.mark_running();
     run.set_runtime_mcp_auth_token(Some("sudo-fixture-bearer".into()));
+    // The kernel must admit the current run before its process can launch.
+    app.providers_mut().insert_run_for_test(run.clone());
     if script.is_some() {
         crate::app::ProviderLaunchProcessRuntime::new(&mut app)
             .spawn_for_launch(&run)
             .unwrap();
     }
-    app.providers_mut().insert_run_for_test(run.clone());
     app.agents_mut()
         .set_agent_runtime_profile_with_account_profile(
             agent.id(),

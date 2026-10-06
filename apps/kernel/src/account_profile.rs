@@ -4349,7 +4349,7 @@ fn read_bounded_regular_file_no_follow(
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     #[cfg(windows)]
     {
@@ -8902,4 +8902,12 @@ mod tests {
             .is_err());
         let _ = fs::remove_dir_all(root);
     }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_fifo_input_fails_without_waiting_for_a_writer() {
+    crate::test_support::assert_fifo_rejected(|path| {
+        read_bounded_regular_file_no_follow(&path, 1024, "fixture").is_err()
+    });
 }

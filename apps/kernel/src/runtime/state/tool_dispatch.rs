@@ -17,6 +17,16 @@ mod extension_registration_tool;
 mod extension_request_tool;
 mod home_connector_executor;
 mod home_extension_authorizer;
+pub(super) fn authorize_remote_home_context_for_peer(
+    state: &KernelRuntimeState,
+    context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
+) -> Result<crate::agent::AgentInstance, DaemonError> {
+    home_extension_authorizer::authorize_remote_home_context(
+        state,
+        context,
+        "authorize forwarded home context",
+    )
+}
 mod home_extension_execution_policy;
 mod home_mcp_proxy_executor;
 mod home_room_browser_runtime;
@@ -32,9 +42,9 @@ mod slice;
 pub(super) use slice::{
     capture_computer_secret_target, capture_room_environment_screenshot,
     execute_room_computer_observation, reset_room_computer_input,
-    run_room_clipboard_read_authorized, run_room_clipboard_write, run_room_keyboard_key,
-    run_room_keyboard_text, run_room_pointer_click, run_room_pointer_drag, run_room_pointer_move,
-    run_room_pointer_scroll, run_room_secret_text_input,
+    run_room_clipboard_read_authorized, run_room_clipboard_write, run_room_computer_hold,
+    run_room_keyboard_key, run_room_keyboard_text, run_room_pointer_click, run_room_pointer_drag,
+    run_room_pointer_move, run_room_pointer_scroll, run_room_secret_text_input,
 };
 mod worker_home_credential_client;
 mod worker_home_extension_client;
@@ -727,6 +737,7 @@ fn canonical_room_browser_runtime_tool(tool_name: &str) -> Option<&'static str> 
                 | SLICE_BROWSER_EVENTS_TOOL
                 | SLICE_BROWSER_DOWNLOADS_TOOL
                 | SLICE_BROWSER_UPLOAD_TOOL
+                | SLICE_BROWSER_ARTIFACT_TOOL
                 | SLICE_BROWSER_PERMISSION_TOOL
                 | SLICE_BROWSER_FIND_TOOL
                 | SLICE_BROWSER_TEXT_TOOL

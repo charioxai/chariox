@@ -206,7 +206,11 @@ async fn emit_relay_replay_gap_snapshot(
                 &event_stream_id,
                 KernelEvent::SessionSnapshot {
                     session: Box::new(projection.session),
-                    provider_run: Box::new(projection.provider_run),
+                    provider_run: Box::new(
+                        projection
+                            .provider_run
+                            .map(crate::provider::PublicProviderRun::from),
+                    ),
                     agent_activity: Box::new(projection.agent_activity),
                     agent_activity_revision: projection.metadata.last_event_id,
                 },

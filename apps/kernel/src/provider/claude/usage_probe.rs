@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{Read, Seek};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -12,7 +13,7 @@ use crate::error::DaemonError;
 use super::mcp_config::create_claude_runtime_files_root;
 
 const CLAUDE_USAGE_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
-const CLAUDE_USAGE_PROBE_DIAGNOSTIC_BYTES: usize = 4 * 1024;
+const CLAUDE_USAGE_PROBE_OUTPUT_BYTES: u64 = 1024 * 1024;
 
 pub(crate) fn probe_claude_account_usage(
     executable: &Path,
@@ -37,11 +38,17 @@ fn probe_claude_account_usage_with_timeout(
     let root = create_claude_runtime_files_root()?;
     let stdout_path = root.path().join("usage-result.json");
     let stderr_path = root.path().join("usage-stderr.log");
-    let stdout = fs::File::create(&stdout_path)
+    let stdout = private_probe_file(&stdout_path)
         .map_err(|error| probe_error(format!("failed to prepare Claude stdout: {error}")))?;
-    let stderr = fs::File::create(&stderr_path)
+    let stderr = private_probe_file(&stderr_path)
         .map_err(|error| probe_error(format!("failed to prepare Claude stderr: {error}")))?;
 
+    let mut stdout_metadata = stdout
+        .try_clone()
+        .map_err(|_| probe_error("failed to pin Claude stdout".into()))?;
+    let stderr_metadata = stderr
+        .try_clone()
+        .map_err(|_| probe_error("failed to pin Claude stderr".into()))?;
     let mut command = Command::new(executable);
     command.args([
         "-p",
@@ -71,43 +78,86 @@ fn probe_claude_account_usage_with_timeout(
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // A monitored spool alone can overshoot between polls. The child has a
+        // hard per-file cap as well; only this owned probe inherits the limit.
+        unsafe {
+            command.pre_exec(|| {
+                let limit = libc::rlimit {
+                    rlim_cur: CLAUDE_USAGE_PROBE_OUTPUT_BYTES as libc::rlim_t,
+                    rlim_max: CLAUDE_USAGE_PROBE_OUTPUT_BYTES as libc::rlim_t,
+                };
+                if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+
     let mut child = command
         .spawn()
         .map_err(|error| probe_error(format!("failed to start Claude: {error}")))?;
-    let status = match child.wait_timeout(timeout) {
-        Ok(Some(status)) => status,
-        Ok(None) => {
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        let overflow = [&stdout_metadata, &stderr_metadata]
+            .into_iter()
+            .any(|file| {
+                file.metadata().map_or(true, |metadata| {
+                    metadata.len() >= CLAUDE_USAGE_PROBE_OUTPUT_BYTES
+                })
+            });
+        if overflow {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(probe_error(format!(
-                "Claude did not report usage within {} seconds{}",
-                timeout.as_secs(),
-                diagnostic_suffix(&stderr_path)
-            )));
+            return Err(probe_error("Claude usage output limit exceeded".into()));
         }
-        Err(error) => {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(probe_error(format!(
-                "failed to wait for Claude usage: {error}"
-            )));
+            return Err(probe_error("Claude usage probe timed out".into()));
+        }
+        match child.wait_timeout(remaining.min(Duration::from_millis(50))) {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(probe_error("failed to wait for Claude usage".into()));
+            }
         }
     };
+    if [&stdout_metadata, &stderr_metadata]
+        .into_iter()
+        .any(|file| {
+            file.metadata().map_or(true, |metadata| {
+                metadata.len() >= CLAUDE_USAGE_PROBE_OUTPUT_BYTES
+            })
+        })
+    {
+        return Err(probe_error("Claude usage output limit exceeded".into()));
+    }
     if !status.success() {
         return Err(probe_error(format!(
-            "Claude exited before reporting usage ({status}){}",
-            diagnostic_suffix(&stderr_path)
+            "Claude exited before reporting usage ({status})"
         )));
     }
-
-    let output = fs::read(&stdout_path)
-        .map_err(|error| probe_error(format!("failed to read Claude usage: {error}")))?;
-    let result: serde_json::Value = serde_json::from_slice(&output).map_err(|error| {
-        probe_error(format!(
-            "Claude returned invalid usage JSON: {error}{}",
-            diagnostic_suffix(&stderr_path)
-        ))
-    })?;
+    let mut output = Vec::new();
+    stdout_metadata
+        .rewind()
+        .map_err(|_| probe_error("failed to rewind Claude usage".into()))?;
+    stdout_metadata
+        .take(CLAUDE_USAGE_PROBE_OUTPUT_BYTES + 1)
+        .read_to_end(&mut output)
+        .map_err(|_| probe_error("failed to read Claude usage".into()))?;
+    if output.len() as u64 > CLAUDE_USAGE_PROBE_OUTPUT_BYTES {
+        return Err(probe_error("Claude usage output limit exceeded".into()));
+    }
+    let result: serde_json::Value = serde_json::from_slice(&output)
+        .map_err(|_| probe_error("Claude returned invalid usage JSON".into()))?;
     let text = validated_claude_usage_result(&result)?;
     let mut usage = claude_usage_snapshot_from_text(text).ok_or_else(|| {
         probe_error("Claude did not return subscription usage windows".to_string())
@@ -197,21 +247,6 @@ fn usage_percent(line: &str, prefix: &str) -> Option<f64> {
     (percent.is_finite() && (0.0..=100.0).contains(&percent)).then_some(percent)
 }
 
-fn diagnostic_suffix(path: &Path) -> String {
-    let Ok(mut bytes) = fs::read(path) else {
-        return String::new();
-    };
-    if bytes.len() > CLAUDE_USAGE_PROBE_DIAGNOSTIC_BYTES {
-        bytes.drain(..bytes.len() - CLAUDE_USAGE_PROBE_DIAGNOSTIC_BYTES);
-    }
-    let diagnostic = terminal_diagnostic(&bytes);
-    if diagnostic.is_empty() {
-        String::new()
-    } else {
-        format!("; Claude stderr: {diagnostic}")
-    }
-}
-
 fn validate_claude_probe_environment(
     environment: &BTreeMap<String, String>,
     profile_home_is_supported: bool,
@@ -229,6 +264,7 @@ fn linux_profile_home_is_supported() -> bool {
     cfg!(target_os = "linux")
 }
 
+#[cfg(test)]
 fn terminal_diagnostic(output: &[u8]) -> String {
     let text = String::from_utf8_lossy(output);
     let mut cleaned = String::with_capacity(text.len());
@@ -439,4 +475,52 @@ process.stdout.write(JSON.stringify({
             "Login required now"
         );
     }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_usage_probe_rejects_stdout_and_stderr_bursts_before_allocating_them() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("mp11-usage-{:016x}", rand::random::<u64>()));
+    fs::create_dir(&root).unwrap();
+    for pipe in ["stdout", "stderr"] {
+        let executable = root.join("fixture.mjs");
+        fs::write(
+            &executable,
+            format!("#!/usr/bin/env node\nprocess.{pipe}.write(Buffer.alloc(8388608));\n"),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let environment = BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".to_string(),
+            root.join("profile").display().to_string(),
+        )]);
+        let start = std::time::Instant::now();
+        let error = probe_claude_account_usage_with_timeout(
+            &executable,
+            "synthetic",
+            &environment,
+            Duration::from_secs(2),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("output limit"),
+            "burst was not rejected at the output boundary"
+        );
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn private_probe_file(path: &Path) -> std::io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    options.open(path)
 }

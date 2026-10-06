@@ -192,3 +192,44 @@ fn authenticated_fixture_keeps_new_unavailable_accounts_blocked() {
         )
         .is_err());
 }
+
+/// MP-11: exercise FIFO rejection without leaving a blocked test thread behind.
+#[cfg(unix)]
+pub(crate) fn assert_fifo_rejected(reader: impl FnOnce(PathBuf) -> bool + Send + 'static) {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::OpenOptionsExt;
+    let root = std::env::temp_dir().join(format!("mp11-fifo-{:016x}", rand::random::<u64>()));
+    std::fs::create_dir(&root).unwrap();
+    let fifo = root.join("input");
+    let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let (send, receive) = std::sync::mpsc::channel();
+    let input = fifo.clone();
+    let thread = std::thread::spawn(move || {
+        send.send(reader(input)).unwrap();
+    });
+    let outcome = receive.recv_timeout(std::time::Duration::from_secs(1));
+    let timely = outcome.is_ok();
+    let settled = if outcome.is_ok() {
+        outcome
+    } else {
+        // Release an old blocking open/read without leaving a reader behind.
+        use std::io::Write;
+        let mut unblock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .open(&fifo)
+            .unwrap();
+        unblock.write_all(b"synthetic-fifo-fixture").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        drop(unblock);
+        receive.recv_timeout(std::time::Duration::from_secs(2))
+    };
+    let joined = thread.join();
+    std::fs::remove_dir_all(root).unwrap();
+    joined.unwrap();
+    let refused = settled.expect("released FIFO reader should finish");
+    assert!(timely, "FIFO open blocked before regular-file validation");
+    assert!(refused, "FIFO was admitted as regular input");
+}

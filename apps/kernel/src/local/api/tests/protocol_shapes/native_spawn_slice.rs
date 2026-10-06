@@ -250,6 +250,8 @@ fn local_daemon_protocol_turn_undo_and_agent_fork_shape_is_versioned() {
     let mut run_value = serde_json::to_value(run).expect("provider run should encode");
     run_value["started_at_ms"] = serde_json::json!(1_000);
     run_value["last_activity_at_ms"] = serde_json::json!(1_000);
+    let run: crate::provider::RuntimeProviderRun =
+        serde_json::from_value(run_value).expect("private provider run should decode");
     let mut session_value = serde_json::to_value(crate::session::RuntimeSession::new(
         "session-1",
         None,
@@ -264,7 +266,7 @@ fn local_daemon_protocol_turn_undo_and_agent_fork_shape_is_versioned() {
     let fork_response = LocalDaemonResponse::AgentForked {
         source_agent_id: "agent-1".to_string(),
         agent,
-        provider_run: serde_json::from_value(run_value).expect("provider run should decode"),
+        provider_run: (&run).into(),
         session: serde_json::from_value(session_value).expect("session snapshot should decode"),
     };
 
@@ -282,11 +284,15 @@ fn local_daemon_protocol_turn_undo_and_agent_fork_shape_is_versioned() {
         snapshot.pointer("/3/AgentForked/provider_run/agent_instance_id"),
         Some(&serde_json::json!("agent-2"))
     );
+    assert_eq!(
+        snapshot.pointer("/3/AgentForked/provider_run/pty_env"),
+        None
+    );
     let serialized = serde_json::to_string(&snapshot).expect("turn action snapshot should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "d2b82ed473d960af8e53fbd35b4ecb2ed9ebafc67d0d3fecf4e02932d1a85569"
+        "af59e1fd1b99bef8f8c2e8595b856d1d1b5016a8f1bad4aa5bc332e3f8a8cec7"
     );
 }
 

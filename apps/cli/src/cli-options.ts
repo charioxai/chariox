@@ -8,7 +8,6 @@ import type {
   CliOptions,
 } from "./cli-types.js"
 import { cliAppUsage, tuiAppHelp } from "./app-command-catalog.js"
-import { describeCliError } from "./runtime.js"
 
 export function parseArgs(args: string[]): CliOptions {
   const options: CliOptions = {
@@ -17,6 +16,7 @@ export function parseArgs(args: string[]): CliOptions {
     accountProfile: "default",
     effort: "",
   }
+  let helpRequested = false
   let explicitRelayToken: string | undefined
   let relayTokenSource: "argv" | "environment" | null = null
 
@@ -24,7 +24,7 @@ export function parseArgs(args: string[]): CliOptions {
     const arg = args[index] ?? ""
     const next = () => {
       const value = args[index + 1]
-      if (!value) {
+      if (!value || value.startsWith("-")) {
         throw new Error(`missing value for ${arg}`)
       }
       index += 1
@@ -107,8 +107,8 @@ export function parseArgs(args: string[]): CliOptions {
         break
       case "--help":
       case "-h":
-        printUsage()
-        process.exit(0)
+        helpRequested = true
+        break
       default:
         if (isTerminalPairingLink(arg)) {
           applyTerminalPairingLinkOptions(options, arg)
@@ -118,6 +118,10 @@ export function parseArgs(args: string[]): CliOptions {
     }
   }
 
+  if (helpRequested) {
+    printUsage()
+    process.exit(0)
+  }
   if (explicitRelayToken) options.relayToken = explicitRelayToken
   if (options.relayToken === "operator-client-token-required") throw new Error("Scoped self-host pairing requires an operator-issued CLIENT transport token; supply --relay-token-env NAME. The kernel credential is private.")
   validateOptions(options)
@@ -207,7 +211,7 @@ function parseTerminalPairingLink(pairingLink: string) {
   try {
     decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<string, unknown>
   } catch (error) {
-    throw new Error(`invalid terminal pairing link: ${describeCliError(error)}`)
+    throw new Error(`invalid terminal pairing link: ${error instanceof Error ? error.message : String(error)}`)
   }
   const relayUrl = typeof decoded.relay_url === "string" ? decoded.relay_url : ""
   const relayToken = typeof decoded.relay_token === "string" ? decoded.relay_token : ""

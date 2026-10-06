@@ -22,6 +22,7 @@ const DEFAULT_ENV_ALLOWLIST = new Set([
 
 const SECRET_NAME_PATTERN = /(^|_)(TOKEN|SECRET|PASSWORD|PASS|API_KEY|PRIVATE_KEY|ACCESS_KEY)$/i
 
+// Prototype results are nonacceptance evidence; production uses the kernel HTTP secret boundary.
 export class SecretHandoffHarness {
   constructor({ credentials = {}, kernelEnv = process.env, vault = {} } = {}) {
     this.credentials = credentials
@@ -45,9 +46,6 @@ export class SecretHandoffHarness {
       if (SECRET_NAME_PATTERN.test(name)) continue
       scrubbed[name] = value
     }
-    if (!scrubbed.PATH && process.env.PATH) scrubbed.PATH = process.env.PATH
-    if (!scrubbed.HOME && process.env.HOME) scrubbed.HOME = process.env.HOME
-    if (!scrubbed.TMPDIR && process.env.TMPDIR) scrubbed.TMPDIR = process.env.TMPDIR
     return scrubbed
   }
 
@@ -98,6 +96,7 @@ export class SecretHandoffHarness {
   async httpRequestWithCredential({ credential_id, method = "GET", url, headers = {}, body = null }) {
     const credential = this.validateUse(credential_id, { url, use: "http" })
     const secret = await this.resolveSecret(credential_id)
+    const derived = [secret]
     const requestHeaders = { ...headers }
     const target = new URL(url)
     const requestBody = body == null
@@ -108,11 +107,14 @@ export class SecretHandoffHarness {
 
     if (credential.injection?.kind === "header") {
       requestHeaders[credential.injection.name] = renderTemplate(credential.injection.value, secret)
+      derived.push(requestHeaders[credential.injection.name])
     } else if (credential.injection?.kind === "query") {
       target.searchParams.set(credential.injection.name, secret)
     } else if (credential.injection?.kind === "basic") {
       const username = credential.injection.username ?? ""
-      requestHeaders.authorization = `Basic ${Buffer.from(`${username}:${secret}`).toString("base64")}`
+      const basic = `${username}:${secret}`
+      requestHeaders.authorization = `Basic ${Buffer.from(basic).toString("base64")}`
+      derived.push(basic, requestHeaders.authorization, Buffer.from(basic).toString("base64"))
     } else if (credential.injection?.kind === "hmac") {
       const timestamp = String(Math.floor(Date.now() / 1000))
       const bodyHash = createHash("sha256").update(requestBody ?? "").digest("hex")
@@ -125,20 +127,58 @@ export class SecretHandoffHarness {
       const signature = createHmac("sha256", secret).update(canonical).digest("hex")
       requestHeaders[credential.injection.timestamp_header ?? "x-chariox-timestamp"] = timestamp
       requestHeaders[credential.injection.signature_header ?? "x-chariox-signature"] = signature
+      derived.push(signature)
     } else {
       throw new Error(`unsupported injection kind for ${credential_id}`)
     }
 
-    const response = await fetch(target, {
-      method,
-      headers: requestHeaders,
-      body: requestBody,
-    })
-    const text = await response.text()
-    return {
-      status: response.status,
-      body: parseMaybeJson(text),
-    }
+    try {
+      const response = await fetch(target, {
+        method, headers: requestHeaders, body: requestBody, redirect: "error",
+        signal: AbortSignal.timeout(15000),
+      })
+      const reader = response.body?.getReader()
+      let size = 0
+      const chunks = []
+      if (reader) {
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            size += value.byteLength
+            if (size > 65536) throw new Error("prototype response exceeds byte limit")
+            chunks.push(Buffer.from(value))
+          }
+        } finally { await reader.cancel() }
+      }
+      const values = new Set()
+      for (const value of derived) {
+        if (!value) continue
+        values.add(value)
+        values.add(encodeURIComponent(value))
+        values.add(new URLSearchParams({ v: value }).toString().slice(2))
+        values.add(Buffer.from(value).toString("base64"))
+        values.add(Buffer.from(value).toString("base64url"))
+        values.add(Buffer.from(value).toString("hex"))
+        values.add(Buffer.from(value).toString("hex").toUpperCase())
+      }
+      const ordered = [...values].sort((a, b) => b.length - a.length)
+      const scrub = value => {
+        if (typeof value === "string") {
+          let result = ""
+          for (let index = 0; index < value.length;) {
+            const match = ordered.find(secret => value.startsWith(secret, index))
+            if (match) { result += "[redacted]"; index += match.length }
+            else result += value[index++]
+          }
+          return result
+        }
+        if (Array.isArray(value)) return value.map(scrub)
+        if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [scrub(key), scrub(item)]))
+        return value
+      }
+      return { status: response.status, body: scrub(parseMaybeJson(Buffer.concat(chunks).toString("utf8"))) }
+    } catch { throw new Error("prototype HTTP request failed") }
   }
 
   async sendSecretToTerminal({ credential_id, child, pattern = "Password:", append_newline = true }) {

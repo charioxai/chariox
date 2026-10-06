@@ -66,7 +66,7 @@ impl KernelRuntimeState {
         } else {
             None
         };
-        self.with_app_side_effect(operation).await
+        self.with_authorized_app_side_effect(operation).await
     }
 
     pub(crate) fn project_environment_for_shell(

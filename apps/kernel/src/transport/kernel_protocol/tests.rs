@@ -1,6 +1,7 @@
 use super::*;
 use crate::agent::RemoteAgentBinding;
 use crate::agent::{AgentInstance, GridPosition};
+use crate::provider::RuntimeProviderRun;
 use crate::runtime::projection::ProjectionMetadata;
 use crate::session::{
     PromptQueueItem, PromptStatus, RuntimeInteraction, RuntimeInteractionChoice,
@@ -48,6 +49,18 @@ fn relay_transport_errors_keep_the_stable_local_transport_projection() {
     assert_eq!(mapped.code, "local_transport_error");
     assert_eq!(mapped.message, business_error.to_string());
     assert!(!mapped.retryable);
+}
+
+#[test]
+fn verified_cleanup_absence_keeps_existing_wire_error_codes() {
+    let error = DaemonError::RelayPeerCleanupAbsent {
+        worker_kernel_id: "worker".into(),
+        resource_id: "agent".into(),
+        code: "leased_agent_not_found",
+    };
+    let local = map_kernel_error(&error);
+    assert_eq!(local.code, "local_transport_error");
+    assert!(!local.retryable);
 }
 
 #[test]

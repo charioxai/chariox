@@ -1,3 +1,4 @@
+import {requireScopedProviderPath,readBoundedPrivateInput} from "./private-drill-runtime.mjs"
 import { spawn } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { readFile, readdir, stat, writeFile } from "node:fs/promises"
@@ -32,10 +33,16 @@ export async function snapshotProviderTranscript({ provider, providerSessionId, 
       reason: `no ${provider} transcript path matched provider session ${providerSessionId}`,
     }
   }
-  const text = await readFile(path, "utf8")
+  const text = await readBoundedPrivateInput(path)
   const artifactPath = pathJoin(providerRoot, `provider-transcript${pathExt(path)}`)
-  await writeFile(artifactPath, text, "utf8")
+
   const semanticEvidence = semanticJsonlTranscriptEvidence(provider, text, { finalMarker, promptMarker })
+  const projection = semanticEvidence ?? {
+    assistantMarkersSeen: requiredAssistantMarkers.filter(marker => text.includes(marker)),
+    toolMarkersSeen: requiredToolMarkers.filter(marker => text.includes(marker)),
+    finalSeen: text.includes(finalMarker), promptOccurrences: countOccurrences(text,promptMarker),
+  }
+  await writeFile(artifactPath,JSON.stringify(projection),{mode:0o600})
   return {
     surface: "provider",
     found: true,
@@ -79,7 +86,7 @@ export async function snapshotOpenCodeSqliteTranscript({ providerSessionId, prov
     const text = JSON.stringify(rows, null, 2)
     const transcriptEvidence = classifyOpenCodeSqliteTranscriptRows(rows, { finalMarker, promptMarker })
     const artifactPath = pathJoin(providerRoot, "provider-transcript.sqlite.json")
-    await writeFile(artifactPath, text, "utf8")
+    await writeFile(artifactPath,JSON.stringify(transcriptEvidence),{mode:0o600})
     return {
       surface: "provider",
       found: true,
@@ -358,22 +365,12 @@ export async function findProviderTranscriptPath(provider, providerSessionId) {
   return null
 }
 
-export function providerTranscriptRoots(provider) {
-  const home = os.homedir()
-  if (provider === "codex") {
-    return [process.env.CODEX_HOME || path.join(home, ".codex")]
-  }
-  if (provider === "claude") {
-    return [process.env.CLAUDE_HOME || path.join(home, ".claude")]
-  }
-  if (provider === "opencode") {
-    return dedupe([
-      process.env.OPENCODE_DATA_HOME,
-      process.env.XDG_DATA_HOME ? path.join(process.env.XDG_DATA_HOME, "opencode") : null,
-      path.join(home, ".local", "share", "opencode"),
-      path.join(home, ".config", "opencode"),
-    ].filter(Boolean))
-  }
+export function providerTranscriptRoots(provider,environment=process.env) {
+  if(provider==="codex")return [requireScopedProviderPath(environment,"CODEX_HOME")]
+  if(provider==="claude")return [requireScopedProviderPath(environment,"CLAUDE_CONFIG_DIR")]
+  if(provider==="opencode")return [environment.OPENCODE_DATA_HOME
+    ?requireScopedProviderPath(environment,"OPENCODE_DATA_HOME")
+    :path.join(requireScopedProviderPath(environment,"XDG_DATA_HOME"),"opencode")]
   return []
 }
 
@@ -399,13 +396,7 @@ export async function providerTranscriptCandidates(provider, root) {
 }
 
 export async function providerTranscriptMatches(provider, file, providerSessionId) {
-  if (path.basename(file) === `${providerSessionId}.json` || path.basename(file) === `${providerSessionId}.jsonl`) {
-    return true
-  }
-  if (path.basename(file).includes(providerSessionId)) {
-    return true
-  }
-  const text = await readFile(file, "utf8").catch(() => "")
+  const text = await readBoundedPrivateInput(file).catch(() => "")
   if (!text) return false
   if (provider === "codex") {
     return jsonlValues(text).some((value) => value?.type === "session_meta"
@@ -714,7 +705,7 @@ export function metadataAvailability({ provider, context, metadata, observed, su
 }
 
 export function readArtifactTextSync(transcript) {
-  const artifactPath = transcript.artifactPath ?? transcript.path
+  const artifactPath = transcript.artifactPath
   if (!artifactPath) return ""
   try {
     return readFileSync(artifactPath, "utf8")
