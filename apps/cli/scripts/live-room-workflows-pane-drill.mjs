@@ -19,20 +19,23 @@ const unwrap = (response, key) => { if (response.Error) throw new Error(response
 await mkdir(args.output, { recursive: true, mode: 0o700 })
 await mkdir(args['state-parent'], { recursive: true, mode: 0o700 })
 const state = await mkdtemp(path.join(args['state-parent'], 'workflow-'))
-const workspace = path.join(state, 'workspace')
-await mkdir(workspace)
+const workspace = await mkdtemp('/root/work/agent-relost-drill-')
+for(const gitArgs of [['init','-q'],['-c','user.name=Chariox relost drill','-c','user.email=noreply@openai.com','commit','--allow-empty','-q','-m','MP-08 isolated TUI drill workspace [skip ci]']]) {
+  const git=spawnOwned('git',gitArgs,{cwd:workspace,stdio:'ignore'})
+  await new Promise((resolve,reject)=>git.once('exit',code=>code===0?resolve():reject(new Error('MP-08 Git fixture initialization failed'))))
+}
 const ports = []
 for (let i = 0; i < 5; i++) {
   const server = net.createServer(); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   ports.push(server.address().port); await new Promise(resolve => server.close(resolve))
 }
-const env = { ...process.env, HOME: path.join(state, 'user'), CHARIOX_HOME: path.join(state, 'kernel'),
+const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('CHARIOX_'))), HOME: path.join(state, 'user'), CHARIOX_HOME: path.join(state, 'kernel'),
   XDG_CONFIG_HOME: path.join(state, 'config'), XDG_STATE_HOME: path.join(state, 'state'),
   XDG_DATA_HOME: path.join(state, 'data'), XDG_CACHE_HOME: path.join(state, 'cache'),
   CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]),
   CHARIOX_CODEX_PORT: String(ports[2]), CHARIOX_OPENCODE_PORT: String(ports[3]),
   CHARIOX_RELAY_PORT: String(ports[4]), CHARIOX_LOG_DIR: path.join(state,'logs'),
-  CHARIOX_DAEMON_ID: `relost-${process.pid}`, CHARIOX_DAEMON_SOCKET: path.join(state, 'kernel.sock'),
+  CHARIOX_DAEMON_SOCKET: path.join(state, 'kernel.sock'),
   TERM: 'xterm-256color', COLORTERM: 'truecolor' }
 for (const key of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'OPENCODE_CONFIG_DIR', 'CHARIOX_RELAY_URL', 'CHARIOX_RELAY_TOKEN', 'CHARIOX_CLOUD_PROFILE', 'CHARIOX_CLOUD_TOKEN', 'CHARIOX_CLOUD_RELAY_CONFIG_JSON', 'CHARIOX_CLOUD_RELAY_CONFIG_PATH']) delete env[key]
 const receipt = { mpItems: ['MP-08','MP-10','MP-11'], source: args.source, clientSource: args['client-source'],
@@ -134,6 +137,7 @@ try {
   await client?.close().catch(()=>{})
   for(const child of [kernel,relay])if(child){signalOwnedProcessGroup(child,'SIGTERM');await sleep(300);if(child.exitCode===null)signalOwnedProcessGroup(child,'SIGKILL')}
   await rm(state,{recursive:true,force:true})
+  await rm(workspace,{recursive:true,force:true})
   assert.ok([terminal,kernel,relay].filter(Boolean).every(child=>child.exitCode!==null||child.signalCode!==null),'MP-11 owned process cleanup failed')
   receipt.cleanup='owned session ended, TUI/kernel/relay stopped, disposable state removed; linked account left in place'
   await resources()
