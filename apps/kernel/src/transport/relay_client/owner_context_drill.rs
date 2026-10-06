@@ -514,22 +514,25 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
     // the router assumes an authenticated identity or calls Cloud.
     let mut wrong_source_key = identity.clone();
     wrong_source_key.public_key_thumbprint = Some("f".repeat(64));
-    let key_refusal = send_managed_peer_request(
-        &harness,
-        &source.daemon_id,
-        &wrong_source_key,
+    let wrong_key_request = relay_crypto::encrypt_payload_for_peer(
         &source.relay_private_key,
         &target.relay_public_key,
-        arm.clone(),
+        &serde_json::to_vec(&arm).unwrap(),
+    )
+    .unwrap();
+    let key_refusal = handle_daemon_peer_request(
+        &router,
+        &state,
+        &outgoing_tx,
+        &source.daemon_id,
+        Some(wrong_source_key),
+        wrong_key_request,
     )
     .await;
-    assert!(matches!(
-        key_refusal,
-        RelayPeerResponse::ManagedContextImportFailed {
-            retryable: false,
-            ..
-        }
-    ));
+    assert!(key_refusal.encrypted_response.is_none());
+    assert!(key_refusal
+        .error
+        .is_some_and(|error| error.code == "unauthorized" && !error.retryable));
     let refused = send_managed_peer_request(
         &harness,
         &source.daemon_id,
