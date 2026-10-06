@@ -224,7 +224,10 @@ try {
       const limit=frame.kind==='png'?0:64;
       let opaque=true;for(let i=0;i<pixels.length;i+=4)if(pixels[i]>limit||pixels[i+1]>limit||pixels[i+2]>limit||pixels[i+3]!==255)opaque=false;
       mdProtection.frames++;mdProtection.violations+=Number(!opaque);mdProtection.kinds[frame.kind]=(mdProtection.kinds[frame.kind]??0)+1;
-      if(!opaque&&mdProtection.failures.length<16)mdProtection.failures.push({sequence:frame.sequence,kind:frame.kind,document:frame.document_id,pixel:Array.from(pixels.slice(0,4))});
+      if(!opaque&&mdProtection.failures.length<16){
+        let maximum=0,above=0;for(let i=0;i<pixels.length;i+=4){maximum=Math.max(maximum,pixels[i],pixels[i+1],pixels[i+2]);if(pixels[i]>limit||pixels[i+1]>limit||pixels[i+2]>limit)above++;}
+        mdProtection.failures.push({sequence:frame.sequence,kind:frame.kind,document:frame.document_id,pixel:Array.from(pixels.slice(0,4)),maximum,above,png:MDDisplay.canvas.toDataURL('image/png')});
+      }
     }
     const sample={sequence:frame.sequence,kind:frame.kind,drawn_ms:stamp(),content_changed:motionSamples.sample(MDDisplay.canvas)};window.mdPresentation=sample;mdPresentations.push(sample);
     requestAnimationFrame(()=>{
@@ -383,6 +386,9 @@ try {
  if(errors.length)throw errors[0];
  if(process.env.MD_PROTECTED==='1'){
   receipt.protected_presentations=await page.evaluate(()=>mdProtection);
+  for(const failure of receipt.protected_presentations.failures){
+   await writeFile(path.join(output,'protected-failure-'+failure.sequence+'.png'),Buffer.from(failure.png.split(',')[1],'base64'));delete failure.png;
+  }
   if(!receipt.protected_presentations.frames||receipt.protected_presentations.violations)throw Error('MP-11: an encoded/displayed frame exposed a protected region');
  }
  receipt.status='PASS_LOCAL_COMPONENT';
