@@ -72,7 +72,7 @@ const resources = async () => {
 await resources()
 let resourceFailure
 const resourceMonitor = setInterval(()=>resources().catch(error=>{resourceFailure=error}),5000)
-let kernel, relay, terminal, client, sessionId, noiseRoot
+let kernel, relay, terminal, client, sessionId, noiseRoot, progressMonitor
 let buffer = '', nextId = 0
 const pending = new Map()
 const terminalCommand = (action, fields = {}) => new Promise((resolve,reject) => {
@@ -192,6 +192,13 @@ try {
       await capture(label+'-command-running',text=>text.includes('1 running')&&text.includes('[Start · Enter]'))
       // User action is a real TUI key. Time starts at the PTY write, before
       // the TUI/relay/kernel process the control; it does not start at an IPC call.
+      // Sample the producer concurrently with the control path: waiting for
+      // state/capture first would misattribute their latency to process exit.
+      const progressSamples = []
+      progressMonitor = setInterval(async()=>{
+        const value = await readFile(path.join(noiseRoot,marker),'utf8').catch(()=>null)
+        if(value !== null)progressSamples.push({at:Date.now(),value})
+      },20)
       const control = await raceKey(action === 'pause' ? '\x10' : '\x13')
       const sample = {round:round+1,action,runId,command,controlSentAtMs:control.sentAtMs,progressBeforeControl:progress}
       receipt.noisyInterrupts.push(sample)
@@ -224,6 +231,10 @@ try {
       sample.status=run.status
       assert.equal(run.status.toLowerCase(),action === 'pause' ? 'paused' : 'stopped')
       await capture(label+'-settled',text=>text.includes('0 running')&&text.includes('[Start · Enter]'))
+      // MP-08: require an unchanged producer for 500ms after the 1s cutoff.
+      await sleep(Math.max(0,control.sentAtMs+1600-Date.now()))
+      clearInterval(progressMonitor)
+      sample.progressSamples=progressSamples
       // Output producers must have stopped, not merely their visible cards.
       let after = await readFile(path.join(noiseRoot,marker),'utf8')
       let unchangedSince = Date.now()
@@ -233,8 +244,13 @@ try {
         if(current !== after) { after=current; unchangedSince=Date.now() }
         if(Date.now()-unchangedSince>=500)break
       } while(Date.now()<control.sentAtMs+5000)
-      sample.producerStopped=Date.now()-unchangedSince>=500
-      sample.stopToProducerStoppedMs=sample.producerStopped ? unchangedSince-control.sentAtMs : null
+      const firstAfterBudget=progressSamples.find(entry=>entry.at>=control.sentAtMs+1000)
+      const tail=progressSamples.filter(entry=>entry.at>=control.sentAtMs+1000)
+      sample.producerStopped=Boolean(firstAfterBudget && tail.at(-1).at-firstAfterBudget.at>=500
+        && tail.every(entry=>entry.value===firstAfterBudget.value))
+      let lastChange=control.sentAtMs
+      for(let i=1;i<progressSamples.length;i++)if(progressSamples[i].value!==progressSamples[i-1].value)lastChange=progressSamples[i].at
+      sample.stopToProducerStoppedMs=sample.producerStopped ? lastChange-control.sentAtMs : null
       await writeFile(path.join(args.output,label+'-timing.json'),JSON.stringify({mpItems:receipt.mpItems,...sample},null,2)+'\n',{mode:0o600})
       if(!sample.producerStopped)receipt.noisyProducerFailures.push({round:round+1,action,
         seam:'provider turn ended but shell output continued',stopToInterruptSentMs:sample.stopToInterruptSentMs,
@@ -346,7 +362,9 @@ try {
   assert.ok(completionVisible,'MP-08 provider completion must be visible in its real TUI agent pane')
   // Finish the other requested controls and provider completion, but retain
   // a RED acceptance result if any shell outlived its cancellation budget.
-  assert.equal(receipt.noisyProducerFailures?.length ?? 0,0,'MP-08 noisy shell output continued beyond five-second cancellation budget')
+  const latencies=(receipt.noisyInterrupts??[]).map(sample=>sample.stopToInterruptSentMs).filter(Number.isFinite).sort((a,b)=>a-b)
+  receipt.sendLatency={samples:latencies.length,p95Ms:latencies[Math.ceil(latencies.length*0.95)-1],maxMs:latencies.at(-1),budgetMs:1000}
+  assert.equal(receipt.noisyProducerFailures?.length ?? 0,0,'MP-08 noisy shell output continued beyond one-second cancellation budget')
   assert.equal(receipt.noisyControlFailures?.length ?? 0,0,'MP-08 noisy control exceeded interrupt or turn-completion budget')
   receipt.status=receipt.expectedRed?'RED':'GREEN'
 } catch(error) {
@@ -356,6 +374,7 @@ try {
   else process.exitCode=1
 } finally {
   clearInterval(resourceMonitor)
+  clearInterval(progressMonitor)
   if(tracingInterrupts) {
     const traces=[]
     for(const name of await readdir(path.join(state,'logs')).catch(()=>[])) {
