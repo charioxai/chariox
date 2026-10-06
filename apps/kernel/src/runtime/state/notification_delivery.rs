@@ -70,11 +70,10 @@ impl KernelRuntimeState {
                             .provider_store
                             .run_uses_structured_prompt_io(&run)
                     });
-            if (remote.is_some() || structured)
-                && self
-                    .owned
-                    .mark_notification_submit(&session, &injection, remote.as_ref(), structured)
-                    .is_err()
+            if self
+                .owned
+                .mark_notification_submit(&session, &injection, remote.as_ref())
+                .is_err()
             {
                 continue;
             }
@@ -134,7 +133,7 @@ impl KernelRuntimeState {
                         self.owned
                             .attachment_store
                             .list_session_attachment_ids(&session),
-                        "notification_inject_retry: notification remains durably pending",
+                        "notification_inject_uncertain: held until acknowledgement or expiry",
                     );
                 }
             }
@@ -277,7 +276,6 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         injection: &Injection,
         remote: Option<&crate::agent::RemoteAgentBinding>,
-        structured: bool,
     ) -> Result<(), DaemonError> {
         self.durable_state_store
             .with_workflow_runtime_transition_lock(|| {
@@ -318,9 +316,10 @@ impl KernelRuntimeOwnedState {
                         worker_provider_run_id: injection.dispatch.provider_run_id.clone(),
                     })
                     .map_err(|_| notification_error("cannot encode injection identity"))?;
-                } else if structured {
-                    // Persist before mailbox dispatch. Across restart there is no
-                    // proof that this original provider/turn did not consume it.
+                } else {
+                    // Every local path persists the same intent before I/O, including
+                    // native bridges and PTY writers that can finish after an error.
+                    // Neither a restart nor an ended turn proves non-acceptance.
                     saved["submit_epoch"] =
                         serde_json::json!(self.provider_store.structured_submit_epoch());
                 }
