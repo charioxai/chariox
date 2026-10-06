@@ -1,4 +1,8 @@
 //! MP-08 / MP-11: fail-closed checks before packaging and before target mutation.
+#[path = "credential_free/shell.rs"]
+mod shell;
+use shell::{credential_text, unsupported_shell};
+
 use super::kernel::{KernelContextPayload, KernelExtensionDependency};
 use super::owner_managed::admission_error;
 use crate::error::DaemonError;
@@ -38,83 +42,6 @@ fn credential_url(url: &url::Url) -> bool {
         })
 }
 
-fn credential_text(text: &str) -> bool {
-    let sensitive = |key: &str| {
-        let key = key.to_ascii_lowercase().replace('-', "_");
-        [
-            "password",
-            "passwd",
-            "secret",
-            "token",
-            "credential",
-            "private_key",
-            "api_key",
-            "apikey",
-            "authorization",
-            "access_key",
-        ]
-        .iter()
-        .any(|name| key.contains(name))
-    };
-    text.lines().any(|line| {
-        let line = line.trim();
-        let line = line
-            .strip_prefix("export ")
-            .or_else(|| line.strip_prefix("set "))
-            .unwrap_or(line);
-        let line = line.strip_prefix("$env:").unwrap_or(line);
-        let Some(index) = line.find(['=', ':']) else {
-            return false;
-        };
-        let key = line[..index].trim().trim_matches(['\'', '"', '{', ' ']);
-        let key = key.rsplit('.').next().unwrap_or(key);
-        key.bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-            && sensitive(key)
-    }) || text.split_whitespace().any(|word| {
-        let word = word.trim_matches(['\'', '"', ',', ';']);
-        if word.to_ascii_lowercase().starts_with("authorization:") {
-            return true;
-        }
-        let Some(flag) = word.strip_prefix("--") else {
-            return false;
-        };
-        let flag = flag
-            .split('=')
-            .next()
-            .unwrap_or(flag)
-            .to_ascii_lowercase()
-            .replace('-', "_");
-        matches!(
-            flag.as_str(),
-            "token"
-                | "password"
-                | "passwd"
-                | "secret"
-                | "credential"
-                | "credentials"
-                | "authorization"
-                | "api_key"
-                | "apikey"
-                | "private_key"
-                | "access_key"
-                | "client_secret"
-                | "access_token"
-                | "auth_token"
-        ) || [
-            "_token",
-            "_password",
-            "_secret",
-            "_credential",
-            "_api_key",
-            "_private_key",
-            "_access_key",
-        ]
-        .iter()
-        .any(|suffix| flag.ends_with(suffix))
-    })
-}
-
 pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError> {
     let name = path.to_ascii_lowercase();
     if crate::project_environment::secret_looking_project_path(&name)
@@ -131,7 +58,7 @@ pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError
         return Err(refused());
     }
     if let Ok(text) = std::str::from_utf8(bytes) {
-        if credential_text(text) {
+        if credential_text(text) || unsupported_shell(&name, text) {
             return Err(refused());
         }
         if let Ok(value) = serde_json::from_str::<Value>(text) {
@@ -401,93 +328,5 @@ pub(crate) fn validate_development_archive(path: &Path) -> Result<(), DaemonErro
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn mp11_owner_context_refuses_credentials_and_environment_files() {
-        for (path, bytes) in [
-            (".env", b"canary-value".as_slice()),
-            ("auth.json", b"canary-value"),
-            ("file", b"API_KEY=synthetic-canary"),
-            ("file", b"export API_KEY=synthetic-canary:with-colon"),
-            ("file", b"Authorization: Bearer synthetic-canary"),
-            ("file", br#"{"args":["--api-key","synthetic-canary"]}"#),
-            ("file", br#"{"x-api-key":"synthetic-canary"}"#),
-            ("file", b"-----BEGIN PRIVATE KEY-----"),
-            ("file", b"https://user:synthetic-canary@example.test"),
-            ("file", b"https://example.test?token=synthetic-canary"),
-            (
-                "file",
-                br#"{"ciphertext":"synthetic-vault-canary","kdf":{}}"#,
-            ),
-        ] {
-            assert!(validate_bytes(path, bytes).is_err(), "fixture path {path}");
-        }
-        assert!(validate_bytes("README.md", b"ordinary project instructions").is_ok());
-        assert!(validate_bytes("origin-url", b"ssh://git@example.test/project.git").is_ok());
-        assert!(validate_bytes("file", br#"{"args":["--max-tokens","4096"]}"#).is_ok());
-    }
-    #[test]
-    fn mp08_mp11_owner_package_refuses_credentials_in_git_history() {
-        crate::test_support::isolated_env_test!();
-        let _lock = crate::env_lock::lock();
-        let root = std::env::temp_dir().join(format!(
-            "chariox-owner-history-{:032x}",
-            rand::random::<u128>()
-        ));
-        fs::create_dir_all(root.join("project")).unwrap();
-        let _cleanup = ScanRoot(root.clone());
-        let project = root.join("project");
-        git(&project, &["init", "-b", "main"], MAX_FILE).unwrap();
-        git(
-            &project,
-            &["config", "user.name", "Synthetic fixture"],
-            MAX_FILE,
-        )
-        .unwrap();
-        git(
-            &project,
-            &["config", "user.email", "fixture@example.test"],
-            MAX_FILE,
-        )
-        .unwrap();
-        fs::write(
-            project.join("README.md"),
-            "API_KEY=synthetic-history-canary\n",
-        )
-        .unwrap();
-        git(&project, &["add", "README.md"], MAX_FILE).unwrap();
-        git(&project, &["commit", "-m", "fixture"], MAX_FILE).unwrap();
-        fs::write(
-            project.join("README.md"),
-            "Ordinary current project content\n",
-        )
-        .unwrap();
-        git(&project, &["add", "README.md"], MAX_FILE).unwrap();
-        git(
-            &project,
-            &["commit", "-m", "remove fixture value"],
-            MAX_FILE,
-        )
-        .unwrap();
-        let archive = super::super::development::export_development_context(
-            super::super::development::DevelopmentContextExportRequest {
-                project_id: "project".into(),
-                repositories: vec![super::super::development::DevelopmentRepositorySelection {
-                    workspace_id: project.display().to_string(),
-                    worktree_id: None,
-                    worktree_path: project,
-                    role: super::super::development::DevelopmentRepositoryRole::Primary,
-                }],
-                archive_path: root.join("development.tar.gz"),
-            },
-        )
-        .unwrap();
-        assert!(validate_development_archive(&archive.archive_path).is_err());
-        assert!(!fs::read_dir(&root).unwrap().any(|entry| entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".owner-context-scan-")));
-    }
-}
+#[path = "credential_free/tests.rs"]
+pub(super) mod tests;

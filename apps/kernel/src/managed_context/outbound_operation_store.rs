@@ -184,7 +184,8 @@ mod tests {
             "chariox-owner-status-{:032x}",
             rand::random::<u128>()
         ));
-        fs::create_dir_all(&root).unwrap();
+        create_private_directory(&root).unwrap();
+        let _cleanup = ArtifactRootCleanup::new(root.clone());
         let mut config = DaemonConfig::for_tests();
         config.user_config.state.path = Some(root.join("state.db").display().to_string());
         config.user_config_path = root.join("config.toml");
@@ -225,9 +226,29 @@ mod tests {
             },
         };
         let store = ManagedContextOutboundOperationStore::open(root.join("outbound")).unwrap();
-        let ticket = store
+        let mut ticket = store
             .prepare_owner_ticket(&config, &runtime, selection.clone())
             .unwrap();
+        // MP-08/MP-11: a failed first status write cannot pin owner preparation
+        // to an operation that has no active execution.
+        let failed_context = ticket.context_plan.context_id().to_string();
+        let blocked_status = root
+            .join("outbound/.operations")
+            .join(format!("{failed_context}.json"));
+        fs::create_dir(&blocked_status).unwrap();
+        assert!(store
+            .start(
+                &failed_context,
+                &ticket.context_plan.package_binding().plan_digest
+            )
+            .is_err());
+        assert!(store.get(&failed_context).is_none());
+        assert!(store.active_context_ids().is_empty());
+        fs::remove_dir(&blocked_status).unwrap();
+        ticket = store
+            .prepare_owner_ticket(&config, &runtime, selection.clone())
+            .unwrap();
+        assert_ne!(ticket.context_plan.context_id(), failed_context);
         let plan = ticket.context_plan.package_binding();
         // MP-08/MP-11: ambiguous/noninteractive admission and a disconnected
         // source stop before creating an operation or reaching Cloud.
