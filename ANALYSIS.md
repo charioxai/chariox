@@ -1,5 +1,7 @@
 # MP-08/MP-10 — WebVoyager round 3 failure analysis
 
+MP-08/MP-10/MP-11 update: the owner approved protected screenshot observations for round 4. The completed **vision-allowed** 632-task run is reported in [ROUND4_RESULTS.md](ROUND4_RESULTS.md): **347 wins / 621 valid / 11 invalid, 54.91%**. This document retains the earlier text-only baseline and 60-task diagnostic; its observation-setting question is resolved, and its sample estimate is separate from the measured round-4 result.
+
 Analysis and targeted benchmark fixes; this diagnostic does not close an MP item or establish a leaderboard rank. MP-11 applies to signal/observation/credential protections, not an exact-blob review of all benchmark source.
 
 Baseline: **179 wins / 615 valid / 17 invalid**, out of 632 eligible tasks (11 frozen exclusions). Eligible win rate 28.32%; valid-only 29.11%. Source controller `fda30571dc26f3ee88da4c5835f1730220d85f6a`, runtime fingerprint `75ca3fea817039531370b5b3649ee330d9c3598cfa394e4bdde41598fe05a95d`, protocol 423, image `sha256:e9790158dcb0942208dcae403ba03de2e87223af6bace073c64e817da1d6a69b`. Host Rust/relay binaries originate from `164c35016`; this is unsigned development evidence. Harness branch starts at `7e8c42450bdd42929b656f78c762d3af864e3416` (r2next lineage), not current OSS main.
