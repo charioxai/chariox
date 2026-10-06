@@ -564,8 +564,7 @@ fn mdaccess_idle_lapse_refuses_retained_keys_text_clicks_and_note_commits() {
         "first",
         "session",
         true,
-        now,
-        0,
+        (now, 0),
         Duration::from_secs(1),
     );
     host.inner.lock().unwrap().access.bind(
@@ -573,8 +572,7 @@ fn mdaccess_idle_lapse_refuses_retained_keys_text_clicks_and_note_commits() {
         "first",
         "session",
         false,
-        now,
-        0,
+        (now, 0),
         Duration::from_secs(1),
     );
     assert!(host.inner.lock().unwrap().access.bind(
@@ -582,8 +580,7 @@ fn mdaccess_idle_lapse_refuses_retained_keys_text_clicks_and_note_commits() {
         "first",
         "session",
         false,
-        now + Duration::from_secs(1),
-        1000,
+        (now + Duration::from_secs(1), 1000),
         Duration::from_secs(1)
     ));
     for input in [
