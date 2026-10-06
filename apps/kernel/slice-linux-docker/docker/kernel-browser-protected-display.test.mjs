@@ -7,6 +7,29 @@ import {CompositorSource} from './kernel-browser-compositor.mjs';
 
 const region={x:900,y:200,width:150,height:80};
 const raw=()=>({width:1280,height:800,format:'bgr0',pixels:Buffer.alloc(1280*800*4,255),shared:{path:'/never-open-unmasked',length:1280*800*4},readRegion(){throw Error('unmasked region read');}});
+test('MP-08/MP-10 admitted masked motion uses a source serial hint while exact pixels stay protected',()=>{
+ const before=maskNativeRaster({...raw(),serial:1},[region]);
+ const after=maskNativeRaster({...raw(),serial:2},[region],[region]);
+ assert.equal(before.signature,'masked-1');assert.equal(after.signature,'masked-2');
+ assert(before.pixels.equals(after.pixels),'the serial is scheduling only; it cannot establish byte inequality');
+ assert.equal(after.pixels[(240*1280+950)*4],0);
+ assert.equal(after.shared,undefined);
+});
+test('MP-08/MP-10/MP-11 contiguous small damage reuses only the immutable masked base',()=>{
+ const previous=maskNativeRaster({...raw(),serial:1},[region]);
+ const damage=[1100,20,1116,36];let reads=0;
+ const source={width:1280,height:800,length:1280*800*4,format:'bgr0',serial:2,damage,
+  copyPixels(){throw Error('full readback must not run for a contiguous small protected update')},
+  readRegion(x,y,w,h){reads++;assert.deepEqual([x,y,w,h],[1100,20,16,16]);return Buffer.alloc(w*h*4,77)}};
+ const next=maskNativeRaster(source,[region],[region],previous);
+ assert.equal(reads,1);assert.equal(next.pixels[(20*1280+1100)*4],77);
+ assert.equal(previous.pixels[(20*1280+1100)*4],255,'the exact masked base stays immutable');
+ assert.equal(next.pixels[(240*1280+950)*4],0);assert.equal(next.shared,undefined);
+ for(const changed of [{serial:3},{width:2560},{}]){
+  if(!Object.keys(changed).length)changed.previousRegions=[];
+  assert.throws(()=>maskNativeRaster({...source,...changed},[region],changed.previousRegions??[region],previous),/full readback/);
+ }
+});
 test('MP-11 native masking removes the shared-file bypass and preserves immutable source pixels',()=>{
  const original=raw(),masked=maskNativeRaster(original,[region]);
  assert.equal(original.pixels[(240*1280+950)*4],255);

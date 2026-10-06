@@ -111,7 +111,7 @@ export class LinuxCapture {
    // Attribute-only changes need a new readback even if XDamage/pixels did
    // not change. The first readback may precede the refreshed metadata.
    if(raw.captured_ms<this.regions.beforeAt){this.wake(true);raw.release?.();this.publishingRaw=null;continue;}
-   at=performance.timeOrigin+performance.now();const masked=maskNativeRaster(raw,regions,this.previousRegions);this.timing('native_mask_copy_hash',at);
+   at=performance.timeOrigin+performance.now();const masked=maskNativeRaster(raw,regions,this.previousRegions,this.latest?.raw);this.timing('native_mask_copy_hash',at);
    if(masked!==raw){raw.release?.();raw=masked;this.publishingRaw=raw;}
    if(!this.valid())break;
    this.previousRegions=regions;

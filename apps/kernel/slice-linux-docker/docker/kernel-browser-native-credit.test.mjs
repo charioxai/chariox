@@ -8,6 +8,14 @@ function fixture(){
   producer:{source,frames:[]},refiner:{quietMs:300}};
  return {source,stream,policy,sample,empty:()=>nativeCreditEmpty(stream,source,policy,0,-Infinity,1,200)};
 }
+test('MP-08/MP-10 busy native encoding of a fresh serial skips repeated CDP inventories',()=>{
+ for(const work of ['active','pending']){
+  const f=fixture();f.sample.serial=2;f.stream.producer[work]={};f.stream.canPatchNative=()=>false;
+  assert.equal(f.empty(),true);
+  f.stream.canPatchNative=()=>true;assert.equal(f.empty(),false,'a ready exact patch still gets admitted');
+  f.stream.canPatchNative=()=>false;f.source.regionRevision=1;assert.equal(f.empty(),false,'mask retirement still takes the full fence');
+ }
+});
 test('MP-10 recent native serial avoids an empty CDP poll but never samples pixels',()=>{
  const f=fixture();Object.defineProperty(f.sample.raw,'pixels',{get(){throw Error('must not observe pixels')}});assert(f.empty());
  assert.equal(nativeCreditEmpty(f.stream,f.source,f.policy,0,-Infinity,1,400),false,'exact deadline still uses protected capture');

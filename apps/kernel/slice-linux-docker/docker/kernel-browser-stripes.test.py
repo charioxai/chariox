@@ -6,6 +6,24 @@ sys.dont_write_bytecode=True
 spec=importlib.util.spec_from_file_location('stripes',Path(os.environ.get('MP_STRIPE_MODULE',Path(__file__).with_name('kernel-browser-stripes.py'))))
 s=importlib.util.module_from_spec(spec);spec.loader.exec_module(s)
 class StripeTests(unittest.TestCase):
+ def test_mp10_unchanged_rows_skip_raster_slices_and_release_mapping(self):
+  import mmap
+  class Raster(bytearray):
+   slices=0
+   def __getitem__(self,key):
+    if isinstance(key,slice):self.slices+=1
+    return super().__getitem__(key)
+  e=s.StripeEncoder();pixels=Raster(128*128*4)
+  try:
+   e.encode(pixels,128,128,8000000);pixels.slices=0
+   self.assertEqual(e.encode(pixels,128,128,8000000),[])
+   self.assertEqual(pixels.slices,0,'unchanged rows must compare admitted buffers without allocating row slices')
+   with mmap.mmap(-1,len(pixels)) as shared:
+    self.assertEqual(e.encode(shared,128,128,8000000),[])
+    shared[0]=255
+    self.assertEqual([r['row'] for r in e.encode(shared,128,128,8000000)],[0])
+   # Exiting the context must not leave a ctypes/memoryview buffer export.
+  finally:e.close()
  def test_mp10_direct_bgrx_conversion_channel_order_stride_and_fallback(self):
   # MP-08/MP-10: compare actual SIMD planes with the portable converter.
   import os

@@ -119,7 +119,10 @@ def main():
                     try:
                         info=os.fstat(file)
                         if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_mode & 0o077 or info.st_size!=size:raise ValueError('shared owner')
-                        mapping=mmap.mmap(file,size,access=mmap.ACCESS_READ)
+                        # MP-08/MP-10: private COW permits a temporary ctypes
+                        # address for exact row comparisons; no writer touches
+                        # it, and the capture/snapshot file remains immutable.
+                        mapping=mmap.mmap(file,size,access=mmap.ACCESS_COPY)
                     finally:os.close(file)
                     pixels=mapping
                 else:pixels=sys.stdin.buffer.read(size)

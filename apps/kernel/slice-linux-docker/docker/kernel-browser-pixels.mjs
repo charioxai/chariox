@@ -126,18 +126,37 @@ export function maskPng(data, regions, scale = 1) {
 // MP-08/MP-11: never mutate a leased raster or let its unmasked shared file
 // bypass protection in an encoder/native tile. Only masked bytes leave here.
 export const displayMaskRegions = Symbol('kernel display protection');
-export function maskNativeRaster(raw, regions, previousRegions) {
+export function maskNativeRaster(raw, regions, previousRegions, previous) {
   if(!regions.length)return raw;
   const {width,height}=raw;
-  const frame=maskPixels({width,height,pixels:raw.copyPixels?.()??Buffer.from(raw.pixels)},regions.map(r=>[r.x,r.y,r.width,r.height]));
+  const stable=previousRegions&&JSON.stringify(previousRegions)===JSON.stringify(regions);
+  let pixels;
+  const box=raw.damage;
+  // MP-08/MP-10/MP-11: these bounds come from the complete native byte
+  // comparison. Reuse only a contiguous, equally masked, immutable base.
+  // Region reads stay below the existing32K-pixel private read bound.
+  if(stable&&previous?.width===width&&previous.height===height&&raw.serial===previous.serial+1&&
+     Buffer.isBuffer(previous.pixels)&&typeof raw.readRegion==='function'&&Array.isArray(box)&&box.length===4&&
+     box.every(Number.isSafeInteger)&&box[0]>=0&&box[1]>=0&&box[2]>box[0]&&box[3]>box[1]&&box[2]<=width&&box[3]<=height&&
+     (box[2]-box[0])*(box[3]-box[1])<=32768){
+    const [left,top,right,bottom]=box,w=right-left,h=bottom-top,data=raw.readRegion(left,top,w,h);
+    if(!Buffer.isBuffer(data)||data.length!==w*h*4)throw Error('MP-11: protected damage read bound');
+    pixels=Buffer.from(previous.pixels);
+    for(let y=0;y<h;y++)data.copy(pixels,((top+y)*width+left)*4,y*w*4,(y+1)*w*4);
+  }else pixels=raw.copyPixels?.()??Buffer.from(raw.pixels);
+  const frame=maskPixels({width,height,pixels},regions.map(r=>[r.x,r.y,r.width,r.height]));
   // MP-08/MP-10/MP-11: scheduling hint over protected pixels only. This is
   // never an attestation or an equality proof: stripes compare exact bytes,
   // and native exact damage must ship even when this hint collides.
   // Identical trusted masks cannot change a pixel outside the actual readback
   // damage. First masks, moved masks and opaque recovery still require a full
   // repair; the capture owner supplies the preceding admitted mask geometry.
-  const damage=previousRegions&&JSON.stringify(previousRegions)===JSON.stringify(regions)?raw.damage:[0,0,width,height];
-  const result={...raw,...frame,[displayMaskRegions]:regions,damage,signature:crc32(frame.pixels).toString(16),retain(){},release(){}};
+  const damage=stable?raw.damage:[0,0,width,height];
+  // MP-08/MP-10: native serials are scheduling hints, never pixel equality.
+  // Exact tiles/refinement compare admitted bytes, and stripes compare every
+  // row before omitting it. Avoid hashing another16MiB on the input loop.
+  const hint=Number.isSafeInteger(raw.serial)&&raw.serial>0?`masked-${raw.serial}`:crc32(frame.pixels).toString(16);
+  const result={...raw,...frame,[displayMaskRegions]:regions,damage,signature:hint,retain(){},release(){}};
   delete result.shared;delete result.readRegion;delete result.copyPixels;
   return result;
 }

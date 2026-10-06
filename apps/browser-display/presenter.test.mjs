@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { attachBrowserDisplay, IdleCredit } from './presenter.mjs';
+test('MP-08/MP-10 empty local credits bound retries to eight milliseconds and input wakes them',async()=>{
+ const idle=new IdleCredit();idle.observeRoundTrip(2);idle.wake();const wait=idle.wait();
+ try{assert.equal(idle.delay,8)}finally{idle.wake();await wait}
+ assert.equal(idle.parked.size,0);
+});
 test('MD-DISPLAY idle credits back off independently and input wakes all parked slots',async()=>{
  const idle=new IdleCredit();const waits=[idle.wait(),idle.wait(),idle.wait(),idle.wait()];
  assert.equal(idle.delay,100);assert.equal(idle.parked.size,4);

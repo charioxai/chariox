@@ -1,3 +1,17 @@
+# MP-08/MP-10/MP-11 — phase22 RUNNING
+
+2026-10-06: base f7dff63a24c4319a845206fc95e2ca40d205a5ad, branch md/display-perf. Applicable scope is MP-08 runtime/client parity, MP-10 measurements/live validation, MP-11 observation protection and owned cleanup. Required frozen plans and actual lane inbox read; third #893 finding is first priority. Fail-first abrupt supervisor regression is queued behind builder2 compile flock. Base 1080p/DPR2 profiles completed against phase21 release ELF with unchanged embedded assets; results are supplementary component evidence, not acceptance. Evidence: /root/.codex/evidence/browser-resume-20260930/display/phase22/.
+
+## MP-08/MP-10 Coordinator asks
+
+Real live acceptance requires coordinator-authorized access to the actual Cloud app/flags and hosted relay (lane is expressly forbidden from contacting the relay machine or Cloud staging), a real desktop/DPR2 client and owner LAN GPU host, plus multi-hour real-site measurements. Keep this item BLOCKED until those resources/actions are supplied; continue all local cleanup/profile/fix/regression work. No protocol shape planned; request allocation here if scope requires one.
+
+## MP-11 Review mapping
+
+Actual inbox: /root/.chariox/dev/browser-resume-20260930/agents/display/REVIEW_INBOX.md. Phase21 checked the wrong display-perf path; phase22 corrects the mapping. Raster-reclamation finding unhandled on base; fail-first must establish it before correction.
+
+---
+
 # MP-08/MP-10/MP-11 — phase21 FINAL, RED_PERFORMANCE
 
 2026-10-06: required base fadfcd59bc629ed7aeb2cf46ce01ab3ee9b4b48d; runtime e4440628e6b3d4c54086d8ab6af0cadf70ce3049 (18be64d0b, eca8b2492, e4440628e), branch md/display-perf. Report commit changes documentation only. Local447/relay90 unchanged. No push, PR, GitHub CI, deployment or hosted contact.

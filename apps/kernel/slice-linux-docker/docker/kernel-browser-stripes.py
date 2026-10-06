@@ -18,6 +18,8 @@ _protection=importlib.util.module_from_spec(_spec);_spec.loader.exec_module(_pro
 
 _xxh=ctypes.CDLL(ctypes.util.find_library('xxhash') or 'libxxhash.so.0').XXH3_64bits
 _xxh.argtypes=[ctypes.c_void_p,ctypes.c_size_t];_xxh.restype=ctypes.c_uint64
+_memcmp=ctypes.CDLL(None).memcmp
+_memcmp.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_size_t];_memcmp.restype=ctypes.c_int
 
 def row_geometry(height):
     if type(height) is not int or height<16 or height%2:raise ValueError('stripe height')
@@ -84,6 +86,14 @@ class StripeEncoder:
         regions=[] if regions is None else regions
         at=stamp();_protection.black_input(pixels,width,height,regions);timing('codec_input_guard',at)
         protected_bounds=_protection.bounds(regions,width,height)
+        # MP-08/MP-10: retain the admitted buffer through synchronous workers,
+        # but hash/compare its rows in place. Copy only rows entering a codec.
+        # No ctypes or memoryview export may survive the exchange's mmap close.
+        if isinstance(pixels,bytes):address=ctypes.cast(ctypes.c_char_p(pixels),ctypes.c_void_p).value
+        else:
+            try:address=ctypes.addressof(ctypes.c_char.from_buffer(pixels))
+            except (TypeError,BufferError):
+                pixels=bytes(pixels);address=ctypes.cast(ctypes.c_char_p(pixels),ctypes.c_void_p).value
         config=(width,height,bitrate,backend,repr(regions))
         if config!=self.config:self.rows={};self.config=config;reset=True
         resets=set(range(8)) if reset is True else set(reset or [])
@@ -92,13 +102,14 @@ class StripeEncoder:
         def encode_row(item):
             row,(y,h)=item
             at=stamp()
-            data=bytes(pixels[y*width*4:(y+h)*width*4])
-            signature=_xxh(ctypes.cast(ctypes.c_char_p(data),ctypes.c_void_p),len(data))
+            start=y*width*4;length=h*width*4
+            signature=_xxh(address+start,length)
             timing('codec_row_copy_hash',at)
             old=self.rows.get(row)
             # Fast hash is only a prefilter. Equal hash compares exact admitted
             # bytes, so a collision cannot omit a changed row.
-            if old and row not in resets and old['hash']==signature and old['pixels']==data:return None
+            if old and row not in resets and old['hash']==signature and _memcmp(ctypes.cast(ctypes.c_char_p(old['pixels']),ctypes.c_void_p),address+start,length)==0:return None
+            data=bytes(memoryview(pixels)[start:start+length])
             if old is None or row in resets:
                 at=stamp()
                 if backend=='libopenh264' and os.environ.get('CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER'):

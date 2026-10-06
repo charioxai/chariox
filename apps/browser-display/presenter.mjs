@@ -18,7 +18,7 @@ export class IdleCredit {
     // Fast retries help a short local credit loop; on a slow link they add
     // encrypted control traffic and TCP loss exposure without hiding its RTT.
     const fast=active&&this.roundTrip!==null&&this.roundTrip<40;
-    this.delay=Math.min(active?(fast?8:33):100,Math.max(active?(fast?2:8):32,this.delay*2));
+    this.delay=Math.min(active?(fast?8:33):100,Math.max(active?8:32,this.delay*2));
     return new Promise(resolve=>{
       const wake=()=>{clearTimeout(timer);this.parked.delete(wake);resolve();};
       const timer=setTimeout(wake,this.delay);this.parked.add(wake);
