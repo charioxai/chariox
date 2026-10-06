@@ -271,9 +271,11 @@ mod cancellation_tests;
 mod turn_attribution_tests;
 
 #[cfg(test)]
-mod interrupt_race_tests;
+mod interrupt_backlog_tests;
 #[cfg(test)]
 mod interrupt_interleaving_tests;
+#[cfg(test)]
+mod interrupt_race_tests;
 
 #[cfg(test)]
 mod prompt_tests {

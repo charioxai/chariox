@@ -78,9 +78,10 @@ try:
         request = json.loads(line)
         try:
             if request["action"] == "key":
+                sent_at_ms = time.time_ns() // 1_000_000
                 os.write(master, base64.b64decode(request["bytes"]))
                 drain(max(0, min(0.2, request.get("drainSeconds", 0.2))))
-                result = {}
+                result = {"sentAtMs": sent_at_ms}
             elif request["action"] == "capture":
                 result = capture(request["prefix"], request.get("drainSeconds", 0.2))
             elif request["action"] == "close":

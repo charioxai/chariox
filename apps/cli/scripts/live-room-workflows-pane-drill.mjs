@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { spawnOwned, signalOwnedProcess, signalOwnedProcessGroup, ownedProcessGroupHandles } from '../../kernel/slice-linux-docker/owned-process-signals.mjs'
 import { LocalIpcClient } from '../../../packages/kernel-client/dist/ipc.js'
 import * as requests from '../../../packages/kernel-client/dist/ipc-requests.js'
+import { interruptTraces, interruptTiming } from './lib/workflow-interrupt-evidence.mjs'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
 const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, arg, index, all) => index % 2 ? pairs : [...pairs, [arg.slice(2), all[index + 1]]], []))
@@ -18,6 +19,9 @@ const model=args.model??'gpt-5.5'
 const relayTransport = args.transport === 'relay'
 const interruptRaceRounds = Number(args['interrupt-race-rounds'] ?? 0)
 assert.ok(Number.isInteger(interruptRaceRounds) && interruptRaceRounds >= 0 && interruptRaceRounds <= 30)
+const noisyInterruptRounds = Number(args['noisy-interrupt-rounds'] ?? 0)
+assert.ok(Number.isInteger(noisyInterruptRounds) && noisyInterruptRounds >= 0 && noisyInterruptRounds <= 30)
+const tracingInterrupts = interruptRaceRounds > 0 || noisyInterruptRounds > 0
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const unwrap = (response, key) => { if (response.Error) throw new Error(response.Error.message); assert.ok(response[key], `MP-08 missing ${key}`); return response[key] }
 await mkdir(args.output, { recursive: true, mode: 0o700 })
@@ -39,7 +43,7 @@ const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key])=>
   CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]),
   CHARIOX_CODEX_PORT: String(ports[2]), CHARIOX_OPENCODE_PORT: String(ports[3]),
   CHARIOX_RELAY_PORT: String(ports[4]), CHARIOX_LOG_DIR: path.join(state,'logs'),
-  CHARIOX_LOG_LEVEL: interruptRaceRounds ? 'debug' : 'info',
+  CHARIOX_LOG_LEVEL: tracingInterrupts ? 'debug' : 'info',
   CHARIOX_DAEMON_SOCKET: path.join(state, 'kernel.sock'),
   TERM: 'xterm-256color', COLORTERM: 'truecolor' }
 for (const key of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'OPENCODE_CONFIG_DIR', 'CHARIOX_RELAY_URL', 'CHARIOX_RELAY_TOKEN', 'CHARIOX_CLOUD_PROFILE', 'CHARIOX_CLOUD_TOKEN', 'CHARIOX_CLOUD_RELAY_CONFIG_JSON', 'CHARIOX_CLOUD_RELAY_CONFIG_PATH']) delete env[key]
@@ -47,6 +51,7 @@ for (const key of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'OPENCODE_CONFIG_DIR', 'CH
 // and terminal enrollment are generated through the normal product pairing flow.
 if (relayTransport) env.CHARIOX_RELAY_TOKEN = randomBytes(32).toString('hex')
 const receipt = { mpItems: ['MP-08','MP-10','MP-11'], source: args.source, clientSource: args['client-source'], model,
+  ownedStateRoot: state, ownedWorkspaceRoot: workspace,
   startedAt: new Date().toISOString(), steps: [], resources: [], transport: relayTransport ? 'paired-relay' : 'local', limitations: ['Web room-pane and fresh Path-1 comparison require their own real-path evidence.'] }
 for (const key of ['kernel','relay','client']) receipt[key + 'Sha256'] = createHash('sha256').update(await readFile(args[key])).digest('hex')
 const bundle = createHash('sha256')
@@ -80,10 +85,10 @@ async function capture(step, predicate, timeout = 15000) {
   let result
   do {
     if(resourceFailure)throw resourceFailure
-    result = await terminalCommand('capture',{prefix:path.join(args.output,step),drainSeconds:interruptRaceRounds ? 0.01 : 0.2})
+    result = await terminalCommand('capture',{prefix:path.join(args.output,step),drainSeconds:tracingInterrupts ? 0.01 : 0.2})
     if (predicate(result.text)) { receipt.steps.push({step, status:'GREEN'}); return result.text }
     assert.equal(result.exitCode, null, `MP-08 TUI exited at ${step}`)
-    await sleep(interruptRaceRounds ? 25 : 250)
+    await sleep(tracingInterrupts ? 25 : 250)
   } while (Date.now()<deadline)
   throw new Error(`MP-08 TUI assertion failed at ${step}`)
 }
@@ -153,6 +158,75 @@ try {
   terminal.stderr.on('data', chunk=> { /* Only fixture diagnostics; no provider stdout is connected here. */ receipt.terminalError=String(chunk).slice(-1000) })
   terminal.on('close',()=>{for(const waiter of pending.values())waiter.reject(new Error('MP-08 terminal driver exited'));pending.clear()})
   await capture('01-room-inventory',text=>text.includes(heading))
+  if (noisyInterruptRounds) {
+    receipt.noisyInterrupts = []
+    for (let round = 0; round < noisyInterruptRounds; round++) {
+      const label = `noisy-${String(round + 1).padStart(2,'0')}`
+      const action = round % 2 ? 'stop' : 'pause'
+      const marker = `${label}.progress`
+      const command = `payload=$(printf '%4096s' x); i=0; end=$((SECONDS+120)); while [ "$SECONDS" -lt "$end" ]; do printf 'WFP_NOISY_OUTPUT %s %s\\n' "$i" "$payload"; i=$((i+1)); if [ $((i%1024)) -eq 0 ]; then printf '%s\\n' "$i" > ${marker}; fi; done`
+      const previous = new Set((await stateUntil(()=>true)).room_workflows.workflows[0].runs.map(run=>run.run_id))
+      await key('\x17')
+      await key(`Run this exact Bash command now as one foreground shell tool call, without a pipe or output truncation: ${command}. Keep waiting for this command; do not return a workflow envelope until it ends.`)
+      await capture(label+'-draft',text=>text.includes('WFP_NOISY_OUTPUT'))
+      const noiseStartedAtMs = Date.now()
+      await raceKey('\r')
+      const started = await stateUntil(s=>s.room_workflows.workflows[0].runs.some(run=>!previous.has(run.run_id)))
+      const runId = started.room_workflows.workflows[0].runs.find(run=>!previous.has(run.run_id)).run_id
+      const noiseDeadline = Date.now()+90000
+      let progress = 0, output = []
+      do {
+        if(resourceFailure)throw resourceFailure
+        progress = Number(await readFile(path.join(workspace,marker),'utf8').catch(()=>0))
+        output = (await interruptTraces(path.join(state,'logs'))).filter(trace=>trace.message==='codex command output received trace' && trace.at>=noiseStartedAtMs)
+        if(progress >= 8192 && output.length)break
+        await sleep(100)
+      } while(Date.now()<noiseDeadline)
+      assert.ok(progress >= 8192 && output.length, 'MP-08 real noisy command must be running and emitting provider socket deltas')
+      await capture(label+'-command-running',text=>text.includes('1 running')&&text.includes('[Start · Enter]'))
+      // User action is a real TUI key. Time starts at the PTY write, before
+      // the TUI/relay/kernel process the control; it does not start at an IPC call.
+      const control = await raceKey(action === 'pause' ? '\x10' : '\x13')
+      const sample = {round:round+1,action,runId,controlSentAtMs:control.sentAtMs,progressBeforeControl:progress}
+      receipt.noisyInterrupts.push(sample)
+      const deadline = Date.now()+10000
+      let traces, timing
+      do {
+        traces = await interruptTraces(path.join(state,'logs'))
+        timing = interruptTiming(traces,control.sentAtMs)
+        if(timing.sent && timing.ended)break
+        await sleep(25)
+      } while(Date.now()<deadline)
+      Object.assign(sample,timing)
+      await writeFile(path.join(args.output,label+'-timing.json'),JSON.stringify({mpItems:receipt.mpItems,...sample},null,2)+'\n',{mode:0o600})
+      assert.ok(timing.sent, 'MP-08 noisy cancellation must actually send turn/interrupt')
+      assert.ok(timing.stopToInterruptSentMs <= 1000, `MP-08 noisy ${action} interrupt sent too late: ${timing.stopToInterruptSentMs}ms`)
+      const settled = await stateUntil(s=>Object.values(s.agent_activity).every(activity=>!activity.active_prompt_count),10000)
+      // Recompute after kernel settlement: an initial stale-ID completion
+      // must not hide the interrupt/completion of the actual running turn.
+      traces = await interruptTraces(path.join(state,'logs'))
+      timing = interruptTiming(traces,control.sentAtMs)
+      Object.assign(sample,timing,{outputDeltasBeforeControl:traces.filter(trace=>trace.message==='codex command output received trace'
+        && trace.at>=noiseStartedAtMs && trace.at<control.sentAtMs && (!timing.sent || trace.providerRunId===timing.sent.providerRunId)).length})
+      await writeFile(path.join(args.output,label+'-timing.json'),JSON.stringify({mpItems:receipt.mpItems,...sample},null,2)+'\n',{mode:0o600})
+      assert.ok(timing.ended, 'MP-08 noisy cancellation must receive provider turn/completed')
+      assert.ok(timing.stopToTurnEndedMs <= 5000, `MP-08 noisy ${action} provider ended too late: ${timing.stopToTurnEndedMs}ms`)
+      await diagnostics(settled)
+      const run=unwrap(await client.send(requests.getWorkflowRunRequest(sessionId,runId)), 'WorkflowRun').workflow_run
+      sample.status=run.status
+      assert.equal(run.status.toLowerCase(),action === 'pause' ? 'paused' : 'stopped')
+      await capture(label+'-settled',text=>text.includes('0 running')&&text.includes('[Start · Enter]'))
+      // Output producers must have stopped, not merely their visible cards.
+      const after = await readFile(path.join(workspace,marker),'utf8')
+      await sleep(500)
+      assert.equal(await readFile(path.join(workspace,marker),'utf8'),after,'MP-08 noisy shell must stop producing output')
+      if(action === 'pause') {
+        await key('\x13')
+        await stateUntil(s=>s.room_workflows.workflows[0].paused_count===0)
+      }
+      await key('\t')
+    }
+  }
   if (interruptRaceRounds) {
     receipt.interruptRace = []
     for (let round = 0; round < interruptRaceRounds; round++) {
@@ -253,7 +327,7 @@ try {
   else process.exitCode=1
 } finally {
   clearInterval(resourceMonitor)
-  if(interruptRaceRounds) {
+  if(tracingInterrupts) {
     const traces=[]
     for(const name of await readdir(path.join(state,'logs')).catch(()=>[])) {
       if(!name.endsWith('.ndjson'))continue
@@ -265,7 +339,8 @@ try {
           responseTurnId:entry.response?.turn?.id})
       }
     }
-    await writeFile(path.join(args.output,'provider-turns.json'),JSON.stringify({mpItems:receipt.mpItems,traces},null,2)+'\n',{mode:0o600})
+    await writeFile(path.join(args.output,'provider-turns.json'),JSON.stringify({mpItems:receipt.mpItems,traces,
+      interruptEvidence:await interruptTraces(path.join(state,'logs'))},null,2)+'\n',{mode:0o600})
   }
   await writeFile(path.join(args.output,'result.json'),JSON.stringify(receipt,null,2)+'\n',{mode:0o600})
   const cleanupGroups=[]

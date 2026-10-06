@@ -17,6 +17,7 @@ mod mcp_reload;
 mod notifications;
 mod permission;
 mod runtime_mcp;
+mod runtime_trace;
 mod server_requests;
 mod socket_io;
 mod thread_runtime;

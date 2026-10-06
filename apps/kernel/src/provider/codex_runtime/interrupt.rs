@@ -8,11 +8,13 @@ use serde_json::{json, Value};
 use crate::error::DaemonError;
 use crate::provider::{CodexClient, CodexNotification};
 
+use super::drain::CODEX_EVENT_DRAIN_MAX_LIVE_NOTIFICATIONS;
 use super::turn::CodexTurnTracker;
 use super::CodexRuntimeState;
 
 const INTERRUPT_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
 const INTERRUPT_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+const INTERRUPT_DRAIN_BUDGET: Duration = Duration::from_millis(10);
 
 pub fn abort_codex_turn(
     provider_run_id: &str,
@@ -28,13 +30,18 @@ pub fn abort_codex_turn(
     let mut rejected_turns = BTreeSet::new();
     loop {
         // Use the same reconciliation before RPCs, after either RPC result, and
-        // after every start-wait read. Drain ready events before terminal settlement.
-        loop {
+        // after every start-wait read. MP-08 / MP-10: a backlogged output
+        // stream must not consume the cancellation deadline before its RPC.
+        let drain_deadline = deadline.min(Instant::now() + INTERRUPT_DRAIN_BUDGET);
+        for _ in 0..CODEX_EVENT_DRAIN_MAX_LIVE_NOTIFICATIONS {
+            if Instant::now() >= drain_deadline {
+                break;
+            }
             match client.read_notification(&mut state.socket, Duration::from_millis(1)) {
                 Ok(Some(notification)) => {
                     let closed = matches!(notification, CodexNotification::Error { .. });
                     state.buffered_notifications.push(notification);
-                    if closed || Instant::now() >= deadline {
+                    if closed {
                         break;
                     }
                 }

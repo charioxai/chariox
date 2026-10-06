@@ -9,7 +9,7 @@ use super::turn::maybe_finalize_terminal_signal;
 use super::{CodexPollResult, CodexRuntimeState};
 
 const CODEX_EVENT_DRAIN_READ_TIMEOUT: Duration = Duration::from_millis(1);
-const CODEX_EVENT_DRAIN_MAX_LIVE_NOTIFICATIONS: usize = 64;
+pub(super) const CODEX_EVENT_DRAIN_MAX_LIVE_NOTIFICATIONS: usize = 64;
 const CODEX_MANAGED_BACKFILL_QUIET_GRACE: Duration = Duration::from_millis(250);
 
 pub fn drain_codex_events(
