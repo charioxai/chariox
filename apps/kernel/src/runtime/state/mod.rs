@@ -463,6 +463,7 @@ mod kernel_browser_mirror;
 mod kernel_browser_receipts;
 mod kernel_browser_runtime;
 mod kernel_browser_secret_runtime;
+mod kernel_computer_runtime;
 mod notes_runtime;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;

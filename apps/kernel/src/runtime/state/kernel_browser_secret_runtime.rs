@@ -89,8 +89,8 @@ impl KernelRuntimeState {
         let host = self.owned.kernel_browser_host.clone();
         let admission = admission.cloned();
         let (user, method) = (user.to_string(), method.to_string());
-        let pixels =
-            method == "host.browser" && (params["op"] == "screenshot" || params["op"] == "poll");
+        let pixels = matches!(method.as_str(), "host.browser" | "host.computer")
+            && (params["op"] == "screenshot" || params["op"] == "poll");
         let display = method == "host.browser"
             && params["op"] == "screenshot"
             && params["display_subscription_id"].is_string();

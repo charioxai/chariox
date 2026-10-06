@@ -25,6 +25,7 @@ mod external_provider_session;
 mod history;
 mod kernel_access;
 mod kernel_browser;
+mod kernel_computer;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
@@ -64,6 +65,7 @@ pub use external_provider_session::*;
 pub use history::*;
 pub use kernel_access::*;
 pub use kernel_browser::*;
+pub use kernel_computer::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
@@ -261,4 +263,5 @@ pub use workspace::*;
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
 /// MP-08/MP-10/MP-11: version 443 combines main 435 with the multidomain
 /// host browser, App views, Notes, grants, captures and DOM mirror contract.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 443;
+/// MP-08/MP-11: reserved version446 adds owned Linux desktop targets and input.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 446;

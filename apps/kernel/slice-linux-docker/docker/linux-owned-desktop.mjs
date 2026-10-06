@@ -30,9 +30,9 @@ async function firstLine(stream, child) {
   });
 }
 export class LinuxOwnedDesktop {
-  constructor(root, { environment = process.env, uid = process.getuid?.(), commands = {} } = {}) {
-    this.root = root; this.source = environment; this.uid = uid; this.commands = commands;
-    this.children = []; this.current = null; this.starting = null;
+  constructor(root, { environment = process.env, commands = {} } = {}) {
+    this.root = root; this.source = environment; this.uid = process.getuid?.(); this.commands = commands;
+    this.children = []; this.known = new Map(); this.current = null; this.starting = null;
   }
   binding() { return this.current; }
   async launch(name, args, env, stdio = ['ignore', 'ignore', 'ignore']) {
@@ -47,7 +47,9 @@ export class LinuxOwnedDesktop {
   }
   async ownedProcesses() {
     const roots=this.children.filter(({child,identity})=>identity && child.exitCode===null && child.signalCode===null).map(({identity})=>identity);
-    return descendants(roots);
+    const current=await descendants(roots);
+    for(const item of current)this.known.set(item.pid,item);
+    return current;
   }
   async recordOwned(child) {
     const identity=await processIdentity(child.pid);
@@ -71,8 +73,12 @@ export class LinuxOwnedDesktop {
       const env = desktopEnvironment(this.source, this.runtime, this.uid);
       const cookie = randomBytes(16);
       await writeFile(env.XAUTHORITY, authorityCookie(cookie), { mode: 0o600, flag: 'wx' });
-      const x = await this.launch('Xvfb', ['-displayfd', '3', '-screen', '0', '1280x800x24', '-auth', env.XAUTHORITY, '-nolisten', 'tcp', '-nolisten', 'local', '-noreset'], env, ['ignore', 'ignore', 'ignore', 'pipe']);
+      // Keep the authenticated abstract socket: its exclusive bind makes
+      // displayfd allocation safe across kernels. Disabling it lets Xvfb
+      // replace another same-UID server's filesystem socket at the same number.
+      const x = await this.launch('Xvfb', ['-displayfd', '3', '-screen', '0', '1280x800x24', '-auth', env.XAUTHORITY, '-nolisten', 'tcp', '-noreset'], env, ['ignore', 'ignore', 'ignore', 'pipe']);
       const display = await firstLine(x.stdio[3], x);
+      x.stdio[3].destroy();
       if (!/^\d{1,5}$/.test(display)) throw new Error('MP-11: invalid owned display');
       await writeFile(env.XAUTHORITY, authorityCookie(cookie, display), { mode: 0o600 });
       cookie.fill(0);
@@ -80,6 +86,7 @@ export class LinuxOwnedDesktop {
       const busPath = path.join(this.runtime, 'bus');
       const bus = await this.launch('dbus-daemon', ['--session', '--nofork', `--address=unix:path=${busPath}`, '--print-address=3'], env, ['ignore', 'ignore', 'ignore', 'pipe']);
       const address = await firstLine(bus.stdio[3], bus);
+      bus.stdio[3].destroy();
       if (!address.startsWith(`unix:path=${busPath},guid=`)) throw new Error('MP-11: invalid owned session bus');
       env.DBUS_SESSION_BUS_ADDRESS = address;
       const keymap=await this.launch('setxkbmap',['-layout','us'],env);
@@ -94,8 +101,8 @@ export class LinuxOwnedDesktop {
   }
   async stop() {
     this.current = null;
-    await settleOwned(this.children.filter(({child}) => child.pid));
-    this.children = [];
+    await settleOwned(this.children.filter(({child}) => child.pid), [...this.known.values()]);
+    this.children = [];this.known.clear();
     if (this.runtime) await rm(this.runtime, { recursive: true, force: true });
     this.runtime = null;
   }

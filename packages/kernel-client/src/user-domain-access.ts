@@ -10,6 +10,7 @@ export type UserDomainAccessClient = {
 }
 export function userDomainResourceLabel(resource: UserDomainResource): string {
   switch (resource.kind) {
+    case "desktop": return `desktop ${resource.surface_id}`
     case "browser_tab": return `tab ${resource.tab_id}`
     case "app_view": return `App ${resource.view_id}`
     case "note": return `note ${resource.note_id}`

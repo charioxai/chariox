@@ -74,12 +74,15 @@ export class HostChromium {
       stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env: environment,
     });
     this.child = child;
-    if (this.desktop?.binding()) await this.desktop.recordOwned(child);
+    child.on('error', () => {});
     const connection = connectCdpPipe(child.stdio[3], child.stdio[4]);
     this.connection = connection;
     child.once('error', () => { void connection.close(); });
     child.once('exit', () => { void connection.close(); });
-    try { await connection.send('Browser.getVersion'); return connection; }
+    try {
+      if (this.desktop?.binding()) await this.desktop.recordOwned(child);
+      await connection.send('Browser.getVersion'); return connection;
+    }
     catch {}
     await this.stop();
     throw new Error("MD-2: sandboxed host Chromium did not become ready (check executable, display and profile ownership)");

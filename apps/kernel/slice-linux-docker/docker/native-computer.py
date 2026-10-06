@@ -38,6 +38,8 @@ def capture(mask):
 def input_action(action):
     kind = action['kind']
     if kind == 'text': keyboard.type_text(action['text']); return
+    if kind=='pointer_hold':
+        keyboard.hold_input('button',{1:'left',2:'middle',3:'right'}[action['button']],action['duration_ms'],action['x'],action['y']);return
     if kind in ('key', 'hold'):
         key = action['key'].replace('Enter', 'Return')
         keyboard.hold_input('key', key, action.get('duration_ms', 1)); return
@@ -122,12 +124,37 @@ def main(request):
     finally: image.close()
 
 
+def keyboard_channel():
+    held=set()
+    print(json.dumps({'ready':True}),flush=True)
+    try:
+        for line in sys.stdin:
+            if len(line)>2048:raise ValueError('oversized physical event')
+            request=json.loads(line)
+            if request['op']=='input' and request['input']['kind']=='keycode':
+                action=request['input'];code=action['keycode']
+                if action['state']=='down':held.add(code)
+                result=main(request)
+                if action['state']=='up':held.discard(code)
+            elif request['op']=='release':
+                result=main(request);held.difference_update(request['codes'])
+            else:raise ValueError('unsupported physical channel operation')
+            print(json.dumps({'id':request['id'],'ok':True,'result':result}),flush=True)
+    finally:
+        if held:
+            try:main({'op':'release','codes':list(held)})
+            except Exception:pass  # Dead display; desktop teardown remains mandatory.
+
+
 if __name__=='__main__':
     def terminate(number,_): raise SystemExit(128+number)
     for number in (signal.SIGTERM,signal.SIGINT): signal.signal(number,terminate)
     try:
+        if sys.argv[1:]==['--keyboard-channel']:
+            keyboard_channel();sys.exit(0)
         request=json.loads(sys.stdin.buffer.read(131073))
         print(json.dumps(main(request),ensure_ascii=False,separators=(',',':')))
-    except Exception:
-        print('MP-08: native Computer operation failed',file=sys.stderr)
+    except Exception as error:
+        # Exception class only: never expose native text, paths or request bytes.
+        print('MP-08: native operation '+type(error).__name__,file=sys.stderr)
         sys.exit(1)

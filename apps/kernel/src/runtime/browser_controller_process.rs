@@ -446,7 +446,9 @@ impl BrowserControllerProcessStdioBackend {
     ) -> Result<BrowserControllerRpcResponse, String> {
         let cancellation = matches!(
             method,
-            "host.browser"
+            "host.computer"
+                | "host.computer.reset"
+                | "host.browser"
                 | "host.secret"
                 | "browser.action"
                 | "browser.upload"

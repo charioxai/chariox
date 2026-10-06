@@ -4,6 +4,7 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UserDomainResource {
+    Desktop { surface_id: String },
     BrowserTab { tab_id: String },
     AppView { view_id: String },
     Note { note_id: String },

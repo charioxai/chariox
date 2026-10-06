@@ -109,6 +109,7 @@ export class KernelBrowserHost {
     }
     assertNotCancelled(signal);
     const connection = await this.chromium.start();
+    try{await this.nativeComputer.primeKeyboard();}catch(error){await this.chromium.stop(connection);throw error;}
     assertNotCancelled(signal);
     this.browser = this.browserFactory(connection);
     this.browser.protectedValues = new Set(this.protection.values);
@@ -139,7 +140,9 @@ export class KernelBrowserHost {
   }
   async stop() {
     this.nativeAccessibility.clear();
-    await this.nativeComputer.close();
+    // A dead X server can make release fail; retirement still destroys the
+    // owned desktop before acknowledging stop.
+    await this.nativeComputer.close().catch(() => {});
     await this.chromium.stop(this.browser?.connection);
     for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
@@ -440,6 +443,7 @@ export class KernelBrowserHost {
       if (request.method === "host.revoke_subscriptions") {
         const ids = new Set(request.params.subscription_ids ?? []);
         const owners = new Set(request.params.subscription_owners ?? []);
+        for(const owner of owners){await this.nativeComputer.retire(owner);for(const observer of this.nativeAccessibility.observers.keys())if(observer.startsWith(owner+':'))this.nativeAccessibility.retire(observer);}
         for (const [id, stream] of this.streams) if (ids.has(id) || owners.has(stream.owner)) await this.removeStream(id);
         return { id: request.id, ok: true, result: { revoked: true } };
       }
@@ -454,7 +458,9 @@ export class KernelBrowserHost {
         return { id: request.id, ok: true, result: { inserted: true } };
       }
       if (request.method === "host.computer") {
-        const observer=request.params.observed_by??'terminal';
+        const observer=(request.params._subscription_owner ? request.params._subscription_owner+':' : '')+(request.params.observed_by??'terminal');
+        if(request.params._agent_input && this.browser?.appTabs?.apps?.size)throw new UserDomainRefusal('not_granted');
+        const nativeParams={...request.params,observed_by:observer};
         if (request.params.op === 'snapshot') {
           const binding=this.chromium.desktop?.binding();
           if(!binding || request.params.surface_id!==binding.surface_id || request.params.generation!==binding.generation)throw new Error('MP-11: stale native snapshot surface');
@@ -466,16 +472,23 @@ export class KernelBrowserHost {
           return {id:request.id,ok:true,result:await this.nativeAccessibility.action(observer,request.params,this.protection,{signal})};
         }
         if (request.params.op === 'start') {
+          if(!this.chromium.desktop || this.chromium.environment?.CHARIOX_KERNEL_BROWSER_HEADLESS==='1')throw new Error('MP-08: owned Computer desktop requires headed Linux');
           await this.start({ signal });
           return { id: request.id, ok: true, result: await this.nativeComputer.request({op:'state'}, this.protection, {signal}) };
         }
-        return { id: request.id, ok: true, result: await this.nativeComputer.request(request.params, this.protection, {signal}) };
+        return { id: request.id, ok: true, result: await this.nativeComputer.request(nativeParams, this.protection, {signal}) };
+      }
+      if (request.method === 'host.computer.retire') {
+        await this.nativeComputer.retire(request.params.observer);
+        this.nativeAccessibility.retire(request.params.observer);
+        return {id:request.id,ok:true,result:{retired:true}};
       }
       if (request.method === "host.computer.reset") {
         await this.nativeComputer.reset();
         return { id: request.id, ok: true, result: { released: true } };
       }
       if (request.method === "host.browser") {
+        if(this.nativeComputer.held.size && ['input','open','close','navigate'].includes(request.params.op))throw new Error('MP-11: native keys held; release desktop input first');
         const at = timestamp();
         const result = await this.request(request.params, { signal });
         this.timing(request.params.op === 'input' ? 'host_input' : 'host_capture_or_control', at);
@@ -509,7 +522,7 @@ export class KernelBrowserHost {
     } catch (error) {
       if (error instanceof UserDomainRefusal) return {id:request.id,ok:false,error:{code:error.code,message:error.message}};
       if (isTrustedStaleReferenceError(error)) return {id:request.id,ok:false,error:{code:"user_domain_stale_reference",message:"User-domain request refused"}};
-      if (error?.code === "browser_action_cancelled") await this.stop();
+      if (error?.code === "browser_action_cancelled" && request.method !== "host.computer") await this.stop();
       if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }

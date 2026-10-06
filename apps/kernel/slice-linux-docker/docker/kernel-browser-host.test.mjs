@@ -648,3 +648,11 @@ test('private CDP pipe loss retires the browser generation even while child is l
   assert.equal(after.tabs[0].tab_id,before.tab_id);
   await assert.rejects(host.request({op:'screenshot',tab_id:before.tab_id,generation:before.generation}),{code:'user_domain_stale_epoch'});
 }));
+
+test('MP-11 agent native input cannot bypass App human-channel admission', () => using(async ({host}) => {
+  await host.request({op:'open',url:'https://example.com'});
+  host.browser.appTabs={apps:new Map([['app',{targetId:'target-1'}]])};
+  let calls=0;host.nativeComputer.execute=async()=>{calls++;return {};};
+  const result=await host.handle({id:'native-app-denial',method:'host.computer',params:{op:'input',surface_id:'s',generation:'g',input:{kind:'click',x:1,y:1},_agent_input:true,observed_by:'agent:a'}});
+  assert.equal(result.ok,false);assert.equal(calls,0);
+}));
