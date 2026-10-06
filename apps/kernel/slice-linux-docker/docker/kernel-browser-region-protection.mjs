@@ -1,3 +1,4 @@
+import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // Screenshot-region masks from trusted CDP metadata, never page JavaScript.
 async function regions(connection, sessionId, mirrorStructured = false) {
   const { root } = await connection.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
@@ -54,15 +55,15 @@ export const protectedHostRegions = (connection, sessionId) => regions(connectio
 export async function captureRegionMasks(connection, sessionId, { mirrorStructured = false } = {}) {
   // Layout changes or failed metadata checks cannot reveal an unmapped field.
   const before = await regions(connection, sessionId, mirrorStructured);
-  return { async afterCapture({ width = 1280, height = 800 } = {}) {
+  return { async afterCapture({ width = geometry.width, height = geometry.height } = {}) {
     if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) throw new Error("Capture geometry unavailable");
     const fullFrame = [{ x: 0, y: 0, width, height }];
     try {
       const after = await regions(connection, sessionId, mirrorStructured);
       if (JSON.stringify(before) !== JSON.stringify(after)) return fullFrame;
       // CDP bounds are CSS coordinates; the raster crop masks native PNG pixels.
-      return after.map(region => ({ x: region.x * width / 1280, y: region.y * height / 800,
-        width: region.width * width / 1280, height: region.height * height / 800 }));
+      return after.map(region => ({ x: region.x * width / geometry.width, y: region.y * height / geometry.height,
+        width: region.width * width / geometry.width, height: region.height * height / geometry.height }));
     } catch { return fullFrame; }
   } };
 }

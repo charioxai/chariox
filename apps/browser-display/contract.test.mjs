@@ -21,3 +21,12 @@ test('MD-DISPLAY actual video/PNG/tile packet contract at protocol 443', async()
  const frames=await contract();
  assert.equal(createHash('sha256').update(JSON.stringify(frames)).digest('hex'),'2ee8a6385402e07acc6ea78752e7f6832ea269faa9646362475c6f5705c672a6');
 });
+
+test('MD-DISPLAY443 pins explicit dependency admission and key/delta/IDR contract',async()=>{
+ const {minimumProtocolVersion,supportedCodecs}=await import('./presenter.mjs');
+ assert.equal(minimumProtocolVersion,443);
+ assert.ok((await supportedCodecs()).includes('chariox-video-dependencies-v1'));
+ const binding={subscription_id:'s',tab_id:'t',device_scale_factor:1,bitrate:2000000,codec:'vp09.00.10.08',dependencies:true};
+ const resets=[];const stream=new DisplayStream(binding,{encoder:{encode:async(p,b,key)=>{resets.push(key);return{key,data_base64:'opaque'}},close:async()=>{}},now:()=>0,wait:async()=>{}});
+ try{for(let n=0;n<3;n++)await stream.frame({generation:1,motion:true,width:1280,height:800,data_base64:String(n)},'document',stream.sequence);assert.deepEqual(resets,[true,false,false]);stream.invalidate();await stream.frame({generation:1,motion:true,width:1280,height:800,data_base64:'recover'},'document',stream.sequence);assert.equal(resets.at(-1),true)}finally{await stream.close()}
+});

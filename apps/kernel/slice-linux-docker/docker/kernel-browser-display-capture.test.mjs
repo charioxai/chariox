@@ -30,3 +30,61 @@ test('MD-DISPLAY large preview damage falls back; wrong document is rejected', a
  await assert.rejects(capture.next({tab_id:'t',document_id:'d'},{},false),/binding changed/);
  assert.equal(capture.previous,null);
 });
+test('MD-DISPLAY verified idle pixels avoid repeated full readback until deadline or input',async()=>{
+ let time=0,calls=0;
+ const pixels=Buffer.alloc(1280*800*4,255),tab={tab_id:'t',document_id:'d',input_epoch:0},policy={values:[]};
+ const capture=new DisplayCapture(async clip=>{if(!clip)calls++;const width=clip?160:1280,height=clip?100:800;return {...tab,generation:1,data_base64:encodePng(width,height,clip?Buffer.alloc(width*height*4,255):pixels)}},1,()=>{},()=>time);
+ await capture.next(tab,policy,false);assert.equal(calls,1);
+ await capture.next(tab,policy,true);assert.equal(calls,1);
+ time=251;await capture.next(tab,policy,true);assert.equal(calls,2);
+ await capture.next({...tab,input_epoch:1},policy,true);assert.equal(calls,3);
+});
+test('MD-DISPLAY repeated verified full PNG skips decode but never skips changed pixels',async()=>{
+ let time=0,changed=false;const timings=[];
+ const tab={tab_id:'t',document_id:'d'},policy={values:[]};
+ const capture=new DisplayCapture(async clip=>{const w=clip?160:1280,h=clip?100:800;return {...tab,generation:1,data_base64:encodePng(w,h,Buffer.alloc(w*h*4,changed?127:255))}},1,name=>timings.push(name),()=>time);
+ await capture.next(tab,policy,false,true);timings.length=0;time=300;
+ const same=await capture.next(tab,policy,true,true);assert.equal(same.pixels.pixels[0],255);
+ assert.ok(!timings.includes('full_source_decode'));
+ changed=true;timings.length=0;time=600;
+ const changedFrame=await capture.next(tab,policy,true,true);assert.equal(changedFrame.pixels.pixels[0],127);
+ assert.ok(timings.includes('full_source_decode'));
+});
+test('MD-DISPLAY changing whole viewport uses CSS motion resolution; idle returns to native pixels',async()=>{
+ let changing=false,time=0;
+ const tab={tab_id:'t',document_id:'d'},policy={values:[]},calls=[];
+ const capture=new DisplayCapture(async clip=>{calls.push(clip?.scale??1);const width=clip?Math.round(1280*clip.scale*2):2560,height=clip?Math.round(800*clip.scale*2):1600;return {...tab,generation:1,width,height,data_base64:encodePng(width,height,Buffer.alloc(width*height*4,changing?127:255))}},2,()=>{},()=>time);
+ const motion={x:0,y:0,width:1280,height:800,scale:.5};
+ await capture.next(tab,policy,false,true,motion);changing=true;
+ const moving=await capture.next(tab,policy,true,true,motion);
+ assert.equal(moving.motion,true);assert.equal(moving.width,1280);assert.equal(calls.at(-1),.5);
+ time=351;const idle=await capture.next(tab,policy,true,true,motion);assert.equal(idle.motion,undefined);assert.equal(idle.pixels.width,2560);
+});
+test('MD-DISPLAY forced verification of small input damage never enters motion mode',async()=>{
+ let changed=false;
+ const tab={tab_id:'t',document_id:'d',input_epoch:0},policy={values:[]};
+ const capture=new DisplayCapture(async clip=>{const width=clip?Math.round(1280*clip.scale):1280,height=clip?Math.round(800*clip.scale):800;const pixels=Buffer.alloc(width*height*4,255);if(changed)pixels[0]=0;return {...tab,generation:1,width,height,data_base64:encodePng(width,height,pixels)}},1);
+ const motion={x:0,y:0,width:1280,height:800,scale:1};
+ await capture.next(tab,policy,false,true,motion);changed=true;
+ const source=await capture.next({...tab,input_epoch:1},policy,true,true,motion);
+ assert.equal(source.motion,undefined);assert.equal(source.pixels.width,1280);
+});
+test('MD-DISPLAY admitted scroll uses motion even when thumbnail misses repeating text',async()=>{
+ const tab={tab_id:'t',document_id:'d'},policy={values:[]};let time=0;
+ const capture=new DisplayCapture(async clip=>{const width=clip?Math.round(1280*clip.scale*2):2560,height=clip?Math.round(800*clip.scale*2):1600;return {...tab,generation:1,width,height,data_base64:encodePng(width,height,Buffer.alloc(width*height*4,255))}},2,()=>{},()=>time);
+ const motion={x:0,y:240,width:1280,height:800,scale:.5};
+ await capture.next(tab,policy,false,true,motion);
+ const moving=await capture.next(tab,policy,true,true,motion,true);assert.equal(moving.motion,true);assert.equal(moving.width,1280);
+ time=400;const idle=await capture.next(tab,policy,true,true,motion,false);assert.equal(idle.motion,undefined);assert.equal(idle.pixels.width,2560);
+});
+
+test('MD-DISPLAY compositor idle reuse requires verified native epoch and policy',async()=>{
+ let clock=0;const data=encodePng(1280,800,Buffer.alloc(1280*800*4,255));
+ const tab={tab_id:'t',document_id:'d',input_epoch:1},policy={values:[]};
+ const capture=new DisplayCapture(async()=>({...tab,data_base64:data}),1,()=>{},()=>clock);
+ await capture.next(tab,policy,false,true);
+ assert(capture.verified(tab,policy,1));assert.equal(capture.verified(tab,policy,2),null);
+ assert.equal(capture.verified({...tab,document_id:'new'},policy,1),null);
+ assert.equal(capture.verified(tab,{values:[]},1),null);
+ clock=251;assert.equal(capture.verified(tab,policy,1),null);
+});

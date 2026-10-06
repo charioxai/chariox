@@ -4,6 +4,9 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { decodePng, encodePng } from './kernel-browser-pixels.mjs';
+import {dirtyTiles, nativeDamageTiles} from './kernel-browser-tiles.mjs';
+import {PixelWorker} from './kernel-browser-pixel-worker.mjs';
+export {dirtyTiles} from './kernel-browser-tiles.mjs';
 import { timestamp } from './kernel-browser-timing.mjs';
 
 export function safeChildPid(child) {
@@ -12,7 +15,11 @@ export function safeChildPid(child) {
 }
 export class PortableEncoder {
   constructor() { this.child = null; this.pending = null; this.failure = null; }
-  async encode(png, bitrate) {
+  async encode(png, bitrate, reset = false, codec = 'vp09.00.10.08') {
+    return typeof png==='object' ? this.exchange({raw:png,bitrate,reset,codec}) : this.exchange({png,bitrate,reset,codec});
+  }
+  async hash(png) { return this.exchange({png,operation:'fingerprint'}); }
+  async exchange(request) {
     if (this.failure) throw this.failure;
     if (!this.child) {
       const child = spawn(process.env.CHARIOX_BROWSER_DISPLAY_PYTHON || 'python3',
@@ -30,8 +37,16 @@ export class PortableEncoder {
         received = 0;
         try {
           const reply = JSON.parse(line);
-          if (reply.error || typeof reply.data_base64 !== 'string' || reply.data_base64.length > 4 * 1024 * 1024) return fail();
-          this.pending?.resolve(reply.data_base64); this.pending = null;
+          if(reply.error)return fail();
+          if(this.pending?.hash){
+            if(!/^[a-f0-9]{64}$/.test(reply.signature)||!Number.isInteger(reply.width)||!Number.isInteger(reply.height)||reply.width<1||reply.height<1||reply.width>2560||reply.height>1600)return fail();
+            this.pending.resolve(reply);
+          }else{
+            if(typeof reply.data_base64!=='string'||reply.data_base64.length>4*1024*1024)return fail();
+            this.backend=['vaapi','x264','vp9'].includes(reply.backend)?reply.backend:null;
+            this.pending?.resolve({data_base64:reply.data_base64,key:reply.key});
+          }
+          this.pending=null;
         } catch { fail(); }
       });
     }
@@ -39,8 +54,8 @@ export class PortableEncoder {
     try {
       return await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('MD-DISPLAY: encode timeout')), 10_000);
-        this.pending = { resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); } };
-        this.child.stdin.write(JSON.stringify({ png, bitrate }) + '\n');
+        this.pending = { hash:request.operation==='fingerprint', resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); } };
+        if(request.raw){const {pixels,...raw}=request.raw;this.child.stdin.write(JSON.stringify({...request,raw})+'\n');this.child.stdin.write(pixels)}else this.child.stdin.write(JSON.stringify(request) + '\n');
       });
     } catch (error) { await this.close(); throw error; }
   }
@@ -72,63 +87,83 @@ export function losslessRegion(frame,x,y,width,height) {
   return {x,y,width,height,data_base64:encodePng(width,height,pixels)};
 }
 
-export function dirtyTiles(previous, current, region = null) {
-  const tiles = [];
-  if (!previous || previous.width !== current.width || previous.height !== current.height) return tiles;
-  const { width, height, pixels } = current;
-  const left = region ? Math.floor(region.x / 128) * 128 : 0;
-  const top = region ? Math.floor(region.y / 128) * 128 : 0;
-  const right = region ? Math.min(width, region.x + region.width) : width;
-  const bottom = region ? Math.min(height, region.y + region.height) : height;
-  for (let y = top; y < bottom; y += 128) for (let x = left; x < right; x += 128) {
-    const w = Math.min(128, width - x), h = Math.min(128, height - y);
-    let changed = false;
-    for (let row = y; row < y + h && !changed; row++) {
-      const offset = (row * width + x) * 4;
-      changed = !pixels.subarray(offset, offset + w * 4).equals(previous.pixels.subarray(offset, offset + w * 4));
-    }
-    if (!changed) continue;
-    tiles.push(losslessRegion(current,x,y,w,h));
-  }
-  return tiles;
-}
-
 export class DisplayStream {
   constructor(binding, { encoder = new PortableEncoder(), now = () => performance.now(), wait = delay, timing = () => {} } = {}) {
-    Object.assign(this, binding); this.encoder = encoder; this.now = now; this.wait = wait;
-    this.sequence = 0; this.previous = null; this.exact = false;
+    this.pixels=new PixelWorker();Object.assign(this, binding); this.encoder = encoder; this.now = now; this.wait = wait;
+    this.sequence = 0; this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null;
     this.refillAt = now(); this.tokens = 0;
     this.expires = Date.now() + 60_000;
     this.timing = timing;
   }
-  invalidate() { this.previous = null; this.exact = false; this.capture?.invalidate(); }
-  async frame(source, documentId, afterSequence) {
+  canPatchNative(sample) {
+    return Boolean(this.previous) && !this.repair && sample.serial === this.compositorSerial + 1 &&
+      nativeDamageTiles(sample.raw, true) !== null;
+  }
+  acceptsCredit(after) { return Number.isSafeInteger(after) && after >= Math.max(0,this.sequence-8) && after <= this.sequence; }
+  invalidate() { this.motionActive=false;this.compositorSerial=null;this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null; this.capture?.invalidate();this.refiner?.invalidate();this.producer?.invalidate(); }
+  async frame(source, documentId, afterSequence, validate = async () => true, currentBinding = () => true) {
     let at = timestamp();
-    const current = source.pixels ?? decodePng(source.data_base64, this.device_scale_factor);
+    const current = source.motion || source.native_tiles ? {width:source.width,height:source.height,signature:source.data_base64,pixels:null}
+      : source.pixels ?? await this.pixels.run('decode',{data:source.data_base64,scale:this.device_scale_factor});
     this.timing('png_decode', at); at = timestamp();
-    const bound = documentId === this.document_id && afterSequence === this.sequence;
-    if (!bound) this.invalidate();
-    const same = this.previous?.pixels.equals(current.pixels);
-    if (same && this.exact) return null;
+    // Already-admitted 419 credits may lag the delivered sequence. Eight
+    // frames is the hard recovery window; clients still validate every base.
+    const bound = documentId === this.document_id && this.acceptsCredit(afterSequence);
+    if (source.native_tiles && !bound) throw Error('MD-DISPLAY: native patch base lost');
+    const wasExact = this.exact;
+    if (!bound) {
+      this.invalidate();
+      // Selection can already have taken a delta from the producer. Resetting
+      // only future work cannot make that packet independently decodable.
+      if (source.encoded && !source.encoded.key) return null;
+    }
+    const same = current.signature ? this.previous?.signature === current.signature : Boolean(this.previous?.pixels && this.previous.pixels.equals(current.pixels));
+    // Taken packets have already advanced the persistent codec reference chain.
+    // Only suppress duplicates before encoding; every encoded dependency ships.
+    if (same && (this.exact || source.motion) && !source.encoded) return null;
     // Private crop metadata comes only from the protected native capture. The
     // cached frame is cloned unchanged outside it; full verification has no hint.
     const clip = source.dirty_clip;
     const region = clip && { x:clip.x*this.device_scale_factor, y:clip.y*this.device_scale_factor,
       width:clip.width*this.device_scale_factor, height:clip.height*this.device_scale_factor };
-    const tiles = this.exact ? dirtyTiles(this.previous, current, region) : [];
+    const tiles = this.exact && this.previous?.pixels && !source.motion && !source.native_tiles ? await this.pixels.run('tiles',{previous:this.previous,current,region}) : [];
     this.timing('compare_tiles', at); at = timestamp();
     const png = () => typeof source.data_base64 === 'function' ? source.data_base64() : source.data_base64;
     const full = () => ({ kind: 'png', data_base64: png() });
     const patch = { kind: 'tiles', base_sequence: this.sequence, tiles };
-    let payload;
-    if (same || (bound && this.previous && !this.exact)) payload = full();
-    else if (tiles.length && JSON.stringify(patch).length < Math.min(48_000, source.full_size_hint ?? JSON.stringify(full()).length)) payload = patch;
+    // Half a second of negotiated frame budget, including outer base64. One
+    // credit remains outstanding; narrow links reduce batch size/cadence.
+    const patchLimit = Math.min(192_000, Math.max(24_000, this.bitrate / 8 * .5 * .75 - 4096));
+    let payload, repair = null;
+    if (source.native_tiles) payload = {kind:'tiles', base_sequence:this.sequence, tiles:source.native_tiles};
+    else if (bound && (same || source.settled_verified) && (!this.exact || !this.previous?.pixels) && !source.motion) {
+      const exact = full();
+      if (JSON.stringify(exact).length <= patchLimit) payload = exact;
+      else {
+        // A verified capture may supersede the immutable RGB snapshot while
+        // repair batches are still queued. Never mark its older tiles exact.
+        if(this.repair && (!same || this.repairSerial!==source.refinement_serial))this.repair=null;
+        const remaining = this.repair ?? source.repair_tiles ?? await this.pixels.run('tiles',{previous:null,current,all:true});
+        const batch = []; let size = 128;
+        for (const tile of remaining) {
+          const cost = JSON.stringify(tile).length + 1;
+          if (batch.length && size + cost > patchLimit) break;
+          batch.push(tile); size += cost;
+        }
+        payload = { kind:'tiles', base_sequence:this.sequence, tiles:batch };
+        repair = remaining.slice(batch.length);
+      }
+    } else if (!source.motion && tiles.length && JSON.stringify(patch).length < Math.min(patchLimit, source.full_size_hint ?? JSON.stringify(full()).length)) payload = patch;
     else if (this.codec === 'png') payload = full();
-    else payload = { kind: 'video', codec: 'vp09.00.10.08', key: true, data_base64: await this.encoder.encode(png(), this.bitrate) };
+    else {
+      const encoded = source.encoded ?? await this.encoder.encode(png(), this.bitrate, !this.dependencies || !bound || !this.previous || this.exact || Boolean(this.repair),this.codec);
+      if(!this.dependencies && typeof encoded!=='string' && !encoded.key)throw Error('MD-DISPLAY: unnegotiated dependent frame');
+      payload = { kind:'video', codec:this.codec, ...(typeof encoded === 'string' ? {key:true,data_base64:encoded} : encoded) };
+    }
     this.timing('select_encode', at); at = timestamp();
     const packet = { ...payload, subscription_id: this.subscription_id, tab_id: this.tab_id,
       generation: source.generation, document_id: documentId, sequence: this.sequence + 1,
-      width: current.width, height: current.height, css_width: 1280, css_height: 800,
+      width: source.motion ? (this.css_width??1280)*this.device_scale_factor : current.width, height: source.motion ? (this.css_height??800)*this.device_scale_factor : current.height, css_width: this.css_width??1280, css_height: this.css_height??800,
       device_scale_factor: this.device_scale_factor, colour: 'srgb' };
     const bytes = Math.ceil(Buffer.byteLength(JSON.stringify(packet)) * 4 / 3) + 1024; // reserve transport/encryption envelope
     if (bytes > 1024 * 1024) throw new Error('MD-DISPLAY: packet exceeds bounded egress');
@@ -136,11 +171,31 @@ export class DisplayStream {
     // MD-DISPLAY-02/04: bounded 16 KiB burst accrued while capture/input runs.
     // Account all base64/envelope bytes, including bootstrap and exact repairs.
     this.tokens = Math.min(16 * 1024, this.tokens + Math.max(0, this.now() - this.refillAt) * this.bitrate / 8000);
-    await this.wait(Math.max(0, bytes - this.tokens) * 8000 / this.bitrate);
-    this.tokens = Math.max(0, this.tokens - bytes); this.refillAt = this.now();
+    // Absolute time, rather than repeated relative slices: a busy event loop
+    // can oversleep a timer. Charge those real milliseconds once, never again.
+    this.refillAt = this.now();
+    const deadline = this.now() + Math.max(0,bytes-this.tokens)*8000/this.bitrate;
+    if(deadline<=this.now())await this.wait(0);
+    while(this.now()<deadline){
+      if(!currentBinding()){
+        if(payload.kind==='video')this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}
+        return null;
+      }
+      const before=this.now(),slice=Math.min(deadline-before,8);await this.wait(slice);
+      // Deterministic test clocks may not advance; real clocks always do.
+      if(this.now()===before)break;
+    }
+    this.tokens = Math.min(16*1024, this.tokens + Math.max(0,this.now()-this.refillAt)*this.bitrate/8000)-bytes;
+    this.tokens = Math.max(0,this.tokens); this.refillAt = this.now();
     this.timing('pacing', at);
-    this.document_id = documentId; this.previous = current; this.exact = payload.kind !== 'video'; this.sequence++;
+    if (!await validate()) { if(payload.kind==='video')this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}return null; }
+    this.document_id = documentId; this.previous = current; this.repair = repair?.length ? repair : null;this.repairSerial=source.refinement_serial;
+    // A small exact patch can acknowledge input over a lossy video base. It
+    // certifies only its damaged pixels; idle native verification still repairs
+    // the untouched raster before the whole frame becomes exact.
+    this.exact = source.native_tiles ? wasExact : payload.kind !== 'video' && !this.repair; this.sequence++;
+    if(payload.kind!=='video')this.producer?.retireUnsent();
     return packet;
   }
-  async close() { clearTimeout(this.timer); this.invalidate(); await this.encoder.close(); }
+  async close() { clearTimeout(this.timer); this.invalidate(); await this.producer?.close();await this.refiner?.close();await this.pixels.close();await this.encoder.close(); }
 }

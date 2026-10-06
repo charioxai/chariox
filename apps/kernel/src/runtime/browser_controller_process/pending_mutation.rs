@@ -10,7 +10,7 @@ use super::{
     BrowserControllerRpcRequest, BrowserControllerRpcResponse,
 };
 
-pub(super) struct PendingBrowserMutation {
+pub(crate) struct PendingBrowserMutation {
     request_id: u64,
     cancel_id: u64,
     response: pending_responses::PendingResponse<BrowserControllerRpcResponse>,
@@ -41,7 +41,7 @@ impl BrowserTabMutationLanes {
 }
 
 impl BrowserControllerProcessStdioBackend {
-    fn begin_cancellable_mutation(
+    pub(crate) fn begin_cancellable_mutation(
         &mut self,
         method: &str,
         params: &serde_json::Value,
@@ -105,7 +105,7 @@ impl BrowserControllerProcessStdioBackend {
 }
 
 impl PendingBrowserMutation {
-    pub(super) fn wait(
+    pub(crate) fn wait(
         self,
         signal: &cancellation::CancellationSignal,
     ) -> Result<BrowserControllerRpcResponse, String> {

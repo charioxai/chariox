@@ -1,39 +1,188 @@
-"""MD-DISPLAY-02: opt-in portable software encoder; input is already protected PNG.
-Requires operator-installed Python3/PyAV. No profiles, CDP, credentials or network.
-Each independent keyframe can be dropped/reordered without decoder dependencies.
-"""
+"""MD-DISPLAY-04: bounded persistent VP9 stream of protected PNG frames only."""
 import base64
 import io
+import re
+import hashlib
 import json
 import sys
+import os
+import shutil
+import subprocess
+import threading
+from pathlib import Path
 from fractions import Fraction
 import av
 
-for line in sys.stdin:
-    try:
-        request = json.loads(line)
-        png = base64.b64decode(request['png'], validate=True)
-        if len(png) > 4 * 1024 * 1024:
-            raise ValueError('frame bound')
-        with av.open(io.BytesIO(png)) as source:
-            frame = next(source.decode(video=0))
-        if frame.width > 2560 or frame.height > 1600:
-            raise ValueError('geometry bound')
-        codec = av.CodecContext.create('libvpx-vp9', 'w')
-        codec.width, codec.height = frame.width, frame.height
-        codec.pix_fmt = 'yuv420p'
-        codec.time_base = Fraction(1, 5)
-        codec.framerate = Fraction(5, 1)
-        codec.bit_rate = request['bitrate']
-        codec.thread_count = 2
-        codec.options = {'deadline': 'realtime', 'cpu-used': '6', 'lag-in-frames': '0',
-                         'crf': '18', 'g': '1'}
-        frame = frame.reformat(format='yuv420p')
-        frame.pts = 0
-        packets = list(codec.encode(frame)) + list(codec.encode(None))
-        if len(packets) != 1 or not packets[0].is_keyframe:
-            raise ValueError('independent keyframe required')
-        print(json.dumps({'data_base64': base64.b64encode(bytes(packets[0])).decode()}), flush=True)
-    except Exception:
-        # Never emit source payloads or arbitrary library exception text.
-        print(json.dumps({'error': 'MD-DISPLAY: protected frame encode failed'}), flush=True)
+
+def h264_idr(packet):
+    # Recovery-point SEI / periodic intra-refresh is not an independent IDR.
+    # The presenter resets its decoder only for actual IDR access units.
+    return any(nal and nal[0] & 31 == 5 for nal in re.split(b'\x00\x00\x01',packet))
+
+class VaapiEncoder:
+    """MD-DISPLAY-02/04: owned persistent FFmpeg VAAPI with framed NUT output.
+    It consumes admitted raw pixels only; it never opens a capture source.
+    Read/write failures/timeouts kill only its validated child and fall back.
+    """
+    def __init__(self):
+        self.child = None
+        self.container = None
+        self.configuration = None
+
+    @staticmethod
+    def stop_child(child):
+        if child is not None:
+            if not isinstance(child.pid,int) or child.pid <= 1:
+                raise ValueError('MD-DISPLAY: unsafe encoder child PID')
+            if child.poll() is None:child.kill()
+
+    def abort(self):
+        self.stop_child(self.child)
+
+    def encode(self, frame, bitrate, reset=False):
+        config = (frame.width,frame.height,bitrate)
+        if self.child is None or reset or config != self.configuration:
+            self.close()
+            device = next(p for p in sorted(Path('/dev/dri').glob('renderD*')) if os.access(p,os.R_OK|os.W_OK))
+            command = ['ffmpeg','-v','error','-nostdin','-init_hw_device',f'vaapi=chariox:{device}',
+                '-filter_hw_device','chariox','-f','rawvideo','-pixel_format','bgr0',
+                '-video_size',f'{frame.width}x{frame.height}','-framerate','60',
+                '-probesize','32','-analyzeduration','0','-i','pipe:0','-an',
+                '-vf','format=nv12,hwupload','-c:v','h264_vaapi','-profile:v','constrained_baseline',
+                '-level:v','5.1','-bf','0','-g','120','-b:v',str(int(bitrate*.45)),
+                '-maxrate',str(int(bitrate*.45)),'-bufsize',str(max(32000,int(bitrate*.05))),
+                '-flags','+low_delay','-bsf:v','h264_mp4toannexb','-f','nut','-flush_packets','1','pipe:1']
+            self.child = subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+            self.configuration = config
+        child = self.child
+        # Writer/readback must progress independently for a native16MiB frame.
+        # NUT preserves packet sizes (AnnexB pipe reads do not frame access units).
+        errors=[]
+        def write():
+            try:
+                pixels = bytes(frame.reformat(format='bgr0').planes[0])
+                if len(pixels)!=frame.width*frame.height*4:raise ValueError('VAAPI raw stride')
+                child.stdin.write(pixels);child.stdin.flush()
+            except Exception as error:errors.append(error);self.stop_child(child)
+        timer = threading.Timer(5,lambda:self.stop_child(child))
+        writer = threading.Thread(target=write,daemon=True)
+        timer.start();writer.start()
+        try:
+            if self.container is None:
+                self.container=av.open(child.stdout,format='nut',mode='r',buffer_size=1,options={'probesize':'32','analyzeduration':'0'})
+                self.packets=self.container.demux(video=0)
+            packet=next(self.packets)
+            writer.join(timeout=1)
+            if writer.is_alive() or errors or packet.size<1 or packet.size>3*1024*1024:raise ValueError('VAAPI packet bound')
+            return packet
+        except Exception:
+            self.abort();writer.join(timeout=1)
+            raise
+        finally:timer.cancel()
+
+    def close(self):
+        self.abort()
+        if self.container is not None:self.container.close();self.container=None
+        if self.child is not None:
+            child=self.child;self.child=None
+            child.wait(timeout=2);child.stdin.close();child.stdout.close()
+        self.configuration=None
+
+def main():
+    codec = None
+    configuration = None
+    sequence = 0
+    hardware = None
+    hardware_disabled = os.environ.get('CHARIOX_BROWSER_DISPLAY_SOFTWARE') == '1'
+    while True:
+        line=sys.stdin.buffer.readline()
+        if not line:break
+        try:
+            request = json.loads(line)
+            if 'raw' in request:
+                raw=request['raw'];w=raw['width'];h=raw['height'];size=w*h*4
+                if not (1<=w<=2560 and 1<=h<=1600) or raw['format']!='bgr0' or raw['length']!=size:raise ValueError('raw bound')
+                pixels=sys.stdin.buffer.read(size)
+                if len(pixels)!=size:raise ValueError('raw truncated')
+                frame=av.VideoFrame(w,h,'bgr0')
+                frame.planes[0].update(pixels)
+            else:
+                png = base64.b64decode(request['png'], validate=True)
+                if len(png) > 4 * 1024 * 1024:raise ValueError('frame bound')
+                with av.open(io.BytesIO(png)) as source:frame = next(source.decode(video=0))
+            if frame.width > 2560 or frame.height > 1600:
+                raise ValueError('geometry bound')
+            if request.get('operation')=='fingerprint':
+                signature=hashlib.sha256(frame.format.name.encode())
+                for plane in frame.planes:
+                    bpp=3 if frame.format.name in ('rgb24','bgr24') else 4 if frame.format.name in ('rgba','bgra') else 1
+                    pixels=memoryview(plane);stride=plane.width*bpp
+                    if stride==plane.line_size:signature.update(pixels[:stride*plane.height])
+                    else:
+                        for row in range(plane.height):signature.update(pixels[row*plane.line_size:row*plane.line_size+stride])
+                print(json.dumps({'signature':signature.hexdigest(),'width':frame.width,'height':frame.height}),flush=True)
+                continue
+            if request.get('operation') is not None:raise ValueError('operation bound')
+            selected=request.get('codec','vp09.00.10.08')
+            if selected not in ('vp09.00.10.08','vp09.00.40.08','vp09.00.50.08','avc1.420033'):raise ValueError('codec admission')
+            if selected.startswith('avc1') and not hardware_disabled and shutil.which('ffmpeg') and any(Path('/dev/dri').glob('renderD*')):
+                try:
+                    if hardware is None:hardware = VaapiEncoder()
+                    packet = hardware.encode(frame, request['bitrate'], request.get('reset',False))
+                    print(json.dumps({'data_base64':base64.b64encode(bytes(packet)).decode(),'key':h264_idr(bytes(packet)),'backend':'vaapi'}),flush=True)
+                    continue
+                except Exception:
+                    if hardware is not None:hardware.close()
+                    hardware = None
+                    hardware_disabled = True
+                    codec = None  # backend switch must be an independent frame
+                    request['reset'] = True
+            # Software motion at <=16Mbps trades transient resolution for
+            # cadence. Hardware retains native DPR; protected exact PNG/tiles
+            # never pass through this branch. Bounded experimental clients accept
+            # CSS-sized or1080p-to720p video and upscale into the native canvas.
+            if request.get('raw',{}).get('motion') is True and (frame.width,frame.height)==(2560,1600) and request['bitrate']<=16000000:
+                frame=frame.reformat(width=1280,height=800,format='yuv420p')
+            elif request.get('raw',{}).get('motion') is True and (frame.width,frame.height)==(1920,1080) and request['bitrate']<=16000000:
+                frame=frame.reformat(width=1280,height=720,format='yuv420p',interpolation='FAST_BILINEAR')
+            config = (frame.width, frame.height, request['bitrate'], selected)
+            if codec is None or config != configuration:
+                codec = av.CodecContext.create('libvpx-vp9' if selected.startswith('vp09') else 'libx264', 'w')
+                codec.width, codec.height = frame.width, frame.height
+                codec.pix_fmt = 'yuv420p'
+                codec.time_base = Fraction(1,60)
+                codec.framerate = Fraction(60,1)
+                # Reserve nested base64, authenticated envelopes and credit replies.
+                codec.bit_rate = int(request['bitrate'] * .45)
+                codec.thread_count = 4
+                codec.options = {'row-mt':'1', 'tile-columns':'2', 'frame-parallel':'1', 'deadline': 'realtime', 'cpu-used': '8', 'lag-in-frames': '0',
+                                 'g': '60', 'error-resilient': '1', 'undershoot-pct': '95',
+                                 'overshoot-pct': '5', 'bufsize': str(int(request['bitrate'] * .1)),
+                                 'minrate': '0', 'maxrate': str(codec.bit_rate),
+                                 'rc_init_occupancy': str(int(request['bitrate'] * .05)),
+                                 'max-intra-rate': '200', 'qmin': '4', 'qmax': '48', 'crf':'28'}
+                if selected.startswith('avc1'):
+                    codec.options={'forced-idr':'1','preset':'ultrafast','tune':'zerolatency','profile':'baseline',
+                     'level':'5.1','crf':'23','g':'120','bf':'0',
+                     'x264-params':f'intra-refresh=1:sync-lookahead=0:repeat-headers=1:annexb=1:rc-lookahead=0:vbv-maxrate={codec.bit_rate//1000}:vbv-bufsize={max(32,codec.bit_rate//10000)}'}
+                configuration, sequence = config, 0
+            frame = frame.reformat(format='yuv420p')
+            # PNG decoders mark every input as I; clear that hint for inter prediction.
+            frame.pict_type = av.video.frame.PictureType.I if request.get('reset') else av.video.frame.PictureType.NONE
+            # Image demuxers supply their own timebase (often 25fps). Its PTS must
+            # not be rebased into the negotiated 30fps video rate-control clock.
+            frame.time_base = codec.time_base
+            frame.pts = sequence
+            packets = list(codec.encode(frame))
+            if len(packets) != 1:
+                raise ValueError('one realtime packet required')
+            sequence += 1
+            print(json.dumps({'data_base64': base64.b64encode(bytes(packets[0])).decode(),
+                              'key': packets[0].is_keyframe if selected.startswith('vp09') else h264_idr(bytes(packets[0])),'backend':'vp9' if selected.startswith('vp09') else 'x264'}), flush=True)
+        except Exception:
+            codec, configuration = None, None
+            print(json.dumps({'error': 'MD-DISPLAY: protected frame encode failed'}), flush=True)
+    if hardware is not None:hardware.close()
+
+if __name__ == "__main__":
+    main()

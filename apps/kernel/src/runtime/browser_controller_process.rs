@@ -311,6 +311,8 @@ impl BrowserControllerProcessStdioBackend {
                 "CHARIOX_KERNEL_BROWSER_MIRROR",
                 "CHARIOX_BROWSER_DISPLAY_PYTHON",
                 "CHARIOX_BROWSER_DISPLAY_TIMING",
+                "CHARIOX_BROWSER_DISPLAY_GEOMETRY",
+                "CHARIOX_BROWSER_DISPLAY_SOFTWARE",
             ] {
                 if let Some(value) = std::env::var_os(key) {
                     command.env(key, value);
@@ -324,6 +326,12 @@ impl BrowserControllerProcessStdioBackend {
             )
         })?;
         let mut owned_group = owned_process_group::OwnedProcessGroup::new(child.id());
+        if self.host {
+            if let Err(error) = owned_group.start_tracking() {
+                kill_owned_child(&mut child, &mut owned_group);
+                return Err(format!("failed to track browser descendants: {error}"));
+            }
+        }
         let stdin = child.stdin.take().ok_or_else(|| {
             kill_owned_child(&mut child, &mut owned_group);
             "browser controller did not expose stdin".to_string()
@@ -339,10 +347,16 @@ impl BrowserControllerProcessStdioBackend {
         let (responses_tx, responses) = mpsc::channel();
         let pending_responses = pending_responses::PendingResponses::default();
         let reader_pending_responses = pending_responses.clone();
+        let reader_ownership = self.host.then(|| owned_group.witness());
         if let Err(error) = std::thread::Builder::new()
             .name("chariox-browser-controller-reader".to_string())
             .spawn(move || {
-                read_controller_responses(stdout, responses_tx, reader_pending_responses)
+                read_controller_responses(
+                    stdout,
+                    responses_tx,
+                    reader_pending_responses,
+                    reader_ownership,
+                )
             })
         {
             kill_owned_child(&mut child, &mut owned_group);
@@ -401,7 +415,19 @@ impl BrowserControllerProcessStdioBackend {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        self.request(method, params)?.into_result(method)
+        let lifecycle = self.host
+            && method == "host.browser"
+            && matches!(
+                params.get("op").and_then(serde_json::Value::as_str),
+                Some("start" | "open" | "state" | "display_subscribe")
+            );
+        let result = self.request(method, params)?.into_result(method);
+        if lifecycle {
+            if let Some(process) = self.process.as_mut() {
+                process.owned_group.refresh();
+            }
+        }
+        result
     }
 
     pub(crate) fn host_request_classified(
@@ -426,6 +452,20 @@ impl BrowserControllerProcessStdioBackend {
             .map_err(crate::error::HostFailure::Other)
     }
 
+    // MD-DISPLAY-04: host RPCs validate their own outcome. The host health RPC
+    // reports only this same supervisor PID, so don't repeat it per frame.
+    // Keep exact owned-child exit detection and cold/recovery health admission.
+    pub(crate) fn ensure_host_started(&mut self) -> Result<bool, String> {
+        if !self.host {
+            return Err("host controller required".into());
+        }
+        self.take_exited_process()?;
+        if self.process.is_none() {
+            self.start()?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
     pub(crate) fn host_request_cancellable(
         &mut self,
         method: &str,
@@ -474,7 +514,9 @@ impl BrowserControllerProcessStdioBackend {
             .as_mut()
             .ok_or_else(|| "browser controller is not running".to_string())?;
         let ownership_at = Instant::now();
-        process.owned_group.refresh();
+        if !self.host {
+            process.owned_group.refresh();
+        }
         crate::transport::kernel_browser_display::timing("process_identity_refresh", ownership_at);
         let mut stdin = process
             .stdin
@@ -574,7 +616,9 @@ impl BrowserControllerProcessStdioBackend {
                 }
             };
             let ownership_at = Instant::now();
-            process.owned_group.refresh();
+            if !self.host {
+                process.owned_group.refresh();
+            }
             crate::transport::kernel_browser_display::timing(
                 "process_identity_refresh",
                 ownership_at,
@@ -701,7 +745,15 @@ pub(crate) fn controller_error_marker(code: &str) -> String {
 }
 
 impl BrowserControllerRpcResponse {
-    fn into_result<T: DeserializeOwned>(self, method: &str) -> Result<T, String> {
+    pub(crate) fn into_host_result(self, method: &str) -> Result<serde_json::Value, crate::error::HostFailure> {
+        if !self.ok {
+            if let Some(reason) = self.error.as_ref().and_then(|error| crate::error::UserDomainRefusalReason::from_code(&error.code)) {
+                return Err(crate::error::HostFailure::Refused(reason));
+            }
+        }
+        self.into_result(method).map_err(crate::error::HostFailure::Other)
+    }
+    pub(crate) fn into_result<T: DeserializeOwned>(self, method: &str) -> Result<T, String> {
         if !self.ok {
             let error = self.error.unwrap_or(BrowserControllerRpcError {
                 code: "controller_error".to_string(),
@@ -1105,7 +1157,7 @@ struct BrowserControllerCommandHealth {
 }
 
 #[derive(Deserialize)]
-struct BrowserControllerRpcResponse {
+pub(crate) struct BrowserControllerRpcResponse {
     id: Option<u64>,
     ok: bool,
     result: Option<serde_json::Value>,
@@ -1192,6 +1244,7 @@ fn read_controller_responses(
     stdout: ChildStdout,
     responses: mpsc::Sender<Result<BrowserControllerRpcResponse, String>>,
     pending_responses: pending_responses::PendingResponses<BrowserControllerRpcResponse>,
+    mut ownership: Option<owned_process_group::OwnedProcessGroup>,
 ) {
     for line in BufReader::new(stdout).lines() {
         let response = line
@@ -1202,6 +1255,21 @@ fn read_controller_responses(
             });
         let response = match response {
             Ok(response) => {
+                // Cold capture/encoder replacement returns an independent frame.
+                // Record lifecycle identities before publishing it; deltas never
+                // scan here. The observer covers launches during idle/failed RPCs.
+                if response.result.as_ref().is_some_and(|v| {
+                    v.pointer("/display_frame/key")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+                        || v.pointer("/display_frame/sequence")
+                            .and_then(serde_json::Value::as_u64)
+                            == Some(1)
+                }) {
+                    if let Some(group) = ownership.as_mut() {
+                        group.refresh();
+                    }
+                }
                 if let Some(id) = response.id {
                     match pending_responses.route(id, response) {
                         Some(response) => Ok(response),

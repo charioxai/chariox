@@ -26,6 +26,7 @@ pub(crate) struct KernelBrowserHost {
 struct HostState {
     browsers: BTreeMap<String, Arc<Mutex<BrowserControllerProcessStdioBackend>>>,
     stopped: bool,
+    display_gates: BTreeMap<String, Arc<super::kernel_browser_display_gate::DisplayGate>>,
     #[cfg(test)]
     after_controller_check: Option<Arc<dyn Fn() + Send + Sync>>,
     access: UserDomainAccess,
@@ -79,6 +80,20 @@ impl KernelBrowserHost {
             inner: Arc::new(Mutex::new(HostState::default())),
             root: root.join("kernel-browser"),
         }
+    }
+    // MD-DISPLAY-04: queued credits wait asynchronously, away from the
+    // controller mutex. Input can enter between captures rather than behind
+    // an entire WAN window of blocking capture/encode/pacing operations.
+    pub(crate) fn display_gate(
+        &self,
+        user: &str,
+    ) -> Arc<super::kernel_browser_display_gate::DisplayGate> {
+        let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        state
+            .display_gates
+            .entry(user.into())
+            .or_insert_with(|| Arc::new(super::kernel_browser_display_gate::DisplayGate::default()))
+            .clone()
     }
     pub(crate) fn profile_root(&self, user: &str) -> PathBuf {
         self.root.join(Self::profile_key(user))
@@ -464,7 +479,17 @@ impl KernelBrowserHost {
         // MP-11: focused and retained input share grant/run cancellation.
         // Vault requests also carry their live focus authority from admission.
         let request_params = params.clone();
-        let mut result = backend.host_request_cancellable(method, params, cancellation.clone());
+        let display = method == "host.browser" && params["op"] == "screenshot"
+            && params["display_subscription_id"].is_string();
+        let mut result = if display {
+            let signal = cancellation.clone().unwrap_or_else(|| Arc::new(BrowserCancellation::default()));
+            let pending = backend.begin_cancellable_mutation(method, &params, &signal)?;
+            drop(backend);
+            pending.wait(&signal).map_err(crate::error::HostFailure::Other)
+                .and_then(|response| response.into_host_result(method))
+        } else {
+            backend.host_request_cancellable(method, params, cancellation.clone())
+        };
         if let Some(action) = action {
             let terminal = if cancellation
                 .as_ref()

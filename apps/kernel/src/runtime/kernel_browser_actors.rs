@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 pub(crate) struct KernelBrowserActors {
     generation: u64,
+    viewport: (u64, u64),
     tabs: TabRegistry,
     actors: BTreeMap<String, EnvironmentActor>,
     ledger: EnvironmentActionLedger,
@@ -29,6 +30,7 @@ impl Default for KernelBrowserActors {
     fn default() -> Self {
         Self {
             generation: 0,
+            viewport: (1280, 800),
             tabs: TabRegistry::new(),
             actors: BTreeMap::new(),
             ledger: EnvironmentActionLedger::new(256, 0),
@@ -56,6 +58,14 @@ impl KernelBrowserActors {
             self.pointers.clear();
             self.pointer_tabs.clear();
             self.generation = generation;
+        }
+        if let (Some(width), Some(height)) = (
+            state["viewport"]["css_width"].as_u64(),
+            state["viewport"]["css_height"].as_u64(),
+        ) {
+            if matches!((width, height), (1280, 800) | (1920, 1080)) {
+                self.viewport = (width, height);
+            }
         }
         let observations = tabs
             .iter()
@@ -210,7 +220,7 @@ impl KernelBrowserActors {
             _ => return Err("MD-3: browser action lane busy".into()),
         };
         if let (Some(x), Some(y)) = (input["x"].as_u64(), input["y"].as_u64()) {
-            if x < 1280 && y < 800 {
+            if x < self.viewport.0 && y < self.viewport.1 {
                 if let Some(tab) = params["tab_id"].as_str() {
                     self.pointer_tabs.insert(actor.actor_id.clone(), tab.into());
                 }
@@ -340,6 +350,16 @@ mod tests {
     fn input(tab: &str) -> Value {
         json!({"op":"input","tab_id":tab,"generation":1,"input":{"kind":"text","text":"synthetic-private-value"}})
     }
+    #[test]
+    fn mp08_pointer_projection_uses_the_bounded_host_viewport() {
+        let mut model = ready();
+        model.reconcile(&json!({"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}],"viewport":{"css_width":1920,"css_height":1080}})).unwrap();
+        let (action, _) = model.begin(human("terminal:1080p"), &json!({"op":"input","tab_id":"host-tab-a","generation":1,"input":{"kind":"click","x":1919,"y":1079}})).unwrap();
+        assert_eq!(model.snapshot()["pointers"][0]["x"], 1919);
+        assert_eq!(model.snapshot()["pointers"][0]["y"], 1079);
+        model.finish(&action, EnvironmentActionTerminal::Completed);
+    }
+
     #[test]
     fn md3_terminal_disconnect_releases_input_and_reclaims_actor_capacity() {
         let mut model = ready();

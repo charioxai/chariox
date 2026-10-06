@@ -25,6 +25,7 @@ function fixture(root) {
       if (connection.beforeSend) await connection.beforeSend(method, params, session);
       sent.push({ method, params, session });
       if (method === "Target.getTargets") return { targetInfos: [...pages].map(([targetId, tab]) => ({ targetId, type: "page", ...tab })) };
+      if (method === 'Target.getTargetInfo') return {targetInfo:pages.get(params.targetId)};
       if (method === "Target.createTarget") { const id = `target-${++next}`; pages.set(id, { url: params.url }); return { targetId: id }; }
       if (method === "Target.closeTarget") {
         pages.delete(params.targetId);
@@ -176,6 +177,21 @@ test("MD-2: text input uses isolated focus checks and rejects secret fields", ()
   await host.request({ op: "input", ...binding, input: { kind: "text", text: "fixture" } });
   assert(sent.some(call => call.method === "Input.insertText"));
   await assert.rejects(host.request({ op: "input", ...binding, input: { kind: "click", x: 1280, y: 0 } }), /viewport/);
+}));
+
+test('MD-DISPLAY-02 bound input checks its document before dispatch without a full preflight reconciliation', () => using(async ({host, sent, pages}) => {
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ const reconcile=host.browser.reconcile;let reconciles=0;
+ host.browser.reconcile=async(...args)=>{reconciles++;return reconcile(...args)};
+ host.browser.connection.beforeSend=async method=>{
+  if(method==='Input.dispatchMouseEvent')assert.equal(reconciles,0,'bound physical input must not await unrelated tab reconciliation');
+ };
+ const command={op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'click',x:2,y:2}};
+ await host.request(command);assert.equal(reconciles,1,'post-input reconciliation still discovers popups/navigation');
+ const before=sent.filter(x=>x.method==='Input.dispatchMouseEvent').length;
+ pages.get(host.tabs.get(tab.tab_id).target_id).document_id='replacement';
+ await assert.rejects(host.request(command),{code:'user_domain_stale_reference'});
+ assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,before);
 }));
 
 test("MD-2: closing the last user tab keeps a hidden browser target alive", () => using(async ({ host, chromium, sent }) => {

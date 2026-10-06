@@ -1,3 +1,4 @@
+import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-5: bounded CDP PNG masking, using the Room's trusted region locator.
 // Unsupported/racing layout receives an opaque whole-frame mask. Page code
 // never participates in drawing/removing the masks. No desktop dependency.
@@ -28,7 +29,7 @@ export function encodePng(width, height, pixels) {
   for (let y = 0; y < height; y++) pixels.copy(rows, y * (width * 4 + 1) + 1, y * width * 4, (y + 1) * width * 4);
   return Buffer.concat([signature, chunk("IHDR", header), chunk("IDAT", deflateSync(rows)), chunk("IEND", Buffer.alloc(0))]).toString("base64");
 }
-export function opaqueFrame(width = 1280, height = 800) {
+export function opaqueFrame(width = geometry.width, height = geometry.height) {
   const pixels = Buffer.alloc(width * height * 4);
   for (let i = 3; i < pixels.length; i += 4) pixels[i] = 255;
   return encodePng(width, height, pixels);
@@ -53,7 +54,7 @@ export function decodePng(data, scale = 1) {
       if (body.length !== 13 || width) throw new Error("MD-5: invalid frame header");
       width = body.readUInt32BE(0); height = body.readUInt32BE(4);
       channels = body[9] === 6 ? 4 : body[9] === 2 ? 3 : 0;
-      if (!width || !height || width > 1280 * scale || height > 800 * scale || body[8] !== 8 || !channels || body[10] || body[11] || body[12]) throw new Error("MD-5: unsupported frame format");
+      if (!width || !height || width > geometry.width * scale || height > geometry.height * scale || body[8] !== 8 || !channels || body[10] || body[11] || body[12]) throw new Error("MD-5: unsupported frame format");
     } else if (type === "IDAT") {
       if (!width || ended) throw new Error("MD-5: invalid frame chunk order");
       compressed.push(body);
@@ -120,7 +121,7 @@ export function maskPng(data, regions, scale = 1) {
 }
 export async function captureProtectedPage(browser, tab, values, targets, capture, scale = 1, clip = null) {
   const pixelScale = scale * (clip?.scale ?? 1);
-  const width = Math.round((clip?.width ?? 1280) * pixelScale), height = Math.round((clip?.height ?? 800) * pixelScale);
+  const width = Math.round((clip?.width ?? geometry.width) * pixelScale), height = Math.round((clip?.height ?? geometry.height) * pixelScale);
   const fallback = () => !clip && scale === 1 ? wholeFrameMask() : opaqueFrame(width, height);
   if (!values.length) return capture();
   try {
