@@ -230,13 +230,14 @@ try {
     await capture(name+'-result')
     return terminal
   }
-  const completed=await copy('02-copy');assert.equal(completed.phase,'completed',JSON.stringify(completed));assert(completed.receipt)
-  const launch=(await cli('03-target-launch',target,['launch-target',completed.contextId,completed.planDigest])).ManagedContextLaunchTarget.target
+  // MP-08/MP-10: inject on the first copy into a fresh target. A separate fresh
+  // copy of an already-imported Project conflicts with its Workspace binding.
+  const broken=await copy('02-storage-fault',true);assert.equal(broken.phase,'failed');assert(broken.retryable&&broken.receipt);assert(faultInjected)
+  const launch=(await cli('03-target-launch',target,['launch-target',broken.contextId,broken.planDigest])).ManagedContextLaunchTarget.target
   const imported=launch.development.repositories[0].workspacePath
   assert.equal(await readFile(path.join(imported,'bootstrap.sh'),'utf8'),ordinary)
   assert.equal(await readFile(path.join(imported,'README.md'),'utf8'),'MP-05 owner context overlay\n')
   await writeFile(path.join(evidence,'03-imported-files.json'),JSON.stringify({bootstrapSha256:createHash('sha256').update(ordinary).digest('hex'),overlay:true,launch},null,2))
-  const broken=await copy('04-storage-fault',true);assert.equal(broken.phase,'failed');assert(broken.retryable&&broken.receipt);assert(faultInjected)
   await access(path.join(source.outbound,broken.contextId,'managed-context.pkg'))
   await stop(source.child)
   const blocked=path.join(source.outbound,'.operations',`${broken.contextId}.json`);await rm(blocked,{recursive:true});await rename(blocked+'.saved',blocked)
