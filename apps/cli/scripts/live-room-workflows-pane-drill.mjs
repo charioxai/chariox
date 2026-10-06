@@ -142,8 +142,8 @@ try {
   const completionRunId=admitted.room_workflows.workflows[0].runs.find(run=>!oldRunIds.has(run.run_id)).run_id
   // Use a real provider completion and the terminal's real agent panes as proof.
   await key('\t')
-  const settled=await stateUntil(s=>s.room_workflows.workflows[0].running_count===0,180000)
-  const finalRun=settled.session.workflow_runs.find(run=>run.id===completionRunId)
+  await stateUntil(s=>s.room_workflows.workflows[0].running_count===0,180000)
+  const finalRun=unwrap(await client.send(requests.getWorkflowRunRequest(sessionId,completionRunId)), 'WorkflowRun').workflow_run
   receipt.finalRun={runId:finalRun.id,status:finalRun.status}
   assert.equal(finalRun.status.toLowerCase(),'completed','MP-08 workflow must complete successfully, not merely stop')
   const history=unwrap(await client.send(requests.getSessionHistoryOutlineRequest(sessionId,[agent.id],4)), 'SessionHistoryOutline')
