@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
+import os from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { processIdentity, settleOwned } from './linux-owned-process.mjs';
 
@@ -12,10 +13,10 @@ export function desktopEnvironment(source, runtime, uid = process.getuid?.()) {
   for (const key of ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR', 'CHARIOX_KERNEL_BROWSER_EXECUTABLE', 'CHARIOX_KERNEL_BROWSER_HEADLESS', 'CHARIOX_KERNEL_BROWSER_DISPLAY', 'CHARIOX_KERNEL_BROWSER_MIRROR', 'CHARIOX_BROWSER_DISPLAY_PYTHON', 'CHARIOX_BROWSER_DISPLAY_TIMING']) if (source[key] !== undefined) env[key] = source[key];
   return { ...env, XAUTHORITY: path.join(runtime, 'Xauthority'), XDG_RUNTIME_DIR: runtime, NO_AT_BRIDGE: '0' };
 }
-function authorityCookie() {
+function authorityCookie(cookie, display) {
   // FamilyWild; the cookie is valid only on this server, whose displayfd is not yet known.
   const field = value => { const size = Buffer.alloc(2); size.writeUInt16BE(value.length); return Buffer.concat([size, value]); };
-  return Buffer.concat([Buffer.from([255, 255]), field(Buffer.alloc(0)), field(Buffer.alloc(0)), field(Buffer.from('MIT-MAGIC-COOKIE-1')), field(randomBytes(16))]);
+  return Buffer.concat([display === undefined ? Buffer.from([255, 255]) : Buffer.from([1, 0]), field(display === undefined ? Buffer.alloc(0) : Buffer.from(os.hostname())), field(display === undefined ? Buffer.alloc(0) : Buffer.from(display)), field(Buffer.from('MIT-MAGIC-COOKIE-1')), field(cookie)]);
 }
 async function firstLine(stream, child) {
   return new Promise((resolve, reject) => {
@@ -59,10 +60,13 @@ export class LinuxOwnedDesktop {
     this.runtime = await mkdtemp(path.join(this.root, 'desktop-'));
     try {
       const env = desktopEnvironment(this.source, this.runtime, this.uid);
-      await writeFile(env.XAUTHORITY, authorityCookie(), { mode: 0o600, flag: 'wx' });
+      const cookie = randomBytes(16);
+      await writeFile(env.XAUTHORITY, authorityCookie(cookie), { mode: 0o600, flag: 'wx' });
       const x = await this.launch('Xvfb', ['-displayfd', '3', '-screen', '0', '1280x800x24', '-auth', env.XAUTHORITY, '-nolisten', 'tcp', '-nolisten', 'local', '-noreset'], env, ['ignore', 'ignore', 'ignore', 'pipe']);
       const display = await firstLine(x.stdio[3], x);
       if (!/^\d{1,5}$/.test(display)) throw new Error('MP-11: invalid owned display');
+      await writeFile(env.XAUTHORITY, authorityCookie(cookie, display), { mode: 0o600 });
+      cookie.fill(0);
       env.DISPLAY = `:${display}`;
       const busPath = path.join(this.runtime, 'bus');
       const bus = await this.launch('dbus-daemon', ['--session', '--nofork', `--address=unix:path=${busPath}`, '--print-address=3'], env, ['ignore', 'ignore', 'ignore', 'pipe']);

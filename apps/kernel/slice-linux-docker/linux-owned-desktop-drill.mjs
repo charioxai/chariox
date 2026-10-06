@@ -16,6 +16,7 @@ try {
   assert.equal((await stat(binding.environment.XAUTHORITY)).mode & 0o777, 0o600);
   const ok = spawnSync('xdpyinfo', [], { env: binding.environment, encoding: 'utf8' });
   assert.equal(ok.status, 0);
+  assert.equal(spawnSync('/usr/bin/python3', ['-c', 'from Xlib.display import Display; c=Display(); c.sync(); c.close()'], {env:binding.environment}).status, 0);
   assert.match(ok.stdout, /1280x800/);
   const denied = spawnSync('xdpyinfo', [], { env: { ...binding.environment, XAUTHORITY: '/dev/null' } });
   assert.notEqual(denied.status, 0);
