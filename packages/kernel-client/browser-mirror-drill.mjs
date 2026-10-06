@@ -32,7 +32,10 @@ if(process.argv[2]!=='child') {
     for(const name of ['playwright-core','ws','pngjs'])await cp(path.join(tools,'node_modules',name),path.join(root,'node_modules',name),{recursive:true});
     await cp(path.join(tools,'browsers'),path.join(root,'browsers'),{recursive:true});
     await cp(path.join(tools,'sysroot'),path.join(root,'sysroot'),{recursive:true});
-    const chromeDir=path.join(root,'browsers',(await readdir(path.join(root,'browsers'))).find(n=>n.startsWith('chromium-')),'chrome-linux64');
+    const chromeBase=path.join(root,'browsers',(await readdir(path.join(root,'browsers'))).find(n=>n.startsWith('chromium-')));
+    const chromeLayout=(await readdir(chromeBase)).find(name=>['chrome-linux64','chrome-linux'].includes(name));
+    if(!chromeLayout)throw Error('MP-10: unsupported installed Chromium layout');
+    const chromeDir=path.join(chromeBase,chromeLayout);
     // Ubuntu restricts unprivileged user namespaces for unknown private binaries.
     // Register ONLY this disposable executable so Chromium can build its real
     // renderer sandbox. No global sysctl or existing AppArmor profile changes.

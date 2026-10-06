@@ -195,6 +195,7 @@ pub(super) async fn handle_daemon_peer_request(
                 );
                 if absent_cleanup {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -288,6 +289,7 @@ pub(super) async fn handle_daemon_peer_request(
         Ok(router) => Arc::new(router),
         Err(error) => {
             return RelayRequestOutcome {
+                display_event: None,
                 encrypted_response: None,
                 error: Some(map_relay_error(&error)),
             }
@@ -2072,6 +2074,7 @@ pub(super) async fn handle_daemon_peer_request(
     }) {
         Ok(outcome) => outcome,
         Err(error) => RelayRequestOutcome {
+            display_event: None,
             encrypted_response: None,
             error: Some(map_relay_error(&error)),
         },

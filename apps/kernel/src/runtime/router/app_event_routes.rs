@@ -33,8 +33,6 @@ impl CommandRouter {
                     .lock(caller_user_id, &connection.connection_id)
                     .await;
                 Box::pin(self.check_app_route(caller_user_id, route, connection)).await?;
-                let _interest = self.event_interest_lock.lock().await;
-                self.refuse_claimed_interest(caller_user_id, route, connection)?;
                 Ok(self
                     .runtime_state
                     .execute_app_control_request(command, request)

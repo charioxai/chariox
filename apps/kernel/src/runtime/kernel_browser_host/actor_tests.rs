@@ -460,7 +460,7 @@ done
         "MP-10: startup fixture never reached its native handshake"
     );
     assert!(immediate, "MP-11: startup I/O blocked grant revocation");
-    assert!(outcome.unwrap_err().contains("not_granted"));
+    assert!(matches!(outcome.unwrap_err(), crate::error::HostFailure::Refused(crate::error::UserDomainRefusalReason::NotGranted)));
 }
 
 #[test]
@@ -598,7 +598,7 @@ fn mdaccess_idle_lapse_refuses_retained_keys_text_clicks_and_note_commits() {
                 Value::Null,
             )
             .unwrap_err();
-        assert!(error.contains("not_granted"));
+        assert!(matches!(error, crate::error::HostFailure::Refused(crate::error::UserDomainRefusalReason::NotGranted)));
     }
     assert!(host
         .note_operation::<()>("owner", Some(&admission), || panic!(
@@ -705,7 +705,7 @@ done
         "MP-11: revoked result populated the fresh grant"
     );
     assert!(
-        result.unwrap_err().contains("not_granted"),
+        matches!(result.unwrap_err(), crate::error::HostFailure::Refused(crate::error::UserDomainRefusalReason::NotGranted)),
         "MP-11: old request crossed result authority boundary"
     );
 }
@@ -770,6 +770,7 @@ done
                         Some(&admission),
                     )
                     .map(|_| ())
+                    .map_err(crate::error::HostFailure::from)
                 } else {
                     host.protected_request_admitted("alice", Some(&admission), "host.browser", json!({"op":op,"tab_id":"host-tab-a","generation":1,"document_id":"d","input":{"kind":"text","text":"fixture"}}), json!({"values":[],"targets":[],"unknown":false})).map(|_| ())
                 }
