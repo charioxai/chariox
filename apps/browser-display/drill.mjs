@@ -36,7 +36,7 @@ const runUid=Number(process.env.MD_RUNTIME_UID || 65534),runGid=Number(process.e
 const chrome=process.env.MD_CHROME || '/usr/bin/google-chrome';
 const runtimePath=process.env.MD_RUNTIME_PATH || '/usr/bin:/bin';
 const quote=value=>"'"+value.replaceAll("'","'\"'\"'")+"'";
-let kernel, display, viewer, browser, server, ready, shaped, shortTmp;
+let kernel, display, viewer, browser, server, ready, shaped, shortTmp, kernelProfiler;
 const workload=process.env.MD_WORKLOAD||'docs';
 receipt.workload=workload;const fixtureStats=[];
 receipt.requested_software_encoder=process.env.MD_ENCODER||'libx264';receipt.requested_converter=process.env.MD_LIBYUV?'libyuv':'auto';
@@ -135,6 +135,12 @@ try {
  kernel=await launchOwned(process.env.MD_BINARY_LOADER || path.join(root,'kernel-tests'),[...(process.env.MD_BINARY_LOADER ? ['--library-path',process.env.MD_BINARY_LIBS,path.join(root,'kernel-tests')] : []),'--ignored','--exact','runtime::router::tests::kernel_browser::display::kernel_browser_display_protocol_drill','--nocapture'],{uid:runUid,gid:runGid,detached:true,cwd:root,env:{...override,PATH:runtimePath,HOME:home,TMPDIR:shortTmp,DISPLAY:`:${screen.trim()}`,CHARIOX_HOME:path.join(home,'chariox'),CHARIOX_LOG_DIR:path.join(home,'logs'),CHARIOX_DISPLAY_DRILL_ROOT:home,CHARIOX_DISPLAY_FIXTURE_URL:`${origin}/${workload}`,CHARIOX_KERNEL_BROWSER_EXECUTABLE:chrome,CHARIOX_KERNEL_BROWSER_DISPLAY:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_BROWSER_DISPLAY_GEOMETRY:process.env.MD_GEOMETRY,CHARIOX_BROWSER_DISPLAY_SOFTWARE:process.env.MD_SOFTWARE,CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER:process.env.MD_ENCODER,CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER:openh264Adapter,CHARIOX_BROWSER_DISPLAY_PYTHON:pythonWrapper},stdio:['ignore','pipe','pipe']});groups.push(kernel.pid);await cpu.track(kernel.pid);
  kernel.stdout.on('data',b=>log.push(b));kernel.stderr.on('data',b=>log.push(b));
  kernelExit=waitChild(kernel);
+ if(process.env.MD_KERNEL_PERF){
+  if(!path.isAbsolute(process.env.MD_KERNEL_PERF))throw Error('MP-10: absolute profiler executable required');
+  // Sample instruction addresses only; never capture stacks/runtime key bytes.
+  kernelProfiler=await launchOwned(process.env.MD_KERNEL_PERF,['record','-q','-e','cpu-clock','-F','99','-p',String(kernel.pid),'-o',path.join(output,'kernel.perf.data')],{detached:true,stdio:'ignore',env:{PATH:runtimePath,...(process.env.MD_PERF_LIBS?{LD_LIBRARY_PATH:process.env.MD_PERF_LIBS}:{})}});
+  receipt.kernel_profiling='MP-10: instruction-only cpu-clock samples of this owned kernel; no stack or memory capture';
+ }
  ready=await until(async()=>{checkChild(kernel,'kernel');try{return JSON.parse(await readFile(path.join(home,'ready.json'),'utf8'))}catch{return null}},'focused MCP opens user-domain tab',45000);
  receipt.protocol=ready.protocol;receipt.opened_by=ready.opened_by;
  if(process.env.MD_SOURCE_ASSETS!=='1'){
@@ -340,6 +346,7 @@ try {
  if(browser)try{const page=browser.contexts()[0].pages().at(-1);receipt.failure_client=await page.evaluate(()=>({frames:window.mdFrames,presentations:window.mdPresentations,stream_running:window.mdStream?.running,stream_error:window.mdStream?.error?.message,sequence:window.mdStream?.presenter?.sequence}));}catch{}
 }
 finally {
+ await stopGroup(kernelProfiler);
  receipt.cpu_samples=cpu.samples;receipt.cpu_accounting='Linux CLK_TCK; separate source Chromium, capture/encode/kernel/relay pipeline, viewer browser and harness. Exited processes retain sampled high-water ticks; sub100ms processes can be missed. WebCodecs inside source Chromium cannot be partitioned (force software portable encoder for CPU comparison).';await cpu.close();
  try{await metrics?.close()}catch{receipt.cleanup.push('RED: owned PNG worker teardown failed');receipt.status='RED';process.exitCode=1}
  if(kernel&&kernel.exitCode===null&&kernel.signalCode===null) {await writeFile(path.join(root,'home','STOP'),'MD-DISPLAY cleanup stop').catch(()=>{});await Promise.race([kernelExit,pause(5000)]);}

@@ -1,20 +1,24 @@
 """MP-08/MP-10/MP-11: report measured rows; missing/dirty data never wins."""
 import json,sys
 from pathlib import Path
-ours,baselines,out=map(Path,sys.argv[1:])
+ours,baselines,out=map(Path,sys.argv[1:4])
+extra=list(zip(['ours OpenH264','ours VP8'],map(Path,sys.argv[4:])))
 out.mkdir(parents=True,exist_ok=True)
 rows=[]
 for fixture in ['docs','canvas','video','scroll30','wheel30']:
-    for backend,root in [('Selkies 2.0.0',baselines/('selkies2-'+fixture)),('Selkies legacy',baselines/('legacy-'+fixture)),('ours',ours/('local-'+fixture+'-8000000'))]:
+    candidates=[('Selkies 2.0.0',baselines/('selkies2-'+fixture)),('Selkies legacy',baselines/('legacy-'+fixture)),('ours x264',ours/('local-'+fixture+'-8000000'))]+[(name,path/('local-'+fixture+'-8000000')) for name,path in extra]
+    for backend,root in candidates:
+        is_ours=backend.startswith('ours')
         p=root/'results.json';row={'fixture':fixture,'backend':backend,'receipt':str(p)};rows.append(row)
         if not p.exists():row['error']='missing receipt';continue
         d=json.loads(p.read_text());row.update(source=d['source'],source_dirty=d['source_dirty'],status=d['status'],error=d.get('error'))
         if d['source_dirty']:raise ValueError('MP-10 dirty source '+str(p))
-        m=d.get('motion',{});idle=d.get('static_polling',{}) if backend=='ours' else {}
+        if is_ours and d.get('actual_encoders')!=[{'ours x264':'x264','ours OpenH264':'openh264','ours VP8':'vp8'}[backend]]:raise ValueError('MP-10 unproven encoder '+str(p))
+        m=d.get('motion',{});idle=d.get('static_polling',{}) if is_ours else {}
         idle_cpu=idle.get('cpu',d.get('idle_cpu'));active=m.get('cpu',d.get('click_cpu'))
         row.update(click=d.get('latency'),typing=d.get('type_latency'),fps=m.get('effective_fps'),content_fps=m.get('effective_content_fps'),idle_cpu=idle_cpu,active_cpu=active,
             idle_video_mbps=idle.get('video_mbps',d.get('idle_video_mbps')),moving_video_mbps=m.get('event_mbps'),live_psnr_db=[x['psnr_db'] for x in m.get('live_pairs',[])])
-        settled=m.get('settled_fidelity',d.get('settled',{}).get('fidelity',{}) if backend=='ours' else d.get('settled',{}))
+        settled=m.get('settled_fidelity',d.get('settled',{}).get('fidelity',{}) if is_ours else d.get('settled',{}))
         row.update(settled_psnr_db=settled.get('psnr_db'),settled_exact=settled.get('lossless',False),cleanup=d.get('cleanup'))
         row['owner_target_pass']=bool(row['click'] and row['typing'] and active and row['click']['p95_ms']<50 and row['typing']['p95_ms']<50 and active['source_plus_pipeline_cores']<=1 and row['settled_exact'] and (fixture=='docs' or row['fps']>=30))
 report={'item':'MP-08/MP-10/MP-11','rows':rows,'status':'RED_PERFORMANCE','gpu':'UNMEASURED: owner laptop required',
