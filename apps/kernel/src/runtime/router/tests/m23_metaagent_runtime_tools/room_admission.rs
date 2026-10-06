@@ -63,9 +63,58 @@ workflow.endpoint(review,{{handle:"entry"}});"#,
         .unwrap();
     assert!(created.ok, "{created:?}");
     let before = registry.get("peer-inline").unwrap().unwrap();
-    let validation = router.dispatch_authenticated_runtime_tool_call(&actor_auth, "chariox.workflow_code.validate",
-        serde_json::json!({"name":"peer-inline"})).await;
-    assert!(validation.as_ref().is_ok_and(|v| v.ok), "A01 named validation must resolve the actual room artifact: {validation:?}");
+    let validation = router
+        .dispatch_authenticated_runtime_tool_call(
+            &actor_auth,
+            "chariox.workflow_code.validate",
+            serde_json::json!({"name":"peer-inline"}),
+        )
+        .await;
+    assert!(
+        validation.as_ref().is_ok_and(|v| v.ok),
+        "A01 named validation must resolve the actual room artifact: {validation:?}"
+    );
+    let validation = validation.unwrap();
+    assert_eq!(
+        validation
+            .payload
+            .pointer("/WorkflowCodeValidated/result/validation/ok"),
+        Some(&serde_json::json!(true))
+    );
+    assert_eq!(
+        validation
+            .payload
+            .pointer("/WorkflowCodeValidated/result/definition/workflow/alias"),
+        Some(&serde_json::json!("inline-review"))
+    );
+    let legacy = crate::workflow_code::WorkflowCodeArtifactRegistry::new(vec![
+        config.workflow_code_artifact_root()
+    ]);
+    legacy
+        .save(
+            "legacy-only",
+            before.metadata.language,
+            &before.source,
+            before.definition.clone(),
+            before.metadata.validation.clone(),
+            crate::workflow_code::WorkflowCodeArtifactActor::new(
+                actor.owner_user_id(),
+                Some(actor.id().to_owned()),
+            ),
+            crate::workflow_code::WorkflowCodeArtifactHistoryAction::Created,
+        )
+        .unwrap();
+    let outside = router
+        .dispatch_authenticated_runtime_tool_call(
+            &actor_auth,
+            "chariox.workflow_code.validate",
+            serde_json::json!({"name":"legacy-only"}),
+        )
+        .await;
+    assert!(
+        outside.is_err(),
+        "A01 room tools must not fall back to owner-wide legacy artifact roots"
+    );
     for tool in ["chariox.workflow_code.apply", "chariox.workflow_code.run"] {
         let error = router
             .dispatch_authenticated_runtime_tool_call(
