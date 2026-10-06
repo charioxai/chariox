@@ -2,7 +2,7 @@
 // MP-08/MP-10/MP-11: real kernel, local relay, official Codex and keyboard TUI flow.
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { readFile, readdir, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { readFile, readdir, mkdir, mkdtemp, rm, statfs, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,12 +15,14 @@ const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, arg, index,
 for (const key of ['kernel', 'relay', 'client', 'account-dir', 'output', 'state-parent']) assert.ok(path.isAbsolute(args[key] ?? ''), `MP-08 --${key} requires an absolute path`)
 assert.ok(!args.output.startsWith(repo + '/') && !args['state-parent'].startsWith(repo + '/'))
 const model=args.model??'gpt-5.5'
+const interruptRaceRounds = Number(args['interrupt-race-rounds'] ?? 0)
+assert.ok(Number.isInteger(interruptRaceRounds) && interruptRaceRounds >= 0 && interruptRaceRounds <= 30)
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const unwrap = (response, key) => { if (response.Error) throw new Error(response.Error.message); assert.ok(response[key], `MP-08 missing ${key}`); return response[key] }
 await mkdir(args.output, { recursive: true, mode: 0o700 })
 await mkdir(args['state-parent'], { recursive: true, mode: 0o700 })
 const state = await mkdtemp(path.join(args['state-parent'], 'workflow-'))
-const workspace = await mkdtemp('/root/work/agent-relost-drill-')
+const workspace = await mkdtemp('/root/work/agent-wfpause-drill-')
 for(const gitArgs of [['init','-q'],['-c','user.name=Chariox relost drill','-c','user.email=noreply@openai.com','commit','--allow-empty','-q','-m','MP-08 isolated TUI drill workspace [skip ci]\n\nCo-Authored-By: GPT-6.1-sol (Codex) <noreply@openai.com>']]) {
   const git=spawnOwned('git',gitArgs,{cwd:workspace,stdio:'ignore'})
   await new Promise((resolve,reject)=>git.once('exit',code=>code===0?resolve():reject(new Error('MP-08 Git fixture initialization failed'))))
@@ -36,6 +38,7 @@ const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key])=>
   CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]),
   CHARIOX_CODEX_PORT: String(ports[2]), CHARIOX_OPENCODE_PORT: String(ports[3]),
   CHARIOX_RELAY_PORT: String(ports[4]), CHARIOX_LOG_DIR: path.join(state,'logs'),
+  CHARIOX_LOG_LEVEL: interruptRaceRounds ? 'debug' : 'info',
   CHARIOX_DAEMON_SOCKET: path.join(state, 'kernel.sock'),
   TERM: 'xterm-256color', COLORTERM: 'truecolor' }
 for (const key of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'OPENCODE_CONFIG_DIR', 'CHARIOX_RELAY_URL', 'CHARIOX_RELAY_TOKEN', 'CHARIOX_CLOUD_PROFILE', 'CHARIOX_CLOUD_TOKEN', 'CHARIOX_CLOUD_RELAY_CONFIG_JSON', 'CHARIOX_CLOUD_RELAY_CONFIG_PATH']) delete env[key]
@@ -47,8 +50,18 @@ for (const name of (await readdir(path.dirname(args.client))).filter(name=>name.
   bundle.update(name+'\0');bundle.update(await readFile(path.join(path.dirname(args.client),name)))
 }
 receipt.clientBundleSha256=bundle.digest('hex')
-const resources = async () => { const memory = await readFile('/proc/meminfo','utf8'); const kib = Number(memory.match(/^MemAvailable:\s+(\d+)/m)[1]); receipt.resources.push({ at: new Date().toISOString(), memAvailableKiB: kib }); assert.ok(kib >= 9 * 1024 * 1024, 'MP-11 memory floor'); }
+const resources = async () => {
+  const memory = await readFile('/proc/meminfo','utf8')
+  const kib = Number(memory.match(/^MemAvailable:\s+(\d+)/m)[1])
+  const disk = await statfs('/')
+  const diskAvailableBytes = disk.bavail * disk.bsize
+  receipt.resources.push({ at: new Date().toISOString(), memAvailableKiB: kib, diskAvailableBytes })
+  assert.ok(kib >= 9 * 1024 * 1024, 'MP-11 memory floor')
+  assert.ok(diskAvailableBytes >= 10 * 1024**3, 'MP-11 disk floor')
+}
 await resources()
+let resourceFailure
+const resourceMonitor = setInterval(()=>resources().catch(error=>{resourceFailure=error}),5000)
 let kernel, relay, terminal, client, sessionId
 let buffer = '', nextId = 0
 const pending = new Map()
@@ -62,14 +75,16 @@ async function capture(step, predicate, timeout = 15000) {
   const deadline = Date.now()+timeout
   let result
   do {
-    result = await terminalCommand('capture',{prefix:path.join(args.output,step)})
+    if(resourceFailure)throw resourceFailure
+    result = await terminalCommand('capture',{prefix:path.join(args.output,step),drainSeconds:interruptRaceRounds ? 0.01 : 0.2})
     if (predicate(result.text)) { receipt.steps.push({step, status:'GREEN'}); return result.text }
     assert.equal(result.exitCode, null, `MP-08 TUI exited at ${step}`)
-    await sleep(250)
+    await sleep(interruptRaceRounds ? 25 : 250)
   } while (Date.now()<deadline)
   throw new Error(`MP-08 TUI assertion failed at ${step}`)
 }
 const key = bytes => terminalCommand('key',{bytes:Buffer.from(bytes).toString('base64')})
+const raceKey = bytes => terminalCommand('key',{bytes:Buffer.from(bytes).toString('base64'),drainSeconds:0.01})
 let lastDiagnostics=0
 async function diagnostics(result) {
   const records=[]
@@ -89,7 +104,7 @@ async function diagnostics(result) {
 }
 async function stateUntil(predicate, timeout=60000) {
   const deadline = Date.now()+timeout
-  do { const result=unwrap(await client.send(requests.getSessionStateRequest(sessionId)), 'SessionState'); if(predicate(result))return result; if(Date.now()-lastDiagnostics>5000){lastDiagnostics=Date.now();await diagnostics(result)} await sleep(100) }while(Date.now()<deadline)
+  do { if(resourceFailure)throw resourceFailure; const result=unwrap(await client.send(requests.getSessionStateRequest(sessionId)), 'SessionState'); if(predicate(result))return result; if(Date.now()-lastDiagnostics>5000){lastDiagnostics=Date.now();await diagnostics(result)} await sleep(100) }while(Date.now()<deadline)
   throw new Error('MP-08 kernel workflow state did not settle')
 }
 try {
@@ -115,6 +130,53 @@ try {
   terminal.stderr.on('data', chunk=> { /* Only fixture diagnostics; no provider stdout is connected here. */ receipt.terminalError=String(chunk).slice(-1000) })
   terminal.on('close',()=>{for(const waiter of pending.values())waiter.reject(new Error('MP-08 terminal driver exited'));pending.clear()})
   await capture('01-room-inventory',text=>text.includes(heading))
+  if (interruptRaceRounds) {
+    receipt.interruptRace = []
+    for (let round = 0; round < interruptRaceRounds; round++) {
+      const label = `race-${String(round + 1).padStart(2,'0')}`
+      const previous = new Set((await stateUntil(()=>true)).room_workflows.workflows[0].runs.map(run=>run.run_id))
+      await key('\x17')
+      await key('Run sleep 30 in the shell, then return the required workflow JSON envelope.')
+      const variation = round % 3 === 0 ? 'pause-resume-stop' : round % 3 === 1 ? 'pause-resume-pause' : 'resume-during-start'
+      await capture(label+'-draft',text=>text.includes('Run sleep 30 in the shell'))
+      await (round % 3 === 2 ? raceKey : key)('\r')
+      const started = await stateUntil(s=>s.room_workflows.workflows[0].runs.some(run=>!previous.has(run.run_id)))
+      const runId = started.room_workflows.workflows[0].runs.find(run=>!previous.has(run.run_id)).run_id
+      // The first two rows interrupt an admitted provider turn; the third
+      // deliberately controls the run while provider submission is starting.
+      if (round % 3 !== 2) await stateUntil(s=>Object.values(s.agent_activity).some(activity=>activity.active_turn?.status === 'running'))
+      await capture(label+'-started',text=>text.includes('1 running')&&text.includes('[Start · Enter]'))
+      await key('\x10')
+      await stateUntil(s=>s.room_workflows.workflows[0].paused_count===1)
+      await capture(label+'-paused',text=>text.includes('1 paused')&&text.includes('[Start · Enter]'))
+      await raceKey('\x12')
+      const resumed = await stateUntil(s=>s.room_workflows.workflows[0].running_count===1)
+      // The pane serializes submitted controls. Wait for its visible RPC
+      // acknowledgement so the next key is a real user action, not ignored.
+      await capture(label+'-resumed',text=>text.includes('1 running')&&text.includes('[Start · Enter]'))
+      await raceKey(round % 3 === 1 ? '\x10' : '\x13')
+      const settled = await stateUntil(s=>{
+        const run = s.session.workflow_runs.find(run=>run.id===runId)
+        return run && ['paused','stopped','failed','completed'].includes(run.status.toLowerCase())
+          && Object.values(s.agent_activity).every(activity=>!activity.active_prompt_count)
+      })
+      await diagnostics(settled)
+      const run = unwrap(await client.send(requests.getWorkflowRunRequest(sessionId,runId)), 'WorkflowRun').workflow_run
+      receipt.interruptRace.push({round:round+1,variation,runId,status:run.status,
+        startActivity:Object.values(started.agent_activity).map(activity=>({promptCount:activity.active_prompt_count,turnStatus:activity.active_turn?.status})),
+        resumeActivity:Object.values(resumed.agent_activity).map(activity=>({promptCount:activity.active_prompt_count,turnStatus:activity.active_turn?.status})),nodes:run.node_runs.map(node=>({id:node.id,status:node.status})),
+        failureEvents:(run.failure_events??[]).map(event=>({kind:event.kind,message:/token|credential|bearer|secret|passphrase|auth/i.test(event.message)?'[credential-related diagnostic suppressed]':event.message}))})
+      await capture(label+'-settled',text=>text.includes('0 running')&&text.includes('[Start · Enter]'))
+      if (run.status.toLowerCase()==='failed' && args['expect-red']==='1')receipt.expectedRed=true
+      else assert.equal(run.status.toLowerCase(), round % 3 === 1 ? 'paused' : 'stopped', `MP-08 ${variation} must settle without a Failed workflow`)
+      if (run.status.toLowerCase()==='paused') {
+        await key('\x13')
+        await stateUntil(s=>s.room_workflows.workflows[0].paused_count===0)
+      }
+      await key('\t')
+    }
+    if(args['expect-red']==='1')assert.ok(receipt.expectedRed,'MP-08 base must reproduce an interrupt race')
+  }
   await key('\x17') // Ctrl+W
   await key('Run sleep 30; reply HOLD.')
   await capture('02-independent-draft',text=>text.includes('Run sleep 30; reply HOLD.'))
@@ -146,6 +208,7 @@ try {
   const finalRun=unwrap(await client.send(requests.getWorkflowRunRequest(sessionId,completionRunId)), 'WorkflowRun').workflow_run
   receipt.finalRun={runId:finalRun.id,status:finalRun.status}
   assert.equal(finalRun.status.toLowerCase(),'completed','MP-08 workflow must complete successfully, not merely stop')
+  await stateUntil(s=>Object.values(s.agent_activity).every(activity=>!activity.active_prompt_count))
   const history=unwrap(await client.send(requests.getSessionHistoryOutlineRequest(sessionId,[agent.id],4)), 'SessionHistoryOutline')
   const hasMarker=value=>{
     if(value?.entry.kind!=='provider_output')return false
@@ -159,13 +222,28 @@ try {
   receipt.providerCompletion={provider:'codex',agentId:agent.id,turnId:completed.turn_id,lifecycle:completed.lifecycle,output:'RELOST_WORKFLOW_OK'}
   await key('\t') // Navigate from the primary agent pane to the workflow agent.
   await capture('09-provider-completion',text=>text.includes('RELOST_WORKFLOW_OK'),60000)
-  receipt.status='GREEN'
+  receipt.status=receipt.expectedRed?'RED':'GREEN'
 } catch(error) {
   receipt.status='RED';receipt.firstFailure=error.message
   if(terminal&&terminal.exitCode===null)await terminalCommand('capture',{prefix:path.join(args.output,'failure')}).catch(()=>{})
   if (args['expect-red']==='1' && error.message==='MP-08 TUI assertion failed at 01-room-inventory')receipt.expectedRed=true
   else process.exitCode=1
 } finally {
+  clearInterval(resourceMonitor)
+  if(interruptRaceRounds) {
+    const traces=[]
+    for(const name of await readdir(path.join(state,'logs')).catch(()=>[])) {
+      if(!name.endsWith('.ndjson'))continue
+      for(const line of (await readFile(path.join(state,'logs',name),'utf8')).split('\n')) {
+        let entry;try{entry=JSON.parse(line)}catch{continue}
+        if(entry.component!=='daemon.provider.codex' || !/turn (start|completion|interrupt)/.test(entry.message??''))continue
+        traces.push({at:entry.timestamp_ms,message:entry.message,providerRunId:entry.provider_run_id,
+          activeTurnId:entry.active_turn_id,previousTurnId:entry.previous_active_turn_id,turnId:entry.turn_id,
+          responseTurnId:entry.response?.turn?.id})
+      }
+    }
+    await writeFile(path.join(args.output,'provider-turns.json'),JSON.stringify({mpItems:receipt.mpItems,traces},null,2)+'\n',{mode:0o600})
+  }
   await writeFile(path.join(args.output,'result.json'),JSON.stringify(receipt,null,2)+'\n',{mode:0o600})
   const cleanupGroups=[]
   for(const child of [kernel,relay].filter(Boolean)){

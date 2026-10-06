@@ -66,6 +66,7 @@ pub(super) fn apply_notification_with_manifest(
     resolved_usage: &mut Option<ProviderRunTokenUsage>,
     remote_extension_manifest: &RemoteExtensionManifest,
 ) {
+    turn_tracker.observe_provider_turn(&notification);
     match notification {
         CodexNotification::TurnScoped {
             turn_id,

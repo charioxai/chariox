@@ -15,6 +15,9 @@ use super::CodexAssistantCompletion;
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct CodexTurnTracker {
+    // Provider lifecycle identity can lag the newly admitted turn/start ID.
+    // Keep it separate from prompt output attribution during rapid resume.
+    pub(super) provider_active_turn_id: Option<String>,
     active_tool_ids: BTreeSet<String>,
     pending_terminal: Option<CodexPendingTerminal>,
     legacy_completion_hint: bool,
@@ -41,6 +44,30 @@ struct CodexPendingTerminal {
 }
 
 impl CodexTurnTracker {
+    pub(super) fn reset_for_submitted(&mut self) {
+        let provider_active_turn_id = self.provider_active_turn_id.take();
+        *self = Self::default();
+        self.provider_active_turn_id = provider_active_turn_id;
+    }
+
+    pub(super) fn observe_provider_turn(
+        &mut self,
+        notification: &crate::provider::CodexNotification,
+    ) {
+        use crate::provider::CodexNotification;
+        match notification {
+            CodexNotification::TurnStarted { turn_id } if !turn_id.is_empty() => {
+                self.provider_active_turn_id = Some(turn_id.clone());
+            }
+            CodexNotification::TurnCompleted { turn_id, .. }
+                if self.provider_active_turn_id.as_deref() == Some(turn_id) =>
+            {
+                self.provider_active_turn_id = None;
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn reset_for_started(&mut self) {
         self.active_tool_ids.clear();
         self.pending_terminal = None;

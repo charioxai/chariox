@@ -56,8 +56,8 @@ def drain(duration=0.2):
             stream.feed(data)
 
 
-def capture(prefix):
-    drain()
+def capture(prefix, drain_seconds=0.2):
+    drain(max(0, min(0.2, drain_seconds)))
     text = "\n".join(screen.display)
     Path(prefix + ".txt").write_text(text)
     Path(prefix + ".ansi.log").write_bytes(raw)
@@ -79,10 +79,10 @@ try:
         try:
             if request["action"] == "key":
                 os.write(master, base64.b64decode(request["bytes"]))
-                drain()
+                drain(max(0, min(0.2, request.get("drainSeconds", 0.2))))
                 result = {}
             elif request["action"] == "capture":
-                result = capture(request["prefix"])
+                result = capture(request["prefix"], request.get("drainSeconds", 0.2))
             elif request["action"] == "close":
                 break
             else:
