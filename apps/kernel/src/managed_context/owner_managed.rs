@@ -216,6 +216,44 @@ pub(crate) fn admission_error(message: impl Into<String>) -> DaemonError {
     }
 }
 
+// MP-08/MP-11: expose only allowlisted refusal reasons, never raw Cloud errors.
+pub(crate) fn cloud_admission_error(error: DaemonError) -> DaemonError {
+    let (code, message, retryable) =
+        match crate::runtime::cloud_api_client::cloud_error_code(&error) {
+            Some("source_offline" | "source_stale") => (
+                "owner_context_source_offline",
+                "Source kernel is offline or stale",
+                true,
+            ),
+            Some("source_user_mismatch") => (
+                "owner_context_foreign_user",
+                "This source kernel belongs to another user",
+                false,
+            ),
+            Some("source_account_mismatch") => (
+                "owner_context_foreign_account",
+                "This source kernel belongs to another account",
+                false,
+            ),
+            Some("target_offline" | "target_stale") => (
+                "owner_context_target_offline",
+                "Target kernel is offline or stale",
+                true,
+            ),
+            _ => (
+                "owner_managed_context_unauthorized",
+                "Cloud refused owner-managed source/target authorization",
+                crate::runtime::cloud_api_client::cloud_error_is_retryable(&error),
+            ),
+        };
+    DaemonError::ManagedContext {
+        code,
+        operation: "reauthorize owner-managed transfer",
+        message: message.into(),
+        retryable,
+    }
+}
+
 // MP-11: an owner's workspace root must not redirect publication through links.
 pub(crate) fn target_context_parent() -> Result<std::path::PathBuf, DaemonError> {
     use std::fs;
@@ -309,7 +347,7 @@ pub(crate) async fn authorize_import_ticket(
             "contextId": plan.context_id, "planDigest": plan.plan_digest, "destination": destination,
             "source": { "kernelId": source_kernel_id, "userId": source.user_id, "relayRealmId": source.realm_id, "keyThumbprint": source.public_key_thumbprint },
         }),
-    ).await.map_err(|_| admission_error("Cloud refused owner-managed source/target authorization (offline, stale or foreign owner)"))?;
+    ).await.map_err(cloud_admission_error)?;
     let binding = ticket.context_plan.package_binding();
     let pins = &ticket.target;
     let source_binding = ticket
@@ -363,5 +401,64 @@ mod tests {
             git_credentials: ManagedContextGitCredentialSelection::None,
         };
         assert!(validate_credential_free_plan(&plan).is_err());
+    }
+    #[test]
+    fn mp08_mp11_cloud_refusals_preserve_safe_reasons_and_retryability() {
+        for (cloud_code, expected, retryable) in [
+            ("source_stale", "Source kernel is offline or stale", true),
+            (
+                "source_user_mismatch",
+                "This source kernel belongs to another user",
+                false,
+            ),
+            (
+                "source_account_mismatch",
+                "This source kernel belongs to another account",
+                false,
+            ),
+            (
+                "dependency_unavailable",
+                "Cloud refused owner-managed source/target authorization",
+                true,
+            ),
+        ] {
+            let error = cloud_admission_error(DaemonError::LocalTransport {
+                operation: "cloud relay request",
+                message: format!("cloud_api_code={cloud_code}: synthetic-private-value"),
+            });
+            assert!(!error.to_string().contains("synthetic-private-value"));
+            let DaemonError::ManagedContext {
+                message,
+                retryable: actual,
+                ..
+            } = error
+            else {
+                panic!("wrong error type")
+            };
+            assert_eq!(message, expected);
+            assert_eq!(actual, retryable);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mp11_owner_context_root_rejects_workspace_and_home_links() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-owner-boundary-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(root.join("home")).unwrap();
+        std::fs::create_dir_all(root.join("outside")).unwrap();
+        std::env::set_var("HOME", root.join("home"));
+        let parent = target_context_parent().unwrap();
+        std::fs::remove_dir(&parent).unwrap();
+        std::os::unix::fs::symlink(root.join("outside"), &parent).unwrap();
+        assert!(target_context_parent().is_err());
+        std::os::unix::fs::symlink(root.join("home"), root.join("linked-home")).unwrap();
+        std::env::set_var("HOME", root.join("linked-home"));
+        assert!(target_context_parent().is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -229,6 +229,32 @@ mod tests {
             .prepare_owner_ticket(&config, &runtime, selection.clone())
             .unwrap();
         let plan = ticket.context_plan.package_binding();
+        // MP-08/MP-11: ambiguous/noninteractive admission and a disconnected
+        // source stop before creating an operation or reaching Cloud.
+        for (interactive, include_ticket, include_owner) in [
+            (false, false, true),
+            (true, true, true),
+            (true, false, false),
+            (true, false, true),
+        ] {
+            let request = crate::local::LocalDaemonRequest::StartManagedContextTransfer(
+                crate::local::StartManagedContextTransferRequest {
+                    ticket: include_ticket.then(|| ticket.clone()),
+                    owner_managed: include_owner.then(|| selection.clone()),
+                    interactive,
+                },
+            );
+            let error = crate::runtime::managed_context_outbound_control::execute_managed_context_outbound_request(
+                config.clone(), Arc::new(RwLock::new(RelayClientState::default())), store.clone(),
+                runtime.provider_account_profile_registry().clone(), runtime.clone(), "owner", request,
+            ).unwrap_err();
+            if interactive && include_owner && !include_ticket {
+                assert!(error
+                    .to_string()
+                    .contains("Source kernel is offline or stale"));
+            }
+            assert!(store.get(&plan.context_id).is_none());
+        }
         let (_, permit) = store.start(&plan.context_id, &plan.plan_digest).unwrap();
         drop(permit);
         let reopened = ManagedContextOutboundOperationStore::open(root.join("outbound")).unwrap();

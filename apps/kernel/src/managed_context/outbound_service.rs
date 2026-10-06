@@ -799,10 +799,18 @@ async fn fetch_authoritative_ticket(
     .await
     .map_err(|error| {
         let retryable = cloud_error_is_retryable(&error);
-        if requested.context_plan.package_binding().destination.is_some() {
-            DaemonError::ManagedContext { code: "owner_managed_context_unauthorized", operation: "reauthorize owner-managed transfer", message: "Cloud refused the owner-managed ticket; source or target is offline, stale, revoked or belongs to another owner".into(), retryable }
+        if requested
+            .context_plan
+            .package_binding()
+            .destination
+            .is_some()
+        {
+            crate::managed_context::owner_managed::cloud_admission_error(error)
         } else {
-            outbound_service_error(format!("Cloud could not authorize the managed-context transfer ticket: {error}"), retryable)
+            outbound_service_error(
+                format!("Cloud could not authorize the managed-context transfer ticket: {error}"),
+                retryable,
+            )
         }
     })
 }
