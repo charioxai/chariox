@@ -334,8 +334,14 @@ try {
   receipt.providerTurnEvidence=history.agents.flatMap(value=>value.turns).map(turn=>({turnId:turn.turn_id,lifecycle:turn.lifecycle,hasMarker:[turn.summary,...turn.entries].some(hasMarker)}))
   assert.ok(completed,'MP-08 official provider output must be distinct from the user prompt')
   receipt.providerCompletion={provider:'codex',agentId:agent.id,turnId:completed.turn_id,lifecycle:completed.lifecycle,output:'RELOST_WORKFLOW_OK'}
-  await key('\t') // Navigate from the primary agent pane to the workflow agent.
-  await capture('09-provider-completion',text=>text.includes('RELOST_WORKFLOW_OK'),60000)
+  let completionVisible = false
+  for(let focusAttempt=0;focusAttempt<6;focusAttempt++) {
+    await key('\t') // Cycle the actual user focus order, including the sidebar.
+    const step=`09-provider-completion-focus-${focusAttempt+1}`
+    try { await capture(step,text=>text.includes('RELOST_WORKFLOW_OK'),1500); completionVisible=true; break }
+    catch(error) { if(error.message!==`MP-08 TUI assertion failed at ${step}`)throw error }
+  }
+  assert.ok(completionVisible,'MP-08 provider completion must be visible in its real TUI agent pane')
   // Finish the other requested controls and provider completion, but retain
   // a RED acceptance result if any shell outlived its cancellation budget.
   assert.equal(receipt.noisyProducerFailures?.length ?? 0,0,'MP-08 noisy shell output continued beyond five-second cancellation budget')
