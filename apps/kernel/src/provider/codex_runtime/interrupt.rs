@@ -1,4 +1,5 @@
 //! MP-08 / MP-10: reconcile Codex's lifecycle identity before interrupting.
+use std::collections::BTreeSet;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -20,32 +21,33 @@ pub fn abort_codex_turn(
     let Some(submitted_turn_id) = state.active_turn_id.clone() else {
         return Ok(());
     };
-    observe_buffered_turns(&mut state.turn_tracker, &state.buffered_notifications);
-    let mut turn_id = state
-        .turn_tracker
-        .provider_active_turn_id
-        .clone()
-        .unwrap_or_else(|| submitted_turn_id.clone());
     let thread_id = state.thread_id().to_string();
     let client = CodexClient::new(provider_run_id, state.endpoint())?;
     let deadline = Instant::now() + INTERRUPT_RETRY_TIMEOUT;
-    let mut retried_stale_id = false;
+    let mut reconciliation = InterruptReconciliation::new(submitted_turn_id);
+    let mut rejected_turns = BTreeSet::new();
     loop {
-        crate::logging::debug_with_fields(
-            "daemon.provider.codex",
-            "codex turn interrupt requested trace",
-            json!({"provider_run_id":provider_run_id,"turn_id":turn_id,"active_turn_id":state.active_turn_id}),
-        );
-        // Include lifecycle events buffered by both the interrupt and list RPCs.
-        let notification_offset = state.buffered_notifications.len();
-        match client.turn_interrupt(
-            &mut state.socket,
-            &mut state.next_request_id,
-            &thread_id,
-            &turn_id,
-            &mut state.buffered_notifications,
-        ) {
-            Ok(()) => {
+        // Use the same reconciliation before RPCs, after either RPC result, and
+        // after every start-wait read. Drain ready events before terminal settlement.
+        loop {
+            match client.read_notification(&mut state.socket, Duration::from_millis(1)) {
+                Ok(Some(notification)) => {
+                    let closed = matches!(notification, CodexNotification::Error { .. });
+                    state.buffered_notifications.push(notification);
+                    if closed || Instant::now() >= deadline {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                // A peer may close immediately after its ACK. Reconciliation
+                // still decides whether that ACK covers the current identity.
+                Err(_) if !reconciliation.acknowledged.is_empty() => break,
+                Err(error) => return Err(error),
+            }
+        }
+        let decision = reconciliation.reconcile(state);
+        match decision {
+            InterruptDecision::Settled => {
                 note_codex_turn_interrupt_accepted(
                     &mut state.active_turn_id,
                     &mut state.turn_tracker,
@@ -53,178 +55,166 @@ pub fn abort_codex_turn(
                 );
                 return Ok(());
             }
-            Err(error) => {
-                let stale_id = codex_interrupt_actual_turn_id(&error);
-                let waiting_for_start = codex_turn_interrupt_is_waiting_for_task_start(&error);
-                if (!waiting_for_start && stale_id.is_none())
-                    || (stale_id.is_some() && retried_stale_id)
-                {
-                    return Err(error);
-                }
-                // Both the thread snapshot and interleaved lifecycle events belong
-                // to this actor-owned socket. Never select a turn from another run.
-                let response = if state.ephemeral {
-                    None
-                } else {
-                    Some(client.thread_turns_list(
-                        &mut state.socket,
-                        &mut state.next_request_id,
-                        &thread_id,
-                        &mut state.buffered_notifications,
-                    )?)
-                };
-                let fresh_notifications = &state.buffered_notifications[notification_offset..];
-                let fresh_lifecycle = fresh_notifications.iter().any(|event| {
-                    matches!(
-                        event,
-                        CodexNotification::TurnStarted { .. }
-                            | CodexNotification::TurnCompleted { .. }
-                    )
+            _ if Instant::now() >= deadline => {
+                return Err(DaemonError::ProviderProtocol {
+                    provider_run_id: provider_run_id.to_string(),
+                    operation: "turn/interrupt",
+                    message: "timed out waiting for the current provider turn to start".to_string(),
                 });
-                observe_buffered_turns(&mut state.turn_tracker, fresh_notifications);
-                let snapshot_id = response.as_ref().and_then(codex_active_turn_id);
+            }
+            InterruptDecision::Wait => sleep(INTERRUPT_RETRY_INTERVAL),
+            InterruptDecision::Interrupt(turn_id) => {
                 crate::logging::debug_with_fields(
                     "daemon.provider.codex",
-                    "codex turn interrupt snapshot trace",
-                    json!({"provider_run_id":provider_run_id,"turn_id":snapshot_id}),
+                    "codex turn interrupt requested trace",
+                    json!({"provider_run_id":provider_run_id,"turn_id":turn_id,"active_turn_id":state.active_turn_id}),
                 );
-                // The validator may advance while the reread is in flight. Fresh
-                // lifecycle events and the current in-progress record supersede
-                // the ID in the rejection, which is already an older observation.
-                let actual_id = fresh_lifecycle
-                    .then(|| state.turn_tracker.provider_active_turn_id.clone())
-                    .flatten()
-                    .filter(|id| {
-                        snapshot_id.as_deref().is_none_or(|current| current == id)
-                            || response
-                                .as_ref()
-                                .is_some_and(|response| codex_turn_record(response, id).is_none())
-                    })
-                    .or(snapshot_id)
-                    .or_else(|| {
-                        stale_id
-                            .filter(|id| {
-                                response.as_ref().is_some_and(|response| {
-                                    codex_turn_record(response, id).is_some()
-                                })
-                            })
-                            .map(str::to_string)
-                    });
-                // A terminal submitted record cannot settle a newer lifecycle
-                // turn that is still missing from the snapshot.
-                if response.as_ref().is_some_and(|response| {
-                    codex_active_turn_id(response).is_none()
-                        && actual_id.as_deref().is_none_or(|id| {
-                            terminal_interruption_is_settled(response, id, state)
-                        })
-                        && terminal_interruption_is_settled(response, &submitted_turn_id, state)
-                }) {
-                    note_codex_turn_interrupt_accepted(
-                        &mut state.active_turn_id,
-                        &mut state.turn_tracker,
-                        &mut state.buffered_notifications,
-                    );
-                    return Ok(());
-                }
-                let target = actual_id
-                    .filter(|id| {
-                        response
-                            .as_ref()
-                            .is_none_or(|response| !codex_turn_is_terminal(response, id))
-                    })
-                    .unwrap_or_else(|| submitted_turn_id.clone());
-                if !wait_for_provider_turn_start(
-                    provider_run_id,
-                    &client,
-                    state,
-                    &target,
-                    deadline,
-                )? {
-                    note_codex_turn_interrupt_accepted(
-                        &mut state.active_turn_id,
-                        &mut state.turn_tracker,
-                        &mut state.buffered_notifications,
-                    );
-                    return Ok(());
-                }
-                crate::logging::debug_with_fields(
-                    "daemon.provider.codex",
-                    "codex turn interrupt identity refreshed",
-                    json!({"provider_run_id":provider_run_id,"turn_id":target,"previous_active_turn_id":turn_id}),
-                );
-                turn_id = target;
-                if stale_id.is_some() {
-                    retried_stale_id = true;
-                }
-                if Instant::now() >= deadline {
-                    return Err(error);
-                }
-                if waiting_for_start {
-                    sleep(INTERRUPT_RETRY_INTERVAL);
+                reconciliation.require_start = true;
+                match client.turn_interrupt(
+                    &mut state.socket,
+                    &mut state.next_request_id,
+                    &thread_id,
+                    &turn_id,
+                    &mut state.buffered_notifications,
+                ) {
+                    Ok(()) => {
+                        reconciliation.acknowledged.insert(turn_id);
+                        // The ACK is newer than the last snapshot. A different
+                        // lifecycle identity still has to pass reconciliation.
+                        reconciliation.snapshot = None;
+                    }
+                    Err(error) => {
+                        let stale_id = codex_interrupt_actual_turn_id(&error);
+                        let waiting = codex_turn_interrupt_is_waiting_for_task_start(&error);
+                        // Record lifecycle changes even when the provider rejects
+                        // an unrecoverable RPC; cancellation remains owned on error.
+                        reconciliation.reconcile(state);
+                        if (!waiting && stale_id.is_none())
+                            || (stale_id.is_some() && !rejected_turns.insert(turn_id.clone()))
+                        {
+                            return Err(error);
+                        }
+                        if !state.ephemeral {
+                            match client.thread_turns_list(
+                                &mut state.socket,
+                                &mut state.next_request_id,
+                                &thread_id,
+                                &mut state.buffered_notifications,
+                            ) {
+                                Ok(response) => {
+                                    reconciliation.snapshot =
+                                        Some((response, state.buffered_notifications.len()))
+                                }
+                                Err(error) => {
+                                    reconciliation.reconcile(state);
+                                    return Err(error);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-fn terminal_interruption_is_settled(
-    response: &Value,
-    turn_id: &str,
-    state: &CodexRuntimeState,
-) -> bool {
-    if !codex_turn_is_terminal(response, turn_id) {
-        return false;
-    }
-    // Codex can normalize an admitted, not-yet-started record to interrupted.
-    // That status needs actual completion evidence, rather than hiding a queued turn.
-    let interrupted = codex_turn_record(response, turn_id)
-        .and_then(|turn| turn.get("status"))
-        .and_then(Value::as_str)
-        == Some("interrupted");
-    !interrupted || state.turn_tracker.has_terminal_for(turn_id)
-        || state.buffered_notifications.iter().any(|event| {
-            matches!(event, CodexNotification::TurnCompleted { turn_id: completed, .. } if completed == turn_id)
-        })
+#[derive(Debug, PartialEq, Eq)]
+enum InterruptDecision {
+    Interrupt(String),
+    Wait,
+    Settled,
 }
 
-fn wait_for_provider_turn_start(
-    provider_run_id: &str,
-    client: &CodexClient,
-    state: &mut CodexRuntimeState,
-    turn_id: &str,
-    deadline: Instant,
-) -> Result<bool, DaemonError> {
-    // A turn/start reply and the rollout snapshot can precede the listener's
-    // interrupt validator. Only the lifecycle event proves this turn started.
-    observe_buffered_turns(&mut state.turn_tracker, &state.buffered_notifications);
-    loop {
-        if state.turn_tracker.has_terminal_for(turn_id) || state.buffered_notifications.iter().any(|event| {
-            matches!(event, CodexNotification::TurnCompleted { turn_id: completed, .. } if completed == turn_id)
-        }) {
-            return Ok(false);
+// One cancellation owns one admitted prompt, but Codex's lifecycle ID can
+// change across admission. Snapshots locate a candidate; only turn/started
+// authorizes a retry. Completion and ACK apply to their exact identity.
+struct InterruptReconciliation {
+    target: String,
+    observed: usize,
+    last_start: Option<usize>,
+    lifecycle_id: Option<String>,
+    completed: BTreeSet<String>,
+    acknowledged: BTreeSet<String>,
+    snapshot: Option<(Value, usize)>,
+    require_start: bool,
+}
+
+impl InterruptReconciliation {
+    fn new(target: String) -> Self {
+        Self {
+            target,
+            observed: 0,
+            last_start: None,
+            lifecycle_id: None,
+            completed: BTreeSet::new(),
+            acknowledged: BTreeSet::new(),
+            snapshot: None,
+            require_start: false,
         }
-        if state.turn_tracker.provider_active_turn_id.as_deref() == Some(turn_id) {
-            crate::logging::debug_with_fields(
-                "daemon.provider.codex",
-                "codex turn interrupt provider started trace",
-                json!({"provider_run_id":provider_run_id,"turn_id":turn_id}),
-            );
-            return Ok(true);
-        }
-        if Instant::now() >= deadline {
-            return Err(DaemonError::ProviderProtocol {
-                provider_run_id: provider_run_id.to_string(),
-                operation: "turn/interrupt",
-                message: "timed out waiting for the current provider turn to start".to_string(),
-            });
-        }
-        if let Some(notification) =
-            client.read_notification(&mut state.socket, INTERRUPT_RETRY_INTERVAL)?
+    }
+
+    fn reconcile(&mut self, state: &mut CodexRuntimeState) -> InterruptDecision {
+        for (index, notification) in state
+            .buffered_notifications
+            .iter()
+            .enumerate()
+            .skip(self.observed)
         {
-            state.turn_tracker.observe_provider_turn(&notification);
-            state.buffered_notifications.push(notification);
+            state.turn_tracker.observe_provider_turn(notification);
+            match notification {
+                CodexNotification::TurnStarted { turn_id } => {
+                    self.last_start = Some(index);
+                    self.lifecycle_id = Some(turn_id.clone());
+                    self.completed.remove(turn_id);
+                }
+                CodexNotification::TurnCompleted { turn_id, .. } => {
+                    self.completed.insert(turn_id.clone());
+                }
+                _ => {}
+            }
+        }
+        self.observed = state.buffered_notifications.len();
+        let active = state.turn_tracker.provider_active_turn_id.as_deref();
+        let snapshot_id = self
+            .snapshot
+            .as_ref()
+            .and_then(|(response, _)| codex_active_turn_id(response));
+        // A listed older start cannot override the newest snapshot record.
+        // A missing identity or a start received after the snapshot supersedes it.
+        // The tracker can retain a previous prompt's identity. Only fresh
+        // lifecycle evidence or the snapshot may rebind this cancellation.
+        let lifecycle_id = self.lifecycle_id.as_deref().filter(|id| {
+            self.snapshot.as_ref().is_none_or(|(response, offset)| {
+                snapshot_id.as_deref().is_none_or(|current| current == *id)
+                    || codex_turn_record(response, id).is_none()
+                    || self.last_start.is_some_and(|index| index >= *offset)
+            })
+        });
+        if let Some(id) = lifecycle_id.map(str::to_string).or(snapshot_id) {
+            self.target = id;
+        }
+        let target = &self.target;
+        let terminal_snapshot = self.snapshot.as_ref().is_some_and(|(response, _)| {
+            codex_active_turn_id(response).is_none()
+                && codex_turn_is_terminal(response, target)
+                // An admitted turn normalized to interrupted can still run.
+                // Lifecycle completion, checked below, is required in that case.
+                && codex_turn_record(response, target)
+                    .and_then(|turn| turn.get("status"))
+                    .and_then(Value::as_str) != Some("interrupted")
+                && lifecycle_id.is_none()
+        });
+        let completed = self.completed.contains(target)
+            || state.turn_tracker.has_terminal_for(target)
+            || terminal_snapshot;
+        // Before the first RPC, a terminal old identity alone does not prove
+        // the newly admitted prompt is cancelled. Ask the provider validator.
+        if self.acknowledged.contains(target) || self.require_start && completed {
+            InterruptDecision::Settled
+        } else if !self.require_start || active == Some(target) {
+            InterruptDecision::Interrupt(target.clone())
         } else {
-            sleep(INTERRUPT_RETRY_INTERVAL);
+            InterruptDecision::Wait
         }
     }
 }
