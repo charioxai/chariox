@@ -74,6 +74,7 @@ export class HostChromium {
       stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env: environment,
     });
     this.child = child;
+    if (this.desktop?.binding()) await this.desktop.recordOwned(child);
     const connection = connectCdpPipe(child.stdio[3], child.stdio[4]);
     this.connection = connection;
     child.once('error', () => { void connection.close(); });

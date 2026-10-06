@@ -5,13 +5,13 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
-import { processIdentity, settleOwned } from './linux-owned-process.mjs';
+import { processIdentity, settleOwned, descendants } from './linux-owned-process.mjs';
 
 export function desktopEnvironment(source, runtime, uid = process.getuid?.()) {
   if (!Number.isInteger(uid) || uid <= 0) throw new Error('MP-11: owned desktop requires a non-root kernel user');
   const env = {};
   for (const key of ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR', 'CHARIOX_KERNEL_BROWSER_EXECUTABLE', 'CHARIOX_KERNEL_BROWSER_HEADLESS', 'CHARIOX_KERNEL_BROWSER_DISPLAY', 'CHARIOX_KERNEL_BROWSER_MIRROR', 'CHARIOX_BROWSER_DISPLAY_PYTHON', 'CHARIOX_BROWSER_DISPLAY_TIMING']) if (source[key] !== undefined) env[key] = source[key];
-  return { ...env, XAUTHORITY: path.join(runtime, 'Xauthority'), XDG_RUNTIME_DIR: runtime, NO_AT_BRIDGE: '0' };
+  return { ...env, XAUTHORITY: path.join(runtime, 'Xauthority'), XDG_RUNTIME_DIR: runtime, NO_AT_BRIDGE: '0', GTK_A11Y: 'always' };
 }
 function authorityCookie(cookie, display) {
   // FamilyWild; the cookie is valid only on this server, whose displayfd is not yet known.
@@ -45,6 +45,15 @@ export class LinuxOwnedDesktop {
     if (!record.identity) throw new Error('MP-11: desktop child ownership unavailable');
     return child;
   }
+  async ownedProcesses() {
+    const roots=this.children.filter(({child,identity})=>identity && child.exitCode===null && child.signalCode===null).map(({identity})=>identity);
+    return descendants(roots);
+  }
+  async recordOwned(child) {
+    const identity=await processIdentity(child.pid);
+    if(!identity)throw new Error('MP-11: graphical process ownership unavailable');
+    this.children.push({child,identity,core:false});
+  }
   async start() {
     if (this.current) {
       if (this.children.some(({ child, core }) => core && (child.exitCode !== null || child.signalCode !== null))) throw new Error('MP-08: owned desktop unavailable; explicitly stop/start');
@@ -73,10 +82,13 @@ export class LinuxOwnedDesktop {
       const address = await firstLine(bus.stdio[3], bus);
       if (!address.startsWith(`unix:path=${busPath},guid=`)) throw new Error('MP-11: invalid owned session bus');
       env.DBUS_SESSION_BUS_ADDRESS = address;
+      const keymap=await this.launch('setxkbmap',['-layout','us'],env);
+      const keymapExit=keymap.exitCode??await new Promise(resolve=>keymap.once('exit',resolve));
+      if(keymapExit!==0)throw new Error('MP-08: owned display keymap unavailable');
       await this.launch('openbox', ['--sm-disable'], env);
       await delay(100);
       if (this.children.some(({child,core}) => core && (child.exitCode !== null || child.signalCode !== null))) throw new Error('MP-08: desktop failed to become ready');
-      this.current = Object.freeze({ surface_id: `desktop-${randomUUID()}`, generation: randomUUID(), width: 1280, height: 800, environment: Object.freeze(env) });
+      this.current = Object.freeze({ surface_id: `desktop-${randomUUID()}`, generation: randomUUID(), ownedProcesses: () => this.ownedProcesses(), width: 1280, height: 800, environment: Object.freeze(env) });
       return this.current;
     } catch (error) { await this.stop(); throw error; }
   }

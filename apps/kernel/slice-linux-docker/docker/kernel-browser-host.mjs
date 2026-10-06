@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { displayTiming, timestamp } from './kernel-browser-timing.mjs';
 import { BrowserCdpClient, isTrustedStaleReferenceError } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
+import { NativeAccessibility } from './native-accessibility.mjs';
 import { NativeComputer } from './native-computer.mjs';
 import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
@@ -53,6 +54,7 @@ export class KernelBrowserHost {
     this.observedDocuments = new Map();
     this.mirror = new MirrorService(this);
     this.protection = { values: [], targets: [], unknown: false };
+    this.nativeAccessibility = new NativeAccessibility({binding:()=>this.chromium.desktop?.binding()});
     this.nativeComputer = new NativeComputer({ placement: 'host',
       binding: () => this.chromium.desktop?.binding(),
       wakeCapture: event => this.onNativeInput?.(event),
@@ -136,6 +138,7 @@ export class KernelBrowserHost {
     finally { this.restoring = false; }
   }
   async stop() {
+    this.nativeAccessibility.clear();
     await this.nativeComputer.close();
     await this.chromium.stop(this.browser?.connection);
     for (const stream of this.displays.values()) await stream.close();
@@ -451,6 +454,17 @@ export class KernelBrowserHost {
         return { id: request.id, ok: true, result: { inserted: true } };
       }
       if (request.method === "host.computer") {
+        const observer=request.params.observed_by??'terminal';
+        if (request.params.op === 'snapshot') {
+          const binding=this.chromium.desktop?.binding();
+          if(!binding || request.params.surface_id!==binding.surface_id || request.params.generation!==binding.generation)throw new Error('MP-11: stale native snapshot surface');
+          return {id:request.id,ok:true,result:await this.nativeAccessibility.snapshot(observer,this.protection,{signal})};
+        }
+        if (request.params.op === 'target_action') {
+          const binding=this.chromium.desktop?.binding();
+          if(!binding || request.params.surface_id!==binding.surface_id || request.params.generation!==binding.generation)throw new Error('MP-11: stale native target surface');
+          return {id:request.id,ok:true,result:await this.nativeAccessibility.action(observer,request.params,this.protection,{signal})};
+        }
         if (request.params.op === 'start') {
           await this.start({ signal });
           return { id: request.id, ok: true, result: await this.nativeComputer.request({op:'state'}, this.protection, {signal}) };

@@ -14,7 +14,7 @@ parser.add_argument('drill',choices=['linux-owned-desktop','native-computer','na
 parser.add_argument('--evidence',required=True)
 args=parser.parse_args()
 source=Path(__file__).resolve().parent
-files=['linux-owned-desktop.mjs','linux-owned-process.mjs','native-computer.mjs','native-computer.py','slice-keyboard.py','slice-text-finder.py','x11-text-keyboard.py']
+files=['browser-controller-snapshot.mjs','linux-owned-desktop.mjs','linux-owned-process.mjs','native-computer.mjs','native-computer.py','slice-keyboard.py','slice-text-finder.py','x11-text-keyboard.py']
 files += [name for name in ['native-accessibility.mjs','native-accessibility.py'] if (source/'docker'/name).exists()]
 head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()
 evidence=Path(args.evidence);evidence.mkdir(parents=True,exist_ok=True)
@@ -25,6 +25,7 @@ with tempfile.TemporaryDirectory(prefix='culinux-b-source-') as temporary:
         shutil.copy(source/'docker'/name,root/'docker'/name)
         hashes[name]=hashlib.sha256((root/'docker'/name).read_bytes()).hexdigest()
     drill=args.drill+'-drill.mjs';shutil.copy(source/drill,root/drill)
+    if args.drill=='native-accessibility':shutil.copy(source/'native-accessibility-fixture.py',root/'native-accessibility-fixture.py')
     command=['runuser','-u','nobody','--','env','CULINUX_SOURCE='+head+'+recorded-working-tree','node',str(root/drill)] if os.getuid()==0 else ['node',str(root/drill)]
     result=subprocess.run(command,capture_output=True,text=True,timeout=120)
     (evidence/(args.drill+'.log')).write_text(result.stdout+result.stderr)

@@ -76,6 +76,9 @@ def input_action(action):
 
 def main(request):
     op = request['op']
+    if op in ('accessibility','accessibility_action'):
+        accessibility=load('native-accessibility')
+        return accessibility.snapshot(request['processes']) if op=='accessibility' else accessibility.act(request)
     if op == 'input': input_action(request['input']); return {'applied':True}
     if op == 'release':
         connection=display.Display()
@@ -87,11 +90,21 @@ def main(request):
         finally: connection.close()
         return {'released':True}
     if op == 'clipboard_read':
-        if request['mask']: return {'text':'[protected]'}
+        accessibility=load('native-accessibility')
+        coverage=accessibility.snapshot(request.get('processes',[]))
+        if request['mask'] or not coverage['available'] or not coverage['complete'] or coverage['protected']: return {'text':'[protected]'}
         result=subprocess.run(['xclip','-selection','clipboard','-o'],check=True,capture_output=True,timeout=2)
         if len(result.stdout)>65536: raise ValueError('clipboard too large')
         return {'text':result.stdout.decode('utf-8')}
-    image=capture(request['mask'])
+    accessibility=load('native-accessibility')
+    before=accessibility.snapshot(request.get('processes',[]))
+    mask=request['mask'] or not before['available'] or not before['complete'] or before['protected']
+    image=capture(mask)
+    after=accessibility.snapshot(request.get('processes',[]))
+    if before!=after:
+        image.close()
+        raise ValueError('native protection changed during capture')
+    request['mask']=mask
     try:
         if op == 'screenshot':
             encoded=io.BytesIO();image.save(encoded,format='PNG')

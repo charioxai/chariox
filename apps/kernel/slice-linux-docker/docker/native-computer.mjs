@@ -96,7 +96,7 @@ export class NativeComputer {
     // Browser target transforms/non-browser secret coverage are not yet proven:
     // any registry protection masks the entire desktop, including OCR/clipboard.
     const mask=Boolean(policy?.values?.length || policy?.targets?.length);
-    const result=await this.execute({op:command.op,mask,query:command.query},binding.environment,signal);
+    const result=await this.execute({op:command.op,mask,query:command.query,processes:await binding.ownedProcesses?.()??[]},binding.environment,signal);
     if(signal?.aborted || this.binding()!==binding) throw new Error('MP-11: stale native observation');
     return {...result,surface_id:binding.surface_id,generation:binding.generation};
   }
