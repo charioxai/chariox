@@ -24,13 +24,23 @@ export class NativeAccessibility {
     if(this.observers.size>=64 && !previous)this.observers.delete(this.observers.keys().next().value);
     const handles=new Map();
     const revision=++this.nextRevision;
-    const nodes=(tree.nodes??[]).slice(0,512).map(node=>{
+    // MP-08 / MP-11: official harnesses truncate large single-line tool output.
+    // Prioritize current controls; the unprojected tree still fences every action.
+    const priority=node=>node.states?.includes('showing')
+      ? (node.actions?.length || node.states.includes('editable') ? 0 : 1) : 2;
+    const candidates=(tree.nodes??[]).slice(0,512).sort((a,b)=>priority(a)-priority(b));
+    const nodes=[];let bytes=0;
+    for(const node of candidates){
+      if(nodes.length>=64)break;
       const target_id=`atspi-${randomUUID()}`;
       const protectedNode=Boolean(node.protected || node.role==='password text' || policy?.targets?.length);
-      handles.set(target_id,{...node,protected:protectedNode});
-      return {target_id,role:node.role,name:protectedNode?'[protected]':node.name,states:node.states??[],bounds:node.bounds,actions:protectedNode?[]:node.actions??[]};
-    });
-    const result={surface_id:binding.surface_id,generation:binding.generation,tree_revision:revision,nodes,complete:tree.complete,fallback:tree.complete?'none':'ocr'};
+      const projected={target_id,role:node.role,name:protectedNode?'[protected]':node.name,states:node.states??[],bounds:node.bounds,actions:protectedNode?[]:node.actions??[]};
+      const size=Buffer.byteLength(JSON.stringify(projected))+1;
+      if(bytes+size>14336)continue;
+      bytes+=size;nodes.push(projected);handles.set(target_id,{...node,protected:protectedNode});
+    }
+    const complete=Boolean(tree.complete && nodes.length===(tree.nodes??[]).length);
+    const result={surface_id:binding.surface_id,generation:binding.generation,tree_revision:revision,nodes,complete,fallback:complete?'none':'ocr'};
     this.observers.set(observer,{digest,revision,handles,public:result});return result;
   }
   async action(observer,command,policy,{signal}={}){

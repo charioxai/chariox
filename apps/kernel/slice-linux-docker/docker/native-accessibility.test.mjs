@@ -46,3 +46,17 @@ test('MP-08 stale handles expose the existing typed refusal instead of a generic
  await native.action('agent:a',command,{});
  await assert.rejects(native.action('agent:a',command,{}), error=>error.code==='user_domain_stale_reference');
 });
+
+
+test('MP-08 OpenCode observation budget retains visible actionable targets and fences the full tree', async () => {
+ let current={...tree,nodes:Array.from({length:319},(_,i)=>({...tree.nodes[0],path:[i],name:'Hidden '+i+' x'.repeat(100),states:[],actions:[]}))};
+ current.nodes.push({...tree.nodes[0],path:[319],name:'File',states:['showing','enabled'],actions:['click']});
+ const native=new NativeAccessibility({binding:()=>binding,execute:async request=>request.op==='accessibility_action'?{applied:true}:structuredClone(current)});
+ const seen=await native.snapshot('agent:a',{});
+ assert(Buffer.byteLength(JSON.stringify(seen))<=16384,'MP-08 provider observation must fit below harness truncation');
+ assert.equal(seen.complete,false,'MP-08 pruned observation explicitly requires rediscovery/OCR');
+ assert.equal(seen.fallback,'ocr');
+ const file=seen.nodes.find(n=>n.name==='File');assert(file?.target_id&&file.actions.includes('click'));
+ current.nodes[0].name='hidden tree changed';
+ await assert.rejects(native.action('agent:a',{target_id:file.target_id,tree_revision:seen.tree_revision,action:'click'},{}),e=>e.code==='user_domain_stale_reference');
+});
