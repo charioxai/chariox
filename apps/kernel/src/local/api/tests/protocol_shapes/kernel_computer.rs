@@ -1,11 +1,11 @@
-//! MP-08 / MP-11: coordinator-reserved local446 / peer89 native desktop shapes.
+//! MP-08 / MP-11: coordinator-reserved local449 / peer92 native desktop shapes.
 use super::*;
 #[test]
-fn mp08_mp11_kernel_computer_446_89_shapes_are_hashed() {
+fn mp08_mp11_kernel_computer_449_92_shapes_are_hashed() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 449);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        89
+        92
     );
     let commands = serde_json::json!([
             {"op":"start"},{"op":"state"},{"op":"actors"},
@@ -41,13 +41,13 @@ fn mp08_mp11_kernel_computer_446_89_shapes_are_hashed() {
     let typed: crate::local::UserDomainResource = serde_json::from_value(resource.clone()).unwrap();
     assert_eq!(serde_json::to_value(typed).unwrap(), resource);
     let snapshot =
-        serde_json::json!({"local":446,"peer":89,"requests":requests,"resource":resource});
+        serde_json::json!({"local":449,"peer":92,"requests":requests,"resource":resource});
     assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "d7f10800b7dac5252cfaf17d39bb94a002433711343e1bf574cdc812c32fa918"
+        "cccbd5bf7c9fae07c54028d6835830e329357b11060c88e5db6558a5c3b0f689"
     );
     for command in [
         serde_json::json!({"op":"input","target":{"surface_id":"s","generation":"g","user_id":"forged"},"input":{"kind":"keycode","keycode":38,"state":"down"}}),
