@@ -85,14 +85,14 @@ fn mp08_mp10_mp11_browser_artifact_peer_82_shape_hashes() {
 // MP-08/MP-10/MP-11: the integration contract contains Apps access, Browser
 // artifact, Computer hold and public provider-run shapes together; unreleased per-lane numbers fold.
 #[test]
-fn mp08_mp10_mp11_apps_browser_computer_union_439_73_is_hashed() {
+fn mp08_mp10_mp11_apps_browser_computer_union_439_82_is_hashed() {
     use sha2::{Digest, Sha256};
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 439);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         82
     );
-    let snapshot = serde_json::json!({"local_protocol":439,"peer_protocol":73,"requests":[{"RoomBrowserArtifact":{"attachment_id":"client","operation":{"action":"capture","browser_generation":1,"guid":null,"kind":"image","return_image_base64":true},"session_id":"room","tab_id":"tab"}},{"SubmitRoomEnvironmentAction":{"action":{"duration_ms":750,"key":"shift+Left","kind":"keyboard_hold"},"idempotency_key":"hold","runtime_generation":2,"session_id":"room","viewport_revision":3}}],"responses":[{"KernelSudoRequested":{"agent_id":"agent"}},{"ProviderRun":{"provider_run":{"account_profile":"default","adapter_key":"codex","agent_instance_id":"agent-public","client_interface":"chariox","control_capabilities":[{"mode":"native","operation":"interrupt_turn"},{"mode":"native","operation":"cancel_prompt"},{"mode":"mcp","operation":"ack_workflow_turn"},{"mode":"mcp","operation":"validate_workflow_handoff"}],"endpoint_mode":"Managed","execution_mode":"build","id":"run-public","last_activity_at_ms":2,"model":"","owner_user_id":"local","permission_level":"yolo","provider":"codex","provider_session_id":null,"session_id":"session-public","started_at_ms":1,"state":"Starting","structured_endpoint":"http://127.0.0.1:1234","usage_tokens_total":null,"variant":null,"working_directory":null}}}]});
+    let snapshot = serde_json::json!({"local_protocol":439,"peer_protocol":82,"requests":[{"RoomBrowserArtifact":{"attachment_id":"client","operation":{"action":"capture","browser_generation":1,"guid":null,"kind":"image","return_image_base64":true},"session_id":"room","tab_id":"tab"}},{"SubmitRoomEnvironmentAction":{"action":{"duration_ms":750,"key":"shift+Left","kind":"keyboard_hold"},"idempotency_key":"hold","runtime_generation":2,"session_id":"room","viewport_revision":3}}],"responses":[{"KernelSudoRequested":{"agent_id":"agent"}},{"ProviderRun":{"provider_run":{"account_profile":"default","adapter_key":"codex","agent_instance_id":"agent-public","client_interface":"chariox","control_capabilities":[{"mode":"native","operation":"interrupt_turn"},{"mode":"native","operation":"cancel_prompt"},{"mode":"mcp","operation":"ack_workflow_turn"},{"mode":"mcp","operation":"validate_workflow_handoff"}],"endpoint_mode":"Managed","execution_mode":"build","id":"run-public","last_activity_at_ms":2,"model":"","owner_user_id":"local","permission_level":"yolo","provider":"codex","provider_session_id":null,"session_id":"session-public","started_at_ms":1,"state":"Starting","structured_endpoint":"http://127.0.0.1:1234","usage_tokens_total":null,"variant":null,"working_directory":null}}}]});
     for request in snapshot["requests"].as_array().unwrap() {
         let typed: LocalDaemonRequest = serde_json::from_value(request.clone()).unwrap();
         assert_eq!(serde_json::to_value(typed).unwrap(), *request);
@@ -106,6 +106,6 @@ fn mp08_mp10_mp11_apps_browser_computer_union_439_73_is_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "1cbf0f3211535eedd07abfc6c99c59e56cd1ea99df765a9d1e2f909933f17399"
+        "090628435a7e5bbd238907c716dc9f13ad0761678b81a37ff3a89e5210d4f0c0"
     );
 }

@@ -276,7 +276,7 @@ fn cloud_device_denial_poll_is_versioned_and_hashed() {
         .expect("denial must deserialize as a terminal poll outcome");
     let actual = serde_json::to_value(response).unwrap();
     assert_eq!(actual, expected);
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 436);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 439);
     assert_eq!(
         format!(
             "{:x}",
@@ -288,7 +288,7 @@ fn cloud_device_denial_poll_is_versioned_and_hashed() {
 
 #[test]
 fn cloud_device_denial_capability_preserves_legacy_requests_and_is_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 436);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 439);
     let legacy = serde_json::json!({"PollCloudRelayLogin": {
         "api_url": "https://cloud.example.test", "device_code": "synthetic-device-code"
     }});
