@@ -48,3 +48,21 @@ Ctrl+P/R/S pauses/resumes/stops the selected workflow's captured current runs,
 and Ctrl+G opens Manage. Enter starts from the workflow composer. Tab returns
 to agents; Escape dismisses the pane. The pane occupies a separate side column
 on wide terminals and a room screen on narrow terminals.
+
+## MP-08 / MP-10 / MP-11 real terminal drill
+
+`room-workflows:tui-drill` uses built kernel/relay executables, the real Bun CLI
+entry, a PTY, and an existing Chariox-linked Codex profile through the public
+account-link request. Python `pyte` and Pillow render the captured terminal
+cells into PNG evidence; ANSI and plain-text captures accompany each step.
+Pass absolute `--kernel`, `--relay`, `--client`, `--account-dir`, `--output`,
+and `--state-parent` paths, plus `--source` and `--client-source` commit IDs.
+State and evidence must live outside repositories.
+
+The keyboard flow verifies the Room inventory, an independent workflow draft,
+dismissal/reopen, Enter admission, captured pause/resume/stop controls, and
+an official Codex completion. A built pre-pane client with `--expect-red 1`
+must fail the initial visible-inventory assertion against the same kernel.
+The harness ends its session, stops its exact owned process generations,
+removes disposable runtime state and leaves the linked account untouched.
+This local TUI result does not establish the Cloud pane or fresh Path-1 parity.
