@@ -20,7 +20,7 @@ files=['native-keyboard-channel.mjs','browser-controller-snapshot.mjs','linux-ow
 files += [name for name in ['native-accessibility.mjs','native-accessibility.py'] if (source/'docker'/name).exists()]
 head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()
 evidence=Path(args.evidence);evidence.mkdir(parents=True,exist_ok=True)
-with tempfile.TemporaryDirectory(prefix='culinux-b-source-') as temporary:
+with tempfile.TemporaryDirectory(prefix='culinux-b-source-',dir='/var/tmp') as temporary:
     root=Path(temporary);(root/'docker').mkdir();os.chmod(root,0o755)
     hashes={}
     for name in files:
@@ -40,6 +40,9 @@ with tempfile.TemporaryDirectory(prefix='culinux-b-source-') as temporary:
     identity=head+('+recorded-working-tree' if dirty else '')
     manifest['source_identity']=identity
     environment={'PATH' :'/usr/bin:/bin','HOME':'/nonexistent','LANG':'C.UTF-8','CULINUX_SOURCE':identity}
+    state=root/'state';state.mkdir(mode=0o700)
+    if os.getuid()==0:os.chown(state,65534,65534)
+    environment['TMPDIR']=str(state)
     options={'user':65534,'group':65534,'extra_groups':[]} if os.getuid()==0 else {}
     log=evidence/(args.drill+'.log');output=log.open('w')
     process=subprocess.Popen(command,stdout=output,stderr=subprocess.STDOUT,text=True,env=environment,**options)

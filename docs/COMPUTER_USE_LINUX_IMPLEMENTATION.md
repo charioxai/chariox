@@ -11,6 +11,7 @@ A headed Linux host browser lazily creates a kernel-owned Xvfb, Openbox and
 private session bus under its external profile state. The kernel must run as a
 normal Unix user. Xvfb disables TCP, allocates distinct authenticated local sockets and requires a fresh
 0600 Xauthority file; inherited login-display/bus authority is discarded.
+Native helper temporary files stay in the private runtime directory.
 Chromium retains its renderer sandbox and CDP pipe and binds to that display.
 Shutdown uses positive PID/start-time identities for owned children and
 verified descendants, removes the private runtime, and retires input helpers.

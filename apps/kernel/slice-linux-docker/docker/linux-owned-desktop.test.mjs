@@ -9,11 +9,12 @@ import { validOwnedPid, processIdentity, descendants, signalOwned, settleOwned }
 
 test('MP-11 rejects root and inherited desktop authority', () => {
   assert.throws(() => desktopEnvironment({ DISPLAY: ':0' }, '/tmp/x', 0), /non-root/);
-  const env = desktopEnvironment({ PATH: '/usr/bin', DISPLAY: ':0', XAUTHORITY: '/secret', DBUS_SESSION_BUS_ADDRESS: 'foreign', ACCESS_TOKEN: 'private' }, '/tmp/x', 1000);
+  const env = desktopEnvironment({ PATH: '/usr/bin', TMPDIR:'/foreign-temp', DISPLAY: ':0', XAUTHORITY: '/secret', DBUS_SESSION_BUS_ADDRESS: 'foreign', ACCESS_TOKEN: 'private' }, '/tmp/x', 1000);
   assert.equal(env.DISPLAY, undefined);
   assert.equal(env.DBUS_SESSION_BUS_ADDRESS, undefined);
   assert.equal(env.ACCESS_TOKEN, undefined);
   assert.equal(env.XAUTHORITY, '/tmp/x/Xauthority');
+  assert.equal(env.TMPDIR,'/tmp/x');
 });
 test('MP-11 process identity rejects system and invalid signal targets', async () => {
   for (const pid of [0, 1, -1, undefined, NaN, 1.1, Infinity]) assert.equal(validOwnedPid(pid), false);
