@@ -32,6 +32,8 @@ struct RaceCase {
     snapshot_status: &'static str,
     result: RpcResult,
     previous_tracker: bool,
+    delayed_start: bool,
+    replayed_submitted_start: bool,
 }
 
 fn generated_interrupt_fixture(case: RaceCase) {
@@ -68,6 +70,9 @@ fn generated_interrupt_fixture(case: RaceCase) {
                     .write(Message::Text(event.to_string().into()))
                     .unwrap();
             }
+            if phase == Phase::List && case.snapshot_status == "actual-completed" {
+                active_actual = false;
+            }
         };
         // Buffered events are also replayed on this fixture socket so the
         // provider oracle sees their exact order. Repeated identity observations
@@ -85,6 +90,10 @@ fn generated_interrupt_fixture(case: RaceCase) {
                 let data = match case.snapshot_status {
                     "missing" => json!([]),
                     "actual" => json!([{"id":"actual","status":"inProgress"}]),
+                    "reported-interrupted" => {
+                        json!([{"id":"submitted","status":"completed"},{"id":"actual","status":"interrupted"}])
+                    }
+                    "actual-completed" => json!([{"id":"actual","status":"completed"}]),
                     status => json!([{"id":"submitted","status":status}]),
                 };
                 json!({"result":{"data":data}})
@@ -125,6 +134,10 @@ fn generated_interrupt_fixture(case: RaceCase) {
                 .write(Message::Text(response.to_string().into()))
                 .unwrap();
             if method == "thread/turns/list" {
+                if case.delayed_start {
+                    socket.flush().unwrap();
+                    thread::sleep(Duration::from_millis(100));
+                }
                 emit(&mut socket, Phase::StartWait);
                 // For a successor appearing during the retry ACK, allow the
                 // snapshot-selected admitted turn to enter the validator first.
@@ -163,7 +176,12 @@ fn generated_interrupt_fixture(case: RaceCase) {
             !active_actual,
             "{case:?}: settlement left the actual turn running"
         );
-        if case.actual_completion.is_none() {
+        if case.snapshot_status == "actual-completed" && case.start < Phase::StartWait {
+            assert_eq!(
+                actual_interrupts, 0,
+                "{case:?}: completed snapshot must settle without another interrupt"
+            );
+        } else if case.actual_completion.is_none() {
             assert!(
                 actual_interrupts > 0,
                 "{case:?}: actual active identity was never interrupted"
@@ -192,7 +210,10 @@ fn generated_interrupt_fixture(case: RaceCase) {
     }
     let result = abort_codex_turn("run", &mut state);
     close.shutdown(Shutdown::Both).unwrap();
-    server.join().unwrap();
+    assert!(
+        server.join().is_ok(),
+        "{label}: provider oracle failed after abort returned {result:?}"
+    );
     result.unwrap_or_else(|error| panic!("{label}: {error}"));
     assert!(state.active_turn_id.is_none(), "{label}");
     assert!(state.buffered_notifications.is_empty(), "{label}");
@@ -200,14 +221,21 @@ fn generated_interrupt_fixture(case: RaceCase) {
 
 fn race_events(case: &RaceCase, phase: Phase) -> Vec<Value> {
     let mut events = Vec::new();
+    let submitted_start = json!({"method":"turn/started","params":{"turn":{"id":"submitted"}}});
     let submitted = json!({"method":"turn/completed","params":{"turn":{"id":"submitted","status":case.completion_status,"items":[]}}});
     if case.completion_first && case.submitted_completion == Some(phase) {
+        if case.replayed_submitted_start {
+            events.push(submitted_start.clone());
+        }
         events.push(submitted.clone());
     }
     if case.start == phase {
         events.push(json!({"method":"turn/started","params":{"turn":{"id":"actual"}}}));
     }
     if !case.completion_first && case.submitted_completion == Some(phase) {
+        if case.replayed_submitted_start {
+            events.push(submitted_start);
+        }
         events.push(submitted);
     }
     if case.actual_completion == Some(phase) {
@@ -275,21 +303,34 @@ fn mp08_interrupt_generated_lifecycle_rpc_interleavings() {
                             {
                                 continue;
                             }
+                            if start >= Phase::Ack
+                                && matches!(result, RpcResult::Stale)
+                                && snapshot_status == "missing"
+                            {
+                                continue;
+                            }
                             if actual_completion.is_some() && start == Phase::BeforeRpc {
                                 continue;
                             }
                             for completion_first in [false, true] {
-                                generated_interrupt_fixture(RaceCase {
-                                    start,
-                                    submitted_completion,
-                                    actual_completion,
-                                    completion_first,
-                                    completion_status,
-                                    snapshot_status,
-                                    result,
-                                    previous_tracker: false,
-                                });
-                                count += 1;
+                                for replayed_submitted_start in [false, true] {
+                                    if replayed_submitted_start && submitted_completion.is_none() {
+                                        continue;
+                                    }
+                                    generated_interrupt_fixture(RaceCase {
+                                        start,
+                                        submitted_completion,
+                                        actual_completion,
+                                        completion_first,
+                                        completion_status,
+                                        snapshot_status,
+                                        result,
+                                        previous_tracker: false,
+                                        delayed_start: false,
+                                        replayed_submitted_start,
+                                    });
+                                    count += 1;
+                                }
                             }
                         }
                     }
@@ -432,6 +473,55 @@ fn mp08_interrupt_retained_previous_tracker_cannot_rebind_admission() {
             snapshot_status: "inProgress",
             result,
             previous_tracker: true,
+            delayed_start: false,
+            replayed_submitted_start: false,
         });
+    }
+}
+
+// MP-08 / MP-10: the validator already named actual; history can omit it
+// before the start notification arrives. Old completion cannot close that gap.
+#[test]
+fn mp08_interrupt_reported_missing_identity_survives_delayed_start() {
+    for snapshot_status in [
+        "missing",
+        "completed",
+        "interrupted",
+        "reported-interrupted",
+    ] {
+        generated_interrupt_fixture(RaceCase {
+            start: Phase::StartWait,
+            submitted_completion: Some(Phase::List),
+            actual_completion: None,
+            completion_first: true,
+            completion_status: "interrupted",
+            snapshot_status,
+            result: RpcResult::Stale,
+            previous_tracker: false,
+            delayed_start: true,
+            replayed_submitted_start: false,
+        });
+    }
+}
+
+// MP-08 / MP-10: a later completed snapshot also settles a lifecycle identity
+// that started before the list; an after-list start still invalidates it.
+#[test]
+fn mp08_interrupt_generated_terminal_snapshot_lifecycle_order() {
+    for result in [RpcResult::Stale, RpcResult::NoActive] {
+        for start in [Phase::Interrupt, Phase::List, Phase::StartWait] {
+            generated_interrupt_fixture(RaceCase {
+                start,
+                submitted_completion: None,
+                actual_completion: None,
+                completion_first: false,
+                completion_status: "completed",
+                snapshot_status: "actual-completed",
+                result,
+                previous_tracker: false,
+                delayed_start: false,
+                replayed_submitted_start: false,
+            });
+        }
     }
 }
