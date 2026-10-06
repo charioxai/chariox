@@ -432,6 +432,17 @@ dependent client minima, and add a focused local/relay drill. Relay stays opaque
 do not add plaintext AX, capture or input handling there. Extend the existing
 typed refusal contract without exposing target existence or app/error contents.
 
+## Validation: real live drills (owner rule, 2026-10-06)
+
+Acceptance for every Mac PR means real live drills of exact user scenarios:
+- real Mac apps (Finder, TextEdit/Pages, Safari/Chrome on real sites, System Settings refusal);
+- real official providers on real accounts;
+- the real web app in a desktop browser at DPR 2, and the real TUI;
+- the hosted relay;
+- realistic durations, including sleep/wake and lock.
+
+Fixture apps and fake capture sources are regression checks only. Nothing is staged for the owner until the feature is complete and has passed these drills.
+
 ## PR sequence and size limits
 
 Linux defines and validates the shared seat/surface/grant contract first. Rebase
