@@ -177,6 +177,9 @@ async fn dispatched_computer_action_settles_after_grant_revocation() {
 async fn mp08_room_computer_revoke_denies_queued_and_new_input_and_regrants() {
     crate::test_support::isolated_env_test!();
     let room = TestRoom::new("room-computer-revoke");
+    room.runtime
+        .reconcile_room_environment_actors(&room.session_id, None)
+        .unwrap();
     let snapshot = room
         .runtime
         .room_environment_snapshot(&room.session_id)
