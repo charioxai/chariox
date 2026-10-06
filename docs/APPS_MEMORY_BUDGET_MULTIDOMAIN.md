@@ -14,6 +14,8 @@ Four workers are admitted before the zero-view baseline. After 3 s warmup, idle 
 
 Collect `/proc` VmRSS and smaps_rollup PSS at a target 100 ms. Sum simultaneous process values within each class, then nearest-rank p50/p95. Browser total includes browser, renderers, GPU, utilities, zygotes and crash helpers; controller/kernel/workers are separate. RSS double-counts shared pages; PSS apportions them and can vary with other lanes. Samples outside declared 20 s windows and missing reads remain in raw evidence but are excluded from percentiles. Budget attribution subtracts the minimum complete zero-view baseline, conservatively, rather than the baseline p95.
 
+MP-08 / MP-10: the wrapper requires more than a zero child exit before reporting PASS. Validation must acknowledge all four distinct installations, include the expected native/Room flags, and reach the matching `finished` phase. Baseline idle, four-view idle and four-view interaction each need at least 20 complete positive browser RSS/PSS samples spanning at least 18 s inside their declared 20 s window, with browser and renderer processes present. The final phase must follow those samples. Both validation and phase files are retained; missing or unusable evidence produces RED/nonzero after cleanup. Rust's exact filter running zero tests cannot establish a measurement pass.
+
 ## Numbers (MiB)
 
 Cells show p50 / p95. These are full browser totals; the v2 target is **App-induced** browser p95 ≤ 768 MiB in [release budgets](CHARIOX_APPS_RELEASE_BUDGETS.md).

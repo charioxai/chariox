@@ -132,6 +132,45 @@ def summarize(samples):
                 'pss_max_mib':quantile(pss,1)})
     return result
 
+def validate_drill(root, topology, samples):
+    """MP-08 / MP-10: a zero Rust exit can mean the exact filter ran no tests."""
+    def require(condition, message):
+        if not condition: raise RuntimeError('MP-08 / MP-10: invalid drill evidence: ' + message)
+    try:
+        validation = json.loads((root/'validation.json').read_text())
+        phase = json.loads((root/'phase.json').read_text())
+    except (OSError, ValueError) as error:
+        raise RuntimeError('MP-08 / MP-10: missing or malformed drill evidence') from error
+    require(isinstance(validation, dict) and isinstance(phase, dict), 'expected JSON objects')
+    require(validation.get('mp_items') == ['MP-08','MP-10'], 'wrong MP items')
+    calls = validation.get('calls_per_view')
+    require(isinstance(calls, list) and len(calls) == 4
+            and all(type(count) is int and count > 1 for count in calls), 'four acknowledged App views required')
+    require(type(validation.get('distinct_installations')) is int
+            and validation['distinct_installations'] == 4, 'four distinct installations required')
+    require(validation.get('sessionless') is (topology == 'host')
+            and validation.get('app_mirror_denied') is (topology == 'host'), 'wrong topology validation')
+    require(phase.get('topology') == topology and phase.get('views') == 0
+            and phase.get('activity') == 'finished', 'finished phase required')
+    require(type(phase.get('at_ms')) is int and phase['at_ms'] > 0, 'finished timestamp required')
+    browser_classes = {'browser','renderers','GPU','utility','zygote'}
+    for views, activity in [(0,'idle'), (4,'idle'), (4,'interacting')]:
+        usable = []
+        for sample in samples:
+            if (sample['topology'], sample['views'], sample['activity']) != (topology, views, activity): continue
+            at = sample.get('at_ms'); sampled = sample['sample_at']
+            if type(at) is not int or not at / 1000 <= sampled < at / 1000 + 20: continue
+            rows = [row for row in sample['processes'] if row['class'] in browser_classes]
+            if not {'browser','renderers'} <= {row['class'] for row in rows}: continue
+            if not all(type(row.get(key)) is int and row[key] > 0
+                       for row in rows for key in ['rss_kib','pss_kib']): continue
+            usable.append(sampled)
+        # Target 100 ms; tolerate censored reads/slow collection, but require
+        # enough complete totals and coverage of the declared 20-second window.
+        require(len(usable) >= 20 and max(usable) - min(usable) >= 18,
+                f'usable {views}-view {activity} RSS/PSS window required')
+        require(phase['at_ms'] / 1000 >= max(usable), 'finished phase precedes samples')
+
 def run(args):
     output = pathlib.Path(args.output).resolve(); output.mkdir(parents=True, exist_ok=True)
     root = pathlib.Path(tempfile.mkdtemp(prefix=f'{args.topology}-', dir='/root/.chariox/dev/appsbudget'))
@@ -140,7 +179,7 @@ def run(args):
                'topology':args.topology, 'source':subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip(),
                'source_diff_sha256':__import__('hashlib').sha256(subprocess.check_output(['git','diff','HEAD'])).hexdigest(),
                'binary_sha256':__import__('hashlib').file_digest(open(args.binary,'rb'),'sha256').hexdigest(),
-               'image':args.image, 'cleanup':False}
+               'image':args.image, 'cleanup':False, 'result':'RED'}
     def save():
         (output/'receipt.json').write_text(json.dumps(receipt, indent=2))
         (output/'summary.json').write_text(json.dumps(summarize(samples), indent=2))
@@ -204,15 +243,16 @@ def run(args):
                 time.sleep(.1)
             exit_code=child.returncode
             receipt['exit_code']=exit_code
-            if exit_code: receipt['result']='RED'
-            else: receipt['result']='PASS'
+            if exit_code == 0:
+                validate_drill(root, args.topology, samples)
+                receipt['drill_validated'] = True
     except BaseException as error:
         receipt['result']='RED';receipt['error']=str(error)
         raise
     finally:
-        validation = root/'validation.json'
-        if validation.exists():
-            shutil.copyfile(validation, output/'validation.json')
+        for name in ['validation.json','phase.json']:
+            if (root/name).exists():
+                shutil.copyfile(root/name, output/name)
         if (root/'slice-ownership.json').exists():
             receipt['slice_ownership'] = json.loads((root/'slice-ownership.json').read_text())
         if child: process_tree(child.pid, owned, str(root))
@@ -238,11 +278,12 @@ def run(args):
         receipt['remaining_owned_pids']=alive
         receipt['finished']=time.time();receipt['resources_after']=resource(check=False)
         receipt['cleanup']=not alive
+        receipt['result'] = 'PASS' if exit_code == 0 and receipt.get('drill_validated') and receipt['cleanup'] else 'RED'
         # Runtime-generated identities are confined to this known disposable root.
         shutil.rmtree(root)
         save()
     print(json.dumps({'mp_items':['MP-08','MP-10'],'result':receipt['result'],'exit':exit_code,'cleanup':receipt['cleanup']}))
-    return 0 if exit_code==0 and receipt['cleanup'] else 1
+    return 0 if receipt['result']=='PASS' else 1
 
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--binary',required=True);p.add_argument('--output',required=True)
