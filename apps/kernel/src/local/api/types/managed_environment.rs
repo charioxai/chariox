@@ -1,5 +1,12 @@
 use super::*;
 
+// MP-08 / MP-11: selection metadata only; credential bytes never cross IPC.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PreflightProviderAccountPortabilityRequest {
+    pub provider_accounts: ManagedEnvironmentProviderAccounts,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListManagedEnvironmentCatalogRequest;

@@ -119,9 +119,17 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
 ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
     let account_owner_user_id =
         runtime_state.provider_account_authority_owner_user_id(caller_user_id);
+    let config = config_projection.snapshot();
     let relay_status = projected_relay_status_view(relay_state, config_projection).await;
     let (remote_machines, remote_kernels) = remote_relay_inventory_projection.snapshot();
-    let terminals = paired_terminal_records();
+    let terminals = if super::self_host_terminal_grants::required(&config) {
+        super::self_host_terminal_grants::entries(&config)?
+            .into_iter()
+            .map(super::terminal_pairings::terminal_record)
+            .collect()
+    } else {
+        paired_terminal_records()
+    };
     let (external_provider_session_page, metaagent_events) = runtime_state
         .waiting_room_auxiliary_projection(
             &account_owner_user_id,

@@ -5,7 +5,7 @@ import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 import { issueCloudRelayClientTokenRequest, pollCloudRelayLoginRequest } from "./ipc-relay-control-requests.js"
 
 test("key-bound CLI client-token request carries only the public thumbprint", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 437)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 439)
   assert.deepEqual(
     issueCloudRelayClientTokenRequest("home", "cli-1", "session-1", "public-thumbprint"),
     {
@@ -27,6 +27,11 @@ test("legacy client-token request omits identity binding explicitly", () => {
       session_id: null,
     },
   })
+})
+
+test("kernel pivot binds the receiving terminal key on protocol 438", async () => {
+  const { resolveKernelClientConnectionRequest } = await import("./ipc-relay-control-requests.js")
+  assert.deepEqual(resolveKernelClientConnectionRequest({kernelRef: "kernel-b", clientId: "terminal-a", publicKeyThumbprint: "a".repeat(64)}), {ResolveKernelClientConnection: {kernel_ref: "kernel-b", machine_ref: null, client_id: "terminal-a", session_id: null, public_key_thumbprint: "a".repeat(64)}})
 })
 
 test("denial support is an explicit poll capability; legacy requests retain their shape", () => {

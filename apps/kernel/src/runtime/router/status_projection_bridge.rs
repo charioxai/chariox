@@ -12,6 +12,7 @@ impl CommandRouter {
     pub(crate) async fn waiting_room_public_snapshot(
         &self,
         caller_user_id: &str,
+        relay_caller: Option<&crate::runtime::command::KernelCaller>,
     ) -> Result<crate::local::WaitingRoomPublicSnapshot, DaemonError> {
         projected_waiting_room_public_snapshot(
             &self.runtime_state,
@@ -19,7 +20,11 @@ impl CommandRouter {
             &self.waiting_room_session_summaries,
             Arc::clone(&self.relay_state),
             self.config_projection.clone(),
-            self.remote_relay_inventory_projection.clone(),
+            if relay_caller.is_none_or(|caller| self.relay_owner_directory_allowed(caller)) {
+                self.remote_relay_inventory_projection.clone()
+            } else {
+                Default::default()
+            },
             caller_user_id,
         )
         .await

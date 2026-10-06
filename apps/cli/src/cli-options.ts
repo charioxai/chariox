@@ -17,6 +17,7 @@ export function parseArgs(args: string[]): CliOptions {
     effort: "",
   }
   let helpRequested = false
+  let explicitRelayToken: string | undefined
   let relayTokenSource: "argv" | "environment" | null = null
 
   for (let index = 0; index < args.length; index += 1) {
@@ -51,7 +52,7 @@ export function parseArgs(args: string[]): CliOptions {
         break
       case "--relay-token":
         if (relayTokenSource) throw new Error("--relay-token and --relay-token-env cannot be combined")
-        options.relayToken = next()
+        options.relayToken = explicitRelayToken = next()
         relayTokenSource = "argv"
         break
       case "--relay-token-env": {
@@ -60,7 +61,7 @@ export function parseArgs(args: string[]): CliOptions {
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error("--relay-token-env requires an environment variable name")
         const token = process.env[name]
         if (!token?.trim()) throw new Error(`--relay-token-env ${name} is empty or missing`)
-        options.relayToken = token
+        options.relayToken = explicitRelayToken = token
         relayTokenSource = "environment"
         break
       }
@@ -121,6 +122,8 @@ export function parseArgs(args: string[]): CliOptions {
     printUsage()
     process.exit(0)
   }
+  if (explicitRelayToken) options.relayToken = explicitRelayToken
+  if (options.relayToken === "operator-client-token-required") throw new Error("Scoped self-host pairing requires an operator-issued CLIENT transport token; supply --relay-token-env NAME. The kernel credential is private.")
   validateOptions(options)
   return options
 }
@@ -305,7 +308,12 @@ function printUsage() {
     "  /notifications ...     discover, install, inspect, reconnect, and remove notification services",
     ...tuiAppHelp(),
     "  /cloud                open Chariox Cloud terminal",
-    "  /cloud link           link this machine to Chariox Cloud",
+    "  chariox cloud login|logout|status|kernels [--api-url URL] manage this terminal profile without a kernel",
+    "  /cloud login          sign in this terminal profile",
+    "  /cloud logout         revoke this terminal profile; kernels keep running",
+    "  /cloud kernels        list My kernels when detached",
+    "  /cloud link           enroll this kernel independently in Chariox Cloud",
+    "  /cloud unlink         revoke this kernel enrollment",
     "  /cloud status         show Cloud and relay status",
     "  /cloud deployments    manage deployed workflow projects and releases",
     "  /cloud deployments claim create|review|accept|revoke manage customer handoff",

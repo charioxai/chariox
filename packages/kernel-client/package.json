@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./relay-auth-renewal": "./dist/relay-auth-renewal.js",
     ".": "./dist/index.js",
     "./ipc": "./dist/ipc.js",
     "./ipc-requests": "./dist/ipc-requests.js",

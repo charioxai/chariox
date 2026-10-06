@@ -211,6 +211,7 @@ async fn relay_waiting_room_subscription_sends_baseline_after_reload_and_observe
     let subscription_public_key =
         relay_crypto::public_key_from_private_key_base64(&subscription_private_key)
             .expect("subscription public key should derive");
+    approve_test_terminal(&config, &subscription_public_key);
     send_client_envelope(
         &mut client_socket,
         &RelayEnvelope::ClientSubscribe {
@@ -261,6 +262,7 @@ async fn relay_waiting_room_subscription_sends_baseline_after_reload_and_observe
     let reloaded_subscription_public_key =
         relay_crypto::public_key_from_private_key_base64(&reloaded_subscription_private_key)
             .expect("reloaded subscription public key should derive");
+    approve_test_terminal(&config, &reloaded_subscription_public_key);
     send_client_envelope(
         &mut reloaded_client_socket,
         &RelayEnvelope::ClientSubscribe {
@@ -438,6 +440,7 @@ async fn proxied_session_subscriptions_share_one_attachment_without_replacement(
     let subscription_public_key =
         relay_crypto::public_key_from_private_key_base64(&subscription_private_key)
             .expect("subscription public key should derive");
+    approve_test_terminal(&config, &subscription_public_key);
     send_client_envelope(
         &mut client_socket,
         &RelayEnvelope::ClientSubscribe {
@@ -493,6 +496,7 @@ async fn proxied_session_subscriptions_share_one_attachment_without_replacement(
     let second_subscription_public_key =
         relay_crypto::public_key_from_private_key_base64(&second_subscription_private_key)
             .expect("second subscription public key should derive");
+    approve_test_terminal(&config, &second_subscription_public_key);
     send_client_envelope(
         &mut second_client_socket,
         &RelayEnvelope::ClientSubscribe {
@@ -641,6 +645,7 @@ async fn relay_subscription_replays_recent_events_after_resume_cursor() {
     let subscription_public_key =
         relay_crypto::public_key_from_private_key_base64(&subscription_private_key)
             .expect("subscription public key should derive");
+    approve_test_terminal(&config, &subscription_public_key);
     send_client_envelope(
         &mut client_socket,
         &RelayEnvelope::ClientSubscribe {
@@ -782,6 +787,7 @@ async fn relay_subscription_emits_replay_gap_and_snapshot_for_stale_cursor() {
     let subscription_public_key =
         relay_crypto::public_key_from_private_key_base64(&subscription_private_key)
             .expect("subscription public key should derive");
+    approve_test_terminal(&config, &subscription_public_key);
 
     replay_recent_relay_events(
         &event_runtime,
@@ -832,7 +838,7 @@ async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_res
 
     let config = DaemonConfig::for_tests();
     let app = Arc::new(Mutex::new(
-        DaemonApp::bootstrap(config).expect("daemon should bootstrap"),
+        DaemonApp::bootstrap(config.clone()).expect("daemon should bootstrap"),
     ));
     let session_id = {
         let mut app = app.lock().await;
@@ -936,6 +942,7 @@ async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_res
     let subscription_public_key =
         relay_crypto::public_key_from_private_key_base64(&subscription_private_key)
             .expect("subscription public key should derive");
+    approve_test_terminal(&config, &subscription_public_key);
 
     replay_recent_relay_events(
         &restarted_runtime,
@@ -993,6 +1000,7 @@ async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_res
         Arc::clone(&restarted_runtime),
         true,
         crate::transport::relay_client::subscriptions::RelaySubscriber {
+            caller: crate::runtime::command::KernelCaller::for_relay_request(None),
             user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
             connection_class: crate::local::KernelConnectionClass::Terminal,
         },

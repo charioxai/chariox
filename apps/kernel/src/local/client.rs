@@ -88,6 +88,9 @@ mod tests {
         let worktree = crate::test_support::TestWorktree::new("workspace-client");
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             api_url: "https://cloud.example.test".to_string(),
             email: "miguel@example.test".to_string(),
             account_id: "account-1".to_string(),

@@ -90,10 +90,42 @@ pub(crate) async fn refresh_remote_inventory_projection(
         .relay_request_timeout_ms
         .min(REMOTE_INVENTORY_RELAY_TIMEOUT_MS);
 
+    let visible_kernel_ids = if let Some(profile) = runtime_config
+        .cloud_relay
+        .as_ref()
+        .filter(|p| p.kernel_credential.is_some())
+    {
+        let directory =
+            crate::runtime::cloud_api_client::get_cloud_kernel_directory(profile).await?;
+        Some(
+            directory
+                .get("targets")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "read My kernels",
+                    message: "Cloud returned an invalid kernel directory".into(),
+                })?
+                .iter()
+                .filter_map(|t| {
+                    t.get("daemonId")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
+                .collect::<std::collections::BTreeSet<_>>(),
+        )
+    } else {
+        None
+    };
     let mut discovery_config = runtime_config.clone();
     if let Some(profile) = runtime_config.cloud_relay.as_ref() {
-        let token =
-            issue_cloud_relay_inventory_discovery_token(profile, &runtime_config.daemon_id).await?;
+        let token = issue_cloud_relay_inventory_discovery_token(
+            profile,
+            &runtime_config.daemon_id,
+            visible_kernel_ids
+                .as_ref()
+                .map(|ids| ids.iter().cloned().collect()),
+        )
+        .await?;
         discovery_config.relay_token = Some(token.token);
     }
 
@@ -115,6 +147,14 @@ pub(crate) async fn refresh_remote_inventory_projection(
         let kernels =
             relay_discovery::list_live_kernels_for_machine(&discovery_config, &machine.machine_id)
                 .await?;
+        let kernels = kernels
+            .into_iter()
+            .filter(|k| {
+                visible_kernel_ids
+                    .as_ref()
+                    .is_none_or(|ids| ids.contains(&k.kernel_id))
+            })
+            .collect();
         remote_kernels
             .extend(validate_live_relay_kernels(&runtime_config, &known_kernel_ids, kernels).await);
     }
@@ -123,6 +163,9 @@ pub(crate) async fn refresh_remote_inventory_projection(
             .iter()
             .filter(|kernel| kernel.machine_id == machine.machine_id)
             .count();
+    }
+    if visible_kernel_ids.is_some() {
+        remote_machines.retain(|machine| machine.kernel_count > 0);
     }
     projection.update(remote_machines, remote_kernels);
     Ok(())

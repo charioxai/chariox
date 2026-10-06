@@ -710,21 +710,26 @@ async fn fetch_authoritative_ticket(
     let machine_id = cloud.machine_id.as_deref().ok_or_else(|| {
         outbound_service_error("source kernel Cloud Machine identity is unavailable", true)
     })?;
-    let machine_credential = cloud.machine_credential.as_deref().ok_or_else(|| {
-        outbound_service_error(
-            "source kernel Cloud Machine credential is unavailable",
+    if cloud.kernel_credential.is_none() && cloud.machine_credential.is_none() {
+        return Err(outbound_service_error(
+            "source kernel Cloud credential is unavailable",
             true,
-        )
-    })?;
-    let body = serde_json::json!({
+        ));
+    }
+    let mut body = serde_json::json!({
         "accountId": cloud.account_id,
         "environmentId": requested.environment_id,
         "machineId": machine_id,
         "kernelId": config.daemon_id,
         "relayRealmId": cloud.realm_id,
         "keyThumbprint": public_key_thumbprint(&config.relay_public_key),
-        "machineCredential": machine_credential,
     });
+    if let Some(credential) = cloud.kernel_credential.as_deref() {
+        body["kernelCredential"] = serde_json::json!(credential);
+    } else if let Some(credential) = cloud.machine_credential.as_deref() {
+        // Only legacy/managed-worker profiles retain Machine authority.
+        body["machineCredential"] = serde_json::json!(credential);
+    }
     post_cloud_json(
         cloud.api_url.clone(),
         "/v1/managed-kernels/context/ticket",
@@ -1757,6 +1762,62 @@ mod tests {
     use crate::config::PersistedCloudRelayProfile;
     use crate::transport::relay_crypto;
 
+    #[tokio::test]
+    async fn kernel_only_profile_requests_authoritative_transfer_ticket() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            api_url: format!("http://{}", listener.local_addr().unwrap()),
+            account_id: "account-1".into(),
+            realm_id: "realm-1".into(),
+            machine_id: Some(config.host_machine_id.clone()),
+            kernel_credential: Some("synthetic-kernel-only-ticket-credential".into()),
+            ..Default::default()
+        });
+        let ticket = git_enrollment_test_ticket(&config, "ticket-request", "public-target-key");
+        let response = serde_json::to_vec(&ticket).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut buf = [0; 4096];
+                let size = stream.read(&mut buf).await.unwrap();
+                assert!(size > 0);
+                request.extend_from_slice(&buf[..size]);
+                if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..end]);
+                    let len: usize = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|value| value.trim().parse().unwrap())
+                        })
+                        .unwrap();
+                    if request.len() >= end + 4 + len {
+                        assert!(headers.starts_with("POST /v1/managed-kernels/context/ticket "));
+                        let body: serde_json::Value =
+                            serde_json::from_slice(&request[end + 4..end + 4 + len]).unwrap();
+                        assert!(body.get("kernelCredential").is_some());
+                        assert!(body.get("machineCredential").is_none());
+                        let header = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", response.len());
+                        stream.write_all(header.as_bytes()).await.unwrap();
+                        stream.write_all(&response).await.unwrap();
+                        break;
+                    }
+                }
+            }
+        });
+        let result = fetch_authoritative_ticket(&config, &ticket).await;
+        assert!(
+            result.is_ok(),
+            "kernel-only profile must reach Cloud ticket authorization"
+        );
+        assert_eq!(result.unwrap().environment_id, ticket.environment_id);
+        server.await.unwrap();
+    }
+
     fn git_enrollment_test_ticket(
         config: &DaemonConfig,
         context_id: &str,
@@ -1956,6 +2017,9 @@ mod tests {
     fn ticket_validation_binds_both_kernels_to_the_cloud_realm() {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             realm_id: "realm-1".to_string(),
             machine_id: Some("source-machine-test".to_string()),
             ..PersistedCloudRelayProfile::default()
@@ -2007,6 +2071,9 @@ mod tests {
         let address = listener.local_addr().expect("Cloud fixture address");
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             api_url: format!("http://{address}"),
             account_id: "account-1".to_string(),
             realm_id: "realm-1".to_string(),
@@ -2095,6 +2162,9 @@ mod tests {
     async fn prepared_git_enrollment_ticket_does_not_require_a_source_machine_credential() {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             api_url: "http://127.0.0.1:1".to_string(),
             realm_id: "realm-1".to_string(),
             machine_id: Some("source-machine-test".to_string()),
@@ -2198,6 +2268,9 @@ mod tests {
     fn modified_prepared_git_enrollment_cannot_claim_the_operation_id() {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             realm_id: "realm-1".to_string(),
             machine_id: Some("source-machine-test".to_string()),
             ..PersistedCloudRelayProfile::default()

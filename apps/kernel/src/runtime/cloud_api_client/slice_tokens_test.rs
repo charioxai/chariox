@@ -6,6 +6,9 @@ use std::time::{Duration, Instant};
 
 fn profile(api_url: String) -> PersistedCloudRelayProfile {
     PersistedCloudRelayProfile {
+        kernel_id: None,
+        kernel_credential: None,
+        kernel_public_key_thumbprint: None,
         api_url,
         account_id: "account-fixture".into(),
         user_id: "user-fixture".into(),

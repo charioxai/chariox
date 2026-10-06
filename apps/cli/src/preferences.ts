@@ -1,6 +1,6 @@
 import os from "node:os"
 import path from "node:path"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdir, readFile, writeFile, rename, chmod } from "node:fs/promises"
 import type { ThemeName } from "./theme-registry.js"
 
 export type CharioxPreferences = {
@@ -27,9 +27,8 @@ export type RelayCloudProfile = {
   clientAlias?: string
   machineId?: string
   machineAlias?: string
-  machineCredential?: string
-  cloudSessionToken?: string
-  cloudSessionExpiresAtMs?: number
+  kernelId?: string
+  kernelEnrolled?: boolean
   tokenExpiresAtMs?: number
 }
 
@@ -130,7 +129,12 @@ export function sessionPromptDraftEntry(
 
 export async function loadPreferences() {
   try {
-    return JSON.parse(await readFile(preferencesPath(), "utf8")) as CharioxPreferences
+    const filePath = preferencesPath()
+    const parsed = JSON.parse(await readFile(filePath, "utf8")) as CharioxPreferences
+    const safe = sanitizePreferences(parsed)
+    if (JSON.stringify(parsed) !== JSON.stringify(safe)) await writePreferences(filePath, safe)
+    await chmod(filePath, 0o600)
+    return safe
   } catch {
     return {} as CharioxPreferences
   }
@@ -161,7 +165,7 @@ export function mergeRelayCloudProfile(
     ...current,
     relay: {
       ...(current.relay ?? {}),
-      cloud: profile,
+      cloud: publicRelayCloudProfile(profile),
     },
   }
 }
@@ -191,6 +195,8 @@ export async function saveSessionPromptState(
 }
 
 export function preferencesPath() {
+  const explicitHome = process.env.CHARIOX_HOME?.trim()
+  if (explicitHome) return path.join(explicitHome, "config.json")
   const xdg = process.env.XDG_CONFIG_HOME?.trim()
   if (xdg) {
     return path.join(xdg, "chariox", "config.json")
@@ -209,8 +215,7 @@ async function updatePreferences(
       const filePath = preferencesPath()
       const current = await loadPreferences()
       const next = apply(current)
-      await mkdir(path.dirname(filePath), { recursive: true })
-      await writeFile(filePath, JSON.stringify(next, null, 2))
+      await writePreferences(filePath, sanitizePreferences(next))
     })
   await preferencesSaveQueue
 }
@@ -229,4 +234,24 @@ function normalizePromptDraftEntry(entry: unknown) {
   return entry
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
+}
+
+export function publicRelayCloudProfile(profile: RelayCloudProfile | null | undefined): RelayCloudProfile | null {
+  if (!profile) return null
+  const keys = ["apiUrl", "email", "accountId", "userId", "accountSlug", "realmId", "relayUrl", "issuerId", "clientId", "clientAlias", "machineId", "machineAlias", "kernelId", "kernelEnrolled", "tokenExpiresAtMs"] as const
+  return Object.fromEntries(keys.filter(key => profile[key] !== undefined).map(key => [key, profile[key]])) as RelayCloudProfile
+}
+function sanitizePreferences(current: CharioxPreferences): CharioxPreferences {
+  return current.relay ? { ...current, relay: { ...current.relay, cloud: publicRelayCloudProfile(current.relay.cloud) } } : current
+}
+async function writePreferences(filePath: string, preferences: CharioxPreferences) {
+  await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 })
+  const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`
+  try {
+    await writeFile(temporary, JSON.stringify(preferences, null, 2), { mode: 0o600, flag: "wx" })
+    await rename(temporary, filePath)
+  } finally {
+    const { rm } = await import("node:fs/promises")
+    await rm(temporary, { force: true })
+  }
 }
