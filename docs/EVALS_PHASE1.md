@@ -52,12 +52,17 @@ the frozen source and official task images unchanged; real-path validation is
 in progress. ELF packaging changes have separate original/packaged hashes.
 The real Ubuntu admission passed the official verifier (reward 1) with visible
 input193504 / cached171392 / output5734 / reasoning368 and cleanup true.
-Bookworm startup exposed an early account-link command, corrected by an
-allowlisted readiness read before the real TUI link. That task then reached
-Codex, whose `cyber_policy` rejection is retained as a provider failure with
-known counters. Settled provider failures proceed to official verification and
-remain in the denominator; transport, quota and accounting admission failures
-still stop the campaign. These diagnostic admissions are separate from smoke
+Official Harbor initializes writable mount targets with mode 0777. Chariox
+correctly rejected the profile directory because it was accessible to other
+users. The adapter restores mode 0700 on the supplied linked directory before
+ordinary product linking; no credential contents or files below it are touched.
+The RED directory/status/screenshot receipts and corrected 0700/Evals registration
+are retained. Git and a terminal font are ordinary runner prerequisites in slim
+images. The native Bookworm task reached Codex, whose `cyber_policy` rejection
+is retained as a provider failure with known counters. Settled provider failures
+proceed to official verification and remain in the denominator; transport,
+quota and accounting admission failures still stop the campaign.
+These diagnostic admissions are separate from smoke
 and fresh full results.
 The serial campaign retains exact task and harness pins, official verifier
 results, real TUI/relay/kernel/provider evidence, fresh quota checks, resource

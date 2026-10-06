@@ -259,20 +259,33 @@ def run(request, evidence):
             kernel = subprocess.Popen([str(root / 'bin/chariox-kernel')], env=env,
                                       stdout=kernel_log, stderr=kernel_log)
             processes.append(kernel)
-            setup = launch_cli(['--detached'], 'setup')
-            setup.send('wait_for', daemonDisconnected=False, timeoutMs=30000)
             stage = 'kernel_ready'
             ready_command = [str(root / 'bin/bun'), str(Path(__file__).with_name('product_status.mjs')), str(root), endpoint, 'Evals', provider, '--ready']
             def kernel_ready():
                 result = subprocess.run(ready_command, env=env, capture_output=True, text=True, timeout=15)
                 return result.returncode == 0
             wait_owned(kernel_ready, time.monotonic() + 90)
+            stage = 'tui_ready'
+            setup = launch_cli(['--detached'], 'setup')
+            setup.send('wait_for', daemonDisconnected=False, timeoutMs=30000)
             stage = 'profile_link'
             setup.send('submit_prompt', prompt=f'/provider accounts link {provider} Evals {shlex.quote(profile)}')
             status_command = [str(root / 'bin/bun'), str(Path(__file__).with_name('product_status.mjs')), str(root), endpoint, 'Evals', provider]
             def status():
                 result = subprocess.run(status_command, env=env, capture_output=True, text=True, timeout=30)
                 return json.loads(result.stdout) if result.returncode == 0 else None
+            from terminal_screen import capture
+            time.sleep(1)
+            capture(evidence / 'setup.terminal.log', evidence / '00-profile-link-requested.png')
+            footer = json.dumps(setup.send('snapshot').get('footer'))
+            classifications = ['already registered', 'must be owned', 'group or other', 'must be a directory', 'repositories and workspaces', 'managed kernels', 'No such file', 'Permission denied', 'invalid', 'credential', 'link account profile']
+            (evidence / 'profile-link-error-classes.json').write_text(json.dumps([word for word in classifications if word.lower() in footer.lower()]))
+            metadata = Path(profile).stat()
+            (evidence / 'profile-directory-status.json').write_text(json.dumps({'exists':Path(profile).is_dir(),'uid':metadata.st_uid,'mode':oct(metadata.st_mode & 0o777)}))
+
+            diagnostic = subprocess.run([*status_command, '--diagnostic'], env=env, capture_output=True, text=True, timeout=15)
+            if diagnostic.returncode == 0:
+                (evidence / 'profile-link-status.json').write_text(diagnostic.stdout)
             wait_owned(status, time.monotonic() + 45)
             subprocess.run([*status_command, '--refresh'], env=env, capture_output=True, text=True, timeout=60, check=True)
             account = wait_owned(status, time.monotonic() + 45)

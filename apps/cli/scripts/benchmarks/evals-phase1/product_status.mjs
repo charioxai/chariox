@@ -7,7 +7,10 @@ const client = new LocalIpcClient(endpoint)
 try {
   const response = await client.send({ ListProviderAccountProfiles: { provider } })
   const profile = response.ProviderAccountProfilesListed?.profiles?.find(p => p.label === label)
-  if (process.argv.includes('--ready')) {
+  if (!Array.isArray(response.ProviderAccountProfilesListed?.profiles)) throw new Error('profiles_unavailable')
+  if (process.argv.includes('--diagnostic')) {
+    process.stdout.write(JSON.stringify({ profiles: response.ProviderAccountProfilesListed.profiles.map(p => ({ provider: p.provider, profile_id: p.profile_id, label: p.label, auth_state: p.auth_state })) }) + '\n')
+  } else if (process.argv.includes('--ready')) {
     process.stdout.write(JSON.stringify({ ready: true }) + '\n')
   } else {
   if (!profile) throw new Error('profile_missing')

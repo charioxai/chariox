@@ -78,13 +78,29 @@ class CharioxAgent(BaseAgent):
         # task files, test instructions and verifier remain untouched.
         venv_root = '/tmp/chariox-evals-python-' + uuid4().hex
         install = await environment.exec(command=shlex.join(['sh', '-c',
+            'set -e; '
+            'if ! command -v git >/dev/null 2>&1 || ! test -f /usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf; then '
+            'apt-get update -qq; apt-get install -y -qq git fonts-dejavu-core; fi; '
             'python3 -m venv ' + shlex.quote(venv_root) + ' 2>/dev/null || '
-            '(apt-get update -qq && apt-get install -y -qq python3 python3-venv fonts-dejavu-core && '
+            '(apt-get update -qq && apt-get install -y -qq python3 python3-venv && '
             'python3 -m venv ' + shlex.quote(venv_root) + '); ' +
             shlex.quote(venv_root + '/bin/pip') + ' install pyte==0.8.2 pillow==11.3.0']))
         if install.return_code != 0:
             raise RuntimeError('MP-08 / MP-10: task runner dependencies unavailable')
         self._python = venv_root + '/bin/python'
+        if self.placement == 'local':
+            # MP-11: official Harbor chmods writable mount roots 0777. Restore
+            # this supplied Chariox-linked directory's required private mode;
+            # do not read/copy credentials or alter files below it.
+            permission_command = [self._python, '-c',
+                'import os,stat,sys; p=sys.argv[1]; s=os.stat(p); '
+                'assert stat.S_ISDIR(s.st_mode) and s.st_uid==os.geteuid(); '
+                'os.chmod(p,0o700); assert os.stat(p).st_mode & 0o777 == 0o700', self.profile_path]
+            private = await environment.exec(command=shlex.join(permission_command))
+            (self.logs_dir / 'profile-permission-receipt.json').write_text(json.dumps({'mp_items':['MP-08','MP-10','MP-11'], 'operation':'restore supplied linked directory 0700 after Harbor writable-mount initialization', 'exit_code':private.return_code, 'credential_contents_accessed':False}))
+            if private.return_code != 0:
+                raise RuntimeError('MP-11: linked profile directory must retain private permissions')
+
         command = [self._python, f'{self._runner_root}/turn.py', '--preflight',
                    '--runtime-root', self.runtime_root, '--source-commit', self.source_commit,
                    '--kernel-sha256', self.kernel_sha256, '--local-protocol', str(self.local_protocol)]

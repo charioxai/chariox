@@ -128,3 +128,11 @@ the fresh product quota. SWE campaigns archive clean quota attempts automaticall
 on re-invocation. Each invocation retains its own runner identity. Benchmark
 measurements select the submitted agent/prompt; descendants require explicit
 agent/prompt bindings. The real TUI session aggregate is validated separately.
+
+MP-08 / MP-10 / MP-11: Harbor initializes writable mount directories to 0777. The
+adapter restores the supplied linked directory to 0700 before ordinary product
+linking, changing no files below it. Slim images need Git and a terminal font
+in addition to the Python screenshot dependencies. Public ELF packaging is
+explicitly hash-bound and mounted at the same absolute path; frozen source and
+official task/verifier files remain intact. A settled, measured provider failure
+continues to official verification and is retained in the denominator.
