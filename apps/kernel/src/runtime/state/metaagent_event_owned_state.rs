@@ -362,7 +362,15 @@ impl KernelRuntimeState {
                 force_queue,
                 refresh_projection: true,
             })
-            .await?;
+            .await
+            .map_err(|error| {
+                crate::runtime::room_dispatch_registration::dispatch_error(
+                    obligation.as_deref(),
+                    None,
+                    Some(&prompt_id),
+                    error,
+                )
+            })?;
         if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
             (&submission.outcome, submission.dispatch.as_ref())
         {

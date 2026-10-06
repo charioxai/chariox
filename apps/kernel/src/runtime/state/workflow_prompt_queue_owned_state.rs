@@ -649,6 +649,7 @@ impl KernelRuntimeOwnedState {
                     sessions.mark_workflow_watchdog_queued(&plan.session_id, &plan.watchdog_id)?;
                     Ok(Some(()))
                 },
+                None,
             )?;
         }
         let should_start = self
@@ -684,6 +685,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         reason: &str,
         admit: impl FnOnce(&mut crate::session::SessionService) -> Result<Option<T>, DaemonError>,
+        committed: Option<&mut bool>,
     ) -> Result<Option<T>, DaemonError> {
         let _admission = self.begin_managed_activity_admission()?;
         let activity_mutation = self.begin_managed_activity_mutation();
@@ -711,6 +713,9 @@ impl KernelRuntimeOwnedState {
             Ok(Some(admitted))
         })?;
         if admitted.is_some() {
+            if let Some(committed) = committed {
+                *committed = true;
+            }
             activity_mutation.record();
             // Publication is deliberately after durable admission and activity capture.
             self.session_snapshot(session_id)?;
@@ -833,35 +838,33 @@ impl KernelRuntimeOwnedState {
                 return Err(error);
             }
         };
-        let mut rejected_before_commit = false;
+        let mut committed = false;
+        let mut resource_id = None;
         let admitted = self.workflow_admit_prompt_transaction(
             session_id,
             "workflow_prompt_enqueued",
             |sessions| {
-                sessions
-                    .enqueue_workflow_prompt_by_agent(
-                        session_id,
-                        workflow.id(),
-                        endpoint.id(),
-                        prompt,
-                        queue_ref,
-                        crate::session::WorkflowQueuedPromptSource::Manual,
-                        None,
-                        publication_invocation,
-                        creator,
-                    )
-                    .map(Some)
-                    .map_err(|error| {
-                        rejected_before_commit = true;
-                        error
-                    })
+                let queued = sessions.enqueue_workflow_prompt_by_agent(
+                    session_id,
+                    workflow.id(),
+                    endpoint.id(),
+                    prompt,
+                    queue_ref,
+                    crate::session::WorkflowQueuedPromptSource::Manual,
+                    None,
+                    publication_invocation,
+                    creator,
+                )?;
+                resource_id = Some(queued.id().to_string());
+                Ok(Some(queued))
             },
+            Some(&mut committed),
         );
         let queued_prompt = match admitted {
             Ok(admitted) => admitted,
             Err(error) => {
                 // Later persistence/projection errors can have committed: retain their intent.
-                if rejected_before_commit {
+                if !committed {
                     crate::runtime::room_dispatch_registration::receipt(
                         &self.durable_state_store,
                         obligation,
@@ -869,12 +872,25 @@ impl KernelRuntimeOwnedState {
                         None,
                     )?;
                 }
-                return Err(error);
+                return Err(crate::runtime::room_dispatch_registration::dispatch_error(
+                    obligation,
+                    Some(committed),
+                    resource_id.as_deref(),
+                    error,
+                ));
             }
         }
         .expect("manual workflow prompt admission must mutate the session");
-        let (claimed, dispatches) =
-            self.workflow_start_next_queued_prompt_for_response(session_id)?;
+        let (claimed, dispatches) = self
+            .workflow_start_next_queued_prompt_for_response(session_id)
+            .map_err(|error| {
+                crate::runtime::room_dispatch_registration::dispatch_error(
+                    obligation,
+                    Some(true),
+                    Some(queued_prompt.id()),
+                    error,
+                )
+            })?;
         let Some(claimed_outcome) = claimed else {
             // This invocation dispatched nothing itself, but a concurrent
             // invocation may have already admitted our prompt into the primary

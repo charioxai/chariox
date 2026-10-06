@@ -26,13 +26,22 @@ impl KernelRuntimeOwnedState {
                 return Err(error);
             }
         };
-        self.durable_state_store.append_event(
-            "agent.created",
-            Some(agent.id().to_string()),
-            serde_json::json!({
-                "agent": &agent,
-            }),
-        )?;
+        self.durable_state_store
+            .append_event(
+                "agent.created",
+                Some(agent.id().to_string()),
+                serde_json::json!({
+                    "agent": &agent,
+                }),
+            )
+            .map_err(|error| {
+                crate::runtime::room_dispatch_registration::dispatch_error(
+                    obligation.as_deref(),
+                    Some(true),
+                    Some(agent.id()),
+                    error,
+                )
+            })?;
         crate::runtime::room_dispatch_registration::receipt(
             &self.durable_state_store,
             obligation.as_deref(),
@@ -73,14 +82,23 @@ impl KernelRuntimeOwnedState {
             }
         };
         if let Some(first_agent) = agents.first() {
-            self.durable_state_store.append_event(
-                "agents.created",
-                Some(first_agent.session_id().to_string()),
-                serde_json::json!({
-                    "session_id": first_agent.session_id(),
-                    "agents": &agents,
-                }),
-            )?;
+            self.durable_state_store
+                .append_event(
+                    "agents.created",
+                    Some(first_agent.session_id().to_string()),
+                    serde_json::json!({
+                        "session_id": first_agent.session_id(),
+                        "agents": &agents,
+                    }),
+                )
+                .map_err(|error| {
+                    crate::runtime::room_dispatch_registration::dispatch_error(
+                        obligations.iter().flatten().next().map(String::as_str),
+                        Some(true),
+                        Some(&agents.iter().map(|a| a.id()).collect::<Vec<_>>().join(",")),
+                        error,
+                    )
+                })?;
         }
         let mut first_error = None;
         for (agent, obligation) in agents.iter().zip(obligations.iter()) {

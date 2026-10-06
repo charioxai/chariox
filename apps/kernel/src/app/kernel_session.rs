@@ -312,16 +312,42 @@ impl<'a> KernelSessionService<'a> {
             } else {
                 let agent = self
                     .app
-                    .spawn_worker_agent(request, &kernel_ref, authorize)?;
-                self.app.durable_state_store().append_event(
-                    "agent.created",
-                    Some(agent.id().to_string()),
-                    serde_json::json!({
-                        "agent": &agent,
-                    }),
-                )?;
-                let _ =
-                    KernelSessionReadService::new(self.app).session_snapshot(agent.session_id())?;
+                    .spawn_worker_agent(request, &kernel_ref, authorize)
+                    .map_err(|error| {
+                        crate::runtime::room_dispatch_registration::dispatch_error(
+                            obligation.as_deref(),
+                            None,
+                            Some(&kernel_ref),
+                            error,
+                        )
+                    })?;
+                self.app
+                    .durable_state_store()
+                    .append_event(
+                        "agent.created",
+                        Some(agent.id().to_string()),
+                        serde_json::json!({
+                            "agent": &agent,
+                        }),
+                    )
+                    .map_err(|error| {
+                        crate::runtime::room_dispatch_registration::dispatch_error(
+                            obligation.as_deref(),
+                            Some(true),
+                            Some(agent.id()),
+                            error,
+                        )
+                    })?;
+                let _ = KernelSessionReadService::new(self.app)
+                    .session_snapshot(agent.session_id())
+                    .map_err(|error| {
+                        crate::runtime::room_dispatch_registration::dispatch_error(
+                            obligation.as_deref(),
+                            Some(true),
+                            Some(agent.id()),
+                            error,
+                        )
+                    })?;
                 crate::runtime::room_dispatch_registration::receipt(
                     &self.app.durable_state_store(),
                     obligation.as_deref(),
@@ -339,19 +365,41 @@ impl<'a> KernelSessionService<'a> {
             Ok(agent) => agent,
             Err(error) => {
                 crate::runtime::room_dispatch_registration::receipt(
-                    &self.app.durable_state_store(), obligation.as_deref(), false, None,
+                    &self.app.durable_state_store(),
+                    obligation.as_deref(),
+                    false,
+                    None,
                 )?;
                 return Err(error);
             }
         };
-        self.app.durable_state_store().append_event(
-            "agent.created",
-            Some(agent.id().to_string()),
-            serde_json::json!({
-                "agent": &agent,
-            }),
-        )?;
-        let _ = KernelSessionReadService::new(self.app).session_snapshot(agent.session_id())?;
+        self.app
+            .durable_state_store()
+            .append_event(
+                "agent.created",
+                Some(agent.id().to_string()),
+                serde_json::json!({
+                    "agent": &agent,
+                }),
+            )
+            .map_err(|error| {
+                crate::runtime::room_dispatch_registration::dispatch_error(
+                    obligation.as_deref(),
+                    Some(true),
+                    Some(agent.id()),
+                    error,
+                )
+            })?;
+        let _ = KernelSessionReadService::new(self.app)
+            .session_snapshot(agent.session_id())
+            .map_err(|error| {
+                crate::runtime::room_dispatch_registration::dispatch_error(
+                    obligation.as_deref(),
+                    Some(true),
+                    Some(agent.id()),
+                    error,
+                )
+            })?;
         crate::runtime::room_dispatch_registration::receipt(
             &self.app.durable_state_store(),
             obligation.as_deref(),

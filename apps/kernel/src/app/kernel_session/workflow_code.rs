@@ -13,6 +13,17 @@ impl<'a> KernelSessionService<'a> {
         alias_base: Option<&str>,
     ) -> Result<WorkflowCodeApplyReport, DaemonError> {
         self.authorize()?;
+        if self.app.config().room_agent_tools
+            && controlled_by_metaagent_id.is_some()
+            && definition
+                .nodes
+                .iter()
+                .any(|node| !node.extensions.is_empty())
+        {
+            return Err(crate::runtime::room_tool_admission::denied(
+                "PR1 room workflows cannot provision capability grants; use owner-admitted capabilities",
+            ));
+        }
         let validation = definition.validate_with_limits(limits);
         if !validation.ok {
             return Err(DaemonError::LocalTransport {

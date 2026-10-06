@@ -28,13 +28,39 @@ pub(crate) fn receipt(
         store.append_event("room.obligation.dispatch_receipt", Some(id.to_string()), serde_json::json!({
             "schema_version": 1, "id": id, "dispatch_state": if accepted {"accepted"} else {"rejected"},
             "status": if accepted {"open"} else {"failed"}, "resource_id": resource, "recorded_at_ms": crate::session::unix_epoch_ms(),
-        })).map_err(|error| DaemonError::LocalTransport {
-            operation: "room_dispatch_receipt",
-            message: format!(
-                "{} dispatch for obligation `{id}`, resource `{}`; receipt persistence failed: {error}; inspect the resource before retrying",
-                if accepted { "accepted" } else { "rejected" }, resource.unwrap_or("none")
-            ),
-        })?;
+        })).map_err(|error| dispatch_error(Some(id), Some(accepted), resource, error))?;
     }
     Ok(())
+}
+
+/// After effects, preserve their identity even if persistence/projection fails.
+/// Unknown acceptance must never be classified as a proven rejection.
+pub(crate) fn dispatch_error(
+    id: Option<&str>,
+    accepted: Option<bool>,
+    resource: Option<&str>,
+    error: DaemonError,
+) -> DaemonError {
+    let Some(id) = id else {
+        return error;
+    }; // Legacy callers retain their error contract.
+    DaemonError::LocalTransport {
+        operation: "room_dispatch",
+        message: format!("{} dispatch for obligation `{id}`, resource `{}`; persistence/dispatch failed: {error}; inspect the resource before retrying",
+            match accepted {Some(true) => "accepted", Some(false) => "rejected", None => "uncertain"}, resource.unwrap_or("none")),
+    }
+}
+
+pub(crate) fn reject_if_failed<T>(
+    store: &DurableKernelStateStore,
+    id: Option<&str>,
+    result: Result<T, DaemonError>,
+) -> Result<T, DaemonError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            receipt(store, id, false, None)?;
+            Err(error)
+        }
+    }
 }

@@ -405,6 +405,8 @@ requires the caller's direct spawned child in the same room; self, peers,
 parents and grandchildren are denied. Workflow mutations require the caller
 or its direct child as immutable object creator. A peer workflow invocation
 creates a separately caller-owned run, without changing definition ownership.
+PR1 agent-authored workflow declarations cannot provision extension grants;
+owner-admitted capability paths remain separate until the capability-grants PR.
 Current room, run/lease and creator fences apply after waits before effects;
 a replaced provider run cannot receive an asynchronous room-tool result.
 
