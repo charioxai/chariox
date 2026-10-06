@@ -20,8 +20,9 @@ export function assertSameController(prior, current) {
   assert.deepEqual(current.artifacts, prior.artifacts, 'MP-10 runtime artifacts changed')
 }
 
-export async function loadContinuation({ priorEvidence, newEvidence, selection, cleanupSettlement, scope = 'round3-full', observationPolicy }) {
+export async function loadContinuation({ priorEvidence, newEvidence, selection, cleanupSettlement, scope = 'round3-full', observationPolicy, ancestors = [] }) {
   assert(path.isAbsolute(priorEvidence) && path.resolve(priorEvidence) !== path.resolve(newEvidence), 'MP-10 preserve original evidence')
+  assert(!ancestors.includes(path.resolve(priorEvidence)), 'MP-10 circular continuation')
   const names = ['CAMPAIGN.json', 'RESULTS.json', 'FULL_SELECTION.json']
   const bytes = await Promise.all(names.map(name => readFile(`${priorEvidence}/${name}`)))
   const [campaign, rows, priorSelection] = bytes.map(buffer => JSON.parse(buffer))
@@ -37,6 +38,16 @@ export async function loadContinuation({ priorEvidence, newEvidence, selection, 
   const settlement = cleanupSettlement ? await verifyCleanupSettlement({ file: cleanupSettlement, priorEvidence, bytes, rows }) : null
   if (settlement) assertSameController(campaign.source, settlement.source)
   else assertRuntimeClosed(campaign.cleanup)
+  const settledCleanupTaskIds = new Set(settlement?.settled ?? [])
+  if (campaign.continuation) {
+    const inherited = await loadContinuation({ priorEvidence: campaign.continuation.priorEvidence, newEvidence: priorEvidence, selection,
+      cleanupSettlement: campaign.continuation.cleanupSettlement?.file, scope, observationPolicy,
+      ancestors: [...ancestors, path.resolve(priorEvidence)] })
+    assertSameController(campaign.source, inherited.source)
+    assert.deepEqual(campaign.continuation, inherited.provenance, 'MP-10 ancestral continuation proof changed')
+    assert.deepEqual(rows.slice(0, inherited.rows.length), inherited.rows, 'MP-10 inherited attempts changed')
+    for (const taskId of inherited.settledCleanupTaskIds) settledCleanupTaskIds.add(taskId)
+  }
   assert.deepEqual(priorSelection, selection, 'MP-10 frozen selection changed')
   for (const [key, value] of Object.entries({ model: 'gpt-6.1-sol', judgeModel: 'gpt-6.1-sol', effort: 'high', judgeEffort: 'low', maxMutatingActions: 15, maxToolCalls: 80, wallTimeoutMs: 600000 })) {
     assert.equal(campaign[key], value, `MP-10 frozen ${key} changed`)
@@ -48,7 +59,7 @@ export async function loadContinuation({ priorEvidence, newEvidence, selection, 
     seen.add(row.taskId)
     assert.equal(!!row.excluded, !!task.excludedReason, 'MP-10 exclusion changed')
     if (row.excluded) assert.equal(row.excludedReason, task.excludedReason)
-    else assert(row.cleanupValid || settlement?.settled.has(row.taskId), 'MP-11 prior attempt cleanup incomplete')
+    else assert(row.cleanupValid || settledCleanupTaskIds.has(row.taskId), 'MP-11 prior attempt cleanup incomplete')
   }
   assert.equal(rows.filter(row => !row.excluded).length, campaign.settled)
   assert.equal(rows.filter(row => row.excluded).length, 11)
@@ -62,7 +73,7 @@ export async function loadContinuation({ priorEvidence, newEvidence, selection, 
   }
   const tasks = selection.tasks.filter(task => !task.excludedReason && !seen.has(task.id))
   assert(tasks.length, 'MP-10 no unattempted tasks remain')
-  return { rows, tasks, source: campaign.source, provenance: { priorEvidence,
+  return { rows, tasks, source: campaign.source, settledCleanupTaskIds: [...settledCleanupTaskIds], provenance: { priorEvidence,
     priorReceipts: names.map((name, i) => ({ name, sha256: createHash('sha256').update(bytes[i]).digest('hex') })),
     ...(observationPolicy ? { observationPolicy, resourceSha256: createHash('sha256').update(await readFile(`${priorEvidence}/runtime-resources.jsonl`)).digest('hex') } : {}),
     admissionHashes, priorSettled: campaign.settled, unattempted: tasks.length, solverRetries: 0,
