@@ -228,7 +228,7 @@ try {
     });
   }});
  },{ready,bitrate:receipt.target_encrypted_bitrate,pngOnly:process.env.MD_PNG_ONLY==='1',creditWindow:Number(process.env.MD_CREDIT_WINDOW||4),requestedCodec:process.env.MD_CODEC||null,dpr:geometry.dpr,defaultDpr:process.env.MD_DEFAULT_DPR==='1',protectedFixture:process.env.MD_PROTECTED==='1'});
- receipt.decode_support=await page.evaluate(async()=>Object.fromEntries(await Promise.all(['avc1.420033','vp8'].map(async codec=>[codec,Boolean((await VideoDecoder.isConfigSupported({codec})).supported)]))));
+ receipt.decode_support=await page.evaluate(async()=>Object.fromEntries(await Promise.all(['avc1.420033','vp8'].map(async codec=>[codec,typeof VideoDecoder==='function'&&Boolean((await VideoDecoder.isConfigSupported({codec})).supported)]))));
  receipt.default_dpr_negotiation=process.env.MD_DEFAULT_DPR==='1';
  if(receipt.default_dpr_negotiation&&await page.evaluate(()=>mdStream.binding.device_scale_factor)!==1)throw Error('MP-08: #893 default DPR is unsupported');
  if(process.env.MD_GEOMETRY_PROBE==='1'){
