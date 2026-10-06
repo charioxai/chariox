@@ -169,7 +169,7 @@ try {
       const label = `noisy-${String(round + 1).padStart(2,'0')}`
       const action = round % 2 ? 'stop' : 'pause'
       const marker = `${label}.progress`
-      const command = `payload=$(printf '%4096s' x); i=0; end=$((SECONDS+120)); while [ "$SECONDS" -lt "$end" ]; do printf 'WFP_NOISY_OUTPUT %s %s\\n' "$i" "$payload"; i=$((i+1)); if [ $((i%1024)) -eq 0 ]; then printf '%s\\n' "$i" > '${path.join(noiseRoot,marker)}'; fi; done`
+      const command = `printf '%s\\n' "$BASHPID" > '${path.join(noiseRoot,marker)}.pid'; payload=$(printf '%4096s' x); i=0; end=$((SECONDS+120)); while [ "$SECONDS" -lt "$end" ]; do printf 'WFP_NOISY_OUTPUT %s %s\\n' "$i" "$payload"; i=$((i+1)); if [ $((i%1024)) -eq 0 ]; then printf '%s\\n' "$i" > '${path.join(noiseRoot,marker)}'; fi; done`
       const previous = new Set((await stateUntil(()=>true)).room_workflows.workflows[0].runs.map(run=>run.run_id))
       await key('\x17')
       await key(`Run this exact Bash command now using exec_command with yield_time_ms=30000 as one foreground shell tool call, without a pipe, background session, or output truncation: ${command}. Keep waiting for this command; do not return a workflow envelope until it ends.`)
@@ -194,13 +194,24 @@ try {
       // the TUI/relay/kernel process the control; it does not start at an IPC call.
       // Sample the producer concurrently with the control path: waiting for
       // state/capture first would misattribute their latency to process exit.
+      const commandPid=Number(await readFile(path.join(noiseRoot,marker)+'.pid','utf8'))
+      assert.ok(Number.isSafeInteger(commandPid)&&commandPid>1,'MP-11 noisy command must report its own valid PID')
+      const processState=async()=>{
+        const raw=await readFile(`/proc/${commandPid}/stat`,'utf8').catch(()=>null)
+        if(raw===null)return null
+        const fields=raw.slice(raw.lastIndexOf(')')+2).split(' ')
+        return {state:fields[0],startTicks:fields[19]}
+      }
+      const originalProcess=await processState()
+      assert.ok(originalProcess&&originalProcess.state!=='Z','MP-08 noisy command must be a live OS process before control')
       const progressSamples = []
       progressMonitor = setInterval(async()=>{
         const value = await readFile(path.join(noiseRoot,marker),'utf8').catch(()=>null)
-        if(value !== null)progressSamples.push({at:Date.now(),value})
+        const process=await processState()
+        if(value !== null)progressSamples.push({at:Date.now(),value,processAlive:Boolean(process&&process.state!=='Z'&&process.startTicks===originalProcess.startTicks)})
       },20)
       const control = await raceKey(action === 'pause' ? '\x10' : '\x13')
-      const sample = {round:round+1,action,runId,command,controlSentAtMs:control.sentAtMs,progressBeforeControl:progress}
+      const sample = {round:round+1,action,runId,command,commandPid,controlSentAtMs:control.sentAtMs,progressBeforeControl:progress}
       receipt.noisyInterrupts.push(sample)
       const deadline = Date.now()+10000
       let traces, timing
@@ -250,7 +261,10 @@ try {
         && tail.every(entry=>entry.value===firstAfterBudget.value))
       let lastChange=progressSamples[0]?.at ?? control.sentAtMs
       for(let i=1;i<progressSamples.length;i++)if(progressSamples[i].value!==progressSamples[i-1].value)lastChange=progressSamples[i].at
-      sample.producerStopped &&= lastChange-control.sentAtMs<=1000
+      const processEnded=progressSamples.find(entry=>entry.at>=control.sentAtMs&&!entry.processAlive)
+      sample.stopToCommandExitedMs=processEnded ? processEnded.at-control.sentAtMs : null
+      sample.commandExitedWithinBudget=Boolean(processEnded && sample.stopToCommandExitedMs<=1000)
+      sample.producerStopped &&= lastChange-control.sentAtMs<=1000 && sample.commandExitedWithinBudget
       sample.stopToProducerStoppedMs=sample.producerStopped ? lastChange-control.sentAtMs : null
       await writeFile(path.join(args.output,label+'-timing.json'),JSON.stringify({mpItems:receipt.mpItems,...sample},null,2)+'\n',{mode:0o600})
       if(!sample.producerStopped)receipt.noisyProducerFailures.push({round:round+1,action,
