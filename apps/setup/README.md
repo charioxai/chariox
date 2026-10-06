@@ -58,6 +58,16 @@ node scripts/build-chariox-setup.mjs --version VERSION --public-key PUBLIC_HEX \
   --target linux-x64 --output /absolute/task-owned/output
 ```
 
+MP-07 / MP-11: the shell bootstrap requires curl, Python 3 and OpenSSL 3.x
+with Ed25519 support on `PATH`. It checks the OpenSSL version before downloading
+Setup; macOS's system LibreSSL is refused with a prerequisite diagnostic.
+On macOS, install and select a compatible verifier before running the script:
+
+```sh
+brew install openssl@3
+export PATH="$(brew --prefix openssl@3)/bin:$PATH"
+```
+
 The public key must come from the approved release inventory; there is no TOFU
 or pin downloaded beside an artifact. Publish rendered `install.sh` and a Setup
 executable named `chariox-setup-VERSION-PLATFORM` with a detached `.sig` (128
