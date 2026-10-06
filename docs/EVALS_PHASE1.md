@@ -1,125 +1,107 @@
-# MP-08 / MP-10 / MP-11 — evals phase 1
+# MP-08 / MP-10 / MP-11 — evals phase 1, round 2
 
-Phase 1 is **blocked, not accepted**. The lane has prepared token normalization,
-a dated API price table and adapters for two pinned public benchmarks. No provider
-baseline or scored task has run. This report makes no Pareto-frontier claim and
-closes no MP acceptance item.
+Round 2 is active and remains **not accepted**. The coordinator allocated
+local daemon448 / relay peer91 and identified the product-linked Codex profile.
+The local accounting implementation and real-path drill are being validated;
+no scored smoke/full benchmark result is claimed yet.
 
-## MP-08 / MP-10 / MP-11 — source and measurement scope
+## MP-08 / MP-10 / MP-11 — round 2 implementation and provenance
 
-The lane started from OSS main `e325afa580d81954e2c179757fc53fa02ed2a2b3`
-(local435), which includes G2, Apps Phase 1 and the MP-11 queue. The shared
-prebuilt kernel reported local439 and was excluded from source-matched proof.
-No local or relay protocol version was allocated or changed by this lane.
+Preparation commits are `7e7ae0e46` and `5159dc3b0`. The frozen real base is
+`5159dc3b07504c8ede8a59eab82a662da2cfd9b6`, local435 / peer73.
+Its source-matched kernel hash is
+`0e6e4c423452b39a1df474da5e79982dd5e85e4061473583c5b847a27c271cdd`.
+The candidate uses the coordinator allocation448 /91; this lane did not choose
+protocol numbers. Snapshot assertions and an accounting wire hash guard cover
+request, response and provider usage counters.
 
-`apps/kernel/src/usage_accounting.rs` normalizes the official harness counter
-conventions: Codex input includes cached reads and output includes reasoning;
-Claude result input excludes cache reads/writes; OpenCode message output
-excludes its separate reasoning counter. Missing counters remain unavailable.
-Negative, inconsistent and overflowing counters fail closed. Repeated Codex
-cumulative updates must be differenced, and OpenCode messages deduplicated,
-when this module is wired into the kernel turn lifecycle. That wiring, durable
-per-turn attribution, agent/session/delegation-tree totals and a CLI report
-remain unimplemented pending the coordinator's protocol allocation.
+The kernel persists prompt/run-bound official usage in operational history
+before prompt settlement. The shared `GetSessionUsage` request and real TUI
+`/session usage` project session, individual-agent and delegation-tree totals.
+Repeated reports replace the same prompt/run; children count once in the
+session total. Unmeasured bound prompts remain unavailable. Codex cumulative
+thread counters are differenced against the start-of-turn baseline; a fresh
+thread starts at zero, while an unknown resumed-thread baseline is unavailable.
+Regressing counters do not reuse a prior apparently valid measurement. Claude
+final-result normalization is wired, but its leased acceptance and OpenCode
+integration are not established by the Codex drill.
 
-The version-1 [price table](../apps/kernel/src/usage_accounting/prices-2026-10-06.json)
-is dated 2026-10-06 and uses integer nanodollars per token. Quotes use public
-standard global API list prices, exclude infrastructure/tool charges and are
-**API-equivalent estimates, not subscription invoices**. Reasoning is included
-in output exactly once. Exact model names are required. Unknown models,
-necessary missing counters, an unspecified context band or unreported cache
-write TTL produce an unavailable quote. No rate is guessed from an alias.
-Sources: [OpenAI API pricing](https://developers.openai.com/api/docs/pricing)
-and [Claude API pricing](https://platform.claude.com/docs/en/about-claude/pricing).
+acct-686 is linked through the normal TUI `/provider accounts link` flow,
+followed by the ordinary `RefreshProviderAccountProfile` operation. Its mapping
+comes from benchmini/benchom2w/acct/acct2/acct3 lane notes. Disposable kernels
+consume the approved product-materialized profile; no credential file is read,
+printed or copied by these adapters. Operator-local profile locations remain
+in the external lane status rather than public source.
 
-## MP-08 / MP-10 — pinned pilots
+The base real TUI/kernel/official Codex0.159.3 run completed the exact answer
+`ACCOUNTING_REAL_PATH_OK` on `gpt-6.1-sol` with low effort, then failed the
+accounting requirement because base435 has no usage-report request. Cleanup
+completed. Earlier setup/screenshot failures and the HTTP400 rejection of
+`gpt-5.3-codex` are separate diagnostic attempts, not accounting-red evidence.
+Evidence is external under the evals round2 directory and retains PTY capture,
+per-step terminal screenshots, kernel logs, exact input and result identities.
+The candidate live relay/TUI/kernel/provider result is pending.
 
-The complete ordered task IDs, revisions and HAL parquet byte hash are retained
-in [inputs.lock.json](../apps/cli/scripts/benchmarks/evals-phase1/inputs.lock.json).
-No random replacement subset is used.
+Pricing remains explicitly unavailable when the official harness lacks a field
+required by the exact dated price table. Codex0.159.3 supplies cumulative input,
+cached input, output and reasoning, but no cache-write/context-price-band
+breakdown for the supported `gpt-6.1-sol` model. The runner retains known tokens
+with null cost; it never invents zero cache writes or selects a band. This blocks
+matching USD acceptance unless an exactly priceable model/profile or authoritative
+counters are supplied. Diagnostic benchmark execution can continue unpriced.
+
+## MP-08 / MP-10 — campaign state
+
+The exact89 /50 task pins below remain unchanged. Codex smoke10 precedes each
+full run, with serial tasks and fresh plan-exhaustion checks. Terminal-Bench
+profile placement is awaiting a coordinator choice between the official Harbor
+same-host volume with normal product linking and a managed worker binding.
+SWE-bench's solver checkouts can use the approved local profile directly.
+Claude/OpenCode await the coordinator's Mac home to builder worker grant.
+No source test, partial task set or unavailable accounting closes an MP item.
+
+
+## MP-08 / MP-10 — frozen official pilots
+
+Complete ordered task IDs, revisions and dataset byte hash are retained in
+[inputs.lock.json](../apps/cli/scripts/benchmarks/evals-phase1/inputs.lock.json).
+No replacement subset or modified scoring rule is used.
 
 | Pilot / official source | Revision | Full denominator |
 | --- | --- | ---: |
-| [Terminal-Bench 2.0](https://github.com/laude-institute/terminal-bench-2) | `2fd12b88aafdd04a52c298e3940bcb189f9766d6` | 89 |
-| [Harbor harness](https://github.com/harbor-framework/harbor) | `c803185a8b7c88c163abe48a22e9cea0bbd95e90` | 89 |
-| [HAL Verified Mini selection](https://hal.cs.princeton.edu/swebench_verified_mini), [dataset](https://huggingface.co/datasets/MariusHobbhahn/swe-bench-verified-mini) | `b316c349947c29963fce3f4a65967c9807a4b673` | 50 |
-| [Official SWE-bench Docker evaluator](https://github.com/SWE-bench/SWE-bench) | `02e7a74ffd0b707aab73d203fe87bdc7c76afc8e` | 50 |
+| [Terminal-Bench2.0](https://github.com/laude-institute/terminal-bench-2) | `2fd12b88aafdd04a52c298e3940bcb189f9766d6` |89 |
+| [Harbor](https://github.com/harbor-framework/harbor) | `c803185a8b7c88c163abe48a22e9cea0bbd95e90` |89 |
+| [HAL Verified Mini dataset](https://huggingface.co/datasets/MariusHobbhahn/swe-bench-verified-mini) | `b316c349947c29963fce3f4a65967c9807a4b673` |50 |
+| [Official SWE-bench Docker evaluator](https://github.com/SWE-bench/SWE-bench) | `02e7a74ffd0b707aab73d203fe87bdc7c76afc8e` |50 |
 
-The Harbor adapter implements the pinned official `BaseAgent` interface and
-uses a real Chariox TUI, a disposable kernel and the selected official provider
-harness inside the task environment. A hashed runtime bundle may be installed
-there; credentials may not be included. A product-materialized profile is a
-separate required input in local mode. Leased mode instead attaches to the
-coordinator-granted home task agent bound to the official environment's worker;
-provider access transfers through the normal lease, with no builder credential
-handling. The SWE adapter admits the exact dataset and clean
-instance base, sends only the problem statement to Chariox, and emits standard
-SWE-bench predictions. Its scorer invokes the unchanged pinned official Docker
-evaluator with a frozen local JSON dataset. Neither adapter has yet been
-validated in a real task environment. Fixture/interface checks are preparation,
-not benchmark execution or accounting acceptance.
+The [dated version1 price table](../apps/kernel/src/usage_accounting/prices-2026-10-06.json)
+uses integer nanodollars at standard global API list prices. Reasoning counts in
+output exactly once. Exact model names and required categories are mandatory;
+no alias, context band or cache-write TTL is guessed. These are API-equivalent
+estimates, not subscription invoices; tool/infrastructure charges are excluded.
+Sources: [OpenAI API pricing](https://developers.openai.com/api/docs/pricing) and
+[Claude API pricing](https://platform.claude.com/docs/en/about-claude/pricing).
 
-## MP-08 / MP-10 — diagnostics
+Harbor uses the unchanged pinned official task/verifier, with a custom agent
+that drives the production TUI/kernel/provider path. Runtime bundles bind all
+built app/dependency/provider files by hash, reject escaping symlinks and require
+committed source. Profiles are separate product inputs. SWE-bench receives only
+the problem statement and an instance-base solver checkout. Gold/test patches
+stay in the separate scorer input; predictions use the standard instance/model/
+patch format. The scorer checks the exact clean official evaluator checkout and
+all required IDs, then invokes its unchanged Docker evaluation.
 
-| Baseline | Pilot | Smoke completed | Full completed | Accuracy | Tokens | API-equivalent USD | Wall time |
-| --- | --- | ---: | ---: | --- | --- | --- | --- |
-| Codex through Chariox | Terminal-Bench 2.0 | 0 | 0 / 89 | unavailable | unavailable | unavailable | unavailable |
-| Codex through Chariox | HAL Verified Mini | 0 | 0 / 50 | unavailable | unavailable | unavailable | unavailable |
+## MP-08 / MP-10 / MP-11 — validation scope
 
-The external evidence directory contains a 139-row task-status CSV with blank
-measurement fields and a cost-versus-accuracy PNG explicitly marked **no scored
-runs**. These are diagnostic status artifacts, not zero-cost or zero-accuracy
-results. No task was attempted, so no provider quota exhaustion was proved and
-there is no task-level resume point beyond the beginning of each pinned set.
-The runner stops only on fresh, active rolling-plan exhaustion; zero purchased
-credits and expired cached meter snapshots are insufficient.
+Round1 preparation had7 Rust normalization/price checks and17 Python admission
+checks. Round2 has18 Python checks, including known tokens with an unavailable
+price, plus shared client formatting/protocol checks. Expanded Rust persistence,
+aggregation and snapshot checks are pending the shared compile slot. These are
+component evidence, not live acceptance. No benchmark task has been scored yet.
+The historical0-run diagnostic CSV/plot is not a zero-cost/zero-accuracy result.
 
-## MP-08 / MP-10 / MP-11 — exact blockers and next acceptance
-
-1. The coordinator must allocate a local protocol number. The existing
-   serialized `ProviderRunTokenUsage` has total/context counters only. This lane
-   stopped before changing that contract, as instructed. After allocation,
-   wire official events into durable per-turn history and the common usage
-   report, update protocol snapshots and run the base-red/candidate-green drill.
-2. The owner/coordinator must identify which registered Codex account maps to
-   authorized `acct-686` and provide its product-linkable path. Product status
-   lists three authenticated Codex profiles, but none is labelled `acct-686`.
-   No credential files were inspected or copied to infer the mapping. The
-   coordinator's 12:35 UTC direction says to continue Codex acct-686 locally;
-   its product-linkable path is still missing from the lane instructions.
-3. The real task environments need the source-matched runtime bundle and a
-   profile materialized through documented Chariox product commands. Then run
-   the accounting drill with the real built TUI/kernel, a real local relay and
-   Codex, retaining per-step terminal/screenshot and log evidence. The drill
-   must demonstrate matching harness counters and API-equivalent price on the
-   real path before accounting is declared done. Then run the 10-task smoke
-   before either full diagnostic set, retaining failures and quota resume state.
-
-The 12:35 UTC coordinator inbox directs Claude/OpenCode cells to use leased
-agents from the owner's Mac home kernel. Their worker and access grant are
-coordinator-owned; no builder login is requested. Both benchmark adapters now
-accept local or leased placement, reject missing/foreign home-worker bindings,
-and share the same real TUI prompt path. The builder's allowlisted product status
-RPC also reports authenticated Claude and OpenCode profiles. A fresh provider run was not performed, so their current
-execution readiness is not established. No new owner login or account creation
-is presently indicated by that status observation.
-
-## MP-08 / MP-10 / MP-11 — retained validation and cleanup
-
-Evidence is external under the reserved builder's
-`/root/.codex/evidence/browser-resume-20260930/evals/`. It includes dependency and
-TUI build logs, component checks, exact task pins, allowlisted account status,
-resource observations, and CSV/PNG diagnostics. The initial four Python tests
-were red on missing adapter admission code, then green; final admission checks
-also cover artifact hashes and signal guards. The initial Rust lock-wait
-interruption was exit143 before compilation and is **not** a red test. Rust
-normalization/price checks subsequently ran under the compile slot and passed
-7/7; the full kernel library `cargo check` also passed. Seventeen Python checks
-pass, including local/leased placement admission. The TUI Done-state and provider-specific cache-write regressions failed before
-their fixes and pass after. No fail-first provider accounting drill is claimed.
-
-No provider, task container, local relay or deployment was launched for these
-pilots. No GitHub action, push, PR, public submission, merge or staging change
-was performed. Lane-owned dependency tools and public benchmark input caches
-are retained for replay; disposable component fixtures cleaned their temporary
-state. Shared reviewer, provider-account and other-lane resources were preserved.
+All state, logs, screenshots and output stay outside source repositories. Signal
+helpers reject system/invalid PIDs and settle only verified owned descendants.
+Fresh rolling-limit exhaustion pauses campaigns; stale meters and zero purchased
+credits do not. Resource floors are9GiB MemAvailable /10GiB root free. No push,
+PR, CI, deployment, public submission or shared-resource cleanup is authorized.

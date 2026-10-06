@@ -34,14 +34,22 @@ def completed_answer(snapshot, session_id, agent_id, prompt_id):
     return '\n'.join(e['text'] for e in entries) if entries else None
 
 
-def admit_usage(report, session_id):
+def admit_token_usage(report, session_id):
     if report.get('session_id') != session_id or report.get('complete') is not True:
         raise ValueError('MP-08 / MP-10: missing or incomplete kernel accounting')
-    required = ['input_tokens', 'cached_input_tokens', 'output_tokens', 'api_equivalent_nanodollars']
+    required = ['input_tokens', 'cached_input_tokens', 'output_tokens']
     if any(type(report.get(k)) is not int or report[k] < 0 for k in required):
         raise ValueError('MP-08 / MP-10: unavailable accounting cannot be reported as zero')
     if report['cached_input_tokens'] > report['input_tokens']:
         raise ValueError('MP-08 / MP-10: inconsistent cache count')
+    return report
+
+
+def admit_usage(report, session_id):
+    admit_token_usage(report, session_id)
+    cost = report.get('api_equivalent_nanodollars')
+    if type(cost) is not int or cost < 0:
+        raise ValueError('MP-08 / MP-10: unavailable price cannot be reported as zero')
     return report
 
 

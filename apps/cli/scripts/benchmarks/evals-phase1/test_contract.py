@@ -1,6 +1,6 @@
 """MP-08 / MP-10 / MP-11: runner admission and attribution checks."""
 import unittest
-from contract import validate_lock, completed_answer, admit_usage, safe_pid, quota_exhausted
+from contract import validate_lock, completed_answer, admit_usage, admit_token_usage, safe_pid, quota_exhausted
 
 
 class ContractTests(unittest.TestCase):
@@ -43,6 +43,13 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(completed_answer(snapshot, 's', 'a', 'p'), 'answer')
         snapshot['session']['agents'][0]['state'] = 'Error'
         self.assertIsNone(completed_answer(snapshot, 's', 'a', 'p'))
+
+    def test_known_tokens_do_not_require_an_invented_price(self):
+        report = dict(session_id='s', complete=True, input_tokens=10, cached_input_tokens=2,
+                      output_tokens=3, api_equivalent_nanodollars=None)
+        self.assertEqual(admit_token_usage(report, 's'), report)
+        with self.assertRaises(ValueError):
+            admit_usage(report, 's')
 
     def test_missing_accounting_is_not_zero(self):
         with self.assertRaises(ValueError):

@@ -1,22 +1,28 @@
 //! MP-08 / MP-10 / MP-11: API-equivalent accounting primitives.
 //!
-//! This module has no wire types or credential access. Provider/runtime/history
-//! integration is gated on a coordinator-allocated protocol version. Inputs are
+//! Provider/runtime/history share these counters at local448 / peer91. No
+//! credential access. Inputs are
 //! official harness counters, never estimates from text length. Input includes
 //! cache; output includes reasoning. None means unreported, not zero.
 
-use serde::Deserialize;
+pub mod report;
+
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::OnceLock;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
+    #[serde(rename = "input_tokens")]
     pub input: Option<u64>,
+    #[serde(rename = "cached_input_tokens")]
     pub cached_input: Option<u64>,
     pub cache_write: Option<u64>,
     pub cache_write_5m: Option<u64>,
     pub cache_write_1h: Option<u64>,
+    #[serde(rename = "output_tokens")]
     pub output: Option<u64>,
+    #[serde(rename = "reasoning_tokens")]
     pub reasoning: Option<u64>,
 }
 
@@ -94,6 +100,37 @@ pub fn opencode_usage(value: &Value) -> Option<Usage> {
         reasoning,
         ..Usage::default()
     })
+}
+
+impl Usage {
+    pub fn zero() -> Self {
+        Self {
+            input: Some(0),
+            cached_input: Some(0),
+            cache_write: Some(0),
+            cache_write_5m: Some(0),
+            cache_write_1h: Some(0),
+            output: Some(0),
+            reasoning: Some(0),
+        }
+    }
+    pub fn difference(self, baseline: Self) -> Option<Self> {
+        fn diff(a: Option<u64>, b: Option<u64>) -> Option<Option<u64>> {
+            match (a, b) {
+                (Some(a), Some(b)) => a.checked_sub(b).map(Some),
+                _ => Some(None),
+            }
+        }
+        Some(Self {
+            input: diff(self.input, baseline.input)?,
+            cached_input: diff(self.cached_input, baseline.cached_input)?,
+            cache_write: diff(self.cache_write, baseline.cache_write)?,
+            cache_write_5m: diff(self.cache_write_5m, baseline.cache_write_5m)?,
+            cache_write_1h: diff(self.cache_write_1h, baseline.cache_write_1h)?,
+            output: diff(self.output, baseline.output)?,
+            reasoning: diff(self.reasoning, baseline.reasoning)?,
+        })
+    }
 }
 
 fn counter(value: &Value, key: &str) -> Option<Option<u64>> {

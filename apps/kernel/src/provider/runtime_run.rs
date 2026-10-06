@@ -791,6 +791,10 @@ fn provider_run_active_selection_rank(state: ProviderRunState) -> u8 {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderRunTokenUsage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accounting: Option<crate::usage_accounting::Usage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_accounting: Option<crate::usage_accounting::Usage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_tokens: Option<u64>,
@@ -803,6 +807,8 @@ pub struct ProviderRunTokenUsage {
 impl ProviderRunTokenUsage {
     pub fn from_total_tokens(total_tokens: u64) -> Self {
         Self {
+            accounting: None,
+            turn_accounting: None,
             total_tokens: Some(total_tokens),
             last_tokens: None,
             context_tokens: None,
@@ -811,7 +817,9 @@ impl ProviderRunTokenUsage {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.total_tokens.is_none()
+        self.accounting.is_none()
+            && self.turn_accounting.is_none()
+            && self.total_tokens.is_none()
             && self.last_tokens.is_none()
             && self.context_tokens.is_none()
             && self.context_window.is_none()

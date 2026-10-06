@@ -44,6 +44,8 @@ pub struct CodexRuntimeState {
     pub(super) next_request_id: u64,
     pub(super) buffered_notifications: Vec<CodexNotification>,
     pub(super) active_turn_id: Option<String>,
+    pub(super) usage_total: Option<crate::usage_accounting::Usage>,
+    pub(super) usage_baseline: Option<crate::usage_accounting::Usage>,
     pub(crate) native_approval_origin: Option<crate::session::NativeInteractionOrigin>,
     pub(super) turn_tracker: CodexTurnTracker,
     pub(super) authoritative_backfill_gate: CodexAuthoritativeBackfillGate,
@@ -92,6 +94,8 @@ impl CodexRuntimeState {
             next_request_id,
             buffered_notifications: Vec::new(),
             active_turn_id: None,
+            usage_total: None,
+            usage_baseline: None,
             native_approval_origin: None,
             turn_tracker: CodexTurnTracker::default(),
             authoritative_backfill_gate: CodexAuthoritativeBackfillGate::default(),
@@ -108,6 +112,9 @@ impl CodexRuntimeState {
     ) -> Self {
         Self {
             endpoint,
+            usage_total: thread_id
+                .is_none()
+                .then(crate::usage_accounting::Usage::zero),
             thread_id: thread_id.unwrap_or_default(),
             thread_ready: false,
             read_only_discovery_permissions: false,
@@ -116,6 +123,7 @@ impl CodexRuntimeState {
             next_request_id,
             buffered_notifications: Vec::new(),
             active_turn_id: None,
+            usage_baseline: None,
             native_approval_origin: None,
             turn_tracker: CodexTurnTracker::default(),
             authoritative_backfill_gate: CodexAuthoritativeBackfillGate::default(),

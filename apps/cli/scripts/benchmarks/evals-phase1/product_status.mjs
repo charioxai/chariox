@@ -8,6 +8,11 @@ try {
   const response = await client.send({ ListProviderAccountProfiles: { provider } })
   const profile = response.ProviderAccountProfilesListed?.profiles?.find(p => p.label === label)
   if (!profile) throw new Error('profile_missing')
+  if (process.argv.includes('--refresh')) {
+    await client.send({ RefreshProviderAccountProfile: { provider, account_profile: profile.profile_id } })
+    const refreshed = await client.send({ ListProviderAccountProfiles: { provider } })
+    Object.assign(profile, refreshed.ProviderAccountProfilesListed?.profiles?.find(p => p.profile_id === profile.profile_id) ?? {})
+  }
   process.stdout.write(JSON.stringify({
     provider: profile.provider, profile_id: profile.profile_id, auth_state: profile.auth_state,
     meters: (profile.usage?.meters ?? []).map(m => ({ kind: m.kind, state: m.state, resets_at_ms: m.resets_at_ms, observed_at_ms: m.observed_at_ms })),

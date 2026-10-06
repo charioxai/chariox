@@ -43,6 +43,9 @@ pub fn drain_codex_events(
     let mut resolved_usage = None;
 
     for notification in std::mem::take(&mut state.buffered_notifications) {
+        if !usage_matches_thread(&notification, state.thread_id()) {
+            continue;
+        }
         apply_notification_with_manifest(
             notification,
             &mut state.active_turn_id,
@@ -67,6 +70,9 @@ pub fn drain_codex_events(
             break;
         };
         drained_to_quiet = false;
+        if !usage_matches_thread(&notification, state.thread_id()) {
+            continue;
+        }
         apply_notification_with_manifest(
             notification,
             &mut state.active_turn_id,
@@ -136,6 +142,13 @@ pub fn drain_codex_events(
         );
     }
 
+    if let Some(usage) = resolved_usage.as_mut() {
+        usage.turn_accounting = usage
+            .accounting
+            .zip(state.usage_baseline)
+            .and_then(|(total, baseline)| total.difference(baseline));
+        state.usage_total = usage.accounting;
+    }
     Ok(CodexPollResult {
         chunks,
         completions,
@@ -516,5 +529,22 @@ mod tests {
         let request: Value = serde_json::from_str(&text).expect("parse Codex request");
         assert_eq!(request["method"], expected_method);
         request
+    }
+}
+
+// MP-08 / MP-10 / MP-11: another thread cannot contribute billable counters.
+fn usage_matches_thread(
+    notification: &crate::provider::CodexNotification,
+    thread_id: &str,
+) -> bool {
+    match notification {
+        crate::provider::CodexNotification::TokenUsageUpdated {
+            thread_id: observed,
+            ..
+        } => observed == thread_id,
+        crate::provider::CodexNotification::TurnScoped { notification, .. } => {
+            usage_matches_thread(notification, thread_id)
+        }
+        _ => true,
     }
 }

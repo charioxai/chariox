@@ -3,7 +3,7 @@
 
 The runtime bundle and product-linked account are explicit inputs. This runner
 never copies credentials, enrolls accounts or uses a provider SDK. Accounting
-integration is currently blocked on the coordinator protocol allocation.
+uses the shared kernel session accounting report at allocated local448 / peer91.
 """
 import argparse
 import hashlib
@@ -16,6 +16,7 @@ import shutil
 import shlex
 import signal
 import socket
+import secrets
 import struct
 import subprocess
 import tempfile
@@ -176,7 +177,7 @@ def run(request, evidence):
     env = {k: os.environ[k] for k in ['PATH', 'LANG', 'LC_ALL'] if k in os.environ}
     env['PATH'] = str(root / 'bin') + ':' + env.get('PATH', '/usr/bin:/bin')
     env.update(HOME=str(state / 'home'), CHARIOX_HOME=str(state / 'kernel'),
-               CHARIOX_LOG_DIR=str(state / 'logs'), TERM='xterm-256color',
+               CHARIOX_LOG_DIR=str(state / 'logs'), CHARIOX_LOG_LEVEL='debug', TERM='xterm-256color',
                CHARIOX_PROVIDER_PROCESS_ORPHAN_TTL_MS=str(2**64 - 1))
     reservations = []
     for key in (['CHARIOX_KERNEL_PORT', 'CHARIOX_MCP_PORT', 'CHARIOX_CODEX_PORT', 'CHARIOX_OPENCODE_PORT'] if placement == 'local' else []):
@@ -192,7 +193,14 @@ def run(request, evidence):
     measurement = {'mp_items': ['MP-08', 'MP-10', 'MP-11'], 'source_commit': request['source_commit'],
                    'placement': placement, 'kernel_sha256': request['kernel_sha256'], 'status': 'failed', 'usage': None,
                    'resources_before': resources_before,
-                   'usage_unavailable_reason': 'kernel per-turn accounting awaits coordinator protocol allocation'}
+                   'usage_unavailable_reason': 'kernel has not reported a priced complete turn'}
+
+    stage = 'launch'
+
+    def screenshot(name):
+        from terminal_screen import capture
+        time.sleep(0.5)
+        capture(evidence / 'task.terminal.log', evidence / (name + '.png'))
 
     def tick():
         resource_sample()
@@ -209,8 +217,9 @@ def run(request, evidence):
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 40, 160, 0, 0))
         descriptors.append(master)
         capture = (evidence / (suffix + '.terminal.log')).open('wb'); captures.append(capture)
+        transport = [] if '--terminal-pairing-link' in extra else ['--kernel-url', endpoint]
         cli = subprocess.Popen([str(root / 'bin/bun'), str(root / 'apps/cli/dist/index.js'),
-                                '--kernel-url', endpoint, '--automation-socket', str(automation), *extra],
+                                *transport, '--automation-socket', str(automation), *extra],
                                env=env, stdin=slave, stdout=slave, stderr=slave)
         os.close(slave); processes.append(cli)
         # Drain the PTY continuously so real rendering cannot block the client.
@@ -229,18 +238,32 @@ def run(request, evidence):
     try:
         for s in reservations: s.close()
         if placement == 'local':
+            stage = 'kernel_start'
+            if request.get('relay_binary'):
+                relay_log = (evidence / 'relay.log').open('wb'); captures.append(relay_log)
+                reservation = socket.socket(); reservation.bind(('127.0.0.1', 0))
+                relay_port = reservation.getsockname()[1]; reservation.close()
+                env['CHARIOX_RELAY_URL'] = f'ws://127.0.0.1:{relay_port}'
+                env['CHARIOX_RELAY_TOKEN'] = secrets.token_urlsafe(32)
+                relay_env = {**env, 'CHARIOX_RELAY_HOST':'127.0.0.1', 'CHARIOX_RELAY_PORT':str(relay_port)}
+                relay = subprocess.Popen([request['relay_binary']], env=relay_env, stdout=relay_log, stderr=relay_log)
+                processes.append(relay)
             kernel_log = (evidence / 'kernel.log').open('wb'); captures.append(kernel_log)
             kernel = subprocess.Popen([str(root / 'bin/chariox-kernel')], env=env,
                                       stdout=kernel_log, stderr=kernel_log)
             processes.append(kernel)
             setup = launch_cli(['--detached'], 'setup')
             setup.send('wait_for', daemonDisconnected=False, timeoutMs=30000)
+            stage = 'profile_link'
             setup.send('submit_prompt', prompt=f'/provider accounts link {provider} Evals {shlex.quote(profile)}')
             status_command = [str(root / 'bin/bun'), str(Path(__file__).with_name('product_status.mjs')), str(root), endpoint, 'Evals', provider]
             def status():
                 result = subprocess.run(status_command, env=env, capture_output=True, text=True, timeout=30)
                 return json.loads(result.stdout) if result.returncode == 0 else None
+            wait_owned(status, time.monotonic() + 45)
+            subprocess.run([*status_command, '--refresh'], env=env, capture_output=True, text=True, timeout=60, check=True)
             account = wait_owned(status, time.monotonic() + 45)
+            (evidence / 'account-status.json').write_text(json.dumps(account, indent=2))
             if account['auth_state'] != 'authenticated':
                 raise RuntimeError('MP-08 / MP-10: linked account needs owner login')
             if quota_exhausted(account['meters'], int(time.time() * 1000)):
@@ -248,10 +271,22 @@ def run(request, evidence):
                 raise RuntimeError('MP-08 / MP-10: proven rolling plan quota exhaustion')
             setup.send('exit')
             client = launch_cli(['--create-session', '--workspace', request['workspace'], '--provider', provider,
-                                 '--model', request['model'], '--account-profile', account['profile_id']], 'task')
+                                 '--model', request['model'], '--effort', request.get('effort', 'low'), '--account-profile', account['profile_id']], 'local' if request.get('relay_binary') else 'task')
             snap = wait_owned(lambda: client.send('snapshot'), time.monotonic() + 30)
             snap = wait_owned(lambda: (s if (s := client.send('snapshot')).get('session', {}).get('agents') else None), time.monotonic() + 60)
             session_id = snap['session']['id']; agent_id = snap['session']['focusedAgentId']
+            if request.get('relay_binary'):
+                stage = 'relay_tui_pairing'
+                link_file = state / 'relay-pairing'
+                subprocess.run([str(root / 'bin/bun'), str(Path(__file__).with_name('pairing_link.mjs')),
+                                str(root), endpoint, str(link_file)], env=env,
+                               capture_output=True, timeout=30, check=True)
+                link = link_file.read_text(); link_file.unlink()
+                client.send('exit')
+                client = launch_cli(['--terminal-pairing-link', link, '--session', session_id], 'task')
+                del link
+                snap = wait_owned(lambda: (s if (s := client.send('snapshot')).get('session', {}).get('id') == session_id else None), time.monotonic() + 60)
+                measurement['transport'] = 'paired encrypted relay TUI to home kernel'
         else:
             client = launch_cli(['--session', request['home_session_ref']], 'task')
             snap = wait_owned(lambda: (s if (s := client.send('snapshot')).get('session', {}).get('agents') else None), time.monotonic() + 60)
@@ -261,6 +296,8 @@ def run(request, evidence):
             session_id = snap['session']['id']; agent_id = target['id']
             measurement['worker_kernel_id'] = request['worker_kernel_id']
             measurement['worker_lifecycle_owner'] = 'coordinator'
+        stage = 'prompt_submit'
+        screenshot('01-ready')
         # Normal kernel-owned permission policy, scoped to this benchmark agent.
         client.send('submit_prompt', prompt='/agent permissions ' + agent_id + ' yolo')
         snap = client.send('snapshot')
@@ -275,6 +312,10 @@ def run(request, evidence):
         measurement.update(session_id=session_id, agent_id=agent_id, prompt_id=prompt_id)
         def settled():
             s = client.send('snapshot')
+            agent = next((a for a in s.get('session', {}).get('agents', []) if a.get('id') == agent_id), {})
+            if agent.get('state') in {'Error', 'Failed'}:
+                measurement['status'] = 'provider_failed'
+                return {'answer': None, 'provider_failed': True}
             answer = completed_answer(s, session_id, agent_id, prompt_id)
             if answer is not None:
                 safe_snapshot = {'session_id': session_id, 'agent_id': agent_id, 'prompt_id': prompt_id,
@@ -282,11 +323,30 @@ def run(request, evidence):
                 (evidence / 'final-snapshot.json').write_text(json.dumps(safe_snapshot, indent=2))
                 return {'answer': answer}
             return None
+        stage = 'provider_turn'
         final = wait_owned(settled, deadline)
-        measurement.update(status='completed', answer=final['answer'])
+        screenshot('02-turn-completed')
+        measurement.update(status='provider_failed' if final.get('provider_failed') else 'completed', answer=final['answer'])
+        stage = 'usage_report'
+        usage_command = [str(root / 'bin/bun'), str(Path(__file__).with_name('usage_status.mjs')), str(root), endpoint, session_id]
+        usage_read = subprocess.run(usage_command, env=env, capture_output=True, text=True, timeout=30)
+        if usage_read.returncode == 0:
+            report = json.loads(usage_read.stdout)
+            (evidence / 'kernel-usage.json').write_text(json.dumps(report, indent=2))
+            total = report['total']
+            price = total.get('api_equivalent_nanodollars')
+            if total['unavailable_turns'] == 0 and report['turns'] and all(t['completed'] for t in report['turns']):
+                measurement['usage'] = {'session_id': session_id, 'complete': True,
+                    **total['usage'], 'api_equivalent_nanodollars': int(price) if price is not None else None}
+                measurement['usage_unavailable_reason'] = None if price is not None else 'official harness lacks the fields required by the exact dated model price'
+        client.send('submit_prompt', prompt='/session usage')
+        screenshot('03-usage-report')
+        if measurement['status'] == 'completed' and request.get('accounting_required') and (measurement['usage'] is None or measurement['usage']['api_equivalent_nanodollars'] is None):
+            measurement['status'] = 'accounting_unavailable'
         client.send('exit')
     except Exception as error:
         measurement['failure_kind'] = type(error).__name__
+        measurement['first_failing_seam'] = stage
     finally:
         for process in processes:
             if process.poll() is None:

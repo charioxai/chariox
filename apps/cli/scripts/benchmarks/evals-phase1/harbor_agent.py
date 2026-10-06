@@ -66,10 +66,20 @@ class CharioxAgent(BaseAgent):
         if cwd.return_code != 0 or not cwd.stdout.strip().startswith('/'):
             raise RuntimeError('MP-08 / MP-10: task workspace unavailable')
         self._workspace = cwd.stdout.strip()
-        for name in ['turn.py', 'contract.py', 'product_status.mjs']:
+        for name in ['turn.py', 'contract.py', 'product_status.mjs', 'usage_status.mjs', 'terminal_screen.py']:
             await environment.upload_file(source_path=Path(__file__).with_name(name),
                                           target_path=f'{self._runner_root}/{name}')
-        command = ['python3', f'{self._runner_root}/turn.py', '--preflight',
+        # Runner-only dependencies live outside the task workspace. Official
+        # task files, test instructions and verifier remain untouched.
+        install = await environment.exec(command=shlex.join(['sh', '-c',
+            'command -v python3 >/dev/null && python3 -m venv --help >/dev/null || '
+            '(apt-get update -qq && apt-get install -y -qq python3 python3-venv fonts-dejavu-core); '
+            'python3 -m venv ' + shlex.quote(self._runner_root + '/venv') + ' && ' +
+            shlex.quote(self._runner_root + '/venv/bin/pip') + ' install pyte==0.8.2 pillow==11.3.0']))
+        if install.return_code != 0:
+            raise RuntimeError('MP-08 / MP-10: task runner dependencies unavailable')
+        self._python = self._runner_root + '/venv/bin/python'
+        command = [self._python, f'{self._runner_root}/turn.py', '--preflight',
                    '--runtime-root', self.runtime_root, '--source-commit', self.source_commit,
                    '--kernel-sha256', self.kernel_sha256, '--local-protocol', str(self.local_protocol)]
         result = await environment.exec(command=shlex.join(command))
@@ -93,7 +103,7 @@ class CharioxAgent(BaseAgent):
             source.write_text(json.dumps(request))
             await environment.upload_file(source_path=source, target_path=input_path)
             result = await environment.exec(command=shlex.join([
-                'python3', f'{self._runner_root}/turn.py', '--input', input_path,
+                self._python, f'{self._runner_root}/turn.py', '--input', input_path,
                 '--result', result_path]))
             local_result = Path(scratch) / 'result.json'
             await environment.download_file(source_path=result_path, target_path=local_result)
@@ -102,11 +112,12 @@ class CharioxAgent(BaseAgent):
         # Preserve unavailable counts as null. Do not invent a zero-cost baseline.
         usage = measurement.get('usage')
         if usage is not None:
-            from contract import admit_usage
-            usage = admit_usage(usage, measurement['session_id'])
+            from contract import admit_token_usage
+            usage = admit_token_usage(usage, measurement['session_id'])
             context.n_input_tokens = usage['input_tokens']
             context.n_cache_tokens = usage['cached_input_tokens']
             context.n_output_tokens = usage['output_tokens']
-            context.cost_usd = usage['api_equivalent_nanodollars'] / 1_000_000_000
+            if usage['api_equivalent_nanodollars'] is not None:
+                context.cost_usd = usage['api_equivalent_nanodollars'] / 1_000_000_000
         if result.return_code != 0 or measurement['status'] != 'completed':
             raise RuntimeError('MP-08 / MP-10: Chariox task did not settle; retain failed task in campaign ledger')

@@ -258,6 +258,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::AliasSession(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::GetSessionUsage(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::GetSessionHistoryOutline(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),

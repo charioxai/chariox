@@ -1,3 +1,5 @@
+import type { SessionUsageReport } from "@chariox/kernel-client/kernel-types"
+import { formatSessionUsage } from "@chariox/kernel-client/usage-report"
 import { adjustProjectEnvironmentRequest, projectEnvironmentPanelLines } from "@chariox/kernel-client/project-environment-panel"
 import { getProjectEnvironmentManifestRequest } from "@chariox/kernel-client/ipc-project-environment-setup-requests"
 import type { ProjectEnvironmentManifest } from "@chariox/kernel-client/kernel-types"
@@ -213,6 +215,15 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const handleSessionCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "session" }>,
   ): Promise<boolean> => {
+    if (command.action === "usage") {
+      if (!deps.isAttached() || !deps.sendRoomEnvironmentRequest) {
+        deps.flashFooter("attach to a session to inspect usage", "error")
+        return true
+      }
+      const { SessionUsage } = await deps.sendRoomEnvironmentRequest<{ SessionUsage: { report: SessionUsageReport } }>({ GetSessionUsage: { session_id: deps.sessionState().id } })
+      deps.appendNotice(formatSessionUsage(SessionUsage.report))
+      return true
+    }
     return handleSessionSlashCommand({ ...deps, currentWorkspaceTarget, currentWorktreeTarget }, command)
   }
 

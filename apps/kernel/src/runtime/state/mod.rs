@@ -393,6 +393,7 @@ mod provider_focus_owned_state;
 mod provider_launch_failure_runtime;
 mod provider_launch_owned_state;
 mod provider_launch_runtime;
+mod provider_usage_owned_state;
 pub(crate) use provider_launch_runtime::ProviderLaunchStartOutcome;
 mod claude_setup_token_capture;
 mod provider_liveness_runtime;

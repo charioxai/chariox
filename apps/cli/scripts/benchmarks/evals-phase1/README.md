@@ -1,8 +1,8 @@
 # MP-08 / MP-10 / MP-11 — evals phase 1 preparation
 
-This is a diagnostic pilot area. Accounting history/CLI integration and real
-Codex acceptance await the coordinator protocol allocation and authorized
-`acct-686` mapping. No full benchmark score is claimed.
+This is a diagnostic pilot area. Accounting history/CLI uses the coordinator allocation
+local448 / peer91 and the approved product-linked `acct-686` mapping. Live
+acceptance and scored baselines are recorded separately. No full benchmark score is claimed.
 
 `inputs.lock.json` freezes the exact 89 Terminal-Bench 2.0 and 50 HAL Verified
 Mini tasks plus official harness revisions. Use `PYTHONDONTWRITEBYTECODE=1` and
@@ -63,9 +63,10 @@ remove an existing container. `swe_adapter.py --placement-config` accepts the
 same lease references (no credentials). Smoke uses the first 10 pinned IDs; full uses all 50. Never run
 an evaluator from a changed or different upstream source.
 
-`turn.py` captures the actual PTY and kernel logs. It does not yet collect the
-required screenshots or kernel usage report; it cannot certify accounting
-acceptance. A completed task with missing accounting remains unpriced. Preserve
+`turn.py` captures the actual PTY, per-step terminal screenshots, kernel logs
+and shared kernel usage report. `accounting_required=true` fails a completed
+turn if tokens or a price are unavailable; diagnostic tasks retain known tokens
+with null cost. A real base-red/candidate-green run is required for acceptance. A completed task with missing accounting remains unpriced. Preserve
 failed attempts, timeouts and quota observations. Do not turn an infrastructure
 failure, partial campaign or skipped task into a successful full run.
 

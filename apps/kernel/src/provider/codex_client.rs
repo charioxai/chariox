@@ -982,6 +982,8 @@ mod tests {
                 thread_id: "thread-1".to_string(),
                 turn_id: "turn-1".to_string(),
                 usage: ProviderRunTokenUsage {
+                    accounting: None,
+                    turn_accounting: None,
                     total_tokens: Some(42100),
                     last_tokens: Some(8900),
                     context_tokens: Some(8900),
@@ -1015,6 +1017,8 @@ mod tests {
                 thread_id: "thread-1".to_string(),
                 turn_id: "turn-2".to_string(),
                 usage: ProviderRunTokenUsage {
+                    accounting: None,
+                    turn_accounting: None,
                     total_tokens: Some(36_000_000),
                     last_tokens: Some(36_000_000),
                     context_tokens: None,

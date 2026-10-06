@@ -75,7 +75,7 @@ pub use api::{
     GetRoomEnvironmentResourceInventoryRequest, GetRoomEnvironmentStateRequest,
     GetRoomEnvironmentTabAccessibilityRequest, GetScriptRequest,
     GetSessionHistoryBlobContentRequest, GetSessionHistoryOutlineRequest, GetSessionStateRequest,
-    GetSkillRequest, GetSliceDisplayEndpointRequest, GetSliceLogsRequest,
+    GetSessionUsageRequest, GetSkillRequest, GetSliceDisplayEndpointRequest, GetSliceLogsRequest,
     GetTerminalCommandCatalogRequest, GetUserConfigRequest, GetUserConfigSchemaRequest,
     GetWaitingRoomPublicSnapshotRequest, GetWorkflowCodeArtifactRequest,
     GetWorkflowPublicationRequest, GetWorkflowRegistryEntryRequest, GetWorkflowRunRequest,
