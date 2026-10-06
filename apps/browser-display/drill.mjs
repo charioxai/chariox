@@ -101,7 +101,7 @@ try {
  const profiles=path.join(root,'profiles');let profiling='';
  if(process.env.MD_PROFILE==='1'){
   await mkdir(profiles,{mode:0o700});await chown(profiles,runUid,runGid);
-  profiling=`case "$1" in\n *kernel-browser-encoder.py) set -- -m cProfile -o ${quote(path.join(profiles,'encoder.prof'))} "$@" ;;\n *kernel-browser-xshm.py) set -- -m cProfile -o ${quote(path.join(profiles,'capture.prof'))} "$@" ;;\nesac\n`;
+  profiling=`if [ "$1" = "-u" ]; then shift; fi\ncase "$1" in\n *kernel-browser-encoder.py) set -- -m cProfile -o ${quote(path.join(profiles,'encoder.prof'))} "$@" ;;\n *kernel-browser-xshm.py) set -- -m cProfile -o ${quote(path.join(profiles,'capture.prof'))} "$@" ;;\nesac\n`;
   const nodeWrapper=path.join(root,'controller-node');
   await writeFile(nodeWrapper,`#!/bin/sh\nexec ${quote(process.execPath)} --cpu-prof --cpu-prof-dir=${quote(profiles)} "$@"\n`,{mode:0o755});
   override.CHARIOX_BROWSER_CONTROLLER_NODE=nodeWrapper;
