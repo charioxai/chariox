@@ -168,6 +168,7 @@ fn run(runtime: &tokio::runtime::Runtime) {
         tokio::time::sleep(Duration::from_secs(20)).await;
         let mut views = Vec::new();
         for (index, id) in ids.iter().enumerate() {
+            phase(&root, &topology, index, "opening");
             if native {
                 let LocalDaemonResponse::UserAppViewOpened { view, .. } = dispatch(&router,
                     serde_json::json!({"OpenUserAppView":{"installation_id":id,"host":"kernel_browser"}})).await else { panic!("user view open") };
@@ -200,20 +201,20 @@ fn run(runtime: &tokio::runtime::Runtime) {
                     }
                     // Room calls exercise the exact worker bridge, without provider credentials.
                     if let Some(room) = &room {
-                        for (n, id) in ids.iter().take(index+1).enumerate() {
+                        for n in 0..index+1 {
                             let env = router.runtime_state.room_environment_snapshot(room).unwrap();
                             let tabs = env.tabs.iter().filter(|tab| tab.url.starts_with("https://app.")).collect::<Vec<_>>();
                             let tab = tabs[n];
                             let snapshot = router.runtime_state.capture_browser_environment_snapshot(room, &tab.tab_id).await.unwrap();
                             if let Some(node) = snapshot.accessibility_nodes.iter().find(|node| node.role == "textbox" && node.name == "Message") {
                                 router.runtime_state.perform_browser_environment_locator_action(room, &node.element_ref,
-                                    &format!("memory-{}-{}", id, crate::session::unix_epoch_ms()),
+                                    &format!("{:032x}", rand::random::<u128>()),
                                     crate::runtime::browser_controller_action::BrowserLocatorAction::Fill { text: "memory fixture".into(), append:false, submit:false, expected_document_url:None }, 5000).await.unwrap();
                             }
                             let snapshot = router.runtime_state.capture_browser_environment_snapshot(room, &tab.tab_id).await.unwrap();
                             let button = snapshot.accessibility_nodes.iter().find(|node| node.role == "button" && node.name == "Call App").unwrap();
                             router.runtime_state.perform_browser_environment_locator_action(room, &button.element_ref,
-                                &format!("memory-click-{}-{}", id, crate::session::unix_epoch_ms()),
+                                &format!("{:032x}", rand::random::<u128>()),
                                 crate::runtime::browser_controller_action::BrowserLocatorAction::Click, 5000).await.unwrap();
                         }
                     }
