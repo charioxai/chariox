@@ -51,8 +51,11 @@ native provider model ID. Use `--path` for the pinned Terminal-Bench checkout,
 `--n-concurrent 1` and an external `--jobs-dir`. The first 10 task IDs in the
 lock define a reproducible smoke; the full run must retain all 89 IDs.
 
-For HAL Mini, prepare an isolated solver workspace at each pinned instance's
-base commit, then run `swe_adapter.py --help`. The adapter verifies the parquet
+For HAL Mini, `swe_campaign.py --help` drives the serial smoke/full solver
+campaign with external workspace/output roots and explicit runtime/profile/model
+inputs. It checks each clean instance base, retains failed tasks in the denominator,
+and stops on proven plan exhaustion or incomplete cleanup. Individual task replay
+uses `swe_adapter.py --help`. The adapter verifies the parquet
 hash and complete 50-task selection, drives a real Chariox TUI turn, and writes
 one standard prediction. Gold/test patches never enter the prompt. Evaluate
 predictions with `score_swe.py --help`, which validates the pinned official

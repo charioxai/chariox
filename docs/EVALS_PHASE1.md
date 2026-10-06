@@ -2,8 +2,9 @@
 
 Round 2 is active and remains **not accepted**. The coordinator allocated
 local daemon448 / relay peer91 and identified the product-linked Codex profile.
-The local accounting implementation and real-path drill are being validated;
-no scored smoke/full benchmark result is claimed yet.
+The numeric accounting drill passes on the real relay/kernel/TUI/Codex path.
+Matching USD remains blocked by missing authoritative pricing inputs. The
+SWE smoke campaign is running; no scored full result is claimed yet.
 
 ## MP-08 / MP-10 / MP-11 — round 2 implementation and provenance
 
@@ -40,7 +41,19 @@ completed. Earlier setup/screenshot failures and the HTTP400 rejection of
 `gpt-5.3-codex` are separate diagnostic attempts, not accounting-red evidence.
 Evidence is external under the evals round2 directory and retains PTY capture,
 per-step terminal screenshots, kernel logs, exact input and result identities.
-The candidate live relay/TUI/kernel/provider result is pending.
+Both the base and candidate now have real encrypted self-host relay runs.
+Base435 completed its provider turn and failed the real TUI usage projection.
+Candidate product source `82a444a77f1456bf3fe75f0782ea4ee7a4d9cf78`, kernel hash
+`f25b48a1f1985bf7ec1fed12732eacb83f227feb1773be57a727d1398e4cd294`,
+completed with visible input18346 / cached12288 / output9 / reasoning0, matching
+the native official cumulative counters exactly. Both cleaned up. The candidate
+kernel tree is identical to built source `41a3ee9f6`; its actual TUI was rebuilt
+for the session-notice visibility fix. Earlier candidate turns exposed the
+collapsed usage notice; the fix places usage on the existing keyed session
+notice path. Failed driver-expansion attempts remain RED evidence. The live
+receipt proves one fresh, single-agent turn, not resume/delegation/leased parity
+or matching USD. Pairing-bootstrap failures without Cloud grants never reached
+a provider turn and are not accounting-red evidence.
 
 Pricing remains explicitly unavailable when the official harness lacks a field
 required by the exact dated price table. Codex0.159.3 supplies cumulative input,
@@ -56,7 +69,13 @@ The exact89 /50 task pins below remain unchanged. Codex smoke10 precedes each
 full run, with serial tasks and fresh plan-exhaustion checks. Terminal-Bench
 profile placement is awaiting a coordinator choice between the official Harbor
 same-host volume with normal product linking and a managed worker binding.
-SWE-bench's solver checkouts can use the approved local profile directly.
+SWE-bench's solver checkouts use the approved local profile directly. The real
+CLI process cwd and explicit workspace/worktree flags bind each clean pinned
+instance checkout. `swe_campaign.py` preserves the exact denominator, serializes
+tasks, binds campaign provenance, checks resources and stops on fresh quota or
+incomplete cleanup. The first interrupted task attempt is retained with its
+solver edits, unscored; it was not reused as a clean base. A subsequent clean-base
+admission failure is retained separately. Valid smoke tasks use fresh checkouts.
 Claude/OpenCode await the coordinator's Mac home to builder worker grant.
 No source test, partial task set or unavailable accounting closes an MP item.
 
@@ -95,9 +114,12 @@ all required IDs, then invokes its unchanged Docker evaluation.
 
 Round1 preparation had7 Rust normalization/price checks and17 Python admission
 checks. Round2 has18 Python checks, including known tokens with an unavailable
-price, plus shared client formatting/protocol checks. The prescribed Node client suite passes1117/1117. Expanded Rust persistence,
-aggregation and snapshot checks are pending the shared compile slot. These are
-component evidence, not live acceptance. No benchmark task has been scored yet.
+price, plus shared client formatting/protocol checks. The prescribed Node client suite passes1117/1117. Rust accounting/persistence/aggregation checks pass12/12, and focused protocol
+snapshot checks pass183/183. The real kernel and relay build passed under the
+shared compile slot with two jobs and kernel debug symbols disabled. Targeted
+CLI notice/session checks pass14/14; CLI typecheck/build pass. These establish
+component behavior; the separately recorded real numeric drill establishes its
+limited live scope. No benchmark task has been scored yet.
 The historical0-run diagnostic CSV/plot is not a zero-cost/zero-accuracy result.
 
 All state, logs, screenshots and output stay outside source repositories. Signal
