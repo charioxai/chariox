@@ -5,6 +5,19 @@ import argparse, json, math, os, pathlib, shutil, signal, subprocess, tempfile, 
 TEST = 'runtime::router::tests::user_app_views::memory_budget::app_view_memory_budget_drill'
 CLASSES = ('browser', 'renderers', 'GPU', 'controller', 'utility', 'zygote', 'kernel', 'worker', 'other')
 
+def slice_labels(ownership):
+    # MP-11: record IDs repeat in fresh homes; require the entire product owner tuple.
+    return {f'io.chariox.slice.{label}': ownership[field] for label, field in
+            [('id','slice_id'), ('owner-kernel-id','owner_kernel_id'), ('runtime-name','runtime_name')]}
+
+def owned_slice_resource(labels, ownership):
+    return bool(labels) and all(labels.get(key) == value for key, value in slice_labels(ownership).items())
+
+def slice_listing(kind, ownership):
+    command = ['docker','ps','-aq'] if kind == 'container' else ['docker','volume','ls','-q']
+    return command + [arg for key,value in slice_labels(ownership).items()
+                      for arg in ['--filter',f'label={key}={value}']]
+
 def process(pid):
     try:
         stat = pathlib.Path(f'/proc/{pid}/stat').read_text().split(') ', 1)[1].split()
@@ -160,11 +173,12 @@ def run(args):
                 if time.monotonic() > deadline: raise TimeoutError('MP-08 / MP-10 drill timeout')
                 resources = resource()
                 rows = process_tree(child.pid, owned, str(root))
-                if (root/'slice-id.txt').exists() and not container:
-                    sid = (root/'slice-id.txt').read_text().strip()
-                    names = subprocess.check_output(['docker','ps','-aq','--filter',f'label=io.chariox.slice.id={sid}'],text=True).split()
+                if (root/'slice-ownership.json').exists() and not container:
+                    ownership = json.loads((root/'slice-ownership.json').read_text())
+                    receipt['slice_ownership'] = ownership
+                    names = subprocess.check_output(slice_listing('container', ownership),text=True).split()
                     if len(names) == 1:
-                        container = names[0]; receipt['slice_id'] = sid; receipt['container'] = container; save()
+                        container = names[0]; receipt['container'] = container; save()
                 if container:
                     pids = subprocess.run(['docker','top',container,'-eo','pid'], capture_output=True,text=True)
                     if pids.returncode == 0:
@@ -190,6 +204,8 @@ def run(args):
         validation = root/'validation.json'
         if validation.exists():
             shutil.copyfile(validation, output/'validation.json')
+        if (root/'slice-ownership.json').exists():
+            receipt['slice_ownership'] = json.loads((root/'slice-ownership.json').read_text())
         if child: process_tree(child.pid, owned, str(root))
         # Exact start identities discovered only in this run's descendant tree.
         for sig in (signal.SIGTERM,signal.SIGKILL):
@@ -199,15 +215,15 @@ def run(args):
             time.sleep(.5)
         if child: child.wait(timeout=10)
         if display: display.wait(timeout=10)
-        if receipt.get('slice_id'):
-            sid=receipt['slice_id']
+        if receipt.get('slice_ownership'):
+            ownership=receipt['slice_ownership']
             # Query exact product labels; never prune or remove a foreign resource.
             for kind in ['container','volume']:
-                listing = ['docker','ps','-aq','--filter',f'label=io.chariox.slice.id={sid}'] if kind=='container' else ['docker','volume','ls','-q','--filter',f'label=io.chariox.slice.id={sid}']
+                listing = slice_listing(kind, ownership)
                 for name in subprocess.check_output(listing,text=True).split():
                     data=json.loads(subprocess.check_output(['docker',kind,'inspect',name]))[0]
                     labels=data['Config']['Labels'] if kind=='container' else data['Labels']
-                    assert labels.get('io.chariox.slice.id')==sid
+                    assert owned_slice_resource(labels, ownership), 'MP-11: foreign Docker resource refused'
                     subprocess.run(['docker','rm','-f',name] if kind=='container' else ['docker','volume','rm',name],check=True,stdout=subprocess.DEVNULL)
         alive=[pid for pid,identity in owned.items() if (r:=process(pid)) and r['start']==identity and r['cmd']]
         receipt['remaining_owned_pids']=alive

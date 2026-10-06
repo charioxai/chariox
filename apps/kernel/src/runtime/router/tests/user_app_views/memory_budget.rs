@@ -146,11 +146,15 @@ fn run(runtime: &tokio::runtime::Runtime) {
     let outcome = runtime.block_on(std::panic::AssertUnwindSafe(async {
         if let Some(room) = &room {
             let LocalDaemonResponse::SliceCreated { slice: created } = dispatch(&router,
-                serde_json::json!({"CreateSlice":{"name":"appsbudget","display_mode":"headed","base":"clean"}})).await else { panic!("slice create") };
+                serde_json::json!({"CreateSlice":{"name":format!("appsbudget-{}", root.file_name().unwrap().to_str().unwrap()),"display_mode":"headed","base":"clean"}})).await else { panic!("slice create") };
             slice = Some(created.id.clone());
-            std::fs::write(root.join("slice-id.txt"), &created.id).unwrap();
-            dispatch(&router, serde_json::json!({"StartSlice":{"slice_ref":created.id}})).await;
+            std::fs::write(root.join("slice-ownership.json"), serde_json::to_vec(&serde_json::json!({
+                "slice_id":created.id,"owner_kernel_id":created.owner_kernel_id,
+                "runtime_name":format!("chariox-slice-{}", created.name),
+            })).unwrap()).unwrap();
+            // MP-11: provision the worker with the Room binding already recorded.
             dispatch(&router, serde_json::json!({"BindRoomEnvironmentSlice":{"session_id":room,"slice_ref":created.id}})).await;
+            dispatch(&router, serde_json::json!({"StartSlice":{"slice_ref":created.id}})).await;
             dispatch(&router, serde_json::json!({"StartRoomEnvironment":{"session_id":room,"viewport":{
                 "css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800}}})).await;
         } else {
@@ -218,54 +222,20 @@ fn run(runtime: &tokio::runtime::Runtime) {
             }
         }
         if native {
-            let mut mirrors = Vec::new();
-            for view in &views {
-                let b = view.browser.as_ref().unwrap();
-                browser_request(&router, KernelBrowserCommand::Snapshot {
-                    tab_id:b.tab_id.clone(), generation:b.generation,
-                }).await;
-                let m = browser_request(&router, KernelBrowserCommand::MirrorSubscribe {
+            // MP-11: App pages intentionally use the native App capability path;
+            // DOM mirror subscription is denied, so no observer/cache is installed.
+            let b = views[0].browser.as_ref().unwrap();
+            let error = request(&router, "alice", LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
+                command: KernelBrowserCommand::MirrorSubscribe {
                     tab_id:b.tab_id.clone(), generation:b.generation, device_scale_factor:1,
-                }).await;
-                mirrors.push((m["subscription_id"].as_str().unwrap().to_string(), b.generation));
-            }
-            phase(&root, &topology, 4, "mirror_warmup");
-            tokio::time::sleep(Duration::from_secs(3)).await;
-            phase(&root, &topology, 4, "mirror_idle");
-            tokio::time::sleep(Duration::from_secs(20)).await;
-            phase(&root, &topology, 4, "mirror_interacting");
-            let until = std::time::Instant::now() + Duration::from_secs(20);
-            let mut sequences = vec![0; mirrors.len()];
-            while std::time::Instant::now() < until {
-                for (n, (id,generation)) in mirrors.iter().enumerate() {
-                    let b = views[n].browser.as_ref().unwrap();
-                    browser_request(&router, KernelBrowserCommand::Snapshot {
-                        tab_id:b.tab_id.clone(), generation:b.generation,
-                    }).await;
-                    browser_request(&router, KernelBrowserCommand::Input {
-                        tab_id:b.tab_id.clone(), generation:b.generation,
-                        input:KernelBrowserInput::Click {x:80,y:125},
-                    }).await;
-                    browser_request(&router, KernelBrowserCommand::Input {
-                        tab_id:b.tab_id.clone(), generation:b.generation,
-                        input:KernelBrowserInput::Text {text:"mirror fixture".into()},
-                    }).await;
-                    let frame = browser_request(&router, KernelBrowserCommand::MirrorNext {
-                        subscription_id:id.clone(), generation:*generation,
-                        after_sequence:sequences[n], drift_nodes:vec![],
-                    }).await;
-                    sequences[n] = frame["sequence"].as_u64().unwrap_or(sequences[n]);
-                }
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-            for (id,generation) in mirrors {
-                browser_request(&router, KernelBrowserCommand::MirrorClose {subscription_id:id,generation}).await;
-            }
+                },
+            })).await.expect_err("App mirror must remain denied");
+            assert!(matches!(error, DaemonError::LocalTransport {operation:"kernel_browser", ..}));
         }
         let calls = observations.iter().map(|o| o.tool_invocations()).collect::<Vec<_>>();
         std::fs::write(root.join("validation.json"), serde_json::to_vec(&serde_json::json!({
             "mp_items":["MP-08","MP-10"],"calls_per_view":calls,
-            "distinct_installations":4,"sessionless":native,
+            "distinct_installations":4,"sessionless":native,"app_mirror_denied":native,
         })).unwrap()).unwrap();
         assert!(calls.iter().all(|calls| *calls > 1), "each page must acknowledge interaction through its App channel");
         assert_eq!(views.iter().map(|v| &v.origin).collect::<std::collections::BTreeSet<_>>().len(), if native {4} else {0});

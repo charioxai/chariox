@@ -1,9 +1,19 @@
 # MP-08 / MP-10: accounting and MP-11 signal guards, no real browser required.
 import unittest
 from unittest.mock import patch
-from measure import quantile, summarize, stop_owned, process_tree, resource
+from measure import quantile, summarize, stop_owned, process_tree, resource, slice_labels, owned_slice_resource
 
 class Accounting(unittest.TestCase):
+    def test_repeated_slice_id_cannot_admit_another_kernel_resource(self):
+        ownership = {'slice_id':'slice-1', 'owner_kernel_id':'kernel-own',
+                     'runtime_name':'chariox-slice-appsbudget-own'}
+        labels = slice_labels(ownership)
+        self.assertTrue(owned_slice_resource(labels, ownership))
+        for field in labels:
+            foreign = dict(labels); foreign[field] = 'foreign'
+            self.assertFalse(owned_slice_resource(foreign, ownership))
+        self.assertFalse(owned_slice_resource({'io.chariox.slice.id':'slice-1'}, ownership))
+
     def test_cleanup_can_record_resources_below_the_floor(self):
         from types import SimpleNamespace
         with patch('measure.pathlib.Path.read_text', return_value='MemAvailable: 1024 kB\n'), \
