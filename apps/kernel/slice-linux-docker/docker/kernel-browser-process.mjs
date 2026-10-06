@@ -5,6 +5,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import * as linux from "./kernel-browser-linux.mjs";
 import * as macos from "./kernel-browser-macos.mjs";
+import { LinuxOwnedDesktop } from './linux-owned-desktop.mjs';
 import { connectCdpPipe } from './kernel-browser-cdp-pipe.mjs';
 
 function platformPolicy(platform) {
@@ -39,13 +40,14 @@ export class HostChromium {
     this.root = root;
     this.environment = environment;
     this.child = null;
+    this.desktop = process.platform === "linux" ? new LinuxOwnedDesktop(root, { environment }) : null;
   }
   async start() {
     if (this.child && this.child.exitCode === null && this.child.signalCode === null) {
       if (this.connection?.isOpen()) return this.connection;
       await this.stop();
     }
-    const environment = platformPolicy(process.platform).launchEnvironment(this.environment);
+    let environment = platformPolicy(process.platform).launchEnvironment(this.environment);
     const profile = path.join(this.root, "profile");
     await mkdir(profile, { recursive: true, mode: 0o700 });
     // Refuse a live profile owner before launching Chromium. Never
@@ -63,7 +65,11 @@ export class HostChromium {
       }
       if (alive) throw new Error("MD-2: browser profile is already owned by a live process");
     }
-    const child = spawn(await executable(environment), launchArguments(profile,
+    const binary = await executable(environment);
+    if (this.desktop && environment.CHARIOX_KERNEL_BROWSER_HEADLESS !== "1") {
+      environment = (await this.desktop.start()).environment;
+    }
+    const child = spawn(binary, launchArguments(profile,
       environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1"), {
       stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env: environment,
     });
@@ -83,6 +89,7 @@ export class HostChromium {
     this.connection = null;
     if (!Number.isSafeInteger(child?.pid) || child.pid <= 1) {
       if (child?.pid !== undefined) throw new Error("MD-2: refusing unsafe browser process ID");
+      await this.desktop?.stop();
       return;
     }
     if (connection?.isOpen()) await connection.send("Browser.close").catch(() => {});
@@ -99,5 +106,6 @@ export class HostChromium {
     }
     if (!exited()) await new Promise(resolve => child.once("exit", resolve));
     await connection?.close();
+    await this.desktop?.stop();
   }
 }

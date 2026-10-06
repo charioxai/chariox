@@ -1,0 +1,33 @@
+// MP-08 / MP-11: fail-first host lifecycle contracts.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { LinuxOwnedDesktop, desktopEnvironment } from './linux-owned-desktop.mjs';
+import { validOwnedPid, processIdentity } from './linux-owned-process.mjs';
+
+test('MP-11 rejects root and inherited desktop authority', () => {
+  assert.throws(() => desktopEnvironment({ DISPLAY: ':0' }, '/tmp/x', 0), /non-root/);
+  const env = desktopEnvironment({ PATH: '/usr/bin', DISPLAY: ':0', XAUTHORITY: '/secret', DBUS_SESSION_BUS_ADDRESS: 'foreign', ACCESS_TOKEN: 'private' }, '/tmp/x', 1000);
+  assert.equal(env.DISPLAY, undefined);
+  assert.equal(env.DBUS_SESSION_BUS_ADDRESS, undefined);
+  assert.equal(env.ACCESS_TOKEN, undefined);
+  assert.equal(env.XAUTHORITY, '/tmp/x/Xauthority');
+});
+test('MP-11 process identity rejects system and invalid signal targets', async () => {
+  for (const pid of [0, 1, -1, undefined, NaN, 1.1, Infinity]) assert.equal(validOwnedPid(pid), false);
+  assert.equal(await processIdentity(1), null);
+  assert.equal(await processIdentity(process.pid), null); // not our child
+});
+test('MP-08 desktop is lazy and failed start cleans its private runtime', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'culinux-unit-'));
+  const desktop = new LinuxOwnedDesktop(root, { uid: 1000, commands: { Xvfb: '/does/not/exist' } });
+  try {
+    assert.equal(desktop.binding(), null);
+    await assert.rejects(desktop.start(), /desktop/);
+    assert.equal(desktop.binding(), null);
+    assert.equal((await stat(root)).isDirectory(), true);
+    await desktop.stop();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
