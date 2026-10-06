@@ -66,6 +66,17 @@ pub(crate) async fn authorize_session_membership(
         }
     })?;
 
+    // MP-08/MP-11: the enrolled terminal still owns its OS-local session.
+    // Use the local identity for membership and session projection only; the
+    // command retains the authenticated enrolled ID for interaction authority.
+    if command.is_terminal_caller() {
+        if let SessionMembershipScope::SessionId(session_id) = &scope {
+            if runtime_state.is_legacy_local_terminal_owner(session_id, &user_id) {
+                return Ok(DEFAULT_LOCAL_USER_ID.to_string());
+            }
+        }
+    }
+
     match scope {
         SessionMembershipScope::AllSessions => Ok(user_id),
         SessionMembershipScope::SessionId(session_id) => {

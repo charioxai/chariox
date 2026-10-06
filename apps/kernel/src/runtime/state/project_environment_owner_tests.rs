@@ -31,6 +31,7 @@ async fn review_fixture() -> (
     crate::test_support::TestWorktree,
     KernelRuntimeState,
     crate::session::RuntimeSession,
+    crate::runtime::router::CommandRouter,
 ) {
     let _guard = crate::env_lock::lock();
     let worktree = crate::test_support::TestWorktree::new("owner-context-review");
@@ -59,11 +60,11 @@ async fn review_fixture() -> (
         8,
     );
     let runtime = router.runtime_state();
-    (_cleanup, worktree, runtime, session)
+    (_cleanup, worktree, runtime, session, router)
 }
 
 async fn owner_context_review_rejection_inner() {
-    let (_cleanup, worktree, runtime, session) = review_fixture().await;
+    let (_cleanup, worktree, runtime, session, _router) = review_fixture().await;
     let project = session.project_id().to_string();
     let repository = crate::managed_context::development::DevelopmentRepositorySelection {
         workspace_id: worktree.path().display().to_string(),
@@ -154,7 +155,7 @@ fn mp08_mp11_source_project_owner_copy_waits_for_approval_and_cancellation_stops
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(owner_copy_inner(true));
+                .block_on(owner_copy_inner(true, false));
         })
         .unwrap()
         .join()
@@ -162,21 +163,67 @@ fn mp08_mp11_source_project_owner_copy_waits_for_approval_and_cancellation_stops
 }
 
 async fn kernel_only_owner_copy_inner() {
-    owner_copy_inner(false).await;
+    owner_copy_inner(false, false).await;
 }
 
-async fn owner_copy_inner(source_project: bool) {
+// MP-08/MP-11: the real enrolled terminal must cancel and continue pre-enrollment copies.
+#[test]
+fn mp08_mp11_legacy_local_project_copy_terminal_cancel_and_continue() {
+    legacy_local_copy_test(true);
+}
+
+#[test]
+fn mp08_mp11_legacy_local_kernel_copy_terminal_cancel_and_continue() {
+    legacy_local_copy_test(false);
+}
+
+fn legacy_local_copy_test(source_project: bool) {
+    crate::test_support::isolated_env_test!();
+    std::thread::Builder::new()
+        .name("legacy-local-copy".into())
+        .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(owner_copy_inner(source_project, true));
+        })
+        .unwrap()
+        .join()
+        .unwrap_or_else(|error| std::panic::resume_unwind(error));
+}
+
+async fn owner_copy_inner(source_project: bool, legacy_local: bool) {
     use crate::managed_context::outbound_service::*;
     use crate::managed_context::owner_managed::*;
     use crate::transport::{relay_client::RelayClientState, relay_crypto};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let (_cleanup, _worktree, runtime, session) = review_fixture().await;
+    let (_cleanup, _worktree, runtime, session, router) = review_fixture().await;
     let mut config = runtime.owned.config_projection.snapshot();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let owner = if legacy_local {
+        assert_eq!(
+            session.owner_user_id(),
+            crate::session::DEFAULT_LOCAL_USER_ID
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .session_store
+                .get_project(session.project_id())
+                .unwrap()
+                .owner_user_id(),
+            session.owner_user_id()
+        );
+        "enrolled-copy-owner"
+    } else {
+        session.owner_user_id()
+    };
     config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
         api_url: format!("http://{}", listener.local_addr().unwrap()),
         account_id: "review-account".into(),
-        user_id: session.owner_user_id().into(),
+        user_id: owner.into(),
         realm_id: "review-realm".into(),
         machine_id: Some("source-machine-test".into()),
         kernel_credential: Some("synthetic-review-fixture".into()),
@@ -307,16 +354,35 @@ async fn owner_copy_inner(source_project: bool) {
         assert_eq!(status.accepted_bytes, 0);
         assert!(status.receipt.is_none());
         assert!(!root.join(&context).exists());
-        runtime
-            .resolve_terminal_runtime_interaction(
-                session.id(),
-                interaction.id(),
-                if approve { "continue" } else { "cancel" },
-                None,
-                Some(session.owner_user_id()),
+        let request = crate::local::LocalDaemonRequest::RespondToInteraction(
+            crate::local::RespondToInteractionRequest {
+                session_id: session.id().into(),
+                interaction_id: interaction.id().into(),
+                choice_id: if approve { "continue" } else { "cancel" }.into(),
+                custom_reply: None,
+                passkey: None,
+                passkey_remember_minutes: None,
+            },
+        );
+        let caller = router
+            .local_command_caller(
+                crate::runtime::command::KernelCommandSource::LocalCli,
+                crate::local::KernelConnectionClass::Terminal,
             )
-            .await
-            .unwrap();
+            .await;
+        assert_eq!(caller.user_id.as_deref(), Some(owner));
+        let command = crate::runtime::command::KernelCommand::from_local_request_with_caller(
+            "owner-copy-answer",
+            crate::runtime::command::KernelCommandSource::LocalCli,
+            caller,
+            None,
+            None,
+            &request,
+        );
+        assert!(matches!(
+            router.dispatch(command, request).await.unwrap(),
+            crate::local::LocalDaemonResponse::InteractionResponded { .. }
+        ));
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let status = store.get(&context).unwrap();

@@ -15,14 +15,27 @@ fn mp08_mp11_source_project_owner_review_rejects_meta_and_agent_answers() {
 }
 
 async fn kernel_only_human_review() {
-    human_review(false).await;
+    human_review(false, false).await;
 }
 
 async fn source_project_human_review() {
-    human_review(true).await;
+    human_review(true, false).await;
 }
 
-async fn human_review(source_project: bool) {
+// MP-08/MP-11: create the Project/session before linking a distinct Cloud owner.
+#[test]
+fn mp08_mp11_legacy_local_kernel_review_uses_enrolled_terminal_owner() {
+    crate::test_support::isolated_env_test!();
+    run_large_stack_async_test("legacy-kernel-human-review", || human_review(false, true));
+}
+
+#[test]
+fn mp08_mp11_legacy_local_project_review_uses_enrolled_terminal_owner() {
+    crate::test_support::isolated_env_test!();
+    run_large_stack_async_test("legacy-project-human-review", || human_review(true, true));
+}
+
+async fn human_review(source_project: bool, legacy_local: bool) {
     let env = TestMetaRuntimeEnv::new("kernel-only-human-review");
     let worktree = crate::test_support::TestWorktree::new("kernel-only-human-review");
     let mut config = DaemonConfig::for_tests();
@@ -49,8 +62,24 @@ async fn human_review(source_project: bool) {
     let auth = run.runtime_mcp_auth_token().unwrap().to_owned();
     let projection = app.config_projection_store();
     let mut config = projection.snapshot();
+    let owner = if legacy_local {
+        assert_eq!(
+            session.owner_user_id(),
+            crate::session::DEFAULT_LOCAL_USER_ID
+        );
+        assert_eq!(
+            app.sessions()
+                .get_project(session.project_id())
+                .unwrap()
+                .owner_user_id(),
+            session.owner_user_id()
+        );
+        "enrolled-review-owner"
+    } else {
+        session.owner_user_id()
+    };
     config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
-        user_id: session.owner_user_id().into(),
+        user_id: owner.into(),
         ..Default::default()
     });
     projection.update(config);
@@ -148,7 +177,7 @@ async fn human_review(source_project: bool) {
                         &id,
                         "continue",
                         None,
-                        Some(session.owner_user_id()),
+                        Some(owner),
                         None,
                         None,
                         class,
@@ -175,6 +204,43 @@ async fn human_review(source_project: bool) {
             events.payload["events"].as_array().unwrap().is_empty(),
             "MP-11 owner review must not enter Meta prompt/event context"
         );
+        if legacy_local {
+            let enrolled = projection.snapshot();
+            let mut relinked = enrolled.clone();
+            relinked.cloud_relay.as_mut().unwrap().user_id = "relinked-owner".into();
+            projection.update(relinked);
+            for caller in [owner, "relinked-owner"] {
+                assert!(
+                    runtime
+                        .resolve_terminal_runtime_interaction(
+                            session.id(),
+                            &id,
+                            "continue",
+                            None,
+                            Some(caller),
+                        )
+                        .await
+                        .is_err(),
+                    "MP-11 a relink cannot reassign a pending review"
+                );
+            }
+            projection.update(enrolled);
+        }
+        if legacy_local {
+            assert!(
+                runtime
+                    .resolve_terminal_runtime_interaction(
+                        session.id(),
+                        &id,
+                        "continue",
+                        None,
+                        Some(session.owner_user_id()),
+                    )
+                    .await
+                    .is_err(),
+                "MP-11 literal local identity cannot answer after enrollment"
+            );
+        }
         let request =
             LocalDaemonRequest::RespondToInteraction(crate::local::RespondToInteractionRequest {
                 session_id: session.id().into(),
@@ -186,7 +252,49 @@ async fn human_review(source_project: bool) {
             });
         let mut command =
             KernelCommand::from_local_request("owner-review-answer", None, None, &request);
-        command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
+        command.caller = router
+            .local_command_caller(
+                crate::runtime::command::KernelCommandSource::LocalCli,
+                crate::local::KernelConnectionClass::Terminal,
+            )
+            .await;
+        assert_eq!(command.caller.user_id.as_deref(), Some(owner));
+        if legacy_local {
+            let observation =
+                LocalDaemonRequest::GetSessionState(crate::local::GetSessionStateRequest {
+                    session_id: session.id().into(),
+                });
+            let observe = KernelCommand::from_local_request_with_caller(
+                "legacy-observation",
+                command.source.clone(),
+                command.caller.clone(),
+                None,
+                None,
+                &observation,
+            );
+            let projected = router.dispatch(observe, observation).await.unwrap();
+            if let LocalDaemonResponse::SessionState {
+                session: projected, ..
+            } = projected
+            {
+                assert_eq!(
+                    projected.focused_agent_id(),
+                    Some(meta.id()),
+                    "MP-11 the enrolled terminal retains the current local session focus"
+                );
+            } else {
+                panic!("MP-11 expected legacy session projection");
+            }
+            let mut host = command.clone();
+            host.caller.connection_class = Some(crate::local::KernelConnectionClass::Host);
+            assert!(
+                matches!(
+                    router.dispatch(host, request.clone()).await,
+                    Err(DaemonError::SessionAccessDenied { .. })
+                ),
+                "MP-11 legacy terminal ownership never grants Host membership"
+            );
+        }
         assert!(matches!(
             router.dispatch(command, request).await.unwrap(),
             LocalDaemonResponse::InteractionResponded { .. }
