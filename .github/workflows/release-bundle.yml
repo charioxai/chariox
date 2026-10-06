@@ -252,6 +252,8 @@ jobs:
             > "$RUNNER_TEMP/macos-signing-receipt.json"
           # Bun's JIT must still run under the hardened runtime.
           test "$("$RUNNER_TEMP/signed/bin/chariox" --version)" = "chariox $VERSION"
+          # MP-07 / MP-11: exercise Setup's JavaScriptCore after signing too.
+          test "$("$RUNNER_TEMP/signed/bin/chariox-setup" --version)" = "Chariox Setup $VERSION"
           # The runtime installer must carry macOS enrollment (#431); without it, it answers platform_unsupported.
           answer=$("$RUNNER_TEMP/signed/libexec/chariox-app-runtime-install" 2>&1 || true)
           [[ "$answer" == *app_runtime_installer_requires_root* ]] || { echo "the runtime installer has no macOS enrollment: $answer"; exit 1; }
