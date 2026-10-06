@@ -9,6 +9,15 @@ pub(super) const PASSKEY: &str = "sudo fixture passkey";
 // MP-08/MP-11: even an owner-authorized sudo turn cannot perform owner review.
 #[tokio::test]
 async fn mp08_mp11_owner_context_review_rejects_sudo_agent_approval() {
+    owner_context_review_rejects_sudo(false).await;
+}
+
+#[tokio::test]
+async fn mp08_mp11_source_project_owner_review_rejects_sudo_agent_approval() {
+    owner_context_review_rejects_sudo(true).await;
+}
+
+async fn owner_context_review_rejects_sudo(source_project: bool) {
     let f = fixture();
     let turn = running(&f);
     let worktree = crate::test_support::TestWorktree::new("sudo-owner-context-review");
@@ -21,11 +30,25 @@ async fn mp08_mp11_owner_context_review_rejects_sudo_agent_approval() {
         ..Default::default()
     });
     f.state.owned.config_projection.update(config);
+    let development = if source_project {
+        crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
+            project_id: session.project_id().into(),
+            repositories: vec![
+                crate::managed_context::development::DevelopmentSourceRepositoryBinding {
+                    role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                    workspace_id: session.workspace_id().into(),
+                    worktree_id: None,
+                },
+            ],
+        }
+    } else {
+        crate::managed_context::package::ManagedContextDevelopmentSelection::Empty
+    };
     let reviewer = f.state.clone();
     let task = tokio::spawn(async move {
         reviewer
             .review_credential_free_owner_context(
-                &crate::managed_context::package::ManagedContextDevelopmentSelection::Empty,
+                &development,
                 "sudo-owner-review",
                 "Owner target machine",
             )

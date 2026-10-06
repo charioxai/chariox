@@ -251,6 +251,7 @@ impl KernelRuntimeState {
                         "this machine",
                         "Saved Project setup".into(),
                         vault.as_ref(),
+                        None,
                     )
                     .await?;
                 {

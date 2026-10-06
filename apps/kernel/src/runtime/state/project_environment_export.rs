@@ -51,29 +51,36 @@ impl KernelRuntimeState {
         &self,
         project_id: &str,
         repositories: &[crate::managed_context::development::DevelopmentRepositorySelection],
+        context_id: &str,
         target: &str,
     ) -> Result<(), DaemonError> {
-        self.refresh_project_environment_state_mode(project_id, repositories, true, target, true)
-            .await
-            .map(|_| ())
-            .map_err(|error| match &error {
-                DaemonError::LocalTransport {
-                    operation: "Project environment",
-                    message,
-                } if matches!(
-                    message.as_str(),
-                    "Project export cancelled" | "Project review timed out"
-                ) =>
-                {
-                    DaemonError::ManagedContext {
-                        code: "managed_context_review_cancelled",
-                        operation: "owner-managed context review",
-                        message: "Owner-managed context review was cancelled or expired".into(),
-                        retryable: false,
-                    }
+        self.refresh_project_environment_state_mode(
+            project_id,
+            repositories,
+            true,
+            target,
+            Some(context_id),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| match &error {
+            DaemonError::LocalTransport {
+                operation: "Project environment",
+                message,
+            } if matches!(
+                message.as_str(),
+                "Project export cancelled" | "Project review timed out"
+            ) =>
+            {
+                DaemonError::ManagedContext {
+                    code: "managed_context_review_cancelled",
+                    operation: "owner-managed context review",
+                    message: "Owner-managed context review was cancelled or expired".into(),
+                    retryable: false,
                 }
-                _ => error,
-            })
+            }
+            _ => error,
+        })
     }
 
     pub(crate) async fn refresh_project_environment_state(
@@ -88,7 +95,7 @@ impl KernelRuntimeState {
             repositories,
             interactive,
             target_name,
-            false,
+            None,
         )
         .await
     }
@@ -99,8 +106,9 @@ impl KernelRuntimeState {
         repositories: &[crate::managed_context::development::DevelopmentRepositorySelection],
         interactive: bool,
         target_name: &str,
-        without_credentials: bool,
+        owner_context_id: Option<&str>,
     ) -> Result<PreparedProjectEnvironmentExport, DaemonError> {
+        let without_credentials = owner_context_id.is_some();
         let project = self.owned.session_store.get_project(project_id)?;
         if repositories
             .iter()
@@ -306,6 +314,7 @@ impl KernelRuntimeState {
                         target_name,
                         code,
                         vault.as_ref(),
+                        owner_context_id,
                     )
                     .await?;
             } else {

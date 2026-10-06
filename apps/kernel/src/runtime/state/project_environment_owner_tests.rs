@@ -74,7 +74,12 @@ async fn owner_context_review_rejection_inner() {
     let task_runtime = runtime.clone();
     let task = tokio::spawn(async move {
         task_runtime
-            .review_credential_free_project_context(&project, &[repository], "Owner machine")
+            .review_credential_free_project_context(
+                &project,
+                &[repository],
+                "project-rejection",
+                "Owner machine",
+            )
             .await
     });
     let interaction = tokio::time::timeout(Duration::from_secs(10), async {
@@ -87,7 +92,7 @@ async fn owner_context_review_rejection_inner() {
             if let Some(interaction) = current
                 .active_interactions()
                 .iter()
-                .find(|interaction| interaction.id().starts_with("project-environment:"))
+                .find(|interaction| interaction.id().starts_with("owner-context:"))
             {
                 break interaction.clone();
             }
@@ -138,7 +143,29 @@ fn mp08_mp11_kernel_only_owner_copy_waits_for_approval_and_cancellation_stops_ex
         .unwrap_or_else(|error| std::panic::resume_unwind(error));
 }
 
+#[test]
+fn mp08_mp11_source_project_owner_copy_waits_for_approval_and_cancellation_stops_export() {
+    crate::test_support::isolated_env_test!();
+    std::thread::Builder::new()
+        .name("project-owner-review".into())
+        .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(owner_copy_inner(true));
+        })
+        .unwrap()
+        .join()
+        .unwrap_or_else(|error| std::panic::resume_unwind(error));
+}
+
 async fn kernel_only_owner_copy_inner() {
+    owner_copy_inner(false).await;
+}
+
+async fn owner_copy_inner(source_project: bool) {
     use crate::managed_context::outbound_service::*;
     use crate::managed_context::owner_managed::*;
     use crate::transport::{relay_client::RelayClientState, relay_crypto};
@@ -174,7 +201,18 @@ async fn kernel_only_owner_copy_inner() {
             target: target.clone(),
             context_selection: OwnerManagedContextSelection {
                 kernel_context: OwnerManagedKernelSelection::SourceKernelWithoutCredentials,
-                development_setup: OwnerManagedDevelopmentSelection::Empty,
+                development_setup: if source_project {
+                    OwnerManagedDevelopmentSelection::SourceProject {
+                        project_id: session.project_id().into(),
+                        repositories: vec![OwnerManagedRepositorySelection {
+                            role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                            workspace_id: session.workspace_id().into(),
+                            worktree_id: None,
+                        }],
+                    }
+                } else {
+                    OwnerManagedDevelopmentSelection::Empty
+                },
             },
         };
         let ticket = ManagedContextTransferTicket {
