@@ -20,12 +20,20 @@ export function assertSameController(prior, current) {
   assert.deepEqual(current.artifacts, prior.artifacts, 'MP-10 runtime artifacts changed')
 }
 
-export async function loadContinuation({ priorEvidence, newEvidence, selection, cleanupSettlement }) {
+export async function loadContinuation({ priorEvidence, newEvidence, selection, cleanupSettlement, scope = 'round3-full', observationPolicy }) {
   assert(path.isAbsolute(priorEvidence) && path.resolve(priorEvidence) !== path.resolve(newEvidence), 'MP-10 preserve original evidence')
   const names = ['CAMPAIGN.json', 'RESULTS.json', 'FULL_SELECTION.json']
   const bytes = await Promise.all(names.map(name => readFile(`${priorEvidence}/${name}`)))
   const [campaign, rows, priorSelection] = bytes.map(buffer => JSON.parse(buffer))
   assert(campaign.finishedAt && !campaign.completed, 'MP-10 continuation requires settled, incomplete campaign')
+  if (observationPolicy) {
+    assert.equal(scope, 'round4-full'); assert.equal(campaign.scope, scope)
+    assert.equal(observationPolicy, 'vision-allowed'); assert.equal(campaign.observationPolicy, observationPolicy)
+    assert.equal(campaign.promptVariant, 'recovery-vision-v1')
+    assert(!rows.some(row => row.providerUnauthorized || row.providerUsageExhausted || row.judgeFailure?.unauthorized || row.judgeFailure?.usageExhausted),
+      'MP-08/MP-10 quota/auth stop requires new owner authorization; never auto-continue')
+    assert(rows.every(row => row.observationPolicy === observationPolicy), 'MP-10 observation policies must not mix')
+  }
   const settlement = cleanupSettlement ? await verifyCleanupSettlement({ file: cleanupSettlement, priorEvidence, bytes, rows }) : null
   if (settlement) assertSameController(campaign.source, settlement.source)
   else assertRuntimeClosed(campaign.cleanup)
@@ -49,13 +57,14 @@ export async function loadContinuation({ priorEvidence, newEvidence, selection, 
     assert(file.endsWith('.json'), 'MP-10 unexpected admission artifact')
     const data = await readFile(`${priorEvidence}/admissions/${file}`), receipt = JSON.parse(data)
     assert(seen.has(receipt.taskId) && !selected.get(receipt.taskId).excludedReason, 'MP-10 ambiguous admission without settled row; never replay')
-    assert.equal(file, `round3-full-${encodeURIComponent(receipt.taskId)}.json`)
+    assert.equal(file, `${scope}-${encodeURIComponent(receipt.taskId)}.json`)
     admissionHashes.push({ file, sha256: createHash('sha256').update(data).digest('hex') })
   }
   const tasks = selection.tasks.filter(task => !task.excludedReason && !seen.has(task.id))
   assert(tasks.length, 'MP-10 no unattempted tasks remain')
   return { rows, tasks, source: campaign.source, provenance: { priorEvidence,
     priorReceipts: names.map((name, i) => ({ name, sha256: createHash('sha256').update(bytes[i]).digest('hex') })),
+    ...(observationPolicy ? { observationPolicy, resourceSha256: createHash('sha256').update(await readFile(`${priorEvidence}/runtime-resources.jsonl`)).digest('hex') } : {}),
     admissionHashes, priorSettled: campaign.settled, unattempted: tasks.length, solverRetries: 0,
     ...(settlement ? { cleanupSettlement: settlement.provenance } : {}) } }
 }

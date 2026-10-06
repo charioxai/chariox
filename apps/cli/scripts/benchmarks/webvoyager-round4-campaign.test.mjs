@@ -21,10 +21,25 @@ async function fixture(kind) {
     await writeFile(`${upstream}/data/WebVoyager_data.jsonl`, dataset)
     await writeFile(`${baseline}/FULL_SELECTION.json`, JSON.stringify(selection))
     await writeFile(`${baseline}/CAMPAIGN.json`, JSON.stringify({ source }))
-    await writeFile(`${baseline}/RESULTS.json`, '[]')
+    await writeFile(`${baseline}/RESULTS.json`, JSON.stringify(selection.tasks.map(t => ({ taskId: t.id, ...(t.excludedReason ? { excluded: true, excludedReason: t.excludedReason } : { harnessValid: true, judgeValid: true, judgeVerdict: 'NOT SUCCESS' }) }))))
+    const priorEvidence = `${root}/prior`
+    let priorRows
+    if (kind.startsWith('continuation')) {
+      await mkdir(`${priorEvidence}/admissions`, { recursive: true })
+      const taggedSelection = { ...selection, observationPolicy: 'vision-allowed', mpItems: ['MP-08', 'MP-10'] }
+      priorRows = [...selection.tasks.filter(t => t.excludedReason).map(t => ({ taskId: t.id, excluded: true, excludedReason: t.excludedReason, observationPolicy: 'vision-allowed' })),
+        { taskId: 'S--0', source, observationPolicy: 'vision-allowed', cleanupValid: true, harnessValid: false, judgeValid: false, firstFailingSeam: 'official_prompt_judge', providerUsageExhausted: kind === 'continuation-quota', judgeFailure: { abort: 'deadline', unauthorized: kind === 'continuation-auth' } }]
+      await writeFile(`${priorEvidence}/FULL_SELECTION.json`, JSON.stringify(taggedSelection))
+      await writeFile(`${priorEvidence}/RESULTS.json`, JSON.stringify(priorRows))
+      await writeFile(`${priorEvidence}/CAMPAIGN.json`, JSON.stringify({ scope: 'round4-full', observationPolicy: kind === 'continuation-policy' ? 'text-only' : 'vision-allowed', promptVariant: 'recovery-vision-v1', finishedAt: 'fixture', completed: false, settled: 1, source, cleanup: { ...cleanup, stateRemoved: kind !== 'continuation-cleanup' }, harnessCommit: 'fixture-prior',
+        model: 'gpt-6.1-sol', judgeModel: 'gpt-6.1-sol', effort: 'high', judgeEffort: 'low', maxMutatingActions: 15, maxToolCalls: 80, wallTimeoutMs: 600000 }))
+      await writeFile(`${priorEvidence}/runtime-resources.jsonl`, JSON.stringify({ memAvailable: 20 * 1024 ** 3, diskAvailable: 20 * 1024 ** 3 }) + '\n')
+      await writeFile(`${priorEvidence}/admissions/round4-full-S--0.json`, JSON.stringify({ taskId: 'S--0', state: 'reserved' }))
+      if (kind === 'continuation-ghost') await writeFile(`${priorEvidence}/admissions/round4-full-S--1.json`, JSON.stringify({ taskId: 'S--1', state: 'reserved' }))
+    }
     await writeFile(`${smokeEvidence}/CAMPAIGN.json`, JSON.stringify({ completed: kind !== 'incomplete-smoke', settled: 10, source, observationPolicy: 'vision-allowed', cleanup }))
     const smoke = kind === 'smoke'
-    const options = { runtime: { laneName: 'wvanalysis', sandboxCompatibility: false, evidence }, rooms: 2, promptVariant: 'recovery-vision-v1', scope: smoke ? 'round4-smoke' : 'round4-full', baseline, upstream, smokeEvidence, smokeTaskIds: selection.tasks.slice(0, 10).map(t => t.id) }
+    const options = { runtime: { laneName: 'wvanalysis', sandboxCompatibility: false, evidence }, rooms: 2, promptVariant: 'recovery-vision-v1', scope: smoke ? 'round4-smoke' : 'round4-full', baseline, upstream, smokeEvidence, smokeTaskIds: selection.tasks.slice(0, 10).map(t => t.id), ...(kind.startsWith('continuation') ? { priorEvidence } : {}) }
     await writeFile(`${root}/options.json`, JSON.stringify(options))
     const calls = [], context = vm.createContext({ JSON, console: { log() {} }, process: { argv: ['node', 'fixture', `${root}/options.json`], on() {}, off() {}, exitCode: 0 } })
     const modules = new Map(), synthetic = (key, values) => {
@@ -46,7 +61,7 @@ async function fixture(kind) {
       } })
       return synthetic(specifier, await import(specifier.startsWith('.') ? new URL(specifier, import.meta.url) : specifier))
     })
-    if (kind === 'incomplete-smoke') { await assert.rejects(coordinator.evaluate(), /complete smoke/); assert.deepEqual(calls, []); return }
+    if (['incomplete-smoke', 'continuation-quota', 'continuation-auth', 'continuation-policy', 'continuation-cleanup', 'continuation-ghost'].includes(kind)) { await assert.rejects(coordinator.evaluate()); assert.deepEqual(calls, []); return }
     await coordinator.evaluate()
     const campaign = JSON.parse(await readFile(`${evidence}/CAMPAIGN.json`, 'utf8'))
     const rows = JSON.parse(await readFile(`${evidence}/RESULTS.json`, 'utf8'))
@@ -58,12 +73,23 @@ async function fixture(kind) {
       assert.equal(campaign.stopPoint.taskId, 'S--0')
       assert(campaign.stopPoint[kind.endsWith('quota') ? 'providerUsageExhausted' : 'providerUnauthorized'])
     } else {
+      if (kind.startsWith('continuation')) {
+        assert(!calls.includes('S--0')); assert.equal(calls.length, 631)
+        assert.deepEqual(rows.slice(0, priorRows.length), priorRows)
+        assert.equal(campaign.invalid, 1); assert.equal(campaign.continuation.priorSettled, 1)
+        await writeFile(`${evidence}/runtime-resources.jsonl`, JSON.stringify({ memAvailable: 24 * 1024 ** 3, diskAvailable: 30 * 1024 ** 3 }) + '\n')
+        await exec(process.execPath, [fileURLToPath(new URL('./webvoyager-round4-report.mjs', import.meta.url)), evidence])
+        const comparison = JSON.parse(await readFile(`${evidence}/COMPARISON.json`, 'utf8'))
+        assert.equal(comparison.round4VisionAllowed.tasks, 632); assert.equal(comparison.round4VisionAllowed.invalid, 1)
+        assert.equal(comparison.harnessRuns.length, 2); assert.equal(comparison.harnessRuns[0].commit, 'fixture-prior')
+        assert.equal(comparison.resources.minimumMemAvailableGiB, 20)
+      }
       assert.equal(campaign.completed, true); assert.equal(campaign.settled, smoke ? 10 : 632)
       assert.equal(rows.length, smoke ? 10 : 643)
     }
   } finally { await rm(root, { recursive: true }) }
 }
 if (process.argv[2] === '--fixture') await fixture(process.argv[3])
-else for (const kind of ['smoke', 'full', 'quota', 'auth', 'judge-quota', 'judge-auth', 'incomplete-smoke']) test(`MP-08/MP-10/MP-11 round4 vision-allowed campaign ${kind}`, async () => {
+else for (const kind of ['smoke', 'full', 'continuation', 'continuation-quota', 'continuation-auth', 'continuation-policy', 'continuation-cleanup', 'continuation-ghost', 'quota', 'auth', 'judge-quota', 'judge-auth', 'incomplete-smoke']) test(`MP-08/MP-10/MP-11 round4 vision-allowed campaign ${kind}`, async () => {
   await exec(process.execPath, ['--experimental-vm-modules', fileURLToPath(import.meta.url), '--fixture', kind], { maxBuffer: 65536 })
 })

@@ -66,7 +66,22 @@ async function report(directory) {
     completed: campaign.completed, harnessCommit: campaign.harnessCommit, source: campaign.source,
     stopPoint: campaign.stopPoint ?? null, cleanup: campaign.cleanup ?? null,
     providerAvailabilityFailures: rows.filter(r => r.providerUnauthorized || r.providerUsageExhausted || r.judgeFailure?.unauthorized || r.judgeFailure?.usageExhausted).map(r => ({ taskId: r.taskId, firstFailingSeam: r.firstFailingSeam, unauthorized: !!(r.providerUnauthorized || r.judgeFailure?.unauthorized), usageExhausted: !!(r.providerUsageExhausted || r.judgeFailure?.usageExhausted) })) }
-  const samples = (await readFile(`${directory}/runtime-resources.jsonl`, 'utf8')).trim().split('\n').map(JSON.parse)
+  const roots = [directory], harnessRuns = [{ evidence: directory, commit: campaign.harnessCommit }]
+  let previous = campaign.continuation
+  while (previous) {
+    assert(!roots.includes(previous.priorEvidence), 'MP-10 circular continuation')
+    for (const receipt of previous.priorReceipts) assert.equal(createHash('sha256').update(await readFile(`${previous.priorEvidence}/${receipt.name}`)).digest('hex'), receipt.sha256, 'MP-10 prior result mutation')
+    const priorRows = JSON.parse(await readFile(`${previous.priorEvidence}/RESULTS.json`, 'utf8'))
+    assert.deepEqual(rows.slice(0, priorRows.length), priorRows, 'MP-10 prior attempts changed or rescored')
+    assert.equal(createHash('sha256').update(await readFile(`${previous.priorEvidence}/runtime-resources.jsonl`)).digest('hex'), previous.resourceSha256)
+    if (previous.cleanupSettlement) assert.equal(createHash('sha256').update(await readFile(previous.cleanupSettlement.file)).digest('hex'), previous.cleanupSettlement.sha256)
+    const priorCampaign = JSON.parse(await readFile(`${previous.priorEvidence}/CAMPAIGN.json`, 'utf8'))
+    assertSameController(baselineCampaign.source, priorCampaign.source)
+    roots.push(previous.priorEvidence); harnessRuns.unshift({ evidence: previous.priorEvidence, commit: priorCampaign.harnessCommit, settled: priorCampaign.settled })
+    previous = priorCampaign.continuation
+  }
+  result.harnessRuns = harnessRuns
+  const samples = (await Promise.all(roots.map(async root => (await readFile(`${root}/runtime-resources.jsonl`, 'utf8')).trim().split('\n').map(JSON.parse)))).flat()
   result.resources = { samples: samples.length,
     minimumMemAvailableGiB: Math.min(...samples.map(s => s.memAvailable)) / 1024 ** 3,
     minimumDiskAvailableGiB: Math.min(...samples.map(s => s.diskAvailable)) / 1024 ** 3 }
