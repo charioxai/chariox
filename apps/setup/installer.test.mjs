@@ -2,13 +2,14 @@
 import assert from "node:assert/strict"
 import { createServer } from "node:http"
 import { generateKeyPairSync } from "node:crypto"
-import { copyFile, mkdir, mkdtemp, readFile, readlink, realpath, readdir, rm, symlink, writeFile } from "node:fs/promises"
+import { copyFile, cp, lstat, mkdir, mkdtemp, readFile, readlink, realpath, readdir, rm, symlink, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import test from "node:test"
 import { installLocal, targetPlatform, publicUrl } from "./installer.mjs"
 import { setupFixture } from "./fixture.mjs"
 import { launchdDefinition, launchdManager } from "./launchd.mjs"
+import { runMachine } from "../kernel/ssh-machine/remote.mjs"
 const extractorSource = await readFile(new URL("../../deploy/managed-kernel/extract-release.py", import.meta.url), "utf8")
 const state = await realpath(process.env.CHARIOX_BYOM_TEST_STATE ?? tmpdir())
 async function harness(t, overrides = {}) {
@@ -73,6 +74,53 @@ test("MP-07 explicit upgrade is atomic, verifies original pins and rolls back fa
   assert.equal(await readlink(join(h.root, "current")), `releases/${next.digest.slice(7)}`)
   assert.equal(await readFile(state, "utf8"), "private state stays")
 })
+for (const cached of [false, true]) {
+  for (const rollback of [false, true]) {
+    test(`MP-07/MP-08/MP-11 delayed upgrade retains staging and lock: cached=${cached} rollback=${rollback}`, async t => {
+      const h = await harness(t); await installLocal(h.options)
+      const nextDir = join(h.dir, "next"); await mkdir(nextDir)
+      const next = await setupFixture(nextDir, { version: "0.4.0", keys: h.f.keys }); await h.serve(next)
+      if (cached) await cp(next.bundle, join(h.root, "releases", next.digest.slice(7)), { recursive: true })
+      const parent = join(h.home, ".local/share/chariox/ssh-machines")
+      const lock = join(parent, ".local.lock"), before = await readFile(join(h.root, "install.json"))
+      const sentinel = join(h.home, ".chariox/dev/ssh-machines/local/sentinel")
+      await writeFile(sentinel, "private state stays")
+      let readiness = 0, stops = 0, stages
+      async function held(checkImage = false) {
+        // Keep readiness/service I/O pending long enough for premature finally cleanup to run.
+        await new Promise(resolve => setTimeout(resolve, 100))
+        assert.ok((await lstat(lock)).isDirectory(), "upgrade must retain its exclusive lock")
+        const names = (await readdir(parent)).filter(name => name.startsWith(".local.stage-"))
+        assert.equal(names.length, 1, "upgrade must retain its staging tree until settlement")
+        stages ??= names
+        assert.deepEqual(names, stages)
+        if (checkImage) assert.ok((await lstat(join(parent, names[0], "image"))).isDirectory(), "initial readiness must retain the staged image")
+        await assert.rejects(runMachine({ action: "remove", installId: "local", port: 55139, releaseDigest: h.f.digest }, { home: h.home, serviceManager: h.options.serviceManager }), /another install operation owns/)
+      }
+      const upgrade = installLocal({ ...h.options, version: next.version, action: "upgrade",
+        kernelCommand: async () => {
+          await held(++readiness === 1)
+          if (rollback && readiness === 2) throw new Error("synthetic readiness failure")
+          return { connected: true, kernelId: "kernel", machineId: "machine", userId: "owner", publicKeyThumbprint: "pin" }
+        },
+        serviceManager: async args => {
+          if (args[0] === "disable" && ++stops === 2) await held() // Rollback also owns the lock until service restoration completes.
+          return h.options.serviceManager(args)
+        },
+      })
+      if (rollback) await assert.rejects(upgrade, /synthetic readiness failure/)
+      else assert.equal((await upgrade).status, "upgraded")
+      assert.equal(readiness, 2)
+      assert.equal(stops, rollback ? 2 : 1)
+      await assert.rejects(lstat(lock), { code: "ENOENT" })
+      assert.deepEqual((await readdir(parent)).filter(name => name.startsWith(".local.stage-") || name.startsWith(".setup-")), [])
+      assert.equal(await readlink(join(h.root, "current")), `releases/${(rollback ? h.f.digest : next.digest).slice(7)}`)
+      if (rollback) assert.deepEqual(await readFile(join(h.root, "install.json")), before)
+      else assert.equal(JSON.parse(await readFile(join(h.root, "install.json"))).releaseDigest, next.digest)
+      assert.equal(await readFile(sentinel, "utf8"), "private state stays")
+    })
+  }
+}
 test("MP-07 an upgrade signed by an unapproved replacement key cannot stop the current service", async t => {
   const h = await harness(t); await installLocal(h.options); h.calls.length = 0
   const dir = join(h.dir, "foreign"); await mkdir(dir); const f = await setupFixture(dir, { version: "0.4.0" }); await h.serve(f)
