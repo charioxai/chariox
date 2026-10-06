@@ -747,3 +747,16 @@ test("MP-08/MP-10/MP-11 Browser artifact request is protocol 435 and opaque", ()
   assert.deepEqual(request, expected)
   assert.equal(createHash("sha256").update(JSON.stringify(request)).digest("hex"), "6bbe9787f3b44bf15f019525f27b7642e932542df3c1c90065ba548225204eee")
 })
+
+// MP-08/MP-10/MP-11: the shared client sends holds through the normal Room API.
+test("MP-08/MP-10/MP-11 protocol439 holds keep generation and viewport authority", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 439)
+  for (const action of [
+    { kind: "keyboard_hold", key: "shift+Left", duration_ms: 750 } as const,
+    { kind: "pointer_hold", x: 12, y: 24, button: "right", duration_ms: 750 } as const,
+  ]) {
+    assert.deepEqual(submitRoomEnvironmentActionRequest("room", 2, 3, "hold-1", action), {
+      SubmitRoomEnvironmentAction: { session_id: "room", runtime_generation: 2, viewport_revision: 3, idempotency_key: "hold-1", action },
+    })
+  }
+})
