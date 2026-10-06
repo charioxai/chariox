@@ -78,9 +78,12 @@ failure, partial campaign or skipped task into a successful full run.
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
   -s apps/cli/scripts/benchmarks/evals-phase1 -p 'test_*.py'
-python3 apps/cli/scripts/benchmarks/evals-phase1/report.py --output /absolute/external/evidence
+python3 apps/cli/scripts/benchmarks/evals-phase1/report.py \
+  --campaign /absolute/external/campaign --score-root /absolute/external/scoring \
+  --output /absolute/external/report
 ```
 
-The report currently writes status-only CSV and an explicitly empty-data plot.
+The report validates campaign/scorer provenance and writes actual task CSV,
+summary and a cost/accuracy plot. Missing prices produce no cost/accuracy point.
 No fixture, imported interface or source check closes an MP item. See
 [`docs/EVALS_PHASE1.md`](../../../../../docs/EVALS_PHASE1.md) for exact blockers.

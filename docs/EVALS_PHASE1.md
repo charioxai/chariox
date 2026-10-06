@@ -4,7 +4,8 @@ Round 2 is active and remains **not accepted**. The coordinator allocated
 local daemon448 / relay peer91 and identified the product-linked Codex profile.
 The numeric accounting drill passes on the real relay/kernel/TUI/Codex path.
 Matching USD remains blocked by missing authoritative pricing inputs. The
-SWE smoke campaign is running; no scored full result is claimed yet.
+SWE smoke scored10/10 resolved with no evaluator errors; the full50 campaign
+is next. No scored full result is claimed yet.
 
 ## MP-08 / MP-10 / MP-11 — round 2 implementation and provenance
 
@@ -119,7 +120,13 @@ snapshot checks pass183/183. The real kernel and relay build passed under the
 shared compile slot with two jobs and kernel debug symbols disabled. Targeted
 CLI notice/session checks pass14/14; CLI typecheck/build pass. These establish
 component behavior; the separately recorded real numeric drill establishes its
-limited live scope. No benchmark task has been scored yet.
+limited live scope. Official SWE smoke completed10/10 and resolved10/10, with0 evaluator errors,
+all solver cleanuptrue, no remaining run containers, and all10 newly pulled task
+image tags removed by exact identity after confirming no container used them.
+Solver wall time totals842.50s;0/10 tasks have an authoritative USD quote. This
+is a local smoke reproduction, not a full score or MP acceptance. The actual
+CSV/summary/plot is generated from frozen campaign and official scorer receipts;
+missing USD produces no cost/accuracy point.
 The historical0-run diagnostic CSV/plot is not a zero-cost/zero-accuracy result.
 
 All state, logs, screenshots and output stay outside source repositories. Signal
