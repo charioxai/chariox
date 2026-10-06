@@ -47,7 +47,7 @@ export class PortableEncoder {
             this.pending.resolve(reply);
           }else{
             if(typeof reply.data_base64!=='string'||reply.data_base64.length>4*1024*1024)return fail();
-            this.backend=['vaapi','x264','vp9'].includes(reply.backend)?reply.backend:null;
+            this.backend=['vaapi','x264','vp8','vp9'].includes(reply.backend)?reply.backend:null;
             this.pending?.resolve({data_base64:reply.data_base64,key:reply.key});
           }
           this.pending=null;

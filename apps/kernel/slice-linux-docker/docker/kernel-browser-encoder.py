@@ -150,7 +150,7 @@ def main():
                 continue
             if request.get('operation') is not None:raise ValueError('operation bound')
             selected=request.get('codec','vp09.00.10.08')
-            if selected not in ('vp09.00.10.08','vp09.00.40.08','vp09.00.50.08','avc1.420033'):raise ValueError('codec admission')
+            if selected not in ('vp8','vp09.00.10.08','vp09.00.40.08','vp09.00.50.08','avc1.420033'):raise ValueError('codec admission')
             if selected.startswith('avc1') and not hardware_disabled and shutil.which('ffmpeg') and any(Path('/dev/dri').glob('renderD*')):
                 try:
                     if hardware is None:hardware = VaapiEncoder()
@@ -173,7 +173,7 @@ def main():
                 frame=frame.reformat(width=1280,height=720,format='yuv420p',interpolation='FAST_BILINEAR')
             config = (frame.width, frame.height, request['bitrate'], selected)
             if codec is None or config != configuration:
-                codec = av.CodecContext.create('libvpx-vp9' if selected.startswith('vp09') else 'libx264', 'w')
+                codec = av.CodecContext.create('libvpx' if selected=='vp8' else 'libvpx-vp9' if selected.startswith('vp09') else 'libx264', 'w')
                 codec.width, codec.height = frame.width, frame.height
                 codec.pix_fmt = 'yuv420p'
                 codec.time_base = Fraction(1,60)
@@ -187,6 +187,7 @@ def main():
                                  'minrate': '0', 'maxrate': str(codec.bit_rate),
                                  'rc_init_occupancy': str(int(request['bitrate'] * .05)),
                                  'max-intra-rate': '200', 'qmin': '4', 'qmax': '48', 'crf':'28'}
+                if selected=='vp8':codec.options={'deadline':'realtime','cpu-used':'8','lag-in-frames':'0','g':'120','error-resilient':'1'}
                 if selected.startswith('avc1'):
                     codec.options={'forced-idr':'1','preset':'ultrafast','tune':'zerolatency','profile':'baseline',
                      'level':'5.1','crf':'23','g':'120','bf':'0',
@@ -204,7 +205,7 @@ def main():
                 raise ValueError('one realtime packet required')
             sequence += 1
             print(json.dumps({'data_base64': base64.b64encode(bytes(packets[0])).decode(),
-                              'key': packets[0].is_keyframe if selected.startswith('vp09') else h264_idr(bytes(packets[0])),'backend':'vp9' if selected.startswith('vp09') else 'x264'}), flush=True)
+                              'key': packets[0].is_keyframe if not selected.startswith('avc1') else h264_idr(bytes(packets[0])),'backend':'vp8' if selected=='vp8' else 'vp9' if selected.startswith('vp09') else 'x264'}), flush=True)
         except Exception:
             codec, configuration = None, None
             print(json.dumps({'error': 'MD-DISPLAY: protected frame encode failed'}), flush=True)
