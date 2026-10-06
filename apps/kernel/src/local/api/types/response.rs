@@ -3,6 +3,10 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    WorkflowNotificationSourceRegistered { source: WorkflowNotificationSource },
+    WorkflowNotificationAttached { subscription: WorkflowNotificationSubscription },
+    WorkflowNotificationDetached { subscription_id: String },
+    WorkflowNotifications { sources: Vec<WorkflowNotificationSourceSummary>, subscriptions: Vec<WorkflowNotificationSubscription>, diagnostics: Vec<WorkflowNotificationDiagnostic> },
     KernelSudoRequested { agent_id: String },
     KernelAccessGranted { grant: KernelAccessGrant, },
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },

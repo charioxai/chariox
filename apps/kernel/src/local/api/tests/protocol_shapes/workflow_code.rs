@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_workflow_code_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 436);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 437);
 
     let validate_request =
         LocalDaemonRequest::ValidateWorkflowCode(crate::local::ValidateWorkflowCodeRequest {

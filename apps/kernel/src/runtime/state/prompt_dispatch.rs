@@ -365,12 +365,33 @@ impl KernelRuntimeState {
         session_id: &str,
         prompt: &crate::session::PromptQueueItem,
     ) -> Result<Option<String>, DaemonError> {
+        self.steer_remote_agent_message_for_turn(session_id, prompt, None, None)
+            .await
+    }
+
+    pub(in crate::runtime::state) async fn steer_remote_agent_message_for_turn(
+        &self,
+        session_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+        expected_active_prompt: Option<&str>,
+        expected_remote: Option<&crate::agent::RemoteAgentBinding>,
+    ) -> Result<Option<String>, DaemonError> {
         let owned = &self.owned;
         let agent_id = prompt.target_agent_id();
         let agent = owned.agent_store.get_agent(agent_id)?;
         let Some(remote_execution) = agent.remote_execution() else {
             return Ok(None);
         };
+        if expected_remote.is_some_and(|expected| {
+            !remote_steer_binding_identity_matches(Some(remote_execution), Some(expected))
+                || remote_execution.active_worker_provider_run_id
+                    != expected.active_worker_provider_run_id
+        }) {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer notification",
+                message: "original remote binding changed before delivery".into(),
+            });
+        }
         let session = owned.session_store.get_session(session_id)?;
         let Some(active_prompt) = owned
             .prompt_state_owner
@@ -378,6 +399,9 @@ impl KernelRuntimeState {
         else {
             return Ok(None);
         };
+        if expected_active_prompt.is_some_and(|expected| expected != active_prompt.id()) {
+            return Ok(None);
+        }
         if active_prompt.status() != crate::session::PromptStatus::Running {
             return Err(DaemonError::LocalTransport {
                 operation: "steer agent message",
@@ -446,7 +470,9 @@ impl KernelRuntimeState {
                     .ok_or_else(|| DaemonError::NoActivePrompt {
                         session_id: session_id.to_string(),
                     })?;
-                if current_active.id() != payload.target_home_prompt_id
+                if expected_remote.is_some_and(|expected| {
+                    !remote_steer_binding_identity_matches(Some(&remote_execution), Some(expected))
+                }) || current_active.id() != payload.target_home_prompt_id
                     || current_active.status() != crate::session::PromptStatus::Running
                     || remote_execution.active_worker_provider_run_id.as_deref()
                         != Some(worker_provider_run_id.as_str())
@@ -465,7 +491,7 @@ impl KernelRuntimeState {
         let mut response =
             send_remote_queued_prompt_steer(&relay_config, &remote_execution, &payload, self, None)
                 .await;
-        if response.as_ref().is_err_and(
+        if expected_active_prompt.is_none() && response.as_ref().is_err_and(
             super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding,
         ) {
             let refreshed = self
@@ -536,6 +562,19 @@ impl KernelRuntimeState {
             &remote_execution.leased_agent_id,
             &provider_run_id,
         );
+        if expected_active_prompt.is_some() {
+            owned.append_steering_prompt_history(
+                session_id,
+                &provider_run_id,
+                &payload.target_home_prompt_id,
+                prompt.source_attachment_id(),
+                agent_id,
+                prompt.id(),
+                prompt.prompt(),
+                prompt.attachments(),
+            )?;
+            return Ok(Some(projected_provider_run_id));
+        }
         self.with_app_side_effect(|_app| {
             let current_agent = owned.agent_store.get_agent(agent_id)?;
             if !remote_steer_binding_identity_matches(
