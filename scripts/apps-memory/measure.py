@@ -103,6 +103,13 @@ def summarize(samples):
                      if s['activity'] in ('idle', 'interacting', 'mirror_idle', 'mirror_interacting')})
     for key in groups:
         cohort = [s for s in samples if (s['topology'], s['views'], s['activity']) == key]
+        # MP-08 / MP-10: opening the next view and a slow final input may retain
+        # the old marker. Preserve raw samples, but analyze the declared 20 s.
+        window = [s for s in cohort if 'at_ms' not in s
+                  or s['at_ms'] / 1000 <= s['sample_at'] < s['at_ms'] / 1000 + 20]
+        after_window = len(cohort) - len(window)
+        cohort = window
+        if not cohort: continue
         for klass in (*CLASSES, 'browser_total'):
             classes = {'browser','renderers','GPU','utility','zygote'} if klass == 'browser_total' else {klass}
             rss, pss, counts, individual_rss, individual_pss = [], [], [], [], []
@@ -114,7 +121,8 @@ def summarize(samples):
                 if all(p['rss_kib'] is not None for p in rows): rss.append(sum(p['rss_kib'] for p in rows))
                 if all(p['pss_kib'] is not None for p in rows): pss.append(sum(p['pss_kib'] for p in rows))
             result.append({'topology': key[0], 'views':key[1], 'activity':key[2], 'class':klass,
-                'samples':len(cohort), 'process_count_min':min(counts), 'process_count_max':max(counts),
+                'samples':len(cohort), 'samples_after_window':after_window,
+                'process_count_min':min(counts), 'process_count_max':max(counts),
                 'per_process_rss_p50_mib':quantile(individual_rss,.5), 'per_process_rss_p95_mib':quantile(individual_rss,.95),
                 'per_process_pss_p50_mib':quantile(individual_pss,.5), 'per_process_pss_p95_mib':quantile(individual_pss,.95),
                 'rss_samples':len(rss), 'pss_samples':len(pss),

@@ -4,6 +4,14 @@ from unittest.mock import patch
 from measure import quantile, summarize, stop_owned, process_tree, resource, slice_labels, owned_slice_resource, category
 
 class Accounting(unittest.TestCase):
+    def test_next_view_opening_is_not_charged_to_previous_interaction(self):
+        samples = [{'topology':'host','views':2,'activity':'interacting','at_ms':100000,
+                    'sample_at':at, 'processes':[{'class':'browser','rss_kib':rss,'pss_kib':rss}]}
+                   for at,rss in [(119,1024),(121,4096)]]
+        row = next(r for r in summarize(samples) if r['class']=='browser_total')
+        self.assertEqual(row['rss_p95_mib'], 1)
+        self.assertEqual(row['samples_after_window'], 1)
+
     def test_browser_total_includes_crashpad_helpers(self):
         self.assertEqual(category('/lane/chromium/chrome_crashpad_handler --database=/lane/profile'), 'utility')
 
