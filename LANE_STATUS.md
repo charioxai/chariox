@@ -1,15 +1,17 @@
-# MP-08/MP-10/MP-11 — phase20 performance IN PROGRESS
+# MP-08/MP-10/MP-11 — phase 20 FINAL, RED_PERFORMANCE
 
-2026-10-06: required base7cf42bc9014994022cd47708eaaff29a729f1cb7; branch md/display-perf. Local447/relay90 unchanged. Read phase19 report and lane history. Measure capture/convert/encode/packetize/client stages before runtime changes, fix dominant stage first, preserve exact settle and fail-closed codec masking. Targets DPR2>=30fps/<50ms input;1080p<=1pipeline core/<50ms input and beat supplied Selkies baseline. Final210-cycle zero-violation protection gate required. Local commits only [skip ci]; no push/CI/deploy.
+2026-10-06: required base `7cf42bc90`; runtime `eeda110c7` (commits `715a1c770`, `d3a66d79e`, `eeda110c7`), branch `md/display-perf`. Local 447/relay 90 unchanged. Report commit changes documentation only. No push, CI, PR, deployment or hosted access.
 
-## MP-08/MP-10 Coordinator asks
+MP-08/MP-10: protected DPR 2 motion 31.11 fps meets the local 30 fps target (phase 19: 7.28). Click/type P95 56.9/901.5 ms remains RED. Final 1080p canvas: 58.35 fps, 1.97 pipeline cores, 55/52 ms. CPU/input/all-metric Selkies comparison remains RED. Exact settle passes in every final condition. Mask/hash/copy work reduced; opaque row fill ~99 ms→1.06 ms. Source re-attestation and exact repair/pacing remain latency seams. Earlier worker2 label was wrong; actual two-worker experiment does not justify changing the default of one.
 
-Real live matrix remains coordinator-run per phase20 assignment: actual Cloud app+flags, hostedwss~8Mbps/RTT>=60ms, public-site list DPR1/2 and multi-hour stability. Lane forbidden to contact hosted relay/Apps. Deliver exact kits/commands and per-condition local limitations. No protocol allocation needed yet.
+MP-11: canonical 210 cycles, 7,146 protected presentations, zero violations. Extra DPR 2: ten cycles, 530 presentations, zero violations. Both codec guards and source retirement remain. 260 configured Node, 25 Python, 24 client and 65 focused Rust checks pass. Five host tests ignored outside explicit drill. One inherited obsolete relay73 assertion fails identically on 0aca/eeda and is excluded, with evidence. Default-stack test overflow resolves with 16 MiB RUST_MIN_STACK. Shared Cargo metadata mismatch resolves by rebuilding own App source under flock, without App code changes.
+
+MP-08/MP-10/MP-11 evidence: `/root/.codex/evidence/browser-resume-20260930/display-perf/phase20/FINAL20.json`. Product/component final archives verified; real kernel/relay and public runtimes, compiled TUI source 0aca with unchanged CLI/client tree. Full report: `docs/MULTIDOMAIN_DISPLAY_PHASE20_RESULTS.md`. All 23 drill state roots and final Rust scratch removed; 2,627,315,351 own obsolete bytes removed. Minimum resources: 24.96 GiB MemAvailable/76.02 GiB disk. Shared, credential, key, reviewer and foreign paths excluded.
+
+## MP-08/MP-10 Coordinator asks — real live BLOCKED here
+
+Phase 20 delegates real live execution to coordinator and forbids lane hosted access. Run exact kits with real Cloud app/entry/flags, hosted wss ~8 Mbps and measured RTT>=60 ms, public-site list DPR 1/2, real linked providers where applicable, compiled TUI and multi-hour stability. Exact commands/required actions are in the report. Performance is RED independently of this blocker; do not stage as accepted. No protocol allocation requested.
 
 ## MP-11 Review inbox
 
-Absolute lane review inbox absent at start; recheck after every milestone/commit. No semantic approval inferred. Own disposable runtime identities only; credentials/shared services/caches/foreign resources excluded from cleanup.
-
-## MP-08/MP-10/MP-11 phase20 source checkpoint
-
-Before changes: protected DPR2 stage diagnostic6.88fps, click/typeP9574.0/68.7ms, pipeline2.12cores. Native mask copy/hash14.43msP50; full stripe encode~16ms plus raw IPC; queued event batching33ms remains a separate input delay. Scheduling CRC over masked bytes raises motion15.53fps; immutable file handoff preview24.01fps. Two workers regresses20.87fps and is rejected (explicit experiment only, default remains1). None passes full performance acceptance. Small masked damage now retains exact readback bounds only with identical preceding trusted masks; transitions stay full repair. Codec guards unchanged. Display-enabled kernel event delay0 retains ordinary bounded event lane/control priority; wire/protocol447/90 unchanged. Await exact rebuilt runtime and final210-cycle gate.
+Absolute lane inbox absent after every runtime/gate/kit milestone; recheck after final report commit. No security-anchor semantic approval inferred. MP-11 non-security exact-blob review is outside narrowed scope.
