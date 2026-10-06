@@ -40,3 +40,34 @@ fn mp08_terminal_cleanup_retains_cancellation_on_error_and_cleans_idle_thread() 
         }
     }
 }
+
+#[test]
+fn mp08_terminal_cleanup_ack_cannot_hide_successor_start() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut socket = accept(stream).unwrap();
+        for (index, method) in ["turn/interrupt", "thread/backgroundTerminals/clean", "turn/interrupt", "thread/backgroundTerminals/clean"].iter().enumerate() {
+            let request: Value = serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+            assert_eq!(request["method"], *method);
+            if index == 0 { assert_eq!(request["params"]["turnId"], "submitted"); }
+            if index == 2 { assert_eq!(request["params"]["turnId"], "successor"); }
+            if index == 1 {
+                socket.send(Message::Text(json!({"method":"turn/started","params":{"turn":{"id":"successor"}}}).to_string().into())).unwrap();
+            }
+            socket.send(Message::Text(json!({"id":request["id"],"result":{}}).to_string().into())).unwrap();
+        }
+    });
+    let (socket, _) = connect(&endpoint).unwrap();
+    let tokio_tungstenite::tungstenite::stream::MaybeTlsStream::Plain(stream) = socket.get_ref() else { unreachable!() };
+    let close = stream.try_clone().unwrap();
+    let mut state = CodexRuntimeState::new(endpoint, "thread".into(), socket, 1);
+    state.active_turn_id = Some("submitted".into());
+    let result = abort_codex_turn("run", &mut state);
+    close.shutdown(Shutdown::Both).unwrap();
+    server.join().unwrap();
+    result.unwrap();
+    assert!(state.active_turn_id.is_none());
+}

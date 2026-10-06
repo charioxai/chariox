@@ -66,6 +66,11 @@ pub fn abort_codex_turn(
                     &mut state.socket, &mut state.next_request_id, &thread_id,
                     &mut state.buffered_notifications,
                 )?;
+                // The cleanup RPC can buffer a successor start too. Apply the
+                // same ownership reconciliation before discarding notifications.
+                if reconciliation.reconcile(state) != InterruptDecision::Settled {
+                    continue;
+                }
                 note_codex_turn_interrupt_accepted(
                     &mut state.active_turn_id,
                     &mut state.turn_tracker,
