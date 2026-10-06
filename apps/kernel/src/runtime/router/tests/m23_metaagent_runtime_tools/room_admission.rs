@@ -461,6 +461,16 @@ async fn stale_trace_result() {
 // MP-08 / MP-11, A01/G18: distinguish rejected creation from committed effects.
 #[test]
 fn room_admission_receipt_failure_preserves_created_resource_identity() {
+    assert_post_creation_failure_identifies_resource("room.obligation.dispatch_receipt");
+}
+
+#[test]
+fn room_admission_creation_event_failure_preserves_created_resource_identity() {
+    assert_post_creation_failure_identifies_resource("agent.created");
+}
+
+fn assert_post_creation_failure_identifies_resource(kind: &str) {
+    assert!(["agent.created", "room.obligation.dispatch_receipt"].contains(&kind));
     let env = TestMetaRuntimeEnv::new("room-receipt-failure");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
@@ -474,7 +484,7 @@ fn room_admission_receipt_failure_preserves_created_resource_identity() {
         ))
         .unwrap();
     let db = rusqlite::Connection::open(app.durable_state_store().path()).unwrap();
-    db.execute_batch("CREATE TRIGGER fail_receipt BEFORE INSERT ON durable_state_events WHEN NEW.kind='room.obligation.dispatch_receipt' BEGIN SELECT RAISE(FAIL, 'receipt failure'); END;").unwrap();
+    db.execute_batch(&format!("CREATE TRIGGER fail_receipt BEFORE INSERT ON durable_state_events WHEN NEW.kind='{kind}' BEGIN SELECT RAISE(FAIL, 'effect metadata failure'); END;")).unwrap();
     let failed = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
@@ -530,4 +540,53 @@ fn room_admission_known_creation_rejection_records_failed_intent() {
         rejected, 1,
         "known rejection must not leave an open dispatch intent"
     );
+}
+
+// MP-08/MP-11 A01: binding a peer is not implicit capability administration.
+#[test]
+fn room_admission_workflow_binding_cannot_grant_peer_extensions() {
+    let env = TestMetaRuntimeEnv::new("room-peer-capability");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, actor) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
+    let peer = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("peer"))
+        .unwrap();
+    let definition: crate::workflow_code::WorkflowCodeDefinition = serde_json::from_value(serde_json::json!({
+        "workflow":{"alias":"unadmitted-peer-grants"},
+        "nodes":[{"handle":"review", "agent":{"kind":"existing","agent_ref":peer.id()},
+            "can_complete_workflow_run":true, "extensions":[{"kind":"skill","name":"am1-source-regression-only"}]}],
+        "endpoints":[{"handle":"entry","entry_node":"review"}],
+    })).unwrap();
+    let failed = crate::app::KernelSessionService::new(&mut app).apply_workflow_code_definition(
+        session.id(),
+        &definition,
+        &crate::config::WorkflowCodeLimitsConfig::default(),
+        actor.owner_user_id().into(),
+        Some(actor.id().into()),
+    );
+    assert!(
+        failed.is_err(),
+        "regular room workflow cannot provision peer capabilities"
+    );
+    assert!(app
+        .agents()
+        .get_agent(peer.id())
+        .unwrap()
+        .extension_grants()
+        .is_empty());
+    assert!(app
+        .sessions()
+        .get_session(session.id())
+        .unwrap()
+        .workflows()
+        .is_empty());
 }
