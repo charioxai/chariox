@@ -22,6 +22,22 @@ match Selkies presentation counts. Idle media must remain zero and quiet settle
 must remain RGB exact. The wheel source also needs separate delivered input and
 source update counts; its30Hz offered input is not evidence of60unique pictures.
 
+## MP-10/MP-11: invalidated encoder/converter labels
+
+The host launcher clears its environment but omitted SOFTWARE_ENCODER,
+OPENH264_ADAPTER and LIBYUV from its allowlist. Phase16's requested OpenH264
+rows report `motion_backend_x264`. They cannot establish Cisco screen-mode
+performance. The initial phase17 SIMD rows also used PyAV, proven by their
+VideoReformatter profiles; copying a libyuv library was not proof of execution.
+Those historical raw receipts are retained with their original source identities
+and an explicit audit in `encoder-identity-audit.json`. Corrected comparisons
+must require actual backend/converter stage receipts, and the real spawn test
+must retain exclusion of unrelated control settings.
+
+The isolated600-frame conversion experiment used3.551CPU seconds for cached
+PyAV and0.182 for libyuv. It measures only conversion and does not establish a
+whole-pipeline reduction.
+
 ## MP-08/MP-10: interface handoff for the Cloud lane
 
 The supplied Cloud `f6cfd0066d75844dbab795cdf715789ec5fa37d6` has the older

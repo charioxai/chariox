@@ -1,4 +1,4 @@
-import {StripePresenter} from './stripe-presenter.mjs';
+import {StripePresenter,independentStripeCover} from './stripe-presenter.mjs';
 import {TileCache} from './tile-cache.mjs';
 import {ScrollPrediction} from './scroll-prediction.mjs';
 import {WorkerVideoDecoder} from './decoder-worker.mjs';
@@ -45,7 +45,7 @@ export class BrowserDisplayPresenter {
     if (this.busy) throw new Error('MD-DISPLAY: await presentation before granting next credit');
     if (frame.subscription_id !== this.binding.subscription_id || frame.generation !== this.binding.generation || frame.tab_id !== this.binding.tab_id || frame.sequence <= this.sequence) return false;
     if (!Number.isSafeInteger(frame.sequence) || ![1, 2].includes(frame.device_scale_factor) || frame.width !== frame.css_width * frame.device_scale_factor || frame.height !== frame.css_height * frame.device_scale_factor || !((frame.css_width===1280 && frame.css_height===800) || (frame.css_width===1920 && frame.css_height===1080 && frame.device_scale_factor===1)) || typeof frame.document_id !== 'string' || !frame.document_id || frame.document_id.length > 256) throw new Error('MD-DISPLAY: invalid geometry/binding');
-    if (['tiles','stripes'].includes(frame.kind) && (frame.base_sequence !== this.sequence || (frame.document_id !== this.documentId && !(frame.kind==='stripes' && Array.isArray(frame.stripes) && frame.stripes.length===8 && frame.stripes.every(row=>row.key))))) throw new Error('MD-DISPLAY: repair base lost; subscribe afresh');
+    if (['tiles','stripes'].includes(frame.kind) && !independentStripeCover(frame) && (frame.base_sequence !== this.sequence || frame.document_id !== this.documentId)) throw new Error('MD-DISPLAY: repair base lost; subscribe afresh');
     this.prediction?.restore();
     if(frame.kind!=='tiles')this.tileCache.clear();
     this.busy = true;

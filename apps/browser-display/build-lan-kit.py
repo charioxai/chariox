@@ -5,6 +5,7 @@ Run only from a clean, committed checkout; no network/build/host mutation.
 import hashlib,json,re,shutil,subprocess,sys,sysconfig,tarfile,os
 from pathlib import Path
 from lan_node_runtime import install as install_node
+from protocol_versions import PROTOCOL_FILES,versions
 binary,tools,pytools,out=map(Path,sys.argv[1:])
 checkout=Path(__file__).resolve().parents[2]
 if subprocess.check_output(['git','status','--porcelain'],cwd=checkout).strip():raise SystemExit('MD-DISPLAY: commit source before packaging')
@@ -12,6 +13,7 @@ source=subprocess.check_output(['git','rev-parse','HEAD'],cwd=checkout,text=True
 build_source=os.environ.get('MD_KERNEL_BUILD_SOURCE',source)
 if not re.fullmatch('[a-f0-9]{40}',build_source):raise SystemExit('MD-DISPLAY: exact kernel build source required')
 subprocess.run(['git','cat-file','-e',build_source+'^{commit}'],cwd=checkout,check=True)
+build_versions=versions(lambda relative:subprocess.check_output(['git','show',build_source+':'+relative],cwd=checkout))
 out.mkdir(parents=True,exist_ok=True);kit=out/'display-lan-kit';kit.mkdir(exist_ok=False)
 def copy(source,dest):
  dest.parent.mkdir(parents=True,exist_ok=True)
@@ -21,6 +23,7 @@ def copy(source,dest):
 files=subprocess.check_output(['git','ls-files','apps/browser-display'],cwd=checkout,text=True).splitlines()
 assets=(checkout/'apps/kernel/src/runtime/kernel_browser_assets.rs').read_text()
 files += ['apps/kernel/src/runtime/kernel_browser_assets.rs','packages/kernel-client/src/browser-relay-crypto.ts','docs/MULTIDOMAIN_KERNEL_BROWSER.md']
+files += [path for path,_ in PROTOCOL_FILES.values()]
 files += ['apps/kernel/slice-linux-docker/docker/'+n for n in re.findall(r'include_bytes!\("../../slice-linux-docker/docker/([^"/]+)"\)',assets)]
 for name in sorted(set(files)):
  if name.startswith('apps/kernel/'):
@@ -53,7 +56,7 @@ for name,program in [('node','node'),('python3','python/bin/python3')]:
  (wrappers/name).write_text(wrapper);(wrappers/name).chmod(0o755)
 (kit/'run-lan.sh').write_text('#!/bin/sh\nset -eu\nbase=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexec "$base/runtime/bin/node" "$base/apps/browser-display/lan-run.mjs" "$@"\n');(kit/'run-lan.sh').chmod(0o755)
 digest=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
-manifest={'item':'MP-08/MP-10/MP-11 MD-DISPLAY-02/04','source':source,'binary':{'build_source':build_source,'original_sha256':digest(binary),'sha256':digest(kit/'runtime/kernel-tests'),'transform':'strip --strip-debug','protocol':441,'relay':84},'node':node,'python':sys.version.split()[0],'chromium':'host executable, mandatory version recorded by each case','files':[]}
+manifest={'item':'MP-08/MP-10/MP-11 MD-DISPLAY-02/04','source':source,'binary':{'build_source':build_source,'original_sha256':digest(binary),'sha256':digest(kit/'runtime/kernel-tests'),'transform':'strip --strip-debug',**build_versions},'node':node,'python':sys.version.split()[0],'chromium':'host executable, mandatory version recorded by each case','files':[]}
 for p in sorted(kit.rglob('*')):
  if p.is_file():manifest['files'].append({'path':str(p.relative_to(kit)),'sha256':digest(p)})
 (kit/'KIT_MANIFEST.json').write_text(json.dumps(manifest,indent=2)+'\n')

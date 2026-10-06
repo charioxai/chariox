@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from protocol_versions import versions
 root, output, checkout = map(Path, sys.argv[1:])
 campaign=json.loads((root/'campaign.json').read_text())
 kit=json.loads((checkout/'KIT_MANIFEST.json').read_text()) if (checkout/'KIT_MANIFEST.json').exists() else None
@@ -15,6 +16,8 @@ def source_bytes(relative):
   if not expected or hashlib.sha256(contents).hexdigest()!=expected:raise ValueError('MD-DISPLAY: changed kit source '+relative)
   return contents
  return subprocess.check_output(['git','show',f"{campaign['source']}:{relative}"],cwd=checkout)
+expected_versions=versions(source_bytes)
+if kit and any(kit['binary'].get(key)!=value for key,value in expected_versions.items()):raise ValueError('MP-10: kit protocol/source mismatch')
 identity=json.loads((root/'binary.json').read_text()) if (root/'binary.json').exists() else None
 digest=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 report={'item':'MD-DISPLAY-02/04','execution_source':campaign['source'],'kernel_binary':identity,
@@ -32,7 +35,7 @@ for case in campaign['cases']:
  data=json.loads(receipt.read_text());row.update(receipt=str(receipt),receipt_sha256=digest(receipt),status=data['status'],error=data.get('error'),cleanup=data.get('cleanup'))
  if data['source']!=campaign['source'] or data['source_dirty']:raise ValueError('MD-DISPLAY: mixed/dirty source')
  if data.get('protocol') is None:row.update(functional_pass=False);continue
- if data['protocol']!=441:raise ValueError('MD-DISPLAY: unexpected protocol')
+ if data['protocol']!=expected_versions['protocol']:raise ValueError('MD-DISPLAY: unexpected protocol')
  if identity and data['binary']['copied_sha256']!=identity['sha256']:raise ValueError('MD-DISPLAY: mixed binary')
  # Bind copied controller files to the exact Git blobs actually executed.
  assets=data.get('controller_assets',[])

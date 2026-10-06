@@ -1,5 +1,15 @@
 # MP-08/MP-10/MP-11: phase 16 bounded stripe motion
 
+**MP-10 correction, phase17 (2026-10-06): the requested OpenH264 live rows
+below actually used x264.** Audit of their retained `host_timings` reports
+`motion_backend_x264`; the Rust host environment allowlist discarded the
+software selector and native adapter path. Those rows establish x264 behavior
+with an ignored OpenH264 request, not OpenH264 screen-mode performance. Standalone
+native codec tests remain separate evidence. Phase17 fixes and checks the real
+spawn boundary and requires actual backend/converter receipts before labeling
+a comparison. The historical source identities and raw receipts are unchanged.
+
+
 Assigned base: multidomain round 2 `6dde21a8c10c9ef2b9f7f0a271cace00591f0bd1`.
 The phase-15 source is retained locally at `md/display-phase15-retained`.
 The replay preserves round-2 private CDP pipes, admission/grant revocation,
@@ -132,7 +142,7 @@ combined live comparison, not an isolated attribution. Native serials now
 capture exact PNG once after quiet; lossy CDP fingerprints retain their 250ms
 hidden-change verification deadline. Both scheduling changes have fail-first
 source tests. The mapped pool moves raw raster copies off Node's motion pipe;
-final OpenH264 docs native metadata/copy P95 is 0.09ms and motion encode 4.44ms.
+final requested-OpenH264 (actual x264) docs native metadata/copy P95 is 0.09ms and motion encode 4.44ms.
 A separate full-path pool-only ablation was not completed; do not claim a
 measured CPU reduction attributable solely to the pool.
 
@@ -142,7 +152,7 @@ VP8 remains RED after its burst options: scrolling 4.00fps at `4a338bbe1` to
 4.99fps at `de80aba52`. Its final scrolling motion encode P95 is 6.02ms but
 transported event bytes average roughly 144kB per presented frame, versus
 about 16kB for x264. Packet size, pacing and reference retirement need further
-isolation; a definitive VP8 root cause is not claimed. Final OpenH264 docs
+isolation; a definitive VP8 root cause is not claimed. Final requested-OpenH264 (actual x264) docs
 input round trip P95 is 11.40ms, native capture 6.54ms, encode 4.44ms,
 queued-event-to-viewer 1.30ms, decode 0.80ms, input-to-draw 39.30ms and draw-to-rAF
 14.20ms. Spans overlap; summing their P95 values would be invalid.
@@ -182,19 +192,19 @@ MP-08/MP-10/MP-11 encoder, browser and GPU comparison:
 |Fixture|Encoder|Click P95 ms|Type P95 ms|FPS / content FPS|Owned active / idle cores|Media moving / idle Mbps|Live PSNR dB|Settled|
 |---|---|---|---|---|---|---|---|---|
 |docs|x264|54.40|36.80|—/—|1.39/0.24|—/0.00|—|exact|
-|docs|OpenH264 screen|47.70|37.70|—/—|1.42/0.21|—/0.00|—|exact|
+|docs|x264 (OpenH264 requested)|47.70|37.70|—/—|1.42/0.21|—/0.00|—|exact|
 |docs|VP8|53.30|39.40|—/—|1.38/0.27|—/0.00|—|exact|
 |canvas|x264|53.20|55.30|55.10/54.70|1.90/0.25|1.29/0.00|26.15–26.15|exact|
-|canvas|OpenH264 screen|55.20|56.00|54.79/54.59|1.93/0.27|1.28/0.00|24.91–26.16|exact|
+|canvas|x264 (OpenH264 requested)|55.20|56.00|54.79/54.59|1.93/0.27|1.28/0.00|24.91–26.16|exact|
 |canvas|VP8|54.90|55.30|55.25/55.25|2.10/0.26|2.47/0.00|24.92–26.15|exact|
 |video|x264|40.00|55.00|30.04/30.04|1.49/0.25|0.75/0.00|27.84–41.15|exact|
-|video|OpenH264 screen|55.00|54.60|29.97/29.97|1.53/0.27|0.75/0.00|27.85–41.67|exact|
+|video|x264 (OpenH264 requested)|55.00|54.60|29.97/29.97|1.53/0.27|0.75/0.00|27.85–41.67|exact|
 |video|VP8|55.10|54.40|29.98/29.98|1.58/0.25|1.28/0.00|27.85–42.56|exact|
 |scroll30|x264|54.10|55.30|29.72/29.72|1.19/0.28|3.69/0.00|16.12–16.82|exact|
-|scroll30|OpenH264 screen|55.50|53.80|29.14/29.14|1.26/0.25|3.63/0.00|14.76–15.20|exact|
+|scroll30|x264 (OpenH264 requested)|55.50|53.80|29.14/29.14|1.26/0.25|3.63/0.00|14.76–15.20|exact|
 |scroll30|VP8|54.60|54.90|4.99/4.99|1.14/0.25|5.74/0.00|14.38–14.55|exact|
 |wheel30|x264|54.00|55.20|22.05/22.05|1.39/0.23|2.74/0.00|14.89–17.11|exact|
-|wheel30|OpenH264 screen|53.70|55.00|22.02/22.02|1.50/0.26|2.74/0.00|16.60–16.92|exact|
+|wheel30|x264 (OpenH264 requested)|53.70|55.00|22.02/22.02|1.50/0.26|2.74/0.00|16.60–16.92|exact|
 |wheel30|VP8|54.50|55.10|3.88/3.88|1.41/0.24|4.36/0.00|14.00–14.24|exact|
 
 MP-10 decode support:

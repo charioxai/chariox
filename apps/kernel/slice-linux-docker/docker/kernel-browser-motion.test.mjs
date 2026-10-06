@@ -1,5 +1,21 @@
 // MD-DISPLAY-02/04: stalled encode does not own input/credit; loss resets deltas.
 import test from 'node:test';import assert from 'node:assert/strict';import{MotionEncoder,CreditBudget}from'./kernel-browser-motion.mjs';
+for(const mode of ['queued','stale','in-flight'])test('MP-08/MP-10 raw-less stripe negotiation recovers '+mode+' full-video work with a key',async()=>{
+ let now=0,latest,offer,release;const keys=[];
+ const source={subscribe(f){offer=f;return()=>{}},sample:()=>latest};
+ const encoder={async encode(image,bitrate,key){keys.push(key);if(release)await new Promise(ok=>release=ok);return{key,data_base64:image}}};
+ const m=new MotionEncoder(source,encoder,{stripes:true,codec:'avc1.420033',bitrate:8000000,now:()=>now});
+ try{
+  latest={serial:1,data_base64:'base'};offer(latest);await m.active;
+  if(mode!=='stale')assert.equal(m.take().encoded.key,true);
+  if(mode==='in-flight')release=true;
+  latest={serial:2,data_base64:'discarded'};offer(latest);
+  if(mode==='in-flight'){m.retireUnsent();const done=release;release=null;done();await m.active}
+  else {await m.active;if(mode==='stale'){now=350;assert.equal(m.take(),null);await m.active;assert.equal(m.take().encoded.key,true);return}m.retireUnsent()}
+  latest={serial:3,data_base64:'recovery'};offer(latest);await m.active;
+  assert.equal(m.take().encoded.key,true,'discarded full-video dependencies require a full-video key');
+ }finally{await m.close()}
+});
 function fixture(){let offer,release;const calls=[];const encoder={async encode(image,b,key){calls.push({image,key});if(release)await new Promise(ok=>release=ok);return {key,data_base64:image}}};const source={subscribe(f){offer=f;return()=>offer=null},sample(){return null}};return {m:new MotionEncoder(source,encoder,{codec:'vp09.00.40.08',bitrate:4000000}),calls,offer:n=>offer({serial:n,data_base64:String(n)}),hold(){release=true},release(){const f=release;release=null;f()}};}
 test('MD-DISPLAY superseded encoder work forces independent recovery without waiting input',async()=>{const f=fixture();f.hold();f.offer(1);f.offer(2);f.m.invalidate();f.offer(3);assert.equal(f.m.take(),null);f.release();await f.m.active;assert.deepEqual(f.calls.map(x=>x.key),[true,true]);assert.equal(f.m.take().serial,3);await f.m.close()});
 test('MD-DISPLAY invalidation and close retire in-flight encoding',async()=>{const f=fixture();f.hold();f.offer(1);f.m.invalidate();const closing=f.m.close();f.release();await closing;assert.equal(f.m.frames.length,0)});

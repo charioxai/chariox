@@ -313,6 +313,9 @@ impl BrowserControllerProcessStdioBackend {
                 "CHARIOX_BROWSER_DISPLAY_TIMING",
                 "CHARIOX_BROWSER_DISPLAY_GEOMETRY",
                 "CHARIOX_BROWSER_DISPLAY_SOFTWARE",
+                "CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER",
+                "CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER",
+                "CHARIOX_BROWSER_DISPLAY_LIBYUV",
             ] {
                 if let Some(value) = std::env::var_os(key) {
                     command.env(key, value);
@@ -3099,5 +3102,45 @@ done
             backend.health().expect("forced process was reaped").state,
             BrowserControllerProcessState::Stopped
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mp10_host_encoder_environment_crosses_the_real_spawn_boundary() {
+        // MP-08/MP-10/MP-11: isolate environment changes in a test subprocess.
+        if std::env::var("CHARIOX_TEST_DISPLAY_ENV_CHILD").as_deref() != Ok("1") {
+            let name = format!("{}::mp10_host_encoder_environment_crosses_the_real_spawn_boundary",
+                module_path!().split_once("::").unwrap().1);
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--nocapture"])
+                .env("CHARIOX_TEST_DISPLAY_ENV_CHILD", "1")
+                .env("CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER", "libopenh264")
+                .env("CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER", "/fixture/openh264.so")
+                .env("CHARIOX_BROWSER_DISPLAY_LIBYUV", "/fixture/libyuv.so")
+                .env("CHARIOX_TEST_CONTROL_SECRET", "synthetic")
+                .status().unwrap();
+            assert!(status.success(), "MP-10: host discarded explicit encoder/converter configuration");
+            return;
+        }
+        let tool = TestTool::new(r#"#!/bin/sh
+set -eu
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+ *'"method":"host.browser"'*) printf '{"id":%s,"ok":true,"result":{"encoder":"%s","adapter":"%s","converter":"%s","control_secret_present":%s}}\n' "$id" "${CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER-}" "${CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER-}" "${CHARIOX_BROWSER_DISPLAY_LIBYUV-}" "${CHARIOX_TEST_CONTROL_SECRET+true}" | sed 's/:}/:false}/' ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; exit 0 ;;
+ esac
+done
+"#);
+        let mut backend = BrowserControllerProcessStdioBackend::new(
+            tool.path(), Vec::new(), Duration::from_secs(2)).for_host();
+        backend.start().unwrap();
+        let result = backend.host_request("host.browser", serde_json::json!({"op":"probe"}));
+        backend.stop().unwrap();
+        assert_eq!(result.unwrap(), serde_json::json!({
+            "encoder":"libopenh264", "adapter":"/fixture/openh264.so",
+            "converter":"/fixture/libyuv.so", "control_secret_present":false
+        }));
     }
 }

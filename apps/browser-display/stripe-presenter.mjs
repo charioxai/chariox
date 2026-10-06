@@ -1,5 +1,14 @@
 // MP-08/MP-10/MP-11: validate/decode every row before one synchronous canvas commit.
 import {WorkerVideoDecoder} from './decoder-worker.mjs';
+export function independentStripeCover(frame){
+ if(frame.kind!=='stripes'||!Array.isArray(frame.stripes)||frame.stripes.length!==8)return false;
+ const ordered=[...frame.stripes].sort((a,b)=>a.y-b.y),seen=new Set();let bottom=0;
+ for(const row of ordered){
+  if(!Number.isSafeInteger(row.row)||row.row<0||row.row>7||seen.has(row.row)||row.key!==true||row.reference_sequence!==null||row.y!==bottom||!Number.isSafeInteger(row.height)||row.height<1)return false;
+  seen.add(row.row);bottom+=row.height;
+ }
+ return bottom===frame.height;
+}
 export class StripePresenter {
  constructor(){this.rows=new Map();}
  async decode(frame,decodeBytes){

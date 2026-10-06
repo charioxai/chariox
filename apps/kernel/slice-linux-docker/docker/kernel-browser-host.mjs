@@ -517,17 +517,15 @@ export class KernelBrowserHost {
       const at = timestamp();
       let dispatched = false;
       // MD-DISPLAY-02/04: input retires exact verification through its epoch.
-      // Keep bounded video dependencies for wheel input so it cannot starve
-      // encoding; policy/document retirement still closes the source/producer.
+      // MP-08/MP-10: all physical input keeps bounded video dependencies.
+      // Retiring an encoded row on each key forces an IDR and can delay echo
+      // behind its byte budget. Epochs still retire exact work; policy/document
+      // retirement still closes the source/producer and resets every row.
       const onDispatch = () => {
         if (dispatched) return;
         dispatched = true;
         this.inputChangedAt.set(tab.tab_id, performance.now());
         this.inputEpochs.set(tab.tab_id, (this.inputEpochs.get(tab.tab_id) ?? 0) + 1);
-        if (command.input.kind !== "scroll") {
-          for (const stream of this.displays.values())
-            if (stream.tab_id === tab.tab_id) stream.producer?.retireUnsent();
-        }
       };
       try {
         await this.sampleLane(tab).run("input", () => inputHostTab(this.browser, tab, command.input, { signal, onDispatch, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));

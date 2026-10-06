@@ -194,6 +194,16 @@ test('MD-DISPLAY-02 bound input checks its document before dispatch without a fu
  assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,before);
 }));
 
+test('MP-08/MP-10 physical input preserves video references while retiring exact work by epoch',()=>using(async({host})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ let retired=0;
+ host.displays.set('test-display',{tab_id:tab.tab_id,expires:Infinity,producer:{retireUnsent:()=>retired++},close:async()=>{}});
+ for(const input of [{kind:'click',x:2,y:2},{kind:'text',text:'a'},{kind:'key',key:'Tab'}])
+  await host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input});
+ assert.equal(host.inputEpochs.get(tab.tab_id),3,'every dispatched input must retire stale exact work');
+ assert.equal(retired,0,'input cannot force row IDRs for already queued normal video');
+}));
+
 test("MD-2: closing the last user tab keeps a hidden browser target alive", () => using(async ({ host, chromium, sent }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
   await host.request({ op: "close", tab_id: opened.tab_id, generation: opened.generation });

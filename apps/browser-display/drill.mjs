@@ -39,6 +39,7 @@ const quote=value=>"'"+value.replaceAll("'","'\"'\"'")+"'";
 let kernel, display, viewer, browser, server, ready, shaped, shortTmp;
 const workload=process.env.MD_WORKLOAD||'docs';
 receipt.workload=workload;const fixtureStats=[];
+receipt.requested_software_encoder=process.env.MD_ENCODER||'libx264';receipt.requested_converter=process.env.MD_LIBYUV?'libyuv':'auto';
 let kernelExit;
 const groups = [], errors = [], log = [];
 for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{receipt.interrupted=signal;errors.push(Error('MD-DISPLAY: interrupted '+signal));
@@ -355,6 +356,14 @@ finally {
   if(/^(CPU\.[\w.-]+\.cpuprofile|(?:encoder|capture)\.\d+\.prof)$/.test(name))await cp(path.join(root,'profiles',name),path.join(output,name));
  }
  receipt.host_timings=traces;receipt.kernel_timings=Buffer.concat(log).toString().split('\n').filter(line=>line.startsWith('MD-DISPLAY-TIMING ')).map(line=>JSON.parse(line.slice('MD-DISPLAY-TIMING '.length)));
+ receipt.actual_encoders=[...new Set(traces.filter(t=>t.stage.startsWith('motion_backend_')).map(t=>t.stage.slice('motion_backend_'.length)))];
+ receipt.actual_converters=[...new Set(traces.filter(t=>t.stage.startsWith('motion_converter_')).map(t=>t.stage.slice('motion_converter_'.length)))];
+ if(receipt.status==='PASS_LOCAL_COMPONENT'&&process.env.MD_SOFTWARE==='1'&&receipt.codec!=='png'){
+  const expected=receipt.codec==='vp8'?'vp8':receipt.codec?.startsWith('vp09')?'vp9':({'libx264':'x264','libopenh264':'openh264'})[receipt.requested_software_encoder];
+  if(!receipt.actual_encoders.length||receipt.actual_encoders.some(e=>e!==expected)||receipt.requested_converter==='libyuv'&&(!receipt.actual_converters.length||receipt.actual_converters.some(c=>c!=='libyuv'))){
+   receipt.status='RED';receipt.error='MP-10: actual encoder/converter does not match the requested comparison';process.exitCode=1;
+  }
+ }
  receipt.stage_breakdown=summarizeStages(receipt);
  if(shaped)try{receipt.netem_stats=await shaped.close();receipt.cleanup.push('owned proxy and namespace-local qdisc removed')}catch{receipt.cleanup.push('RED: owned netem cleanup failed');receipt.status='RED';process.exitCode=1}
  if(server)await new Promise(resolve=>server.close(resolve));
