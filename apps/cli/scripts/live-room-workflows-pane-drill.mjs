@@ -31,10 +31,10 @@ const env = { ...process.env, HOME: path.join(state, 'user'), CHARIOX_HOME: path
   XDG_DATA_HOME: path.join(state, 'data'), XDG_CACHE_HOME: path.join(state, 'cache'),
   CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]),
   CHARIOX_CODEX_PORT: String(ports[2]), CHARIOX_OPENCODE_PORT: String(ports[3]),
-  CHARIOX_RELAY_PORT: String(ports[4]), CHARIOX_RELAY_URL: `ws://127.0.0.1:${ports[4]}`,
+  CHARIOX_RELAY_PORT: String(ports[4]), CHARIOX_LOG_DIR: path.join(state,'logs'),
   CHARIOX_DAEMON_ID: `relost-${process.pid}`, CHARIOX_DAEMON_SOCKET: path.join(state, 'kernel.sock'),
   TERM: 'xterm-256color', COLORTERM: 'truecolor' }
-for (const key of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'OPENCODE_CONFIG_DIR', 'CHARIOX_RELAY_TOKEN', 'CHARIOX_CLOUD_PROFILE', 'CHARIOX_CLOUD_TOKEN']) delete env[key]
+for (const key of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'OPENCODE_CONFIG_DIR', 'CHARIOX_RELAY_URL', 'CHARIOX_RELAY_TOKEN', 'CHARIOX_CLOUD_PROFILE', 'CHARIOX_CLOUD_TOKEN', 'CHARIOX_CLOUD_RELAY_CONFIG_JSON', 'CHARIOX_CLOUD_RELAY_CONFIG_PATH']) delete env[key]
 const receipt = { mpItems: ['MP-08','MP-10','MP-11'], source: args.source, clientSource: args['client-source'],
   startedAt: new Date().toISOString(), steps: [], resources: [], limitations: ['Local TUI acceptance; Cloud union Web pane and fresh Path-1 comparison are separate gates.'] }
 for (const key of ['kernel','relay','client']) receipt[key + 'Sha256'] = createHash('sha256').update(await readFile(args[key])).digest('hex')
@@ -74,8 +74,8 @@ async function stateUntil(predicate, timeout=60000) {
 try {
   relay = spawnOwned(args.relay, [], { cwd:repo,env,stdio:'ignore',detached:true })
   kernel = spawnOwned(args.kernel, [], { cwd:repo,env,stdio:'ignore',detached:true })
-  client = new LocalIpcClient(`ws://127.0.0.1:${ports[0]}`, {localAuthEnvironment:env})
-  for(let i=0;;i++) {try{await client.send(requests.listSessionsRequest());break}catch(error){if(i>=80)throw error;await sleep(250)}}
+  client = new LocalIpcClient(`ws://127.0.0.1:${ports[0]}`, {localAuthEnvironment:env,controlRequestRetryDeadlineMs:1000})
+  for(let i=0;;i++) {if(kernel.exitCode!==null)throw new Error(`MP-08 kernel startup exited (${kernel.exitCode})`);try{await client.send(requests.listSessionsRequest());break}catch(error){if(i>=80)throw error;await sleep(250)}}
   const profile = unwrap(await client.send(requests.linkProviderAccountProfileRequest('codex','relost-acct-686',args['account-dir'])), 'ProviderAccountProfile').profile
   const created=unwrap(await client.send(requests.createSessionRequest(workspace,workspace,'relost-workflows')), 'SessionCreated')
   sessionId=created.session.id
@@ -128,7 +128,7 @@ try {
   else process.exitCode=1
 } finally {
   if(sessionId)await client?.send(requests.endSessionRequest(sessionId)).catch(()=>{})
-  if(terminal){terminal.stdin.write(JSON.stringify({id:++nextId,action:'close'})+'\n');await sleep(1000);if(terminal.exitCode===null)signalOwnedProcess(terminal,'SIGTERM')}
+  if(terminal&&terminal.exitCode===null&&terminal.signalCode===null){terminal.stdin.write(JSON.stringify({id:++nextId,action:'close'})+'\n');await sleep(1000);if(terminal.exitCode===null)signalOwnedProcess(terminal,'SIGTERM')}
   await client?.close().catch(()=>{})
   for(const child of [kernel,relay])if(child){signalOwnedProcessGroup(child,'SIGTERM');await sleep(300);if(child.exitCode===null)signalOwnedProcessGroup(child,'SIGKILL')}
   await rm(state,{recursive:true,force:true})
