@@ -131,47 +131,63 @@ CSV/summary/plot is generated from frozen campaign and official scorer receipts;
 missing USD produces no cost/accuracy point.
 The historical0-run diagnostic CSV/plot is not a zero-cost/zero-accuracy result.
 
-MP-08 / MP-10: the full SWE Verified Mini baseline completed50/50 independent
-solver turns and officially resolved44/50 (88%), with6 unresolved,0 scorer
-errors,0 empty patches and0 unstopped task containers. The scorer guard then removed only the50 exact
-newly pulled, unused task image tags; no shared cache cleanup ran. The unchanged official
-v4.1.0 evaluator run is
+MP-08 / MP-10: the full SWE Verified Mini baseline completed 50 independent
+solver turns and officially resolved 44/50 (88%), with six unresolved, zero
+scorer errors, zero empty patches and zero unstopped task containers. The scorer
+guard removed only its 50 newly pulled, unused task image tags. The unchanged
+official v4.1.0 evaluator run is
 `chariox-evals-full-2c6c95cdf4534b82b62bc50470886fa2`. Every task used frozen
-product source82a444a77 and kernel SHA f25b48a1...; subsequent allocation-guard
-commits are not relabelled as that runtime. All50 real TUI usage reports match
-the final native Codex counters and all runtime cleanup completed. Solver wall
-sum is4950.44s, mean99.01s, median94.80s and nearest-rank p95=191.08s. No task
-has an authoritative USD quote. This is a local unpriced Codex baseline,
-not ordinary/managed/provider parity or matching-dollar acceptance.
+product source `82a444a77` and kernel SHA `f25b48a1...`; subsequent allocation
+guard commits are not relabelled as that runtime. All 50 real TUI usage captures
+match the final native Codex input/cache/output/reasoning counters, and all
+runtime cleanup completed. Solver wall sum is 4950.44s, mean 99.01s, median
+94.80s and nearest-rank p95 is 191.08s. No task has an authoritative USD quote.
+This is a local unpriced Codex baseline; ordinary/managed/provider parity and
+matching dollar acceptance still require their own drills.
 
 The six unresolved tasks remain in the denominator. Post-scoring analysis
-identifies implementation defects: django-12193 fixes the array caller but
-leaves CheckboxInput mutating attrs; django-12273 leaves saved inheritance
-links when copying with pk=None; sphinx-7590 encodes incorrect C++ literal IDs;
+identifies patch defects: django-12193 fixes the array caller but leaves
+CheckboxInput mutating attrs; django-12273 leaves saved inheritance links when
+copying with pk=None; sphinx-7590 encodes incorrect C++ literal IDs;
 sphinx-7748 adds a singleton signature continuation; sphinx-7985 emits an extra
-existing-file link result; sphinx-11510 adds include-read rather than extending
+existing-file link result; sphinx-11510 adds include-read instead of extending
 the expected source-read behavior. Official failed-test IDs, patch hashes and
 test-log hashes are retained externally. No scored patch was retried after
 seeing verifier results.
 
-MP-11: a wider allocation audit corrected stale current-version435 assertions,
-publication defaults and the public-provider drill stamp to448. Fail-first
-Node/CLI/publication checks were retained. Focused10 Rust guards,3 actual
-public-provider boundary checks,14 Node guards,5 CLI guards and4 boundary-script
-checks pass. Historical released snapshots and clients' unchanged minimum
-versions retain their original identities. These checks establish their focused
-security/protocol scope, not the complete narrowed MP-11 parity matrix.
+MP-11: a wider allocation audit corrected stale current-version 435 assertions,
+publication defaults and the public-provider drill stamp to 448. Fail-first
+Node/CLI/publication checks were retained. Focused 10 Rust guards, three actual
+public-provider boundary checks, 14 Node guards, five CLI guards and four
+boundary-script checks pass. Historical released snapshots and clients'
+unchanged minimum versions retain their original identities. These checks
+establish their focused security/protocol scope; the complete narrowed MP-11
+parity matrix is not established by this baseline.
 
 MP-08 / MP-10 / MP-11: Terminal task environment inventory exposed a native
 loader blocker before any scored task: the host-built kernel requires
-GLIBC2.38/2.39 in Bookworm. Building the same frozen82a source in the project's
-pinned Rust1.88 Bookworm image produced a kernel with maximum GLIBC2.34;
-the actual native protocol probe changes from RED(exit1) to GREEN(exit0,448).
-It still fails Bullseye(GLIBC2.31). A Bullseye-compatible build is being prepared
-without changing official task images. The bundled provider zsh also has a
-newer libc requirement; its actual task-path use is not established. These are
-component admission probes, not Terminal-Bench provider/task acceptance.
+GLIBC 2.38/2.39 in Bookworm. Building the same frozen source in the project's
+pinned Rust 1.88 Bookworm image produced a kernel with maximum GLIBC 2.34;
+the actual native protocol probe changes from RED (exit 1) to GREEN (exit 0,
+448). That binary still fails Bullseye (GLIBC 2.31). Bullseye bootstrap package
+failures and missing-compiler exit 101 were retained; GPG-verified archived
+packages repaired and verified the prerequisites. Its next build remained
+queued and was settled before acquiring the shared compile slot, with no build
+verdict. The public Codex executable's Bullseye version probe passed; bundled
+zsh failed to load. Whether the actual task path selects that zsh is unverified.
+No official task image was changed and no profile was mounted into these
+builders. These are component probes; the real Terminal task flow requires
+approved profile placement or a managed worker binding.
 
+MP-11: all 60 completed solver checkouts were removed after preserving the
+predictions and inventorying protected paths, including ignored files. The
+single protected-name match was generated bytecode for tracked public Django
+source, not an inspected credential. The interrupted checkout was also removed after proving its final diff exactly
+matched its preserved, unscored patch. Own finished Bookworm and failed/queued
+Bullseye compiler profiles and the exact builder containers were removed.
+Public runtime binaries, frozen source pins, receipts and the interrupted
+attempt's evidence remain available for replay. Shared caches, provider
+profiles, protected reviewer state and other lanes were untouched.
 
 
 All state, logs, screenshots and output stay outside source repositories. Signal
