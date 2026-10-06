@@ -51,6 +51,7 @@ for (const key of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'OPENCODE_CONFIG_DIR', 'CH
 // and terminal enrollment are generated through the normal product pairing flow.
 if (relayTransport) env.CHARIOX_RELAY_TOKEN = randomBytes(32).toString('hex')
 const receipt = { mpItems: ['MP-08','MP-10','MP-11'], source: args.source, clientSource: args['client-source'], model,
+  drillSource: args['drill-source'] ?? args.source,
   ownedStateRoot: state, ownedWorkspaceRoot: workspace,
   startedAt: new Date().toISOString(), steps: [], resources: [], transport: relayTransport ? 'paired-relay' : 'local', limitations: ['Web room-pane and fresh Path-1 comparison require their own real-path evidence.'] }
 for (const key of ['kernel','relay','client']) receipt[key + 'Sha256'] = createHash('sha256').update(await readFile(args[key])).digest('hex')
@@ -168,7 +169,8 @@ try {
       const previous = new Set((await stateUntil(()=>true)).room_workflows.workflows[0].runs.map(run=>run.run_id))
       await key('\x17')
       await key(`Run this exact Bash command now as one foreground shell tool call, without a pipe or output truncation: ${command}. Keep waiting for this command; do not return a workflow envelope until it ends.`)
-      await capture(label+'-draft',text=>text.includes('WFP_NOISY_OUTPUT'))
+      // The narrow composer scrolls to the end of this long user command.
+      await capture(label+'-draft',text=>text.includes('ends.'))
       const noiseStartedAtMs = Date.now()
       await raceKey('\r')
       const started = await stateUntil(s=>s.room_workflows.workflows[0].runs.some(run=>!previous.has(run.run_id)))
@@ -187,7 +189,7 @@ try {
       // User action is a real TUI key. Time starts at the PTY write, before
       // the TUI/relay/kernel process the control; it does not start at an IPC call.
       const control = await raceKey(action === 'pause' ? '\x10' : '\x13')
-      const sample = {round:round+1,action,runId,controlSentAtMs:control.sentAtMs,progressBeforeControl:progress}
+      const sample = {round:round+1,action,runId,command,controlSentAtMs:control.sentAtMs,progressBeforeControl:progress}
       receipt.noisyInterrupts.push(sample)
       const deadline = Date.now()+10000
       let traces, timing
