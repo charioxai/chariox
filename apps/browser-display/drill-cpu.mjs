@@ -8,7 +8,7 @@ export class CpuCounter {
 }
 export function cpuSpan(before,after){const seconds=(after.at_ms-before.at_ms)/1000;const cores={};for(const role of ['source','pipeline','viewer','harness'])cores[role]=(after.cpu_seconds[role]-before.cpu_seconds[role])/seconds;return {duration_ms:seconds*1000,cores,source_plus_pipeline_cores:cores.source+cores.pipeline};}
 export class CpuSampler {
- constructor({root,viewerRoot,harnessPid=process.pid}){this.root=root;this.viewerRoot=viewerRoot;this.harnessPid=harnessPid;this.counter=new CpuCounter(Number(execFileSync('getconf',['CLK_TCK'],{encoding:'utf8'})));this.known=new Map();this.samples=[];this.roots=new Map();this.seen=new Set();}
+ constructor({root,viewerRoot,harnessPid=process.pid}){this.root=root;this.viewerRoot=viewerRoot;this.harnessPid=harnessPid;this.counter=new CpuCounter(Number(execFileSync('getconf',['CLK_TCK'],{encoding:'utf8'})));this.known=new Map();this.components=new Map();this.samples=[];this.roots=new Map();this.seen=new Set();}
  async track(pid,role='pipeline'){
   if(!Number.isSafeInteger(pid)||pid<=1||!['source','pipeline','viewer'].includes(role))throw Error('MP-10 invalid owned CPU root');
   const s=await readFile(`/proc/${pid}/stat`,'utf8'),f=s.slice(s.lastIndexOf(')')+2).split(' ');this.roots.set(pid,{start:f[19],role});
@@ -27,7 +27,13 @@ export class CpuSampler {
    else if(command.includes(this.viewerRoot))role='viewer';
    else if(command.includes(this.root))role=/chrome|chromium/.test(command.split('\0')[0])?'source':'pipeline';
    // MP-10: process names only, never raw command lines or environment values.
-   inventory.push({pid,ppid:Number(f[1]),start,component:s.slice(s.indexOf('(')+1,s.lastIndexOf(')')),ticks:Number(f[11])+Number(f[12]),rss_bytes:Number(f[21])*4096});
+   let component=this.components.get(pid+':'+start)??s.slice(s.indexOf('(')+1,s.lastIndexOf(')'));
+   if(component==='python3'){
+    const args=command||await readFile(`/proc/${pid}/cmdline`,'utf8');
+    for(const script of ['kernel-browser-xshm.py','kernel-browser-encoder.py'])if(args.split('\0').some(a=>a.endsWith('/'+script)))component=script;
+   }
+   this.components.set(pid+':'+start,component);
+   inventory.push({pid,ppid:Number(f[1]),start,component,ticks:Number(f[11])+Number(f[12]),rss_bytes:Number(f[21])*4096});
    if(role)this.known.set(pid+':'+start,role);
   }catch{}
   const byPid=new Map(inventory.map(r=>[r.pid,r]));
