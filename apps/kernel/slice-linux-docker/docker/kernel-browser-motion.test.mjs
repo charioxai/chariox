@@ -1,5 +1,12 @@
 // MD-DISPLAY-02/04: stalled encode does not own input/credit; loss resets deltas.
 import test from 'node:test';import assert from 'node:assert/strict';import{MotionEncoder,CreditBudget}from'./kernel-browser-motion.mjs';
+test('MP-08/MP-10 raw-less stripe fallback recovers an oversized unsent full-video packet',async()=>{
+ const latest={serial:1,data_base64:'source'},keys=[];
+ const source={subscribe:()=>()=>{},sample:()=>latest};
+ const encoder={async encode(image,bitrate,key){keys.push(key);return{key,data_base64:keys.length===1?'A'.repeat(1024*1024):'AA=='}}};
+ const m=new MotionEncoder(source,encoder,{stripes:true,codec:'avc1.420033',bitrate:8000000});
+ try{await m.active;assert.deepEqual(keys,[true,true]);assert.equal(m.take().encoded.key,true)}finally{await m.close()}
+});
 for(const mode of ['queued','stale','in-flight'])test('MP-08/MP-10 raw-less stripe negotiation recovers '+mode+' full-video work with a key',async()=>{
  let now=0,latest,offer,release;const keys=[];
  const source={subscribe(f){offer=f;return()=>{}},sample:()=>latest};
