@@ -21,6 +21,8 @@ the source inspection identities in the table remain unchanged.
 Round 3 starts at `05754fc6a8e30ef30d8f9b3a7357d522f94d0d6b` and incorporates
 the binding 12:22/12:34 UTC inbox additions: post-overhaul evals and the two
 flagship external-service build/deploy variants below. Runtime pins stay fixed.
+The 13:32 UTC review additionally binds windowed sudo to owner-authorized work
+and permits useful goal continuation while independent sources remain live.
 
 Source read for this study:
 
@@ -125,6 +127,9 @@ the event until a real turn is available. Remote urgency uses the same leased
 steer/receipt route, with no alternate prompt authority; partition, unsupported
 steer and uncertain outcomes follow the wake delivery rules below. Neither
 urgency nor reply preference conveys elevation or approval authority.
+During sudo-bound work, unrelated peer messages and queued prompts cannot
+enter its provider context or steer it, even if urgent; use the causal fence
+below. Only kernel-correlated results of that authorized work may resume it.
 
 Derive owner, room/session, agent and provider-run identity from admitted MCP
 or the authenticated home-owned lease, never arguments. Resolve references
@@ -204,14 +209,16 @@ explicit implementation changes, not existing window behavior.
    a fresh passkey through the existing terminal-only, rate-limited verifier;
    passkey bytes never enter prompt/history/provider context.
 2. Bind a non-transferable elevation entry to owner/kernel/session/agent,
-   authorizing terminal, initial prompt, expiry and revocation epoch. Proposed
+   authorizing terminal, initial prompt/task/objective revision, expiry and
+   revocation epoch. Proposed
    default is 60 minutes; offer 1, 2, 4 and 8 hours, with a proposed maximum of
    8 hours per verification. This is a separate elevation duration selector,
    not the existing 1–15-minute passkey-remember setting. A remembered passkey
    for another action cannot mint elevation.
 3. Queueing, delegation, yielding and waking cannot extend expiry. Check the
-   same entry on each new turn and every privileged call, including after
-   waits. Expired wakes run as regular agents and can request owner renewal.
+   same entry and owner-work causal binding on each new turn and every
+   privileged call, including after waits. Expired wakes run as regular agents
+   and can request owner renewal.
    Wall-clock rollback cannot extend a live monotonic deadline. Proposed
    restart behavior is fail closed: preserve value-free audit, invalidate live
    elevation and wake regularly until the owner reauthorizes.
@@ -219,6 +226,35 @@ explicit implementation changes, not existing window behavior.
    change ends elevation immediately. Stop pending privileged operations at
    their next fence; already delivered physical input cannot be undone.
    Spawned/forked agents and workflow nodes never inherit it.
+
+**Owner-work causal fence.** A live window authorizes the owner's approved
+request, not every request received by that agent. Home admission records the
+original owner prompt/task (goal ID/revision when present), approved typed
+operation classes/resources and an immutable authorization revision. Bind each
+continuation, subscription, delegated-result correlation and provider turn to
+that work before dispatch; neither message arguments nor model-provided IDs
+can mint the binding. Recheck it with current window/run/lease at privileged
+admission and immediately before effects. A related result is untrusted data,
+not authority to widen the operation/resource envelope; an unclassified or
+expanded privileged target needs fresh owner authorization, not a guessed
+natural-language match. This adds no mandatory task plan.
+
+Urgent/non-urgent peer requests, unmatched events and unrelated queued user
+prompts remain outside the elevated provider context: defer visibly until its
+turn settles, or dispatch a distinct regular turn with no sudo binding. Never
+steer them into the elevated run and merely relabel their origin. Resuming
+authorized work restores only its owner objective and protected, correlated
+public work context; an intervening regular task's instructions cannot carry
+into that context. Authenticated delegate/workflow/watcher results and deadline
+checks may resume that original work under the unchanged scope/expiry. A new
+owner request or objective/scope amendment requires fresh explicit authorization;
+Extend renews time for the same work only. Preserve the pinned sudo tests'
+peer-message/queued-steering denial boundary while generalizing continuation.
+If the official harness cannot isolate/reconstruct those contexts, keep unrelated
+prompts deferred until authorized work ends or its grant is revoked; never reuse
+a contaminated provider thread for elevated continuation.
+Home and worker enforce the same fence; UI/audit show deferred origin and
+authorized task, never suggest the grant covers unrelated work.
 
 Every web, local TUI and remote TUI projects the same `/sudo` status row with
 remaining time, absolute expiry, Revoke and Extend controls. Extend opens one
@@ -545,9 +581,12 @@ intent before provider I/O; home ordering/current worker lease still apply.
 **At each goal work-turn end**, validate ledger and evaluate against the
 original objective and public results. If achieved and no unresolved
 obligations, commit done with the verified final answer. Otherwise, if the
-outcome needs the user, commit blocked. Otherwise, if live sources exist,
-commit waiting with obligation coverage and a finite check-in deadline.
-Otherwise immediately re-prompt the same agent to continue, using ordinary
+outcome needs the user, commit blocked. Honor a validated `continue` when
+useful independent work remains, even with live delegates/watchers; preserve
+their obligations/subscriptions and immediately admit the next work turn.
+Choose waiting only when progress actually depends on live sources, with
+obligation coverage and a finite check-in deadline. If incomplete and no live
+sources exist, immediately re-prompt the same agent to continue, using ordinary
 dispatch and the next durable continuation sequence. This transient scheduling
 phase is visible as working; it cannot become idle or falsely waiting. Source
 loss/check-in wakes re-evaluate and take the same branches. The progress guard
@@ -769,7 +808,8 @@ Reserve coordinator allocations before implementation; choose no local or
 relay numbers in this plan. New serialized needs are room-tool availability
 and capability grants, immutable spawn/creator lineage, task/obligation and
 turn-settlement records, event origin/cursor/registration and yield/wait state,
-deadlines/progress/block interactions, process/timer status, elevation status/
+deadlines/progress/block interactions, process/timer status, elevation causal
+authorization/scope bindings and status/
 warning/extension/revocation/leased context, goal objective/state/evaluation/
 continuation/check-in/migration projections,
 hand-off target/view/protected input/payment confirmation, and history query/
@@ -822,15 +862,15 @@ the relevant acceptance boundaries. No fixture-only pass closes a PR.
 | 1 — room admission/tools, M; main | Room tools, immutable creator lineage and obligation registration at dispatch; A01, G01–G18 + S01–S04. MP-08/MP-10/MP-11. |
 | 2 — durable events/yield, L; 1 + #885 | Inbox/receipts, explicit turn-end states, obligation enforcement, sweep/progress guard and all-client visibility; A02, G01–G18 + S01–S04. MP-08/MP-09/MP-10/MP-11. Split persistence and lifecycle enforcement at service boundaries if needed; neither is accepted alone. |
 | 3 — process/timer watchers, M; 2 | Owned watchers/processes and MP-09 activity/recovery; A03, G01–G18 + S01–S04. MP-08/MP-09/MP-10/MP-11. |
-| 4 — sudo windows/policy, M; 1 + 2 | Hour-scale grants, fresh extension, status/warnings and approval prohibition; A04, G01–G18 + S01–S05. MP-08/MP-10/MP-11. |
+| 4 — sudo windows/policy, M; 1 + 2 | Hour-scale grants, owner-work causal fence, fresh extension, status/warnings and approval prohibition; A04, G01–G18 + S01–S06. MP-08/MP-10/MP-11. |
 | 5 — user-requested capability grants, M; 1 + #900 | Prompt-caused resource grants and executable App-agent admission; A05, G01–G18 + S01–S04. MP-08/MP-10/MP-11. |
 | 6 — Vault generator/login, M; 4 + 5 | Opaque generation, protected login and leakage negatives; A06, G01–G18 + S01–S04. MP-08/MP-10/MP-11. |
 | 7 — hand-off, L; 2 + 5 (+ 6 for save) | Protected owner interaction, blocked obligations and safe resume; A07, G01–G18 + S01–S04. MP-08/MP-10/MP-11. |
 | 8 — payment confirmation, M; 4 + 6 + 7 | Single-use owner confirmation and uncertain effects; A08, G01–G18 + S01–S04. MP-08/MP-10/MP-11. |
 | 9 — history search, M; 1 + protected history projection | Room-authorized public FTS, redaction/invalidation; A09, G01–G18 + S01–S04. MP-08/MP-10/MP-11. |
-| 10 — leased wakes/elevation, M; 2–4 | Home ordering, worker fences and placement parity; A10, G01–G18 + S01–S04. MP-08/MP-09/MP-10/MP-11. |
+| 10 — leased wakes/elevation, M; 2–4 | Home ordering, worker causal fences and placement parity; A10, G01–G18 + S01–S05. MP-08/MP-09/MP-10/MP-11. |
 | 11 — retirement/migration, S–M; 1–10 + 12 accepted | Legacy drain/migration, minimum versions and final integration; A11, G01–G18 + S01–S04, then flagship FA01–FA10 and I01–I03. MP-08/MP-09/MP-10/MP-11. |
-| 12 — hybrid goal loop, M; 2–4 + 10 | Persisted objective, bounded completion check, immediate continuation/check-ins, blocked owner paths and goal migration; A12, G01–G18 + S01–S06. Land before 11. MP-08/MP-09/MP-10/MP-11. |
+| 12 — hybrid goal loop, M; 2–4 + 10 | Persisted objective, bounded completion check, useful independent continuation/check-ins, blocked owner paths and goal migration; A12, G01–G18 + S01–S07. Land before 11. MP-08/MP-09/MP-10/MP-11. |
 
 After the overhaul PRs and their functional gates, run the separate **Evals and
 optimization** phase below. It does not gate overhaul merge or MP acceptance.
@@ -859,7 +899,7 @@ paths, base/candidate source and binary identities, result and blocker owner/
 action. The gate compares expected IDs with results: missing, duplicate, blank,
 skipped, N/A or unknown results fail. No provider/client/placement substitution
 or source-only pass. A runner failure cannot silently shorten the manifest.
-At this revision the gating expected set is 19,224 A cells plus 432 I cells
+At this revision the gating expected set is 19,440 A cells plus 432 I cells
 (three scenarios × 72 axis combinations × two integration phases) and 1,440 FA
 cells (ten controlled flagship cases × 72 axes × two integration phases).
 The 576 FB showcase cells (eight cases × 72 axes) are separate and non-gating.
@@ -985,6 +1025,7 @@ already pass on base; do not deliberately weaken base to manufacture RED.
 | S03 | 1. Keep task active for the real 60-minute window, with wait spanning expiry. 2. Observe warning at 10 minutes and expiry on every terminal. 3. Wake, deny queued privileged call, continue regular work and request fresh elevation. No accelerated clock substitutes for this duration proof. | Timestamped warning/expiry/regular progress, countdown reconnect and refusal reason. | BLOCKED(B0) |
 | S04 | 1. Revoke, rotate passkey, change placement and restart in separate elevated runs. 2. Try old Extend response/wake. Each invalidates elevation; fresh owner verification is required. 3. Commit effect before expiry and drop ACK; reconcile without replay. | Epoch/placement fences, restart status and exact effect receipt. | BLOCKED(B0) |
 | S05 | 1. Attempt approval/passkey/payment resolution via legacy meta tool, raw kernel request, shell/native bridge and delegated agent. 2. Owner answers normally through client. All model paths deny; same kernel interaction settles once. | Shared admission denials, owner response and one effect. | BLOCKED(B0) |
+| S06 | 1. During live sudo work, send unrelated urgent/non-urgent peer requests and queued owner prompts, while running and waiting; request unrelated owner-wide administration. They cannot steer elevated context or use its window, and defer visibly or run regularly without it. 2. Deliver authenticated correlated delegate/watcher result, continue original work and execute an approved privileged step without new passkey while grant stays live. 3. Forge causal IDs, widen result scope, edit objective or reuse regular-task context; deny until fresh owner authorization. | Message/context admission and no-effect denials, original task/window/scope receipts, positive authorized continuation, separate regular context and fresh amendment interaction. | BLOCKED(B0) |
 
 ### MP-08 / MP-10 / MP-11 — A05 capability grants
 
@@ -1039,6 +1080,7 @@ already pass on base; do not deliberately weaken base to manufacture RED.
 | S02 | 1. Message busy/idle/yielded remote receivers with both urgency modes and explicit reply. 2. Partition after acceptance, replace lease and deliver old completion. No duplicate run, stale completion or reply chatter. | Steer/inbox/receipt timeline, old-lease denial and result counts. | BLOCKED(B0) |
 | S03 | 1. Owner authorizes exact leased elevation on admitted execution kernel. 2. Wait, extend freshly, expire/revoke and restart worker/home. 3. Try inherited and cross-kernel browser authority. Both-end fences deny stale grants and delegates stay regular. | Home/worker expiry/epoch checks, renewal screens and domain denial. | BLOCKED(B0) |
 | S04 | 1. Repeat on O/M and slice, lose worker process/App source. 2. Allow deadline/sweep. 3. Normally stop/start managed host and resume overdue work. Parity excluding shutdown/deployment only; no hidden dormant task. | Paired normalized results, source-loss/deadline wake and MP-09 timings. | BLOCKED(B0) |
+| S05 | 1. Repeat A04 S06 through a real lease: unrelated urgent/non-urgent peer requests and queued prompts cannot acquire the worker's live sudo binding. 2. Replay forged/stale causal ID, run/lease or goal revision; both ends deny before effect. 3. Correlated authorized result wakes the same owner task and approved privileged operation succeeds under valid scope/window. | Home/worker context/causal fences, deferred regular-origin UI, negative effect counts and positive same-task continuation receipts. | BLOCKED(B0) |
 
 ### MP-08 / MP-09 / MP-10 / MP-11 — A11 migration and retirement
 
@@ -1059,6 +1101,7 @@ already pass on base; do not deliberately weaken base to manufacture RED.
 | S04 | 1. Trigger each blocked category: decision/input, 2FA/refusal/automation prohibition, missing account/quota/billing/credential, unanswered approval/expired required sudo, progress guard. 2. Deliver source progress/reconnect while blocked; neither resumes. 3. Owner resolves through protected product UI or cancels. Exactly one revalidated resume/cancel, human input stays protected. | Each category's interaction/notification, owner response receipt and boolean leakage scan. | BLOCKED(B0) |
 | S05 | 1. Start `/sudo /goal`, wait through warning/expiry, then Extend with fresh passkey. 2. Pause/resume from each UI, restart home/worker and edit objective. 3. Child/grandchild completion feeds root goal evaluation; delegates stay ordinary, A cannot delete grandchild. Goal survives sudo loss and explicit owner stop; no implicit elevation or goal inheritance. | Goal/sudo rows in every client, elapsed counters/revisions, direct-creator denials and safe reauthorization. | BLOCKED(B0) |
 | S06 | 1. Open legacy `/goal` planner-worker-reviewer invocation at pinned base. 2. Migrate once with recovered objective/run/node bindings, restart twice and replay migration ACK. 3. Exercise unknown objective and completed/cancelled runs. Preserve work/history, ask owner to adopt unknown goal, no duplicate nodes or dual scheduler; `/goal`, user templates and `/loop` remain available as specified. | Migration receipts, preserved objective/run/history, node launch counts and old-client diagnostic. | BLOCKED(B0) |
+| S07 | 1. Goal delegates a real long build and retains a watcher while root has independent implementation work. 2. Completion check returns validated continue; immediately admit root work without waiting for a source/check-in, keeping both obligations/subscriptions live. 3. Exhaust independent work, choose covered finite waiting, then consume build/watcher results and finish. Empty/repeated continue remains subject to progress guard. | Evaluation/next-turn timestamps before any source event, independent artifact, retained source IDs/ledger, later wait/check-in/result timeline and final zero-open done. | BLOCKED(B0) |
 
 ### MP-08 / MP-09 / MP-10 / MP-11 — final integration scenario suite
 
