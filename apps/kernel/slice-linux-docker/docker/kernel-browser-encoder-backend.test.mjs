@@ -5,7 +5,7 @@ test('MP-10 actual SIMD conversion survives the browser encoder adapter',{skip:!
  const {BrowserEncoder}=await import('./kernel-browser-webcodecs.mjs');
  const e=new BrowserEncoder({},'target');
  try{
-  const packet=await e.encodeStripes({width:128,height:128,format:'bgr0',pixels:Buffer.alloc(128*128*4)},8000000,true,'avc1.420033');
+  const packet=await e.encodeStripes({width:128,height:128,format:'bgr0',length:128*128*4,pixels:Buffer.alloc(128*128*4)},8000000,true,'avc1.420033');
   assert.equal(packet.stripes.length,8);assert.equal(e.backend,'x264');assert.equal(e.converter,'libyuv');
  }finally{await e.close()}
 });
