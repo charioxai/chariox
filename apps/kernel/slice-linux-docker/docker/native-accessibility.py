@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import pyatspi
+from collections import deque
 MAX_NODES=512
 MAX_DEPTH=32
 
@@ -17,7 +18,7 @@ def alive(process):
 
 def snapshot(processes):
     allowed={item['pid']:item['started'] for item in processes if alive(item)}
-    nodes=[];complete=True;protected=False;seen=set()
+    nodes=[];complete=True;protected=False;seen=set();pending=deque()
     try: desktop=pyatspi.Registry.getDesktop(0)
     except Exception:return {'available':False,'complete':False,'nodes':[],'protected':True}
     def visit(node,pid,started,path,depth):
@@ -43,7 +44,7 @@ def snapshot(processes):
         if not secret:
             for i in range(min(node.childCount,MAX_NODES)):
                 child=node.getChildAtIndex(i)
-                if child:visit(child,pid,started,path+[i],depth+1)
+                if child:pending.append((child,pid,started,path+[i],depth+1))
             if node.childCount>MAX_NODES:complete=False
     try:
         for app_index in range(min(desktop.childCount,64)):
@@ -54,8 +55,12 @@ def snapshot(processes):
                 complete=False
                 continue
             seen.add(pid)
-            visit(app,pid,allowed[pid],[],0)
+            pending.append((app,pid,allowed[pid],[],0))
         if desktop.childCount>64:complete=False
+        # MP-08: traverse applications fairly before deep hidden menu trees.
+        while pending and len(nodes)<MAX_NODES:
+            visit(*pending.popleft())
+        if pending:complete=False
         # A private bus alone does not prove all visible windows expose AT-SPI.
         # Unknown/unscoped native windows make password coverage uncertain.
         try:

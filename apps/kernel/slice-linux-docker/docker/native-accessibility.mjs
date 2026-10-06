@@ -27,7 +27,8 @@ export class NativeAccessibility {
     // MP-08 / MP-11: official harnesses truncate large single-line tool output.
     // Prioritize current controls; the unprojected tree still fences every action.
     const priority=node=>node.states?.includes('showing')
-      ? (node.actions?.length || node.states.includes('editable') ? 0 : 1) : 2;
+      ? (node.states.includes('focused') || ['frame','window','dialog'].includes(node.role)
+        ? 0 : node.actions?.length || node.states.includes('editable') ? 1 : 2) : 3;
     const candidates=(tree.nodes??[]).slice(0,512).sort((a,b)=>priority(a)-priority(b));
     const nodes=[];let bytes=0;
     for(const node of candidates){
@@ -36,7 +37,8 @@ export class NativeAccessibility {
       const protectedNode=Boolean(node.protected || node.role==='password text' || policy?.targets?.length);
       const projected={target_id,role:node.role,name:protectedNode?'[protected]':node.name,states:node.states??[],bounds:node.bounds,actions:protectedNode?[]:node.actions??[]};
       const size=Buffer.byteLength(JSON.stringify(projected))+1;
-      if(bytes+size>14336)continue;
+      // MP-08: MCP duplicates and pretty-prints this payload; history caps at12KiB.
+      if(bytes+size>3072)continue;
       bytes+=size;nodes.push(projected);handles.set(target_id,{...node,protected:protectedNode});
     }
     const complete=Boolean(tree.complete && nodes.length===(tree.nodes??[]).length);

@@ -61,6 +61,18 @@ test('MP-08 OpenCode observation budget retains visible actionable targets and f
  await assert.rejects(native.action('agent:a',{target_id:file.target_id,tree_revision:seen.tree_revision,action:'click'},{}),e=>e.code==='user_domain_stale_reference');
 });
 
+test('MP-08 / MP-11 visible window context survives menus and the wrapped provider receipt budget', async () => {
+ const current={...tree,nodes:Array.from({length:120},(_,i)=>({...tree.nodes[0],path:[i],name:'Menu '+i,states:['showing','enabled'],actions:['click']}))};
+ current.nodes.push({...tree.nodes[0],path:[120],role:'frame',name:'Chariox pixel fixture',states:['showing'],actions:[]});
+ const native=new NativeAccessibility({binding:()=>binding,execute:async()=>structuredClone(current)});
+ const snapshot=await native.snapshot('agent:a',{});
+ assert(snapshot.nodes.some(n=>n.name==='Chariox pixel fixture'));
+ const payload={...snapshot,agent_id:'agent-2',session_id:'1234567890123456',slice_id:'slice-1',source:'computer_controller'};
+ const receipt={_meta:null,content:[{type:'text',text:JSON.stringify(payload)}],structuredContent:payload};
+ assert(Buffer.byteLength(JSON.stringify(receipt,null,2))<=12*1024,'MP-08 complete MCP receipt must remain parseable in provider history');
+ assert.equal(snapshot.fallback,'ocr');
+});
+
 test('MP-08 / MP-11 failed or cancelled dispatch consumes handles even with an unchanged tree', async () => {
  for (const reason of ['helper failed after effect', 'action cancelled after effect']) {
   let effects=0;
