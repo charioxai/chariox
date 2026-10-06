@@ -712,6 +712,21 @@ fn room_admission_workflow_binding_cannot_grant_peer_extensions() {
             "can_complete_workflow_run":true, "extensions":[{"kind":"skill","name":"am1-source-regression-only"}]}],
         "endpoints":[{"handle":"entry","entry_node":"review"}],
     })).unwrap();
+    // MP-08/MP-11: target validation must report the same provisioning fence as apply.
+    let limits = crate::config::WorkflowCodeLimitsConfig::default();
+    let (_, validation) = crate::app::KernelSessionService::new(&mut app)
+        .validate_workflow_code_definition_with_rebindings(
+            session.id(), &definition, &limits, &[], &[], Some(actor.id()),
+        )
+        .unwrap();
+    assert!(!validation.ok, "room validation must reject unadmitted capability provisioning: {validation:?}");
+    assert!(validation.diagnostics.iter().any(|diagnostic| diagnostic.code == "unauthorized_extension_provisioning"));
+    let (_, owner_validation) = crate::app::KernelSessionService::new(&mut app)
+        .validate_workflow_code_definition_with_rebindings(
+            session.id(), &definition, &limits, &[], &[], None,
+        )
+        .unwrap();
+    assert!(owner_validation.ok, "owner-authored validation retains its existing capability path: {owner_validation:?}");
     let failed = crate::app::KernelSessionService::new(&mut app).apply_workflow_code_definition(
         session.id(),
         &definition,
