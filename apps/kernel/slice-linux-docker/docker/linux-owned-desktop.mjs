@@ -11,7 +11,9 @@ export function desktopEnvironment(source, runtime, uid = process.getuid?.()) {
   if (!Number.isInteger(uid) || uid <= 0) throw new Error('MP-11: owned desktop requires a non-root kernel user');
   const env = {};
   for (const key of ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR', 'CHARIOX_KERNEL_BROWSER_EXECUTABLE', 'CHARIOX_KERNEL_BROWSER_HEADLESS', 'CHARIOX_KERNEL_BROWSER_DISPLAY', 'CHARIOX_KERNEL_BROWSER_MIRROR', 'CHARIOX_BROWSER_DISPLAY_PYTHON', 'CHARIOX_BROWSER_DISPLAY_TIMING']) if (source[key] !== undefined) env[key] = source[key];
-  return { ...env, TMPDIR: runtime, XAUTHORITY: path.join(runtime, 'Xauthority'), XDG_RUNTIME_DIR: runtime, NO_AT_BRIDGE: '0', GTK_A11Y: 'always' };
+  // MP-08 / MP-11: Chromium's native ATK bridge has a separate enablement
+  // check from renderer accessibility. Keep both on this owned desktop.
+  return { ...env, TMPDIR: runtime, XAUTHORITY: path.join(runtime, 'Xauthority'), XDG_RUNTIME_DIR: runtime, NO_AT_BRIDGE: '0', GTK_A11Y: 'always', ACCESSIBILITY_ENABLED: '1' };
 }
 export const desktopBusAddress = () => `unix:abstract=chariox-desktop-${randomUUID()}`;
 function authorityCookie(cookie, display) {

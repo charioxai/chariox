@@ -15,6 +15,8 @@ test('MP-11 rejects root and inherited desktop authority', () => {
   assert.equal(env.ACCESS_TOKEN, undefined);
   assert.equal(env.XAUTHORITY, '/tmp/x/Xauthority');
   assert.equal(env.TMPDIR,'/tmp/x');
+  assert.equal(env.ACCESSIBILITY_ENABLED, '1');
+  assert.equal(env.NO_AT_BRIDGE, '0');
 });
 test('MP-11 process identity rejects system and invalid signal targets', async () => {
   for (const pid of [0, 1, -1, undefined, NaN, 1.1, Infinity]) assert.equal(validOwnedPid(pid), false);

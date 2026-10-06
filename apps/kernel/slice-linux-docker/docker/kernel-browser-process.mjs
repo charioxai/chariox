@@ -25,13 +25,14 @@ export async function executable(environment = process.env, platform = process.p
   throw new Error("MD-2: install native Chromium or set CHARIOX_KERNEL_BROWSER_EXECUTABLE");
 }
 
-export function launchArguments(profile, headless, display = false) {
+export function launchArguments(profile, headless, display = false, nativeAccessibility = false) {
   return [
     `--user-data-dir=${profile}`, "--remote-debugging-pipe",
     "--no-first-run", "--no-default-browser-check",
     "--disable-session-crashed-bubble", "--disable-background-networking",
     "--window-size=1280,800", ...(headless ? ["--headless=new"] : []),
-    ...(display ? ["--disable-frame-rate-limit"] : []), "about:blank",
+    ...(display ? ["--disable-frame-rate-limit"] : []),
+    ...(nativeAccessibility && !headless ? ["--force-renderer-accessibility"] : []), "about:blank",
   ];
 }
 
@@ -82,7 +83,7 @@ export class HostChromium {
       environment = chromiumTemporaryEnvironment(environment, this.temporaryDirectory.fd);
     }
     const child = spawn(binary, launchArguments(profile,
-      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1"), {
+      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1", Boolean(this.desktop?.binding())), {
       stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env: environment,
     });
     this.child = child;

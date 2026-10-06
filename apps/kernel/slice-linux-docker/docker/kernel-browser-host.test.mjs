@@ -99,6 +99,11 @@ test("MD-2: native launch keeps sandbox and a private inherited CDP pipe", () =>
   assert(args.includes("--user-data-dir=/tmp/private-profile"));
   assert(!args.some(arg => /no-sandbox|disable-setuid-sandbox/.test(arg)));
 });
+test('MP-08 / MP-11: owned headed Chromium enables its native accessibility tree', () => {
+  assert(launchArguments('/tmp/private-profile', false, false, true).includes('--force-renderer-accessibility'));
+  assert(!launchArguments('/tmp/private-profile', true, false, true).includes('--force-renderer-accessibility'));
+  assert(!launchArguments('/tmp/private-profile', false).includes('--force-renderer-accessibility'));
+});
 test("MD-2: URL boundary rejects local files, script URLs and credentials", () => {
   for (const url of ["file:///tmp/a", "javascript:alert(1)", "chrome://settings", "https://alice:secret@example.com"]) assert.throws(() => navigationUrl(url));
   assert.equal(navigationUrl("https://example.com"), "https://example.com/");
