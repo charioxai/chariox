@@ -61,3 +61,17 @@ test('MP-11 attribute-only protected/layout changes retire cached native and CDP
  assert.equal(regionProtectionChanged(style,'foreign',true),false);
  assert(regionProtectionChanged({sessionId:'session',method:'DOM.childNodeInserted'},'session',false));
 });
+
+test('MP-08/MP-10 trusted empty DOM protection uses events instead of per-frame tree transfer',async()=>{
+ let calls=0;const connection={send:async method=>{calls++;if(method==='DOM.getDocument')return {root:{nodeId:1}};assert.equal(method,'DOM.querySelectorAll');return {nodeIds:[]};}};
+ const guard=new NativeRegionProtection(connection,'s');await guard.refresh();const baseline=calls;
+ for(let i=0;i<20;i++)assert.deepEqual(await guard.regions({width:1280,height:800,captured_ms:guard.beforeAt+1}),[]);
+ assert.equal(calls,baseline,'static regionless frames cannot request/serialize full DOM trees');
+ guard.retire();await assert.rejects(guard.regions({width:1280,height:800,captured_ms:Infinity}),/unavailable|retired/);
+});
+test('MP-11 a trusted metadata reply after protection retirement cannot reactivate admission',async()=>{
+ let enter,release;const entered=new Promise(r=>enter=r),held=new Promise(r=>release=r);
+ const c={send:async method=>{if(method==='DOM.getDocument'){enter();await held;return {root:{nodeId:1}};}return {nodeIds:[]};}};
+ const guard=new NativeRegionProtection(c,'s');const pending=guard.refresh();await entered;guard.retire();release();await assert.rejects(pending,/retired/);
+ assert.equal(guard.guard,null);
+});

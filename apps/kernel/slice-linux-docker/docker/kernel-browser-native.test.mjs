@@ -49,3 +49,16 @@ test('MP-10 input wake never writes to a fenced capture or destroyed pipe',async
  capture.wake();valid=false;capture.wake();valid=true;capture.child.stdin.destroyed=true;capture.wake();
  assert.deepEqual(writes,[{wake:true}]);
 });
+
+// MP-11: an empty DOM admission is event-bound before/after native attestation.
+test('MP-11 marker insertion retires native pixels even while attestation is pending',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
+ for(const phase of ['refreshing','attesting','streaming']){
+  const source=new LinuxCapture({sessionId:'session'});source.regions=new NativeRegionProtection({send:async method=>method==='DOM.getDocument'?{root:{nodeId:1}}:{nodeIds:[]}},'session');
+  if(phase!=='refreshing')await source.regions.refresh();source.attested=phase==='streaming';let released=0;
+  source.latest={raw:{release:()=>released++}};source.pending={release:()=>released++};
+  source.onCdp({sessionId:'foreign',method:'DOM.attributeModified',params:{name:'data-chariox-observation-protected'}});assert.equal(source.closed,false);
+  source.onCdp({sessionId:'session',method:'DOM.attributeModified',params:{name:'data-chariox-observation-protected'}});
+  assert.equal(source.closed,true);assert.equal(source.attested,false);assert.equal(source.regions.guard,null);assert.equal(source.latest,null);assert.equal(released,2);await source.close();
+ }
+});

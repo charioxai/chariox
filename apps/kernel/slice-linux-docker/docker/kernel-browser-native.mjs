@@ -23,15 +23,16 @@ export class LinuxCapture {
  }
  subscribe(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn)}
  valid(){return !this.closed&&ownsDisplay(this.display)&&this.allowed(this.policy)}
+ onCdp(m){
+  if(m.sessionId===this.sessionId&&m.method==='Page.frameNavigated'&&!m.params?.frame?.parentId)this.fence();
+  if(m.method==='Target.targetCreated'&&m.params?.targetInfo?.type==='page')this.fence();
+  // MP-11: attribute-only protection changes produce no XDamage. Fence even
+  // before attestation, so an empty snapshot cannot outlive marker insertion.
+  if(this.regions&&regionProtectionChanged(m,this.sessionId,this.regions.guard?.hasRegions))this.fence();
+ }
  async start(){
   if(!this.valid()||!Number.isSafeInteger(this.pid)||this.pid<=1)throw Error('MD-DISPLAY: native surface not owned');
-  this.off=this.connection.subscribe(m=>{
-   if(m.sessionId===this.sessionId&&m.method==='Page.frameNavigated'&&!m.params?.frame?.parentId)this.fence();
-   if(m.method==='Target.targetCreated'&&m.params?.targetInfo?.type==='page')this.fence();
-   // MP-11: attribute-only protection changes produce no XDamage. Retire
-   // cached pixels/dependencies before another credit can use their old mask.
-   if(this.attested&&regionProtectionChanged(m,this.sessionId,this.regions?.guard?.hasRegions))this.fence();
-  });
+  this.off=this.connection.subscribe(m=>this.onCdp(m));
   try{
    this.phase='bounds';const {windowId}=await this.connection.send('Browser.getWindowForTarget',{targetId:this.tab.target_id});
    // Native DPR2: fit800 CSS pixels below Chromium's87px browser chrome.
@@ -106,7 +107,7 @@ export class LinuxCapture {
  // MP-08/MP-10: only admitted physical input reaches this owned helper.
  wake(){if(this.valid()&&this.child&&!this.child.stdin.destroyed)this.child.stdin.write(JSON.stringify({wake:true})+'\n')}
  sample(after=-1){return this.valid()&&this.attested&&this.latest?.serial>after?this.latest:null}
- fence(){this.closed=true;this.attested=false;this.latest?.raw.release?.();this.pending?.release?.();this.latest=null;this.pending=null;this.listeners.clear();if(!this.closing)this.closing=this.cleanup();this.closing.catch(()=>{})}
+ fence(){this.closed=true;this.attested=false;this.regions?.retire();this.latest?.raw.release?.();this.pending?.release?.();this.latest=null;this.pending=null;this.listeners.clear();if(!this.closing)this.closing=this.cleanup();this.closing.catch(()=>{})}
  pause(){} resume(){} // CDP exact reads do not mutate the native display.
  async close(){this.fence();return this.closing}
  async cleanup(){

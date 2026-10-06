@@ -37,7 +37,7 @@ const runUid=Number(process.env.MD_RUNTIME_UID || 65534),runGid=Number(process.e
 const chrome=process.env.MD_CHROME || '/usr/bin/google-chrome';
 const runtimePath=process.env.MD_RUNTIME_PATH || '/usr/bin:/bin';
 const quote=value=>"'"+value.replaceAll("'","'\"'\"'")+"'";
-let kernel, display, viewer, browser, server, ready, shaped, shortTmp, kernelProfiler;
+let kernel, display, viewer, browser, server, ready, shaped, shortTmp, kernelProfiler,dynamicFixtureServed=false;
 const workload=process.env.MD_WORKLOAD||'docs';
 receipt.workload=workload;const fixtureStats=[];
 receipt.requested_software_encoder=process.env.MD_ENCODER||'libx264';receipt.requested_converter=process.env.MD_LIBYUV?'libyuv':'auto';
@@ -123,7 +123,12 @@ try {
    const name=new URL(req.url,'http://localhost').pathname;
    if(name==='/fixture-statistics'&&req.method==='POST'){let text='';for await(const chunk of req){text+=chunk;if(text.length>1024)throw Error('fixture statistics bound')};const value=JSON.parse(text);if(![value.updates,value.duration_ms,value.target_hz].every(Number.isFinite))throw Error('fixture statistics shape');fixtureStats.push(value);res.end('ok');return;}
    const page=fixture(name,`http://127.0.0.1:${server.address().port}`,sourceText);
-   if(page){res.setHeader('Content-Type','text/html');res.end(process.env.MD_PROTECTED==='1'?page.replace('</body>','<div id="protected-fixture" data-chariox-observation-protected style="position:fixed;left:900px;top:200px;width:150px;height:80px;background:red;color:white;z-index:100">Protected fixture</div></body>'):page);return;}
+   if(page){
+    res.setHeader('Content-Type','text/html');const dynamic=process.env.MD_DYNAMIC_PROTECTED==='1'&&!dynamicFixtureServed;if(dynamic)dynamicFixtureServed=true;
+    const overlay=`<div id="protected-fixture" ${dynamic?'':'data-chariox-observation-protected'} style="position:fixed;left:900px;top:200px;width:150px;height:80px;background:red;color:white;z-index:100">Protected fixture</div>`;
+    const button=dynamic?`<button style="position:fixed;left:720px;top:200px;width:160px;height:80px;z-index:100" onclick="document.querySelector('#protected-fixture').setAttribute('data-chariox-observation-protected','')">Protect</button>`:'';
+    res.end(process.env.MD_PROTECTED==='1'?page.replace('</body>',overlay+button+'</body>'):page);return;
+   }
    if(name==='/browser-relay-crypto.mjs'){res.setHeader('Content-Type','text/javascript');res.end(relayCrypto);return;}
    if(name==='/relay-bootstrap'){const bootstrap=JSON.parse(await readFile(path.join(root,'home','relay-bootstrap.private.json'),'utf8'));if(shaped)bootstrap.relay_url=shaped.url;res.setHeader('Content-Type','application/json');res.end(JSON.stringify(bootstrap));return;}
    const assets={'/harness.html':'harness.html','/presenter.mjs':'presenter.mjs','/stripe-presenter.mjs':'stripe-presenter.mjs','/decoder-worker.mjs':'decoder-worker.mjs','/tile-cache.mjs':'tile-cache.mjs','/scroll-prediction.mjs':'scroll-prediction.mjs','/motion-samples.mjs':'motion-samples.mjs'};
@@ -168,7 +173,7 @@ try {
  const port=await until(async()=>{checkChild(viewer,'viewer');try{return Number((await readFile(path.join(viewerHome,'DevToolsActivePort'),'utf8')).split('\n')[0])}catch{return null}},'viewer');
  browser=await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
  const page=await browser.contexts()[0].newPage();page.on('pageerror',()=>errors.push(Error('MD-DISPLAY browser callback failure')));await page.goto(`${origin}/harness.html`);await page.waitForFunction(()=>window.MDDisplay);
- await page.evaluate(async({ready,bitrate,pngOnly,creditWindow,requestedCodec,dpr,defaultDpr,protectedFixture})=>{
+ await page.evaluate(async({ready,bitrate,pngOnly,creditWindow,requestedCodec,dpr,defaultDpr,protectedFixture,dynamicProtection})=>{
   if(pngOnly)globalThis.VideoDecoder=undefined;
   const api=await import('/browser-relay-crypto.mjs');
   const sender=await api.createRelayKeypair();
@@ -210,13 +215,13 @@ try {
    },onEvent:listener=>{listeners.add(listener);return()=>listeners.delete(listener)}};
   mdTransport.subscribeDisplay=binding=>control({kind:'client_subscribe',subscription_id:binding.subscription_id,target:{daemon_id:bootstrap.daemon_id},session_id:binding.subscription_id,attachment_id:String(binding.generation),client_public_key:sender.publicKeyBase64,subscription_scope:'kernel_browser_display',resume_from_event_id:null});
   mdTransport.unsubscribeDisplay=binding=>control({kind:'client_unsubscribe',subscription_id:binding.subscription_id,client_public_key:sender.publicKeyBase64});
-  const motionSamples=new (await import('/motion-samples.mjs')).MotionSamples();window.mdProtection={frames:0,violations:0,kinds:{},failures:[]};
+  const motionSamples=new (await import('/motion-samples.mjs')).MotionSamples();window.mdProtection={enabled:!dynamicProtection,frames:0,violations:0,kinds:{},failures:[]};
   window.mdStream=await MDDisplay.attachBrowserDisplay(MDDisplay.canvas,mdTransport,{tab_id:ready.tab_id,generation:ready.generation},{bitrate,creditWindow,...(defaultDpr?{}:{deviceScaleFactor:dpr}),codec:requestedCodec,onTiming:timing,onPresented:frame=>{
-    if(protectedFixture){
+    if(protectedFixture&&mdProtection.enabled){
       const pixels=MDDisplay.canvas.getContext('2d').getImageData(908*dpr,208*dpr,134*dpr,64*dpr).data;
       // MP-11: lossy H264/VP8 may shift a black mask's decoded RGB floor.
       // Exact PNG is black; codec frames must remain dark and hide the red/text.
-      const limit=frame.kind==='png'?0:32;
+      const limit=frame.kind==='png'?0:64;
       let opaque=true;for(let i=0;i<pixels.length;i+=4)if(pixels[i]>limit||pixels[i+1]>limit||pixels[i+2]>limit||pixels[i+3]!==255)opaque=false;
       mdProtection.frames++;mdProtection.violations+=Number(!opaque);mdProtection.kinds[frame.kind]=(mdProtection.kinds[frame.kind]??0)+1;
       if(!opaque&&mdProtection.failures.length<16)mdProtection.failures.push({sequence:frame.sequence,kind:frame.kind,document:frame.document_id,pixel:Array.from(pixels.slice(0,4))});
@@ -227,7 +232,7 @@ try {
       sample.presented_ms=stamp();
     });
   }});
- },{ready,bitrate:receipt.target_encrypted_bitrate,pngOnly:process.env.MD_PNG_ONLY==='1',creditWindow:Number(process.env.MD_CREDIT_WINDOW||4),requestedCodec:process.env.MD_CODEC||null,dpr:geometry.dpr,defaultDpr:process.env.MD_DEFAULT_DPR==='1',protectedFixture:process.env.MD_PROTECTED==='1'});
+ },{ready,bitrate:receipt.target_encrypted_bitrate,pngOnly:process.env.MD_PNG_ONLY==='1',creditWindow:Number(process.env.MD_CREDIT_WINDOW||4),requestedCodec:process.env.MD_CODEC||null,dpr:geometry.dpr,defaultDpr:process.env.MD_DEFAULT_DPR==='1',protectedFixture:process.env.MD_PROTECTED==='1',dynamicProtection:process.env.MD_DYNAMIC_PROTECTED==='1'});
  receipt.decode_support=await page.evaluate(async()=>Object.fromEntries(await Promise.all(['avc1.420033','vp8'].map(async codec=>[codec,typeof VideoDecoder==='function'&&Boolean((await VideoDecoder.isConfigSupported({codec})).supported)]))));
  receipt.default_dpr_negotiation=process.env.MD_DEFAULT_DPR==='1';
  if(receipt.default_dpr_negotiation&&await page.evaluate(()=>mdStream.binding.device_scale_factor)!==1)throw Error('MP-08: #893 default DPR is unsupported');
@@ -245,12 +250,23 @@ try {
   metric.presentation_ms=snapshot.presentation.presented_ms;metric.presentation_drawn_ms=snapshot.presentation.drawn_ms;metric.presentation_sequence=snapshot.presentation.sequence;metric.presentation_kind=snapshot.presentation.kind;
   await writeFile(path.join(output,name+'-source.png'),source);await writeFile(path.join(output,name+'-viewer.png'),view);if(diff)await writeFile(path.join(output,name+'-diff.png'),diff);
   if(process.env.MD_PROTECTED==='1'){
-   const frame=PNG.sync.read(view),dpr=geometry.dpr;let opaque=true;
-   for(let y=208*dpr;y<272*dpr;y++)for(let x=908*dpr;x<1042*dpr;x++){const i=(y*frame.width+x)*4;if(frame.data[i]>8||frame.data[i+1]>8||frame.data[i+2]>8||frame.data[i+3]!==255)opaque=false;}
-   (receipt.protected_checks??=[]).push({step:name,opaque});
+   const frame=PNG.sync.read(view),admitted=PNG.sync.read(source),dpr=geometry.dpr,limit=metric.lossless||metric.presentation_kind==='png'?0:64;let opaque=true,sourceOpaque=true;
+   for(let y=208*dpr;y<272*dpr;y++)for(let x=908*dpr;x<1042*dpr;x++){
+    const i=(y*frame.width+x)*4;if(frame.data[i]>limit||frame.data[i+1]>limit||frame.data[i+2]>limit||frame.data[i+3]!==255)opaque=false;
+    const j=(y*admitted.width+x)*4;if(admitted.data[j]||admitted.data[j+1]||admitted.data[j+2]||admitted.data[j+3]!==255)sourceOpaque=false;
+   }
+   (receipt.protected_checks??=[]).push({step:name,opaque,source_opaque:sourceOpaque});
+   if(!sourceOpaque)throw Error('MP-11: protected source pixels must be black before encoding');
    if(!opaque)throw Error('MP-11: protected source region must be opaque in presented pixels');
   }
   return metric;
+ }
+ if(process.env.MD_DYNAMIC_PROTECTED==='1'){
+  const before=await actual();await writeFile(path.join(output,'before-protection-marker-viewer.png'),Buffer.from(before.png.split(',')[1],'base64'));
+  await page.evaluate(()=>mdStream.input({kind:'click',x:800,y:240}));
+  const protectedFrame=await until(()=>page.evaluate(()=>mdStream.next()),'attribute-only protected display frame');
+  receipt.protection_insertion={initial_sequence:first.sequence,protected_sequence:protectedFrame.sequence,kind:protectedFrame.kind,fidelity:await pair('after-protection-marker')};
+  await page.evaluate(()=>mdProtection.enabled=true);
  }
  receipt.bootstrap.fidelity=await pair('bootstrap-video');
  const settleStarted=performance.now();

@@ -80,12 +80,22 @@ export async function captureRegionMasks(connection, sessionId, { mirrorStructur
 // MP-08/MP-11: a native readback must follow its trusted pre-capture metadata.
 // A coalesced sample older than that fence receives an opaque whole-frame mask.
 export class NativeRegionProtection {
-  constructor(connection,sessionId){Object.assign(this,{connection,sessionId});}
-  async refresh(){this.guard=await captureRegionMasks(this.connection,this.sessionId);this.beforeAt=performance.timeOrigin+performance.now();}
+  constructor(connection,sessionId){Object.assign(this,{connection,sessionId});this.revision=0;}
+  retire(){this.revision++;this.guard=null;}
+  async refresh(){
+    const revision=this.revision,guard=await captureRegionMasks(this.connection,this.sessionId);
+    if(revision!==this.revision)throw Error('MP-11: native region fence retired');
+    this.guard=guard;this.beforeAt=performance.timeOrigin+performance.now();
+  }
   async regions(raw){
-    if(!this.guard||!Number.isFinite(raw.captured_ms))throw Error('MP-11: native region fence unavailable');
-    const result=raw.captured_ms<this.beforeAt?[{x:0,y:0,width:raw.width,height:raw.height}]:await this.guard.afterCapture(raw);
-    if(this.guard.changed)await this.refresh();return result;
+    const guard=this.guard;
+    if(!guard||!Number.isFinite(raw.captured_ms))throw Error('MP-11: native region fence unavailable');
+    // MP-08/MP-10/MP-11: getDocument enables trusted DOM events. LinuxCapture
+    // retires this snapshot on every protection/tree change, including during
+    // attestation. A stable empty snapshot needs no per-frame DOM transfer.
+    const result=raw.captured_ms<this.beforeAt?[{x:0,y:0,width:raw.width,height:raw.height}]:guard.hasRegions?await guard.afterCapture(raw):[];
+    if(this.guard!==guard)throw Error('MP-11: native region fence retired');
+    if(guard.changed)await this.refresh();return result;
   }
 }
 
