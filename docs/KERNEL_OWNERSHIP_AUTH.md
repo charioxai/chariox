@@ -66,3 +66,34 @@ uses the shared query provider for its Kernels and Security account controls.
 These focused source and local PostgreSQL/relay/browser regressions address
 review findings. They do not establish fresh-machine MP-10 acceptance or close
 MP-08 / MP-11 security-anchor review.
+
+## MP-08 / MP-10 / MP-11 live Cloud relay drill
+
+`pnpm --dir apps/cli run cloud-relay:drill` builds the CLI, enrolls a disposable
+kernel through `/cloud link`, and separately signs the owner terminal in through
+`/cloud login`. It restarts the enrolled kernel without editing its private
+record, discovers it through the terminal's authenticated directory, and connects
+using that terminal's key-bound CLIENT grant. Collaboration invitations and
+membership use the private client adapter; local joins and workflow authorization
+remain kernel-owned. Owner, peer and third-user session grants renew with the same
+terminal key, session and exact kernel target. No printed relay token is parsed.
+
+The live command requires a paired Cloud checkout (`CHARIOX_CLOUD_REPO`) with
+installed dependencies and a disposable local PostgreSQL database (`DATABASE_URL`).
+It builds/migrates that local checkout and starts its own API, relay and kernel;
+it does not connect to hosted infrastructure. On a shared builder, set
+`CHARIOX_RUST_COMPILE_LOCK` to its assigned compile lock and `CARGO_BUILD_JOBS=4`;
+the drill builds the relay before launching its binary. Runtime state, generated
+identities and client credentials use disposable directories outside the source
+checkout and are removed on completion, failure or settled interruption. Public
+result/failure evidence records both source commits and cleanup status under
+`CHARIOX_DRILL_EVIDENCE_DIR` (default `~/.codex/evidence/live-cloud-relay/`).
+`CHARIOX_CLOUD_KERNEL_CREDENTIAL_ONLY=1` ends after restart and remote session
+creation/attachment/listing, omitting collaboration assertions.
+
+`pnpm --dir apps/cli run cloud-relay:drill --check` checks built runtime imports
+without starting services. `pnpm --dir apps/cli run test:cloud-relay-drill` also
+exercises the actual command handlers and client adapters against synthetic local
+Cloud/relay/kernel seams, including commands and encrypted events across several
+grant expiries and safe child signalling. These checks do not establish a live
+Cloud/PostgreSQL run, hosted transport or fresh-machine MP-10 acceptance.
