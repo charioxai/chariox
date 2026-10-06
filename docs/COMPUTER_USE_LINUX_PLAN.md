@@ -132,6 +132,14 @@ targets. Agents receive on-demand snapshots/screenshots and never depend on
 video decoding, stream timing or whether a human viewer is attached. AT-SPI
 coverage and secret masking need new live fixtures; none was tested in Phase A.
 
+MP-08 / MP-10 / MP-11 round 4 separates the 64-node / 3 KiB public
+projection from private protection coverage (at most 8,192 nodes). Managed
+AT-SPI virtual tables are covered by their visible cell rectangles, with
+matching indexed role/name/geometry and descendant password checks. Missing
+rectangles, changed targets, unknown visible windows or exhausted bounds keep
+capture/OCR protected. The full private observation is still revalidated before
+action or capture; these bounds do not grant an agent additional authority.
+
 Use a private Xauthority cookie, display socket with no TCP listener, private
 runtime directory and explicit display/geometry binding; launch the user browser
 as a non-root user with renderer sandboxing. Do not adopt the logged-in desktop
@@ -241,6 +249,18 @@ with each terminal column independently verified, plus the combined-client run.
 Each cell ID is the row prefix plus `W`, `L`, `R` or `J` (24 cells).
 All slice cells are NOT_RUN in Phase A; all host cells are PLANNED.
 
+MP-08 / MP-10 / MP-11 owner update, 2026-10-06 18:10–18:11 UTC:
+acceptance uses real user tasks, real applications/sites, product-linked accounts
+and official provider harnesses. Mousepad, pixel canvases and synthetic pages
+are regression evidence only. Historical Phase A/helper results above do not
+become acceptance. Web (`W`) and combined (`J`) cells use the real app entry
+in a desktop browser at **DPR 2**, once PR5 lands. Remote TUI (`R`) and combined
+(`J`) cells use the approved hosted **Caddy-fronted `wss://` relay** through
+normal Chariox bootstrap; a local relay proves transport regressions only.
+Record missing hosted admission, client/display dependencies and provider quota
+as explicit blocked prerequisites. Nothing goes to staging before complete
+implementation and validation.
+
 | Provider × placement / cell prefix | Web (`W`) | Local TUI (`L`) | Remote TUI (`R`) | Web + both TUIs (`J`) |
 | --- | --- | --- | --- | --- |
 | Codex slice / `CU-CODEX-SLICE-` | required | required | required | required |
@@ -250,16 +270,22 @@ All slice cells are NOT_RUN in Phase A; all host cells are PLANNED.
 | OpenCode kernel-host virtual display / `CU-OPENCODE-HOST-` | required | required | required | required |
 | Claude kernel-host virtual display / `CU-CLAUDE-HOST-` | required | required | required | required |
 
-Each cell must run the official provider with a product-linked profile and
-complete the same public-fixture task set:
+Each MP-08 / MP-10 / MP-11 cell must run the official provider with a real
+product-linked account and complete the same public real-user task set:
 
-1. Observe an AT-SPI tree, target a graphical editor, enter/select/copy Unicode
-   text, use shortcuts, save/edit a document and verify its bytes independently.
-   Assert native focus, stale accessibility-target rejection and action receipts.
-2. Deliberately remove accessibility from a fixture region. Use OCR fallback
-   and on-demand exact MCP screenshot bytes to act on randomized visual targets;
-   retain delivered-image hashes, provider turn identity and independently checked
-   native effects. Repeat blinded targets; no shell/CDP or file-reading shortcut.
+1. Use **LibreOffice Writer and Calc** through their real graphical interfaces.
+   Edit a Unicode document and a spreadsheet with a formula; save, close and
+   reopen both. Verify document text and spreadsheet values/formulas independently
+   from the saved ODT/ODS artifacts, and retain screenshots of reopened content.
+   Use a real file manager to find and reopen the saved files. Assert native
+   focus, AT-SPI action receipts and stale accessibility-target rejection.
+2. Navigate a **real public website in browser chrome** and complete a public
+   reading/navigation task. Use bounded AT-SPI targets, protected OCR where the
+   accessible projection is absent/incomplete, and exact screenshots on demand.
+   Retain URL/title, image hashes, provider turn identity and independently checked
+   native effects. Providers may not use shell/CDP or direct file reading to
+   substitute for the graphical task. Synthetic randomized targets remain useful
+   fail-first regressions and do not satisfy this acceptance task.
 3. Switch Browser↔Computer without changing the Chromium profile/tab registry,
    exercise browser chrome and the non-browser app, then reconnect that terminal
    to the same surface/generation and authoritative provider history.

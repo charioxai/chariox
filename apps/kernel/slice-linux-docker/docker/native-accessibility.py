@@ -4,7 +4,9 @@ import json
 import os
 import pyatspi
 from collections import deque
-MAX_NODES=512
+# MP-08 / MP-10 / MP-11: private protection coverage is independent of
+# the 64-node / 3 KiB public projection. Exhaustion still masks captures.
+MAX_NODES=8192
 MAX_DEPTH=32
 
 
@@ -14,6 +16,53 @@ def alive(process):
         return (stat[stat.rfind(')')+2:].split()[19]==process['started'] and
                 os.stat('/proc/'+str(process['pid'])).st_uid==os.getuid())
     except (OSError,KeyError,IndexError):return False
+
+
+
+def visible_table_children(node, bounds):
+    """MP-08 / MP-10 / MP-11: cover a managed virtual table's visible pixels.
+
+    AT-SPI MANAGES_DESCENDANTS tables may advertise billions of virtual cells.
+    Walk their actual screen rectangles, rather than enumerating invisible cells.
+    Every covered rectangle must resolve to a showing, direct table cell; gaps,
+    invalid geometry and budget exhaustion leave capture protection uncertain.
+    """
+    if not bounds or any(not isinstance(value, int) for value in bounds):
+        raise ValueError('table geometry unavailable')
+    x, y, width, height = bounds
+    if x < 0 or y < 0 or width <= 0 or height <= 0 or x+width > 16384 or y+height > 16384:
+        raise ValueError('table geometry out of bounds')
+    component = node.queryComponent()
+    result = []; seen = set(); bottom = y+height; right = x+width
+    while y < bottom:
+        column = x; next_row = bottom
+        while column < right:
+            if len(result) >= MAX_NODES:
+                raise ValueError('visible table budget exhausted')
+            child = component.getAccessibleAtPoint(column, y, pyatspi.DESKTOP_COORDS)
+            if child is None or child.getRole() != pyatspi.ROLE_TABLE_CELL or not child.getState().contains(pyatspi.STATE_SHOWING):
+                raise ValueError('visible table coverage unavailable')
+            index = child.getIndexInParent()
+            if index < 0 or index >= node.childCount:
+                raise ValueError('visible table child changed')
+            rect = child.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+            indexed = node.getChildAtIndex(index)
+            # Managed descendants may be recreated with different object paths.
+            # Bind the indexed target to the same visible cell geometry/content.
+            if indexed is None or indexed.getRole() != pyatspi.ROLE_TABLE_CELL or not indexed.getState().contains(pyatspi.STATE_SHOWING) or indexed.name != child.name:
+                raise ValueError('visible table child changed')
+            indexed_rect = indexed.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+            if (indexed_rect.x, indexed_rect.y, indexed_rect.width, indexed_rect.height) != (rect.x, rect.y, rect.width, rect.height):
+                raise ValueError('visible table child geometry changed')
+            child = indexed
+            if rect.width <= 0 or rect.height <= 0 or not (rect.x <= column < rect.x+rect.width and rect.y <= y < rect.y+rect.height):
+                raise ValueError('visible table geometry changed')
+            if index not in seen:
+                result.append((index, child)); seen.add(index)
+            column = min(right, rect.x+rect.width)
+            next_row = min(next_row, rect.y+rect.height)
+        y = next_row
+    return result
 
 
 def snapshot(processes):
@@ -42,10 +91,19 @@ def snapshot(processes):
             except NotImplementedError:pass
         nodes.append({'pid':pid,'started':started,'path':path,'role':role,'name':'[protected]' if secret else (node.name or '')[:4096],'states':states,'bounds':bounds,'actions':actions,'protected':secret})
         if not secret:
-            for i in range(min(node.childCount,MAX_NODES)):
-                child=node.getChildAtIndex(i)
-                if child:pending.append((child,pid,started,path+[i],depth+1))
-            if node.childCount>MAX_NODES:complete=False
+            managed_table = (node.getRole() == pyatspi.ROLE_TABLE and
+                             state.contains(pyatspi.STATE_MANAGES_DESCENDANTS))
+            try:
+                children = visible_table_children(node, bounds) if managed_table else (
+                    (i, node.getChildAtIndex(i)) for i in range(min(node.childCount, MAX_NODES)))
+                for i, child in children:
+                    if len(nodes)+len(pending)>=MAX_NODES:
+                        complete=False
+                        break
+                    if child:pending.append((child,pid,started,path+[i],depth+1))
+                if not managed_table and node.childCount>MAX_NODES:complete=False
+            except (ValueError, NotImplementedError):
+                complete=False
     try:
         for app_index in range(min(desktop.childCount,64)):
             app=desktop.getChildAtIndex(app_index)
