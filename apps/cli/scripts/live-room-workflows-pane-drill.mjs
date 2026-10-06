@@ -81,21 +81,23 @@ try {
   sessionId=created.session.id
   const agent=unwrap(await client.send(requests.spawnAgentRequest(sessionId,'codex','workflow-codex','gpt-6.1-sol',workspace,'low','build','yolo',undefined,undefined,undefined,profile.profile_id)), 'AgentSpawned').agent
   unwrap(await client.send(requests.createAgentWorkflowRequest(sessionId,agent.id,'trigger','tui','Review')), 'AgentWorkflowCreated')
-  await stateUntil(s=>s.room_workflows?.workflow_count===1)
+  const inventoryState=await stateUntil(s=>s.room_workflows?.workflow_count===1)
+  const heading=inventoryState.room_workflows.workflows[0].label+' /'
+  receipt.workflowLabel=inventoryState.room_workflows.workflows[0].label
   terminal=spawnOwned('python3',[path.join(repo,'apps/cli/scripts/lib/room-workflows-tui-pty.py'),path.join(repo,'apps/kernel/slice-linux-docker'),
     'bun',args.client,'--kernel-url',`ws://127.0.0.1:${ports[0]}`,'--session',sessionId,'--workspace',workspace,'--worktree',workspace,
     '--provider','codex','--model','gpt-6.1-sol','--account-profile',profile.profile_id,'--client-id','relost-tui'],{cwd:repo,env,stdio:['pipe','pipe','pipe'],detached:true})
   terminal.stdout.on('data', chunk=> {buffer+=chunk;while(buffer.includes('\n')){const i=buffer.indexOf('\n');const message=JSON.parse(buffer.slice(0,i));buffer=buffer.slice(i+1);const waiter=pending.get(message.id);pending.delete(message.id);if(message.error)waiter?.reject(new Error(message.error));else waiter?.resolve(message.result)}})
   terminal.stderr.on('data', chunk=> { /* Only fixture diagnostics; no provider stdout is connected here. */ receipt.terminalError=String(chunk).slice(-1000) })
   terminal.on('close',()=>{for(const waiter of pending.values())waiter.reject(new Error('MP-08 terminal driver exited'));pending.clear()})
-  await capture('01-room-inventory',text=>text.includes('Review /'))
+  await capture('01-room-inventory',text=>text.includes(heading))
   await key('\x17') // Ctrl+W
-  await key('Use your shell to sleep 30 seconds, then reply RELOST_WORKFLOW_HOLD. Do nothing else.')
-  await capture('02-independent-draft',text=>text.includes('RELOST_WORKFLOW_HOLD'))
+  await key('Run sleep 30; reply HOLD.')
+  await capture('02-independent-draft',text=>text.includes('Run sleep 30; reply HOLD.'))
   await key('\x1b')
-  await capture('03-dismissed',text=>!text.includes('Start Review /'))
+  await capture('03-dismissed',text=>!text.includes('Start '+heading))
   await key('\x17')
-  await capture('04-reopened-draft',text=>text.includes('RELOST_WORKFLOW_HOLD')&&text.includes('Start Review /'))
+  await capture('04-reopened-draft',text=>text.includes('Run sleep 30; reply HOLD.')&&text.includes('Start '+heading))
   await key('\r')
   const started = await stateUntil(s=>s.room_workflows.workflows[0].runs.length>0)
   receipt.runId=started.room_workflows.workflows[0].runs[0].run_id
@@ -109,7 +111,7 @@ try {
   await key('\x13') // Ctrl+S
   await stateUntil(s=>s.room_workflows.workflows[0].running_count===0&&s.room_workflows.workflows[0].paused_count===0)
   await capture('08-stopped',text=>text.includes('0 running')&&text.includes('0 paused'))
-  await key('Reply exactly RELOST_WORKFLOW_OK. Do not use tools.')
+  await key('Reply RELOST_WORKFLOW_OK')
   await key('\r')
   await stateUntil(s=>s.room_workflows.workflows[0].runs.length>0)
   // Use a real provider completion and the terminal's real agent panes as proof.
