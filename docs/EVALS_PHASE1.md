@@ -59,8 +59,12 @@ ordinary product linking; no credential contents or files below it are touched.
 The RED directory/status/screenshot receipts and corrected 0700/Evals registration
 are retained. Git and a terminal font are ordinary runner prerequisites in slim
 images. The native Bookworm task reached Codex, whose `cyber_policy` rejection
-is retained as a provider failure with known counters. Settled provider failures
-proceed to official verification and remain in the denominator; transport,
+is retained as a provider failure. Rejections can arrive before native counters
+exist; these are scored by the official verifier with usage unknown, not zero.
+Reports retain known token/proxy subtotals and count unmeasured tasks; a campaign
+with missing counters has no exact token total or bounded total proxy quote.
+Its plot marks the measured proxy lower bound with the total upper bound unknown.
+Settled provider failures proceed to official verification and remain in the denominator; transport,
 quota and accounting admission failures still stop the campaign.
 These diagnostic admissions are separate from smoke
 and fresh full results.

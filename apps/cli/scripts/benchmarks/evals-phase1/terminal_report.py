@@ -91,6 +91,10 @@ def plot(summaries, output):
         if quote and accuracy is not None:
             lo=float(quote['lower_usd'])/summary['denominator'];hi=float(quote['upper_usd'])/summary['denominator']
             ax.plot([lo,hi],[accuracy]*2,marker='|',linewidth=3,label=label+f" ({summary.get('successes',summary.get('resolved'))}/{summary['denominator']})")
+        elif accuracy is not None and (known:=summary.get('known_proxy_subtotal')) and known['measured_tasks']:
+            lo=float(known['lower_usd'])/summary['denominator']
+            ax.scatter([lo],[accuracy],marker='>',label=label+f" ({summary['successes']}/{summary['denominator']}; proxy lower bound only)")
+            ax.annotate('Total upper bound unknown',xy=(lo,accuracy),xytext=(12,-18),textcoords='offset points',fontsize=8)
         else: ax.plot([],[],label=label+' — incomplete/unpriced')
     ax.set(xlabel='Proxy API cost per task (USD interval; band/cache-write unknown)',ylabel='Official task accuracy (%)',ylim=(0,100),title='MP-08 / MP-10: tokens primary; proxy cost versus accuracy')
     ax.grid(alpha=.2);ax.legend(loc='best');fig.tight_layout();fig.savefig(output,dpi=160);plt.close(fig)
