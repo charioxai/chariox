@@ -101,17 +101,18 @@ export function decodePng(data, scale = 1) {
   }
   return { width, height, pixels };
 }
+const opaquePixel=Buffer.from([0,0,0,255]);
 export function maskPixels({width,height,pixels}, regions) {
   if (regions.length > 50_000) throw new Error("MD-5: region limit");
   for (const region of regions) {
     if (!Array.isArray(region) || region.length !== 4 || !region.every(Number.isFinite)) throw new Error("MD-5: invalid region");
     const [x, y, w, h] = region;
     // Match the Room mask's outward rounding/padding.
-    for (let py = Math.max(0, Math.floor(y) - 4); py < Math.min(height, Math.ceil(y + h) + 4); py++) {
-      for (let px = Math.max(0, Math.floor(x) - 4); px < Math.min(width, Math.ceil(x + w) + 4); px++) {
-        const i = (py * width + px) * 4; pixels.fill(0, i, i + 3); pixels[i + 3] = 255;
-      }
-    }
+    const left=Math.max(0,Math.floor(x)-4),right=Math.min(width,Math.ceil(x+w)+4);
+    // MP-08/MP-10/MP-11: opaque recovery can cover4M pixels at DPR2.
+    // Fill each admitted row in native code; preserve outward bounds and alpha.
+    if(right>left)for(let py=Math.max(0,Math.floor(y)-4);py<Math.min(height,Math.ceil(y+h)+4);py++)
+      pixels.fill(opaquePixel,(py*width+left)*4,(py*width+right)*4);
   }
   return {width,height,pixels};
 }
