@@ -434,14 +434,14 @@ typed refusal contract without exposing target existence or app/error contents.
 
 ## Validation: real live drills (owner rule, 2026-10-06)
 
-Acceptance for every Mac PR means real live drills of exact user scenarios:
+Each Mac PR runs real live drills of the capability it adds, on the real Mac with real apps, never fixture-only. M0, for example, runs the owner-granted signed helper capturing and driving a real app window. The **feature acceptance gate**, before anything is staged for the owner, is the full set of real live drills of exact user scenarios across M0–M5:
 - real Mac apps (Finder, TextEdit/Pages, Safari/Chrome on real sites, System Settings refusal);
 - real official providers on real accounts;
 - the real web app in a desktop browser at DPR 2, and the real TUI;
 - the hosted relay;
 - realistic durations, including sleep/wake and lock.
 
-Fixture apps and fake capture sources are regression checks only. Nothing is staged for the owner until the feature is complete and has passed these drills.
+Fixture apps and fake capture sources are regression checks only. Intermediate PRs stay feature-disabled and unstaged. Nothing is staged for the owner until M0–M5 are complete and the full gate passes.
 
 ## PR sequence and size limits
 
