@@ -3,7 +3,7 @@ import {PixelWorker} from './kernel-browser-pixel-worker.mjs';
 import {timestamp} from './kernel-browser-timing.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 export class NativeRefiner {
- constructor(capture,{pixels=new PixelWorker(),now=()=>performance.now(),quietMs=300,quietNativeMs=30,verifyMs=250,prepareTiles=false,timing=()=>{}}={}){Object.assign(this,{capture,pixels,now,quietMs,quietNativeMs,verifyMs,prepareTiles,timing});this.latest=null;this.active=null;this.closed=false;this.verifiedAt=-Infinity;this.revision=0;this.prepared=null;}
+ constructor(capture,{pixels=new PixelWorker(),now=()=>performance.now(),quietMs=300,quietNativeMs=50,verifyMs=250,prepareTiles=false,timing=()=>{}}={}){Object.assign(this,{capture,pixels,now,quietMs,quietNativeMs,verifyMs,prepareTiles,timing});this.latest=null;this.active=null;this.closed=false;this.verifiedAt=-Infinity;this.revision=0;this.prepared=null;}
  same(a,b){return a&&b&&a.source===b.source&&a.document===b.document&&a.policy===b.policy&&a.epoch===b.epoch&&a.serial===b.serial&&a.native===b.native;}
  request(binding,changedAt,valid){
   if(this.closed)throw Error('MD-DISPLAY: refiner closed');
