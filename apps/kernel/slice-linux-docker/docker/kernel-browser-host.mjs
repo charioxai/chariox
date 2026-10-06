@@ -64,6 +64,7 @@ export class KernelBrowserHost {
     if (!Array.isArray(policy.values) || policy.values.length > 256 || policy.values.some(value => typeof value !== "string" || !value) || !Array.isArray(policy.targets)) throw new Error("MD-5: invalid protection policy");
     if (JSON.stringify(policy) === JSON.stringify(this.protection)) return {};
     this.protection = policy;
+    this.nativeAccessibility.clear();
     this.mirror.invalidate();
     for (const stream of this.displays.values()) stream.invalidate();
     if (this.browser) this.browser.protectedValues = new Set(policy.values);
@@ -91,6 +92,10 @@ export class KernelBrowserHost {
     if (this.browser && this.chromium.child?.exitCode === null && this.chromium.child?.signalCode === null
       && this.chromium.connection?.isOpen() !== false) return;
     if (!allowStart) throw new BrowserActionError("browser_unavailable", "MP-11: user browser is stopped or unavailable; explicitly start/open the browser");
+    // MP-11: retire helpers on the old display before Chromium recovery can
+    // replace it. A failed key release still requires owned desktop teardown.
+    try { await this.nativeComputer.close(); }
+    finally { await this.chromium.stop(); this.nativeAccessibility.clear(); }
     for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
     this.displays.clear(); this.scales.clear(); this.inputEpochs.clear();

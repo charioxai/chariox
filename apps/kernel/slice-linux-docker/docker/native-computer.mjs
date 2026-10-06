@@ -10,7 +10,10 @@ export function nativeInput(input, binding) {
   const bounded = (value, max) => Number.isInteger(value) && value >= 0 && value < max;
   const point = (x,y) => { if (!bounded(x,binding.width) || !bounded(y,binding.height)) throw new Error('MP-08: native input outside viewport'); };
   switch(input.kind) {
-    case 'composition': case 'text': if (typeof input.text !== 'string' || !Buffer.byteLength(input.text) || Buffer.byteLength(input.text)>16384 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(input.text)) throw new Error('MP-08: invalid native text'); break;
+    case 'composition': case 'text':
+      if (typeof input.text !== 'string' || !Buffer.byteLength(input.text) || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(input.text)) throw new Error('MP-08: invalid native text');
+      if ([...input.text].length > 128) throw new Error('MP-08: native text exceeds the execution budget; split into blocks of at most 128 characters');
+      break;
     case 'keycode': if (!bounded(input.keycode-8,248) || !['down','up'].includes(input.state)) throw new Error('MP-08: invalid native keycode'); break;
     case 'key': if (typeof input.key !== 'string' || !/^[A-Za-z0-9_+]{1,128}$/.test(input.key)) throw new Error('MP-08: invalid native chord'); break;
     case 'hold': if (typeof input.key !== 'string' || !/^[A-Za-z0-9_+]{1,128}$/.test(input.key) || !Number.isInteger(input.duration_ms) || input.duration_ms<1 || input.duration_ms>10000) throw new Error('MP-08: invalid native hold'); break;
@@ -55,7 +58,10 @@ export class NativeComputer {
   async primeKeyboard() {
     if(this.execute!==executeNative)return;
     const binding=this.binding();if(!binding)return;
-    if(!this.keyboard)this.keyboard=new NativeKeyboardChannel(binding.environment);
+    if(this.keyboard && this.keyboardBinding!==binding){
+      await this.keyboard.close();this.keyboard=null;this.held.clear();this.heldOwner=null;
+    }
+    if(!this.keyboard){this.keyboard=new NativeKeyboardChannel(binding.environment);this.keyboardBinding=binding;}
     try{await this.keyboard.start();}catch(error){await this.keyboard.close();this.keyboard=null;throw error;}
   }
   async retire(observer) {
@@ -63,7 +69,7 @@ export class NativeComputer {
   }
   async close() {
     try {await this.reset();}
-    finally {await this.keyboard?.close();this.keyboard=null;if (this.clipboard) {await settleOwned([this.clipboard]);this.clipboard=null;}}
+    finally {await this.keyboard?.close();this.keyboard=null;this.keyboardBinding=null;this.held.clear();this.heldOwner=null;if (this.clipboard) {await settleOwned([this.clipboard]);this.clipboard=null;}}
   }
   async writeClipboard(text, binding) {
     if(this.clipboard) await settleOwned([this.clipboard]);

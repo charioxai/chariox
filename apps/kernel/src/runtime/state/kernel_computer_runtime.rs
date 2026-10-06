@@ -10,6 +10,17 @@ const TOOL: &str = "chariox.kernel_computer";
 fn params(command: KernelComputerCommand) -> Result<serde_json::Value, DaemonError> {
     let mut value = serde_json::to_value(command)
         .map_err(|_| host_error("MP-08: invalid Computer command".into()))?;
+    // MP-08 / MP-11: the shared helper sleeps 40 ms per character. Bound text
+    // before any desktop action so valid input fits the existing 20 s RPC.
+    if matches!(value["input"]["kind"].as_str(), Some("text" | "composition"))
+        && value["input"]["text"]
+            .as_str()
+            .is_some_and(|text| text.chars().count() > 128)
+    {
+        return Err(host_error(
+            "MP-08: native text exceeds the execution budget; split into blocks of at most 128 characters".into(),
+        ));
+    }
     if let Some(target) = value.as_object_mut().and_then(|o| o.remove("target")) {
         for key in ["surface_id", "generation"] {
             let id = target[key]
@@ -50,7 +61,7 @@ impl KernelRuntimeState {
             agent.id(),
             KernelBrowserCapability::Computer,
         ) {
-            tools.push(RuntimeToolSpec{name:TOOL.into(),description:"MP-08: control the owned host desktop via fresh surface/generation. snapshot returns scoped AT-SPI targets/tree_revision; stale targets require rediscovery. OCR and exact protected screenshots are on-demand. Input uses text/committed composition, key chords, bounded holds, mouse and clipboard; human takeover pauses agent input. Persistent keycode down/up is a human channel. Never use video timing as observation.".into(),input_schema:serde_json::json!({"type":"object","properties":{"command":{"type":"object","properties":{"op":{"enum":["start","state","snapshot","screenshot","ocr","clipboard_read","input","target_action"]},"target":{"type":"object","properties":{"surface_id":{"type":"string","minLength":1,"maxLength":128},"generation":{"type":"string","minLength":1,"maxLength":128}},"required":["surface_id","generation"],"additionalProperties":false},"query":{"type":["string","null"],"maxLength":4096},"input":{"type":"object","properties":{"kind":{"enum":["text","composition","key","hold","pointer_hold","click","move","drag","scroll","clipboard_write"]},"text":{"type":"string","maxLength":65536},"key":{"type":"string","maxLength":128},"duration_ms":{"type":"integer","minimum":1,"maximum":10000},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"to_x":{"type":"integer","minimum":0,"maximum":1279},"to_y":{"type":"integer","minimum":0,"maximum":799},"button":{"type":"integer","minimum":1,"maximum":3},"steps":{"type":"integer","minimum":-100,"maximum":100}},"required":["kind"],"additionalProperties":false},"tree_revision":{"type":"integer","minimum":1},"target_id":{"type":"string","maxLength":128},"action":{"type":"string","maxLength":128}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false})});
+            tools.push(RuntimeToolSpec{name:TOOL.into(),description:"MP-08: control the owned host desktop via fresh surface/generation. snapshot returns scoped AT-SPI targets/tree_revision; stale targets require rediscovery. OCR and exact protected screenshots are on-demand. Input uses text/committed composition, key chords, bounded holds, mouse and clipboard; human takeover pauses agent input. Persistent keycode down/up is a human channel. Never use video timing as observation.".into(),input_schema:serde_json::json!({"type":"object","properties":{"command":{"type":"object","properties":{"op":{"enum":["start","state","snapshot","screenshot","ocr","clipboard_read","input","target_action"]},"target":{"type":"object","properties":{"surface_id":{"type":"string","minLength":1,"maxLength":128},"generation":{"type":"string","minLength":1,"maxLength":128}},"required":["surface_id","generation"],"additionalProperties":false},"query":{"type":["string","null"],"maxLength":4096},"input":{"type":"object","properties":{"kind":{"enum":["text","composition","key","hold","pointer_hold","click","move","drag","scroll","clipboard_write"]},"text":{"type":"string","maxLength":65536,"description":"text/composition: at most 128 Unicode characters per action; clipboard_write: at most 65536 UTF-8 bytes"},"key":{"type":"string","maxLength":128},"duration_ms":{"type":"integer","minimum":1,"maximum":10000},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"to_x":{"type":"integer","minimum":0,"maximum":1279},"to_y":{"type":"integer","minimum":0,"maximum":799},"button":{"type":"integer","minimum":1,"maximum":3},"steps":{"type":"integer","minimum":-100,"maximum":100}},"required":["kind"],"additionalProperties":false},"tree_revision":{"type":"integer","minimum":1},"target_id":{"type":"string","maxLength":128},"action":{"type":"string","maxLength":128}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false})});
         }
         tools
     }
@@ -169,6 +180,18 @@ impl KernelRuntimeState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mp08_native_text_budget_is_checked_before_backend_dispatch() {
+        for kind in ["text", "composition"] {
+            let command = |length| serde_json::from_value::<KernelComputerCommand>(serde_json::json!({
+                "op":"input", "target":{"surface_id":"s", "generation":"g"},
+                "input":{"kind":kind,"text":"😀".repeat(length)}
+            })).unwrap();
+            assert!(params(command(128)).is_ok());
+            assert!(params(command(129)).is_err());
+            assert!(params(command(600)).is_err());
+        }
+    }
     #[test]
     fn mp11_computer_target_refuses_empty_identity_and_actor_forgery() {
         assert!(params(KernelComputerCommand::Snapshot {

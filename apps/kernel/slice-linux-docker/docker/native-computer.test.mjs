@@ -20,3 +20,26 @@ test('MP-08 immediate physical key and text are distinct and wake capture after 
   for(const input of [{kind:'keycode',keycode:38,state:'down'},{kind:'keycode',keycode:38,state:'up'},{kind:'text',text:'Grüße 世界😀'}]) await adapter.request({op:'input',surface_id:'surface',generation:'generation',input},{});
   assert.equal(sent.length,3);assert.equal(wakes.length,3);assert.equal(sent[2].input.kind,'text');
 });
+
+test('MP-08 / MP-11 real warm keyboard is reaped and replaced with the desktop generation', async () => {
+  let current = { ...binding, environment: { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8' } };
+  const adapter = new NativeComputer({ placement: 'host', binding: () => current });
+  try {
+    await adapter.primeKeyboard();
+    const first = adapter.keyboard.child;
+    current = { ...current, generation: 'replacement' };
+    await adapter.primeKeyboard();
+    assert.notEqual(adapter.keyboard.child.pid, first.pid);
+    assert(first.exitCode !== null || first.signalCode !== null);
+    assert.equal(adapter.held.size, 0);
+  } finally { await adapter.close(); }
+});
+
+test('MP-08 native text is rejected before dispatch when it cannot fit the RPC budget', async () => {
+  let calls = 0;
+  const adapter = new NativeComputer({ placement: 'host', binding: () => binding, execute: async () => { calls++; return {}; } });
+  await assert.rejects(adapter.request({ op: 'input', surface_id: binding.surface_id, generation: binding.generation,
+    input: { kind: 'text', text: 'a'.repeat(129) } }, {}), /128/);
+  assert.equal(calls, 0);
+  assert.doesNotThrow(() => nativeInput({ kind: 'composition', text: '😀'.repeat(128) }, binding));
+});

@@ -19,7 +19,7 @@ are unchanged. Owned session and accessibility buses use distinct short abstract
 addresses with EXTERNAL authentication, avoiding global temporary directories
 and Unix socket path limits. The accessibility daemon inherits its own address
 before activating registry children.
-Chromium retains its renderer sandbox and CDP pipe and binds to that display.
+MP-08 / MP-11: Chromium retains its renderer sandbox and CDP pipe and binds to that display. Its temporary directory uses a held `/proc/<adapter-pid>/fd/<directory-fd>` reference to the same owned runtime, so singleton socket paths stay bounded under long state roots. The descriptor stays open until Chromium settles.
 Shutdown uses positive PID/start-time identities for owned children and
 verified descendants, removes the private runtime, and retires input helpers.
 No real login screen is adopted.
@@ -48,7 +48,7 @@ Exact PNG, OCR, clipboard, finite keyboard/pointer holds and pointer operations
 share the native adapter. Persistent physical key presses are a human channel;
 agents use finite key chords/holds. Cancellation releases finite holds before
 completion. Clipboard writers remain owned foreground processes until replaced
-or shutdown. Warm keyboard helpers remain owned after key-up and are reaped.
+or shutdown. Warm keyboard helpers remain owned after key-up and are reaped. MP-08 / MP-11: text/composition actions accept at most 128 Unicode characters, checked before dispatch to fit the existing execution deadline; longer text must be split into blocks. Clipboard limits remain independent. Browser recovery retires held keys and helpers before replacing the desktop; fresh bindings get fresh keyboard channels.
 
 ## MP-08 AT-SPI and MP-11 observation protection
 
@@ -56,7 +56,7 @@ AT-SPI targets are scoped to verified owned application PID/start-time identitie
 on the private bus. Public opaque handles are observer-bound and revision-bound;
 PID, bus names and object paths remain internal. Both the JS adapter and Python
 action helper revalidate the tree before dispatch. Mutation retires handles;
-stale denial requires rediscovery, never blind mutation replay. Missing or
+stale denial requires rediscovery, never blind mutation replay. MP-11: protection policy participates in cache revisions, policy updates clear observers, and actions recheck current target protection. Missing or
 incomplete accessibility coverage reports OCR fallback.
 
 Password roles expose no text/actions. Protected registry values/targets,
@@ -74,7 +74,7 @@ text copy. Pixels stay under the existing protection barrier.
 The coordinator-reserved versions are local daemon **446**, relay peer **89**.
 `KernelBrowser { command: { op: "computer", command: ... } }` carries the typed
 native command through the existing terminal authority and host service.
-Computer clients require 446; unchanged Browser/UserDomain clients keep 443.
+MP-08 / MP-11: the TUI exposes `/computer start|state|takeover|release|type <text>` through this shared contract and `/access revoke` through existing grant authority. Commands pin the selected transport and acquire fresh desktop identity before mutations. Computer clients require 446; unchanged Browser/UserDomain clients keep 443.
 Protocol snapshot/hash tests cover all native commands/input variants and the
 new `Desktop` user-domain resource. Existing historical shape fixtures retain
 their filenames and data; current version pins advance once in PR4.

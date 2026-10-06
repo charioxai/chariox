@@ -1,6 +1,6 @@
 // MD-2: host Chromium lifetime. Never touches a slice or an existing Chrome.
 import { spawn } from "node:child_process";
-import { access, mkdir, readlink } from "node:fs/promises";
+import { access, mkdir, readlink, open } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import * as linux from "./kernel-browser-linux.mjs";
@@ -33,6 +33,14 @@ export function launchArguments(profile, headless, display = false) {
     "--window-size=1280,800", ...(headless ? ["--headless=new"] : []),
     ...(display ? ["--disable-frame-rate-limit"] : []), "about:blank",
   ];
+}
+
+// MP-08 / MP-11: Chromium's singleton socket must fit sockaddr_un even when
+// the owned state path is long. This is the same private directory, held open
+// by the adapter until Chromium and its children have settled.
+export function chromiumTemporaryEnvironment(environment, fd, pid = process.pid) {
+  if (!Number.isSafeInteger(fd) || fd < 0 || !Number.isSafeInteger(pid) || pid <= 1) throw new Error('MP-11: invalid private temporary directory');
+  return { ...environment, TMPDIR: `/proc/${pid}/fd/${fd}` };
 }
 
 export class HostChromium {
@@ -69,6 +77,10 @@ export class HostChromium {
     if (this.desktop && environment.CHARIOX_KERNEL_BROWSER_HEADLESS !== "1") {
       environment = (await this.desktop.start()).environment;
     }
+    if (process.platform === 'linux') {
+      this.temporaryDirectory = await open(this.desktop?.runtime ?? this.root, 'r');
+      environment = chromiumTemporaryEnvironment(environment, this.temporaryDirectory.fd);
+    }
     const child = spawn(binary, launchArguments(profile,
       environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1"), {
       stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env: environment,
@@ -94,6 +106,7 @@ export class HostChromium {
     if (!Number.isSafeInteger(child?.pid) || child.pid <= 1) {
       if (child?.pid !== undefined) throw new Error("MD-2: refusing unsafe browser process ID");
       await this.desktop?.stop();
+      await this.temporaryDirectory?.close(); this.temporaryDirectory = null;
       return;
     }
     if (connection?.isOpen()) await connection.send("Browser.close").catch(() => {});
@@ -111,5 +124,6 @@ export class HostChromium {
     if (!exited()) await new Promise(resolve => child.once("exit", resolve));
     await connection?.close();
     await this.desktop?.stop();
+    await this.temporaryDirectory?.close(); this.temporaryDirectory = null;
   }
 }

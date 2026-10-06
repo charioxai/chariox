@@ -13,7 +13,7 @@ export class NativeAccessibility {
     const raw=await this.execute({op:'accessibility',processes},binding.environment,signal);
     if(signal?.aborted || this.binding()!==binding)throw new Error('MP-11: stale accessibility surface');
     const tree=redactObservation(raw,policy?.values??[]);
-    return {tree,binding,processes,rawDigest:createHash('sha256').update(JSON.stringify(canonical(raw))).digest('hex'),digest:createHash('sha256').update(JSON.stringify([binding.surface_id,binding.generation,tree])).digest('hex')};
+    return {tree,binding,processes,rawDigest:createHash('sha256').update(JSON.stringify(canonical(raw))).digest('hex'),digest:createHash('sha256').update(JSON.stringify([binding.surface_id,binding.generation,tree,canonical(policy??{})])).digest('hex')};
   }
   async snapshot(observer,policy,{signal}={}){
     const {tree,binding,digest}=await this.read(policy,signal);
@@ -34,7 +34,7 @@ export class NativeAccessibility {
   }
   async action(observer,command,policy,{signal}={}){
     const observed=this.observers.get(observer),target=observed?.handles.get(command.target_id);
-    if(!target || observed.revision!==command.tree_revision || target.protected || !target.actions.includes(command.action))throw new Error('MP-11: inaccessible or foreign target');
+    if(!target || observed.revision!==command.tree_revision || target.protected || policy?.targets?.length || !target.actions.includes(command.action))throw new Error('MP-11: inaccessible or foreign target');
     const {digest,binding,processes,rawDigest}=await this.read(policy,signal);
     if(digest!==observed.digest){this.observers.delete(observer);throw new Error('MP-11: stale accessibility target; rediscover');}
     const result=await this.execute({op:'accessibility_action',processes,path:target.path,pid:target.pid,started:target.started,action:command.action,expected_tree_digest:rawDigest},binding.environment,signal);

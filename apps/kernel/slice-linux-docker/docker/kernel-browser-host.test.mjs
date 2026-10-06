@@ -11,7 +11,16 @@ import { encodePng, decodePng, maskPng } from "./kernel-browser-pixels.mjs";
 import { KernelBrowserHost, navigationUrl } from "./kernel-browser-host.mjs";
 import { candidates as macCandidates, launchEnvironment as macEnvironment } from "./kernel-browser-macos.mjs";
 import { launchEnvironment as linuxEnvironment } from "./kernel-browser-linux.mjs";
-import { launchArguments, HostChromium } from "./kernel-browser-process.mjs";
+import { launchArguments, HostChromium, chromiumTemporaryEnvironment } from "./kernel-browser-process.mjs";
+
+test('MP-08 / MP-11: Chromium temporary sockets use the held private directory through a bounded path', () => {
+  const environment = { TMPDIR: '/private/' + 'long/'.repeat(60), XAUTHORITY: '/private/authority' };
+  const bounded = chromiumTemporaryEnvironment(environment, 5, 12345);
+  assert.equal(bounded.TMPDIR, '/proc/12345/fd/5');
+  assert.equal(bounded.XAUTHORITY, environment.XAUTHORITY);
+  assert(!bounded.TMPDIR.includes(environment.TMPDIR));
+  for (const pid of [0, 1, -1, NaN]) assert.throws(() => chromiumTemporaryEnvironment(environment, 5, pid));
+});
 
 function fixture(root) {
   const pages = new Map();
