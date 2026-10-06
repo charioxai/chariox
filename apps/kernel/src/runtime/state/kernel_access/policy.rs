@@ -67,6 +67,9 @@ impl KernelRuntimeState {
             request,
             LocalDaemonRequest::RequestKernelAccess(_)
                 | LocalDaemonRequest::ManageCredentialVault(_)
+                // Raw credential configs can contain literal injection headers.
+                | LocalDaemonRequest::GetCredential(_)
+                | LocalDaemonRequest::ListCredentials(_)
                 // Registry reads and imports return literal env/header credentials.
                 | LocalDaemonRequest::GetMcpServer(_)
                 | LocalDaemonRequest::ListMcpServers(_)

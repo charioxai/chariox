@@ -106,6 +106,7 @@ fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)
             | LocalDaemonRequest::ManageCredentialVault(_)
             | LocalDaemonRequest::GetCredential(_)
+            | LocalDaemonRequest::ListCredentials(_)
             // Sudo must not serialize literal MCP env/header credentials either.
             | LocalDaemonRequest::GetMcpServer(_)
             | LocalDaemonRequest::ListMcpServers(_)
@@ -144,12 +145,13 @@ fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
 }
 
 #[cfg(test)]
-mod mcp_tests {
+mod registry_tests {
     use super::*;
 
     #[test]
-    fn sudo_refuses_raw_mcp_credentials_and_provider_imports() {
+    fn sudo_refuses_raw_registry_credentials_and_provider_imports() {
         for request in [
+            LocalDaemonRequest::ListCredentials(crate::local::ListCredentialsRequest),
             LocalDaemonRequest::GetMcpServer(crate::local::GetMcpServerRequest {
                 workspace_id: None,
                 name: "literal-secret".into(),

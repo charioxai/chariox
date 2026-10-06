@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[tokio::test]
-async fn kernel_access_refuses_raw_mcp_credentials_and_provider_imports() {
+async fn kernel_access_refuses_raw_registry_credentials_and_provider_imports() {
     let worktree = crate::test_support::TestWorktree::new("access-mcp-secret-read");
     let mut app =
         crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
@@ -49,6 +49,33 @@ async fn kernel_access_refuses_raw_mcp_credentials_and_provider_imports() {
                 })
             )
             .is_err());
+    }
+    let credentials = crate::credential::CharioxCredentialRegistry::new(
+        worktree.path().join("registered-credentials"),
+    );
+    let credential = crate::config::UserCredentialConfig {
+        id: "literal-credential-header".into(),
+        description: None,
+        source: crate::config::UserCredentialSourceConfig::Env {
+            name: "TEST_UNUSED".into(),
+        },
+        allowed_hosts: vec!["example.com".into()],
+        allowed_uses: vec![crate::config::UserCredentialUse::Http],
+        injection: crate::config::UserCredentialInjectionConfig::Header {
+            name: "Authorization".into(),
+            value: "Bearer test-only-credential-secret".into(),
+        },
+        metadata: None,
+    };
+    credentials.upsert(credential.clone()).unwrap();
+    assert_eq!(credentials.get(&credential.id).unwrap(), Some(credential));
+    for request in [
+        LocalDaemonRequest::GetCredential(crate::local::GetCredentialRequest {
+            id: "literal-credential-header".into(),
+        }),
+        LocalDaemonRequest::ListCredentials(crate::local::ListCredentialsRequest),
+    ] {
+        assert!(state.authorize_external_request(&grant, &request).is_err());
     }
     for request in [
         LocalDaemonRequest::ListMcpServers(crate::local::ListMcpServersRequest {
