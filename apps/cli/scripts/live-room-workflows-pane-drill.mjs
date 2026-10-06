@@ -168,7 +168,7 @@ try {
       const command = `payload=$(printf '%4096s' x); i=0; end=$((SECONDS+120)); while [ "$SECONDS" -lt "$end" ]; do printf 'WFP_NOISY_OUTPUT %s %s\\n' "$i" "$payload"; i=$((i+1)); if [ $((i%1024)) -eq 0 ]; then printf '%s\\n' "$i" > ${marker}; fi; done`
       const previous = new Set((await stateUntil(()=>true)).room_workflows.workflows[0].runs.map(run=>run.run_id))
       await key('\x17')
-      await key(`Run this exact Bash command now as one foreground shell tool call, without a pipe or output truncation: ${command}. Keep waiting for this command; do not return a workflow envelope until it ends.`)
+      await key(`Run this exact Bash command now using exec_command with yield_time_ms=30000 as one foreground shell tool call, without a pipe, background session, or output truncation: ${command}. Keep waiting for this command; do not return a workflow envelope until it ends.`)
       // The narrow composer scrolls to the end of this long user command.
       await capture(label+'-draft',text=>text.includes('ends.'))
       const noiseStartedAtMs = Date.now()
