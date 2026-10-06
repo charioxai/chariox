@@ -9,6 +9,8 @@ from fractions import Fraction
 import os
 import re
 import av
+import importlib.util
+from pathlib import Path
 
 _xxh=ctypes.CDLL(ctypes.util.find_library('xxhash') or 'libxxhash.so.0').XXH3_64bits
 _xxh.argtypes=[ctypes.c_void_p,ctypes.c_size_t];_xxh.restype=ctypes.c_uint64
@@ -42,7 +44,11 @@ class StripeEncoder:
             # bytes, so a collision cannot omit a changed row.
             if old and row not in resets and old['hash']==signature and old['pixels']==data:continue
             if old is None or row in resets:
-                codec=av.CodecContext.create(backend,'w');codec.width=width;codec.height=h
+                if backend=='libopenh264' and os.environ.get('CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER'):
+                    spec=importlib.util.spec_from_file_location('native_openh264',Path(__file__).with_name('kernel-browser-openh264.py'));module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+                    codec=module.NativeOpenH264(width,h,max(16000,int(bitrate*.45*h/height)))
+                else:codec=av.CodecContext.create(backend,'w')
+                codec.width=width;codec.height=h
                 codec.pix_fmt='yuv420p';codec.time_base=Fraction(1,60);codec.framerate=Fraction(60,1)
                 codec.bit_rate=max(16000,int(bitrate*.45*h/height));codec.thread_count=1
                 if backend=='libx264':

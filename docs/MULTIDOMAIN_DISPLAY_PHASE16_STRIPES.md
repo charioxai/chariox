@@ -70,13 +70,24 @@ The choice is pluggable, not a distribution approval. x264 is GPL; OpenH264
 is the BSD H.264 software alternative; libvpx is BSD. Separating a process does
 not remove the distributed dependency's obligations.
 
-The supplied PyAV build exposes OpenH264, but FFmpeg's OpenH264 adapter does
-not expose screen-content `iUsageType`: it uses defaults. An ignored `usage`
-option would falsely claim that mode; none is installed. The current diagnostic
-OpenH264 rows measure that adapter. Cisco runtime-download provenance and a
-screen-content native adapter remain separate work before the requested
-OpenH264 distribution comparison can pass. See the [FFmpeg adapter source](https://github.com/FFmpeg/FFmpeg/blob/n8.0/libavcodec/libopenh264enc.c),
-[Cisco OpenH264 documentation](https://github.com/cisco/openh264/blob/master/README.md)
+The supplied FFmpeg/PyAV adapter does not expose screen-content usage. The
+original `kernel-browser-openh264.cpp` adapter selects `SCREEN_CONTENT_REAL_TIME`
+through Cisco's native API and verifies the selected usage through `GetOption`.
+Its Python wrapper pins Cisco2.6.0, consumes existing admitted I420 frame planes,
+and bounds output to1MiB. No capture or file/network access occurs in the adapter.
+`CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER` selects the external native adapter;
+without it OpenH264 uses the older FFmpeg adapter and must not be described as
+screen-content mode. Protected PNG fallback preserves the selected encoder.
+
+The drill downloads Cisco's prebuilt2.6.0 library over HTTPS outside the source
+checkout, builds the original adapter against pinned BSD API headers, then copies
+only those two public libraries into its disposable runtime. Runtime-download
+URLs, source/header/library hashes and build commands are retained in evidence.
+No upstream source or binary is committed. Distribution and patent coverage
+remain owner decisions; a runtime download receipt is not legal clearance.
+See the [Cisco release](https://github.com/cisco/openh264/releases/tag/v2.6.0),
+[Cisco API](https://github.com/cisco/openh264/blob/v2.6.0/codec/api/wels/codec_api.h),
+[FFmpeg adapter](https://github.com/FFmpeg/FFmpeg/blob/n8.0/libavcodec/libopenh264enc.c)
 and [libvpx license](https://www.webmproject.org/license/software/).
 
 ## MP-08/MP-10/MP-11: acceptance boundary

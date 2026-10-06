@@ -175,7 +175,11 @@ def main():
             if selected.startswith('avc1') and software_h264 not in ('libx264','libopenh264'):raise ValueError('software H264 selection')
             config = (frame.width, frame.height, request['bitrate'], selected,software_h264)
             if codec is None or config != configuration:
-                codec = av.CodecContext.create('libvpx' if selected=='vp8' else 'libvpx-vp9' if selected.startswith('vp09') else software_h264, 'w')
+                if selected.startswith('avc1') and software_h264=='libopenh264' and os.environ.get('CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER'):
+                    import importlib.util
+                    spec=importlib.util.spec_from_file_location('native_openh264',Path(__file__).with_name('kernel-browser-openh264.py'));module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+                    codec=module.NativeOpenH264(frame.width,frame.height,int(request['bitrate']*.45))
+                else:codec = av.CodecContext.create('libvpx' if selected=='vp8' else 'libvpx-vp9' if selected.startswith('vp09') else software_h264, 'w')
                 codec.width, codec.height = frame.width, frame.height
                 codec.pix_fmt = 'yuv420p'
                 codec.time_base = Fraction(1,60)
