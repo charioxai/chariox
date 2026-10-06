@@ -132,11 +132,15 @@ def run(args):
             'RUST_BACKTRACE':'0', 'RUST_TEST_THREADS':'1', 'RUST_MIN_STACK':str(32*1024**2),
             'TOKIO_WORKER_THREADS':'2', 'CHARIOX_KERNEL_BROWSER_MIRROR':'1', 'CHARIOX_KERNEL_HOST':'127.0.0.1', 'CHARIOX_KERNEL_PORT':'49901',
             'CHARIOX_BROWSER_CONTROLLER_NODE':'/usr/bin/node'}
-        (root/'home').mkdir(); (root/'chariox').mkdir()
+        (root/'home').mkdir(); (root/'chariox').mkdir(); (root/'tmp').mkdir()
+        # MP-11: scope the existing fixed worker's hard-coded /tmp to this run.
+        namespace = ['unshare','--mount','--propagation','private','bash','-c',
+            'mount --bind "$1" /tmp || exit; shift; exec "$@"',
+            'appsbudget-private-tmp',str(root/'tmp')]
         command = [args.binary, '--exact', '--ignored', TEST, '--nocapture']
         if args.topology == 'host':
-            for p in [root,root/'home',root/'chariox']: os.chown(p,65534,65534)
-            display = subprocess.Popen(['setpriv','--reuid=65534','--regid=65534','--clear-groups','Xvfb',
+            for p in [root,root/'home',root/'chariox',root/'tmp']: os.chown(p,65534,65534)
+            display = subprocess.Popen([*namespace,'setpriv','--reuid=65534','--regid=65534','--clear-groups','Xvfb',
                 '-displayfd','1','-screen','0','1280x800x24','-nolisten','tcp'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             assert display.pid > 1
             owned[display.pid] = process(display.pid)['start']
@@ -144,6 +148,7 @@ def run(args):
             env['CHARIOX_KERNEL_BROWSER_EXECUTABLE'] = args.chrome
             env['LD_LIBRARY_PATH'] = args.library_path
             command = ['setpriv','--reuid=65534','--regid=65534','--clear-groups', *command]
+        command = [*namespace, *command]
         with (output/'kernel.log').open('wb') as log, (output/'samples.jsonl').open('w') as raw:
             child = subprocess.Popen(command, env=env, stdout=log, stderr=log)
             assert child.pid > 1
