@@ -2,6 +2,7 @@
 use super::*;
 use crate::local::{KernelBrowserCommand, KernelBrowserInput, KernelBrowserRequest};
 use serde_json::{json, Value};
+mod access;
 
 fn run_test(test: fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>) {
     tokio::runtime::Builder::new_multi_thread()
@@ -87,7 +88,7 @@ async fn focus_check() {
     assert!(names(first_token).contains(&"chariox.kernel_browser".into()));
     assert!(names(first_token).contains(&"chariox.kernel_browser_paste_secret".into()));
     focus(&router, session.id(), second.id()).await;
-    assert!(!names(first_token).contains(&"chariox.load_kernel_browser".into()));
+    assert!(names(first_token).contains(&"chariox.load_kernel_browser".into()));
     assert!(router
         .dispatch_authenticated_runtime_tool_call(
             first_token,
@@ -95,7 +96,7 @@ async fn focus_check() {
             json!({"command":{"op":"stop"}})
         )
         .await
-        .is_err());
+        .is_ok());
     assert!(router
         .dispatch_authenticated_runtime_tool_call(
             first_token,
@@ -187,7 +188,7 @@ async fn restart_check() {
     );
     use futures_util::FutureExt;
     let outcome = std::panic::AssertUnwindSafe(async {
-        let state = human(&router, KernelBrowserCommand::State).await;
+        let state = human(&router, KernelBrowserCommand::Start).await;
         let id = restored["tab_id"].as_str().unwrap();
         assert!(state["tabs"]
             .as_array()
@@ -915,7 +916,7 @@ async fn live_check() {
         }
         assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
         tokio::time::sleep(Duration::from_millis(300)).await;
-        let recovered = human(&router, KernelBrowserCommand::State).await;
+        let recovered = human(&router, KernelBrowserCommand::Start).await;
         assert!(recovered["generation"].as_u64().unwrap() > generation);
         assert!(recovered["tabs"]
             .as_array()

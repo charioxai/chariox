@@ -142,6 +142,7 @@ pub mod terminal_output_executor;
 pub(crate) mod terminal_pairings;
 pub(crate) mod user_config_executor;
 pub(crate) mod user_config_policy;
+mod user_domain_access;
 pub(crate) mod waiting_room_activity;
 pub(crate) mod waiting_room_control;
 pub(crate) mod waiting_room_public_projection;

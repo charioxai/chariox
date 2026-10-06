@@ -71,7 +71,7 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let instances = self.app_control().user_views();
         let failed = crate::runtime::app_control::failed;
-        match request {
+        let mut response = match request {
             LocalDaemonRequest::OpenUserAppView(request) => {
                 let (binding, frontend) = match self
                     .user_app_frontend(owner, &request.installation_id)
@@ -232,7 +232,26 @@ impl KernelRuntimeState {
                 })
             }
             _ => unreachable!(),
+        }?;
+        let access: crate::local::UserDomainWindowAccess =
+            serde_json::from_value(self.user_domain_window_projection(owner)).map_err(|_| {
+                DaemonError::LocalTransport {
+                    operation: "user_domain_access",
+                    message: "MP-08: window projection unavailable".into(),
+                }
+            })?;
+        match &mut response {
+            LocalDaemonResponse::UserAppViewOpened { view, .. }
+            | LocalDaemonResponse::UserAppViewFrontend { view, .. } => view.access = Some(access),
+            LocalDaemonResponse::UserAppViewsListed { views }
+            | LocalDaemonResponse::UserAppViewsChanged { views, .. } => {
+                for view in views {
+                    view.access = Some(access.clone());
+                }
+            }
+            _ => {}
         }
+        Ok(response)
     }
 
     pub(super) async fn invoke_user_app_view_call(

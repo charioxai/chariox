@@ -93,6 +93,7 @@ fn user_app_view_protocol_427_kernel_browser_host_selection_snapshot() {
         installation_id: "todo".into(),
         generation: "7".into(),
         origin: "https://app.a.invalid".into(),
+        access: None,
         browser: Some(UserAppViewBrowser {
             tab_id: "host-tab-t".into(),
             generation: 2,

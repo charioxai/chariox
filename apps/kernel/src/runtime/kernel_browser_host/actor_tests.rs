@@ -1,13 +1,28 @@
 //! MD-3/MD-4: actual host ledger → controller cancellation, no Chromium dependency.
 use super::*;
 use serde_json::json;
+use std::time::Instant;
 #[test]
 fn human_takeover_cancels_the_running_controller_and_fences_the_focused_agent() {
+    check_running_cancellation(false, false);
+}
+#[test]
+fn mdaccess_revoke_cancels_inflight_controller_input_immediately() {
+    check_running_cancellation(true, false);
+}
+#[test]
+fn mdaccess_focus_switch_preserves_running_input() {
+    check_running_cancellation(false, true);
+}
+fn check_running_cancellation(revoke: bool, focus_change: bool) {
     let root = std::env::temp_dir().join(format!(
         "chariox-md3-takeover-{:032x}",
         rand::random::<u128>()
     ));
     std::fs::create_dir(&root).unwrap();
+    if focus_change {
+        std::fs::write(root.join("focus-retention"), "owned").unwrap();
+    }
     let script = root.join("controller.sh");
     std::fs::write(&script, r#"set -eu
 root=$1
@@ -15,9 +30,14 @@ while IFS= read -r request; do
   id=${request#*:}; id=${id%%,*}
   case "$request" in
     *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
-    *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+    *'"method":"host.revoke_subscriptions"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
     *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id" ;;
-    *'"op":"input"'*) pending=$id; printf 'started\n' > "$root/started" ;;
+    *'"op":"input"'*) pending=$id; printf 'started\n' > "$root/started"
+      if [ -f "$root/focus-retention" ]; then
+        while [ ! -f "$root/release" ]; do sleep 0.01; done
+        printf '{"id":%s,"ok":true,"result":{}}\n' "$id"
+      fi ;;
     *'"method":"browser.cancel"'*)
       printf 'cancelled\n' > "$root/cancelled"
       printf '{"id":%s,"ok":true,"result":{"accepted":true}}\n' "$id"
@@ -40,6 +60,12 @@ done
         .insert("alice".into(), Arc::new(Mutex::new(backend)));
     host.set_focus("alice", Some("agent"));
     host.load("alice", "agent").unwrap();
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
     let mutation = json!({"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"d","input":{"kind":"text","text":"must-not-be-retained"}});
     let policy = json!({"values":[],"targets":[],"unknown":false});
     std::thread::scope(|scope| {
@@ -57,33 +83,58 @@ done
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(root.join("started").exists());
-        let takeover = host
-            .request_takeover(
-                "alice",
-                EnvironmentActor::new("terminal:a", EnvironmentActorKind::Human, "Alice"),
-                "host-tab-a",
-                1,
-            )
-            .unwrap();
-        assert!(matches!(
-            takeover,
-            TakeoverOutcome::CancellationRequired { .. }
-        ));
-        assert!(host
-            .request_takeover(
-                "bob",
-                EnvironmentActor::new("terminal:b", EnvironmentActorKind::Human, "Bob"),
-                "host-tab-a",
-                1
-            )
-            .is_err());
-        assert!(running
-            .join()
-            .unwrap()
-            .unwrap_err()
-            .contains("browser_action_cancelled"));
+        if revoke {
+            host.revoke_agent("agent");
+        } else if focus_change {
+            host.set_focus("alice", Some("second"));
+            assert!(host.has_grant("alice", "agent"));
+            assert!(!host
+                .admit("alice", "agent")
+                .unwrap()
+                .cancellation
+                .requested());
+            std::fs::write(root.join("release"), "release").unwrap();
+        } else {
+            let takeover = host
+                .request_takeover(
+                    "alice",
+                    EnvironmentActor::new("terminal:a", EnvironmentActorKind::Human, "Alice"),
+                    "host-tab-a",
+                    1,
+                )
+                .unwrap();
+            assert!(matches!(
+                takeover,
+                TakeoverOutcome::CancellationRequired { .. }
+            ));
+            assert!(host
+                .request_takeover(
+                    "bob",
+                    EnvironmentActor::new("terminal:b", EnvironmentActorKind::Human, "Bob"),
+                    "host-tab-a",
+                    1
+                )
+                .is_err());
+        }
+        let result = running.join().unwrap();
+        if focus_change {
+            result.unwrap();
+        } else {
+            assert!(result.unwrap_err().contains(if revoke {
+                "revoked"
+            } else {
+                "browser_action_cancelled"
+            }));
+        }
     });
-    assert!(root.join("cancelled").exists());
+    assert_eq!(root.join("cancelled").exists(), !focus_change);
+    if revoke {
+        assert!(!host.has_grant("alice", "agent"));
+        assert!(host.actor_snapshot("alice").unwrap()["actors"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    } else if !focus_change {
     let admission = host.admit("alice", "agent").unwrap();
     assert!(matches!(
         host.protected_request_admitted(
@@ -96,16 +147,17 @@ done
         .unwrap_err(),
         crate::error::HostFailure::Refused(crate::error::UserDomainRefusalReason::NotGranted)
     ));
-    let state = host.actor_snapshot("alice").unwrap();
-    assert_eq!(state["input_ownership"][0]["actor_id"], "terminal:a");
-    assert_eq!(state["actions"][0]["state"], "cancelled");
-    assert_eq!(state["actions"][0]["outcome"]["reason"], "human_takeover");
-    assert!(!state.to_string().contains("must-not-be-retained"));
-    assert!(host
-        .release_input("alice", "terminal:b", "host-tab-a", 1)
-        .is_err());
-    host.release_input("alice", "terminal:a", "host-tab-a", 1)
-        .unwrap();
+        let state = host.actor_snapshot("alice").unwrap();
+        assert_eq!(state["input_ownership"][0]["actor_id"], "terminal:a");
+        assert_eq!(state["actions"][0]["state"], "cancelled");
+        assert_eq!(state["actions"][0]["outcome"]["reason"], "human_takeover");
+        assert!(!state.to_string().contains("must-not-be-retained"));
+        assert!(host
+            .release_input("alice", "terminal:b", "host-tab-a", 1)
+            .is_err());
+        host.release_input("alice", "terminal:a", "host-tab-a", 1)
+            .unwrap();
+    }
     host.shutdown().unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -134,7 +186,7 @@ fn retired_agents_reclaim_actor_slots_beyond_the_presence_limit() {
             .lock()
             .unwrap()
             .finish(&action, EnvironmentActionTerminal::Completed);
-        // Retire a non-focused agent too: the prior focus interval is already revoked.
+        // Retire a non-focused agent too: focus alone keeps the prior grant.
         host.set_focus("alice", None);
         host.revoke_agent(&agent);
         assert!(
@@ -221,4 +273,439 @@ done
         .is_empty());
     host.shutdown().unwrap();
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn mdaccess_revoke_releases_grant_lock_before_waiting_for_actor() {
+    let host = KernelBrowserHost::new(std::env::temp_dir().join("mdaccess-lock-order"));
+    host.set_focus("alice", Some("agent"));
+    let epoch = host
+        .inner
+        .lock()
+        .unwrap()
+        .access
+        .grant("alice", "agent")
+        .unwrap()
+        .epoch
+        .clone();
+    let model = host.actor_model("alice").unwrap();
+    let actor_guard = model.lock().unwrap();
+    let revoker = host.clone();
+    let revoke = std::thread::spawn(move || revoker.revoke_agent("agent"));
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !epoch.requested() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let reader = host.clone();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let authority = std::thread::spawn(move || sender.send(reader.has_grant("alice", "agent")));
+    let result = receiver.recv_timeout(Duration::from_secs(2));
+    drop(actor_guard); // Also lets a broken implementation terminate cleanly.
+    revoke.join().unwrap();
+    authority.join().unwrap().unwrap();
+    assert_eq!(
+        result.unwrap(),
+        false,
+        "MP-11: revoke must not deadlock authority callbacks"
+    );
+}
+
+#[test]
+fn mdaccess_scoped_inventory_preserves_other_actor_tab_ownership() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-mdaccess-ledger-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+  *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+  *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"a","document_id":"doc-a"},{"tab_id":"b","document_id":"doc-b"}]}}\n' "$id" ;;
+  *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("owner", &script, &root);
+    host.set_focus("owner", Some("first"));
+    host.load("owner", "first").unwrap();
+    let admission = host.admit("owner", "first").unwrap();
+    host.claim_resource(
+        Some(&admission),
+        UserDomainResource::BrowserTab { tab_id: "a".into() },
+        false,
+    )
+    .unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    host.backend("owner")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    host.protected_request(
+        "owner",
+        None,
+        "host.browser",
+        json!({"op":"state"}),
+        policy.clone(),
+    )
+    .unwrap();
+    host.request_takeover(
+        "owner",
+        EnvironmentActor::new("human", EnvironmentActorKind::Human, "Human"),
+        "b",
+        1,
+    )
+    .unwrap();
+    host.set_focus("owner", Some("second"));
+    let scoped = host
+        .protected_request_admitted(
+            "owner",
+            Some(&admission),
+            "host.browser",
+            json!({"op":"state"}),
+            policy,
+        )
+        .unwrap();
+    assert_eq!(scoped["tabs"].as_array().unwrap().len(), 1);
+    assert_eq!(scoped["tabs"][0]["tab_id"], "a");
+    assert!(host.actor_snapshot("owner").unwrap()["input_ownership"]
+        .to_string()
+        .contains("b"));
+    assert!(
+        host.release_input("owner", "human", "b", 1).is_ok(),
+        "MP-11: another actor's tab must remain in the authoritative registry"
+    );
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn mdaccess_focus_change_keeps_inflight_grant_authority_until_revoke() {
+    let host = KernelBrowserHost::new(PathBuf::from("/tmp/mdaccess-authority"));
+    host.set_focus("owner", Some("first"));
+    host.load("owner", "first").unwrap();
+    let admission = host.admit("owner", "first").unwrap();
+    host.set_focus("owner", Some("second"));
+    assert!(!admission.cancellation.requested());
+    host.check_admission(Some(&admission)).unwrap();
+    host.revoke_agent("first");
+    assert!(admission.cancellation.requested());
+    assert!(host
+        .check_admission(Some(&admission))
+        .unwrap_err()
+        .contains("not_granted"));
+}
+
+#[test]
+fn mdaccess_controller_startup_does_not_block_immediate_revocation() {
+    let root =
+        std::env::temp_dir().join(format!("mdaccess-startup-{:032x}", rand::random::<u128>()));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script,r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+  *'"method":"health"'*)
+   printf 'started' > "$root/started"
+   while [ ! -f "$root/release" ]; do sleep 0.01; done
+   printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+  *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("owner", &script, &root);
+    host.set_focus("owner", Some("first"));
+    host.load("owner", "first").unwrap();
+    let admission = host.admit("owner", "first").unwrap();
+    let epoch = admission.cancellation.clone();
+    let caller = host.clone();
+    let run = std::thread::spawn(move || {
+        caller.protected_request_admitted(
+            "owner",
+            Some(&admission),
+            "host.browser",
+            json!({"op":"start"}),
+            json!({"values":[],"targets":[],"unknown":false}),
+        )
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !root.join("started").exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let started = root.join("started").exists();
+    let revoker = host.clone();
+    let revoke = std::thread::spawn(move || revoker.revoke_agent("first"));
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while !epoch.requested() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let immediate = epoch.requested();
+    // Always settle the run-owned controller before reporting a failure.
+    std::fs::write(root.join("release"), "release").unwrap();
+    revoke.join().unwrap();
+    let outcome = run.join().unwrap();
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(
+        started,
+        "MP-10: startup fixture never reached its native handshake"
+    );
+    assert!(immediate, "MP-11: startup I/O blocked grant revocation");
+    assert!(outcome.unwrap_err().contains("not_granted"));
+}
+
+#[test]
+fn mdaccess_retained_browser_scope_allows_input_but_no_new_resources_or_vault() {
+    let host = KernelBrowserHost::new(PathBuf::from("/tmp/mdaccess-scope"));
+    host.set_focus("owner", Some("first"));
+    host.load("owner", "first").unwrap();
+    let admission = host.admit("owner", "first").unwrap();
+    host.claim_resource(
+        Some(&admission),
+        UserDomainResource::BrowserTab {
+            tab_id: "tab".into(),
+        },
+        false,
+    )
+    .unwrap();
+    host.set_focus("owner", Some("second"));
+    for input in [
+        json!({"kind":"key","key":"Tab"}),
+        json!({"kind":"key","key":"Delete"}),
+        json!({"kind":"text","text":"fixture"}),
+        json!({"kind":"click","x":1,"y":2}),
+    ] {
+        host.scope_browser_request(
+            Some(&admission),
+            "host.browser",
+            &json!({"op":"input","tab_id":"tab","input":input}),
+        )
+        .unwrap();
+    }
+    for op in ["state", "start", "stop", "navigate", "close"] {
+        host.scope_browser_request(
+            Some(&admission),
+            "host.browser",
+            &json!({"op":op,"tab_id":"tab"}),
+        )
+        .unwrap();
+    }
+    assert!(host
+        .scope_browser_request(
+            Some(&admission),
+            "host.browser",
+            &json!({"op":"snapshot","tab_id":"new"})
+        )
+        .unwrap_err()
+        .contains("not_focused_agent"));
+    assert!(host
+        .scope_browser_request(Some(&admission), "host.secret", &json!({"tab_id":"tab"}))
+        .unwrap_err()
+        .contains("sensitive_requires_focus"));
+    host.revoke_agent("first");
+    assert!(host
+        .check_admission(Some(&admission))
+        .unwrap_err()
+        .contains("not_granted"));
+}
+
+#[test]
+fn mdaccess_retained_notes_commits_share_grant_and_revoke_boundary() {
+    let host = KernelBrowserHost::new(PathBuf::from("/tmp/mdaccess-note-scope"));
+    host.set_focus("owner", Some("first"));
+    host.load_for("owner", "first", KernelBrowserCapability::Notes)
+        .unwrap();
+    let admission = host
+        .admit_for("owner", "first", KernelBrowserCapability::Notes)
+        .unwrap();
+    host.set_focus("owner", Some("second"));
+    assert_eq!(
+        host.note_operation("owner", Some(&admission), || Ok(42))
+            .unwrap(),
+        42
+    );
+    host.revoke_agent("first");
+    assert!(host
+        .note_operation::<()>("owner", Some(&admission), || panic!(
+            "MP-11: revoked note commit"
+        ))
+        .is_err());
+}
+
+#[test]
+fn mdaccess_idle_lapse_refuses_retained_keys_text_clicks_and_note_commits() {
+    let host = KernelBrowserHost::new(PathBuf::from("/tmp/mdaccess-idle-input"));
+    host.set_focus("owner", Some("first"));
+    host.load("owner", "first").unwrap();
+    let admission = host.admit("owner", "first").unwrap();
+    host.claim_resource(
+        Some(&admission),
+        UserDomainResource::BrowserTab {
+            tab_id: "tab".into(),
+        },
+        false,
+    )
+    .unwrap();
+    host.set_focus("owner", Some("second"));
+    let now = Instant::now();
+    host.inner.lock().unwrap().access.bind(
+        "owner",
+        "first",
+        "session",
+        true,
+        now,
+        0,
+        Duration::from_secs(1),
+    );
+    host.inner.lock().unwrap().access.bind(
+        "owner",
+        "first",
+        "session",
+        false,
+        now,
+        0,
+        Duration::from_secs(1),
+    );
+    assert!(host.inner.lock().unwrap().access.bind(
+        "owner",
+        "first",
+        "session",
+        false,
+        now + Duration::from_secs(1),
+        1000,
+        Duration::from_secs(1)
+    ));
+    for input in [
+        json!({"kind":"key","key":"Delete"}),
+        json!({"kind":"text","text":"expired"}),
+        json!({"kind":"click","x":1,"y":2}),
+    ] {
+        let error = host
+            .protected_request_admitted(
+                "owner",
+                Some(&admission),
+                "host.browser",
+                json!({"op":"input","tab_id":"tab","input":input}),
+                Value::Null,
+            )
+            .unwrap_err();
+        assert!(error.contains("not_granted"));
+    }
+    assert!(host
+        .note_operation::<()>("owner", Some(&admission), || panic!(
+            "MP-11: expired commit"
+        ))
+        .unwrap_err()
+        .contains("not_granted"));
+}
+
+// MP-08/MP-11: deterministic post-controller/pre-registration revoke/refocus race.
+#[test]
+fn mdaccess_revoked_open_cannot_populate_refocused_grant() {
+    check_result_epoch_race("open", true);
+}
+#[test]
+fn mdaccess_revoked_subscribe_cannot_populate_refocused_grant() {
+    check_result_epoch_race("subscribe", true);
+}
+#[test]
+fn mdaccess_revoked_snapshot_cannot_return_after_refocus() {
+    check_result_epoch_race("snapshot", true);
+}
+#[test]
+fn mdaccess_result_rechecks_provider_run_authority_before_return() {
+    check_result_epoch_race("snapshot", false);
+}
+fn check_result_epoch_race(op: &str, refocus: bool) {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-mdaccess-result-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+while IFS= read -r request; do
+  id=${request#*:}; id=${id%%,*}
+  case "$request" in
+    *'"method":"health"'*) result=$(printf '{"state":"ready","process_id":%s}' "$$") ;;
+    *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; exit 0 ;;
+    *'"op":"open"'*) result='{"generation":1,"tab_id":"late-tab","tabs":[{"tab_id":"late-tab","document_id":"d"}]}' ;;
+    *'"op":"subscribe"'*) result='{"generation":1,"subscription_id":"late-sub"}' ;;
+    *) result='{"generation":1,"tabs":[{"tab_id":"existing-tab","document_id":"d"}]}' ;;
+  esac
+  printf '{"id":%s,"ok":true,"result":%s}\n' "$id" "$result"
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    let backend = BrowserControllerProcessStdioBackend::new(
+        "/bin/sh",
+        vec![script.display().to_string()],
+        Duration::from_secs(2),
+    )
+    .for_host();
+    host.inner
+        .lock()
+        .unwrap()
+        .browsers
+        .insert("owner".into(), Arc::new(Mutex::new(backend)));
+    host.set_focus("owner", Some("agent"));
+    host.load("owner", "agent").unwrap();
+    host.backend("owner")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    let live = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let run = live.clone();
+    let admission = host
+        .admit("owner", "agent")
+        .unwrap()
+        .with_authority(move || run.load(std::sync::atomic::Ordering::Acquire));
+    let caller = host.clone();
+    host.inner.lock().unwrap().after_controller_check = Some(Arc::new(move || {
+        if refocus {
+            caller.revoke_agent("agent");
+            caller.set_focus("owner", Some("agent"));
+            caller.load("owner", "agent").unwrap();
+        } else {
+            live.store(false, std::sync::atomic::Ordering::Release);
+        }
+    }));
+    let mut params = json!({"op":op});
+    if op != "open" {
+        params["tab_id"] = "existing-tab".into();
+    }
+    let result = host.protected_request_admitted(
+        "owner",
+        Some(&admission),
+        "host.browser",
+        params,
+        json!({"values":[],"targets":[],"unknown":false}),
+    );
+    let state = host.inner.lock().unwrap();
+    let grant = state.access.grant("owner", "agent").unwrap();
+    let uncontaminated = !grant.resources.contains(&UserDomainResource::BrowserTab {
+        tab_id: "late-tab".into(),
+    }) && grant.subscriptions.is_empty();
+    drop(state);
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(
+        uncontaminated,
+        "MP-11: revoked result populated the fresh grant"
+    );
+    assert!(
+        result.unwrap_err().contains("not_granted"),
+        "MP-11: old request crossed result authority boundary"
+    );
 }

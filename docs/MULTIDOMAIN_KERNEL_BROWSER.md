@@ -35,7 +35,8 @@ Failed mutations are returned, never replayed automatically.
 Only observational reconciliation retries a stale-document navigation race,
 with three bounded reads; it never recreates a tab or repeats input.
 
-A bounded supervisor restarts an exited browser on the next request; profile
+An explicit start/open recovers an exited browser; observation reads never
+start/restart it. Profile
 storage survives. Durable tab records restore URLs under the same Chariox tab
 IDs, with a new browser generation and document references. Old references and
 screen subscriptions fail after restart. An internal blank target keeps headed Chromium alive when no user tabs are open;
@@ -47,18 +48,23 @@ an unrelated user's Chrome or delete its locks.
 ## MD-3: authority and secrets
 
 Human requests derive user identity from KernelCaller, not request arguments.
-Only authenticated terminals may call the public host interface. MCP derives
-user/agent identity from the admitted local provider run and checks the user's
-current focus on discovery and every call. Focus changes revoke old access;
-remote/leased runs are excluded. A small loader tool makes the capability known;
-the browser operation tool is advertised only after on-demand loading.
-No additional approval/grant path is introduced.
+Only authenticated terminals may call the public host interface. MP-08/MP-11:
+MCP derives user/agent identity from the admitted local provider run. Focus
+claims resources; active tasks and pending wakes retain their exact grant after
+focus changes. MP-11: retained grants allow the same input/mutations on granted
+resources as focus, including text, keys, Tab and clicks. Explicit start/open
+is allowed; unrelated resource claims still need focus. No observation read
+starts/recovers the controller or browser.
+A small loader advertises tools on demand. See the authoritative
+[user-domain access amendment](MULTIDOMAIN_USER_DOMAIN_ACCESS.md) (432/78).
+Remote/leased calls name both kernels and request focus on the window's kernel;
+there is no cross-kernel control.
 
 MD-3 local socket admission carries a nonserialized connection cancellation
 lifetime through router, Vault barrier and backend waits. Disconnect cancels it
 before releasing actor presence. Ledger registration checks it under the same
 lock as disconnect, so queued physical input cannot recreate a departed actor.
-Changing focus and retiring an agent also remove its actor and pointer slots;
+Retiring or explicitly revoking an agent removes its actor and pointer slots;
 bounded terminal action history remains. A failed CDP input attempt fences the
 browser to clear uncertain held keys/buttons before another actor can dispatch.
 
@@ -85,13 +91,14 @@ Native URLs outside HTTP(S)/about:blank restore as about:blank; reconciliation
 keeps at most 128 durable tabs, prioritizes existing identities, closes excess
 native targets and truncates oversized legacy registries.
 
-Each MCP call retains one focus-interval admission through async waits and the
-controller operation. Focus change, agent destruction/session end/placement move
-or loss of the provider-run authority cancels pending host input and Vault fill
-through the shared stdio cancellation path. A timed-out cancellation fences the
+MP-08/MP-11: each MCP call retains its grant admission through async waits and
+the controller operation. Idle expiry, explicit revoke, agent destruction/session
+end/placement move or loss of provider-run authority cancels pending input.
+MP-11: ordinary input keeps grant/run authority across focus changes. Vault
+fills keep their additional live-focus authority through the shared stdio cancellation path. A timed-out cancellation fences the
 controller before settlement. Input checks cancellation and the observed CDP
 loader before every physical event. If input is interrupted between events, the
-host stops its owned Chromium to clear held keys/buttons; the next request
+host stops its owned Chromium to clear held keys/buttons; an explicit start/open
 recovers with a new generation. This cannot undo input already delivered before
 revocation.
 
@@ -105,7 +112,10 @@ frame/document binding for public display clients requires a coordinator
 protocol allocation and client integration. It is not claimed accepted here.
 
 
-Ordinary input is not a Vault operation. Ordinary text input into password/OTP fields is refused. MD-5 adds
+Ordinary input is not a Vault operation. MP-08 / MP-11: ordinary text insertion
+and all text-producing keys into
+password/OTP or focused frame targets are refused before dispatch for both
+focused and retained grants; those targets require the Vault path. MD-5 adds
 `chariox.kernel_browser_paste_secret` after on-demand loading: an opaque Vault
 credential handle plus observed tab/generation/document/node reference, never
 secret text. Only the host owner (local or configured Cloud identity) can use
@@ -244,7 +254,7 @@ cancellation path. Pending takeover fences subsequent mutations immediately;
 ownership is granted only once that action settles. Release requires the same
 terminal actor. Browser recovery preserves deliberate human ownership of stable
 tabs and invalidates old action/generation references. Focus/run revocation still
-uses the existing uninterrupted focus admission; release does not restore old
+uses the existing grant admission; release does not restore old
 focus or grant access to another agent. Observations remain available during
 takeover. Appviews retains its own admission/attribution above the unchanged App
 seam. Actor projections are live kernel state. A full kernel restart releases control;

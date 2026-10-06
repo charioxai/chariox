@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { captureRegionMasks } from "./kernel-browser-region-protection.mjs";
+import { captureRegionMasks, protectedHostRegions } from "./kernel-browser-region-protection.mjs";
 
 function fixture() {
-  const state = { x: 10, fail: false, calls: [], shadow: false };
+  const state = { x: 10, fail: false, calls: [], shadow: false, shadowRootType: undefined };
   const connection = { async send(method) {
     state.calls.push(method);
     if (state.fail) throw new Error("metadata unavailable");
-    if (method === "DOM.getDocument") return { root: { nodeId: 1, children: state.shadow ? [{ nodeId: 3, shadowRoots: [{}] }] : [] } };
+    if (method === "DOM.getDocument") return { root: { nodeId: 1, children: state.shadow ? [{ nodeId: 3, shadowRoots: [{ shadowRootType: state.shadowRootType }] }] : [] } };
     if (method === "DOM.querySelectorAll") return { nodeIds: [2] };
     assert.equal(method, "DOM.getBoxModel");
     return { model: { border: [state.x, 20, state.x + 30, 20, state.x + 30, 60, state.x, 60] } };
@@ -36,4 +36,14 @@ test("region capture protects shadow hosts and refuses unavailable initial prote
   assert.equal((await masks.afterCapture()).length, 2);
   state.fail = true;
   await assert.rejects(captureRegionMasks(connection, "session"), /unavailable/);
+});
+test("MP-11: native input internals do not protect ordinary fields; explicit protected fields remain masked", async () => {
+  const { state, connection } = fixture();
+  state.shadow = true;
+  state.shadowRootType = "user-agent";
+  assert.equal((await protectedHostRegions(connection, "session")).length, 1);
+  for (const kind of ["open", "closed", undefined]) {
+    state.shadowRootType = kind;
+    assert.equal((await protectedHostRegions(connection, "session")).length, 2);
+  }
 });

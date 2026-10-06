@@ -10,7 +10,7 @@ import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./
 import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
-import { assertNotCancelled, assertCurrentDocument } from "./browser-controller-actions.mjs";
+import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from "./browser-controller-actions.mjs";
 import { captureRegionMasks } from "./kernel-browser-region-protection.mjs";
 import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
 
@@ -75,8 +75,10 @@ export class KernelBrowserHost {
     await rename(`${name}.new`, name);
     this.lastSaved = serialized;
   }
-  async start() {
+  async start({ signal, allowStart = true } = {}) {
+    assertNotCancelled(signal);
     if (this.browser && this.chromium.child?.exitCode === null && this.chromium.child?.signalCode === null) return;
+    if (!allowStart) throw new BrowserActionError("browser_unavailable", "MP-11: user browser is stopped or unavailable; explicitly start/open the browser");
     for (const stream of this.displays.values()) await stream.close();
     this.displays.clear(); this.scales.clear(); this.inputEpochs.clear();
     await this.browser?.close();
@@ -92,7 +94,9 @@ export class KernelBrowserHost {
     if (!Number.isSafeInteger(saved.generation) || saved.generation < 0 || !Array.isArray(saved.tabs)) {
       throw new Error("MD-2: invalid browser tab registry");
     }
+    assertNotCancelled(signal);
     const endpoint = await this.chromium.start();
+    assertNotCancelled(signal);
     this.browser = this.browserFactory(endpoint);
     this.browser.protectedValues = new Set(this.protection.values);
     this.generation = saved.generation + 1;
@@ -113,7 +117,8 @@ export class KernelBrowserHost {
       }
       for (const tab of saved.tabs.slice(0, TAB_LIMIT)) {
         if (typeof tab.tab_id !== "string" || !tab.tab_id.startsWith("host-tab-")) throw new Error("MD-2: invalid saved tab identity");
-        await this.open(restorationUrl(tab.url), tab.tab_id);
+        assertNotCancelled(signal);
+        await this.open(restorationUrl(tab.url), tab.tab_id, { signal });
       }
       await this.save();
     } catch (error) { await this.stop(); throw error; }
@@ -215,11 +220,11 @@ export class KernelBrowserHost {
     if (typeof data !== "string" || data.length > 4 * 1024 * 1024) throw new Error("MD-2: frame exceeds limit");
     return { generation: this.generation, tab_id: tab.tab_id, document_id: tab.document_id, mime_type: "image/png", data_base64: data, width, height, ...(protectedCapture ? { protected_regions } : {}) };
   }
-  async subscribe(tab, boundFrames = false) {
+  async subscribe(tab, boundFrames = false, owner = null) {
     if (this.streams.size >= 16) throw new Error("MD-2: frame subscription limit reached");
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
     const id = `host-stream-${randomUUID()}`;
-    const stream = { sessionId, tabId: tab.tab_id, boundFrames, latest: null, sequence: 0, expires: Date.now() + 60_000 };
+    const stream = { sessionId, tabId: tab.tab_id, boundFrames, owner, latest: null, sequence: 0, expires: Date.now() + 60_000 };
     const captureProtected = () => {
       stream.latest ??= this.maskedStreamFrame(stream);
       if (stream.capturing || this.protection.unknown || Date.now() < (stream.nextCapture ?? 0)) return;
@@ -297,11 +302,12 @@ export class KernelBrowserHost {
     return result;
   }
   async request(command, { signal } = {}) {
-    const scope = command.focused_agent ? "focused-agent" : command.observed_by ?? "adapter";
+    const scope = command.observed_by ?? (command.focused_agent ? "focused-agent" : "adapter");
     assertNotCancelled(signal);
     if (command.op.startsWith("display_") && process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
     if (command.op === "stop") return this.stop();
-    await this.start();
+    // MP-11: observation never launches/relaunches the browser.
+    await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "note_selection", "note_reanchor"].includes(command.op) });
     assertNotCancelled(signal);
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
     for (const [id, stream] of this.streams) if (Date.now() > stream.expires) await this.removeStream(id);
@@ -401,7 +407,7 @@ export class KernelBrowserHost {
       if (!command.focused_agent && !command.bound_frames) delete frame.document_id;
       return this.observe(frame, tab, scope);
     }
-    if (command.op === "subscribe") return this.subscribe(tab, command.bound_frames === true);
+    if (command.op === "subscribe") return this.subscribe(tab, command.bound_frames === true, command._subscription_owner ?? null);
     throw new Error("MD-2: unsupported browser operation");
   }
   async handle(request, { signal } = {}) {
@@ -410,8 +416,14 @@ export class KernelBrowserHost {
       if (request.method === "health") return { id: request.id, ok: true, result: { state: "ready", process_id: process.pid, diagnostic_code: null } };
       if (request.method === "shutdown") return { id: request.id, ok: true, result: await this.stop() };
       if (request.method === "host.protect") return { id: request.id, ok: true, result: await this.protect(request.params) };
+      if (request.method === "host.revoke_subscriptions") {
+        const ids = new Set(request.params.subscription_ids ?? []);
+        const owners = new Set(request.params.subscription_owners ?? []);
+        for (const [id, stream] of this.streams) if (ids.has(id) || owners.has(stream.owner)) await this.removeStream(id);
+        return { id: request.id, ok: true, result: { revoked: true } };
+      }
       if (request.method === "host.secret") {
-        await this.start();
+        await this.start({ signal });
         if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
         const tab = await this.target(request.params);
         if (tab.document_id !== request.params.document_id) throw new UserDomainRefusal("stale_reference");
@@ -438,7 +450,7 @@ export class KernelBrowserHost {
         // browser. Only an explicit Open or ordinary tab request may start it.
         if (generation !== undefined && (!this.browser || this.chromium.child?.exitCode !== null
           || this.chromium.child?.signalCode !== null)) throw new Error("App host is no longer live");
-        await this.start();
+        await this.start({ signal });
         if (generation !== undefined && generation !== this.generation) throw new UserDomainRefusal("stale_epoch");
         const result = await handleBrowserControllerRequest({ ...request, params }, { browser: this.browser, signal });
         if (result.ok) {
@@ -455,6 +467,9 @@ export class KernelBrowserHost {
       if (error instanceof UserDomainRefusal) return {id:request.id,ok:false,error:{code:error.code,message:error.message}};
       if (isTrustedStaleReferenceError(error)) return {id:request.id,ok:false,error:{code:"user_domain_stale_reference",message:"User-domain request refused"}};
       if (error?.code === "browser_action_cancelled") await this.stop();
+      if (["browser_unavailable"].includes(error?.code)) {
+        return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
+      }
       return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }
   }
 }

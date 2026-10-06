@@ -204,7 +204,20 @@ async fn check() {
             json!({"note_id":note.note_id})
         )
         .await
-        .is_err());
+        .is_ok());
+    // MP-11: retained note reads and authored effects survive focus change.
+    for (name, args) in [
+        (
+            "chariox.reply_to_note",
+            json!({"note_id":note.note_id,"comment":"retained reply"}),
+        ),
+        ("chariox.resolve_note", json!({"note_id":note.note_id})),
+    ] {
+        router
+            .dispatch_authenticated_runtime_tool_call(a, name, args)
+            .await
+            .unwrap();
+    }
     router
         .dispatch_authenticated_runtime_tool_call(b, "chariox.load_kernel_browser", json!({}))
         .await

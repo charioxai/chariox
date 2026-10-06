@@ -47,7 +47,7 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
     ) -> Vec<RuntimeToolSpec> {
         let _ = run;
-        let mut specs=vec![RuntimeToolSpec { name:LOADER.into(),description:"MD-N4: load notes on demand. Notes belong to the user and only the current focused local agent can read, reply or resolve.".into(),input_schema:serde_json::json!({"type":"object","properties":{},"additionalProperties":false}) }];
+        let mut specs=vec![RuntimeToolSpec { name:LOADER.into(),description:"MD-N4: load notes on demand. Notes belong to the user and focus claims notes and active tasks retain their claimed notes.".into(),input_schema:serde_json::json!({"type":"object","properties":{},"additionalProperties":false}) }];
         if !self.owned.kernel_browser_host.is_loaded_for(
             &self.provider_account_authority_owner_user_id(agent.owner_user_id()),
             agent.id(),
@@ -69,7 +69,7 @@ impl KernelRuntimeState {
                     serde_json::json!({"type":"string","minLength":1,"maxLength":16384});
                 required.push("comment");
             }
-            specs.push(RuntimeToolSpec { name:(*name).into(),description:"MD-N4: notes on a window or selected text; access follows current focus. Read refreshes the text quote anchor; original quote survives a missing page.".into(),input_schema:serde_json::json!({"type":"object","properties":properties,"required":required,"additionalProperties":false}) });
+            specs.push(RuntimeToolSpec { name:(*name).into(),description:"MD-N4: notes on a window or selected text; access retains claimed notes while the task is active or awaiting a wake. Read refreshes the text quote anchor; original quote survives a missing page.".into(),input_schema:serde_json::json!({"type":"object","properties":properties,"required":required,"additionalProperties":false}) });
         }
         specs
     }
@@ -91,9 +91,7 @@ impl KernelRuntimeState {
                 "MD-N4: one admitted local provider run required".into(),
             ));
         };
-        let agent = self
-            .kernel_browser_agent(run)
-            .ok_or_else(|| host_error("MD-N4: current focused agent required".into()))?;
+        let agent = self.user_domain_tool_agent(run).await?;
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
         let host = self.owned.kernel_browser_host.clone();
         if name == LOADER {
@@ -163,6 +161,19 @@ impl KernelRuntimeState {
         host.check_admission(admission.as_ref())
             .map_err(host_error)?;
         let store = &self.owned.notes;
+        if let Read { note_id }
+        | Reply { note_id, .. }
+        | Resolve { note_id }
+        | Reanchor { note_id }
+        | Ask { note_id } = &command
+        {
+            let resource = crate::local::UserDomainResource::Note {
+                note_id: note_id.clone(),
+            };
+            host.claim_resource(admission.as_ref(), resource.clone(), false)
+                .map_err(host_error)?;
+            host.resource_notice(admission.as_ref(), resource);
+        }
         let result = match command {
             CaptureSelection { window } => {
                 let observation =
@@ -303,6 +314,19 @@ impl KernelRuntimeState {
                     store.ask(user, &note_id, actor)
                 })
                 .map_err(host_error)?,
+        };
+        let result = if let NoteResult::NotesListed { mut notes } = result {
+            notes.retain(|note| {
+                host.resource_visible(
+                    admission.as_ref(),
+                    &crate::local::UserDomainResource::Note {
+                        note_id: note.note_id.clone(),
+                    },
+                )
+            });
+            NoteResult::NotesListed { notes }
+        } else {
+            result
         };
         host.check_admission(admission.as_ref())
             .map_err(host_error)?;

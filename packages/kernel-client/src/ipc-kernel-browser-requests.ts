@@ -2,6 +2,7 @@
 import type { KernelBrowserCommand, KernelBrowserRequest, KernelBrowserResult } from "./kernel-types.js"
 
 export const kernelBrowserMinimumProtocolVersion = 434
+export const userDomainAccessMinimumProtocolVersion = 432
 
 export function kernelBrowserRequest(command: KernelBrowserCommand): KernelBrowserRequest {
   return { KernelBrowser: { command } }
