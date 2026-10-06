@@ -102,6 +102,7 @@ fn run(runtime: &tokio::runtime::Runtime) {
     let fixture = Fixture::compile().unwrap();
     let mut workers = Vec::new();
     let mut observations = Vec::new();
+    let mut _worker_events = Vec::new();
     let ids = ["installed", "memory-2", "memory-3", "memory-4"];
     for (index, id) in ids.iter().enumerate() {
         let catalog = if index == 0 {
@@ -110,9 +111,9 @@ fn run(runtime: &tokio::runtime::Runtime) {
             crate::durable_state::app_state::fixture_browser_installation(&store, id)
         };
         let (process, observed) = fixture
-            .spawn_for_installation_blocking(Mode::ToolEcho, &package, id)
+            .spawn_for_installation_blocking(Mode::ToolMemoryBudget, &package, id)
             .unwrap();
-        let (starting, _) = crate::runtime::app_worker::AppWorkerOwner::start_blocking(
+        let (starting, events) = crate::runtime::app_worker::AppWorkerOwner::start_blocking(
             process,
             &package,
             catalog,
@@ -121,6 +122,7 @@ fn run(runtime: &tokio::runtime::Runtime) {
             tokio::runtime::Handle::current(),
         )
         .unwrap();
+        _worker_events.push(events);
         let mut registered = starting
             .await_registered_blocking(Duration::from_secs(3))
             .unwrap();
