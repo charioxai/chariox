@@ -209,3 +209,20 @@ test("MP-08 / MP-10 / MP-11 access popup describes the whole local kernel withou
     assert.doesNotMatch(frame, /Session:|Session kernel-access/)
   } finally { harness.renderer.destroy() }
 })
+
+for (const kind of ["access_grant", "access_extension"] as const) {
+  test(`MP-08 / MP-10 / MP-11 legacy ${kind} popup keeps its session scope visible`, async () => {
+    const harness = await createTestRenderer({ width: 90, height: 30 })
+    const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
+    harness.renderer.root.add(box)
+    const surface = createPasskeyPopupRenderer(harness.renderer, noActions)
+    surface.assign(box)
+    try {
+      surface.render({ ...view, prompt: { ...prompt, kind } }, { width: 90, height: 30 })
+      await harness.renderOnce()
+      const frame = harness.captureCharFrame()
+      assert.match(frame, /Session: Payments \(session-1\)/)
+      assert.doesNotMatch(frame, /Local kernel/)
+    } finally { harness.renderer.destroy() }
+  })
+}

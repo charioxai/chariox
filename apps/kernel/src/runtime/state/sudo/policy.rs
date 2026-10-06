@@ -106,6 +106,10 @@ fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)
             | LocalDaemonRequest::ManageCredentialVault(_)
             | LocalDaemonRequest::GetCredential(_)
+            // Sudo must not serialize literal MCP env/header credentials either.
+            | LocalDaemonRequest::GetMcpServer(_)
+            | LocalDaemonRequest::ListMcpServers(_)
+            | LocalDaemonRequest::ImportMcpServers(_)
             // Pairing and Cloud identity can outlive the authorizing turn or
             // return relay credentials. They remain host-terminal operations.
             | LocalDaemonRequest::CreatePairingInvite(_)
@@ -137,6 +141,31 @@ fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
         || matches!(request, LocalDaemonRequest::RespondToInteraction(answer) if answer.passkey.is_some() || answer.passkey_remember_minutes.is_some())
         || matches!(request, LocalDaemonRequest::SubmitPrompt(prompt) if is_sudo_prompt(&prompt.prompt))
         || matches!(request, LocalDaemonRequest::SubmitPrompts(prompts) if prompts.prompts.iter().any(|prompt| is_sudo_prompt(&prompt.prompt)))
+}
+
+#[cfg(test)]
+mod mcp_tests {
+    use super::*;
+
+    #[test]
+    fn sudo_refuses_raw_mcp_credentials_and_provider_imports() {
+        for request in [
+            LocalDaemonRequest::GetMcpServer(crate::local::GetMcpServerRequest {
+                workspace_id: None,
+                name: "literal-secret".into(),
+            }),
+            LocalDaemonRequest::ListMcpServers(crate::local::ListMcpServersRequest {
+                workspace_id: None,
+            }),
+            LocalDaemonRequest::ImportMcpServers(crate::local::ImportMcpServersRequest {
+                workspace_id: None,
+                provider: "codex".into(),
+                name: None,
+            }),
+        ] {
+            assert!(sudo_request_forbidden(&request));
+        }
+    }
 }
 
 pub(crate) fn is_sudo_prompt(prompt: &str) -> bool {

@@ -55,7 +55,7 @@ export function createCliKernelApprovalComposition(deps: {
     onClose: closed,
     scroll: popupSurface.scroll,
     respond: (prompt, choiceId, proof) =>
-      prompt.kind === "access_grant" || prompt.kind === "access_extension"
+      prompt.session_id === "kernel-access" && (prompt.kind === "access_grant" || prompt.kind === "access_extension")
         ? respondToKernelAccessDecision(deps.client, prompt.interaction_id, choiceId, proof)
         : respondToInteraction(deps.client, prompt.session_id, prompt.interaction_id, choiceId, null, proof),
     notify: deps.notify,

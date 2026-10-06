@@ -267,6 +267,8 @@ The kernel identifies the connecting process through the OS, which works only on
 
 Every live grant authorizes ordinary requests throughout its local kernel. There is no `session_id` in the access request or grant, no filtered `ListSessions`, and no grant-specific session-scope mapping. Normal user membership and ownership checks still apply. The shared request policy refuses human-only authority changes, critical approvals, secret disclosure/export, remote-kernel attachment and peer requests. It does not reject global operations simply because they have no session.
 
+Raw MCP registry get/list and MCP provider import responses can contain literal environment credentials or HTTP authorization headers. External grants and sudo turns must refuse these requests before serialization; kernel-owned capability discovery remains available. A TUI must route access replies using the prompt's actual session id: only `kernel-access` prompts use the protocol-451 decision response, while older kernels retain their session-scoped interaction response. (MP-08 / MP-10 / MP-11.)
+
 Access and extension popups use the shared kernel-owned interaction board independently of any session. Their routing identifier is not a grant scope. Closing, archiving or deleting a session cannot revoke a local-kernel grant. Each request, queued continuation, reply and subscription still checks process identity and live grant authority; expiry and revocation remain immediate.
 
 ### 6.3 TCP loopback

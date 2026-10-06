@@ -67,6 +67,10 @@ impl KernelRuntimeState {
             request,
             LocalDaemonRequest::RequestKernelAccess(_)
                 | LocalDaemonRequest::ManageCredentialVault(_)
+                // Registry reads and imports return literal env/header credentials.
+                | LocalDaemonRequest::GetMcpServer(_)
+                | LocalDaemonRequest::ListMcpServers(_)
+                | LocalDaemonRequest::ImportMcpServers(_)
                 // These expose remote admission credentials or connect to another kernel.
                 | LocalDaemonRequest::CreatePairingInvite(_)
                 | LocalDaemonRequest::JoinPairingInvite(_)

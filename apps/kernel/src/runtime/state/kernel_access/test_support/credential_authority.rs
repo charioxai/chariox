@@ -1,4 +1,68 @@
 use super::*;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+#[tokio::test]
+async fn kernel_access_refuses_raw_mcp_credentials_and_provider_imports() {
+    let worktree = crate::test_support::TestWorktree::new("access-mcp-secret-read");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let state = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+        Arc::new(Mutex::new(app)),
+        32,
+    )
+    .runtime_state();
+    let grant = state.insert_access_grant_for_test(session.id());
+    let registry =
+        crate::mcp::CharioxMcpRegistry::new(vec![worktree.path().join("registered-mcps")]);
+    let mut stdio = crate::mcp::CharioxMcpServerConfig::stdio("literal-env", "true", vec![]);
+    if let crate::mcp::CharioxMcpTransportConfig::Stdio { env, .. } = &mut stdio.transport {
+        env.insert("API_KEY".into(), "test-only-env-secret".into());
+    }
+    let mut http = crate::mcp::CharioxMcpServerConfig::streamable_http(
+        "literal-header",
+        "https://example.com/mcp",
+    );
+    if let crate::mcp::CharioxMcpTransportConfig::StreamableHttp { http_headers, .. } =
+        &mut http.transport
+    {
+        http_headers.insert(
+            "Authorization".into(),
+            "Bearer test-only-header-secret".into(),
+        );
+    }
+    for config in [stdio, http] {
+        registry.install(&config).unwrap();
+        // These endpoints return the stored transport verbatim. Admission must
+        // reject them before serialization, even with a live ordinary grant.
+        assert!(registry.get(&config.name).unwrap().as_ref() == Some(&config));
+        assert!(state
+            .authorize_external_request(
+                &grant,
+                &LocalDaemonRequest::GetMcpServer(crate::local::GetMcpServerRequest {
+                    workspace_id: None,
+                    name: config.name,
+                })
+            )
+            .is_err());
+    }
+    for request in [
+        LocalDaemonRequest::ListMcpServers(crate::local::ListMcpServersRequest {
+            workspace_id: None,
+        }),
+        LocalDaemonRequest::ImportMcpServers(crate::local::ImportMcpServersRequest {
+            workspace_id: None,
+            provider: "codex".into(),
+            name: None,
+        }),
+    ] {
+        assert!(state.authorize_external_request(&grant, &request).is_err());
+    }
+}
 
 impl KernelRuntimeState {
     pub(super) async fn control_credential_access_for_test(
