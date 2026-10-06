@@ -116,22 +116,49 @@ use crate::script::CharioxEnvironmentRuntime;
 pub fn export_kernel_context(
     request: KernelContextExportRequest,
 ) -> Result<KernelContextSnapshot, DaemonError> {
+    if request.vault.is_none() {
+        return Err(kernel_context_error(
+            "credential-bearing export requires its Vault binding",
+        ));
+    }
+    export_kernel_context_mode(request, false)
+}
+
+/// MP-08 / MP-11: this mode never reads or snapshots the credential registry or Vault.
+pub fn export_kernel_context_without_credentials(
+    request: KernelContextExportRequest,
+) -> Result<KernelContextSnapshot, DaemonError> {
+    if request.vault.is_some() {
+        return Err(kernel_context_error(
+            "credential-free export cannot include a Vault",
+        ));
+    }
+    export_kernel_context_mode(request, true)
+}
+
+fn export_kernel_context_mode(
+    request: KernelContextExportRequest,
+    without_credentials: bool,
+) -> Result<KernelContextSnapshot, DaemonError> {
     validate_identifier(&request.context_id, "context id")?;
     validate_identifier(&request.source_kernel_id, "source kernel id")?;
     validate_sha256(&request.source_key_thumbprint, "source key thumbprint")?;
     validate_identifier(&request.target_kernel_id, "target kernel id")?;
     validate_sha256(&request.target_key_thumbprint, "target key thumbprint")?;
-    crate::secret::validate_transferred_vault_snapshot_for_export(
-        &request.vault,
-        &crate::secret::TransferredVaultSourceBinding {
-            context_id: request.context_id.clone(),
-            source_kernel_id: request.source_kernel_id.clone(),
-            source_key_thumbprint: request.source_key_thumbprint.clone(),
-        },
-        &request.target_kernel_id,
-        &request.target_key_thumbprint,
-    )?;
-    let sources = super::source_snapshot::KernelContextSourceSnapshot::capture()?;
+    if let Some(vault) = request.vault.as_ref() {
+        crate::secret::validate_transferred_vault_snapshot_for_export(
+            vault,
+            &crate::secret::TransferredVaultSourceBinding {
+                context_id: request.context_id.clone(),
+                source_kernel_id: request.source_kernel_id.clone(),
+                source_key_thumbprint: request.source_key_thumbprint.clone(),
+            },
+            &request.target_kernel_id,
+            &request.target_key_thumbprint,
+        )?;
+    }
+    let sources =
+        super::source_snapshot::KernelContextSourceSnapshot::capture_mode(without_credentials)?;
     let mut budget = SnapshotMemoryBudget::new(&request)?;
 
     let mut extensions = Vec::new();
@@ -192,7 +219,9 @@ pub fn export_kernel_context(
         &mut budget,
         &referenced_connector_adapters,
     )?;
-    export_credentials(&sources.credential_root, &mut dependencies, &mut budget)?;
+    if !without_credentials {
+        export_credentials(&sources.credential_root, &mut dependencies, &mut budget)?;
+    }
     if dependencies.len() > MAX_DEPENDENCIES {
         return Err(kernel_context_error(
             "kernel Extension dependency count exceeds its limit",
@@ -214,6 +243,9 @@ pub fn export_kernel_context(
         dependencies,
         vault: request.vault,
     };
+    if without_credentials {
+        crate::managed_context::credential_free::validate_kernel_payload(&payload)?;
+    }
     let (_, snapshot_sha256) = serialized_json_measure(&payload, MAX_SNAPSHOT_BYTES)?;
     Ok(KernelContextSnapshot {
         snapshot_sha256,

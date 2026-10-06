@@ -285,4 +285,5 @@ pub struct KernelRuntimeProcessIdentity {
 pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
     "disposable_worker_control_v1",
     "managed_environment_keep_running_v1",
+    "owner_managed_context_transfer_v1",
 ];

@@ -46,6 +46,7 @@ pub(crate) struct RelayManagedContextArmRequest {
     pub source_kernel_id: String,
     pub plan: crate::managed_context::package::ManagedContextPlanBinding,
     pub target_environment_id: String,
+    pub destination: Option<crate::managed_context::owner_managed::OwnerManagedDestination>,
     pub target_kernel_id: String,
     pub target_key_thumbprint: String,
     pub capability: String,
@@ -82,19 +83,48 @@ impl CommandRouter {
             source_kernel_id,
             plan,
             target_environment_id,
+            destination,
             target_kernel_id,
             target_key_thumbprint,
             capability,
             archive_sha256,
             archive_size_bytes,
         } = request;
+        crate::managed_context::owner_managed::validate_destination_binding(
+            &target_environment_id,
+            destination.as_ref(),
+            &target_kernel_id,
+        )?;
+        if destination != plan.destination {
+            return Err(managed_context_authorization_error(
+                "owner destination does not match the context plan",
+            ));
+        }
         let caller = managed_context_transfer_caller(
             self,
             &identity,
             &source_kernel_id,
             disposable_home_caller,
         )?;
-        let plan = if let Some(registration) = self.managed_kernel_registration.as_ref() {
+        if caller.target_destination != destination
+            || caller.target_kernel_id != target_kernel_id
+            || caller.target_key_thumbprint != target_key_thumbprint
+        {
+            return Err(managed_context_authorization_error(
+                "context destination does not match the enrolled encrypted target",
+            ));
+        }
+        let plan = if destination.is_some() {
+            crate::managed_context::owner_managed::authorize_import_ticket(
+                &self.config_projection.snapshot(),
+                &identity,
+                &source_kernel_id,
+                &plan,
+                destination.as_ref().expect("owner destination"),
+            )
+            .await?;
+            plan
+        } else if let Some(registration) = self.managed_kernel_registration.as_ref() {
             let static_authorization = managed_context_caller(self, &identity, &source_kernel_id);
             match static_authorization {
                 Ok(authorization)
@@ -150,11 +180,15 @@ impl CommandRouter {
                 "managed context target or owner binding does not match",
             ));
         }
-        let destination_parent = config
-            .durable_state_path()
-            .parent()
-            .map(|root| root.join("managed-context-workspaces"))
-            .ok_or_else(|| managed_context_error("managed context destination has no parent"))?;
+        let destination_parent = if plan.destination.is_some() {
+            crate::managed_context::owner_managed::target_context_parent()?
+        } else {
+            config
+                .durable_state_path()
+                .parent()
+                .map(|root| root.join("managed-context-workspaces"))
+                .ok_or_else(|| managed_context_error("managed context destination has no parent"))?
+        };
         let now_ms = crate::session::unix_epoch_ms();
         let expires_at_ms = now_ms.saturating_add(TRANSFER_TTL.as_millis() as u64);
         let store = self.managed_context_transfers.clone();
@@ -426,7 +460,14 @@ impl CommandRouter {
 
         let target_private_key = self.relay_private_key();
         let target_environment_id = ready.target_environment_id.clone();
-        let early_terminal_error = if is_git_credential_enrollment {
+        let early_terminal_error = if completion_plan.destination.is_some() {
+            crate::managed_context::owner_managed::validate_destination_binding(
+                &target_environment_id,
+                completion_plan.destination.as_ref(),
+                &ready.target_kernel_id,
+            )
+            .err()
+        } else if is_git_credential_enrollment {
             None
         } else if let Some(registration) = registration.as_ref() {
             validate_managed_context_completion_binding(
@@ -461,9 +502,11 @@ impl CommandRouter {
             let rollback_private_key = target_private_key.clone();
             let rollback_provider_account_target = provider_account_target.clone();
             let rollback_git_credential_target = git_credential_target.clone();
+            let rollback_development_root = ready.destination_root.clone();
             if let Err(rollback_error) = run_import_blocking(move || {
                 rollback_persisted_managed_context_publication(
                     rollback_request,
+                    &rollback_development_root,
                     &rollback_private_key,
                     Some(&rollback_provider_account_target),
                     rollback_git_credential_target.as_ref(),
@@ -484,7 +527,11 @@ impl CommandRouter {
         let rollback_private_key = target_private_key.clone();
         let import_provider_account_target = provider_account_target.clone();
         let import_git_credential_target = git_credential_target.clone();
-        let environment_target = completion_config.clone();
+        let environment_target = if completion_plan.destination.is_some() {
+            None
+        } else {
+            Some(completion_config.clone())
+        };
         let imported = run_import_blocking(move || {
             apply_managed_context_package(ManagedContextPackageApplicationRequest {
                 transfer_id: ready.transfer_id,
@@ -500,7 +547,7 @@ impl CommandRouter {
                 },
                 development_destination_root: ready.destination_root,
                 target_private_key,
-                project_environment_target: Some(environment_target),
+                project_environment_target: environment_target,
                 provider_account_target: Some(import_provider_account_target),
                 git_credential_target: import_git_credential_target,
             })
@@ -592,7 +639,9 @@ impl CommandRouter {
                 .await);
             }
         };
-        let completion = if is_git_credential_enrollment {
+        let completion = if completion_plan.destination.is_some() {
+            Ok(())
+        } else if is_git_credential_enrollment {
             complete_git_credential_enrollment(
                 &completion_config,
                 registration
@@ -739,6 +788,13 @@ impl CommandRouter {
             }
         }
 
+        if receipt.destination.is_some() {
+            // MP-08/MP-11: target readiness must re-probe its own profiles.
+            self.runtime_state
+                .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+                .await;
+            self.runtime_state.record_waiting_room_change();
+        }
         let final_store = store;
         let final_status = run_blocking(move || {
             final_store.get_status(
@@ -831,6 +887,7 @@ fn managed_context_transfer_caller(
             ));
         }
         return Ok(ManagedContextTransferCaller {
+            target_destination: None,
             kernel_id: source_kernel_id.to_string(),
             key_thumbprint,
             owner_user_id,
@@ -838,6 +895,32 @@ fn managed_context_transfer_caller(
             target_environment_id: Some(registration.environment_id.clone()),
             target_kernel_id: registration.kernel_id.clone(),
             target_key_thumbprint: public_key_thumbprint(&config.relay_public_key),
+        });
+    }
+
+    if disposable_home_caller.is_none()
+        && config.kernel_runtime_role == crate::config::KernelRuntimeRole::General
+        && profile.kernel_id.as_deref() == Some(config.daemon_id.as_str())
+        && profile.kernel_credential.is_some()
+        && profile.machine_id.as_deref() == Some(config.host_machine_id.as_str())
+        && profile.kernel_public_key_thumbprint.as_deref()
+            == Some(public_key_thumbprint(&config.relay_public_key).as_str())
+    {
+        if identity.subject_kind != chariox_relay::auth::RelaySubjectKind::Kernel
+            || identity.subject != source_kernel_id
+            || profile.realm_id != identity.realm_id
+            || profile.user_id != owner_user_id
+            || identity.expires_at_ms <= crate::session::unix_epoch_ms()
+        {
+            return Err(managed_context_authorization_error(
+                "owner-managed source account, user, realm, key or freshness does not match",
+            ));
+        }
+        return Ok(ManagedContextTransferCaller {
+            kernel_id: source_kernel_id.to_string(), key_thumbprint, owner_user_id,
+            realm_id: identity.realm_id.clone(), target_environment_id: None,
+            target_destination: Some(crate::managed_context::owner_managed::OwnerManagedDestination::OwnerManagedMachine { machine_id: config.host_machine_id.clone(), kernel_id: config.daemon_id.clone() }),
+            target_kernel_id: config.daemon_id.clone(), target_key_thumbprint: public_key_thumbprint(&config.relay_public_key),
         });
     }
 
@@ -868,6 +951,7 @@ fn managed_context_transfer_caller(
         ));
     }
     Ok(ManagedContextTransferCaller {
+        target_destination: None,
         kernel_id: source_kernel_id.to_string(),
         key_thumbprint,
         owner_user_id,
@@ -995,6 +1079,7 @@ fn relay_receipt(
         }
     };
     Ok(RelayManagedContextImportReceipt {
+        destination: receipt.destination.clone(),
         transfer_id: receipt.transfer_id,
         archive_sha256: receipt.package_sha256,
         plan_digest: receipt.plan_digest,

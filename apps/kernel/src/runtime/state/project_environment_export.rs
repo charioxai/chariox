@@ -46,12 +46,60 @@ impl KernelRuntimeState {
         )
     }
 
+    // MP-08/MP-11: use the native review while omitting all environment values.
+    pub(crate) async fn review_credential_free_project_context(
+        &self,
+        project_id: &str,
+        repositories: &[crate::managed_context::development::DevelopmentRepositorySelection],
+        target: &str,
+    ) -> Result<(), DaemonError> {
+        self.refresh_project_environment_state_mode(project_id, repositories, true, target, true)
+            .await
+            .map(|_| ())
+            .map_err(|error| match &error {
+                DaemonError::LocalTransport {
+                    operation: "Project environment",
+                    message,
+                } if matches!(
+                    message.as_str(),
+                    "Project export cancelled" | "Project review timed out"
+                ) =>
+                {
+                    DaemonError::ManagedContext {
+                        code: "managed_context_review_cancelled",
+                        operation: "owner-managed context review",
+                        message: "Owner-managed context review was cancelled or expired".into(),
+                        retryable: false,
+                    }
+                }
+                _ => error,
+            })
+    }
+
     pub(crate) async fn refresh_project_environment_state(
         &self,
         project_id: &str,
         repositories: &[crate::managed_context::development::DevelopmentRepositorySelection],
         interactive: bool,
         target_name: &str,
+    ) -> Result<PreparedProjectEnvironmentExport, DaemonError> {
+        self.refresh_project_environment_state_mode(
+            project_id,
+            repositories,
+            interactive,
+            target_name,
+            false,
+        )
+        .await
+    }
+
+    async fn refresh_project_environment_state_mode(
+        &self,
+        project_id: &str,
+        repositories: &[crate::managed_context::development::DevelopmentRepositorySelection],
+        interactive: bool,
+        target_name: &str,
+        without_credentials: bool,
     ) -> Result<PreparedProjectEnvironmentExport, DaemonError> {
         let project = self.owned.session_store.get_project(project_id)?;
         if repositories
@@ -74,7 +122,12 @@ impl KernelRuntimeState {
         let _lock = tokio::task::spawn_blocking(move || lock_store.lock(&lock_project))
             .await
             .map_err(|_| environment_failure("environment refresh lock task failed"))??;
-        let previous = store.load(project_id)?;
+        let mut previous = store.load(project_id)?;
+        if without_credentials {
+            if let Some(previous) = previous.as_mut() {
+                previous.manifest.entries.clear();
+            }
+        }
         let index_roots = roots.clone();
         let names: BTreeSet<_> = std::env::vars_os()
             .filter_map(|(name, _)| name.into_string().ok())
@@ -89,6 +142,9 @@ impl KernelRuntimeState {
                 .map_err(|_| environment_failure("environment reference index task failed"))??;
         retain_imported_private_candidates(&mut index, previous.as_ref());
         let mut references = index.references;
+        if without_credentials {
+            references.clear();
+        }
         // Explicitly supplied values survive incremental discovery and are never asked again.
         if let Some(previous) = &previous {
             for reference in &mut references {
@@ -156,9 +212,12 @@ impl KernelRuntimeState {
             );
         }
         normalize_project_config_file_decisions(&mut manifest);
+        if without_credentials {
+            manifest.entries.clear();
+        }
         // MP-08 / MP-10 / MP-11: Resolve and paste through the normal Vault
         // interaction before environment review; keep its lease through resolution.
-        let _vault_guard = if interactive && !manifest.entries.is_empty() {
+        let _vault_guard = if !without_credentials && interactive && !manifest.entries.is_empty() {
             if utility_identity.is_none() {
                 utility_identity = Some(
                     self.environment_utility_identity(&project, repositories)
@@ -178,7 +237,11 @@ impl KernelRuntimeState {
         } else {
             None
         };
-        let vault = crate::secret::project_environment_vault(&config)?;
+        let vault: Arc<dyn crate::secret::CredentialVaultStore> = if without_credentials {
+            Arc::new(CredentialFreeVault)
+        } else {
+            crate::secret::project_environment_vault(&config)?
+        };
         let workspace_environment: BTreeMap<_, _> = roots
             .keys()
             .map(|workspace| {
@@ -220,7 +283,7 @@ impl KernelRuntimeState {
         };
         let review_identity;
         let mut additions = ProjectPrivateFileAdditions::default();
-        if project_environment_needs_review(&state) {
+        if without_credentials || project_environment_needs_review(&state) {
             let code = project_environment_code_summary(repositories);
             if interactive {
                 review_identity = match utility_identity.take() {
@@ -263,7 +326,16 @@ impl KernelRuntimeState {
                 project.name()
             );
         }
-        store.save(&state)?;
+        if without_credentials {
+            if !state.manifest.entries.is_empty() {
+                return Err(environment_failure(
+                    "owner-managed review cannot include environment credentials",
+                ));
+            }
+            // The credential-free review does not replace the source's saved environment choices.
+        } else {
+            store.save(&state)?;
+        }
         additions.commit();
         let resolved = resolve_project_environment(
             &state.manifest,
@@ -428,3 +500,28 @@ impl Drop for EnvironmentUtilityCleanup {
         }
     }
 }
+
+// MP-11: even revised reviews cannot access or mutate the source Vault.
+#[derive(Debug)]
+struct CredentialFreeVault;
+impl crate::secret::CredentialVaultStore for CredentialFreeVault {
+    fn get_secret(&self, _: &str, _: &str) -> Result<String, DaemonError> {
+        Err(environment_failure(
+            "credential access is excluded from this transfer",
+        ))
+    }
+    fn set_secret(&self, _: &str, _: &str, _: &str) -> Result<(), DaemonError> {
+        Err(environment_failure(
+            "credential access is excluded from this transfer",
+        ))
+    }
+    fn delete_secret(&self, _: &str, _: &str) -> Result<(), DaemonError> {
+        Err(environment_failure(
+            "credential access is excluded from this transfer",
+        ))
+    }
+}
+
+#[cfg(test)]
+#[path = "project_environment_owner_tests.rs"]
+mod owner_tests;

@@ -2119,8 +2119,9 @@ mod tests {
         let started = dispatch_public(
             &home_router,
             LocalDaemonRequest::StartManagedContextTransfer(StartManagedContextTransferRequest {
+                owner_managed: None,
                 interactive: false,
-                ticket: ticket.clone(),
+                ticket: Some(ticket.clone()),
             }),
         )
         .await;

@@ -21,7 +21,8 @@ export type ManagedContextTransferStatus = {
 }
 
 export type ManagedContextLaunchTarget = {
-  readonly environmentId: string
+  readonly environmentId?: string
+  readonly destination?: OwnerManagedDestination
   readonly kernelId: string
   readonly contextId: string
   readonly planDigest: string
@@ -40,6 +41,45 @@ export type ManagedContextLaunchTarget = {
           readonly headSha: string
         }[]
       }
+}
+
+// MP-08 / MP-11: clients select inventory only; the kernel pins source/owner/plan.
+export const OWNER_MANAGED_CONTEXT_CAPABILITY = "owner_managed_context_transfer_v1"
+export const OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION = 445
+export const OWNER_MANAGED_CONTEXT_MINIMUM_RELAY_PROTOCOL_VERSION = 88
+
+export type OwnerManagedDestination = {
+  readonly kind: "owner_managed_machine"
+  readonly machineId: string
+  readonly kernelId: string
+}
+
+export type OwnerManagedContextTransfer = {
+  readonly target: {
+    readonly relayRealmId: string
+    readonly machineId: string
+    readonly kernelId: string
+    readonly relayPublicKey: string
+    readonly keyThumbprint: string
+  }
+  readonly contextSelection: {
+    readonly kernelContext: "empty" | "source_kernel_without_credentials"
+    readonly developmentSetup:
+      | { readonly kind: "empty" }
+      | {
+          readonly kind: "source_project"
+          readonly projectId: string
+          readonly repositories: readonly {
+            readonly role: "primary" | "supporting"
+            readonly workspaceId: string
+            readonly worktreeId: string | null
+          }[]
+        }
+  }
+}
+
+export function startOwnerManagedContextTransferRequest(ownerManaged: OwnerManagedContextTransfer) {
+  return { StartManagedContextTransfer: { interactive: true, ownerManaged } } as const
 }
 
 export function startManagedContextTransferRequest(ticket: ManagedContextTransferTicket, interactive = false) {
