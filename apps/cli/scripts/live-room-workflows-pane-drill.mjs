@@ -161,6 +161,7 @@ try {
   await capture('01-room-inventory',text=>text.includes(heading))
   if (noisyInterruptRounds) {
     receipt.noisyInterrupts = []
+    receipt.noisyProducerFailures = []
     for (let round = 0; round < noisyInterruptRounds; round++) {
       const label = `noisy-${String(round + 1).padStart(2,'0')}`
       const action = round % 2 ? 'stop' : 'pause'
@@ -230,7 +231,9 @@ try {
       sample.producerStopped=Date.now()-unchangedSince>=500
       sample.stopToProducerStoppedMs=sample.producerStopped ? unchangedSince-control.sentAtMs : null
       await writeFile(path.join(args.output,label+'-timing.json'),JSON.stringify({mpItems:receipt.mpItems,...sample},null,2)+'\n',{mode:0o600})
-      assert.ok(sample.producerStopped,'MP-08 noisy shell must stop producing output within five seconds of control')
+      if(!sample.producerStopped)receipt.noisyProducerFailures.push({round:round+1,action,
+        seam:'provider turn ended but shell output continued',stopToInterruptSentMs:sample.stopToInterruptSentMs,
+        stopToTurnEndedMs:sample.stopToTurnEndedMs})
       if(action === 'pause') {
         await key('\x13')
         await stateUntil(s=>s.room_workflows.workflows[0].paused_count===0)
@@ -330,6 +333,9 @@ try {
   receipt.providerCompletion={provider:'codex',agentId:agent.id,turnId:completed.turn_id,lifecycle:completed.lifecycle,output:'RELOST_WORKFLOW_OK'}
   await key('\t') // Navigate from the primary agent pane to the workflow agent.
   await capture('09-provider-completion',text=>text.includes('RELOST_WORKFLOW_OK'),60000)
+  // Finish the other requested controls and provider completion, but retain
+  // a RED acceptance result if any shell outlived its cancellation budget.
+  assert.equal(receipt.noisyProducerFailures?.length ?? 0,0,'MP-08 noisy shell output continued beyond five-second cancellation budget')
   receipt.status=receipt.expectedRed?'RED':'GREEN'
 } catch(error) {
   receipt.status='RED';receipt.firstFailure=error.message
