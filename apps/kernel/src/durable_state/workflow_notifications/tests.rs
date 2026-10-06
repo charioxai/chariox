@@ -1315,3 +1315,70 @@ fn reactivation_limit_drill(owner_limit: bool) {
         matches!(reactivated, NotificationOutcome::Subscription(s) if s.subscription_id == original.subscription_id)
     );
 }
+
+// MP-08 / MP-10 / MP-11: persisted UTF-8 text is charged in bytes on every admission.
+#[test]
+fn retained_multibyte_notification_payload_limit_is_measured_in_bytes() {
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("byte-source");
+    let (b, _, bp) = f.workflow("byte-target");
+    let source = f.source(&a);
+    let sub = f.attach(&source, &b, &bp);
+    f.complete(&a, "seed", None, WorkflowRunStatus::Completed, "fixture");
+    let (_, mut env) = f.candidates(false).pop().unwrap();
+    env.output = Some(WorkflowOutputPayload::new("🦀".repeat(7000), vec![]));
+    env.fields["opaque"] = serde_json::json!("界".repeat(10000));
+    env.occurrence_id = "byte-0000".into();
+    let size = encode_notification_envelope(&env).unwrap().len();
+    let max = chariox_app_runtime::app_outbox::MAX_RETAINED_PAYLOAD_BYTES;
+    let capacity = max / size;
+    assert!(capacity < MAX_PENDING as usize);
+    let mut db = Connection::open(f.root.join("kernel.sqlite")).unwrap();
+    db.execute(
+        "DELETE FROM app_outbox WHERE source_kind='workflow_completion'",
+        [],
+    )
+    .unwrap();
+    let tx = db.transaction().unwrap();
+    for n in 0..capacity {
+        env.occurrence_id = format!("byte-{n:04}");
+        assert_eq!(encode_notification_envelope(&env).unwrap().len(), size);
+        insert_receipt(
+            &tx,
+            &sub,
+            &env,
+            "retryable",
+            crate::session::unix_epoch_ms(),
+        )
+        .unwrap();
+    }
+    env.occurrence_id = format!("byte-{capacity:04}");
+    let refusal = insert_receipt(
+        &tx,
+        &sub,
+        &env,
+        "retryable",
+        crate::session::unix_epoch_ms(),
+    );
+    let (bytes, chars): (i64, i64) = tx.query_row(
+        "SELECT sum(length(CAST(payload_json AS BLOB))),sum(length(payload_json)) FROM app_outbox",
+        [], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).unwrap();
+    tx.rollback().unwrap();
+    drop(db);
+    cleanup(f);
+    assert!(
+        refusal.is_err(),
+        "MP-08: next UTF-8 envelope must exceed the retained byte ceiling"
+    );
+    assert!(refusal
+        .unwrap_err()
+        .to_string()
+        .contains("notification outbox full"));
+    assert_eq!(bytes as usize, capacity * size);
+    assert!(bytes as usize <= max && bytes as usize + size > max);
+    assert!(
+        chars < bytes / 2,
+        "fixture distinguishes characters from bytes"
+    );
+}

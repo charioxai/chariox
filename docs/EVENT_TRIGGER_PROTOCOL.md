@@ -180,11 +180,15 @@ active run and that endpoint's entry turn is active. It persists the exact run/t
 before using ordinary provider steering. The item stays durably accepted until
 provider acceptance. Structured-provider mailbox enqueue is not acceptance: both
 finished-submit reapers correlate the actual result with the durable injection.
-Codex hidden-context and steering RPC errors propagate as submission failures;
-a buffered output error cannot acknowledge an injected notification. An
-in-flight submit is not enqueued twice in one process; restart retains the item and
-rechecks the original turn. Remote send intent pins the worker, machine, execution
-lease, turn and provider run before I/O. An uncertain remote outcome must reconcile
+Codex hidden-context failures before steering and explicit negative RPC replies
+permit queue fallback. Write, read, malformed-reply and disconnect errors do not
+prove non-acceptance: the exact local provider run, target prompt/turn, agent and
+submit epoch remain durably held. A restart also holds an unsettled local submit
+intent, even if the original turn ended. Local providers have no authoritative
+steer-receipt reconciliation API, so unknown outcomes expire without replay or
+queue fallback; this can delay or expire an input that never reached the provider.
+A buffered output error cannot acknowledge an injected notification. Remote send
+intent pins the worker, machine, execution lease, turn and provider run before I/O. An uncertain remote outcome must reconcile
 through `ReconcileLeasedPromptSteerReceipt` before replay or fallback, even when the
 original turn has ended. Dispatching/unavailable/conflicting receipts remain held
 until an exact accepted/rejected receipt or expiry. Idle/ended turns with no
@@ -203,7 +207,8 @@ Refusal leaves no delivery receipt; completion retains a visible
 `workflow_notification_prompt_limit` diagnostic. At most 32 artifacts remain metadata only: no fetch,
 host-file read or provider attachment promotion. There are at most 1,024 local sources
 and active subscriptions per owner, 32 subscribers per source, 1,024 pending receipts
-and 16 MiB pending payload per kernel. Oversize/backpressure is diagnostic and cannot
+and 16 MiB pending payload per kernel, measured as UTF-8 bytes for both new and
+already retained envelopes. Oversize/backpressure is diagnostic and cannot
 roll back successful workflow completion. Legacy accepted bytes retain their original
 TTL; editing a binding's TTL affects new occurrences only, and admission of older
 pending occurrences and duplicate ACKs uses the fixed 30-day protocol ceiling.

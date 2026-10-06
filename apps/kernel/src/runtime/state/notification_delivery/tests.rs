@@ -622,11 +622,14 @@ async fn notification_inject_bound_codex_requires_steer_acknowledgement() {
     use std::{net::TcpListener, thread};
     use tokio_tungstenite::tungstenite::{accept, connect, Message};
 
-    for (app, reject) in [
-        (false, Some("turn/steer")),
-        (true, Some("turn/steer")),
-        (false, Some("thread/inject_items")),
-        (false, None),
+    for (app, reject, lose_reply, restart) in [
+        (false, Some("turn/steer"), false, false),
+        (true, Some("turn/steer"), false, false),
+        (false, Some("thread/inject_items"), false, false),
+        (false, None, false, false),
+        (false, None, true, false),
+        (true, None, true, true),
+        (false, None, false, true),
     ] {
         let (_root, runtime, session, id) = fixture(app, 1).await;
         let injection = runtime
@@ -655,6 +658,10 @@ async fn notification_inject_bound_codex_requires_steer_acknowledgement() {
                     assert!(request["params"]["input"]
                         .to_string()
                         .contains("NOTIFICATION_INJECT_PROOF"));
+                }
+                // Fixture applies the input, then loses the RPC response.
+                if method == "turn/steer" && lose_reply {
+                    break;
                 }
                 let response = if reject == Some(method) {
                     json!({"id":request["id"], "error":{"code":-32000,"message":"fixture rejects notification"}})
@@ -725,17 +732,39 @@ async fn notification_inject_bound_codex_requires_steer_acknowledgement() {
             reject.or(Some("turn/steer"))
         );
         let acknowledged = finished.result.is_ok();
-        runtime
-            .owned
-            .provider_store
-            .push_finished_structured_prompt_submit_for_test(
-                finished.session_id,
-                finished.provider_run_id,
-                finished.agent_id,
-                finished.prompt_id,
-                finished.result,
-            );
-        runtime.owned.reap_structured_prompt_jobs();
+        assert_eq!(acknowledged, reject.is_none() && !lose_reply);
+        let uncertain = lose_reply || restart;
+        let runtime = if restart {
+            end_original_notification_turn(&runtime, &session, &injection);
+            let config = runtime.owned.config_projection.snapshot();
+            runtime
+                .with_app_side_effect(|app| app.save_durable_state_snapshot().unwrap())
+                .await;
+            drop(runtime);
+            let restored =
+                super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(
+                    crate::app::DaemonApp::bootstrap(config).unwrap(),
+                );
+            restored.deliver_pending_notification_injections().await;
+            restored
+        } else {
+            runtime
+                .owned
+                .provider_store
+                .push_finished_structured_prompt_submit_for_test(
+                    finished.session_id,
+                    finished.provider_run_id,
+                    finished.agent_id,
+                    finished.prompt_id,
+                    finished.result,
+                );
+            runtime.owned.reap_structured_prompt_jobs();
+            runtime
+        };
+        if lose_reply && !restart {
+            end_original_notification_turn(&runtime, &session, &injection);
+        }
+        runtime.deliver_pending_notification_injections().await;
         let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
         let item = snapshot
             .workflow_queued_prompts()
@@ -744,14 +773,54 @@ async fn notification_inject_bound_codex_requires_steer_acknowledgement() {
             .unwrap();
         assert_eq!(
             item.status(),
-            if reject.is_none() {
+            if uncertain {
+                WorkflowQueuedPromptStatus::Running
+            } else if reject.is_none() {
                 WorkflowQueuedPromptStatus::Completed
             } else {
                 WorkflowQueuedPromptStatus::Queued
             },
-            "rejected bound Codex submission must keep durable queue fallback"
+            "MP-08 / MP-10: only definite non-acceptance permits queue fallback"
         );
-        assert_eq!(acknowledged, reject.is_none());
+        assert_eq!(item.notification_injection_pending(), uncertain);
+        if uncertain {
+            let saved = &item.publication_invocation().unwrap().caller["notification_steer"];
+            assert_eq!(saved["provider_run_id"], injection.dispatch.provider_run_id);
+            assert_eq!(
+                saved["prompt_id"],
+                injection.dispatch.target_active_prompt_id.clone().unwrap()
+            );
+            assert!(runtime
+                .owned
+                .prepare_notification_injection(&session, &id)
+                .unwrap()
+                .is_none());
+            // Bootstrap may prune the ended original run. No different run may appear.
+            assert!(
+                snapshot
+                    .workflow_runs()
+                    .iter()
+                    .all(|run| run.id() == "active-0"),
+                "never create another run"
+            );
+        }
+        let db = rusqlite::Connection::open(runtime.owned.durable_state_store.path()).unwrap();
+        let receipt_state: String = db
+            .query_row(
+                "SELECT state FROM app_outbox WHERE queued_prompt_id=?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            receipt_state,
+            if !uncertain && acknowledged {
+                "delivered"
+            } else {
+                "queued"
+            }
+        );
+        drop(db);
         let hot = runtime
             .owned
             .durable_state_store
@@ -770,6 +839,43 @@ async fn notification_inject_bound_codex_requires_steer_acknowledgement() {
     }
 }
 
+// MP-08 / MP-10: an ended original turn is not proof of non-acceptance.
+fn end_original_notification_turn(
+    runtime: &KernelRuntimeState,
+    session: &str,
+    injection: &Injection,
+) {
+    let snapshot = runtime.owned.session_store.get_session(session).unwrap();
+    let agent = &injection.dispatch.agent_id;
+    runtime
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_if_matches(
+            &snapshot,
+            agent,
+            injection.dispatch.target_active_prompt_id.as_deref(),
+        );
+    let (active, queued) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&snapshot, agent);
+    assert!(active.is_none());
+    runtime
+        .owned
+        .mirror_prompt_owner_agent_state(session, agent, active, queued)
+        .unwrap();
+    let mut ended = runtime.owned.session_store.get_session(session).unwrap();
+    ended
+        .workflow_run_mut("active-0")
+        .unwrap()
+        .set_status(WorkflowRunStatus::Completed);
+    runtime
+        .owned
+        .durable_state_store
+        .persist_workflow_runtime_transition(&ended, "local applied steer lost settlement")
+        .unwrap();
+    runtime.owned.session_store.write().restore_session(ended);
+}
 // MP-08 / MP-10: a lost ACK must hold the original identity after its turn ends.
 #[tokio::test]
 async fn notification_inject_remote_uncertainty_never_becomes_a_new_run() {
@@ -1041,7 +1147,7 @@ async fn notification_inject_structured_pending_survives_restart_before_actor_wr
         .unwrap();
     assert_eq!(item.status(), WorkflowQueuedPromptStatus::Running);
     assert!(item.notification_injection_pending());
-    // Startup does not mistake the old process's mailbox marker for a live actor.
+    // The old process may have written before it crashed: hold until known.
     runtime.deliver_pending_notification_injections().await;
     let restored = runtime.owned.session_store.get_session(&session).unwrap();
     let item = restored
@@ -1050,8 +1156,5 @@ async fn notification_inject_structured_pending_survives_restart_before_actor_wr
         .find(|q| q.id() == id)
         .unwrap();
     assert_ne!(item.status(), WorkflowQueuedPromptStatus::Cancelled);
-    assert!(matches!(
-        item.status(),
-        WorkflowQueuedPromptStatus::Queued | WorkflowQueuedPromptStatus::Completed
-    ));
+    assert!(matches!(item.status(), WorkflowQueuedPromptStatus::Running));
 }

@@ -503,7 +503,7 @@ pub(super) fn insert_receipt(
     now: u64,
 ) -> Result<(), DaemonError> {
     let bytes = encode_notification_envelope(env)?;
-    let (count,retained):(i64,i64)=tx.query_row("SELECT count(*),coalesce(sum(length(payload_json)),0) FROM app_outbox WHERE source_kind='workflow_completion' AND state IN ('accepted','retryable')",[],|r|Ok((r.get(0)?,r.get(1)?))).map_err(sql)?;
+    let (count,retained):(i64,i64)=tx.query_row("SELECT count(*),coalesce(sum(length(CAST(payload_json AS BLOB))),0) FROM app_outbox WHERE source_kind='workflow_completion' AND state IN ('accepted','retryable')",[],|r|Ok((r.get(0)?,r.get(1)?))).map_err(sql)?;
     if count >= MAX_PENDING
         || retained + bytes.len() as i64
             > chariox_app_runtime::app_outbox::MAX_RETAINED_PAYLOAD_BYTES as i64

@@ -165,7 +165,7 @@ impl KernelRuntimeOwnedState {
             }
             if queued.publication_invocation().and_then(|i| i.caller.get("notification_steer"))
                 .is_some_and(|s| s.get("remote_uncertain").is_some()
-                    || s.get("submit_epoch").and_then(serde_json::Value::as_u64) == Some(self.provider_store.structured_submit_epoch())) {
+                    || s.get("submit_epoch").is_some()) {
                 return Ok(None);
             }
             // Arbitrary publication envelopes cannot request a kernel injection:
@@ -319,6 +319,8 @@ impl KernelRuntimeOwnedState {
                     })
                     .map_err(|_| notification_error("cannot encode injection identity"))?;
                 } else if structured {
+                    // Persist before mailbox dispatch. Across restart there is no
+                    // proof that this original provider/turn did not consume it.
                     saved["submit_epoch"] =
                         serde_json::json!(self.provider_store.structured_submit_epoch());
                 }
@@ -528,6 +530,21 @@ pub(crate) fn finish_structured_notification_submit(
         if !store.notification_queue_is_owned(&snapshot, item)? {
             return Ok(false);
         }
+        let accepted = match &finished.result {
+            Ok(_) => true,
+            Err(DaemonError::ProviderPromptSteerRejected { .. }) => false,
+            Err(_) => {
+                // A write/read/disconnect error is not a negative acknowledgement.
+                // The persisted submit intent holds the exact original provider/turn
+                // until expiry; neither changed epochs nor ended turns permit replay.
+                crate::logging::warn_with_fields(
+                    "daemon.notification_delivery",
+                    "notification_inject_local_uncertain: held until acknowledgement or expiry",
+                    serde_json::json!({"session_id": finished.session_id, "prompt_id": finished.prompt_id, "provider_run_id": finished.provider_run_id}),
+                );
+                return Ok(true);
+            }
+        };
         settle_injection(
             store,
             sessions,
@@ -535,7 +552,7 @@ pub(crate) fn finish_structured_notification_submit(
             &finished.prompt_id,
             item.workflow_run_id()
                 .ok_or_else(|| notification_error("injection run missing"))?,
-            finished.result.is_ok(),
+            accepted,
         )?;
     }
     Ok(true)
