@@ -184,6 +184,10 @@ fn run(runtime: &tokio::runtime::Runtime) {
                 while std::time::Instant::now() < until {
                     for view in &views {
                         let b = view.browser.as_ref().unwrap();
+                        // MP-11: observe through the public path before kernel-bound input.
+                        browser_request(&router, KernelBrowserCommand::Snapshot {
+                            tab_id:b.tab_id.clone(), generation:b.generation,
+                        }).await;
                         for input in [KernelBrowserInput::Click {x:80,y:125},
                             KernelBrowserInput::Text {text:"memory fixture".into()},
                             KernelBrowserInput::Key {key:"Enter".into()}] {
@@ -217,6 +221,9 @@ fn run(runtime: &tokio::runtime::Runtime) {
             let mut mirrors = Vec::new();
             for view in &views {
                 let b = view.browser.as_ref().unwrap();
+                browser_request(&router, KernelBrowserCommand::Snapshot {
+                    tab_id:b.tab_id.clone(), generation:b.generation,
+                }).await;
                 let m = browser_request(&router, KernelBrowserCommand::MirrorSubscribe {
                     tab_id:b.tab_id.clone(), generation:b.generation, device_scale_factor:1,
                 }).await;
@@ -232,6 +239,9 @@ fn run(runtime: &tokio::runtime::Runtime) {
             while std::time::Instant::now() < until {
                 for (n, (id,generation)) in mirrors.iter().enumerate() {
                     let b = views[n].browser.as_ref().unwrap();
+                    browser_request(&router, KernelBrowserCommand::Snapshot {
+                        tab_id:b.tab_id.clone(), generation:b.generation,
+                    }).await;
                     browser_request(&router, KernelBrowserCommand::Input {
                         tab_id:b.tab_id.clone(), generation:b.generation,
                         input:KernelBrowserInput::Click {x:80,y:125},
