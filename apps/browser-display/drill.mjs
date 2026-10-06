@@ -26,7 +26,8 @@ if (![binary,output,tools,pytools].every(value => value && path.isAbsolute(value
 const require = createRequire(path.join(tools,'package.json'));
 let chromium, PNG, relayCrypto, metrics;
 const pause = ms => new Promise(resolve => setTimeout(resolve,ms));
-const geometry=process.env.MD_GEOMETRY==='1920x1080'?{width:1920,height:1080,dpr:1}:{width:1280,height:800,dpr:2};
+const geometry=process.env.MD_GEOMETRY==='1920x1080'?{width:1920,height:1080,dpr:1}:{width:1280,height:800,dpr:Number(process.env.MD_DPR||2)};
+if(![1,2].includes(geometry.dpr))throw Error('MP-08/MP-11: unsupported drill DPR');
 const receipt = { item: 'MD-DISPLAY-02/04', status: 'RED', ...await sourceIdentity(), commands: process.argv.slice(1), codec: null,requested_codec:process.env.MD_CODEC||'auto', target_encrypted_bitrate: Number(process.env.MD_BITRATE || 2_000_000), css_geometry:[geometry.width,geometry.height],dpr:geometry.dpr, transport:'production local scoped-auth relay + kernel encrypted request/event path', samples:[], cleanup:[] };
 await mkdir(output,{recursive:true});
 const root = await mkdtemp(path.join(process.env.MD_SCRATCH_PARENT || tmpdir(),'chariox-md-display-impl-'));
@@ -122,7 +123,7 @@ try {
    const name=new URL(req.url,'http://localhost').pathname;
    if(name==='/fixture-statistics'&&req.method==='POST'){let text='';for await(const chunk of req){text+=chunk;if(text.length>1024)throw Error('fixture statistics bound')};const value=JSON.parse(text);if(![value.updates,value.duration_ms,value.target_hz].every(Number.isFinite))throw Error('fixture statistics shape');fixtureStats.push(value);res.end('ok');return;}
    const page=fixture(name,`http://127.0.0.1:${server.address().port}`,sourceText);
-   if(page){res.setHeader('Content-Type','text/html');res.end(page);return;}
+   if(page){res.setHeader('Content-Type','text/html');res.end(process.env.MD_PROTECTED==='1'?page.replace('</body>','<div id="protected-fixture" data-chariox-observation-protected style="position:fixed;left:900px;top:200px;width:150px;height:80px;background:red;color:white;z-index:100">Protected fixture</div></body>'):page);return;}
    if(name==='/browser-relay-crypto.mjs'){res.setHeader('Content-Type','text/javascript');res.end(relayCrypto);return;}
    if(name==='/relay-bootstrap'){const bootstrap=JSON.parse(await readFile(path.join(root,'home','relay-bootstrap.private.json'),'utf8'));if(shaped)bootstrap.relay_url=shaped.url;res.setHeader('Content-Type','application/json');res.end(JSON.stringify(bootstrap));return;}
    const assets={'/harness.html':'harness.html','/presenter.mjs':'presenter.mjs','/stripe-presenter.mjs':'stripe-presenter.mjs','/decoder-worker.mjs':'decoder-worker.mjs','/tile-cache.mjs':'tile-cache.mjs','/scroll-prediction.mjs':'scroll-prediction.mjs','/motion-samples.mjs':'motion-samples.mjs'};
@@ -233,7 +234,14 @@ try {
  async function pair(name) {
   const source=await reference(),snapshot=await actual(),view=Buffer.from(snapshot.png.split(',')[1],'base64');const {diff,...metric}=await metrics.compare(source,view);
   metric.presentation_ms=snapshot.presentation.presented_ms;metric.presentation_drawn_ms=snapshot.presentation.drawn_ms;metric.presentation_sequence=snapshot.presentation.sequence;metric.presentation_kind=snapshot.presentation.kind;
-  await writeFile(path.join(output,name+'-source.png'),source);await writeFile(path.join(output,name+'-viewer.png'),view);if(diff)await writeFile(path.join(output,name+'-diff.png'),diff);return metric;
+  await writeFile(path.join(output,name+'-source.png'),source);await writeFile(path.join(output,name+'-viewer.png'),view);if(diff)await writeFile(path.join(output,name+'-diff.png'),diff);
+  if(process.env.MD_PROTECTED==='1'){
+   const frame=PNG.sync.read(view),dpr=geometry.dpr;let opaque=true;
+   for(let y=208*dpr;y<272*dpr;y++)for(let x=908*dpr;x<1042*dpr;x++){const i=(y*frame.width+x)*4;if(frame.data[i]>8||frame.data[i+1]>8||frame.data[i+2]>8||frame.data[i+3]!==255)opaque=false;}
+   (receipt.protected_checks??=[]).push({step:name,opaque});
+   if(!opaque)throw Error('MP-11: protected source region must be opaque in presented pixels');
+  }
+  return metric;
  }
  receipt.bootstrap.fidelity=await pair('bootstrap-video');
  const settleStarted=performance.now();
