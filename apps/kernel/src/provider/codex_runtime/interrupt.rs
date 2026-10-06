@@ -36,6 +36,8 @@ pub fn abort_codex_turn(
             "codex turn interrupt requested trace",
             json!({"provider_run_id":provider_run_id,"turn_id":turn_id,"active_turn_id":state.active_turn_id}),
         );
+        // Include lifecycle events buffered by both the interrupt and list RPCs.
+        let notification_offset = state.buffered_notifications.len();
         match client.turn_interrupt(
             &mut state.socket,
             &mut state.next_request_id,
@@ -61,7 +63,6 @@ pub fn abort_codex_turn(
                 }
                 // Both the thread snapshot and interleaved lifecycle events belong
                 // to this actor-owned socket. Never select a turn from another run.
-                let notification_offset = state.buffered_notifications.len();
                 let response = if state.ephemeral {
                     None
                 } else {
