@@ -72,11 +72,16 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::Mutex;
 
-    fn expired_cloud_profile(api_url: String) -> crate::config::PersistedCloudRelayProfile {
+    fn expired_cloud_profile(
+        api_url: String,
+        config: &DaemonConfig,
+    ) -> crate::config::PersistedCloudRelayProfile {
         crate::config::PersistedCloudRelayProfile {
-            kernel_id: None,
-            kernel_credential: None,
-            kernel_public_key_thumbprint: None,
+            kernel_id: Some(config.daemon_id.clone()),
+            kernel_credential: Some("kernel-secret".to_string()),
+            kernel_public_key_thumbprint: Some(
+                crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key),
+            ),
             api_url,
             email: "user@example.test".to_string(),
             account_id: "account-1".to_string(),
@@ -85,11 +90,11 @@ mod tests {
             realm_id: "realm-1".to_string(),
             relay_url: "wss://relay.example.test".to_string(),
             issuer_id: "issuer-1".to_string(),
-            client_id: Some("client-1".to_string()),
+            client_id: None,
             client_alias: None,
             machine_id: Some("machine-1".to_string()),
             machine_alias: None,
-            machine_credential: Some("machine-secret".to_string()),
+            machine_credential: None,
             cloud_session_token: None,
             cloud_session_expires_at_ms: None,
             token_expires_at_ms: Some(1),
@@ -192,6 +197,11 @@ mod tests {
             assert!(request.contains(r#""subjectKind":"client""#));
             assert!(request.contains(r#""allowUnpairedClientSubject":true"#));
             assert!(request.contains(r#""allowedActions":["client.metadata.read"]"#));
+            assert!(request.contains(r#""kernelCredential":"kernel-secret""#));
+            assert!(request.contains(r#""allowedTargets":["kernel-slice-test"]"#));
+            assert!(request.contains(r#""publicKeyThumbprint":""#));
+            assert!(!request.contains("machineCredential"));
+            assert!(!request.contains("sessionToken"));
             let body = r#"{"token":"dedicated-metadata-token","expiresAt":"2099-01-01T00:00:00Z"}"#;
             stream
                 .write_all(
@@ -209,7 +219,7 @@ mod tests {
         let mut owner = crate::config::DaemonConfig::for_tests();
         owner.relay_url = Some("wss://relay.example.test".to_string());
         owner.relay_token = Some(fresh_owner_token(&owner));
-        let mut profile = expired_cloud_profile(format!("http://{address}"));
+        let mut profile = expired_cloud_profile(format!("http://{address}"), &owner);
         profile.token_expires_at_ms = Some(crate::session::unix_epoch_ms() + 300_000);
         owner.cloud_relay = Some(profile);
         let app = DaemonApp::bootstrap(owner).expect("test daemon should boot");
@@ -268,11 +278,15 @@ mod tests {
                 );
                 let request = read_http_request(&mut stream);
                 assert!(request.starts_with("POST /relay/token HTTP/1.1"));
-                assert!(request.contains(r#""machineCredential":"machine-secret""#));
+                assert!(request.contains(r#""kernelCredential":"kernel-secret""#));
+                assert!(!request.contains("machineCredential"));
+                assert!(!request.contains("sessionToken"));
                 if let Some(expected) = expected {
                     assert!(request.contains(expected));
                     assert!(request
                         .contains(r#""subject":"slice-discovery:daemon-test:kernel-slice-test""#));
+                    assert!(request.contains(r#""allowedTargets":["kernel-slice-test"]"#));
+                    assert!(request.contains(r#""publicKeyThumbprint":""#));
                 }
                 let body = format!(r#"{{"token":"{token}","expiresAt":"2099-01-01T00:00:00Z"}}"#);
                 write!(
@@ -287,7 +301,7 @@ mod tests {
         let mut expired = crate::config::DaemonConfig::for_tests();
         expired.relay_url = Some("wss://relay.example.test".to_string());
         expired.relay_token = Some("expired-owner-token".to_string());
-        expired.cloud_relay = Some(expired_cloud_profile(format!("http://{address}")));
+        expired.cloud_relay = Some(expired_cloud_profile(format!("http://{address}"), &expired));
         let app = DaemonApp::bootstrap(expired).expect("test daemon should boot");
         let projection = app.config_projection_store();
         let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
