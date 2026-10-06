@@ -548,6 +548,15 @@ fn room_admission_workflow_binding_cannot_grant_peer_extensions() {
     let env = TestMetaRuntimeEnv::new("room-peer-capability");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
+    // Supplementary authored capability package in disposable test workspace, never acceptance.
+    let skill = workspace.join(".chariox/skills/am1-source-regression-only");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(skill.join("SKILL.md"), "---\nname: am1-source-regression-only\ndescription: Source regression capability package.\n---\nRead-only source review.\n").unwrap();
+    crate::runtime::capability_registry::ensure_skill_exists(
+        Some(&workspace.to_string_lossy()),
+        "am1-source-regression-only",
+    )
+    .unwrap();
     let mut config = DaemonConfig::for_tests();
     config.room_agent_tools = true;
     let mut app = DaemonApp::bootstrap(config).unwrap();
