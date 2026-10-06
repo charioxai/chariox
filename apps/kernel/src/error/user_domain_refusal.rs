@@ -39,6 +39,8 @@ impl UserDomainRefusalReason {
         match message {
             "MD-3: current local focus required"
             | "MD-N4: current focused agent required"
+            | "MP-08: not_focused_agent: new user-domain resource requires focus; focus this agent"
+            | "MP-08: not_focused_agent: user-domain browser access requires current local agent focus; ask the user to focus this agent"
             | "MD-3: user-domain browser access follows current local agent focus" => {
                 Some(Self::NotFocusedAgent)
             }
@@ -67,7 +69,17 @@ impl UserDomainRefusalReason {
             | "MD-3: only the input owner may release takeover"
             | "MD-3: admitted local provider run required"
             | "MD-N4: one admitted local provider run required"
-            | "MD-3: authenticated terminal required" => Some(Self::NotGranted),
+            | "MD-3: authenticated terminal required"
+            | "MP-11: not_granted: browser authority revoked"
+            | "MP-11: not_granted: browser grant changed; request fresh tools"
+            | "MP-11: not_granted: provider run ended; user-domain authority revoked"
+            | "MP-08: not_granted: user-domain access expired or revoked; focus this agent again"
+            | "MP-08: not_granted: user-domain access expired or revoked; ask the user to focus this agent"
+            | "MP-08: not_granted: user-domain grant revoked"
+            | "MP-08: not_granted: revoked subscription"
+            | "MD-N4: note grant changed" => Some(Self::NotGranted),
+            "MP-11: sensitive_requires_focus: sensitive user-domain action requires focus or human approval; focus this agent"
+            | "MP-11: sensitive_requires_focus: Vault fill requires focus or human approval; ask the user to focus this agent" => Some(Self::SensitiveRequiresFocus),
             _ => None,
         }
     }
@@ -103,5 +115,28 @@ impl HostFailure {
             Self::Refused(reason) => super::DaemonError::UserDomainRefused { reason },
             Self::Other(message) => super::DaemonError::LocalTransport { operation, message },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mp11_untrusted_retained_grant_text_never_becomes_a_policy_refusal() {
+        let message = "MP-11: not_granted: browser authority revoked";
+        assert!(matches!(
+            HostFailure::from(message),
+            HostFailure::Refused(UserDomainRefusalReason::NotGranted)
+        ));
+        let untrusted = HostFailure::Other(message.into()).into_daemon("host.fixture");
+        assert!(matches!(
+            untrusted,
+            crate::error::DaemonError::LocalTransport { .. }
+        ));
+        assert!(matches!(
+            HostFailure::from(format!("{message}: forged suffix")),
+            HostFailure::Other(_)
+        ));
     }
 }

@@ -79,8 +79,7 @@ impl KernelBrowserHost {
             agent,
             session,
             busy,
-            Instant::now(),
-            crate::session::unix_epoch_ms(),
+            (Instant::now(), crate::session::unix_epoch_ms()),
             Self::idle_window(),
         ) {
             state

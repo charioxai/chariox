@@ -3,7 +3,7 @@ use super::*;
 use crate::local::{KernelBrowserCommand, KernelBrowserRequest, NoteRecord};
 
 #[test]
-fn queued_browser_observation_cannot_regain_authority_after_refocus() {
+fn queued_browser_observation_cannot_regain_authority_after_revoke_and_refocus() {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -54,6 +54,17 @@ async fn check_queued_focus() {
             .is_err()
     );
     focus(&router, session.id(), second.id()).await;
+    // MP-08/MP-11: focus changes retain grants; explicit revocation retires
+    // this request's epoch before a new focus can create its successor.
+    let revoke = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
+        command: KernelBrowserCommand::RevokeGrants {
+            agent_id: Some(first.id().into()),
+        },
+    });
+    router
+        .dispatch(terminal_command("md-notes-revoke-first", &revoke), revoke)
+        .await
+        .unwrap();
     focus(&router, session.id(), first.id()).await;
     drop(guard);
     assert!(

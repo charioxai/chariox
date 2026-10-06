@@ -338,7 +338,7 @@ impl KernelBrowserHost {
             } else {
                 EnvironmentActionTerminal::Failed
             });
-            result?;
+            result.map_err(crate::error::HostFailure::Other)?;
             self.check_admission(admission)?;
             return Ok(serde_json::json!({ "state": "stopped", "tabs": [] }));
         }
@@ -347,35 +347,33 @@ impl KernelBrowserHost {
             {
                 return Err("MD-APP: App host is no longer live".into());
             }
-        } else {
-            if !matches!(backend.health(), Ok(health) if health.state == BrowserControllerProcessState::Ready)
-            {
-                // MP-11: state/observation reads cannot start or recover a
-                // controller. Startup is explicit and uses the same grant for
-                // focused and retained agents, without holding its lock over I/O.
-                if method == "host.browser"
-                    && matches!(
-                        params["op"].as_str(),
-                        Some(
-                            "state"
-                                | "snapshot"
-                                | "screenshot"
-                                | "subscribe"
-                                | "poll"
-                                | "unsubscribe"
-                                | "display_subscribe"
-                                | "display_attach"
-                                | "note_selection"
-                                | "note_reanchor"
-                        )
+        } else if !matches!(backend.health(), Ok(health) if health.state == BrowserControllerProcessState::Ready)
+        {
+            // MP-11: state/observation reads cannot start or recover a
+            // controller. Startup is explicit and uses the same grant for
+            // focused and retained agents, without holding its lock over I/O.
+            if method == "host.browser"
+                && matches!(
+                    params["op"].as_str(),
+                    Some(
+                        "state"
+                            | "snapshot"
+                            | "screenshot"
+                            | "subscribe"
+                            | "poll"
+                            | "unsubscribe"
+                            | "display_subscribe"
+                            | "display_attach"
+                            | "note_selection"
+                            | "note_reanchor"
                     )
-                {
-                    return Err("MP-11: browser_unavailable: user browser controller is stopped or unavailable; explicitly start/open the browser".into());
-                }
-                self.check_admission(admission)?;
-                backend.start()?;
-                self.check_admission(admission)?;
+                )
+            {
+                return Err("MP-11: browser_unavailable: user browser controller is stopped or unavailable; explicitly start/open the browser".into());
             }
+            self.check_admission(admission)?;
+            backend.start().map_err(crate::error::HostFailure::Other)?;
+            self.check_admission(admission)?;
         }
         let mut params = params;
         if let Some(admission) = admission.filter(|admission| admission.agent.is_some()) {
@@ -406,7 +404,8 @@ impl KernelBrowserHost {
         {
             // MP-08: attach may be the first post-recovery request. Seed the same
             // tab ledger before takeover, without registering another actor.
-            let state = backend.host_request("host.browser", serde_json::json!({"op":"state"}))?;
+            let state = backend
+                .host_request_classified("host.browser", serde_json::json!({"op":"state"}))?;
             model
                 .lock()
                 .map_err(|_| "MD-3: actor lock poisoned")?

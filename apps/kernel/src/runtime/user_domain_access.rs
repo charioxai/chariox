@@ -123,8 +123,7 @@ impl UserDomainAccess {
         agent: &str,
         session: &str,
         busy: bool,
-        now: Instant,
-        now_ms: u64,
+        (now, now_ms): (Instant, u64),
         idle_window: Duration,
     ) -> bool {
         let Some(grant) = self.grants.get_mut(&(user.into(), agent.into())) else {
@@ -270,19 +269,31 @@ mod tests {
         access.focus("owner", Some("second"));
         assert!(!epoch.requested());
         assert!(access.claim("owner", "first", tab("a"), false).is_ok());
-        assert!(access
-            .claim("owner", "first", tab("b"), false)
-            .unwrap_err()
-            .contains("not_focused_agent"));
-        assert!(access
-            .claim("owner", "first", tab("a"), true)
-            .unwrap_err()
-            .contains("sensitive_requires_focus"));
+        assert!(matches!(
+            crate::error::HostFailure::from(
+                access.claim("owner", "first", tab("b"), false).unwrap_err()
+            ),
+            crate::error::HostFailure::Refused(
+                crate::error::UserDomainRefusalReason::NotFocusedAgent
+            )
+        ));
+        assert!(matches!(
+            crate::error::HostFailure::from(
+                access.claim("owner", "first", tab("a"), true).unwrap_err()
+            ),
+            crate::error::HostFailure::Refused(
+                crate::error::UserDomainRefusalReason::SensitiveRequiresFocus
+            )
+        ));
         assert!(access.claim("owner", "second", tab("b"), false).is_ok());
-        assert!(access
-            .claim("stranger", "first", tab("a"), false)
-            .unwrap_err()
-            .contains("not_granted"));
+        assert!(matches!(
+            crate::error::HostFailure::from(
+                access
+                    .claim("stranger", "first", tab("a"), false)
+                    .unwrap_err()
+            ),
+            crate::error::HostFailure::Refused(crate::error::UserDomainRefusalReason::NotGranted)
+        ));
     }
     #[test]
     fn mdaccess_explicit_open_grants_only_its_created_tab() {
@@ -344,7 +355,7 @@ mod tests {
         access.focus("owner", Some("first"));
         let epoch = access.grant("owner", "first").unwrap().epoch.clone();
         access.subscribe("owner", "first", "stream", "a").unwrap();
-        access.bind("owner", "first", "session", true, now, 1, window);
+        access.bind("owner", "first", "session", true, (now, 1), window);
         access.focus("owner", Some("second"));
         // The kernel reports pending wake as busy, even with no executing turn.
         access.bind(
@@ -352,23 +363,28 @@ mod tests {
             "first",
             "session",
             true,
-            now + window * 2,
-            2,
+            (now + window * 2, 2),
             window,
         );
         assert!(!epoch.requested());
         let idle = now + window * 3;
-        assert!(!access.bind("owner", "first", "session", false, idle, 3, window));
+        assert!(!access.bind("owner", "first", "session", false, (idle, 3), window));
         assert!(!access.bind(
             "owner",
             "first",
             "session",
             false,
-            idle + window - Duration::from_millis(1),
-            4,
+            (idle + window - Duration::from_millis(1), 4),
             window
         ));
-        assert!(access.bind("owner", "first", "session", false, idle + window, 5, window));
+        assert!(access.bind(
+            "owner",
+            "first",
+            "session",
+            false,
+            (idle + window, 5),
+            window
+        ));
         assert!(epoch.requested());
         assert!(access.grant("owner", "first").is_err());
         let second = access.grant("owner", "second").unwrap().epoch.clone();

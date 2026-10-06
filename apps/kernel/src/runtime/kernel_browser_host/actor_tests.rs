@@ -303,9 +303,8 @@ fn mdaccess_revoke_releases_grant_lock_before_waiting_for_actor() {
     drop(actor_guard); // Also lets a broken implementation terminate cleanly.
     revoke.join().unwrap();
     authority.join().unwrap().unwrap();
-    assert_eq!(
-        result.unwrap(),
-        false,
+    assert!(
+        !result.unwrap(),
         "MP-11: revoke must not deadlock authority callbacks"
     );
 }

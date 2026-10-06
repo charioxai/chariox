@@ -154,19 +154,21 @@ pub(super) fn require_notes_worker_protocol(version: Option<u32>) -> Result<(), 
     {
         Ok(())
     } else {
-        Err(admission_error(
-            "Room Notes require relay peer protocol 74 or newer",
-        ))
+        Err(admission_error(&format!(
+            "Room Notes require relay peer protocol {} or newer",
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+        )))
     }
 }
 #[cfg(test)]
 mod notes_peer_tests {
     #[test]
     fn md_notes_refuses_unknown_and_pre_union_workers_before_dispatch() {
-        for version in [None, Some(70), Some(71), Some(72), Some(73)] {
+        let minimum = crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
+        for version in [None, Some(70), Some(73), Some(minimum - 1)] {
             assert!(super::require_notes_worker_protocol(version).is_err());
         }
-        for version in [Some(74), Some(75)] {
+        for version in [Some(minimum), Some(minimum + 1)] {
             assert!(super::require_notes_worker_protocol(version).is_ok());
         }
     }

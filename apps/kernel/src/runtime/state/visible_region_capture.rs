@@ -104,13 +104,12 @@ impl KernelRuntimeState {
                             all(target_os = "linux", target_env = "gnu")
                         ))]
                         {
-                            let (_, view) = self
-                                .app_control()
-                                .user_views()
-                                .get(&owner, view_id)
-                                .ok_or_else(|| DaemonError::UserDomainRefused {
-                                    reason: crate::error::UserDomainRefusalReason::NotGranted,
-                                })?;
+                            let (_, view) =
+                                self.app_control().user_views().get(&owner, view_id).ok_or(
+                                    DaemonError::UserDomainRefused {
+                                        reason: crate::error::UserDomainRefusalReason::NotGranted,
+                                    },
+                                )?;
                             let browser = view.browser.ok_or_else(|| {
                                 capture_error(
                                     "Native App views are captured by the trusted client renderer",
