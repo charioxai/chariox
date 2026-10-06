@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+sys.dont_write_bytecode=True
 from protocol_versions import versions
 root, output, checkout = map(Path, sys.argv[1:])
 campaign=json.loads((root/'campaign.json').read_text())

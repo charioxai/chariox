@@ -4,6 +4,7 @@ Run only from a clean, committed checkout; no network/build/host mutation.
 """
 import hashlib,json,re,shutil,subprocess,sys,sysconfig,tarfile,os
 from pathlib import Path
+sys.dont_write_bytecode=True
 from lan_node_runtime import install as install_node
 from protocol_versions import PROTOCOL_FILES,versions
 binary,tools,pytools,out=map(Path,sys.argv[1:])
