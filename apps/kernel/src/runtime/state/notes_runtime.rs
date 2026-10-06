@@ -338,7 +338,11 @@ impl KernelRuntimeState {
         | NoteWindow::Terminal { session_id, .. } = window
         {
             let session = self.owned.session_snapshot(session_id)?;
-            if !session.has_member(user) {
+            // Browser/note storage uses the home owner's Cloud/local alias;
+            // Room membership keeps the authenticated Cloud principal.
+            if !session.members().iter().any(|member| {
+                self.provider_account_authority_owner_user_id(member.user_id()) == user
+            }) {
                 return Err(host_error("MD-N2: Room membership required".into()));
             }
         }
