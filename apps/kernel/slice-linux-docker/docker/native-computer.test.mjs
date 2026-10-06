@@ -43,3 +43,9 @@ test('MP-08 native text is rejected before dispatch when it cannot fit the RPC b
   assert.equal(calls, 0);
   assert.doesNotThrow(() => nativeInput({ kind: 'composition', text: '😀'.repeat(128) }, binding));
 });
+
+test('MP-08 provider shortcut casing resolves to physical base keys', () => {
+  for(const [key,expected] of [['SUPER+D','super+d'],['CTRL+SHIFT+A','ctrl+shift+a'],['ALT+ENTER','alt+Return'],['Escape','Escape'],['F12','F12']])
+    assert.equal(nativeInput({kind:'key',key},binding).key,expected);
+  assert.equal(nativeInput({kind:'hold',key:'CTRL+A',duration_ms:5},binding).key,'ctrl+a');
+});

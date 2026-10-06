@@ -24,6 +24,12 @@ export function nativeInput(input, binding) {
     case 'clipboard_write': if (typeof input.text!=='string' || Buffer.byteLength(input.text)>65536) throw new Error('MP-08: invalid clipboard');break;
     default: throw new Error('MP-08: unsupported native input');
   }
+  if(input.kind==='key' || input.kind==='hold') {
+    // MP-08: chords name physical base keys; casing does not imply Shift.
+    const names={ctrl:'ctrl',control:'ctrl',alt:'alt',shift:'shift',super:'super',meta:'super',enter:'Return',return:'Return',escape:'Escape',esc:'Escape',tab:'Tab',space:'space',backspace:'BackSpace',delete:'Delete',left:'Left',right:'Right',up:'Up',down:'Down',home:'Home',end:'End',pageup:'Prior',pagedown:'Next'};
+    const key=input.key.split('+').map(name=>names[name.toLowerCase()]??(/^[A-Za-z]$/.test(name)?name.toLowerCase():/^f\d{1,2}$/i.test(name)?name.toUpperCase():name)).join('+');
+    return {...input,key};
+  }
   return input;
 }
 export async function executeNative(request, environment, signal) {
