@@ -1,6 +1,14 @@
 // MP-08/MP-10/MP-11: protected fallback keeps the explicitly selected software codec.
 import test from 'node:test';import assert from 'node:assert/strict';
 import {PortableEncoder} from './kernel-browser-display.mjs';import {encodePng} from './kernel-browser-pixels.mjs';
+test('MP-10 actual SIMD conversion survives the browser encoder adapter',{skip:!process.env.CHARIOX_BROWSER_DISPLAY_LIBYUV},async()=>{
+ const {BrowserEncoder}=await import('./kernel-browser-webcodecs.mjs');
+ const e=new BrowserEncoder({},'target');
+ try{
+  const packet=await e.encodeStripes({width:128,height:128,format:'bgr0',pixels:Buffer.alloc(128*128*4)},8000000,true,'avc1.420033');
+  assert.equal(packet.stripes.length,8);assert.equal(e.backend,'x264');assert.equal(e.converter,'libyuv');
+ }finally{await e.close()}
+});
 test('MP-11 OpenH264 protected PNG fallback never silently chooses x264',async()=>{
  const before=process.env.CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER,software=process.env.CHARIOX_BROWSER_DISPLAY_SOFTWARE;
  process.env.CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER='libopenh264';process.env.CHARIOX_BROWSER_DISPLAY_SOFTWARE='1';
