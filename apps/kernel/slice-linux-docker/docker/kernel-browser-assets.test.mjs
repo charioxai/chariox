@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 test("MP-08 / MP-10: materialized native controller imports without a checkout", async () => {
@@ -17,7 +17,8 @@ test("MP-08 / MP-10: materialized native controller imports without a checkout",
     for (const [, name, relative] of entries)
       await writeFile(path.join(root, name), await readFile(path.resolve(path.dirname(manifest), relative)));
     const child = spawnSync(process.execPath, ["--input-type=module", "-e",
-      "await import(process.argv[1]);", pathToFileURL(path.join(root, "kernel-browser-host.mjs")).href],
+      "const { pathToFileURL } = await import('node:url'); await import(pathToFileURL(process.argv[1]).href);",
+      path.join(root, "kernel-browser-host.mjs")],
     { timeout: 30_000, encoding: "utf8", env: { PATH: "/usr/bin:/bin", HOME: root, TMPDIR: root } });
     assert.equal(child.status, 0, child.stderr);
   } finally {
