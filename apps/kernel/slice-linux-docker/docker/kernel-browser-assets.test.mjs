@@ -1,0 +1,19 @@
+// MP-08 / MP-11: the native kernel ships a runnable controller outside checkout.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFile,mkdtemp,writeFile,rm} from 'node:fs/promises';
+import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+import path from 'node:path';
+import os from 'node:os';
+test('MP-08 embedded native controller answers real health without source modules',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'culinux-asset-test-'));
+ try {
+  const inventory=await readFile(new URL('../../src/runtime/kernel_browser_assets.rs',import.meta.url),'utf8');
+  const names=[...inventory.matchAll(/include_bytes!\("\.\.\/\.\.\/slice-linux-docker\/docker\/([^"\n]+)"\)/g)].map(m=>m[1]);
+  assert(names.includes('kernel-browser-host.mjs'));
+  for(const name of names)await writeFile(path.join(root,name),await readFile(new URL(name,import.meta.url)));
+  const reply=execFileSync(process.execPath,[path.join(root,'kernel-browser-host.mjs'),'stdio',path.join(root,'profile')],{input:JSON.stringify({id:1,method:'health',params:{}})+'\n',encoding:'utf8',timeout:10000});
+  assert.equal(JSON.parse(reply.trim()).result.state,'ready');
+ }finally{await rm(root,{recursive:true,force:true});}
+});
