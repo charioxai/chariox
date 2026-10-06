@@ -39,6 +39,27 @@ are outside this proxy. Every plotted dollar value is labeled **proxy**.
 
 ## MP-08 / MP-10 / MP-11 — round 3 real-path admission
 
+The fresh official Terminal-Bench 2.0 smoke completed **7/10 (70%)**, with
+zero harness errors and all ten native counter totals matching the numeric
+real TUI projection. Input **4,429,809**, cached input **4,185,216**, output
+**29,477**, reasoning **2,790**; solver wall **1,698.69 seconds**, campaign
+wall **2,224.54 seconds**. The dated mapping yields **proxy USD
+1.2024776–3.4805352**. One provider failure still received official reward 1;
+the official verifier decides the score. A separate fresh full89 campaign
+is running; it does not reuse smoke results and has no full score yet.
+Reports and the comparison plot remain outside Git in the round3 evidence.
+
+Real diagnostic comparisons use the same built TUI, kernel, loopback relay,
+official Codex and unchanged Harbor task. The frozen base adapter stops
+before verification on an unsupported-model rejection with no counters;
+the corrected adapter scores it officially as reward 0 with unknown usage.
+In a separate 20-second adapter-deadline drill, the base also skips verification;
+the corrected adapter uses the ordinary TUI Ctrl+C stop action and receives
+official reward 0 with complete cleanup. Its last observed counters are
+incomplete and are not reported as a final total. Both diagnostic task sets
+are excluded from smoke/full benchmark denominators. Authentication and
+quota admission failures remain distinct from scored model failures.
+
 The first official Harbor attempt failed before container startup because the
 builder had no Compose plugin. A SHA-256-verified, pinned Compose v2.39.4 plugin
 is now scoped to the lane's Docker CLI tooling. The unchanged pinned official
