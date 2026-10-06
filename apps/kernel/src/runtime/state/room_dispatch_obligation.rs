@@ -51,4 +51,17 @@ impl KernelRuntimeState {
             resource,
         )
     }
+
+    /// Finish the receipt transaction before provider startup writes can be batched
+    /// with it. Already-admitted dispatches still start if this receipt fails.
+    pub(crate) fn finish_room_dispatch(
+        &self,
+        id: Option<&str>,
+        resource: Option<&str>,
+        dispatch: impl FnOnce(),
+    ) -> Result<(), DaemonError> {
+        let receipt = self.record_room_dispatch_receipt(id, true, resource);
+        dispatch();
+        receipt
+    }
 }

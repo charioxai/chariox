@@ -77,11 +77,10 @@ impl KernelRuntimeState {
                     } => queued_prompt.id(),
                 };
                 // Admission already committed: receipt failure must not discard dispatches.
-                self.spawn_workflow_prompt_dispatches(dispatches);
-                if let Err(error) = self.record_room_dispatch_receipt(
+                if let Err(error) = self.finish_room_dispatch(
                     obligation.as_deref(),
-                    true,
                     Some(resource_id),
+                    || self.spawn_workflow_prompt_dispatches(dispatches),
                 ) {
                     return (Err(error), None);
                 }

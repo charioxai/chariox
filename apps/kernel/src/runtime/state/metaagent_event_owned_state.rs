@@ -335,7 +335,6 @@ impl KernelRuntimeState {
                 .owned
                 .steer_active_metaagent_prompt(session_id, &prompt)?
             {
-                self.spawn_workflow_prompt_dispatches(dispatches);
                 self.persist_metaagent_prompt_submission(
                     session_id,
                     metaagent,
@@ -344,7 +343,9 @@ impl KernelRuntimeState {
                     "steered",
                     None,
                 );
-                self.record_room_dispatch_receipt(obligation.as_deref(), true, Some(&prompt_id))?;
+                self.finish_room_dispatch(obligation.as_deref(), Some(&prompt_id), || {
+                    self.spawn_workflow_prompt_dispatches(dispatches);
+                })?;
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
@@ -399,13 +400,14 @@ impl KernelRuntimeState {
             audit_provider_run_id.as_deref(),
         );
         let agent_activity = self.agent_activity_for_session(&submission.session);
-        if let Some(dispatch) = submission.dispatch.take() {
-            self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
-        }
-        if let Some(dispatch) = submission.remote_dispatch.take() {
-            self.spawn_remote_prompt_dispatch(dispatch);
-        }
-        self.record_room_dispatch_receipt(obligation.as_deref(), true, Some(&prompt_id))?;
+        self.finish_room_dispatch(obligation.as_deref(), Some(&prompt_id), || {
+            if let Some(dispatch) = submission.dispatch.take() {
+                self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
+            }
+            if let Some(dispatch) = submission.remote_dispatch.take() {
+                self.spawn_remote_prompt_dispatch(dispatch);
+            }
+        })?;
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({

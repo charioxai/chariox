@@ -360,12 +360,28 @@ pub(super) fn workflow_code_artifact_apply_result(
     let actor =
         workflow_code_artifact_actor(&caller_user_id, controlled_by_metaagent_id.as_deref());
     authorize()?;
-    workflow_code_registry_for_session(app, session_id)?.record_apply_history(
-        artifact_name,
-        actor,
-        history_action,
-        &apply,
-    )?;
+    let registry = workflow_code_registry_for_session(app, session_id)?;
+    let may_record_history = if app.config().room_agent_tools
+        && history_action == crate::workflow_code::WorkflowCodeArtifactHistoryAction::Run
+        && metaagent_id.is_some()
+    {
+        let caller = app.agents().get_agent(metaagent_id.unwrap())?;
+        // Public source can create a caller-owned definition/run, without editing
+        // peer source provenance. Recheck the current object at the history fence.
+        registry.get(artifact_name)?.is_some_and(|current| {
+            current.metadata == artifact.metadata
+                && crate::runtime::room_tool_admission::owns_object(
+                    &caller,
+                    current.metadata.provenance.created_by.metaagent_id.as_deref(),
+                    &app.agents().get_session_agents(session_id),
+                )
+        })
+    } else {
+        true
+    };
+    if may_record_history {
+        registry.record_apply_history(artifact_name, actor, history_action, &apply)?;
+    }
     Ok(crate::workflow_code::WorkflowCodeCompileAndApplyResult {
         compile: crate::workflow_code::WorkflowCodeCompileResult {
             definition,

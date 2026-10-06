@@ -367,12 +367,6 @@ impl KernelRuntimeState {
             .dispatch
             .as_ref()
             .map(|dispatch| dispatch.provider_run_id.clone());
-        if let Some(dispatch) = submission.dispatch.take() {
-            self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
-        }
-        if let Some(dispatch) = submission.remote_dispatch.take() {
-            self.spawn_remote_prompt_dispatch(dispatch);
-        }
         let result = crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({
@@ -391,7 +385,14 @@ impl KernelRuntimeState {
         {
             store.record(operation_id, fingerprint, result.clone());
         }
-        self.record_room_dispatch_receipt(obligation.as_deref(), true, Some(&prompt_id))?;
+        self.finish_room_dispatch(obligation.as_deref(), Some(&prompt_id), || {
+            if let Some(dispatch) = submission.dispatch.take() {
+                self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
+            }
+            if let Some(dispatch) = submission.remote_dispatch.take() {
+                self.spawn_remote_prompt_dispatch(dispatch);
+            }
+        })?;
         Ok(result)
     }
 
