@@ -32,7 +32,7 @@ export function launchArguments(profile, headless, display = false) {
     "--no-first-run", "--no-default-browser-check",
     "--disable-session-crashed-bubble", "--disable-background-networking",
     `--window-size=${geometry.width},${geometry.height+(display?87:0)}`, ...(headless ? ["--headless=new"] : []),
-    ...(display ? ["--disable-frame-rate-limit", `--force-device-scale-factor=${geometry.dpr}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows"] : []), "about:blank",
+    ...(display ? [`--force-device-scale-factor=${geometry.dpr}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows"] : []), "about:blank",
   ];
 }
 

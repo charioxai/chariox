@@ -54,3 +54,18 @@ test('MP-08/MP-10 exact capture waits through a normal typing cadence',async()=>
  let now=100,reads=0;const r=new NativeRefiner(async()=>{reads++;return{data_base64:'png'}},{now:()=>now,pixels:{run:async()=>({}),close:async()=>{}}});
  try{for(let at=100;at<=1000;at+=100){now=at;r.request({...binding,epoch:at},at,()=>true)}assert.equal(reads,0);now=1299;r.request({...binding,epoch:1000},1000,()=>true);assert.equal(reads,0);now=1300;r.request({...binding,epoch:1000},1000,()=>true);await r.active;assert.equal(reads,1)}finally{await r.close()}
 });
+
+test('MP-08/MP-11 native exact byte serial settles once; lossy fallback still verifies hidden changes',async()=>{
+ let now=300,captures=0,pixel='one';
+ const r=new NativeRefiner(async()=>({data_base64:pixel}),{now:()=>now,pixels:{run:async(op,{data})=>({pixels:Buffer.from(data),width:1,height:1}),close:async()=>{}}});
+ const binding={source:{},document:'d',policy:{},epoch:0,serial:1,native:true};
+ try{
+  const capture=r.capture;r.capture=async()=>{captures++;return capture()};
+  r.request(binding,0,()=>true);await r.active;assert.equal(captures,1);
+  now=3000;r.request(binding,0,()=>true);await r.active;assert.equal(captures,1,'native exact bytes and serial already attest this unchanged source');
+  r.request({...binding,serial:2},0,()=>true);await r.active;assert.equal(captures,2);
+  const fallback={...binding,native:false};r.request(fallback,0,()=>true);await r.active;
+  pixel='hidden RGB';now+=300;r.request(fallback,0,()=>true);await r.active;
+  assert.equal(captures,4);assert.equal(r.latest.pixels.pixels.toString(),'hidden RGB','same lossy serial cannot suppress exact deadline verification');
+ }finally{await r.close()}
+});

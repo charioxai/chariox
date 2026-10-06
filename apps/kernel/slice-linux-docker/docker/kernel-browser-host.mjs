@@ -425,7 +425,7 @@ export class KernelBrowserHost {
         if(stream.previous&&(stream.document_id!==tab.document_id||!stream.acceptsCredit(command.after_sequence)))stream.invalidate();
         if(!stream.refiner||stream.refinerDocument!==tab.document_id){await stream.refiner?.close();stream.refiner=new NativeRefiner(()=>this.screenshot(tab,null,false,"png",false),{now:()=>performance.now(),prepareTiles:true,timing:this.timing});stream.refinerDocument=tab.document_id;}
         const policy=this.protection;
-        const binding={source:compositor,document:tab.document_id,policy,epoch,serial:sample.serial,scale:stream.device_scale_factor};
+        const binding={source:compositor,document:tab.document_id,policy,epoch,serial:sample.serial,scale:stream.device_scale_factor,native:compositor.attested===true&&Boolean(sample.raw)};
         // Always run the deadline/epoch-aware verifier before unchanged reuse.
         // A lossy JPEG fingerprint cannot rule out fine native RGB damage.
         const exact=stream.refiner.request(binding,Math.max(compositor.changedAt,this.inputChangedAt.get(tab.tab_id)??-Infinity),()=>this.protection===policy&&compositor.sample()?.serial===sample.serial&&(this.inputEpochs.get(tab.tab_id)??0)===epoch);
