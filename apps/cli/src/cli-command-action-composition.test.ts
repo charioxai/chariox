@@ -5,7 +5,8 @@ import { join } from "node:path"
 import test from "node:test"
 import { createCliCommandActionComposition, type CliCommandActionCompositionDeps } from "./cli-command-action-composition.js"
 import { CloudClient } from "./cloud-client.js"
-import type { CloudClientCredentialStore } from "./cloud-client-credential-store.js"
+import type { CloudClientCredentialStore, CloudClientCredential } from "./cloud-client-credential-store.js"
+import { cloudClientCallerScope } from "./cloud-client-collaboration-scope.js"
 import { makeCommandDeps, makeSession } from "./command-actions-test-support.js"
 
 // MP-08 / MP-11: actual composition + slash handler, with both authority profiles.
@@ -16,7 +17,7 @@ for (const resume of [false, true]) {
     process.env.CHARIOX_HOME = root
     t.after(() => { if (previous === undefined) delete process.env.CHARIOX_HOME; else process.env.CHARIOX_HOME = previous; rmSync(root, {recursive: true, force: true}) })
     const profile = {apiUrl: "http://127.0.0.1:44123", accountId: "collaborator-account", userId: "human", clientId: `cli:${"a".repeat(64)}`, publicKeyThumbprint: "a".repeat(64), enrollmentKind: "CLIENT", realmId: "realm", relayUrl: "wss://relay.test", email: "human@example.test", accountSlug: "fixture", issuerId: "fixture"}
-    const credential = {profile, clientId: profile.clientId, publicKeyThumbprint: profile.publicKeyThumbprint, accessToken: "synthetic-human-access", refreshCredential: "synthetic-refresh", expiresAtMs: Date.now()+300_000}
+    const credential: CloudClientCredential = {profile, clientId: profile.clientId, publicKeyThumbprint: profile.publicKeyThumbprint, accessToken: "synthetic-human-access", refreshCredential: "synthetic-refresh", expiresAtMs: Date.now()+300_000}
     let saved = 0, resumed = 0, refreshed = 0
     const paths: string[] = [], ipc: string[] = [], notices: string[] = []
     const cloudClient = new CloudClient({load: async () => resume ? credential : null, session: async () => {resumed++; return credential}, saveLogin: async () => {saved++}} as unknown as CloudClientCredentialStore, () => ({publicKeyThumbprint: profile.publicKeyThumbprint}) as any)
@@ -81,8 +82,8 @@ for (const {action, kind, nonowner, rejectAt} of cloudCommandCases) {
     const session = makeSession(), notices: string[] = [], ipc: string[] = [], paths: string[] = []
     let applied = 0, attached = 0
     const profile = {apiUrl: "http://127.0.0.1:44123", accountId: nonowner ? "collaborator-account" : "account", userId: "human", clientId: "terminal", realmId: "realm", relayUrl: "wss://relay.test", email: "human@example.test", accountSlug: "fixture", issuerId: "fixture"}
-    const credential = {profile, clientId: "terminal", publicKeyThumbprint: "a".repeat(64), accessToken: "synthetic-human-access", refreshCredential: "synthetic-refresh", expiresAtMs: Date.now()+60_000}
-    const cloudClient = new CloudClient({load: async () => credential, session: async () => credential} as unknown as CloudClientCredentialStore, () => ({publicKeyThumbprint: credential.publicKeyThumbprint}) as any)
+    const credential: CloudClientCredential = {profile, clientId: "terminal", publicKeyThumbprint: "a".repeat(64), accessToken: "synthetic-human-access", refreshCredential: "synthetic-refresh", expiresAtMs: Date.now()+60_000}
+    const cloudClient = new CloudClient({load: async () => credential, session: async () => credential, rememberSessionScope: async (caller: CloudClientCredential, session: {sessionId: string; accountId: string}) => {credential.collaborationScopes ??= []; credential.collaborationScopes.push({caller: cloudClientCallerScope(caller), ...session})}} as unknown as CloudClientCredentialStore, () => ({publicKeyThumbprint: credential.publicKeyThumbprint}) as any)
     t.after(() => cloudClient.stop())
     t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input)); paths.push(url.pathname)
@@ -93,7 +94,7 @@ for (const {action, kind, nonowner, rejectAt} of cloudCommandCases) {
       const results: Record<string, unknown> = {
         "/deployment-projects": {portfolio: []},
         "/sessions/invites": {inviteId: "cloud-invite", inviteToken: "cloud-invite-token", sessionId: session.id, accountId: profile.accountId, createdByUserId: profile.userId},
-        "/sessions/invites/cloud-invite-token/accept": {userId: profile.userId, sessionId: session.id},
+        "/sessions/invites/cloud-invite-token/accept": {userId: profile.userId, sessionId: session.id, accountId: profile.accountId},
         "/sessions/members": {sessionId: session.id, members: [{userId: profile.userId, email: profile.email, displayName: "Human"}]},
         "/collaborators/recent": {collaborators: [{userId: "friend", email: "friend@example.test", sharedSessionCount: 2}]},
       }
@@ -143,8 +144,8 @@ for (const kind of ["cloud", "collab"] as const) {
   test(`MP-08 / MP-11: /${kind} members uses the accepted session's owner account with the collaborator's private login`, async t => {
     const session = makeSession(), notices: string[] = [], ipc: string[] = []
     const profile = {apiUrl: "http://127.0.0.1:44123", accountId: "collaborator-account", userId: "collaborator", clientId: "terminal", realmId: "personal-realm", relayUrl: "wss://relay.test", email: "collaborator@example.test", accountSlug: "personal", issuerId: "fixture"}
-    const credential = {profile, clientId: profile.clientId, publicKeyThumbprint: "a".repeat(64), accessToken: "synthetic-collaborator-access", refreshCredential: "synthetic-refresh", expiresAtMs: Date.now()+300_000}
-    const cloudClient = new CloudClient({load: async () => credential, session: async () => credential} as unknown as CloudClientCredentialStore, () => ({publicKeyThumbprint: credential.publicKeyThumbprint}) as any)
+    const credential: CloudClientCredential = {profile, clientId: profile.clientId, publicKeyThumbprint: "a".repeat(64), accessToken: "synthetic-collaborator-access", refreshCredential: "synthetic-refresh", expiresAtMs: Date.now()+300_000}
+    const cloudClient = new CloudClient({load: async () => credential, session: async () => credential, rememberSessionScope: async (caller: CloudClientCredential, session: {sessionId: string; accountId: string}) => {credential.collaborationScopes ??= []; credential.collaborationScopes.push({caller: cloudClientCallerScope(caller), ...session})}} as unknown as CloudClientCredentialStore, () => ({publicKeyThumbprint: credential.publicKeyThumbprint}) as any)
     t.after(() => cloudClient.stop())
     // Pinned Cloud 3620f1245: invite acceptance writes under invite.accountId;
     // member listing authenticates the caller then requires the exact tuple.

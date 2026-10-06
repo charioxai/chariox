@@ -26,8 +26,8 @@ async function fixture(root) {
   const relayUrl = `ws://127.0.0.1:${relay.address().port}`
   const devices = new Map(), grants = new Map(), sockets = new Map(), timers = new Set()
   const members = [{ accountId: "account-owner", sessionId: "session-a", userId: "user-owner", email: "owner@example.com" }]
-  const calls = [], errors = []
-  let grantNumber = 0
+  const calls = [], errors = [], contacts = []
+  let grantNumber = 0, inviteUses = 0, inviteMaxUses = 0
   const profile = (accountSlug, family) => ({
     enrollmentKind: "CLIENT", publicKeyThumbprint: family.key, clientId: family.id,
     accountId: `account-${accountSlug}`, userId: `user-${accountSlug}`, accountSlug,
@@ -78,10 +78,16 @@ async function fixture(root) {
       } else if (pathname === "/sessions/invites") {
         assert.ok([...devices.values()].some(f => f.access === body.sessionToken))
         assert.equal(body.sessionId, "session-a")
+        inviteMaxUses = body.maxUses
         send({ inviteId: "invite-a", inviteToken: "synthetic-invite", sessionId: "session-a", accountId: "account-owner", createdByUserId: "user-owner" })
       } else if (pathname === "/sessions/invites/synthetic-invite/accept") {
         const family = [...devices.values()].find(f => f.access === body.sessionToken)
         assert.ok(family)
+        if (inviteUses >= inviteMaxUses) {send({error: {code: "session_invite_invalid"}}, 403); return}
+        inviteUses++
+        for (const [userId, collaboratorUserId] of [["user-owner", `user-${family.accountSlug}`], [`user-${family.accountSlug}`, "user-owner"]]) {
+          contacts.push({accountId: "account-owner", userId, collaboratorUserId, hiddenAt: null, lastCollaboratedAt: new Date().toISOString(), sharedSessionCount: 1})
+        }
         // MP-08 / MP-11: Cloud 3620f1245 records invite.accountId, not caller.accountId.
         members.push({ accountId: "account-owner", sessionId: "session-a", userId: `user-${family.accountSlug}`, email: `${family.accountSlug}@example.com` })
         send({ sessionId: "session-a", accountId: "account-owner", userId: `user-${family.accountSlug}`, invitedByUserId: "user-owner", joinedAt: new Date().toISOString() })
@@ -96,6 +102,13 @@ async function fixture(root) {
           return
         }
         send({ sessionId, members: members.filter(m => m.accountId === accountId && m.sessionId === sessionId) })
+      } else if (pathname === "/collaborators/recent") {
+        const family = [...devices.values()].find(f => `Bearer ${f.access}` === req.headers.authorization)
+        assert.ok(family)
+        const accountId = new URL(req.url, "http://localhost").searchParams.get("accountId")
+        send({collaborators: contacts.filter(c => c.accountId === accountId && c.userId === `user-${family.accountSlug}` && c.hiddenAt === null)
+          .sort((a, b) => Date.parse(b.lastCollaboratedAt)-Date.parse(a.lastCollaboratedAt)).slice(0, 25)
+          .map(c => ({userId: c.collaboratorUserId, email: `${c.collaboratorUserId.slice(5)}@example.com`, lastCollaboratedAt: c.lastCollaboratedAt, sharedSessionCount: c.sharedSessionCount}))})
       } else throw new Error("unexpected fixture route")
     })().catch(error => { errors.push(error); res.writeHead(500); res.end() })
   })
@@ -176,15 +189,25 @@ test("MP-08 / MP-10 / MP-11: drill composes kernel enrollment and private human 
     assert.equal(online.machineId, "machine-a")
     const detached = await terminal.client.connect("kernel-a"); clients.push(detached)
     assert.deepEqual(await detached.send({ GetDaemonHealth: null }), { accepted: true })
-    const invitation = await deps.createCloudSessionInvite("session-a", { maxUses: 2 })
-    const peer = await loginCloudDrillUser(cloud.apiUrl, { modules, stateRoot: root, name: "peer", email: "peer@example.com", accountSlug: "peer" })
+    const invitation = await deps.createCloudSessionInvite("session-a", { maxUses: 1 })
+    let peer = await loginCloudDrillUser(cloud.apiUrl, { modules, stateRoot: root, name: "peer", email: "peer@example.com", accountSlug: "peer" })
     terminals.push(peer)
     assert.equal((await peer.client.collaboration.acceptSessionInvite(invitation.invite.invite_token)).acceptance.user_id, "user-peer")
     assert.equal((await deps.listCloudSessionMembers("session-a")).members.length, 2)
     assert.equal((await peer.client.collaboration.sessionMembers("session-a")).members.length, 2)
     assert.equal((await peer.client.profile()).accountId, "account-peer", "shared session scope cannot replace the caller's login account")
+    assert.equal((await peer.client.collaboration.collaborators())[0]?.user_id, "user-owner")
+    await assert.rejects(peer.client.collaboration.acceptSessionInvite(invitation.invite.invite_token), /session_invite_invalid/)
+    // MP-08 / MP-10 / MP-11: same persisted identity/profile, fresh CloudClient.
+    peer.client.stop()
+    peer = createCloudDrillClient(modules, root, "peer")
+    terminals.push(peer)
+    await peer.client.resume()
     const scoped = await connectSessionScopedCloudClient(modules, peer, { accountId: "account-owner", realmId: "realm-owner", sessionId: "session-a", targetDaemonId: "kernel-a" })
     clients.push(scoped)
+    assert.deepEqual(await scoped.send({ AttachToSession: {session_id: "session-a", client_id: "peer-restarted"} }), {accepted: true})
+    assert.equal((await peer.client.collaboration.sessionMembers("session-a")).members.length, 2)
+    assert.equal((await peer.client.collaboration.collaborators())[0]?.user_id, "user-owner")
     let events = 0
     scoped.onKernelEvent(() => { events++ })
     await scoped.subscribeToKernelEvents("session-a", "attachment-a")
