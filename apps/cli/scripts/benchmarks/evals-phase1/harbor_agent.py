@@ -90,14 +90,12 @@ class CharioxAgent(BaseAgent):
         # Runner-only dependencies live outside the task workspace. Official
         # task files, test instructions and verifier remain untouched.
         venv_root = '/tmp/chariox-evals-python-' + uuid4().hex
+        release = await environment.exec(command=shlex.join(['sh', '-c',
+            'if test -r /etc/os-release; then . /etc/os-release; printf "%s" "${VERSION_CODENAME-}"; fi']))
+        from task_dependencies import setup_command
         install = await environment.exec(command=shlex.join(['sh', '-c',
-            'set -e; '
-            'if ! command -v git >/dev/null 2>&1 || ! test -f /usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf; then '
-            'apt-get update -qq; apt-get install -y -qq git fonts-dejavu-core; fi; '
-            'python3 -m venv ' + shlex.quote(venv_root) + ' 2>/dev/null || '
-            '(apt-get update -qq && apt-get install -y -qq python3 python3-venv && '
-            'python3 -m venv ' + shlex.quote(venv_root) + '); ' +
-            shlex.quote(venv_root + '/bin/pip') + ' install pyte==0.8.2 pillow==11.3.0']))
+            setup_command(venv_root, release.stdout.strip())]))
+        (self.logs_dir / 'dependency-setup.log').write_text((install.stdout or '') + (install.stderr or ''))
         if install.return_code != 0:
             raise RuntimeError('MP-08 / MP-10: task runner dependencies unavailable')
         self._python = venv_root + '/bin/python'

@@ -44,6 +44,32 @@ def resume_quota_campaign(campaign, identity):
     return campaign
 
 
+def resume_setup_campaign(campaign, identity):
+    """MP-08 / MP-10 / MP-11: retry only a clean failure before any solver or oracle."""
+    if any(campaign.get(k) != v for k, v in identity.items()) or campaign.get('status') != 'blocked' or not campaign.get('tasks'):
+        raise ValueError('MP-08 / MP-10: setup resume identity/status differs')
+    last = campaign['tasks'][-1]
+    official = json.loads(Path(last['official_result']).read_text())
+    error = official.get('exception_info') or {}
+    metadata = ((official.get('agent_result') or {}).get('metadata') or {}).get('chariox')
+    cleanup = last['cleanup']
+    if (not {'agent_execution', 'verifier', 'verifier_result', 'agent_result'} <= official.keys()
+            or error.get('exception_type') != 'RuntimeError'
+            or error.get('exception_message') != 'MP-08 / MP-10: task runner dependencies unavailable'
+            or official.get('agent_execution') is not None or official.get('verifier') is not None
+            or official.get('verifier_result') is not None or metadata is not None
+            or official['agent_info']['version'] != campaign['source_commit']
+            or official['task_name'].split('/')[-1] != last['task_id']
+            or cleanup['remaining_containers']
+            or any(r.get('removed_containers') or r.get('retained_volumes') for r in cleanup['manual_settlement'])):
+        raise ValueError('MP-08 / MP-10 / MP-11: clean dependency failure before provider/verifier required')
+    campaign.setdefault('setup_attempts', []).append(campaign['tasks'].pop())
+    campaign['status'] = 'running'
+    campaign.pop('first_failing_task', None)
+    campaign.pop('finished_at', None)
+    return campaign
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--phase',choices=['smoke','full','admission'],required=True)
@@ -54,27 +80,31 @@ def main():
     p.add_argument('--local-protocol',type=int,required=True)
     p.add_argument('--model',default='gpt-6.1-sol')
     p.add_argument('--admission-task',default='break-filter-js-from-html')
-    p.add_argument('--resume',action='store_true')
+    resume = p.add_mutually_exclusive_group()
+    resume.add_argument('--resume',action='store_true')
+    resume.add_argument('--resume-setup',action='store_true')
     args=p.parse_args()
     scripts=Path(__file__).resolve().parent
     lock=json.loads((scripts/'inputs.lock.json').read_text());validate_lock(lock)
     if command_output(['git','-C',str(args.tasks),'rev-parse','HEAD']) != lock['terminal_bench_2']['revision'] or command_output(['git','-C',str(args.tasks),'status','--porcelain']):
         raise ValueError('MP-08 / MP-10: exact clean official task checkout required')
-    if not args.output.is_absolute() or (args.output.exists() and not args.resume) or args.output.resolve().is_relative_to(scripts.parents[4]):
+    resuming = args.resume or args.resume_setup
+    if not args.output.is_absolute() or (args.output.exists() and not resuming) or args.output.resolve().is_relative_to(scripts.parents[4]):
         raise ValueError('MP-11: new absolute external evidence directory required')
     preflight(str(args.runtime_root),args.source_commit,args.kernel_sha256,args.local_protocol)
     ids=lock['terminal_bench_2']['task_ids']
     selected=ids[:10] if args.phase=='smoke' else [args.admission_task] if args.phase=='admission' else ids
-    args.output.mkdir(parents=True,mode=0o700,exist_ok=args.resume)
+    args.output.mkdir(parents=True,mode=0o700,exist_ok=resuming)
     campaign={'mp_items':['MP-08','MP-10','MP-11'],'benchmark':'terminal_bench_2','phase':args.phase,'task_ids':selected,
               'source_commit':args.source_commit,'kernel_sha256':args.kernel_sha256,'model':args.model,'harness_revision':lock['harbor']['revision'],
               'task_revision':lock['terminal_bench_2']['revision'],'runner_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'started_at':time.time(),'tasks':[],'status':'running'}
-    if args.resume:
+    if resuming:
         identity={key:campaign[key] for key in ['benchmark','phase','task_ids','source_commit','kernel_sha256','model','harness_revision','task_revision']}
-        campaign=resume_quota_campaign(json.loads((args.output/'campaign.json').read_text()),identity)
+        saved = json.loads((args.output/'campaign.json').read_text())
+        campaign = (resume_setup_campaign if args.resume_setup else resume_quota_campaign)(saved, identity)
     attempts=args.output/'campaign-attempts';attempts.mkdir(mode=0o700,exist_ok=True)
-    (attempts/(uuid4().hex+'.json')).write_text(json.dumps({'mp_items':['MP-08','MP-10','MP-11'],'runner_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'started_at':time.time(),'resume':args.resume},indent=2)+'\n')
+    (attempts/(uuid4().hex+'.json')).write_text(json.dumps({'mp_items':['MP-08','MP-10','MP-11'],'runner_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'started_at':time.time(),'resume':resuming,'resume_kind':'setup' if args.resume_setup else 'quota' if args.resume else None},indent=2)+'\n')
     def save(): (args.output/'campaign.json').write_text(json.dumps(campaign,indent=2)+'\n')
     save()
     env={**os.environ,'PYTHONPATH':str(scripts),'PYTHONDONTWRITEBYTECODE':'1','HARBOR_DISABLE_TELEMETRY':'1'}
