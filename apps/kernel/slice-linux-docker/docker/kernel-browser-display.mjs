@@ -1,6 +1,6 @@
 // MD-DISPLAY-02/04: flag-gated codec/repair policy over the protected host seam.
 import { spawn } from 'node:child_process';
-import {unlinkSync} from 'node:fs';
+import {unlinkSync,mkdtempSync,openSync,writeSync,ftruncateSync,closeSync,rmdirSync} from 'node:fs';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -41,6 +41,12 @@ export class PortableEncoder {
         received = 0;
         try {
           const reply = JSON.parse(line);
+          // MP-08/MP-10: helper diagnostics stay private, never in a frame.
+          if(process.env.CHARIOX_BROWSER_DISPLAY_TIMING==='1'&&Array.isArray(reply.timings)&&reply.timings.length<=64){
+            const stages=new Set(['codec_input_guard','codec_row_copy_hash','codec_row_init','codec_convert','codec_encode','codec_output_guard','codec_base64','codec_packetize']);
+            const spans=reply.timings.filter(span=>Array.isArray(span)&&span.length===3&&stages.has(span[0])&&Number.isFinite(span[1])&&Number.isFinite(span[2])&&span[2]>=span[1]);
+            if(this.timing?.batch)this.timing.batch(spans);else for(const span of spans)this.timing?.(...span);
+          }
           if(reply.error)return fail();
           if(reply.dropped===true){
             this.backend=({libx264:'x264',libopenh264:'openh264',libvpx:'vp8'})[reply.backend]??reply.backend;
@@ -72,7 +78,24 @@ export class PortableEncoder {
       return await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('MD-DISPLAY: encode timeout')), 10_000);
         this.pending = { stripes:request.operation==='stripes',hash:request.operation==='fingerprint', resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); } };
-        if(request.raw?.shared){this.child.stdin.write(JSON.stringify(request)+'\n')}else if(request.raw){const {pixels,...raw}=request.raw;this.child.stdin.write(JSON.stringify({...request,raw})+'\n');this.child.stdin.write(pixels)}else this.child.stdin.write(JSON.stringify(request) + '\n');
+        if(request.raw?.shared){this.child.stdin.write(JSON.stringify(request)+'\n')}else if(request.raw){
+          const {pixels,...raw}=request.raw,root=process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT;
+          if(root){
+            // MP-08/MP-10/MP-11: one private immutable request snapshot, not
+            // an unmasked capture lease. The helper closes its mmap before
+            // replying; only then can the next exchange overwrite this file.
+            const at=timestamp();
+            if(!Buffer.isBuffer(pixels)||pixels.length!==raw.length||pixels.length>2560*1600*4)throw Error('MP-11: encoder raster bound');
+            if(!this.raster){
+              const directory=mkdtempSync(path.join(root,'encoder-')),file=path.join(directory,'raster');
+              this.raster={directory,file,fd:openSync(file,'wx',0o600)};
+            }
+            let offset=0;while(offset<pixels.length){const written=writeSync(this.raster.fd,pixels,offset,pixels.length-offset,offset);if(written<=0)throw Error('MP-11: encoder raster write');offset+=written;}
+            ftruncateSync(this.raster.fd,pixels.length);
+            this.timing?.('encoder_raster_handoff',at);
+            this.child.stdin.write(JSON.stringify({...request,raw:{...raw,shared:{path:this.raster.file,length:pixels.length}}})+'\n');
+          }else{this.child.stdin.write(JSON.stringify({...request,raw})+'\n');this.child.stdin.write(pixels)}
+        }else this.child.stdin.write(JSON.stringify(request) + '\n');
       });
     } catch (error) { await this.close(); throw error; }
   }
@@ -82,6 +105,11 @@ export class PortableEncoder {
   }
   handedOff(encoded){if(encoded?.packet)this.packets.delete(encoded.packet.name)}
   async close() {
+    try{await this.closeChild()}finally{
+      if(this.raster){const {fd,file,directory}=this.raster;this.raster=null;closeSync(fd);unlinkSync(file);rmdirSync(directory);}
+    }
+  }
+  async closeChild() {
     for(const name of [...this.packets])this.discard({packet:{name}});
     const child = this.child; this.child = null;
     if (!child || child.pid === undefined) return;
@@ -117,6 +145,7 @@ export class DisplayStream {
     this.refillAt = now(); this.tokens = 0;
     this.expires = Date.now() + 60_000;
     this.timing = timing;
+    this.encoder.timing = timing;
   }
   canPatchNative(sample) {
     return Boolean(this.previous) && !this.repair && sample.serial === this.compositorSerial + 1 &&
@@ -147,7 +176,7 @@ export class DisplayStream {
     const same = current.signature ? this.previous?.signature === current.signature : Boolean(this.previous?.pixels && this.previous.pixels.equals(current.pixels));
     // Taken packets have already advanced the persistent codec reference chain.
     // Only suppress duplicates before encoding; every encoded dependency ships.
-    if (same && (this.exact || source.motion) && !source.encoded) return null;
+    if (same && (this.exact || source.motion) && !source.encoded && !source.native_tiles) return null;
     // Private crop metadata comes only from the protected native capture. The
     // cached frame is cloned unchanged outside it; full verification has no hint.
     const clip = source.dirty_clip;

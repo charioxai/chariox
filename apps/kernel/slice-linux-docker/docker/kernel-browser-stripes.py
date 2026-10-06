@@ -9,6 +9,7 @@ import ctypes.util
 from fractions import Fraction
 import os
 import re
+import time
 import av
 import importlib.util
 from pathlib import Path
@@ -69,13 +70,19 @@ class StripeEncoder:
         if self.backend not in ('libx264','libopenh264','libvpx'):raise ValueError('encoder selection')
 
     def encode(self,pixels,width,height,bitrate,reset=False,selected="avc1.420033",regions=None):
+        # MP-08/MP-10: private, opt-in stage clocks; no raster/region data.
+        self.timings=[]
+        tracing=os.environ.get('CHARIOX_BROWSER_DISPLAY_TIMING')=='1'
+        def stamp():return time.time_ns()/1000000 if tracing else 0
+        def timing(stage,start):
+            if tracing:self.timings.append([stage,start,stamp()])
         self.protection_dropped=False
         if type(width) is not int or width<16 or width>2560 or width%2 or height>1600 or len(pixels)!=width*height*4:raise ValueError('stripe geometry')
         backend="libvpx" if selected=="vp8" else self.backend
         if selected not in ("vp8","avc1.420033") or (selected=="avc1.420033" and backend=="libvpx"):raise ValueError("stripe codec selection")
         self.effective_backend=backend
         regions=[] if regions is None else regions
-        _protection.black_input(pixels,width,height,regions)
+        at=stamp();_protection.black_input(pixels,width,height,regions);timing('codec_input_guard',at)
         protected_bounds=_protection.bounds(regions,width,height)
         config=(width,height,bitrate,backend,repr(regions))
         if config!=self.config:self.rows={};self.config=config;reset=True
@@ -84,13 +91,16 @@ class StripeEncoder:
         output=[]
         def encode_row(item):
             row,(y,h)=item
+            at=stamp()
             data=bytes(pixels[y*width*4:(y+h)*width*4])
             signature=_xxh(ctypes.cast(ctypes.c_char_p(data),ctypes.c_void_p),len(data))
+            timing('codec_row_copy_hash',at)
             old=self.rows.get(row)
             # Fast hash is only a prefilter. Equal hash compares exact admitted
             # bytes, so a collision cannot omit a changed row.
             if old and row not in resets and old['hash']==signature and old['pixels']==data:return None
             if old is None or row in resets:
+                at=stamp()
                 if backend=='libopenh264' and os.environ.get('CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER'):
                     spec=importlib.util.spec_from_file_location('native_openh264',Path(__file__).with_name('kernel-browser-openh264.py'));module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
                     codec=module.NativeOpenH264(width,h,max(16000,int(bitrate*.45*h/height)))
@@ -104,16 +114,19 @@ class StripeEncoder:
                 else:codec.options={'deadline':'realtime','cpu-used':'8','lag-in-frames':'0','g':'120','error-resilient':'1','bufsize':str(max(16000,codec.bit_rate//20)),'maxrate':str(codec.bit_rate),'minrate':'0','undershoot-pct':'95','overshoot-pct':'5','qmin':'4','qmax':'48','rc_init_occupancy':str(max(16000,codec.bit_rate//20)),'max-intra-rate':'200'}
                 old={'codec':codec,'sequence':0,'converter':BgrConverter(),
                      'guard':_protection.DecodedMaskGuard(selected) if any(left<right and top<y+h and bottom>y for left,top,right,bottom in protected_bounds) else None};self.rows[row]=old
-            codec=old['codec'];frame=old['converter'].convert(data,width,h)
+                timing('codec_row_init',at)
+            at=stamp();codec=old['codec'];frame=old['converter'].convert(data,width,h);timing('codec_convert',at)
             frame.time_base=codec.time_base;frame.pts=old['sequence']
             frame.pict_type=av.video.frame.PictureType.I if old['sequence']==0 else av.video.frame.PictureType.NONE
-            packets=list(codec.encode(frame))
+            at=stamp();packets=list(codec.encode(frame));timing('codec_encode',at)
             if len(packets)!=1:raise ValueError('stripe packet count')
             packet=bytes(packets[0]);key=packets[0].is_keyframe if selected=='vp8' else any(nal and nal[0]&31==5 for nal in re.split(b'\x00\x00\x01',packet))
-            if old['guard'] and not old['guard'].safe(packet,regions,width,h,y=y):
-                return False
+            if old['guard']:
+                at=stamp();safe=old['guard'].safe(packet,regions,width,h,y=y);timing('codec_output_guard',at)
+                if not safe:return False
             previous=old['sequence'];old.update(sequence=previous+1,hash=signature,pixels=data)
-            return dict(row=row,y=y,height=h,codec=selected,key=key,sequence=previous+1,reference_sequence=None if key else previous,data_base64=base64.b64encode(packet).decode())
+            at=stamp();result=dict(row=row,y=y,height=h,codec=selected,key=key,sequence=previous+1,reference_sequence=None if key else previous,data_base64=base64.b64encode(packet).decode());timing('codec_base64',at)
+            return result
         # MP-10: one bounded pool, one codec thread per independent row.
         # Unchanged rows return before codec conversion or rate control.
         work=enumerate(row_geometry(height))

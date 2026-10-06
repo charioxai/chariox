@@ -12,6 +12,7 @@ import stat
 import subprocess
 import threading
 import uuid
+import time
 from pathlib import Path
 from fractions import Fraction
 import av
@@ -146,6 +147,7 @@ def main():
                 # receives headers only; the kernel consumes the private file.
                 reply={'stripes':rows,'backend':stripes.effective_backend,'workers':stripes.workers if stripes.effective_backend=='libx264' else 1,'converter':'libyuv' if all(row['converter'].convert_native for row in stripes.rows.values()) else 'swscale'}
                 if stripes.protection_dropped:reply['dropped']=True
+                at=time.time_ns()/1000000
                 root=os.environ.get('CHARIOX_BROWSER_DISPLAY_PACKET_ROOT')
                 if root and rows:
                     directory=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
@@ -162,6 +164,7 @@ def main():
                         reply['packet']={'name':name,'length':len(payload)}
                         reply['stripes']=[{k:v for k,v in row.items() if k!='data_base64'} for row in rows]
                     finally:os.close(directory)
+                if os.environ.get('CHARIOX_BROWSER_DISPLAY_TIMING')=='1':reply['timings']=[*stripes.timings,['codec_packetize',at,time.time_ns()/1000000]]
                 print(json.dumps(reply,separators=(',',':')),flush=True);continue
             if request.get('raw',{}).get('shared'):mapping.close()
             if request.get('operation')=='fingerprint':

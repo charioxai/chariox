@@ -52,6 +52,7 @@ export class BrowserEncoder {
  get backend(){return this.fallback.backend ?? 'webcodecs';}
  get converter(){return this.fallback.converter;}
  get workers(){return this.fallback.workers;}
+ set timing(value){this.fallback.timing=value;}
  discard(encoded){this.fallback.discard?.(encoded)}
  handedOff(encoded){this.fallback.handedOff?.(encoded)}
  async encodeStripes(...args){return this.fallback.encodeStripes(...args)}

@@ -2,8 +2,7 @@ import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-5: bounded CDP PNG masking, using the Room's trusted region locator.
 // Unsupported/racing layout receives an opaque whole-frame mask. Page code
 // never participates in drawing/removing the masks. No desktop dependency.
-import { deflateSync, inflateSync } from "node:zlib";
-import { createHash } from 'node:crypto';
+import { deflateSync, inflateSync, crc32 } from "node:zlib";
 import { locateBrowserRegions } from "./browser-observation-regions.mjs";
 
 const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -123,11 +122,18 @@ export function maskPng(data, regions, scale = 1) {
 // MP-08/MP-11: never mutate a leased raster or let its unmasked shared file
 // bypass protection in an encoder/native tile. Only masked bytes leave here.
 export const displayMaskRegions = Symbol('kernel display protection');
-export function maskNativeRaster(raw, regions) {
+export function maskNativeRaster(raw, regions, previousRegions) {
   if(!regions.length)return raw;
   const {width,height}=raw;
   const frame=maskPixels({width,height,pixels:Buffer.from(raw.pixels)},regions.map(r=>[r.x,r.y,r.width,r.height]));
-  const result={...raw,...frame,[displayMaskRegions]:regions,damage:[0,0,width,height],signature:createHash('sha256').update(frame.pixels).digest('hex'),retain(){},release(){}};
+  // MP-08/MP-10/MP-11: scheduling hint over protected pixels only. This is
+  // never an attestation or an equality proof: stripes compare exact bytes,
+  // and native exact damage must ship even when this hint collides.
+  // Identical trusted masks cannot change a pixel outside the actual readback
+  // damage. First masks, moved masks and opaque recovery still require a full
+  // repair; the capture owner supplies the preceding admitted mask geometry.
+  const damage=previousRegions&&JSON.stringify(previousRegions)===JSON.stringify(regions)?raw.damage:[0,0,width,height];
+  const result={...raw,...frame,[displayMaskRegions]:regions,damage,signature:crc32(frame.pixels).toString(16),retain(){},release(){}};
   delete result.shared;delete result.readRegion;
   return result;
 }

@@ -18,7 +18,9 @@ test('MP-10 real native row bytes bypass Node and discard only unsent packets',a
   const bytes=await readFile(root+'/'+encoded.packet.name);assert.equal(bytes.length,encoded.packet.length);
   const rows=JSON.parse(bytes);assert.ok(rows.every(r=>typeof r.data_base64==='string'));
   assert.deepEqual(rows.map(({data_base64,...header})=>header),encoded.stripes);
-  encoder.discard(encoded);assert.deepEqual(await readdir(root),[]);
+  encoder.discard(encoded);
+  const remaining=await readdir(root);assert.equal(remaining.length,1);assert.match(remaining[0],/^encoder-/);
+  assert.deepEqual(await readdir(root+'/'+remaining[0]),['raster'],'only the bounded active request snapshot remains');
   const second=await encoder.encodeStripes(raw,8000000,true);encoder.handedOff(second);
   await encoder.close();assert.deepEqual(await readdir(root),[second.packet.name],'only Rust consumes a handed-off packet');
   await unlink(root+'/'+second.packet.name);

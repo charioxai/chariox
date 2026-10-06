@@ -90,3 +90,14 @@ test('MP-11 a trusted metadata reply after protection retirement cannot reactiva
  const guard=new NativeRegionProtection(c,'s');const pending=guard.refresh();await entered;guard.retire();release();await assert.rejects(pending,/retired/);
  assert.equal(guard.guard,null);
 });
+
+test('MP-08/MP-10/MP-11 stable trusted masks preserve small native damage; mask transitions repair the full viewport',()=>{
+ const original={...raw(),damage:[1100,20,1180,60]},regions=[region];
+ const stable=maskNativeRaster(original,regions,regions);
+ assert.deepEqual(stable.damage,original.damage);
+ assert.equal(stable.pixels[(240*1280+950)*4],0);
+ original.pixels.fill(17);assert.equal(stable.pixels[(30*1280+1110)*4],255,'protected snapshot is immutable');
+ for(const previous of [undefined,[],[{...region,x:800}], [{x:0,y:0,width:1280,height:800}]]){
+  assert.deepEqual(maskNativeRaster(raw(),regions,previous).damage,[0,0,1280,800]);
+ }
+});

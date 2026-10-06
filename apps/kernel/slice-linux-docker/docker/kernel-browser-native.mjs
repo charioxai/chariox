@@ -93,9 +93,11 @@ export class LinuxCapture {
    const visibility=await this.connection.send('Runtime.evaluate',{expression:'document.visibilityState',contextId:this.contextId,returnByValue:true},this.sessionId);
    this.timing('native_visibility_fence',at);
    if(visibility.result?.value!=='visible')throw Error('native source not visible');
-   const masked=maskNativeRaster(raw,await this.regions.regions(raw));
+   at=performance.timeOrigin+performance.now();const regions=await this.regions.regions(raw);this.timing('native_region_fence',at);
+   at=performance.timeOrigin+performance.now();const masked=maskNativeRaster(raw,regions,this.previousRegions);this.timing('native_mask_copy_hash',at);
    if(masked!==raw){raw.release?.();raw=masked;this.publishingRaw=raw;}
    if(!this.valid())break;
+   this.previousRegions=regions;
    this.motionStreak=performance.now()-this.changedAt<90?this.motionStreak+1:1;this.changedAt=performance.now();
    this.timing('native_xshm_capture',raw.captured_ms); // includes bounded pipe delivery and source fence.
    this.latest?.raw.release?.();

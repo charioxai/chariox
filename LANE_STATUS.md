@@ -1,19 +1,15 @@
-# MP-08/MP-10/MP-11 — phase19 FINAL; real acceptance BLOCKED
+# MP-08/MP-10/MP-11 — phase20 performance IN PROGRESS
 
-2026-10-06: base b77569f2e; runtime0acaf81db; verifier40905d8c0. Local447/relay90 unchanged. Local [skip ci] commits only.
+2026-10-06: required base7cf42bc9014994022cd47708eaaff29a729f1cb7; branch md/display-perf. Local447/relay90 unchanged. Read phase19 report and lane history. Measure capture/convert/encode/packetize/client stages before runtime changes, fix dominant stage first, preserve exact settle and fail-closed codec masking. Targets DPR2>=30fps/<50ms input;1080p<=1pipeline core/<50ms input and beat supplied Selkies baseline. Final210-cycle zero-violation protection gate required. Local commits only [skip ci]; no push/CI/deploy.
 
-MP-11 P1: base RED3/107 presentations. Exact public raster replay proves source RGB0 reconstructs RGB76; guarded replay drops the whole batch. Validate masked input and actual decoded output before packetization, reset uncertain references, recover with exact protected PNG. Committed native gate:210motion/settle/reference-loss cycles,5741presentations, zero violations. DPR2 final10cycles/235presentations and manual-credit10/358 also have zero violations. These are component evidence, not live acceptance. Current protection-anchor semantic review remains coordinator work.
+## MP-08/MP-10 Coordinator asks
 
-MP-08/MP-10: profile identifies software encode as largest active helper stage. Fresh1080p canvas pipeline1.873cores,57.80fps, click/typeP9551.1/52.3ms; docs52.9/50.5ms. Existing720p full-video shows no consistent win; experiment removed. DPR2 motion7.28fps is RED. No performance acceptance or GPU result claimed.
+Real live matrix remains coordinator-run per phase20 assignment: actual Cloud app+flags, hostedwss~8Mbps/RTT>=60ms, public-site list DPR1/2 and multi-hour stability. Lane forbidden to contact hosted relay/Apps. Deliver exact kits/commands and per-condition local limitations. No protocol allocation needed yet.
 
-MP-08/MP-10/MP-11 artifacts: exact product kernel/relay + self-contained Bun/OpenTUI chariox, product-kit-final SHA72b1812e; final component kit SHA50b8e604 (verifier40905, binary0aca). Full hashes, commands, step screenshots/logs and failed attempts in docs/MULTIDOMAIN_DISPLAY_PHASE19_RESULTS.md and external phase19/FINAL19.json.245configured Node,5protection+6stripe+6encoder Python,16client,7navigation/settle pass;32focused Rust pass/5ignored. Release and compiled TUI build/help checks pass; help is not live acceptance.
+## MP-11 Review inbox
 
-## MP-08/MP-10/MP-11 Coordinator asks
+Absolute lane review inbox absent at start; recheck after every milestone/commit. No semantic approval inferred. Own disposable runtime identities only; credentials/shared services/caches/foreign resources excluded from cleanup.
 
-Run unchanged masked gate and real Cloud md/display-web aa9c44f8/p1b app entry+actual flags against the exact artifacts. This lane is forbidden to contact hosted relay/Apps; supplied Cloudf6 lacks the paired real app/e2e stack. Coordinator must execute real public-site list, hostedwss ~8Mbps/RTT>=60ms, desktop DPR1/2, real linked official provider/TUI where applicable and multi-hour stability. Supply a real GPU machine endpoint for hardware comparison. Exact kit/setup instructions are in the report. Required coverage/latency/scroll/site screenshots remain unaccepted; no mock substitutes.
+## MP-08/MP-10/MP-11 phase20 source checkpoint
 
-## MP-11 Review inbox and cleanup
-
-Absolute display-perf inbox absent after runtime/verifier milestone batches; check once more after final report commit. P1 mapping:0aca guard + deterministic replay +210cycles; real-site request mapping: explicit coordinator blocker and exact kits/instructions. No review approval inferred; no non-security exact-blob blocker under narrowed MP-11.
-
-MP-11:24component receipts, all state/temp roots absent;1286resource samples, MemAvailable>=22.00GiB/disk>=88.46GiB. Removed exact own diagnostic directories, experiment worktree/branch and1.50GB obsolete public kits/dist outputs. Retain final kits/binaries/evidence/build dependencies. No foreign services/processes/resources, credentials, protected key stores/backups, reviewer state, shared Cargo cache or Docker touched. FINAL; stop.
+Before changes: protected DPR2 stage diagnostic6.88fps, click/typeP9574.0/68.7ms, pipeline2.12cores. Native mask copy/hash14.43msP50; full stripe encode~16ms plus raw IPC; queued event batching33ms remains a separate input delay. Scheduling CRC over masked bytes raises motion15.53fps; immutable file handoff preview24.01fps. Two workers regresses20.87fps and is rejected (explicit experiment only, default remains1). None passes full performance acceptance. Small masked damage now retains exact readback bounds only with identical preceding trusted masks; transitions stay full repair. Codec guards unchanged. Display-enabled kernel event delay0 retains ordinary bounded event lane/control priority; wire/protocol447/90 unchanged. Await exact rebuilt runtime and final210-cycle gate.

@@ -283,3 +283,28 @@ test('MP-08/MP-10 input damage bypasses pacing once and repays bounded debt',asy
   waits.length=0;const start=now;await stream.frame({...source(3),input_triggered:false},'d',2);assert.ok(now>start,'motion pays the negotiated rate');
  }finally{await stream.close()}
 });
+
+test('MP-08/MP-10 native exact damage cannot disappear on a scheduling fingerprint collision',async()=>{
+ const stream=new DisplayStream(binding,{now:()=>0,wait:async()=>{},encoder:{close:async()=>{}}});
+ stream.sequence=1;stream.document_id='d';stream.previous={signature:'collision'};stream.exact=true;
+ const source={generation:1,width:1280,height:800,data_base64:'collision',native_tiles:[{x:0,y:0,width:1,height:1,data_base64:encodePng(1,1,Buffer.from([17,18,19,255]))}]};
+ try{const frame=await stream.frame(source,'d',1);assert.equal(frame?.kind,'tiles');assert.equal(frame.sequence,2);assert.equal(frame.tiles.length,1)}finally{await stream.close()}
+});
+
+test('MP-08/MP-10/MP-11 private encoder snapshot is stable across source mutation, reused exchanges and teardown',async()=>{
+ const {mkdtemp,readFile,readdir,rm}=await import('node:fs/promises');const {tmpdir}=await import('node:os');const path=await import('node:path');
+ const root=await mkdtemp(path.join(tmpdir(),'chariox-mp20-encoder-'));
+ const previous=process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT;process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT=root;
+ const encoder=new PortableEncoder();const pixels=Buffer.alloc(128*128*4,0);const raw={width:128,height:128,format:'bgr0',length:pixels.length,pixels};
+ try{
+  const first=encoder.encodeStripes(raw,8000000,true);pixels.fill(255);const a=await first;
+  assert.equal(a.stripes.length,8);assert(a.stripes.every(row=>row.key));
+  const firstBytes=await readFile(path.join(root,a.packet.name));encoder.discard(a);
+  const b=await encoder.encodeStripes(raw,8000000);
+  assert.equal(b.stripes.length,8);assert(b.stripes.every(row=>row.reference_sequence===1));
+  assert.notDeepEqual(await readFile(path.join(root,b.packet.name)),firstBytes);encoder.discard(b);
+  const idle=await encoder.encodeStripes(raw,8000000);assert.deepEqual(idle.stripes,[]);
+  pixels.fill(0);const recover=await encoder.encodeStripes(raw,8000000,true);assert(recover.stripes.every(row=>row.key));encoder.discard(recover);
+  await encoder.close();assert.deepEqual(await readdir(root),[],'owned handoff and packet artifacts must settle');
+ }finally{await encoder.close();if(previous===undefined)delete process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT;else process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT=previous;await rm(root,{recursive:true,force:true})}
+});
