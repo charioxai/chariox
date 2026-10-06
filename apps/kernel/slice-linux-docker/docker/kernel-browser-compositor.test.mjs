@@ -56,3 +56,17 @@ test('MD-DISPLAY source closed during render lease admission releases the late l
  admit(async()=>{releases++});await assert.rejects(started,/retired/);
  assert.equal(releases,1);assert.equal(f.handlers.size,0);
 });
+
+test('MP-11 protection retirement keeps the renderer lease and rejects a late old capture',async()=>{
+ const f=fixture();await f.source.start();let release,enter,captures=0;
+ const held=new Promise(r=>release=r),entered=new Promise(r=>enter=r);
+ const black=encodePng(8,8,Buffer.alloc(8*8*4,0));
+ f.source.protect=async()=>{if(++captures===1){enter();return held;}return {data_base64:black};};
+ f.emit('Page.screencastFrame',{data:encodePng(8,8,Buffer.alloc(8*8*4,255)),sessionId:2});await entered;
+ f.emit('DOM.attributeModified',{name:'data-chariox-observation-protected'});
+ assert.equal(f.source.sample(),null);assert.equal(f.source.closed,false);assert.equal(f.source.regionRevision,1);
+ assert(!f.calls.includes('Page.stopScreencast'),'retirement cannot interrupt mouse press/release');
+ release({data_base64:encodePng(8,8,Buffer.alloc(8*8*4,255))});await new Promise(r=>setTimeout(r,0));
+ assert.equal(f.source.sample().data_base64,black);assert.equal(captures,2);
+ await f.source.close();
+});

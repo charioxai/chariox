@@ -9,7 +9,8 @@ import {fileURLToPath} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
 import {NativePipe,NativeRaster} from './kernel-browser-native-pipe.mjs';
 import {ownsDisplay} from './kernel-browser-owned-display.mjs';
-import {decodePng} from './kernel-browser-pixels.mjs';
+import {decodePng,maskNativeRaster} from './kernel-browser-pixels.mjs';
+import {NativeRegionProtection,regionProtectionChanged} from './kernel-browser-region-protection.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 import {safeChildPid} from './kernel-browser-display.mjs';
 export async function selectNativeCapture({platform=process.platform,display,create}){
@@ -27,6 +28,9 @@ export class LinuxCapture {
   this.off=this.connection.subscribe(m=>{
    if(m.sessionId===this.sessionId&&m.method==='Page.frameNavigated'&&!m.params?.frame?.parentId)this.fence();
    if(m.method==='Target.targetCreated'&&m.params?.targetInfo?.type==='page')this.fence();
+   // MP-11: attribute-only protection changes produce no XDamage. Retire
+   // cached pixels/dependencies before another credit can use their old mask.
+   if(this.attested&&regionProtectionChanged(m,this.sessionId,this.regions?.guard?.hasRegions))this.fence();
   });
   try{
    this.phase='bounds';const {windowId}=await this.connection.send('Browser.getWindowForTarget',{targetId:this.tab.target_id});
@@ -39,6 +43,7 @@ export class LinuxCapture {
    await delay(100);
    // Force the emulated viewport to paint before establishing its native crop.
    await this.screenshot();
+   this.regions=new NativeRegionProtection(this.connection,this.sessionId);await this.regions.refresh();
    this.poolRoot=await mkdtemp(path.join(this.display.root,'raster-'));
    this.phase='readback';const child=spawn(process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',['-u',fileURLToPath(new URL('./kernel-browser-xshm.py',import.meta.url))],{env:{...process.env,...this.display.environment},stdio:['pipe','pipe','pipe']});this.child=child;
    const fail=()=>this.fence();child.on('error',fail);child.on('exit',fail);child.stdin.on('error',fail);
@@ -80,13 +85,15 @@ export class LinuxCapture {
  async publish(){
   if(this.publishing)return;this.publishing=true;
   try{while(this.pending&&this.valid()){
-   const raw=this.pending;this.pending=null;this.publishingRaw=raw;
+   let raw=this.pending;this.pending=null;this.publishingRaw=raw;
    let at=performance.timeOrigin+performance.now();
    await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id);this.timing('native_document_fence',at);
    at=performance.timeOrigin+performance.now();
    const visibility=await this.connection.send('Runtime.evaluate',{expression:'document.visibilityState',contextId:this.contextId,returnByValue:true},this.sessionId);
    this.timing('native_visibility_fence',at);
    if(visibility.result?.value!=='visible')throw Error('native source not visible');
+   const masked=maskNativeRaster(raw,await this.regions.regions(raw));
+   if(masked!==raw){raw.release?.();raw=masked;this.publishingRaw=raw;}
    if(!this.valid())break;
    this.motionStreak=performance.now()-this.changedAt<90?this.motionStreak+1:1;this.changedAt=performance.now();
    this.timing('native_xshm_capture',raw.captured_ms); // includes bounded pipe delivery and source fence.

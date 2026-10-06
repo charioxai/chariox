@@ -3,6 +3,7 @@ import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // Unsupported/racing layout receives an opaque whole-frame mask. Page code
 // never participates in drawing/removing the masks. No desktop dependency.
 import { deflateSync, inflateSync } from "node:zlib";
+import { createHash } from 'node:crypto';
 import { locateBrowserRegions } from "./browser-observation-regions.mjs";
 
 const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -118,6 +119,33 @@ export function maskPixels({width,height,pixels}, regions) {
 export function maskPng(data, regions, scale = 1) {
   const frame=maskPixels(decodePng(data,scale),regions);
   return encodePng(frame.width,frame.height,frame.pixels);
+}
+// MP-08/MP-11: never mutate a leased raster or let its unmasked shared file
+// bypass protection in an encoder/native tile. Only masked bytes leave here.
+export function maskNativeRaster(raw, regions) {
+  if(!regions.length)return raw;
+  const {width,height}=raw;
+  const frame=maskPixels({width,height,pixels:Buffer.from(raw.pixels)},regions.map(r=>[r.x,r.y,r.width,r.height]));
+  const result={...raw,...frame,damage:[0,0,width,height],signature:createHash('sha256').update(frame.pixels).digest('hex'),retain(){},release(){}};
+  delete result.shared;delete result.readRegion;
+  return result;
+}
+// MP-08/MP-11: crop/thumbnail only an already-protected viewport. The display
+// thumbnail is a damage hint; exact crops preserve every admitted native pixel.
+export function cropProtectedPng(data,clip,scale=1){
+  if(!clip)return {data_base64:data,width:geometry.width*scale,height:geometry.height*scale};
+  if(clip.width===geometry.width&&clip.height===geometry.height&&(clip.scale??1)===1)return {data_base64:data,width:geometry.width*scale,height:geometry.height*scale};
+  const frame=decodePng(data,scale),factor=clip.scale??1;
+  const full=clip.width===geometry.width&&clip.height===geometry.height;
+  const left=full?0:Math.round(clip.x*scale),top=full?0:Math.round(clip.y*scale);
+  const width=Math.round(clip.width*scale*factor),height=Math.round(clip.height*scale*factor);
+  if(!Number.isFinite(factor)||factor<=0||factor>1||![left,top,width,height].every(Number.isSafeInteger)||left<0||top<0||width<1||height<1||left+clip.width*scale>frame.width||top+clip.height*scale>frame.height)throw Error('MP-11: protected crop bounds');
+  const pixels=Buffer.alloc(width*height*4);
+  for(let y=0;y<height;y++)for(let x=0;x<width;x++){
+    const source=((top+Math.floor(y/factor))*frame.width+left+Math.floor(x/factor))*4;
+    frame.pixels.copy(pixels,(y*width+x)*4,source,source+4);
+  }
+  return {width,height,data_base64:encodePng(width,height,pixels)};
 }
 export async function captureProtectedPage(browser, tab, values, targets, capture, scale = 1, clip = null) {
   const pixelScale = scale * (clip?.scale ?? 1);

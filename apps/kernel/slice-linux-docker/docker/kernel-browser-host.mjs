@@ -13,7 +13,7 @@ import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from "./browser-controller-actions.mjs";
-import { captureRegionMasks } from "./kernel-browser-region-protection.mjs";
+import { captureRegionMasks, captureProtectedDisplay, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
 import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
 
 import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
@@ -161,17 +161,17 @@ export class KernelBrowserHost {
     if(stream.codec==='png'||this.protection.unknown||this.protection.values.length||this.protection.targets.length||
       [...this.streams.values()].some(s=>s.tabId===tab.tab_id))return null;
     let entry=this.compositors.get(tab.tab_id);
-    if(entry&&entry.document!==tab.document_id){await this.closeCompositors(tab.tab_id);entry=null;}
+    if(entry&&(entry.document!==tab.document_id||entry.source?.closed)){await this.closeCompositors(tab.tab_id);entry=null;}
     if(!entry){
       const {connection,sessionId}=await this.browser.resolvePageTarget(tab.target_id);
       const policy=this.protection,generation=this.generation;
       let source=await selectNativeCapture({display:this.chromium.display,create:async()=>{
         if(this.tabs.size!==1)throw Error('native tab scope');
-        const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.child?.pid,connection,sessionId,tab,scale:stream.device_scale_factor,policy,screenshot:()=>this.screenshot(tab,null,false,'png',false),allowed:p=>this.tabs.size===1&&this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation,timing:this.timing});
+        const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.child?.pid,connection,sessionId,tab,scale:stream.device_scale_factor,policy,screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.tabs.size===1&&this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation,timing:this.timing});
         return await source.start();
       }});
       source??=new CompositorSource({connection,sessionId,tab,scale:stream.device_scale_factor,policy,timing:this.timing,width:geometry.width*stream.device_scale_factor,height:geometry.height*stream.device_scale_factor,format:'jpeg',acquire:()=>this.sampleLane(tab).run('input',()=>this.browser.inputCapture.hold(connection,sessionId)),
-        screenshot:clip=>this.screenshot(tab,clip),allowed:p=>this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation});
+        screenshot:clip=>this.displayScreenshot(tab,clip),protect:()=>this.displayScreenshot(tab),allowed:p=>this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation});
       entry={source,document:tab.document_id,ready:source instanceof LinuxCapture?Promise.resolve(source):source.start().catch(()=>null)};this.compositors.set(tab.tab_id,entry);
     }
     return await entry.ready;
@@ -260,6 +260,11 @@ export class KernelBrowserHost {
     if(!lane){lane=new SampleLane();this.sampleLanes.set(tab.tab_id,lane)}
     return lane;
   }
+  // MP-08/MP-11: all display routes consume already-masked PNGs. Use the full
+  // viewport so protected DOM bounds cannot shift with a page/crop origin.
+  async displayScreenshot(tab,clip=null,optimizeForSpeed=true){
+    return captureProtectedDisplay(this,tab,clip,optimizeForSpeed);
+  }
   async screenshot(tab, clip = null, protectedCapture = false, format = "png", optimizeForSpeed = true) {
     const started = timestamp();
     const scale = this.scales.get(tab.tab_id) ?? 1;
@@ -299,28 +304,25 @@ export class KernelBrowserHost {
       if (stream.capturing || this.protection.unknown || Date.now() < (stream.nextCapture ?? 0)) return;
       stream.capturing = true;
       stream.nextCapture = Date.now() + 200;
-      const policy = this.protection, generation = this.generation;
-      void this.screenshot(tab).then(frame => {
-        if (this.protection === policy && this.generation === generation && this.streams.get(id) === stream) {
+      const policy = this.protection, generation = this.generation,regionEpoch=stream.regionEpoch??0;
+      void this.displayScreenshot(tab).then(frame => {
+        if (this.protection === policy && this.generation === generation && this.streams.get(id) === stream&&(stream.regionEpoch??0)===regionEpoch) {
           if (!stream.boundFrames) delete frame.document_id;
           stream.latest = { ...frame, sequence: ++stream.sequence };
         }
       }).catch(() => {}).finally(() => { stream.capturing = false; });
     };
     stream.off = connection.subscribe(message => {
+      if(regionProtectionChanged(message,sessionId)){
+        stream.regionEpoch=(stream.regionEpoch??0)+1;
+        stream.latest=this.maskedStreamFrame(stream);captureProtected();return;
+      }
       if (message.method !== "Page.screencastFrame" || message.sessionId !== sessionId) return;
       const data = message.params?.data;
       if (typeof data === "string" && data.length <= 4 * 1024 * 1024 && Date.now() <= stream.expires) {
-        const protectedPixels = this.protection.unknown || this.protection.values.length > 0;
-        if (!protectedPixels && !stream.boundFrames) {
-          stream.latest = { generation: this.generation, tab_id: tab.tab_id, mime_type: "image/jpeg", data_base64: data,
-            width: viewport.css_width, height: viewport.css_height, sequence: ++stream.sequence };
-        } else {
-          // Raw screencast timestamps cannot bind a masking layout. Use the
-          // same protected screenshot path, triggered by screencast activity.
-          // One capture at a time, at most 5Hz; never queue page frames.
-          captureProtected();
-        }
+        // MP-11: raw screencast timestamps cannot bind protected DOM layout.
+        // They wake the same masked capture path; no raw page bytes escape.
+        captureProtected();
       }
       // One CDP source per page; subscriber fan-out must not duplicate ACKs.
       if ([...this.streams].find(([, current]) => current.sessionId === sessionId)?.[0] === id) {
@@ -332,7 +334,7 @@ export class KernelBrowserHost {
     this.armExpiry(id, stream);
     try { if (!alreadyStreaming) await connection.send("Page.startScreencast", { format: "jpeg", quality: 80, maxWidth: geometry.width, maxHeight: geometry.height, everyNthFrame: 1 }, sessionId); }
     catch (error) { clearTimeout(stream.timer); stream.off(); this.streams.delete(id); throw error; }
-    if (this.protection.unknown || this.protection.values.length || boundFrames) captureProtected();
+    captureProtected();
     return { generation: this.generation, subscription_id: id };
   }
   armExpiry(id, stream) {
@@ -404,8 +406,7 @@ export class KernelBrowserHost {
       // and pending repairs are then invalidated by the new document as usual.
       if (!stream.capture || stream.capture.document !== tab.document_id)
         stream.capture = new DisplayCapture((clip) => {
-          if(clip?.display_motion) { const {display_motion,...nativeClip}=clip; return this.screenshot(tab,nativeClip,false,'jpeg'); }
-          return this.screenshot(tab,clip);
+          return this.displayScreenshot(tab,clip);
         }, stream.device_scale_factor, this.timing);
       const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
       const layoutAt = timestamp();
@@ -418,6 +419,8 @@ export class KernelBrowserHost {
       const capturePolicy=this.protection;
       const epoch = this.inputEpochs.get(tab.tab_id) ?? 0;
       const compositor=await this.compositorFor(tab,stream);
+      const regionRevision=compositor?.regionRevision;
+      if(stream.compositorRegionRevision!==regionRevision){stream.invalidate();stream.compositorRegionRevision=regionRevision;}
       const sample=compositor?.sample();
       let source;
       if(compositor&&sample&&stream.codec!=='png'){
@@ -428,7 +431,7 @@ export class KernelBrowserHost {
         // packet. A lost canvas base also reoffers any skipped patchable source.
         // Once retired, empty credits must let the pending recovery key finish.
         if(stream.previous&&(stream.document_id!==tab.document_id||!stream.acceptsCredit(command.after_sequence)))stream.invalidate();
-        if(!stream.refiner||stream.refinerDocument!==tab.document_id){await stream.refiner?.close();stream.refiner=new NativeRefiner(()=>this.screenshot(tab,null,false,"png",false),{now:()=>performance.now(),prepareTiles:true,timing:this.timing});stream.refinerDocument=tab.document_id;}
+        if(!stream.refiner||stream.refinerDocument!==tab.document_id){await stream.refiner?.close();stream.refiner=new NativeRefiner(()=>this.displayScreenshot(tab,null,false),{now:()=>performance.now(),prepareTiles:true,timing:this.timing});stream.refinerDocument=tab.document_id;}
         const policy=this.protection;
         const binding={source:compositor,document:tab.document_id,policy,epoch,serial:sample.serial,scale:stream.device_scale_factor,native:compositor.attested===true&&Boolean(sample.raw)};
         // Always run the deadline/epoch-aware verifier before unchanged reuse.
@@ -458,8 +461,8 @@ export class KernelBrowserHost {
       const frame = await stream.frame(source, source.document_id, command.after_sequence, async () => {
         assertNotCancelled(signal);
         await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-        return source.motion || ((this.inputEpochs.get(tab.tab_id) ?? 0) === epoch&&(source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial));
-      },()=>this.protection===capturePolicy&&(source.motion||((this.inputEpochs.get(tab.tab_id)??0)===epoch&&(source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial))));
+        return !compositor?.closed&&compositor?.regionRevision===regionRevision&&(source.motion || ((this.inputEpochs.get(tab.tab_id) ?? 0) === epoch&&(source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)));
+      },()=>!compositor?.closed&&compositor?.regionRevision===regionRevision&&this.protection===capturePolicy&&(source.motion||((this.inputEpochs.get(tab.tab_id)??0)===epoch&&(source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial))));
       if(frame){stream.compositorSerial=source.refinement_serial ?? source.serial;if(source.input_triggered)stream.deliveredInputEpoch=epoch;}
       return { generation: this.generation, frame_sent: frame !== null, display_frame: frame };
     }
@@ -557,7 +560,7 @@ export class KernelBrowserHost {
       return result;
     }
     if (command.op === "screenshot") {
-      const frame = await this.screenshot(tab, null, command._capture_protection === true);
+      const frame = command._capture_protection===true?await this.screenshot(tab,null,true):await this.displayScreenshot(tab);
       // MD-3: explicit binding is an internal display/MCP seam. Legacy 417
       // still emits its existing frame shape until the coordinator adapter lands.
       if (!command.focused_agent && !command.bound_frames) delete frame.document_id;

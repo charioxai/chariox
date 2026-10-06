@@ -32,7 +32,9 @@ function fixture(root) {
         if (pages.size === 0 && chromium.child) chromium.child.exitCode = 0;
         return {};
       }
-      if (method === "Page.captureScreenshot") return { data: Buffer.from("test-frame").toString("base64") };
+      if (method === 'DOM.getDocument') return {root:{nodeId:1}};
+      if (method === 'DOM.querySelectorAll') return {nodeIds:[]};
+      if (method === "Page.captureScreenshot") return { data: encodePng(1280,800,Buffer.alloc(1280*800*4,255)) };
       if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "frame", loaderId: pages.get(session?.replace("session-", ""))?.document_id ?? `doc-${session?.replace("session-", "")}` } } };
       if (method === "Page.createIsolatedWorld") return { executionContextId: 42 };
       if (method === "Runtime.evaluate") return { result: { value: fixture.secretFocused ?? false } };
@@ -142,9 +144,13 @@ test("MD-2: latest-frame subscription is bounded and invalidated by recovery", (
   const subscription = await host.request({ op: "subscribe", ...binding });
   const session = sent.find(call => call.method === "Page.startScreencast").session;
   for (let count = 0; count < 100; count++) for (const handler of handlers) handler({ method: "Page.screencastFrame", sessionId: session, params: { data: `frame-${count}`, sessionId: count } });
-  const polled = await host.request({ op: "poll", ...subscription });
-  assert.equal(polled.frame.sequence, 100);
-  assert.equal(polled.frame.data_base64, "frame-99");
+  let polled;for(let attempt=0;attempt<50;attempt++){
+    polled=await host.request({op:'poll',...subscription});
+    if(decodePng(polled.frame.data_base64).pixels[0]===255)break;
+    await new Promise(resolve=>setTimeout(resolve,5));
+  }
+  assert(polled.frame.sequence>0&&polled.frame.sequence<=100);
+  assert.equal(polled.frame.mime_type,'image/png');assert.equal(decodePng(polled.frame.data_base64).pixels[0],255);
   assert.equal(sent.filter(call => call.method === "Page.screencastFrameAck").length, 100);
   await host.request({ op: "unsubscribe", ...subscription });
   assert.equal(handlers.size, 0);
@@ -178,7 +184,14 @@ test("MD-5: multiple subscribers share one CDP source and acknowledgment", () =>
   assert.equal(starts.length, 1);
   for (const handler of handlers) handler({ method: "Page.screencastFrame", sessionId: starts[0].session, params: { data: "frame", sessionId: 1 } });
   assert.equal(sent.filter(call => call.method === "Page.screencastFrameAck").length, 1);
-  for (const subscription of [first, second]) assert.equal((await host.request({ op: "poll", ...subscription })).frame.data_base64, "frame");
+  for (const subscription of [first, second]) {
+    let frame;for(let attempt=0;attempt<50;attempt++){
+      frame=(await host.request({op:'poll',...subscription})).frame;
+      if(decodePng(frame.data_base64).pixels[0]===255)break;
+      await new Promise(resolve=>setTimeout(resolve,5));
+    }
+    assert.equal(frame.mime_type,'image/png');assert.equal(decodePng(frame.data_base64).pixels[0],255);
+  }
   await host.request({ op: "unsubscribe", ...first });
   assert(!sent.some(call => call.method === "Page.stopScreencast"));
   await host.request({ op: "unsubscribe", ...second });
@@ -243,7 +256,7 @@ test("MD-5: protection flushes old frames and masks new/retired frames across re
   const session = sent.find(call => call.method === "Page.startScreencast").session;
   const emit = () => { for (const handler of handlers) handler({ method: "Page.screencastFrame", sessionId: session, params: { data: "unsafe-raw-pixels", sessionId: 1 } }); };
   emit();
-  assert.equal((await host.request({ op: "poll", ...subscription })).frame.data_base64, "unsafe-raw-pixels");
+  assert.notEqual((await host.request({ op: "poll", ...subscription })).frame.data_base64, "unsafe-raw-pixels");
   const policy = { unknown: false, values: ["synthetic-only"], targets: [] };
   await host.protect(policy);
   assert.equal((await host.request({ op: "poll", ...subscription })).frame.mime_type, "image/png");
@@ -267,6 +280,17 @@ test("MD-5: unavailable observation policy fences captures and leaves shutdown a
   await host.protect({ unknown: true, values: [], targets: [] });
   await assert.rejects(host.request({ op: "screenshot", tab_id: opened.tab_id, generation: opened.generation }), /registry/);
   assert.equal((await host.request({ op: "stop" })).state, "stopped");
+}));
+
+test('MP-11 legacy observation retires an in-flight frame after attribute-only protection changes',()=>using(async({host,connection,handlers,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'});let entered,release;
+ const waiting=new Promise(resolve=>entered=resolve),held=new Promise(resolve=>release=resolve);
+ connection.beforeSend=async method=>{if(method==='Page.captureScreenshot'){entered();await held;}};
+ const subscription=await host.request({op:'subscribe',tab_id:opened.tab_id,generation:opened.generation});await waiting;
+ const session=sent.find(call=>call.method==='Page.startScreencast').session;
+ for(const handler of handlers)handler({sessionId:session,method:'DOM.attributeModified',params:{name:'data-chariox-observation-protected'}});
+ release();for(let n=0;n<50&&host.streams.get(subscription.subscription_id).capturing;n++)await new Promise(resolve=>setTimeout(resolve,5));
+ assert.equal(decodePng((await host.request({op:'poll',...subscription})).frame.data_base64).pixels[0],0,'retired capture cannot overwrite the opaque observation');
 }));
 test("MD-5: metadata scrubs echoes and never persists a secret-bearing restore URL", () => using(async ({ host }, root) => {
   const opened = await host.request({ op: "open", url: "https://example.com/?q=synthetic-protected-value" });
@@ -534,6 +558,24 @@ for (const kind of ["key", "click"]) {
           observed_by: "terminal:next", input: { kind: "key", key: "Tab" } });
       });
   }));
+}
+
+for (const change of ['stable','layout','metadata','unavailable']) {
+ test(`MP-11 display screenshots mask marked fields before encoding: ${change}`,()=>using(async({host,connection})=>{
+  const send=connection.send;let captured=false;
+  connection.send=async(method,params,session)=>{
+   if(method==='DOM.getDocument'){if(change==='unavailable'||captured&&change==='metadata')throw Error('metadata unavailable');return {root:{nodeId:1}};}
+   if(method==='DOM.querySelectorAll')return {nodeIds:[2]};
+   if(method==='DOM.getBoxModel'){const x=captured&&change==='layout'?100:900;return {model:{border:[x,200,x+150,200,x+150,280,x,280]}};}
+   if(method==='Page.captureScreenshot'){captured=true;return {data:encodePng(1280,800,Buffer.alloc(1280*800*4,255))};}
+   return send(method,params,session);
+  };
+  const opened=await host.request({op:'open',url:'about:blank'});
+  const frame=await host.request({op:'screenshot',tab_id:opened.tab_id,generation:opened.generation});
+  const pixels=decodePng(frame.data_base64).pixels;
+  assert.equal(pixels[(240*1280+950)*4],0,'protected bytes cannot reach an encoder or capture client');
+  assert.equal(pixels[0],change==='stable'?255:0,'racing/unavailable protection masks the whole frame');
+ }));
 }
 
 for (const change of ["stable", "layout", "metadata"]) {

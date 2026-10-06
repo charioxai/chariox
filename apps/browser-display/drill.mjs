@@ -168,7 +168,7 @@ try {
  const port=await until(async()=>{checkChild(viewer,'viewer');try{return Number((await readFile(path.join(viewerHome,'DevToolsActivePort'),'utf8')).split('\n')[0])}catch{return null}},'viewer');
  browser=await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
  const page=await browser.contexts()[0].newPage();page.on('pageerror',()=>errors.push(Error('MD-DISPLAY browser callback failure')));await page.goto(`${origin}/harness.html`);await page.waitForFunction(()=>window.MDDisplay);
- await page.evaluate(async({ready,bitrate,pngOnly,creditWindow,requestedCodec,dpr,defaultDpr})=>{
+ await page.evaluate(async({ready,bitrate,pngOnly,creditWindow,requestedCodec,dpr,defaultDpr,protectedFixture})=>{
   if(pngOnly)globalThis.VideoDecoder=undefined;
   const api=await import('/browser-relay-crypto.mjs');
   const sender=await api.createRelayKeypair();
@@ -210,15 +210,24 @@ try {
    },onEvent:listener=>{listeners.add(listener);return()=>listeners.delete(listener)}};
   mdTransport.subscribeDisplay=binding=>control({kind:'client_subscribe',subscription_id:binding.subscription_id,target:{daemon_id:bootstrap.daemon_id},session_id:binding.subscription_id,attachment_id:String(binding.generation),client_public_key:sender.publicKeyBase64,subscription_scope:'kernel_browser_display',resume_from_event_id:null});
   mdTransport.unsubscribeDisplay=binding=>control({kind:'client_unsubscribe',subscription_id:binding.subscription_id,client_public_key:sender.publicKeyBase64});
-  const motionSamples=new (await import('/motion-samples.mjs')).MotionSamples();
+  const motionSamples=new (await import('/motion-samples.mjs')).MotionSamples();window.mdProtection={frames:0,violations:0,kinds:{},failures:[]};
   window.mdStream=await MDDisplay.attachBrowserDisplay(MDDisplay.canvas,mdTransport,{tab_id:ready.tab_id,generation:ready.generation},{bitrate,creditWindow,...(defaultDpr?{}:{deviceScaleFactor:dpr}),codec:requestedCodec,onTiming:timing,onPresented:frame=>{
+    if(protectedFixture){
+      const pixels=MDDisplay.canvas.getContext('2d').getImageData(908*dpr,208*dpr,134*dpr,64*dpr).data;
+      // MP-11: lossy H264/VP8 may shift a black mask's decoded RGB floor.
+      // Exact PNG is black; codec frames must remain dark and hide the red/text.
+      const limit=frame.kind==='png'?0:32;
+      let opaque=true;for(let i=0;i<pixels.length;i+=4)if(pixels[i]>limit||pixels[i+1]>limit||pixels[i+2]>limit||pixels[i+3]!==255)opaque=false;
+      mdProtection.frames++;mdProtection.violations+=Number(!opaque);mdProtection.kinds[frame.kind]=(mdProtection.kinds[frame.kind]??0)+1;
+      if(!opaque&&mdProtection.failures.length<16)mdProtection.failures.push({sequence:frame.sequence,kind:frame.kind,document:frame.document_id,pixel:Array.from(pixels.slice(0,4))});
+    }
     const sample={sequence:frame.sequence,kind:frame.kind,drawn_ms:stamp(),content_changed:motionSamples.sample(MDDisplay.canvas)};window.mdPresentation=sample;mdPresentations.push(sample);
     requestAnimationFrame(()=>{
       if(window.mdProbeLeft!==undefined){const c=MDDisplay.canvas.getContext('2d');let n=0;for(let i=0;i<5;i++){const p=c.getImageData(mdProbeLeft+4*dpr+i*8*dpr,28*dpr,1,1).data;if(p[0]>128)n|=1<<i}sample.step=n;}
       sample.presented_ms=stamp();
     });
   }});
- },{ready,bitrate:receipt.target_encrypted_bitrate,pngOnly:process.env.MD_PNG_ONLY==='1',creditWindow:Number(process.env.MD_CREDIT_WINDOW||4),requestedCodec:process.env.MD_CODEC||null,dpr:geometry.dpr,defaultDpr:process.env.MD_DEFAULT_DPR==='1'});
+ },{ready,bitrate:receipt.target_encrypted_bitrate,pngOnly:process.env.MD_PNG_ONLY==='1',creditWindow:Number(process.env.MD_CREDIT_WINDOW||4),requestedCodec:process.env.MD_CODEC||null,dpr:geometry.dpr,defaultDpr:process.env.MD_DEFAULT_DPR==='1',protectedFixture:process.env.MD_PROTECTED==='1'});
  receipt.decode_support=await page.evaluate(async()=>Object.fromEntries(await Promise.all(['avc1.420033','vp8'].map(async codec=>[codec,Boolean((await VideoDecoder.isConfigSupported({codec})).supported)]))));
  receipt.default_dpr_negotiation=process.env.MD_DEFAULT_DPR==='1';
  if(receipt.default_dpr_negotiation&&await page.evaluate(()=>mdStream.binding.device_scale_factor)!==1)throw Error('MP-08: #893 default DPR is unsupported');
@@ -320,6 +329,15 @@ try {
  const inputVerified=await verifySettled(()=>page.evaluate(()=>mdStream.next()),attempt=>pair('after-input-verification-'+attempt));
  receipt.final_fidelity=inputVerified.fidelity;receipt.final_verification_attempts=inputVerified.verification_attempts;
  if(!receipt.final_fidelity.lossless)throw Error('MD-DISPLAY: small-change pixels differ');
+ if(process.env.MD_PROTECTED==='1'){
+  receipt.protected_reference_recovery=await page.evaluate(async()=>{
+   const previous=mdStream.presenter.sequence;mdStream.presenter.sequence=0;let frame;const deadline=performance.now()+10000;
+   while(!(frame=await mdStream.next())){if(performance.now()>deadline)throw Error('MP-11: protected reference recovery timeout');await new Promise(r=>setTimeout(r,4));}
+   return {previous,sequence:frame.sequence,kind:frame.kind,independent:frame.kind==='png'||frame.kind==='video'&&frame.key||frame.kind==='stripes'&&frame.stripes.length===8&&frame.stripes.every(row=>row.key)};
+  });
+  if(!receipt.protected_reference_recovery.independent)throw Error('MP-11: protected recovery must be independent');
+  await pair('protected-reference-recovery');
+ }
  // Full navigation preserves the display subscription and rotates its source.
  receipt.fixture_statistics=fixtureStats;
  const oldDocument=await page.evaluate(()=>mdStream.presenter.documentId);
@@ -347,6 +365,10 @@ try {
  const exit=await kernelExit;receipt.kernel_exit=exit;if(exit.code!==0)throw Error('MD-DISPLAY kernel drill failed');
  await writeFile(path.join(output,'kernel.log'),Buffer.concat(log));
  if(errors.length)throw errors[0];
+ if(process.env.MD_PROTECTED==='1'){
+  receipt.protected_presentations=await page.evaluate(()=>mdProtection);
+  if(!receipt.protected_presentations.frames||receipt.protected_presentations.violations)throw Error('MP-11: an encoded/displayed frame exposed a protected region');
+ }
  receipt.status='PASS_LOCAL_COMPONENT';
  receipt.latency_goal={p50_ms:80+receipt.network.rtt,p95_ms:100+receipt.network.rtt,passed:receipt.latency.p50_ms<=80+receipt.network.rtt&&receipt.latency.p95_ms<=100+receipt.network.rtt};
  if(process.env.MD_REQUIRE_LATENCY==='1'&&!receipt.latency_goal.passed)throw Error('MD-DISPLAY: input-to-presentation latency goal remains RED');

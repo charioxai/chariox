@@ -6,6 +6,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {PortableEncoder} from './kernel-browser-display.mjs';
 import {decodePng} from './kernel-browser-pixels.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
+import {regionProtectionChanged} from './kernel-browser-region-protection.mjs';
 export function jpegDimensions(bytes) {
   if(bytes[0]!==255||bytes[1]!==216)return null;
   for(let offset=2;offset+4<bytes.length;){
@@ -23,15 +24,22 @@ export function jpegDimensions(bytes) {
   return null;
 }
 export class CompositorSource {
-  constructor({connection,sessionId,tab,scale,policy,screenshot,allowed,width=1280,height=800,format='png',hasher=new PortableEncoder(),acquire=async()=>async()=>{},timing=()=>{},now=()=>performance.now()}) {
-    Object.assign(this,{connection,sessionId,tab,scale,policy,screenshot,allowed,width,height,format,hasher,acquire,timing,now});
-    this.listeners=new Set();this.latest=null;this.serial=0;this.attested=false;this.closed=false;this.changedAt=now();this.fenced=false;this.sampling=0;this.ignoreUntil=-Infinity;this.motionStreak=0;this.ignoreIdleUntil=-Infinity;this.pendingImage=null;this.hashing=false;
+  constructor({connection,sessionId,tab,scale,policy,screenshot,protect,allowed,width=1280,height=800,format='png',hasher=new PortableEncoder(),acquire=async()=>async()=>{},timing=()=>{},now=()=>performance.now()}) {
+    Object.assign(this,{connection,sessionId,tab,scale,policy,screenshot,protect,allowed,width,height,format,hasher,acquire,timing,now});
+    this.listeners=new Set();this.latest=null;this.serial=0;this.regionRevision=0;this.attested=false;this.closed=false;this.changedAt=now();this.fenced=false;this.sampling=0;this.ignoreUntil=-Infinity;this.motionStreak=0;this.ignoreIdleUntil=-Infinity;this.pendingImage=null;this.hashing=false;
   }
   subscribe(listener){this.listeners.add(listener);return()=>this.listeners.delete(listener)}
   async start() {
     if(this.fenced||!this.allowed(this.policy))throw Error('MD-DISPLAY: compositor policy fenced');
     this.off=this.connection.subscribe(message=>{
       if(message.sessionId!==this.sessionId||this.closed)return;
+      if(this.attested&&this.protect&&regionProtectionChanged(message,this.sessionId)){
+        // MP-11: retire old pixels without stopping a hidden renderer between
+        // mouse press/release. A fresh masked capture wakes even without paint.
+        this.regionRevision++;this.latest=null;
+        this.pendingImage={receivedAt:performance.timeOrigin+this.now(),format:'png'};
+        void this.processLatest();return;
+      }
       if(message.method==='Page.frameNavigated'&&!message.params?.frame?.parentId){this.attested=false;this.latest=null;this.fenced=true;return;}
       if(message.method!=='Page.screencastFrame')return;
       // ACK the one shared source immediately; never let viewer credit delay CDP.
@@ -69,9 +77,13 @@ export class CompositorSource {
     this.hashing=true;
     try{
       while(this.pendingImage&&!this.closed&&!this.fenced){
-        const {data,receivedAt,format}=this.pendingImage;this.pendingImage=null;
+        let {data,receivedAt,format}=this.pendingImage;this.pendingImage=null;const revision=this.regionRevision;
+        // MP-11: screencast pixels have no protected-layout binding. Use them
+        // only as a wake; capture/mask afresh before hashing or video encoding.
+        if(this.protect){data=(await this.protect()).data_base64;format='png';}
         const fingerprint=await this.hasher.hash(data);this.timing('source_'+format+'_fingerprint',receivedAt);
         if(this.closed||this.fenced||!this.allowed(this.policy))break;
+        if(revision!==this.regionRevision)continue;
         if(this.sampling||this.now()<this.ignoreUntil)continue;
         if(fingerprint.width!==this.width||fingerprint.height!==this.height)throw Error('source geometry');
         if(this.latest?.signature!==fingerprint.signature){this.motionStreak=this.now()-this.changedAt<90?this.motionStreak+1:1;this.serial++;this.changedAt=this.now();}

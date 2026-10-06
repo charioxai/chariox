@@ -1,4 +1,6 @@
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
+import {maskPng,opaqueFrame,cropProtectedPng} from './kernel-browser-pixels.mjs';
+import {assertCurrentDocument} from './browser-controller-actions.mjs';
 // Screenshot-region masks from trusted CDP metadata, never page JavaScript.
 async function regions(connection, sessionId, mirrorStructured = false) {
   const { root } = await connection.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
@@ -52,18 +54,54 @@ async function regions(connection, sessionId, mirrorStructured = false) {
 
 export const protectedHostRegions = (connection, sessionId) => regions(connection, sessionId);
 
+// MP-11: page protection can change without repainting any pixel.
+export function regionProtectionChanged(message,sessionId,hasRegions=true){
+  return message.sessionId===sessionId&&(
+    ['DOM.documentUpdated','DOM.childNodeInserted','DOM.childNodeRemoved','DOM.childNodeCountUpdated','DOM.shadowRootPushed','DOM.shadowRootPopped'].includes(message.method)||
+    ['DOM.attributeModified','DOM.attributeRemoved'].includes(message.method)&&(['type','autocomplete','data-chariox-secret','data-chariox-observation-protected','data-observation-protected'].includes(message.params?.name)||hasRegions&&['style','class'].includes(message.params?.name)));
+}
+
 export async function captureRegionMasks(connection, sessionId, { mirrorStructured = false } = {}) {
   // Layout changes or failed metadata checks cannot reveal an unmapped field.
   const before = await regions(connection, sessionId, mirrorStructured);
-  return { async afterCapture({ width = geometry.width, height = geometry.height } = {}) {
+  return { hasRegions:before.length>0, async afterCapture({ width = geometry.width, height = geometry.height } = {}) {
     if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) throw new Error("Capture geometry unavailable");
     const fullFrame = [{ x: 0, y: 0, width, height }];
     try {
       const after = await regions(connection, sessionId, mirrorStructured);
-      if (JSON.stringify(before) !== JSON.stringify(after)) return fullFrame;
+      if (JSON.stringify(before) !== JSON.stringify(after)) {this.changed=true;return fullFrame;}
       // CDP bounds are CSS coordinates; the raster crop masks native PNG pixels.
       return after.map(region => ({ x: region.x * width / geometry.width, y: region.y * height / geometry.height,
         width: region.width * width / geometry.width, height: region.height * height / geometry.height }));
-    } catch { return fullFrame; }
+    } catch { this.changed=true;return fullFrame; }
   } };
+}
+
+// MP-08/MP-11: a native readback must follow its trusted pre-capture metadata.
+// A coalesced sample older than that fence receives an opaque whole-frame mask.
+export class NativeRegionProtection {
+  constructor(connection,sessionId){Object.assign(this,{connection,sessionId});}
+  async refresh(){this.guard=await captureRegionMasks(this.connection,this.sessionId);this.beforeAt=performance.timeOrigin+performance.now();}
+  async regions(raw){
+    if(!this.guard||!Number.isFinite(raw.captured_ms))throw Error('MP-11: native region fence unavailable');
+    const result=raw.captured_ms<this.beforeAt?[{x:0,y:0,width:raw.width,height:raw.height}]:await this.guard.afterCapture(raw);
+    if(this.guard.changed)await this.refresh();return result;
+  }
+}
+
+// MP-08/MP-11: bind masks to a full viewport before any encoder or crop sees
+// it. Keep this policy below clients and preserve the ordinary wire shape.
+export async function captureProtectedDisplay(host,tab,clip=null,optimizeForSpeed=true){
+  const scale=host.scales.get(tab.tab_id)??1;let frame;
+  try{
+    const {protected_regions,...captured}=await host.screenshot(tab,null,true,'png',optimizeForSpeed);
+    frame={...captured,data_base64:protected_regions.length?maskPng(captured.data_base64,protected_regions.map(r=>[r.x,r.y,r.width,r.height]),scale):captured.data_base64};
+  }catch(error){
+    if(['stale_document_reference','browser_action_cancelled'].includes(error?.code))throw error;
+    const {connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id);
+    await assertCurrentDocument(connection,sessionId,tab.target_id,tab.document_id);
+    const width=geometry.width*scale,height=geometry.height*scale;
+    frame={generation:host.generation,tab_id:tab.tab_id,document_id:tab.document_id,mime_type:'image/png',width,height,data_base64:opaqueFrame(width,height)};
+  }
+  return {...frame,...cropProtectedPng(frame.data_base64,clip,scale)};
 }
