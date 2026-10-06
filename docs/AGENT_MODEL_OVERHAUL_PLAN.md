@@ -18,6 +18,9 @@ transitive proposal and goal retirement: direct children only; retain `/goal`
 as the explicit hybrid continuation loop. Plain prompts use lighter guards.
 This revision starts at design commit `3077fff6bf9b02e589b057d3133d22869bb6f6bd`;
 the source inspection identities in the table remain unchanged.
+Round 3 starts at `05754fc6a8e30ef30d8f9b3a7357d522f94d0d6b` and incorporates
+the binding 12:22/12:34 UTC inbox additions: post-overhaul evals and the two
+flagship external-service build/deploy variants below. Runtime pins stay fixed.
 
 Source read for this study:
 
@@ -826,8 +829,11 @@ the relevant acceptance boundaries. No fixture-only pass closes a PR.
 | 8 — payment confirmation, M; 4 + 6 + 7 | Single-use owner confirmation and uncertain effects; A08, G01–G18 + S01–S04. MP-08/MP-10/MP-11. |
 | 9 — history search, M; 1 + protected history projection | Room-authorized public FTS, redaction/invalidation; A09, G01–G18 + S01–S04. MP-08/MP-10/MP-11. |
 | 10 — leased wakes/elevation, M; 2–4 | Home ordering, worker fences and placement parity; A10, G01–G18 + S01–S04. MP-08/MP-09/MP-10/MP-11. |
-| 11 — retirement/migration, S–M; 1–10 + 12 accepted | Legacy drain/migration, minimum versions and final integration; A11, G01–G18 + S01–S04, then I01–I03. MP-08/MP-09/MP-10/MP-11. |
+| 11 — retirement/migration, S–M; 1–10 + 12 accepted | Legacy drain/migration, minimum versions and final integration; A11, G01–G18 + S01–S04, then flagship FA01–FA10 and I01–I03. MP-08/MP-09/MP-10/MP-11. |
 | 12 — hybrid goal loop, M; 2–4 + 10 | Persisted objective, bounded completion check, immediate continuation/check-ins, blocked owner paths and goal migration; A12, G01–G18 + S01–S06. Land before 11. MP-08/MP-09/MP-10/MP-11. |
+
+After the overhaul PRs and their functional gates, run the separate **Evals and
+optimization** phase below. It does not gate overhaul merge or MP acceptance.
 
 Before calling any implementation done, retain exact OSS/Cloud/source/binary
 and provider identities, commands/exit codes, RED first seam, GREEN assertions,
@@ -853,8 +859,11 @@ paths, base/candidate source and binary identities, result and blocker owner/
 action. The gate compares expected IDs with results: missing, duplicate, blank,
 skipped, N/A or unknown results fail. No provider/client/placement substitution
 or source-only pass. A runner failure cannot silently shorten the manifest.
-At this revision the expected set is 19,224 A cells plus 432 I cells (three
-scenarios × 72 axis combinations × two integration phases). These are coverage
+At this revision the gating expected set is 19,224 A cells plus 432 I cells
+(three scenarios × 72 axis combinations × two integration phases) and 1,440 FA
+cells (ten controlled flagship cases × 72 axes × two integration phases).
+The 576 FB showcase cells (eight cases × 72 axes) are separate and non-gating.
+These are coverage
 requirements, not executed results; the planning manifest initializes each
 separate ID to B0 with its steps/evidence. Later PR splits must expand the same
 requirements for every new PR; they cannot reduce coverage.
@@ -894,7 +903,7 @@ or private pixels. Private synthetic-canary checkers return booleans/counts;
 scan before retaining evidence. A log assertion alone cannot prove UI flow.
 
 **Results, explicitly assigned to every expanded cell:** initial design result
-is `BLOCKED(B0)` for all A/I IDs: coordinator must assign implementation lanes
+is `BLOCKED(B0)` for all A/I/FA/FB IDs: coordinator must assign implementation lanes
 and supply the implemented, built OSS/Cloud candidate and real e2e stack; this
 document changes no runtime. Replace B0 per cell at execution with `PASS`,
 `FAIL(first seam)` or `BLOCKED(reason, owner, exact action)` and evidence.
@@ -1053,6 +1062,60 @@ already pass on base; do not deliberately weaken base to manufacture RED.
 
 ### MP-08 / MP-09 / MP-10 / MP-11 — final integration scenario suite
 
+The top end-to-end scenario is **“/sudo agent builds and deploys a web app with
+external services”**, using `/sudo /goal` for durable overall completion. Run
+variant A before I01–I03; variant B is a periodic live showcase, not a gate.
+Both use the real stack, mixed official providers and protected user-domain
+Chromium outside slices. The home kernel remains runtime authority; Cloud's
+publication runtime serves the produced app, never proxies agent traffic.
+
+**Owner prerequisites, checked before dispatch:**
+
+| Variant | Owner/coordinator action and blocking seam |
+| --- | --- |
+| A — controlled acceptance | Supply exact paired built OSS/Cloud and `scripts/e2e-stack` (equivalent isolated stack until available), authorized staging publication target/namespace and public URL, product-linked access to all three providers, enrolled passkey and owner available for approvals/unlock/hand-off/renewal. Supply Stripe test-mode account/access through protected product configuration; no live-money credentials. Provide isolated Mailpit, local OIDC and DB services reachable from the publication runtime. Supply authorized fresh Path-1 host for M cells. Missing staging permission, Stripe access or owner action is an explicit BLOCKED with owner and next step; this plan authorizes no lane deployment. |
+| B — live showcase | Owner supplies a dedicated mailbox with credentials in the Vault, an **existing Google account** authorized for Firebase Spark (free) Auth + Firestore + Hosting, access to Chariox Cloud publication, linked provider plans and an agreed usage/time/$ ceiling. Owner remains available for 2FA, phone/human verification, approvals and passkey renewal. Any optional Supabase/Clerk-style service must permit normal email sign-up for this use and stay within the approved free/test scope; missing account/quota/billing is BLOCKED, never an implicit paid upgrade. |
+
+**Matrix expansion:** `FA{01..10}-{provider}-{client}-{placement}-{environment}-
+{before-retirement|after-retirement}` and
+`FB{01..08}-{provider}-{client}-{placement}-{environment}`, using all 72 axes
+above with the selected provider as root and all three providers in the team.
+Each FA cell first runs FA01 to reach its seam; each FB cell first runs FB01.
+Other required variants in a row get separate asserted subruns. Materialize
+every ID with steps, E, extra evidence and explicit result; no omitted cells.
+FA must show real-path base RED → candidate GREEN for changed behavior and pass
+on both integration heads. FB records PASS/FAIL/BLOCKED per scheduled campaign;
+unscheduled cells remain explicit BLOCKED(coordinator, schedule showcase),
+never PASS. FA/FB receipts cannot substitute for each other or other MP gates.
+
+#### MP-08 / MP-09 / MP-10 / MP-11 — variant A: controlled acceptance matrix
+
+| Cell | Exact numbered user flow and expected behavior | Expected evidence beyond E | Result |
+| --- | --- | --- | --- |
+| FA01 | 1. Owner submits `/sudo /goal build and deploy a web app with auth, a DB and external services`, verifies the default window and grants the owning-kernel browser. 2. Root delegates frontend to Claude, backend/infra to Codex and review/test to OpenCode (rotate roles with root axis); all delegates stay regular. 3. Build sign-up/login and DB create/read/update; use Mailpit verification and local OIDC. 4. Complete owner-confirmed Stripe test checkout, deploy to Chariox Cloud staging publication runtime and verify the served app in real Chromium. 5. Start a finite post-deploy URL watcher, consume its result, settle all work and finish done. | Source/artifact digest, mixed-team lineage/results, verified mail/OIDC/DB/test-payment receipts, publication receipt/live URL and final zero-open room ledger. | BLOCKED(B0) |
+| FA02 | 1. Generate sign-up password with `vault.generate`, retry after lost generation ACK. 2. Kernel injects login/sign-up fields, agent clicks observed action; receive verification in Mailpit through browser UI. 3. Controlled verification challenge requires protected owner hand-off, then resume once. | Same opaque handle/receipt, one account and delivered mail, protected target/hand-off outcome, boolean full-sink absence scan. | BLOCKED(B0) |
+| FA03 | 1. Sign in through local OIDC redirect/popup and callback. 2. Create/update DB record in deployed UI, logout, login and read it again. 3. Attempt another user's record and wrong-origin secret fill. Deny both without leaked credential or foreign data. | Stable tab/callback, authenticated identity and DB persistence assertions, authorization denials and no-effect checks. | BLOCKED(B0) |
+| FA04 | 1. Prepare Stripe test checkout in app. 2. Withhold owner confirmation; sudo alone cannot commit. 3. Owner confirms bound amount/payee/cart/action, drop ACK after test effect and reconcile; replay/change details rejects. | Test-mode assertion, one confirmation/charge receipt, safe uncertainty UI, no duplicate charge or live-money effect. | BLOCKED(B0) |
+| FA05 | 1. Hold the real publication acknowledgement during deploy wait. 2. Restart only owned home kernel, reconnect real clients and revalidate retained goal/waits/receipts. 3. Owner freshly reauthorizes after fail-closed sudo loss; reconcile publication and continue once. | Restart/fault seam, same goal/obligations, fresh authorization, one publication/artifact and provider continuation receipts. | BLOCKED(B0) |
+| FA06 | 1. Keep real task running across the default 60-minute sudo window; capture 10-minute warning and expiry during privileged work still needed. 2. Queued privileged step denies and becomes visibly blocked, regular work remains admitted. 3. Owner extends/reauthorizes with fresh passkey through selected client (cross-client in B), resume and deploy once. | Real elapsed/warning/expiry timeline, shared goal/sudo rows, denial and new window revision, owner response and single publish. | BLOCKED(B0) |
+| FA07 | 1. Root claims done while delegate, deploy wait and post-deploy watcher obligations remain open. 2. Bounded completion check lists them; one correction selects valid wait/continue, completes actual work and reaches done. 3. Separate subrun repeats false done; block visibly and require owner resume before finishing. | Purported answer recorded as progress, check/correction counts, blocked interaction, verified final app and zero open obligations. | BLOCKED(B0) |
+| FA08 | 1. Fail a real delegate run before its artifact is delivered. 2. Parent receives correlated failure, handles it and replaces/reassigns explicitly without duplicate launch; missing user resource requires blocked interaction. 3. Complete failed work and review before goal done. | First delegate failure/provider seam, parent wake and handled failure, replacement lineage/results, no dormant agent. | BLOCKED(B0) |
+| FA09 | 1. Post-deploy watcher observes live URL, auth and DB behavior. 2. Inject unhealthy response then recovery; yield with finite check-ins, show long-wait notification and restart recovery. 3. Cancel/settle watcher explicitly before done. Test ordinary/managed activity and normal shutdown/start without a new Cloud wake scheduler. | Live Chromium assertions plus watcher output/exit, source/deadline/check-in timeline, O/M activity and MP-09 receipts, cleanup. | BLOCKED(B0) |
+| FA10 | 1. Combine deploy-wait restart, sudo expiry/extension, open-obligation done claim and delegate failure in one FA01 run at recorded barriers. 2. Resolve only required owner interactions, verify live app and payment/mail/DB receipts. 3. Finish root done and every delegate explicitly done/cancelled, zero open obligations or dormant/unclassified agents; remove only owned runtime/publication/fixture resources. | Complete fault/recovery timeline, real-client screenshots/logs per step, exact heads, one-effect counts, final goal/room state and verified cleanup. | BLOCKED(B0) |
+
+#### MP-08 / MP-09 / MP-10 / MP-11 — variant B: live showcase matrix (non-gating)
+
+| Cell | Exact numbered user flow and expected behavior | Expected evidence beyond E | Result |
+| --- | --- | --- | --- |
+| FB01 | 1. Owner submits the same flagship `/sudo /goal` prompt with approved service scope and budget. 2. Mixed team builds auth/data app, uses dedicated mailbox and existing Google/Firebase account, publishes to Firebase Hosting on Spark and Chariox Cloud. 3. Watch both live URLs, independently verify auth/data round trip and settle work before done. | Two deployment receipts/URLs/artifact bindings, real browser flow, team and goal ledger, measured success. | BLOCKED(B0) |
+| FB02 | 1. Kernel injects dedicated mailbox login from Vault. 2. Agent retrieves verification through browser UI; owner handles 2FA/human checks via protected interaction. 3. Resume from safe status only and verify mail outcome. | Mailbox access/outcome without message challenges or credentials in evidence, hand-off reason/count/duration and leak scan. | BLOCKED(B0) |
+| FB03 | 1. Use existing Google account; never automate Google account creation. 2. Configure Spark Auth + Firestore + Hosting through permitted flows, owner handles account/phone/verification steps. 3. Prove auth and persisted data on hosted app; quota/billing requirement blocks, no automatic upgrade. | Approved account/project metadata, Spark plan assertion, hosted auth/data receipts, protected hand-offs and any exact blocker. | BLOCKED(B0) |
+| FB04 | 1. If owner elects Supabase/Clerk-style service, record allowed normal email sign-up scope before starting. 2. Generate Vault password, inject and verify via mailbox; human/refusal/automation-restricted step hands off. 3. Verify permitted service integration. Without an elected service record BLOCKED(owner, select/authorize optional service), not invented success. | Scope decision, opaque generation receipt, verification/integration assertion and safe hand-off history. | BLOCKED(B0) |
+| FB05 | 1. Encounter verification, model refusal, disallowed automation or missing user resource. 2. Surface owner-only blocked interaction across clients; never evade refusal or create replacement identity. 3. Owner completes permitted isolated step/provides resource and explicitly resumes, or cancels with honest unsuccessful result. | Reason/notification, protected action and single resume/cancel, service outcome and hand-off totals. | BLOCKED(B0) |
+| FB06 | 1. Span a long build/deploy wait with goal check-ins and expiry notice. 2. Owner freshly extends/reauthorizes when needed; reconnect to retained state. 3. Verify publication on both targets and settle post-deploy watchers; no dormant agent or implicit renewal. | Real timing, sudo/goal UI, deployment reconciliation and final zero-open ledger. | BLOCKED(B0) |
+| FB07 | 1. Freeze success rubric and limits before prompt. 2. Measure independent task success, total/active/wait wall time, tokens and API-equivalent $, hand-off count/reasons/time, agents/providers and delegation count/tree. 3. Include failed/blocked attempts, unknown usage and plan throttling; report no cost as zero merely because it ran on a plan. | Per-attempt metrics/price snapshot and coverage, grader assertions, failure seam and hand-off/delegation ledger. | BLOCKED(B0) |
+| FB08 | 1. Run private evidence absence checks before retention. 2. Remove only campaign-created test data/deployments/watchers and revoke temporary grants; retain owner mailbox/Google identity, Vault entries and linked credentials. 3. Record final product state, resource recovery and cleanup. | Boolean scan, exact owned cleanup/retention list, service receipt and final resource samples. | BLOCKED(B0) |
+
 Run I01–I03 on the exact final paired OSS/Cloud build, after PRs 1–10 + 12, then
 again after retirement. IDs are `I{01..03}-{provider}-{client}-{placement}-
 {environment}` over every axis above (72 cells per scenario per integration
@@ -1066,17 +1129,81 @@ never use simulated time for hour/multi-hour duration acceptance.
 | I02 | 1. Owner starts `/goal` on A for a real ≥3-hour task; A → B → C chain uses all providers and owned workflow/process/timer waits. 2. Restart owned home at hour 1 and worker at hour 2; partition/reconnect relay once. 3. Sweep overdue/dead sources and reauthorize root sudo via fresh owner passkey when lost; none inherited. 4. A requests B to settle/delete its own child C; A cannot destructively act on C. In a separate branch lose B with C alive, show owner intervention and no inherited rights. 5. Resume retained chain/results, settle every obligation and verify actual final artifacts, all agents explicitly done/cancelled. Failure/blocked cases notify user and resume only on owner action. | Monotonic ≥3-hour run, both restart/partition records, lineage and correction counters across restart, deadline/source-loss wakes, reauthorization UI, final artifact/zero-open ledger. | BLOCKED(B0) |
 | I03 | 1. Owner prompts a real agent to finish a browser task requiring a protected human code/secret step. 2. Agent requests hand-off, becomes blocked on every terminal, retains its task/obligation and finite interaction expiry. 3. Disconnect/reconnect client; restart owned kernel while pending, revalidate target; verify restart removes sudo. 4. Owner supplies protected input through same bound interaction (fresh request if stale), then explicitly reauthorizes if needed. 5. Agent resumes once from safe outcome, finishes target operation and final answer, no open obligations or private input in context/history/pixels/logs/index. | Before/after blocked/hand-off screens, target generation, one action/resume receipt, real service outcome and boolean full-sink scan. | BLOCKED(B0) |
 
-## MP-08 / MP-11 — owner decisions and remaining proposal
+## MP-08 / MP-09 / MP-10 / MP-11 — Evals and optimization (after overhaul, non-gating)
+
+Start scored runs after PRs 1–12 and controlled acceptance pass; freeze an
+accepted reference build first. This phase does not gate their merge or MP
+closure. Aim to establish, through measured comparisons, Chariox's accuracy
+versus **API-equivalent $, tokens and wall time Pareto frontier** for multi-agent
+and long-running work. No claim of “best” without comparable public evidence.
+
+Baselines are each official Codex, Claude and OpenCode harness alone. Compare
+Chariox planner + workers, mixed Claude/Codex teams, strong planner + cheap
+workers, verifier loop and best-of-n. Pair configurations on identical tasks,
+versions, seeds, tools, budgets and graders; separate unequal model/tool/access
+conditions. Best-of-n pays for every candidate and selection. Use efficient-
+benchmarking subset selection from a disjoint pilot/development set, freeze
+selection and report uncertainty; optimize without tuning on held-out answers.
+
+| Eval order / workload | Overhaul features exercised (PR numbers above) |
+| --- | --- |
+| 1 — SWE-bench Verified Mini (50-task pilot) | Room delegation/direct-creator isolation (1), correlated results/wakes (2/10), process/test watchers (3), public history (9), goal checks and verifier completion (12). |
+| 1 — Terminal-Bench 2.0 (89-task pilot) | Ordinary/leased/slice tools (1/10), process ownership/cancellation and timers (3), durable waiting/progress guards (2), bounded goal continuation (12). |
+| 2 — GAIA validation subset | Mixed-team coordination (1/2/10), admitted browser/App resources (5), protected Vault/hand-off when task allows (6/7), public history (9), original-objective completion (12). |
+| 2 — tau2-bench airline | No-reply/urgency/correlated teamwork (1/2), admitted actions and explicit human approvals where supported (5/7/8), history (9), goal obligations/checks (12). Benchmark tool simulators remain grader targets, not provider runtimes. |
+| 2 — Long-Horizon Terminal-Bench | Durable goals, deadline/check-in/no-progress guards (2/12), watchers (3), hour-scale sudo/fresh owner extension where allowed (4), leased recovery (10), history/migration (9/11). |
+| Open Chariox multi-agent suite: parallel bundles | Public independent task bundles/graders; fan-out/results, direct-child rights and cancellation (1/2), watchers (3), leased parity (10), overall completion (12). |
+| Open suite: mixed difficulty | Public tasks with known grading; planner/worker assignment, mixed/cheap teams, verifier and best-of-n; room authority/results (1/2), history (9), leases (10), completion checks (12). |
+| Open suite: long-horizon build+deploy with restarts | Public tasks/graders and first-party services; flagship FA flow, goals/wakes/watchers (2/3/12), sudo (4), capability/Vault/hand-off/payment (5–8), history (9), leased restart and migration (10/11). |
+
+Pin maintainers' task/rule versions and licenses before each pilot; preserve
+official graders and distinguish subset/local reproduction from official
+scores. Publish the open suite's task provenance, three track definitions,
+grader code and reproducible runs without secrets. Mark a feature unexercised
+where benchmark rules prohibit it; these mappings are intended coverage, not
+proof that every public task supports every feature.
+
+Run on linked provider **plans within usage windows**. Claude/OpenCode execute
+through Chariox leased agents: Chariox transfers selected provider access via
+the normal lease; never use builder logins, SDKs or copied owner credentials.
+Codex also uses the official harness/product-linked path. Record account role
+without auth data, harness/model/effort, rate/usage limits and throttled waits.
+Owner prereqs: linked plans/leases, accepted binaries, task environments and
+graders, approved compute/time/API-equivalent budget and any human actions.
+Public submissions require explicit owner OK; this plan grants none.
+
+Per task/config/seed retain success/accuracy, all input/output/cache/reasoning
+tokens exposed by the harness, total/active/wait wall time, retries/checks,
+delegation/hand-off counts, source/binary/model identities, exact commands and
+exit codes, grader output, protected traces and owned cleanup. Price actual
+model usage at a pinned dated official API price snapshot even on plans;
+report actual plan/compute spend separately. Unavailable token/price fields are
+unknown with coverage bounds, never zero or an exact $ claim. Include failures,
+rate limits and all agents/evaluators in totals. Plot non-dominated accuracy/$,
+accuracy/tokens and accuracy/time configurations with paired uncertainty;
+retain raw records and budget cutoff. Each optimization reruns affected real-
+path functional/security/recovery gates before adding a frontier point.
+
+## MP-08 / MP-09 / MP-11 — owner decisions and remaining proposal
 
 Round 2 resolves the old questions: default 60-minute sudo with fresh extension,
 fail-closed restart, no inheritance; destructive agent/workflow actions limited
 to immutable direct creator identity. The 11:45/11:48 UTC inbox decisions
 retain `/goal` as an explicit hybrid continuation loop and limit destructive
-control to direct children; they supersede earlier proposals. Proposed policy
-constants are 8-hour maximum
-per verification, N = 3 no-progress wakes, 30-second sweep, 2-minute uncertain
-delivery escalation, 15-minute long-wait notice and 10-minute goal check-in
-(configurable 1–60 minutes). Coordinator/owner may ratify
-or amend those constants before implementation; record any amendment without
+control to direct children; they supersede earlier proposals. All proposed
+policy constants remain **owner-ratifiable before implementation**, including
+the approved 60-minute default direction:
+
+| Constant | Proposed value, subject to owner ratification |
+| --- | --- |
+| Sudo default | 60 minutes |
+| Sudo maximum per fresh verification | 8 hours |
+| No-progress guard | N = 3 consecutive wakes/continuations |
+| Kernel sweep | 30 seconds |
+| Goal check-in | 10 minutes, configurable 1–60 minutes |
+| Long-wait notice | 15 minutes without progress |
+| Uncertain delivery escalation | 2 minutes |
+
+Coordinator/owner may ratify or amend those values; record any amendment without
 weakening finite deadlines, visible escalation or fresh passkey extension.
 No owner decision blocks completion of this documentation assignment.
