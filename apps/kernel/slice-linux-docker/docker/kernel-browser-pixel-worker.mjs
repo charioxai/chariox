@@ -1,6 +1,6 @@
 // MD-DISPLAY-02/04: bounded pixel work outside the host input event loop.
 import {Worker,isMainThread,parentPort} from 'node:worker_threads';
-import {decodePng} from './kernel-browser-pixels.mjs';
+import {decodePng,encodePng} from './kernel-browser-pixels.mjs';
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 import {dirtyTiles} from './kernel-browser-tiles.mjs';
 if(!isMainThread){
@@ -12,7 +12,7 @@ if(!isMainThread){
     if(!Number.isSafeInteger(width)||!Number.isSafeInteger(height)||width<1||height<1||width>geometry.width*2||height>geometry.height*2||data.length!==width*height*4)throw Error('native geometry');
     const shared=new SharedArrayBuffer(data.length),pixels=new Uint8Array(shared);
     for(let i=0;i<data.length;i+=4){pixels[i]=data[i+2];pixels[i+1]=data[i+1];pixels[i+2]=data[i];pixels[i+3]=255;}
-    result={width,height,pixels};
+    result={width,height,pixels,data_base64:encodePng(width,height,Buffer.from(shared))};
    }
    else if(kind==='tiles')result=dirtyTiles(previous&&{...previous,pixels:Buffer.from(previous.pixels.buffer,previous.pixels.byteOffset,previous.pixels.byteLength)}, {...current,pixels:Buffer.from(current.pixels.buffer,current.pixels.byteOffset,current.pixels.byteLength)},region,all);
    else throw Error('operation');

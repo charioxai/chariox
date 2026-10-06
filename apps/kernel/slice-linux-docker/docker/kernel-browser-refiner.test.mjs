@@ -13,7 +13,8 @@ test('MP-08/MP-10/MP-11 admitted native exact repair never acquires CDP screensh
   assert.equal(r.failure,undefined);assert.equal(retained,0);assert.equal(r.latest.motion,false);
   assert.deepEqual([...r.latest.pixels.pixels],[1,2,3,255,0,0,0,255]);
   assert.deepEqual(r.latest[displayMaskRegions],raw[displayMaskRegions]);
-  assert.deepEqual(decodePng(r.latest.data_base64()).pixels,r.latest.pixels.pixels);
+  assert.equal(typeof r.latest.data_base64,'string','complete exact PNG must be prepared off the host input loop');
+  assert.deepEqual(decodePng(r.latest.data_base64).pixels,r.latest.pixels.pixels);
  }finally{await r.close()}
 });
 test('MD-DISPLAY native read is asynchronous, bounded and invalidated before commit',async()=>{let release,captures=0,now=200;const r=new NativeRefiner(()=>{captures++;return new Promise(ok=>release=ok)},{quietMs:80,now:()=>now,pixels:{async run(){return {width:1,height:1,pixels:Buffer.alloc(4)}},async close(){}}});assert.equal(r.request(binding,0,()=>true),null);assert.equal(r.request(binding,0,()=>true),null);assert.equal(captures,1);r.request({...binding,epoch:2},0,()=>true);release({data_base64:'x'});await r.active;assert.equal(r.latest,null);assert.equal(r.request({...binding,epoch:2},0,()=>true),null);release({data_base64:'x'});await r.active;assert.equal(r.latest.settled_verified,true);await r.close()});

@@ -83,8 +83,8 @@ test('MP-08/MP-10/MP-11 protection changes retire pixels without re-attesting th
  assert.equal(source.closed,false);assert.equal(source.sample(),null);assert.equal(released,1);assert.equal(source.regionRevision,1);
  source.pending={width:1280,height:800,length:1280*800*4,pixels:Buffer.alloc(1280*800*4,255),serial:2,format:'bgr0',captured_ms:performance.timeOrigin+performance.now()};
  await source.publish();assert.equal(refreshes,2,'old readback gets full mask after refresh; no surface attestation');
- // This raw precedes the new metadata fence and must be opaque in full.
- assert.equal(source.sample().raw.pixels[10000],0);
+ // This raw precedes the new metadata fence and must never be published.
+ assert.equal(source.sample(),null);
  source.pending={width:1280,height:800,length:1280*800*4,pixels:Buffer.alloc(1280*800*4,255),serial:3,format:'bgr0',captured_ms:performance.timeOrigin+performance.now()};
  await source.publish();assert.equal(source.sample().raw.pixels[8*4],0);assert.equal(source.sample().raw.pixels[10000],255);
  source.onCdp({sessionId:'s',method:'Page.frameNavigated',params:{frame:{}}});assert.equal(source.closed,true);

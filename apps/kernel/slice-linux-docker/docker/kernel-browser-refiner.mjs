@@ -1,7 +1,7 @@
 // MD-DISPLAY-02/04: bounded asynchronous exact verification; no input lock.
 import {PixelWorker} from './kernel-browser-pixel-worker.mjs';
 import {timestamp} from './kernel-browser-timing.mjs';
-import {encodePng,displayMaskRegions} from './kernel-browser-pixels.mjs';
+import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 export class NativeRefiner {
  constructor(capture,{pixels=new PixelWorker(),now=()=>performance.now(),quietMs=300,verifyMs=250,prepareTiles=false,timing=()=>{}}={}){Object.assign(this,{capture,pixels,now,quietMs,verifyMs,prepareTiles,timing});this.latest=null;this.active=null;this.closed=false;this.verifiedAt=-Infinity;this.revision=0;this.prepared=null;}
  same(a,b){return a&&b&&a.source===b.source&&a.document===b.document&&a.policy===b.policy&&a.epoch===b.epoch&&a.serial===b.serial&&a.native===b.native;}
@@ -22,7 +22,8 @@ export class NativeRefiner {
      if(raw){
       if(source.raw!==raw)throw Error('MP-11: native refinement binding changed');
       pixels=await this.pixels.run('native',{data:raw.pixels,width:raw.width,height:raw.height});
-      source={...source,motion:false,[displayMaskRegions]:raw[displayMaskRegions]??[],data_base64:()=>encodePng(pixels.width,pixels.height,pixels.pixels)};
+      source={...source,motion:false,[displayMaskRegions]:raw[displayMaskRegions]??[],data_base64:pixels.data_base64};
+      delete pixels.data_base64;
      }
     }finally{raw?.release?.();}
     this.timing('exact_capture',at);at=timestamp();
