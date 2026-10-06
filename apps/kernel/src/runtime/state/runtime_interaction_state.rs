@@ -287,7 +287,7 @@ impl KernelRuntimeState {
             caller_user_id,
             None,
             None,
-            None,
+            Some(crate::local::KernelConnectionClass::Terminal),
         )
         .await
     }
@@ -335,13 +335,14 @@ impl KernelRuntimeState {
             )
             .await?;
         self.owned
-            .resolve_runtime_interaction(
+            .resolve_terminal_runtime_interaction(
                 session_id,
                 interaction_id,
                 choice_id,
                 custom_reply,
                 caller_user_id,
                 authorization.verified,
+                connection_class,
             )
             .map_err(|error| {
                 self.owned

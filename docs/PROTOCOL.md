@@ -577,9 +577,11 @@ MP-08 / MP-11 `source_kernel_without_credentials` is part of the canonical plan
 and package binding. Provider accounts and Git credentials are kernel-forced `none`.
 Its source exporter does not read the credential registry or Vault. Native source
 confirmation gates packaging and transfer for every owner copy. A selected Project
-uses its native Project review; kernel-only copies use a source-owner idle session
-RuntimeInteraction naming the destination Machine. Without such a session the copy
-is refused with retry guidance. Cancellation or expiry stops export. Environment
+uses its native Project review; kernel-only copies use an idle source-owner session
+with an owner-bound, human-only kernel-operation RuntimeInteraction naming the destination
+Machine. Meta delegation, ordinary agents, Host clients and sudo agent turns cannot
+answer this review; the owner terminal can continue or cancel. Without such a session
+the copy is refused with retry guidance. Cancellation or expiry stops export. Environment
 values are omitted and Vault access is denied for Project review. Source and target checks reject credential dependencies, Vault
 snapshots, credential-bearing extension files, overlays/setup files, sealed Project
 environment values and recognized secrets in Git history. Target import uses an

@@ -116,6 +116,31 @@ impl KernelRuntimeOwnedState {
             caller_user_id,
             passkey_verified,
             false,
+            false,
+        )
+    }
+
+    /// Carries the authenticated answering connection into the locked resolver.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn resolve_terminal_runtime_interaction(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        choice_id: &str,
+        custom_reply: Option<&str>,
+        caller_user_id: Option<&str>,
+        passkey_verified: bool,
+        connection_class: Option<crate::local::KernelConnectionClass>,
+    ) -> Result<(), DaemonError> {
+        self.resolve_runtime_interaction_inner(
+            session_id,
+            interaction_id,
+            choice_id,
+            custom_reply,
+            caller_user_id,
+            passkey_verified,
+            false,
+            connection_class == Some(crate::local::KernelConnectionClass::Terminal),
         )
     }
 
@@ -135,9 +160,11 @@ impl KernelRuntimeOwnedState {
             Some(owner),
             false,
             true,
+            false,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn resolve_runtime_interaction_inner(
         &self,
         session_id: &str,
@@ -147,6 +174,7 @@ impl KernelRuntimeOwnedState {
         caller_user_id: Option<&str>,
         passkey_verified: bool,
         take_host: bool,
+        terminal_answer: bool,
     ) -> Result<(), DaemonError> {
         self.resolve_runtime_interaction_authorized(
             session_id,
@@ -158,6 +186,7 @@ impl KernelRuntimeOwnedState {
             None,
             None,
             take_host,
+            terminal_answer,
         )
     }
 
@@ -173,6 +202,7 @@ impl KernelRuntimeOwnedState {
         sudo: Option<&crate::local::KernelSudoTurn>,
         authorizing_terminal: Option<&str>,
         take_host: bool,
+        terminal_answer: bool,
     ) -> Result<(), DaemonError> {
         let _mutation = self
             .pending_interactions
@@ -276,6 +306,13 @@ impl KernelRuntimeOwnedState {
             return Err(super::critical_approval_passkey::passkey_error(
                 super::critical_approval_passkey::PASSKEY_REQUIRED,
                 "approving this critical action needs your Chariox passkey",
+            ));
+        }
+        if super::owner_context_review::is_owner_context_review(&interaction)
+            && (!terminal_answer || sudo.is_some())
+        {
+            return Err(interaction_error(
+                "Only the owner's Chariox terminal can answer this review",
             ));
         }
         if take_host

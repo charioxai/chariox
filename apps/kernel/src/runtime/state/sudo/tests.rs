@@ -6,6 +6,93 @@ use crate::provider::{
 
 pub(super) const PASSKEY: &str = "sudo fixture passkey";
 
+// MP-08/MP-11: even an owner-authorized sudo turn cannot perform owner review.
+#[tokio::test]
+async fn mp08_mp11_owner_context_review_rejects_sudo_agent_approval() {
+    let f = fixture();
+    let turn = running(&f);
+    let worktree = crate::test_support::TestWorktree::new("sudo-owner-context-review");
+    let (session, _) = crate::app::KernelSessionService::new(&mut *f.app.lock().await)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let mut config = f.state.owned.config_projection.snapshot();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: session.owner_user_id().into(),
+        ..Default::default()
+    });
+    f.state.owned.config_projection.update(config);
+    let reviewer = f.state.clone();
+    let task = tokio::spawn(async move {
+        reviewer
+            .review_credential_free_owner_context(
+                &crate::managed_context::package::ManagedContextDevelopmentSelection::Empty,
+                "sudo-owner-review",
+                "Owner target machine",
+            )
+            .await
+    });
+    let id = "owner-context:sudo-owner-review";
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if f.state
+                .session_snapshot(session.id())
+                .await
+                .unwrap()
+                .active_interactions()
+                .iter()
+                .any(|i| i.id() == id)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        f.state
+            .answer_sudo_interaction(
+                &turn.entry_id,
+                RespondToInteractionRequest {
+                    session_id: session.id().into(),
+                    interaction_id: id.into(),
+                    choice_id: "continue".into(),
+                    custom_reply: None,
+                    passkey: None,
+                    passkey_remember_minutes: None,
+                }
+            )
+            .await
+            .is_err(),
+        "MP-11 sudo agent must not approve source owner review"
+    );
+    // MP-11: an owner ID and verified flag alone are not a terminal answer.
+    assert!(f
+        .state
+        .owned
+        .resolve_runtime_interaction(
+            session.id(),
+            id,
+            "continue",
+            None,
+            Some(session.owner_user_id()),
+            true,
+        )
+        .is_err());
+    assert!(!task.is_finished());
+    f.state
+        .resolve_terminal_runtime_interaction(
+            session.id(),
+            id,
+            "cancel",
+            None,
+            Some(session.owner_user_id()),
+        )
+        .await
+        .unwrap();
+    assert!(task.await.unwrap().is_err());
+}
+
 pub(super) struct Fixture {
     _worktree: crate::test_support::TestWorktree,
     pub(super) state: KernelRuntimeState,
@@ -1318,6 +1405,7 @@ async fn sudo_admission_waiting_for_grants_does_not_block_a_critical_receipt() {
             true,
             Some(&turn),
             None,
+            false,
             false,
         );
         completed.send(result).unwrap();

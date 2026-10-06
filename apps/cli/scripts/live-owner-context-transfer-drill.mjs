@@ -265,6 +265,14 @@ try {
       if(status.phase!=='preparing'||status.packageSizeBytes>0)return {premature:status}
     },'compulsory native owner review')
     if(review.premature){await capture(name+'-missing-review');assert.fail('MP-11 owner copy packaged or sent before compulsory native confirmation')}
+    if(kernelOnly) {
+      await capture(name+'-review-pending')
+      assert(review.interactions.some(i=>i.id.startsWith(prefix)&&i.agentId===undefined),
+        'MP-11 kernel-only review must be a human-only kernel decision, never an agent Choice')
+      tui.stdin.write('\x1b[19~') // MP-10: real owner's F8 opens the kernel approval panel.
+      await until(()=>tui.output.includes('Chariox approval 1 of 1'),'owner approval panel')
+      await sleep(250)
+    }
     await capture(name+'-review')
     if(kernelOnly) {
       assert(review.interactions.some(i=>i.title?.includes(target.identity.machineId)),'MP-11 review names destination')
@@ -275,7 +283,12 @@ try {
       await assert.rejects(access(path.join(target.env.HOME,'.chariox','skills','review',packagedFile)))
       steps.push({name:name+'-no-package-or-publication-before-approval',mpItems:['MP-08','MP-10','MP-11'],status:pending})
     }
-    await automation({action:'interaction_submit',choiceIndex:cancel?1:0})
+    if(kernelOnly) {
+      // MP-10: opening selects nothing. Real Up selects Cancel, Down Continue.
+      tui.stdin.write(cancel?'\x1b[A':'\x1b[B')
+      await sleep(250)
+      tui.stdin.write('\r')
+    } else await automation({action:'interaction_submit',choiceIndex:cancel?1:0})
     const terminal=await until(async()=>{
       const status=(await cli(name+'-poll-'+steps.length,source,['status',initial.contextId])).ManagedContextTransferStatus.status
       return (status.phase === 'completed' || (status.phase === 'failed' && (!inject || status.receipt || !faultInjected))) && status

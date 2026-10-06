@@ -2,10 +2,7 @@
 use super::*;
 use crate::managed_context::owner_managed::admission_error;
 use crate::managed_context::package::ManagedContextDevelopmentSelection;
-use crate::session::{
-    RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
-    RuntimeInteractionKind, RuntimeInteractionLevel,
-};
+use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle};
 
 impl KernelRuntimeState {
     pub(crate) async fn review_credential_free_owner_context(
@@ -36,7 +33,7 @@ impl KernelRuntimeState {
             .as_ref()
             .map(|profile| profile.user_id.as_str())
             .ok_or_else(|| admission_error("Source kernel has no enrolled owner"))?;
-        let (session, agent) = self
+        let session = self
             .owned
             .session_store
             .list_sessions()
@@ -61,7 +58,7 @@ impl KernelRuntimeState {
                                 .active_prompt_for_agent(&session, agent.id())
                                 .is_none()
                     })
-                    .map(|agent| (session, agent))
+                    .map(|_| session)
             })
             .ok_or_else(|| {
                 admission_error(
@@ -69,17 +66,16 @@ impl KernelRuntimeState {
                 )
             })?;
         let id = format!("owner-context:{context_id}");
-        let interaction = RuntimeInteraction::new(
-            &id, agent.id(), RuntimeInteractionKind::Choice, RuntimeInteractionLevel::Info,
-            Some(format!("Ready to copy kernel context to {target}")),
+        let interaction = RuntimeInteraction::for_kernel_operation(
+            &id, &id, format!("Ready to copy kernel context to {target}"),
             "Copy kernel extensions, personal instructions and their packages. No Project or credentials are selected. Review the source content before continuing: automatic credential checks cannot identify every secret in free-form files.",
             vec![
                 RuntimeInteractionChoice::new("continue", "Looks good, continue", "continue", Some(RuntimeInteractionChoiceStyle::Primary)),
                 RuntimeInteractionChoice::new("cancel", "Cancel", "cancel", Some(RuntimeInteractionChoiceStyle::Danger)),
-            ], None, Some(900), Some("cancel".into()),
-        );
+            ],
+        ).with_timeout_sec(900);
         let receiver = self
-            .create_runtime_interaction(session.id(), interaction)
+            .create_kernel_operation_interaction(session.id(), session.owner_user_id(), interaction)
             .await?;
         match tokio::time::timeout(Duration::from_secs(900), receiver).await {
             Ok(Ok(resolution))
@@ -101,4 +97,11 @@ impl KernelRuntimeState {
             }
         }
     }
+}
+
+// MP-11: compulsory content review cannot be delegated, including through sudo.
+pub(super) fn is_owner_context_review(interaction: &RuntimeInteraction) -> bool {
+    interaction
+        .kernel_operation_id()
+        .is_some_and(|id| id.starts_with("owner-context:"))
 }
