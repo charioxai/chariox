@@ -37,3 +37,35 @@ listed seams only. Hosted Cloud/relay/WAN, official-provider, signed-release,
 OS-level IME, macOS and fresh ordinary/Path-1 acceptance remain separate gates.
 Current security-anchor semantic review follows the owner-narrowed MP-11 scope;
 non-security source does not require per-blob semantic admission.
+
+## MP-08 / MP-10 / MP-11 validation
+
+Validated implementation source: `8ab18e96c9f4040ccb0b7c8e25fb32f1cb306275`.
+The following documentation commit changes this record only. Commands, exact
+source identities, exit codes, resource samples, RED receipts and cleanup are
+retained in the external mdmain lane evidence; no screenshots enter Git.
+
+- Rust1.88: workspace/all-target `cargo check --locked` passes at7762795c0;
+  only two test assertions change afterward. Final test build, formatting and
+  workspace/all-target/all-feature clippy pass at8ab18e96c. Clippy has875
+  inherited diagnostics on both frozen main and the candidate, zero regressions.
+- Focused Rust: protocol snapshots194; kernel browser44 (10 opt-in ignored);
+  Notes16 (2 ignored); grants5; typed refusals2; controller87; App views10
+  (1 ignored); visible region4. Other focused passes include command cache39,
+  relay peer33, shared App events2, signal guards3, crypto1, forwarded-peer
+  denial5, relay protocol3 and actual peer-identity admission11. Filters overlap;
+  counts are per suite. An earlier identity filter selected zero and was corrected.
+- Node: controller/Notes/DOM metrics/display145; shared client1170; focused
+  CLI31; Bun1.4.2 real OpenTUI renderer3; protocol/publication policy12. All three
+  touched TypeScript package checks pass. Their source is unchanged after420978890.
+- DOM: seven fixture groups at DPR1/2 pass all14 fidelity/latency rows and24
+  protection/event-path checks. Worst row input p50/p95=48.8/63.4ms. The executed
+  controller/renderer bytes are unchanged after the c29205809 matrix source.
+
+MP-08/MP-11 integration repairs preserve retained grants across focus changes
+and retire queued operations on explicit revocation. Exact trusted grant-policy
+messages map to bounded typed refusals; controller/transport text remains Other.
+Observed same-origin mirror frames inspect the live secret-field leaf, while
+opaque/direct frame input stays denied. MP-10 viewer scrollbars match the source
+browser, and presenter/drill protocol pins use443/86. Source claims and component
+limits above still apply; these passes do not close MP acceptance items.
