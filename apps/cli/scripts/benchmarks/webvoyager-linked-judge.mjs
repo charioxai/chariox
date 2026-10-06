@@ -8,7 +8,7 @@ import { stopOwnedProcess } from './round2/owned-processes.mjs'
 import { nativeFailureEvidence } from './round2/provider-availability.mjs'
 const exec = promisify(execFile)
 
-export async function judgeWebVoyager({ task, directory, screenshots, upstream, root, accountHome }) {
+export async function judgeWebVoyager({ task, directory, screenshots, upstream, root, accountHome, observationPolicy }) {
   const images = screenshots.slice(-15)
   await exec('python3', [path.join(import.meta.dirname, 'webvoyager-judge.py'), `${upstream}/evaluation/auto_eval.py`,
     task.ques, `${directory}/answer.txt`, String(images.length), `${directory}/judge-input.json`])
@@ -41,14 +41,14 @@ export async function judgeWebVoyager({ task, directory, screenshots, upstream, 
     const tools = events.filter(event => event.type === 'item.completed' && !['agent_message', 'reasoning'].includes(event.item?.type)).length
     const answer = await readFile(`${directory}/judge-answer.txt`, 'utf8')
     const verdict = !tools && /SUCCESS/.test(answer) ? answer.includes('NOT SUCCESS') ? 'NOT SUCCESS' : 'SUCCESS' : null
-    const result = { mpItems: ['MP-08', 'MP-10', 'MP-11'], judgeModel: 'gpt-6.1-sol', judgeEffort: 'low',
+    const result = { ...(observationPolicy ? { observationPolicy } : {}), mpItems: ['MP-08', 'MP-10', 'MP-11'], judgeModel: 'gpt-6.1-sol', judgeEffort: 'low',
       judgeToolCalls: tools, judgeUsage: events.find(event => event.type === 'turn.completed')?.usage ?? null,
       judgeWallSeconds: (Date.now() - start) / 1000, judgeAnswer: answer, judgeVerdict: verdict, judgeValid: verdict !== null }
     await writeFile(`${directory}/judge-audit.json`, JSON.stringify(result, null, 2), { mode: 0o600 })
     return result
   } catch (error) {
     firstError = error
-    error.judgeFailure = nativeFailureEvidence({ output, exitCode, abort })
+    error.judgeFailure = { ...nativeFailureEvidence({ output, exitCode, abort }), ...(observationPolicy ? { observationPolicy } : {}) }
     try { await writeFile(`${directory}/judge-failure.json`, JSON.stringify(error.judgeFailure, null, 2) + '\n', { mode: 0o600 }) }
     catch { error.judgeFailure.evidenceWriteFailed = true }
     throw error

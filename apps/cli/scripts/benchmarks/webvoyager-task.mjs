@@ -20,12 +20,23 @@ const exec = promisify(execFile), pause = ms => new Promise(resolve => setTimeou
 const observations = new Set(['browser_status', 'browser_find', 'browser_text', 'browser_wait_for_text', 'browser_wait_for_selector', 'browser_wait_for_idle', 'browser_events', 'browser_downloads', 'browser_history'])
 
 export function webVoyagerPrompt(task, variant = 'frozen') {
-  assert(['frozen', 'recovery-v1'].includes(variant), 'MP-10 unknown prompt variant')
+  assert(['frozen', 'recovery-v1', 'recovery-vision-v1'].includes(variant), 'MP-10 unknown prompt variant')
   const frozen = `MP-08 / MP-10 WebVoyager diagnostic smoke. Solve this task in the Room browser.\nTask: ${task.ques}\nStart URL: ${task.web}\nUse ONLY Chariox first-party slice_open_url and slice_browser_* tools. Open the start URL first. Observe before acting and use observed opaque field IDs. No shell, files, scripts, direct HTTP, provider-native browser, other MCPs, Computer tools, benchmark code or expected answers. Read-only browsing only: no logins, sign-ups, purchases, cart changes, bookings, posts, messages, uploads, account changes or other submissions that change state. Search/filter forms that only retrieve public information are allowed. If the task needs a forbidden action, stop and state SKIPPED_STATE_CHANGE. If blocked by login, CAPTCHA, robots, access denial, expired dates or missing data, stop and state the blocker. Do not bypass restrictions or change the task. Stay within 15 mutating Browser actions, 80 Browser tool calls and 600 seconds. Return a concise factual final answer with source URLs; state failures honestly.`
   if (variant === 'frozen') return frozen
-  return frozen.replace('If blocked by login, CAPTCHA, robots, access denial, expired dates or missing data, stop and state the blocker.',
+  const recovery = frozen.replace('If blocked by login, CAPTCHA, robots, access denial, expired dates or missing data, stop and state the blocker.',
     'You may dismiss sign-in invitations and informational overlays without signing in, and reject nonessential cookies using observed controls such as Reject all, I do not agree, or necessary-only settings. These privacy-preserving navigation choices are permitted; do not stop solely because they save a local browser preference. Do not accept optional tracking. Do not change delivery addresses or invent a location. If blocked by mandatory login, CAPTCHA, robots, access denial or expired dates, stop and state the blocker. Before declaring missing data, wait for the requested result and read the relevant section. For image-only results, look for an observed Plain Text or accessible alternative; never infer values from an unreadable image.')
     + '\nNavigation recovery: if an element is obscured or disabled, inspect the current page for a dismissible overlay before retrying. Refresh observed field IDs after navigation or a stale-element error. Use the visible control, not a hidden duplicate. Allow one recovery attempt after a wait for idle; avoid repeating an unchanged failing action. Read the required content with targeted browser_text queries and pagination within the tool limits. Verify each requested filter, date, unit, count and ranking on the resulting page before answering. For latest/recent items verify dates and compare candidates. Give only verified facts and identify any unmet requirement; never claim full success from a partial result.'
+  if (variant === 'recovery-v1') return recovery
+  return recovery.replace('Use ONLY Chariox first-party slice_open_url and slice_browser_* tools.',
+    'Round 4 vision-allowed. Use ONLY Chariox first-party slice_open_url, slice_browser_* and protected slice_screenshot tools. Use slice_screenshot with return_image_base64=true through the ordinary Room/kernel path to see the current page; do not supply a path or read artifact files.')
+    .replace('other MCPs, Computer tools,', 'other MCPs, Computer input tools,')
+    .replace('For image-only results, look for an observed Plain Text or accessible alternative; never infer values from an unreadable image.',
+      'For image-only results, inspect a fresh protected screenshot and any observed Plain Text or accessible alternative. Read values, units and labels carefully; never infer values from an unreadable image.')
+}
+
+export function webVoyagerToolAllowed(tool, variant = 'frozen') {
+  return /^(slice_open_url|slice_browser_[a-z_]+)$/.test(tool)
+    || variant === 'recovery-vision-v1' && tool === 'slice_screenshot'
 }
 
 export async function runWebVoyagerTask({ task, runtime, options }) {
@@ -34,7 +45,7 @@ export async function runWebVoyagerTask({ task, runtime, options }) {
   await mkdir(directory, { recursive: false, mode: 0o700 })
   const promptVariant = options.promptVariant ?? 'frozen'
   const prompt = webVoyagerPrompt(task, promptVariant)
-  const row = { promptVariant, promptSha256: createHash('sha256').update(prompt).digest('hex'), mpItems: ['MP-08', 'MP-10', 'MP-11'], benchmark: 'WebVoyager', scope: options.scope ?? 'round3-full',
+  const row = { ...(promptVariant === 'recovery-vision-v1' ? { observationPolicy: 'vision-allowed', round: 4 } : {}), promptVariant, promptSha256: createHash('sha256').update(prompt).digest('hex'), mpItems: ['MP-08', 'MP-10', 'MP-11'], benchmark: 'WebVoyager', scope: options.scope ?? 'round3-full',
     taskId: task.id, runId: id, taskRevision: '5a7896738c10bfb8b9edccce6bb0e0411f8ae569',
     model: 'gpt-6.1-sol', effort: 'high', judgeModel: 'gpt-6.1-sol', judgeEffort: 'low',
     source: runtime.source, dateStatus: task.dateStatus, maxMutatingActions: 15, maxToolCalls: 80, wallTimeoutMs: 600000,
@@ -86,7 +97,7 @@ export async function runWebVoyagerTask({ task, runtime, options }) {
     agentId = await room.spawn({ provider: 'codex', model: 'gpt-6.1-sol', effort: 'high', accountProfile: runtime.profileId })
     row.sessionId = room.owned.sessionId; row.agentId = agentId
     seam = 'prompt_submit'
-    const submitted = unwrap(await submitOnce({ directory: `${options.runtime.evidence}/admissions`, scope: options.scope ?? 'round3-full', taskId: task.id, runId: id,
+    const submitted = unwrap(await submitOnce({ directory: `${options.runtime.evidence}/admissions`, scope: options.scope ?? 'round3-full', taskId: task.id, runId: id, observationPolicy: row.observationPolicy,
       submit: () => client.send(requests.submitPromptRequest(room.owned.sessionId, room.owned.attachmentId, agentId, prompt, [])) }), 'PromptSubmitted')
     row.promptId = (submitted.outcome.Started ?? submitted.outcome.Queued).prompt.id
     identity = { sessionId: room.owned.sessionId, agentId, promptId: row.promptId }
@@ -126,7 +137,7 @@ export async function runWebVoyagerTask({ task, runtime, options }) {
     }
     row.toolTrace = [...tools.values()].map(record => ({ tool: roomProviderToolName(record.tool), status: record.status, input: sanitizeDrillMetadata(record.input) }))
     row.providerToolCalls = row.toolTrace.length
-    row.forbiddenTools = row.toolTrace.filter(tool => !/^(slice_open_url|slice_browser_[a-z_]+)$/.test(tool.tool)).map(tool => tool.tool)
+    row.forbiddenTools = row.toolTrace.filter(tool => !webVoyagerToolAllowed(tool.tool, promptVariant)).map(tool => tool.tool)
     row.providerError = entries.some(item => item.entry.kind === 'provider_error')
     row.providerUnauthorized = entries.some(item => item.entry.kind === 'provider_error' && /401|unauthorized|refresh_token_reused/i.test(item.entry.text))
     row.providerErrors = settlementRecord({ turn, entries: originals, elapsedMs: Date.now() - providerStart, ...identity, helpers }).providerErrors
@@ -147,7 +158,7 @@ export async function runWebVoyagerTask({ task, runtime, options }) {
     row.usageTokensTotal = run ? unwrap(await client.send(requests.getProviderRunRequest(run)), 'ProviderRun').provider_run.usage_tokens_total : null
     seam = 'official_prompt_judge'
     Object.assign(row, await judgeWebVoyager({ task, directory, screenshots: row.screenshots, upstream: options.upstream,
-      root: runtime.root, accountHome: options.runtime.accountHome }))
+      root: runtime.root, accountHome: options.runtime.accountHome, observationPolicy: row.observationPolicy }))
   } catch (error) {
     row.firstFailingSeam = seam; row.failure = rpcErrorRecord(error)
     if (error.judgeFailure) row.judgeFailure = error.judgeFailure

@@ -21,7 +21,7 @@ const port = () => new Promise(resolve => {
   server.listen(0, '127.0.0.1', () => { const value = server.address().port; server.close(() => resolve(value)) })
 })
 
-export async function startOwnedRuntime({ lane, evidence, release, repo, clientRoot, image, accountHome, label, viewport, sandboxCompatibility = true, laneName = 'r2next' }) {
+export async function startOwnedRuntime({ lane, evidence, release, repo, clientRoot, image, accountHome, label, viewport, sandboxCompatibility = true, laneName = 'r2next', observationPolicy }) {
   for (const value of [lane, evidence, release, repo, clientRoot, accountHome]) assert(path.isAbsolute(value), 'MP-10 absolute runtime roots required')
   assert.match(laneName, /^(r2next|wvanalysis)$/)
   assert(path.resolve(lane).startsWith(`/root/.chariox/dev/browser-resume-20260930/agents/${laneName}/`))
@@ -35,7 +35,7 @@ export async function startOwnedRuntime({ lane, evidence, release, repo, clientR
   const workspace = await mkdtemp(`/root/work/agent-${laneName}-runtime-workspace-`)
   await chmod(root, 0o711); await chmod(workspace, 0o777)
   const children = []
-  const report = { mpItems: ['MP-08', 'MP-10', 'MP-11'], label, root, workspace, resources: [], unsigned: true }
+  const report = { ...(observationPolicy ? { observationPolicy } : {}), mpItems: ['MP-08', 'MP-10', 'MP-11'], label, root, workspace, resources: [], unsigned: true }
   const save = () => writeFile(`${evidence}/runtime.json`, JSON.stringify(sanitizeDrillMetadata(report), null, 2) + '\n', { mode: 0o600 })
   let client, monitor, closing = false, interrupted = false
   const interrupt = () => { interrupted = true }
@@ -43,7 +43,7 @@ export async function startOwnedRuntime({ lane, evidence, release, repo, clientR
   const guard = async () => {
     const memory = Number((await readFile('/proc/meminfo', 'utf8')).match(/MemAvailable:\s+(\d+)/)[1]) * 1024
     const fs = await statfs('/')
-    const sample = { at: new Date().toISOString(), memAvailable: memory, diskAvailable: fs.bavail * fs.bsize }
+    const sample = { ...(observationPolicy ? { observationPolicy, mpItems: ['MP-08', 'MP-10', 'MP-11'] } : {}), at: new Date().toISOString(), memAvailable: memory, diskAvailable: fs.bavail * fs.bsize }
     report.resources.push(sample)
     await appendFile(`${evidence}/runtime-resources.jsonl`, JSON.stringify(sample) + '\n')
     if (memory < 16 * 1024 ** 3 || sample.diskAvailable < 10 * 1024 ** 3) interrupted = true
