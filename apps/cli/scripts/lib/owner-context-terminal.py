@@ -46,8 +46,14 @@ else:
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH',42,132,0,0))
     child = subprocess.Popen(sys.argv[1:], stdin=slave, stdout=slave, stderr=slave)
     os.close(slave)
+    inputs = [master, sys.stdin.fileno()]
     while child.poll() is None:
-        if select.select([master],[],[],0.1)[0]:
+        ready = select.select(inputs,[],[],0.1)[0]
+        if sys.stdin.fileno() in ready:
+            data = os.read(sys.stdin.fileno(), 4096)
+            if data: os.write(master, data)
+            else: inputs.remove(sys.stdin.fileno())
+        if master in ready:
             try: data = os.read(master, 65536)
             except OSError: break
             if not data: break

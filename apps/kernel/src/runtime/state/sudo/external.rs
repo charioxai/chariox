@@ -114,6 +114,7 @@ impl KernelRuntimeState {
                 None,
                 Some(terminal),
                 false,
+                true,
             )
             .map_err(|error| {
                 self.owned.closed_interaction_error(
