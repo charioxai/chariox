@@ -1275,7 +1275,10 @@ impl AegsServer {
                     let _delivery_guard =
                         match self.store.delivery_guard(&subscription, generation).await {
                             Ok(guard) => guard,
-                            Err(_) => continue,
+                            Err(_) => {
+                                interest_keys.remove(&subscription.event_interest_key);
+                                continue;
+                            }
                         };
                     let connection_id = subscription.connection_id.clone();
                     let event = PublishEventRequest {
@@ -2259,6 +2262,90 @@ mod mp11_delivery_http_tests {
             Some(b"synthetic-encrypted-exchange".as_slice())
         );
         assert_eq!(publishing.await.unwrap()["matched_interest_count"], 1);
+    }
+
+    #[tokio::test]
+    async fn mp11_signed_webhook_delivers_shared_interest_after_first_binding_retires() {
+        let publisher = PublisherFixture::with_blocked_publication(true);
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .upsert_ready_connection("connection", "owner", "github", &serde_json::Value::Null, 1)
+            .unwrap();
+        let earlier = crate::SubscriptionClaim {
+            binding_id: "00-earlier".into(),
+            generator_id: "dev.chariox.github".into(),
+            connection_id: "connection".into(),
+            connection_scope: "scope".into(),
+            event_interest_key: "earlier-interest".into(),
+            event_type: "event".into(),
+            event_type_version: 1,
+            filter: serde_json::Value::Null,
+            revision: 1,
+            active: true,
+        };
+        let first = crate::SubscriptionClaim {
+            binding_id: "10-first".into(),
+            event_interest_key: "shared-interest".into(),
+            ..earlier.clone()
+        };
+        let remaining = crate::SubscriptionClaim {
+            binding_id: "20-remaining".into(),
+            ..first.clone()
+        };
+        let allowed_owners = ["owner".to_string()];
+        store
+            .reconcile_scoped(
+                "kernel",
+                Some(&allowed_owners),
+                &earlier.generator_id,
+                &[earlier.clone(), first, remaining.clone()],
+            )
+            .unwrap();
+        let server = Arc::new(AegsServer {
+            producer_id: earlier.generator_id.clone(),
+            management_token: None,
+            management_public_key: None,
+            management_issuer: "fixture".into(),
+            management_url: None,
+            manifest_digest: None,
+            publisher: AedsPublisher::new(&earlier.generator_id, None, &publisher.url),
+            store: store.clone(),
+            provider: Arc::new(SignedProvider),
+            action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        });
+        let publishing = tokio::spawn(signed_webhook(server));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while publisher.calls.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!publishing.is_finished());
+        // All three bindings have been selected. Retire only the first shared
+        // binding while the earlier interest is waiting for its HTTP response.
+        let reconciliation = store.reconcile_scoped(
+            "kernel",
+            Some(&allowed_owners),
+            &earlier.generator_id,
+            &[earlier.clone(), remaining.clone()],
+        );
+        publisher.hold.store(false, Ordering::SeqCst);
+        reconciliation.unwrap();
+        let response = publishing.await.unwrap();
+        assert_eq!(
+            store
+                .matching(
+                    &earlier.generator_id,
+                    &earlier.event_type,
+                    &earlier.connection_scope
+                )
+                .unwrap(),
+            vec![earlier, remaining]
+        );
+        assert_eq!(publisher.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(response["matched_interest_count"], 2);
+        assert_eq!(response["publications"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]
