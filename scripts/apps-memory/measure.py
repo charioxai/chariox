@@ -16,7 +16,8 @@ def process(pid):
 def process_tree(root, retained, marker=None):
     rows = [row for entry in pathlib.Path('/proc').iterdir() if entry.name.isdecimal()
             and (row := process(int(entry.name)))]
-    selected = {root}
+    # MP-11: a reused root PID must never admit a foreign descendant tree.
+    selected = set()
     selected.update(row['pid'] for row in rows if retained.get(row['pid']) == row['start']
                     or (marker and (marker + '/') in row['cmd']
                         and row['cmd'].split()[0].endswith('/chrome_crashpad_handler')))
@@ -104,7 +105,9 @@ def summarize(samples):
                 'per_process_pss_p50_mib':quantile(individual_pss,.5), 'per_process_pss_p95_mib':quantile(individual_pss,.95),
                 'rss_samples':len(rss), 'pss_samples':len(pss),
                 'rss_p50_mib':quantile(rss,.5), 'rss_p95_mib':quantile(rss,.95),
-                'pss_p50_mib':quantile(pss,.5), 'pss_p95_mib':quantile(pss,.95)})
+                'rss_max_mib':quantile(rss,1),
+                'pss_p50_mib':quantile(pss,.5), 'pss_p95_mib':quantile(pss,.95),
+                'pss_max_mib':quantile(pss,1)})
     return result
 
 def run(args):
@@ -143,7 +146,10 @@ def run(args):
             command = ['setpriv','--reuid=65534','--regid=65534','--clear-groups', *command]
         with (output/'kernel.log').open('wb') as log, (output/'samples.jsonl').open('w') as raw:
             child = subprocess.Popen(command, env=env, stdout=log, stderr=log)
-            assert child.pid > 1; receipt['pid'] = child.pid; receipt['command']=command; save()
+            assert child.pid > 1
+            identity = process(child.pid)
+            if identity: owned[child.pid] = identity['start']
+            receipt['pid'] = child.pid; receipt['command']=command; save()
             deadline = time.monotonic() + 600
             while child.poll() is None:
                 if time.monotonic() > deadline: raise TimeoutError('MP-08 / MP-10 drill timeout')
@@ -176,6 +182,9 @@ def run(args):
         receipt['result']='RED';receipt['error']=str(error)
         raise
     finally:
+        validation = root/'validation.json'
+        if validation.exists():
+            shutil.copyfile(validation, output/'validation.json')
         if child: process_tree(child.pid, owned, str(root))
         # Exact start identities discovered only in this run's descendant tree.
         for sig in (signal.SIGTERM,signal.SIGKILL):

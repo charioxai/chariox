@@ -1,7 +1,7 @@
 # MP-08 / MP-10: accounting and MP-11 signal guards, no real browser required.
 import unittest
 from unittest.mock import patch
-from measure import quantile, summarize, stop_owned
+from measure import quantile, summarize, stop_owned, process_tree
 
 class Accounting(unittest.TestCase):
     def test_nearest_rank_and_simultaneous_class_totals(self):
@@ -34,5 +34,14 @@ class Accounting(unittest.TestCase):
         with patch('measure.process',return_value={'start':'new'}), patch('measure.os.kill') as kill:
             stop_owned(22,'old',15)
             kill.assert_not_called()
+
+    def test_reused_root_does_not_admit_foreign_descendants(self):
+        entries = [type('Entry', (), {'name':str(pid)})() for pid in [22,23]]
+        rows = {22:{'pid':22,'ppid':1,'start':'new','cmd':'foreign'},
+                23:{'pid':23,'ppid':22,'start':'child','cmd':'foreign child'}}
+        retained = {22:'old'}
+        with patch('measure.pathlib.Path.iterdir', return_value=entries), patch('measure.process', side_effect=rows.get):
+            self.assertEqual(process_tree(22,retained), [])
+        self.assertEqual(retained,{22:'old'})
 
 if __name__=='__main__': unittest.main()

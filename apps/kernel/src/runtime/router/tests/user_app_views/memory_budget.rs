@@ -10,13 +10,14 @@ fn app_view_memory_budget_drill() {
     std::thread::Builder::new()
         .stack_size(32 * 1024 * 1024)
         .spawn(|| {
-            tokio::runtime::Builder::new_multi_thread()
+            let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
                 .enable_all()
                 .thread_stack_size(32 * 1024 * 1024)
                 .build()
-                .unwrap()
-                .block_on(run());
+                .unwrap();
+            let _entered = runtime.enter();
+            run(&runtime);
         })
         .unwrap()
         .join()
@@ -35,7 +36,7 @@ async fn dispatch(router: &CommandRouter, value: serde_json::Value) -> LocalDaem
     request(router, "alice", req).await.unwrap()
 }
 
-async fn run() {
+fn run(runtime: &tokio::runtime::Runtime) {
     let root = std::path::PathBuf::from(std::env::var_os("CHARIOX_APPS_MEMORY_ROOT").unwrap());
     let topology = std::env::var("CHARIOX_APPS_MEMORY_TOPOLOGY").unwrap();
     let native = topology == "host";
@@ -140,7 +141,7 @@ async fn run() {
         observations.push(observed);
     }
     let mut slice = None;
-    let outcome = std::panic::AssertUnwindSafe(async {
+    let outcome = runtime.block_on(std::panic::AssertUnwindSafe(async {
         if let Some(room) = &room {
             let LocalDaemonResponse::SliceCreated { slice: created } = dispatch(&router,
                 serde_json::json!({"CreateSlice":{"name":"appsbudget","display_mode":"headed","base":"clean"}})).await else { panic!("slice create") };
@@ -249,13 +250,24 @@ async fn run() {
                 browser_request(&router, KernelBrowserCommand::MirrorClose {subscription_id:id,generation}).await;
             }
         }
+        let calls = observations.iter().map(|o| o.tool_invocations()).collect::<Vec<_>>();
+        std::fs::write(root.join("validation.json"), serde_json::to_vec(&serde_json::json!({
+            "mp_items":["MP-08","MP-10"],"calls_per_view":calls,
+            "distinct_installations":4,"sessionless":native,
+        })).unwrap()).unwrap();
+        assert!(calls.iter().all(|calls| *calls > 1), "each page must acknowledge interaction through its App channel");
         assert_eq!(views.iter().map(|v| &v.origin).collect::<std::collections::BTreeSet<_>>().len(), if native {4} else {0});
         if native { assert!(sessions.list_sessions().is_empty()); }
-    }).catch_unwind().await;
+    }).catch_unwind());
     phase(&root, &topology, 0, "cleanup");
-    router.runtime_state.shutdown_cleanup().await.unwrap();
+    runtime
+        .block_on(router.runtime_state.shutdown_cleanup())
+        .unwrap();
     if let Some(id) = &slice {
-        dispatch(&router, serde_json::json!({"DeleteSlice":{"slice_ref":id}})).await;
+        runtime.block_on(dispatch(
+            &router,
+            serde_json::json!({"DeleteSlice":{"slice_ref":id}}),
+        ));
     }
     for worker in workers {
         worker.shutdown_blocking();
