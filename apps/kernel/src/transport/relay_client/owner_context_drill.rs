@@ -188,9 +188,25 @@ async fn target_router(
     )
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn mp05_mp08_mp11_owner_managed_context_encrypted_peer_drill() {
+#[test]
+fn mp05_mp08_mp11_owner_managed_context_encrypted_peer_drill() {
     crate::test_support::isolated_env_test!();
+    std::thread::Builder::new()
+        .name("owner-context-peer-drill".into())
+        .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(owner_managed_context_encrypted_peer_drill_inner());
+        })
+        .unwrap()
+        .join()
+        .unwrap_or_else(|error| std::panic::resume_unwind(error));
+}
+
+async fn owner_managed_context_encrypted_peer_drill_inner() {
     let _lock = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-owner-peer-{:032x}",
@@ -512,7 +528,7 @@ async fn mp05_mp08_mp11_owner_managed_context_encrypted_peer_drill() {
             ..
         }
     ));
-    for _ in 0..4 {
+    for pin in ["machine", "kernel", "thumbprint", "public_key"] {
         let response = send_managed_peer_request(
             &harness,
             &source.daemon_id,
@@ -522,13 +538,15 @@ async fn mp05_mp08_mp11_owner_managed_context_encrypted_peer_drill() {
             arm.clone(),
         )
         .await;
-        assert!(matches!(
-            response,
-            RelayPeerResponse::ManagedContextImportFailed {
-                retryable: false,
-                ..
+        match response {
+            RelayPeerResponse::ManagedContextImportFailed { code, retryable } => {
+                assert!(!retryable, "{pin} refusal code {code} was retryable");
             }
-        ));
+            response => panic!(
+                "{pin} did not refuse: {:?}",
+                std::mem::discriminant(&response)
+            ),
+        }
     }
     let capability = random_managed_context_capability();
     let request = ManagedContextOutboundTransferRequest {
