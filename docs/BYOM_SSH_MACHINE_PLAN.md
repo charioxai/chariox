@@ -1,6 +1,6 @@
 # BYOM over SSH (MP-07 / MP-08 / MP-11)
 
-PR1 continuation base: OSS ownership `0d02073f5` (local 439, relay 70);
+PR1 reviewed base: OSS ownership `68b1f48d4` (local 439, relay 70);
 BYOM adds local 444, with no relay shape change. Owner request 2026-10-05 adds an owner-managed machine, not a
 Cloud-disposable environment. The ordinary runtime remains the authority.
 MP-11 follows the owner's narrowed behavioural/security-anchor scope.
