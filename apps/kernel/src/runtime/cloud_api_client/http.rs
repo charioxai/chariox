@@ -408,9 +408,9 @@ pub(super) fn cloud_status_error(status: u16, body: String) -> DaemonError {
     let message = if body.is_empty() {
         format!("cloud relay request failed with {status}")
     } else if let Some(code) = cloud_api_error_code(&body) {
-        format!("cloud relay request failed with {status}: cloud_api_code={code}: {body}")
+        format!("cloud relay request failed with {status}: cloud_api_code={code}")
     } else {
-        format!("cloud relay request failed with {status}: {body}")
+        format!("cloud relay request failed with {status}")
     };
     DaemonError::LocalTransport {
         operation: "cloud relay request",
@@ -505,6 +505,21 @@ pub(crate) fn is_stale_cloud_link_error(error: &DaemonError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_poll_status_errors_keep_cloud_response_bodies_private() {
+        // MP-08/MP-11: #898's fallback must retain #888's error redaction.
+        for body in [
+            r#"{"error":{"code":"invalid_request","message":"synthetic-private-body"}}"#,
+            "synthetic-private-body",
+        ] {
+            let error = cloud_status_error(400, body.into());
+            let rendered = error.to_string();
+            assert!(!rendered.contains("synthetic-private-body"));
+            assert!(!rendered.contains("message"));
+            assert!(rendered.contains("400"));
+        }
+    }
 
     #[test]
     fn cloud_url_component_percent_encodes_query_values() {
