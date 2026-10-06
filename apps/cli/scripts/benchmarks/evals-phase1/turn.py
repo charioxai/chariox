@@ -342,7 +342,14 @@ def run(request, evidence):
                     **total['usage'], 'api_equivalent_nanodollars': int(price) if price is not None else None}
                 measurement['usage_unavailable_reason'] = None if price is not None else 'official harness lacks the fields required by the exact dated model price'
         client.send('submit_prompt', prompt='/session usage')
-        visible = screenshot('03-usage-report')
+        screenshot('03-usage-report-collapsed')
+        # Use the real TUI's user click handler to open its ordinary multiline
+        # notice; do not treat hidden snapshot text as visible-screen evidence.
+        snap = client.send('snapshot')
+        for entry in snap.get('transcript', {}).get('entries', []):
+            if entry.get('text', '').startswith('Usage (standard API-equivalent') and entry.get('blobCollapsed') is True:
+                client.send('toggle_blob', entryId=entry['id'], collapsed=False, agentId=agent_id)
+        visible = screenshot('04-usage-report-expanded')
         usage = measurement['usage']
         measurement['tui_usage_visible'] = usage is not None and all(
             f'{label} {usage[key]}' in visible
