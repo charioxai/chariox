@@ -32,7 +32,10 @@ export function compareRound4(baseline, rows, eligible = 632) {
     afterValid: subset.filter(p => p.afterValid).length, gained: subset.filter(p => !p.baselineWin && p.afterWin).length,
     lost: subset.filter(p => p.baselineWin && !p.afterWin).length,
     deltaPercentagePoints: subset.length ? (subset.filter(p => p.afterWin).length - subset.filter(p => p.baselineWin).length) / subset.length * 100 : null })
-  const losses = after.map(r => ({ taskId: r.taskId, ...classifyFailure(r) })).filter(r => r.category)
+  const budgetViolations = after.filter(r => r.providerToolCalls > r.maxToolCalls)
+    .map(r => ({ taskId: r.taskId, providerToolCalls: r.providerToolCalls, maxToolCalls: r.maxToolCalls }))
+  const losses = after.map(r => ({ taskId: r.taskId,
+    ...(r.providerToolCalls > r.maxToolCalls ? { category: 'timeout / step budget', subclass: 'tool_calls' } : classifyFailure(r)) })).filter(r => r.category)
   const classes = [...new Set(losses.map(r => r.category))].map(category => ({ category,
     count: losses.filter(r => r.category === category).length, nextFix: fixes[category] }))
     .sort((a, b) => b.count - a.count || a.category.localeCompare(b.category))
@@ -47,7 +50,7 @@ export function compareRound4(baseline, rows, eligible = 632) {
       eligibleRate: after.length === eligible ? after.filter(win).length / eligible : null },
     paired: summarize(paired), byBaselineClass: [...new Set(paired.map(p => p.baselineClass))].sort()
       .map(category => ({ category, ...summarize(paired.filter(p => p.baselineClass === category)) })),
-    perSite: sites, remainingLossClasses: classes, top3RemainingLossClasses: classes.slice(0, 3),
+    perSite: sites, budgetViolations, remainingLossClasses: classes, top3RemainingLossClasses: classes.slice(0, 3),
     limitation: 'Local reproduction with approved substitute LOW native CLI judge; joint prompt/vision/capture changes are not causally isolated. No leaderboard submission. Partial campaigns do not establish an eligible rate.' }
 }
 

@@ -38,3 +38,15 @@ test('MP-10 partial vision campaigns retain invalids and cannot report full elig
   assert.equal(compareRound4(old, [...now, { taskId: 'B--1', ...good }], 3).round4VisionAllowed.eligibleRate, 2 / 3)
   assert.throws(() => compareRound4(old, [now[0], now[0]], 3))
 })
+
+
+test('MP-10 over-budget vision calls remain invalid without inventing a cleanup failure', async () => {
+  const { compareRound4 } = await import('./webvoyager-round4-report.mjs')
+  const baseline = [{ taskId: 'S--0', harnessValid: true, judgeValid: true, judgeVerdict: 'SUCCESS' }]
+  const row = { ...baseline[0], harnessValid: false, providerToolCalls: 82, maxToolCalls: 80, cleanupValid: true }
+  const report = compareRound4(baseline, [row], 1)
+  assert.equal(report.round4VisionAllowed.wins, 0); assert.equal(report.round4VisionAllowed.invalid, 1)
+  assert.equal(report.top3RemainingLossClasses[0].category, 'timeout / step budget')
+  assert.deepEqual(report.budgetViolations, [{ taskId: 'S--0', providerToolCalls: 82, maxToolCalls: 80 }])
+  assert.equal(row.cleanupValid, true); assert.equal(row.judgeVerdict, 'SUCCESS')
+})
