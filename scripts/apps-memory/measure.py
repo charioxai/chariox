@@ -43,6 +43,7 @@ def process_tree(root, retained, marker=None):
     return chosen
 
 def category(cmd):
+    if '/chrome_crashpad_handler' in cmd: return 'utility'
     if '--type=renderer' in cmd: return 'renderers'
     if '--type=gpu-process' in cmd: return 'GPU'
     if '--type=utility' in cmd: return 'utility'

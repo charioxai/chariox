@@ -1,9 +1,12 @@
 # MP-08 / MP-10: accounting and MP-11 signal guards, no real browser required.
 import unittest
 from unittest.mock import patch
-from measure import quantile, summarize, stop_owned, process_tree, resource, slice_labels, owned_slice_resource
+from measure import quantile, summarize, stop_owned, process_tree, resource, slice_labels, owned_slice_resource, category
 
 class Accounting(unittest.TestCase):
+    def test_browser_total_includes_crashpad_helpers(self):
+        self.assertEqual(category('/lane/chromium/chrome_crashpad_handler --database=/lane/profile'), 'utility')
+
     def test_repeated_slice_id_cannot_admit_another_kernel_resource(self):
         ownership = {'slice_id':'slice-1', 'owner_kernel_id':'kernel-own',
                      'runtime_name':'chariox-slice-appsbudget-own'}
