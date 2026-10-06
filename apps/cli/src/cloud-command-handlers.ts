@@ -22,7 +22,11 @@ import {
 } from "./deployed-workflow-command.js"
 
 export type CloudCommandHandlerDeps =
-  & { handleClientCloudCommand?: (args: string[]) => Promise<boolean>; getCloudControlProfile?: () => Promise<RelayCloudProfile | null> }
+  & {
+    handleClientCloudCommand?: (args: string[]) => Promise<boolean>
+    getCloudControlProfile?: () => Promise<RelayCloudProfile | null>
+    getCloudCollaborationProfile?: () => Promise<RelayCloudProfile | null>
+  }
   & CloudCommandLifecycleDeps
   & CloudSessionCommandHandlerDeps
   & RelayCloudCommandHandlerDeps
@@ -113,14 +117,16 @@ export async function handleCloudSlashCommand(
     await deps.refreshWaitingRoomData?.()
     return
   }
-  const profile = await deps.getCloudRelayProfile?.() ?? null
   if (area === "status") {
-    await showCloudStatus(deps, profile)
+    await showCloudStatus(deps, await deps.getCloudRelayProfile?.() ?? null)
     return
   }
-  const controlProfile = deps.getCloudControlProfile ? await deps.getCloudControlProfile() : profile
+  const getProfile = ["invite", "members", "collaborators"].includes(area)
+    ? deps.getCloudCollaborationProfile ?? deps.getCloudControlProfile
+    : deps.getCloudControlProfile
+  const controlProfile = getProfile ? await getProfile() : await deps.getCloudRelayProfile?.() ?? null
   if (!controlProfile) {
-    deps.flashFooter(deps.getCloudControlProfile ? "sign in with /cloud login first" : "cloud profile missing; run /cloud link first", "error")
+    deps.flashFooter(getProfile ? "sign in with /cloud login first" : "cloud profile missing; run /cloud link first", "error")
     return
   }
   if (await handleDeployedWorkflowCloudCommand(deps, controlProfile, area, action, args)) {
@@ -136,7 +142,9 @@ export async function handleCollabSlashCommand(
   deps: CloudCommandHandlerDeps,
   command: Extract<ParsedSlashCommand, { kind: "collab" }>,
 ): Promise<void> {
-  const profile = await deps.getCloudRelayProfile?.() ?? null
+  const profile = deps.getCloudCollaborationProfile
+    ? await deps.getCloudCollaborationProfile()
+    : await deps.getCloudRelayProfile?.() ?? null
   if (profile) {
     await handleCloudSlashCommand(deps, {
       kind: "cloud",

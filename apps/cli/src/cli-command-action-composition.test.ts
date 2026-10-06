@@ -32,11 +32,19 @@ test("signed-in attached terminal preserves kernel enrollment when unlink is rej
 
 // MP-08 / MP-11: the enrolled kernel contains no human authority. Cloud HTTP
 // receives the private terminal profile; only local session mutations use IPC.
-for (const action of ["deployments list", "invite create", "invite accept", "members", "collaborators"]) {
-  test(`signed-in attached terminal uses human Cloud authority for ${action}`, async t => {
+// A nonowner's private account may differ from the kernel owner's account.
+const cloudCommandCases: {action: string; kind: "cloud" | "collab"; nonowner: boolean; rejectAt?: "cloud" | "kernel"}[] = [
+  ...["deployments list", "invite create", "invite accept", "members", "collaborators"].map(action => ({action, kind: "cloud" as const, nonowner: false})),
+  ...(["cloud", "collab"] as const).flatMap(kind =>
+    ["invite create", "invite accept", "members", "collaborators"].map(action => ({action, kind, nonowner: true}))),
+  ...(["cloud", "collab"] as const).flatMap(kind =>
+    (["cloud", "kernel"] as const).map(rejectAt => ({action: "invite accept", kind, nonowner: true, rejectAt}))),
+]
+for (const {action, kind, nonowner, rejectAt} of cloudCommandCases) {
+  test(`signed-in ${nonowner ? "nonowner" : "owner"} terminal uses human authority for /${kind} ${action}${rejectAt ? ` with ${rejectAt} denial` : ""}`, async t => {
     const session = makeSession(), notices: string[] = [], ipc: string[] = [], paths: string[] = []
     let applied = 0, attached = 0
-    const profile = {apiUrl: "http://127.0.0.1:44123", accountId: "account", userId: "human", clientId: "terminal", realmId: "realm", relayUrl: "wss://relay.test", email: "human@example.test", accountSlug: "fixture", issuerId: "fixture"}
+    const profile = {apiUrl: "http://127.0.0.1:44123", accountId: nonowner ? "collaborator-account" : "account", userId: "human", clientId: "terminal", realmId: "realm", relayUrl: "wss://relay.test", email: "human@example.test", accountSlug: "fixture", issuerId: "fixture"}
     const credential = {profile, clientId: "terminal", publicKeyThumbprint: "a".repeat(64), accessToken: "synthetic-human-access", refreshCredential: "synthetic-refresh", expiresAtMs: Date.now()+60_000}
     const cloudClient = new CloudClient({load: async () => credential, session: async () => credential} as unknown as CloudClientCredentialStore, () => ({publicKeyThumbprint: credential.publicKeyThumbprint}) as any)
     t.after(() => cloudClient.stop())
@@ -56,24 +64,39 @@ for (const action of ["deployments list", "invite create", "invite accept", "mem
       assert.ok(url.pathname in results, "expected client control-plane route")
       if (url.pathname === "/sessions/invites") {assert.equal(body.sessionId, session.id); assert.equal(body.collaborationLevel, "full")}
       if (init?.method !== "POST") assert.equal(url.searchParams.get("accountId"), profile.accountId)
+      if (rejectAt === "cloud") return new Response(JSON.stringify({error: {code: "collaboration_denied"}}), {status: 403})
       return new Response(JSON.stringify(results[url.pathname]), {status: 200})
     })
     const client = {isRelayTransport: () => true, send: async (request: Record<string, any>) => {
       const variant = Object.keys(request)[0]!; ipc.push(variant)
-      if (variant === "CloudRelayStatus") return {CloudRelayStatus: {profile: {api_url: profile.apiUrl, account_id: profile.accountId, kernel_id: "kernel", kernel_enrolled: true}}}
+      if (variant === "CloudRelayStatus") {
+        if (nonowner) throw new Error("CloudRelayStatus requires the kernel owner")
+        return {CloudRelayStatus: {profile: {api_url: profile.apiUrl, account_id: "account", kernel_id: "kernel", kernel_enrolled: true}}}
+      }
       if (variant === "CreateSessionInvite") return {SessionInviteCreated: {session, invite: {invite_token: "local-invite-token", invite: {invite_id: "local-invite"}}}}
-      if (variant === "JoinSessionInvite") {assert.equal(request.JoinSessionInvite.user_id, profile.userId); return {SessionInviteJoined: {session, member: {user_id: profile.userId}}}}
+      if (variant === "JoinSessionInvite") {
+        assert.equal(request.JoinSessionInvite.user_id, profile.userId)
+        assert.equal(request.JoinSessionInvite.invite_token, "local-invite-token")
+        if (rejectAt === "kernel") throw new Error("kernel membership denied")
+        return {SessionInviteJoined: {session, member: {user_id: profile.userId}}}
+      }
       throw new Error(`human Cloud requests cannot use kernel IPC: ${variant}`)
     }}
     const base = {...makeCommandDeps(), client, cloudClient, options: {clientId: "terminal", accountProfile: "default"}, preferencesState: () => ({}), kernelConnected: () => true, sessionState: () => session, appendNotice: (text: string) => notices.push(text), appendCloudNotice: (text: string) => notices.push(text), applySessionState: () => {applied++}, attachBinding: async () => {attached++}}
     const deps = new Proxy(base, {get: (target, key) => key in target ? target[key as keyof typeof target] : () => {}})
     const handlers = createCliCommandActionComposition(deps as unknown as CliCommandActionCompositionDeps)
     const args = action === "invite create" ? ["invite", "create", "--level", "full"] : action === "invite accept" ? ["invite", "accept", "http://127.0.0.1/invites?cloud_invite=cloud-invite-token&local_invite=local-invite-token"] : action.split(" ")
-    await handlers.handleCloudCommand({kind: "cloud", raw: `/cloud ${action}`, args})
+    const run = () => kind === "collab"
+      ? handlers.handleCollabCommand({kind, raw: `/collab ${action}`, args})
+      : handlers.handleCloudCommand({kind, raw: `/cloud ${action}`, args})
+    if (rejectAt) await assert.rejects(run, rejectAt === "cloud" ? /collaboration_denied/ : /kernel membership denied/)
+    else await run()
     assert.equal(paths.length, 1)
+    if (nonowner) assert.equal(ipc.includes("CloudRelayStatus"), false, "human collaboration does not read owner-only enrollment status")
     assert.ok(!ipc.some(variant => /^(CreateCloud|AcceptCloud|ListCloud)/.test(variant)))
-    assert.equal(applied, action.startsWith("invite") ? 1 : 0)
-    assert.equal(attached, action === "invite accept" ? 1 : 0)
+    assert.equal(ipc.filter(variant => variant === "JoinSessionInvite").length, action === "invite accept" && rejectAt !== "cloud" ? 1 : 0)
+    assert.equal(applied, !rejectAt && action.startsWith("invite") ? 1 : 0)
+    assert.equal(attached, !rejectAt && action === "invite accept" ? 1 : 0)
     if (action === "members") assert.ok(notices.some(value => value.includes("human human@example.test (Human)")))
     if (action === "collaborators") assert.ok(notices.some(value => value.includes("friend friend@example.test shared_sessions=2")))
   })

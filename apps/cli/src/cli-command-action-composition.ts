@@ -595,6 +595,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       ? await deps.cloudClient?.profile() ?? null
       : await getKernelCloudRelayProfile(client),
     getCloudControlProfile: () => getCloudClientControlProfile(deps.cloudClient, deps.kernelConnected?.() === false ? undefined : client),
+    getCloudCollaborationProfile: () => getCloudClientControlProfile(deps.cloudClient),
     connectCloudRelay: () => connectKernelCloudRelay(client),
     saveCloudRelayProfile: async (profile) => {
       await saveRelayCloudProfile(profile)
