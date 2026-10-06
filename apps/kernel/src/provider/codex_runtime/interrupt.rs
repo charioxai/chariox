@@ -109,8 +109,13 @@ pub fn abort_codex_turn(
                             })
                             .map(str::to_string)
                     });
+                // A terminal submitted record cannot settle a newer lifecycle
+                // turn that is still missing from the snapshot.
                 if response.as_ref().is_some_and(|response| {
                     codex_active_turn_id(response).is_none()
+                        && actual_id.as_deref().is_none_or(|id| {
+                            terminal_interruption_is_settled(response, id, state)
+                        })
                         && terminal_interruption_is_settled(response, &submitted_turn_id, state)
                 }) {
                     note_codex_turn_interrupt_accepted(

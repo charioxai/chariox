@@ -20,7 +20,8 @@ fn interrupt_fixture_with_event(
     retry_turn_id: &str,
     assert_waits_for_start: bool,
 ) -> Result<(), DaemonError> {
-    let expect_retry = assert_waits_for_start
+    let expect_retry = started_during_read
+        || assert_waits_for_start
         || turns["data"]
             .as_array()
             .is_some_and(|turns| turns.iter().any(|turn| turn["status"] == "inProgress"))
@@ -50,7 +51,7 @@ fn interrupt_fixture_with_event(
                     json!({"error":{"code":-32600,"message":first_error}})
                 }
                 ("thread/turns/list", 2) => {
-                    if !expect_retry
+                    if (!expect_retry || started_during_read)
                         && turns["data"].as_array().is_some_and(|turns| {
                             turns.iter().any(|turn| {
                                 turn["id"] == "submitted" && turn["status"] == "interrupted"
@@ -203,6 +204,43 @@ fn mp08_interrupt_fresh_start_event_supersedes_a_stale_snapshot() {
         false,
     )
     .unwrap();
+}
+
+#[test]
+fn mp08_interrupt_fresh_start_supersedes_a_completed_submitted_snapshot() {
+    for error in [
+        "expected active turn id submitted but found actual",
+        "no active turn to interrupt",
+    ] {
+        interrupt_fixture_with_event(
+            error,
+            json!({"data":[{"id":"submitted","status":"completed"}]}),
+            None,
+            true,
+            "actual",
+            false,
+        )
+        .expect("the fresh actual turn must be interrupted before settling cancellation");
+    }
+}
+
+#[test]
+fn mp08_interrupt_fresh_start_supersedes_an_interrupted_submitted_snapshot() {
+    for error in [
+        "expected active turn id submitted but found actual",
+        "no active turn to interrupt",
+    ] {
+        // The fixture buffers submitted's completion before actual's fresh start.
+        interrupt_fixture_with_event(
+            error,
+            json!({"data":[{"id":"submitted","status":"interrupted"}]}),
+            None,
+            true,
+            "actual",
+            false,
+        )
+        .expect("submitted's completion must not hide the fresh actual turn");
+    }
 }
 
 #[test]
