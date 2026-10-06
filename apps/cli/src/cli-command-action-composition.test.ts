@@ -138,6 +138,61 @@ for (const {action, kind, nonowner, rejectAt} of cloudCommandCases) {
   })
 }
 
+// MP-08 / MP-11: shared membership scope is distinct from personal login scope.
+for (const kind of ["cloud", "collab"] as const) {
+  test(`MP-08 / MP-11: /${kind} members uses the accepted session's owner account with the collaborator's private login`, async t => {
+    const session = makeSession(), notices: string[] = [], ipc: string[] = []
+    const profile = {apiUrl: "http://127.0.0.1:44123", accountId: "collaborator-account", userId: "collaborator", clientId: "terminal", realmId: "personal-realm", relayUrl: "wss://relay.test", email: "collaborator@example.test", accountSlug: "personal", issuerId: "fixture"}
+    const credential = {profile, clientId: profile.clientId, publicKeyThumbprint: "a".repeat(64), accessToken: "synthetic-collaborator-access", refreshCredential: "synthetic-refresh", expiresAtMs: Date.now()+300_000}
+    const cloudClient = new CloudClient({load: async () => credential, session: async () => credential} as unknown as CloudClientCredentialStore, () => ({publicKeyThumbprint: credential.publicKeyThumbprint}) as any)
+    t.after(() => cloudClient.stop())
+    // Pinned Cloud 3620f1245: invite acceptance writes under invite.accountId;
+    // member listing authenticates the caller then requires the exact tuple.
+    const invite = {accountId: "owner-account", sessionId: session.id, createdByUserId: "owner"}
+    const members = [{accountId: invite.accountId, sessionId: invite.sessionId, userId: "owner", email: "owner@example.test"}]
+    let memberReads = 0, attached = false
+    t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input))
+      if (url.pathname === "/sessions/invites/cloud-invite/accept") {
+        const body = JSON.parse(String(init?.body))
+        assert.equal(body.sessionToken, credential.accessToken)
+        members.push({accountId: invite.accountId, sessionId: invite.sessionId, userId: profile.userId, email: profile.email})
+        return Response.json({...invite, userId: profile.userId, invitedByUserId: invite.createdByUserId, joinedAt: new Date().toISOString()})
+      }
+      assert.equal(url.pathname, "/sessions/members")
+      assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${credential.accessToken}`)
+      assert.equal(url.searchParams.has("sessionToken"), false)
+      const accountId = url.searchParams.get("accountId"), sessionId = url.searchParams.get("sessionId")
+      if (!members.some(member => member.accountId === accountId && member.sessionId === sessionId && member.userId === profile.userId)) {
+        return Response.json({error: {code: "session_invite_invalid"}}, {status: 403})
+      }
+      memberReads++
+      return Response.json({sessionId, members: members.filter(member => member.accountId === accountId && member.sessionId === sessionId)})
+    })
+    const client = {isRelayTransport: () => true, send: async (request: Record<string, any>) => {
+      const variant = Object.keys(request)[0]!; ipc.push(variant)
+      assert.equal(variant, "JoinSessionInvite", "collaborator cannot query owner-only kernel Cloud status")
+      assert.equal(request.JoinSessionInvite.user_id, profile.userId)
+      return {SessionInviteJoined: {session, member: {user_id: profile.userId}}}
+    }}
+    const base = {...makeCommandDeps(), client, cloudClient, options: {}, preferencesState: () => ({}), kernelConnected: () => true, sessionState: () => session, appendNotice: (text: string) => notices.push(text), applySessionState: () => {}, attachBinding: async () => {attached = true}}
+    const deps = new Proxy(base, {get: (target, key) => key in target ? target[key as keyof typeof target] : () => {}})
+    const handlers = createCliCommandActionComposition(deps as unknown as CliCommandActionCompositionDeps)
+    const run = (args: string[]) => kind === "cloud"
+      ? handlers.handleCloudCommand({kind, raw: `/cloud ${args.join(" ")}`, args})
+      : handlers.handleCollabCommand({kind, raw: `/collab ${args.join(" ")}`, args})
+    await assert.rejects(run(["members"]), /session_invite_invalid/, "same session ID in the personal account does not grant membership")
+    await run(["invite", "accept", "http://127.0.0.1/invite?cloud_invite=cloud-invite&local_invite=local-invite"])
+    assert.equal(attached, true)
+    await run(["members"])
+    await run(["members", "list"])
+    assert.equal(memberReads, 2)
+    assert.deepEqual(ipc, ["JoinSessionInvite"])
+    assert.ok(notices.some(value => value.includes("owner owner@example.test") && value.includes("collaborator collaborator@example.test")))
+    assert.equal((await cloudClient.profile())?.accountId, "collaborator-account")
+  })
+}
+
 // MP-08 / MP-11: enrollment cannot stand in for a terminal login or cross realms.
 for (const state of ["signed-out", "foreign-account", "foreign-cloud"] as const) {
   test(`attached deployment command rejects ${state} human authority`, async t => {
