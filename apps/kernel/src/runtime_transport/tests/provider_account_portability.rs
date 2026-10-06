@@ -8,6 +8,8 @@ use crate::local::ManagedEnvironmentProviderAccountSelection;
 fn provider_account_portability_websocket_drill() {
     crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
+    use std::os::unix::fs::PermissionsExt;
+    let shared_tmp_mode = std::fs::metadata("/tmp").unwrap().permissions().mode() & 0o7777;
     let root = std::env::temp_dir().join(format!("chx-kp-{:x}", rand::random::<u64>()));
     std::fs::create_dir(&root).unwrap();
     // The isolated child has a nested TMPDIR, which can exceed sockaddr_un.
@@ -42,6 +44,7 @@ fn provider_account_portability_websocket_drill() {
             cloud_session_token: None, ..Default::default()
         });
         let app = DaemonApp::bootstrap(config).unwrap();
+        assert_eq!(std::fs::metadata("/tmp").unwrap().permissions().mode() & 0o7777, shared_tmp_mode, "kernel fixture must not change shared temporary-directory permissions");
         let profiles = app.provider_account_profile_registry();
         let mut accounts = Vec::new();
         let mut paths = Vec::new();
