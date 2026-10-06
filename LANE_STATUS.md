@@ -1,63 +1,35 @@
-# MP-08/MP-10/MP-11 — phase16 FINAL; NOT DONE
+# MP-08/MP-10/MP-11 — phase17 IN PROGRESS
 
-2026-10-06: local work on md/display-perf rebased by replay 7af025627 onto
-assigned round2 base 6dde21a8c10c9ef2b9f7f0a271cace00591f0bd1. Phase 15
-history retained as md/display-phase15-retained. Final runtime source de80aba52.
-Allocated local 447/relay peer 90; negotiated original <=8-row stripe transport,
-per-row references/recovery, atomic draw, pooled raster leases, fast exact-band
-change checks, quiet exact PNG settle, pluggable codecs and #893 DPR guard/default.
-No pixelflux; no GPL codec linked into kernel. Feature remains opt-in.
+2026-10-06: assigned base f5d3b1da9 verified; md/display-perf. Protocol447/90
+unchanged. Fresh clean base60Hz component53.07fps /1.99 owned cores. Capture-start
+pacing56.50fps /2.05cores; independent row decoding58.28fps instrumented.
+These do not close acceptance. scroll30 generates30unique updates/s; its prior
+29.72fps is not evidence of a global30Hz cap. Real60Hz diagnostic added separately.
 
-MP-08/MP-10 final comparison: 15 clean optimized encoder cases PASS_LOCAL_COMPONENT;
-all exact settle/default geometry/unsupported-DPR refusal/navigation/takeover/
-zero idle media/cleanup. Ten clean Selkies2/legacy baseline rows retained at
-94b4fe903. Runtime source de80aba52 plus separately hashed optimized libtest ELF
-and source asset overrides. These are fixture drills, not real-app acceptance.
-Owner target/Selkies win RED: final x264 click/type P95 about40-55ms, moving
-owned source+pipeline 1.19-1.90 cores, scroll 29.72fps/wheel 22.05fps. OpenH264
-screen mode scroll 29.14fps; VP8 scroll 4.99fps. Full15-row baseline/x264 plus
-15-row encoder, Chrome decode and unmeasured GPU tables in phase16 doc/evidence.
-No MP acceptance item closed.
-
-MP-08/MP-10/MP-11 focused validation: Node 236 pass; Rust 26 host + 194 local guards
- + 16 peer  + 20 kernel-event  + 95 library; optimized local guards 194. Client 193
-across initial 191 pass/missing module failure and corrected module 2 pass.
-Raster 7; real x264/VP8 codec 4 + native OpenH264/VP8 codec 4 pass. Final product
-kernel/CLI/relay builds pass; kernel prints 447; CLI/relay help smoke pass.
-No GitHub CI; all local commits [skip ci]. No push/PR/merge/deploy/contact.
+MP-08/MP-10 current commits: ed73a068c capture pacing;1a15d4a7c parallel row decode
++ owned profiling;d35a3c491 unbuffered helper profiler;3cf1da89f optional direct
+libyuv I420 planes + cached portable conversion + normal four-credit pressure.
+Fail-first parallel atomic failure test and direct YUV/credit tests pass after
+fixes. Current SIMD component campaign in progress; honest15-row comparison next.
+Python/V8 profiles and resource receipts retained externally.
 
 ## MP-08/MP-10 Coordinator asks
 
-Supply paired Cloud display app source/ref or scripts/e2e-stack checkout.
-Supplied Cloud f6cfd0066d75844dbab795cdf715789ec5fa37d6 lacks display integration;
-neither checkout has harness. Private ref fetch cannot authenticate here.
-This blocks required real-app red/green loss/masking/settle/idle/geometry drills.
-Rebuilding binaries does not substitute for the missing real app entry.
+Supply paired Cloud kernel-browser display447 app integration and scripts/e2e-stack.
+Short concrete interface spec: docs/MULTIDOMAIN_DISPLAY_PHASE17_PERF.md.
+Existing Cloud f6cfd0066d75844dbab795cdf715789ec5fa37d6 is older Room display only.
+Real-app red/green acceptance cannot run until that source/harness is supplied.
 
 ## MP-11 Review inbox mapping
 
-Absolute REVIEW_INBOX.md checked through 10:14 encoder request after milestones.
-09:33 #893 DPR P2: 5777f3374 default/admission fix,96497c6c7 component default/
-refusal probes; geometry-default-red.log -> geometry-green.log + final receipts.
-10:14 encoder request: 9f29fa58f fallback selection,4a338bbe1 original Cisco
-SCREEN_CONTENT_REAL_TIME adapter + runtime 2.6.0 provenance, de80aba52 VP8 bounds,
-final per-encoder table. Chrome H264/VP8 actual decode yes; Edge/Firefox/Safari
-unmeasured. Older reviewed reference/process/protection fixes survive replay.
-MP-11 narrowed security-anchor/parity scope respected; no non-security blob backlog.
+Absolute agents/display/REVIEW_INBOX.md checked after each commit batch; latest
+entry remains10:14 encoder licensing request. Previous #893 DPR/default and
+encoder selection/provenance fixes retained. Narrowed scope applies to current
+security anchors; no non-security blob backlog. Source protection, document and
+visibility fences unchanged; atomic decoder abort closes every completed output.
 
 ## MP-10 Owner questions
 
-Distribution choice remains owner-selected: x264 GPL; Cisco OpenH264 BSD;
-libvpx BSD. Native Cisco adapter/provenance is measured, not legal clearance.
-Owner laptop required for VAAPI comparison; builder2 has no GPU. Paired app
-source is the immediate acceptance blocker. CPU/latency and VP8 presentation
-performance require further work even after that blocker is removed.
-
-MP-08/MP-10/MP-11 cleanup:118 recorded roots and 70 namespaces absent; matching
-process inventory empty. Own public transpiled output/Python bytecode removed
-(2.56MB). Public codec reproduction dependencies/evidence and built binaries
-retained for coordinator review; shared Cargo outputs untouched. No Docker
-resources created. Final 119GiB disk free/~39GiB MemAvailable, above floors.
-Evidence: /root/.codex/evidence/browser-resume-20260930/display/phase16/;
-validation-manifest.json, final-cleanup.json, comparison-final/, final-*/.
-FINAL; stop.
+Owner chooses x264 vs OpenH264 default later. GPU measurements need owner laptop.
+No push/PR/CI/deploy/shared service change. Disposable profiles/public library
+packages only; no provider/private credentials copied or printed.
