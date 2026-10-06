@@ -160,9 +160,9 @@ try {
   if(sessionId)await client?.send(requests.endSessionRequest(sessionId)).catch(()=>{})
   if(terminal&&terminal.exitCode===null&&terminal.signalCode===null){terminal.stdin.write(JSON.stringify({id:++nextId,action:'close'})+'\n');await sleep(1000);if(terminal.exitCode===null)signalOwnedProcess(terminal,'SIGTERM')}
   await client?.close().catch(()=>{})
-  for(const group of cleanupGroups)signalOwnedProcessGroup(group,'SIGINT')
+  for(const handle of cleanupGroups)signalOwnedProcessGroup(handle,'SIGINT')
   await sleep(2000)
-  for(const group of cleanupGroups)signalOwnedProcessGroup(group,'SIGKILL')
+  for(const handle of cleanupGroups)signalOwnedProcessGroup(handle,'SIGKILL')
   await rm(state,{recursive:true,force:true})
   await rm(workspace,{recursive:true,force:true})
   assert.ok([terminal,kernel,relay].filter(Boolean).every(child=>child.exitCode!==null||child.signalCode!==null),'MP-11 owned process cleanup failed')
