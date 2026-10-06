@@ -347,7 +347,7 @@ def run(request, evidence):
         # notice; do not treat hidden snapshot text as visible-screen evidence.
         snap = client.send('snapshot')
         for entry in snap.get('transcript', {}).get('entries', []):
-            if entry.get('text', '').startswith('Usage (standard API-equivalent') and entry.get('blobCollapsed') is True:
+            if any(str(entry.get(key, '')).startswith('Usage (standard API-equivalent') for key in ['text', 'blobTitle']) and entry.get('blobCollapsed') is True:
                 client.send('toggle_blob', entryId=entry['id'], collapsed=False, agentId=agent_id)
         visible = screenshot('04-usage-report-expanded')
         usage = measurement['usage']
