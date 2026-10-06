@@ -6,7 +6,7 @@ import { readFile, readdir, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promis
 import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { spawnOwned, signalOwnedProcess, signalOwnedProcessGroup } from '../../kernel/slice-linux-docker/owned-process-signals.mjs'
+import { spawnOwned, signalOwnedProcess, signalOwnedProcessGroup, ownedProcessGroupHandles } from '../../kernel/slice-linux-docker/owned-process-signals.mjs'
 import { LocalIpcClient } from '../../../packages/kernel-client/dist/ipc.js'
 import * as requests from '../../../packages/kernel-client/dist/ipc-requests.js'
 
@@ -21,7 +21,7 @@ await mkdir(args.output, { recursive: true, mode: 0o700 })
 await mkdir(args['state-parent'], { recursive: true, mode: 0o700 })
 const state = await mkdtemp(path.join(args['state-parent'], 'workflow-'))
 const workspace = await mkdtemp('/root/work/agent-relost-drill-')
-for(const gitArgs of [['init','-q'],['-c','user.name=Chariox relost drill','-c','user.email=noreply@openai.com','commit','--allow-empty','-q','-m','MP-08 isolated TUI drill workspace [skip ci]']]) {
+for(const gitArgs of [['init','-q'],['-c','user.name=Chariox relost drill','-c','user.email=noreply@openai.com','commit','--allow-empty','-q','-m','MP-08 isolated TUI drill workspace [skip ci]\n\nCo-Authored-By: GPT-6.1-sol (Codex) <noreply@openai.com>']]) {
   const git=spawnOwned('git',gitArgs,{cwd:workspace,stdio:'ignore'})
   await new Promise((resolve,reject)=>git.once('exit',code=>code===0?resolve():reject(new Error('MP-08 Git fixture initialization failed'))))
 }
@@ -135,9 +135,10 @@ try {
   await key('\x13') // Ctrl+S
   await stateUntil(s=>s.room_workflows.workflows[0].running_count===0&&s.room_workflows.workflows[0].paused_count===0)
   await capture('08-stopped',text=>text.includes('0 running')&&text.includes('0 paused'))
+  const oldRunIds=new Set((await stateUntil(()=>true)).room_workflows.workflows[0].runs.map(run=>run.run_id))
   await key('Say RELOST_WORKFLOW_OK only.')
   await key('\r')
-  await stateUntil(s=>s.room_workflows.workflows[0].runs.length>0)
+  await stateUntil(s=>s.room_workflows.workflows[0].runs.some(run=>!oldRunIds.has(run.run_id)))
   // Use a real provider completion and the terminal's real agent panes as proof.
   await key('\t')
   await stateUntil(s=>s.room_workflows.workflows[0].running_count===0,180000)
@@ -155,10 +156,13 @@ try {
   if (args['expect-red']==='1' && error.message==='MP-08 TUI assertion failed at 01-room-inventory')receipt.expectedRed=true
   else process.exitCode=1
 } finally {
+  const cleanupGroups=[kernel,relay].filter(Boolean).flatMap(child=>ownedProcessGroupHandles(child))
   if(sessionId)await client?.send(requests.endSessionRequest(sessionId)).catch(()=>{})
   if(terminal&&terminal.exitCode===null&&terminal.signalCode===null){terminal.stdin.write(JSON.stringify({id:++nextId,action:'close'})+'\n');await sleep(1000);if(terminal.exitCode===null)signalOwnedProcess(terminal,'SIGTERM')}
   await client?.close().catch(()=>{})
-  for(const child of [kernel,relay])if(child){signalOwnedProcessGroup(child,'SIGTERM');await sleep(300);if(child.exitCode===null)signalOwnedProcessGroup(child,'SIGKILL')}
+  for(const group of cleanupGroups)signalOwnedProcessGroup(group,'SIGINT')
+  await sleep(2000)
+  for(const group of cleanupGroups)signalOwnedProcessGroup(group,'SIGKILL')
   await rm(state,{recursive:true,force:true})
   await rm(workspace,{recursive:true,force:true})
   assert.ok([terminal,kernel,relay].filter(Boolean).every(child=>child.exitCode!==null||child.signalCode!==null),'MP-11 owned process cleanup failed')
