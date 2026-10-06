@@ -17,3 +17,14 @@ test('MP-08 embedded native controller answers real health without source module
   assert.equal(JSON.parse(reply.trim()).result.state,'ready');
  }finally{await rm(root,{recursive:true,force:true});}
 });
+
+
+test('MP-08 slice image native accessibility module graph imports outside checkout',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'culinux-image-assets-'));
+ try {
+  const dockerfile=await readFile(new URL('Dockerfile',import.meta.url),'utf8');
+  const names=new Set([...dockerfile.matchAll(/apps\/kernel\/slice-linux-docker\/docker\/([A-Za-z0-9._-]+\.(?:mjs|py))/g)].map(m=>m[1]));
+  for(const name of names)await writeFile(path.join(root,name),await readFile(new URL(name,import.meta.url)));
+  execFileSync(process.execPath,['--input-type=module','-e',`await import(${JSON.stringify(new URL('file://'+root+'/native-accessibility.mjs').href)})`],{timeout:10000});
+ }finally{await rm(root,{recursive:true,force:true});}
+});
