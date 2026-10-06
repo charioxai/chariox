@@ -455,8 +455,10 @@ impl ManagedContextOutboundOperationStore {
             retryable: false,
             updated_at_ms: crate::session::unix_epoch_ms(),
         };
-        state.insert(context_id.to_string(), status.clone());
+        // MP-08/MP-11: a failed durable start must leave no phantom Preparing
+        // operation and must preserve an existing retryable failure.
         self.persist_status(&status)?;
+        state.insert(context_id.to_string(), status.clone());
         self.active
             .lock()
             .expect("managed-context outbound active lock")
@@ -1877,6 +1879,139 @@ mod tests {
     };
     use crate::config::PersistedCloudRelayProfile;
     use crate::transport::relay_crypto;
+
+    #[test]
+    fn mp08_mp11_source_refuses_compound_shell_assignments_in_overlay() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        assert_source_refuses_inline_shell(
+            "FOO=bar API_KEY=synthetic-canary curl https://example.test\n",
+            false,
+        );
+    }
+
+    #[test]
+    fn mp08_mp11_source_refuses_basic_auth_in_overlay() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        assert_source_refuses_inline_shell(
+            "curl --user owner:synthetic-canary https://example.test\n",
+            false,
+        );
+    }
+
+    #[test]
+    fn mp08_mp11_source_refuses_compound_shell_assignments_in_history() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        assert_source_refuses_inline_shell(
+            "FOO=bar API_KEY=synthetic-canary curl https://example.test\n",
+            true,
+        );
+    }
+
+    #[test]
+    fn mp08_mp11_source_refuses_basic_auth_in_history() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        assert_source_refuses_inline_shell(
+            "curl --user owner:synthetic-canary https://example.test\n",
+            true,
+        );
+    }
+
+    fn assert_source_refuses_inline_shell(text: &str, history: bool) {
+        use crate::managed_context::owner_managed::*;
+        let fixture =
+            crate::managed_context::credential_free::tests::InlineShellFixture::new(text, history);
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            realm_id: "realm".into(),
+            machine_id: Some(config.host_machine_id.clone()),
+            ..Default::default()
+        });
+        let selection = OwnerManagedTransfer {
+            target: ManagedContextTransferTarget {
+                relay_realm_id: "realm".into(),
+                machine_id: "target-machine".into(),
+                kernel_id: "target-kernel".into(),
+                relay_public_key: config.relay_public_key.clone(),
+                key_thumbprint: public_key_thumbprint(&config.relay_public_key),
+            },
+            context_selection: OwnerManagedContextSelection {
+                kernel_context: OwnerManagedKernelSelection::Empty,
+                development_setup: OwnerManagedDevelopmentSelection::SourceProject {
+                    project_id: "project".into(),
+                    repositories: vec![OwnerManagedRepositorySelection {
+                        role: super::super::development::DevelopmentRepositoryRole::Primary,
+                        workspace_id: fixture.project.display().to_string(),
+                        worktree_id: None,
+                    }],
+                },
+            },
+        };
+        let ticket = ManagedContextTransferTicket {
+            environment_id: String::new(),
+            context_plan: ManagedKernelContextPlan::for_owner_managed(&config, &selection).unwrap(),
+            target: selection.target,
+        };
+        let store =
+            ManagedContextOutboundOperationStore::open(fixture.root.join("outbound")).unwrap();
+        let profiles = crate::account_profile::ProviderAccountProfileRegistry::open(
+            fixture.root.join("profiles.json"),
+        )
+        .unwrap();
+        let result = prepare_managed_context_package(&config, &store, &profiles, &ticket);
+        assert!(
+            matches!(result, Err(ref error) if error.to_string().contains("credential-free context")),
+            "MP-11 source must reject inline shell credentials"
+        );
+        assert!(
+            !fixture
+                .root
+                .join("outbound")
+                .join(ticket.context_plan.context_id())
+                .exists(),
+            "MP-11 rejected package is cleaned up"
+        );
+    }
+
+    #[test]
+    fn mp08_mp11_operation_recovers_after_initial_status_write_failure() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-status-write-{:032x}",
+            rand::random::<u128>()
+        ));
+        let store = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
+        let _cleanup = ArtifactRootCleanup::new(root.clone());
+        let blocked = root.join(".operations");
+        fs::write(&blocked, b"synthetic storage failure").unwrap();
+        assert!(store.start("context", "sha256:one").is_err());
+        assert!(
+            store.get("context").is_none(),
+            "MP-08 failed durable start must not leave Preparing in memory"
+        );
+        assert!(store.active_context_ids().is_empty());
+        assert_eq!(
+            store.transfer_slots.available_permits(),
+            MAX_CONCURRENT_OUTBOUND_TRANSFERS
+        );
+        fs::remove_file(&blocked).unwrap();
+        let (status, permit) = store.start("context", "sha256:one").unwrap();
+        assert!(
+            permit.is_some(),
+            "MP-08 recovery must acquire an execution permit"
+        );
+        assert_eq!(
+            status.phase,
+            ManagedContextOutboundOperationPhase::Preparing
+        );
+        assert!(store.active_context_ids().contains("context"));
+        let reopened = ManagedContextOutboundOperationStore::open(root).unwrap();
+        assert_eq!(reopened.get("context"), Some(status));
+        drop(permit);
+        store.finish("context");
+    }
 
     #[tokio::test]
     async fn kernel_only_profile_requests_authoritative_transfer_ticket() {
