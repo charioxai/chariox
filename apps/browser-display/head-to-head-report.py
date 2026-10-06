@@ -16,9 +16,10 @@ for fixture in ['docs','canvas','video','scroll30','wheel30']:
             idle_video_mbps=idle.get('video_mbps',d.get('idle_video_mbps')),moving_video_mbps=m.get('event_mbps'),live_psnr_db=[x['psnr_db'] for x in m.get('live_pairs',[])])
         settled=m.get('settled_fidelity',d.get('settled',{}).get('fidelity',{}) if backend=='ours' else d.get('settled',{}))
         row.update(settled_psnr_db=settled.get('psnr_db'),settled_exact=settled.get('lossless',False),cleanup=d.get('cleanup'))
-        row['owner_target_pass']=bool(row['click'] and row['typing'] and active and row['click']['p95_ms']<50 and row['typing']['p95_ms']<50 and active['cores']['pipeline']<=1 and row['settled_exact'] and (fixture=='docs' or row['fps']>=30))
+        row['owner_target_pass']=bool(row['click'] and row['typing'] and active and row['click']['p95_ms']<50 and row['typing']['p95_ms']<50 and active['source_plus_pipeline_cores']<=1 and row['settled_exact'] and (fixture=='docs' or row['fps']>=30))
 report={'item':'MP-08/MP-10/MP-11','rows':rows,'status':'RED_PERFORMANCE','gpu':'UNMEASURED: owner laptop required',
         'limits':['Same 1080p DPR1 fixtures and eight Mbps ceiling; local owned namespaces, MTU1500, offloads disabled.',
+                  'Owner CPU target uses source plus pipeline, excluding the remote viewer. Source/pipeline classification can vary when a shell wrapper execs Chromium; their combined total is stable.',
                   'Canvas/rAF timing is a software presentation proxy. CPU is Linux task ticks, separated source/pipeline/viewer; sub100ms tasks can be missed.',
                   'Video-event Mbps includes Chariox encrypted frame envelopes, Selkies2 stripe headers, or legacy inbound RTP payload bytes; excludes requests, TCP/TLS/DTLS overhead and diagnostics.',
                   'Live PSNR compares latest source with a later viewer snapshot and includes temporal drift. Held-motion PSNR is separately labelled; neither is frame-aligned codec PSNR.',

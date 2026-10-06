@@ -156,3 +156,18 @@ inventories. Portable kit/manifest/SHA/revision/README/KIT_READY remain under th
 sibling `phase10b/`. Local commits only; no CI/push/deploy/shared-service changes.
 No hosted/managed/provider, physical-photon or laptop GPU acceptance is claimed.
 These source tests and fixture runs do not close MP-10 or MP-11 security review.
+
+
+## MP-08/MP-10/MP-11: phase16 mapped capture interface for Computer Use
+
+The source contract remains `start()`, `subscribe(callback)`, `sample(afterSerial)`
+and `close()`. An admitted native sample's raw raster now has `width`, `height`,
+`format: bgr0`, `length`, `shared: {path,length}` and non-serialized `retain()` /
+`release()` leases. Three private mapped slots are serial-bound and cannot be
+reused until all source/encoder references release. `pixels` is a cached immutable
+startup/exact snapshot getter; motion encoders consume the shared mapping instead.
+The source owns window/display fences and observation admission; the encoder has
+no capture authority. Desktop sources must preserve those fences and lease
+lifetimes before reusing this interface. Stripe encoding, quiet exact scheduling
+and the presenter remain independent of browser DOM. Cursor/copy-rectangle work
+is deferred. See [phase16 contract and results](MULTIDOMAIN_DISPLAY_PHASE16_STRIPES.md).
