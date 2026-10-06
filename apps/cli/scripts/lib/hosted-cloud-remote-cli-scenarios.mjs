@@ -405,9 +405,6 @@ export async function runHostedRemoteCliAssertions({
   requests,
   homeClient,
   verificationClient,
-  relayUrl,
-  relayToken,
-  targetDaemonAlias,
   repoRoot,
   remoteCliRepo,
   remoteCliHost,
@@ -426,6 +423,14 @@ export async function runHostedRemoteCliAssertions({
   const remoteClientId = `hosted-remote-client-${remoteId}`
   const remoteWorkspace = `/tmp/chariox-hosted-remote-cli-${remoteId}`
   const remoteSocket = `/tmp/chariox-hosted-remote-cli-${remoteId}.sock`
+  // MP-08 / MP-10 / MP-11: the receiving terminal uses its own signed-in
+  // CLIENT profile and key, as in the remote pairing scenario. An owner's
+  // key-bound grant cannot be forwarded to another terminal.
+  const pairing = unwrap(
+    await homeClient.send(requests.createTerminalPairingLinkRequest("cli", remoteAlias, 15 * 60 * 1000)),
+    "TerminalPairingLinkCreated",
+  ).pairing
+  assert(pairing?.pairing_link, "remote CLI pairing link should be returned")
   const remoteCommand = [
     "set -e",
     "export PATH=/root/.bun/bin:/opt/node-v22/bin:$PATH",
@@ -435,12 +440,8 @@ export async function runHostedRemoteCliAssertions({
     [
       "bun",
       "dist/index.js",
-      "--relay-url",
-      shellQuote(relayUrl),
-      "--relay-token",
-      shellQuote(relayToken),
-      "--target-daemon-alias",
-      shellQuote(targetDaemonAlias),
+      "--terminal-pairing-link",
+      shellQuote(pairing.pairing_link),
       "--automation-socket",
       shellQuote(remoteSocket),
       "--create-session",

@@ -586,7 +586,6 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       isKernelConnected: () => deps.kernelConnected?.() ?? true,
       apiUrl: () => resolveConfiguredCloudRelayApiUrl(preferencesState()) ?? "https://staging.chariox.com",
       notice: appendCloudNotice,
-      accountId: async () => deps.kernelConnected?.() ? (await getKernelCloudRelayProfile(client))?.accountId : relayCloudProfile(preferencesState())?.accountId,
       saveProfile: async profile => { await saveRelayCloudProfile(profile); setPreferencesState((current: any) => mergeRelayCloudProfile(current, profile)) },
       refresh: refreshWaitingRoomData,
       openUrl: openExternalUrl,

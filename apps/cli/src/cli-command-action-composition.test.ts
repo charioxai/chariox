@@ -9,6 +9,42 @@ import type { CloudClientCredentialStore } from "./cloud-client-credential-store
 import { makeCommandDeps, makeSession } from "./command-actions-test-support.js"
 
 // MP-08 / MP-11: actual composition + slash handler, with both authority profiles.
+for (const resume of [false, true]) {
+  test(`MP-08 / MP-11: attached nonowner can ${resume ? "resume" : "sign in"} its terminal despite denied kernel status`, async t => {
+    const root = mkdtempSync(join(tmpdir(), "chariox-kauth-login-"))
+    const previous = process.env.CHARIOX_HOME
+    process.env.CHARIOX_HOME = root
+    t.after(() => { if (previous === undefined) delete process.env.CHARIOX_HOME; else process.env.CHARIOX_HOME = previous; rmSync(root, {recursive: true, force: true}) })
+    const profile = {apiUrl: "http://127.0.0.1:44123", accountId: "collaborator-account", userId: "human", clientId: `cli:${"a".repeat(64)}`, publicKeyThumbprint: "a".repeat(64), enrollmentKind: "CLIENT", realmId: "realm", relayUrl: "wss://relay.test", email: "human@example.test", accountSlug: "fixture", issuerId: "fixture"}
+    const credential = {profile, clientId: profile.clientId, publicKeyThumbprint: profile.publicKeyThumbprint, accessToken: "synthetic-human-access", refreshCredential: "synthetic-refresh", expiresAtMs: Date.now()+300_000}
+    let saved = 0, resumed = 0, refreshed = 0
+    const paths: string[] = [], ipc: string[] = [], notices: string[] = []
+    const cloudClient = new CloudClient({load: async () => resume ? credential : null, session: async () => {resumed++; return credential}, saveLogin: async () => {saved++}} as unknown as CloudClientCredentialStore, () => ({publicKeyThumbprint: profile.publicKeyThumbprint}) as any)
+    t.after(() => cloudClient.stop())
+    t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname; paths.push(path)
+      const body = JSON.parse(String(init?.body))
+      if (path === "/auth/device/start") {
+        assert.equal(body.enrollmentKind, "CLIENT")
+        assert.equal(body.clientId, profile.clientId)
+        return Response.json({deviceCode: "synthetic-device", userCode: "PUBLIC", verificationUrl: "http://127.0.0.1/activate", expiresAt: new Date(Date.now()+60_000).toISOString(), intervalSeconds: 1})
+      }
+      assert.equal(path, "/auth/device/poll")
+      return Response.json({status: "approved", profile, cloudSessionToken: credential.accessToken, refreshCredential: credential.refreshCredential, cloudSessionExpiresAt: new Date(credential.expiresAtMs).toISOString()})
+    })
+    const client = {send: async (request: Record<string, unknown>) => {ipc.push(Object.keys(request)[0]!); throw new Error("CloudRelayStatus requires the kernel owner")}}
+    const base = {...makeCommandDeps(), client, cloudClient, options: {}, preferencesState: () => ({relay: {cloud: {apiUrl: profile.apiUrl, accountId: "kernel-owner-account"}}}), kernelConnected: () => true, sessionState: () => makeSession(), appendCloudNotice: (value: string) => notices.push(value), refreshWaitingRoomData: async () => {refreshed++}, openExternalUrl: async () => false, setPreferencesState: () => {}}
+    const deps = new Proxy(base, {get: (target, key) => key in target ? target[key as keyof typeof target] : () => {}})
+    await createCliCommandActionComposition(deps as unknown as CliCommandActionCompositionDeps).handleCloudCommand({kind: "cloud", raw: "/cloud login", args: ["login"]})
+    assert.deepEqual(ipc, [], "human login never reads owner-only status")
+    assert.deepEqual(paths, resume ? [] : ["/auth/device/start", "/auth/device/poll"])
+    assert.equal(saved, resume ? 0 : 1)
+    assert.equal(resumed, resume ? 1 : 0)
+    assert.equal(refreshed, 1)
+    assert.ok(notices.some(value => value.includes("Terminal signed in: fixture")))
+  })
+}
+
 test("signed-in attached terminal preserves kernel enrollment when unlink is rejected", async t => {
   const root=mkdtempSync(join(tmpdir(),"chariox-kauth-unlink-"))
   const previous=process.env.CHARIOX_HOME
