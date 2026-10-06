@@ -196,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn mp11_f7_public_provider_run_protocol_435_snapshot() {
+    fn mp11_f7_public_provider_run_protocol_448_snapshot() {
         assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 448);
         let run = private_run();
         let dto = PublicProviderRun::from(&run);
