@@ -13,6 +13,7 @@ mod app_publisher;
 mod apps;
 mod browser_artifact;
 mod browser_import;
+mod browser_mirror;
 mod cloud_relay;
 mod computer_hold;
 mod core;

@@ -165,12 +165,24 @@ impl KernelBrowserActors {
             request
         };
         // Store counts and coordinates only; payloads/secret bytes never enter the ledger.
-        let input = &params["input"];
+        let outer = &params["input"];
+        let input = if outer["kind"] == "mirror" {
+            if outer["action"]["kind"] == "coordinate" {
+                &outer["action"]["input"]
+            } else {
+                &outer["action"]
+            }
+        } else {
+            outer
+        };
         let request = match input["kind"].as_str() {
-            Some("text") => request.with_arguments(EnvironmentActionArguments::KeyboardText {
-                utf8_byte_count: input["text"].as_str().unwrap_or_default().len() as u32,
-                character_count: input["text"].as_str().unwrap_or_default().chars().count() as u32,
-            }),
+            Some("text" | "composition") => {
+                request.with_arguments(EnvironmentActionArguments::KeyboardText {
+                    utf8_byte_count: input["text"].as_str().unwrap_or_default().len() as u32,
+                    character_count: input["text"].as_str().unwrap_or_default().chars().count()
+                        as u32,
+                })
+            }
             Some("click") => request.with_arguments(EnvironmentActionArguments::PointerClick {
                 x: input["x"].as_u64().unwrap_or_default() as u32,
                 y: input["y"].as_u64().unwrap_or_default() as u32,

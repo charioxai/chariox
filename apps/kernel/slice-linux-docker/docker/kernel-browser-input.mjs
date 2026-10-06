@@ -2,7 +2,10 @@
 import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { assertCurrentDocument, assertNotCancelled } from "./browser-controller-actions.mjs";
 const viewport = { css_width: 1280, css_height: 800 };
-export async function inputHostTab(browser, tab, input, { signal, onDispatch } = {}) {
+// MP-08: Chromium uses virtual key codes for native caret/editing commands.
+const keyCodes = { Tab: 9, Enter: 13, Escape: 27, Backspace: 8, Delete: 46,
+  ArrowLeft: 37, ArrowRight: 39, ArrowUp: 38, ArrowDown: 40, Home: 36, End: 35 };
+export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror } = {}) {
     assertNotCancelled(signal);
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
     const check = async () => {
@@ -24,8 +27,10 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch } =
       }, sessionId);
       if (result?.value !== false) throw new UserDomainRefusal("sensitive_requires_focus");
     };
+    let mirrorGuard;
     const sendInput = async (method, params) => {
       await check();
+      await mirrorGuard?.();
       if (method === "Input.insertText" || (method === "Input.dispatchKeyEvent" && params.text)) {
         await checkTextTarget();
         await check();
@@ -35,8 +40,20 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch } =
       assertNotCancelled(signal);
       return result;
     };
+    // MP-11: sequence-only refusals precede even focus emulation. No page
+    // focus/selection/physical input may run before mirror epoch admission.
+    let resolved;
+    if(input.kind==='mirror') {
+      if(!resolveMirror)throw new Error('MP-11: mirror input resolver unavailable');
+      await check();resolved=await resolveMirror(input);
+    }
     return browser.inputCapture.run(connection, sessionId, async () => {
       await check();
+      if(resolved) {
+        mirrorGuard=resolved.guard;
+        if(resolved.perform) {await check();await resolved.perform(sendInput,onDispatch);await check();return;}
+        input=resolved.input;
+      }
       if (input.kind === "text") {
         if (typeof input.text !== "string" || input.text.length > 16384) throw new Error("MD-2: input text exceeds limit");
         await sendInput("Input.insertText", { text: input.text });

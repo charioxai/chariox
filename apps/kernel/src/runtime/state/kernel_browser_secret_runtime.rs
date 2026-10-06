@@ -94,6 +94,7 @@ impl KernelRuntimeState {
         let display = method == "host.browser"
             && params["op"] == "screenshot"
             && params["display_subscription_id"].is_string();
+        let mirror = method == "host.browser" && params["op"] == "mirror_next";
         let at = std::time::Instant::now();
         let mut result = tokio::task::spawn_blocking(move || {
             host.protected_request_admitted(&user, admission.as_ref(), &method, params, policy)
@@ -119,7 +120,25 @@ impl KernelRuntimeState {
         } else {
             None
         };
+        // MP-11: mirror media has already passed protected compositor/resource
+        // admission. Scrubbing opaque base64 can corrupt bytes for short secrets.
+        let mirror_resources = if mirror {
+            result.as_object_mut().and_then(|r| r.remove("resources"))
+        } else {
+            None
+        };
+        let mirror_tiles = if mirror {
+            result.as_object_mut().and_then(|r| r.remove("tiles"))
+        } else {
+            None
+        };
         let mut result = protection.scrub(&scope, result)?;
+        if let Some(resources) = mirror_resources {
+            result["resources"] = resources;
+        }
+        if let Some(tiles) = mirror_tiles {
+            result["tiles"] = tiles;
+        }
         if let Some(mut data) = data {
             if display && !data.is_null() {
                 // Opaque bytes are protected by the host; textual document/tab metadata is scrubbed.

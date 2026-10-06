@@ -27,7 +27,15 @@ const connection = {
     if (method === 'Target.closeTarget') { pages.delete(params.targetId); return {}; }
     if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'frame', loaderId: pages.get(session)?.document_id } } };
     if (method === 'Page.createIsolatedWorld') return { executionContextId: 42 };
-    if (method === 'Runtime.evaluate') return { result: { value: false } };
+    if (method === 'Emulation.setDeviceMetricsOverride') return {};
+    if (method === 'Page.getResourceTree') return {frameTree:{frame:{id:'frame'},resources:[]}};
+    if (method === 'Runtime.evaluate') {
+      if(params.expression.includes('Object.fromEntries([...style]'))return {result:{value:{}}};
+      if(params.expression.includes('__charioxMirror.read('))return {result:{value:{root:'n1',nodes:[{id:'n1',parent:null,children:[],kind:'element',tag:'button',style:{width:'80px',height:'40px'},box:{x:0,y:0,width:80,height:40}}],fonts:[],resources:[],scroll:{x:0,y:0},focused:null}}};
+      if(params.expression.includes('installMirrorObserver'))return {result:{value:true}};
+      return { result: { value: false } };
+    }
+    if (method === 'Input.dispatchKeyEvent') return {};
     if (method === 'Input.insertText') return {};
     throw new Error(`MD-N5: unexpected fixture CDP method ${method}`);
   },
@@ -39,6 +47,7 @@ const host = new KernelBrowserHost(process.argv[3], {
     reconcile: async () => ({ tabs: [...pages].map(([target_id, tab]) => ({ target_id, title: 'MD-N5 fixture', ...tab })) }),
     navigate: async ({ target_id, url }) => pages.set(target_id, { url, document_id: `doc-${++revision}` }),
     resolvePageTarget: async target => ({ connection, sessionId: target }),
+    ensureFocusWorld: async () => ({contextId:42}),
     inputCapture: { run: async (_, __, operation) => operation() },
   }),
 });
