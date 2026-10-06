@@ -102,3 +102,24 @@ test('MP-10 lost queued stripe resets only affected row references',async()=>{
   m.invalidate();await m.active;assert.equal(resets.at(-1),true,'protection/navigation fences reset every row');
  }finally{await m.close()}
 });
+
+// MP-08/MP-10/MP-11: review15:28, disjoint queued/incoming dependency retirement.
+for(const native of [false,true])test('MP-11 overflow recovers incoming and queued stripe references '+native,async()=>{
+ const {MotionEncoder:Encoder}=await import(process.env.MP_MOTION_MODULE??'./kernel-browser-motion.mjs');
+ let latest,offer;const resets=[],discarded=[];
+ const source={subscribe:f=>{offer=f;return()=>{}},sample:()=>latest};
+ const encoder={discard:x=>discarded.push(x),async encodeStripes(raw,bitrate,reset){
+  resets.push(reset);const rows=reset===true?[0,1,2,3,4,5,6,7]:reset.length?reset:[raw.row];
+  const recovery=reset===true||reset.length>0;
+  return {stripes:rows.map(row=>({row,key:recovery,...(!native?{data_base64:recovery?'AA==':'A'.repeat(600000)}:{})})),...(native?{packet:{name:String(raw.serial),length:recovery?128:600000}}:{})};
+ }};
+ const m=new Encoder(source,encoder,{stripes:true,codec:'avc1.420033',bitrate:8000000});
+ try{
+  latest={serial:1,raw:{row:0,serial:1}};offer(latest);await m.active;m.take();
+  latest={serial:2,raw:{row:0,serial:2}};offer(latest);await m.active;
+  latest={serial:3,raw:{row:1,serial:3}};offer(latest);await m.active;
+  const recovered=m.take();assert.ok(recovered.encoded.stripes.some(r=>r.row===0&&r.key),'queued row0 must recover');
+  assert.ok(recovered.encoded.stripes.some(r=>r.row===1&&r.key),'discarded incoming row1 must recover too');
+  latest={serial:4,raw:{row:1,serial:4}};offer(latest);await m.active;assert.equal(m.take().encoded.stripes[0].key,false,'next row1 packet may follow the delivered recovery');
+ }finally{await m.close()}
+});

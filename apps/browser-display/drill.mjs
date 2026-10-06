@@ -299,7 +299,8 @@ try {
  receipt.click_cpu=cpuSpan(clickCpu,(await resource()).cpu);
  const typeCpu=(await resource()).cpu;const typeProbes=[];for(let i=21;i<=40;i++){
   await page.evaluate(async()=>mdStream.input({kind:'click',x:mdStream.presenter.canvas.width/mdStream.binding.device_scale_factor-170,y:28}));await pause(100);
-  typeProbes.push(await page.evaluate(async expected=>{const at=performance.timeOrigin+performance.now();await mdStream.input({kind:'text',text:'a'});const deadline=at+10000;while(mdPresentation?.step!==expected){if(mdStream.error)throw mdStream.error;if(performance.timeOrigin+performance.now()>deadline)throw Error('MD-DISPLAY typing pixel acknowledgement timeout');await new Promise(r=>requestAnimationFrame(r));}return mdPresentation.presented_ms-at;},i&31));
+  const probe=await page.evaluate(async expected=>{const at=performance.timeOrigin+performance.now();await mdStream.input({kind:'text',text:'a'});const acknowledged=performance.timeOrigin+performance.now(),deadline=at+10000;while(mdPresentation?.step!==expected||!mdPresentation?.presented_ms){if(mdStream.error)throw mdStream.error;if(performance.timeOrigin+performance.now()>deadline)throw Error('MD-DISPLAY typing pixel acknowledgement timeout');await new Promise(r=>requestAnimationFrame(r));}return {started_ms:at,input_ack_ms:acknowledged,drawn_ms:mdPresentation.drawn_ms,presented_ms:mdPresentation.presented_ms,latency_ms:mdPresentation.presented_ms-at};},i&31);
+  typeProbes.push(probe.latency_ms);(receipt.type_probes??=[]).push(probe);
  }
  receipt.type_latency=distribution(typeProbes);receipt.type_cpu=cpuSpan(typeCpu,(await resource()).cpu);
  await page.evaluate(()=>mdStream.stop());

@@ -18,7 +18,7 @@ export class MotionEncoder {
    if(this.closed||!this.valid()){this.encoder.discard?.(encoded);return;}
    if(encoded.stripes?.length===0)continue;
    if(revision!==this.revision){this.encoder.discard?.(encoded);if(encoded.stripes&&!this.key)for(const row of encoded.stripes)this.resetRows.add(row.row);else this.key=true;continue;}
-   if(this.frames.length>=2||this.frames.reduce((n,f)=>n+JSON.stringify(f.encoded).length+(f.encoded.packet?.length??0),(JSON.stringify(encoded).length+(encoded.packet?.length??0)))>1024*1024){this.encoder.discard?.(encoded);this.invalidateRows();continue;}
+   if(this.frames.length>=2||this.frames.reduce((n,f)=>n+JSON.stringify(f.encoded).length+(f.encoded.packet?.length??0),(JSON.stringify(encoded).length+(encoded.packet?.length??0)))>1024*1024){this.encoder.discard?.(encoded);this.invalidate();continue;}
    this.frames.push({...sample,encoded});
   }
  }
