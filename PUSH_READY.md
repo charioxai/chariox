@@ -1,50 +1,21 @@
-# MP-08/MP-10/MP-11 — phase17 local commits ready for coordinator; acceptance RED
+# MP-08/MP-10/MP-11 — phase18 local commits for coordinator; acceptance NOT DONE
 
-Base f5d3b1da96e06a57a6f4b7b590abbbd2bb958885, md/display-perf.
-Final measured runtime c53693acf8434970898d15199faa6f666977160a. Protocol447/90
-unchanged; no allocation needed. All commits [skip ci] with required coauthor;
-no push, PR, GitHub comment, CI, merge, deployment or Cloud staging operation.
+2026-10-06 18:21 UTC: runtime c0e8a1fdfc352dcb6548d12222e811386db004bd; diagnostic harness17f1d91bd. Base c42d74363; branch md/display-perf; protocol447/relay90 unchanged. Local commits only, [skip ci], required coauthor.
 
-MP-08/MP-10: capture-start cadence, concurrent independent decoder rows, optional
-libyuv direct planes, preserved normal credit budget, admitted negative-only
-native empty credits, sparse bounded exact-region tiles and actual encoding-mode
-reference recovery. Backend remains pluggable; default not owner-selected here.
-Require actual backend/converter metadata; no ignored setting can claim a result.
+MP-08/MP-10: native stripe payloads bypass Node through kernel-owned private bounded packets; Node still handles control and source checks. Input-triggered XDamage capture/32KiB repayable pacing debt; pluggable x264/OpenH264/VP8; worker1 default after1/2/4 measurements. Stable empty trusted DOM snapshots use event-bound admission. Targets remain RED: x264 typeP9543.7–59.6ms on five fixtures, scroll60P9573.6ms; canvas59.65fps/1.34pipeline cores. Complete27-case comparison, exact settles, zero idle bytes and65s renewal pass component checks only.
 
-MP-10 result: real60Hz x26458.98fps/1.76owned cores vsbase53.07fps/1.99.
-TypingP9536.90–55.50ms vsSelkies30.40–35.40. Actual OpenH264 scroll4.18fps
-vsx26429.76; VP85.19. Exact settle/zero idle bytes/65s lease renewal pass.
-Fresh15-row baseline comparison and15-row actual encoder table in
- docs/MULTIDOMAIN_DISPLAY_PHASE17_PERF.md; full25-row receipts external.
-Software CPU/typing/wheel and every-row Selkies win remain RED; GPU unmeasured.
+MP-11 P1 source leak reproduced RED before masking; native/CDP/screenshots/refinement mask before codec/hash/shared routes. Exact final native run is INTERMITTENT_RED:2/180 presented frames exceed dark RGB64; source/settle/recovery checks pass. Two unchanged diagnostic repeats pass177/188frames; root cause unresolved, no privacy acceptance claimed. Diagnostic harness now retains failed-frame PNGs. Fallback70/70 and PNG/tiles59/59 presentations pass.
 
-MP-11 review13:41 mapping (all fail-first, no disputes):
-1. actual raw-less full-video stale/queued/inflight retirement b5df3da5c;
-   overflow3796eb6aa. review-recovery-red/green and review-overflow-red/green.
-2. complete independent cover recovers lost outer cursor b5df3da5c;
-   producer-to-presenter regression in review-recovery logs.
-3. pinned protocol report/LAN metadata b5df3da5c;
-   review-protocol-red/green:447accepted,446rejected.
-Additional real child env boundary RED/GREEN; metadata corrections12a16132a/
-3c5f9226b/1fe1b1e19. Empty-credit136e64ba3 and sparse-region c53693acf have
-fail-first coverage and preserve current observation/cursor/signal fences.
-MP-11 security/parity scope remains the narrowed owner scope; no broad blob gate.
+## MP-08/MP-10/MP-11 Coordinator asks / acceptance blockers
 
-MP-08/MP-10 acceptance blocker: coordinator must deliver Cloud kernel-browser447
-integration and scripts/e2e-stack, real entry/flags and linked provider. Frozen
-Cloud f6cfd0066d75844dbab795cdf715789ec5fa37d6 has only Room display. Fixture entry
-with optimized b5df libtest ELF + pinned final assets is component evidence.
-Real final kernel/relay/CLI launchers now built/preserved with exact57 assets;
-help/protocol smoke does not close real-app/TUI/provider red/green acceptance.
+Supplied Cloudf6cfd006 lacksaa9c44f8/e2e-stack/real entry flags. Rerun unchanged /masked gate on these commits. Coordinator18:10 requires real web app/desktop DPR1/2, hosted relay, shaped8Mbps/real RTT and real-site/video/canvas list. Lane is forbidden to contact hosted relay, so coordinator execution/access is required. No owner laptop GPU endpoint supplied. Fixtures, libtest IPC, release builds and help do not satisfy live real-app/TUI/provider acceptance.
 
-MP-08/MP-10/MP-11 validation:27 final comparison cases, final profile and65s idle
-pass. Node596/597 (root mode000 fixture base failure; unprivileged baseGREEN);
-Rust host27pass; local383/385 +affected TypeScript3pass under pinned official
-Node22.20. Focused encoder/planes/metadata/security checks pass. Preserve original
-RED logs; no broad-green claim. All source/build identities explicitly separate.
+## MP-11 Review inbox mapping
 
-MP-11 cleanup:128 roots/74namespaces absent, exact-root process inventory empty.
-Needed public binaries/libraries retained; no private owner keys/provider state,
-Docker resources or shared services touched. Evidence and commands/exit/resource/
-cleanup metadata under /root/.codex/evidence/browser-resume-20260930/display/phase17/.
-FINAL; stop.
+15:28 disjoint overflow ->bafbc9352 fail-first ordinary/native independent recovery.16:04/16:08 P1 ->d89b733e2+a10ecd6b6+c0e8a1fdf, source-mask regressions and component checks; final intermittent native RED retained.18:10 real-site gate ->explicit coordinator blocker. Historical display inbox latest18:10 checked; display-perf inbox absent. No security review approval inferred; non-security exact-blob review is outside narrowed MP-11.
+
+MP-11 checks:288Node,6configured codec,11unchanged compiled-client,59Rust host+3protocol+1transient event+2native packet pass. Release CLI/kernel/relay built;57asset identities match.32final receipts(27comparison+5privacy), all32state roots absent;31componentPASS,1RED.883resource samples: MemAvailable≥21.37GiB,disk≥110.08GiB. Removed8old own ELF copies; retained final18-bin. No push/CI/deploy/Cloud, foreign resources/services, credentials or private owner keys touched.
+
+MP-08/MP-10/MP-11 report: docs/MULTIDOMAIN_DISPLAY_PHASE18_RESULTS.md. Evidence: /root/.codex/evidence/browser-resume-20260930/display-perf/phase18/FINAL18.json. Full commands/hashes/screenshots/logs and cleanup retained externally. FINAL; stop.
+
+MP-11 protected resources excluded from cleanup: key stores/backups/provider profiles/reviewer state/other lanes/shared Cargo target/Docker resources. Final runtime binaries are lane-owned retained drill inputs; no obsolete own ELF copies remain.

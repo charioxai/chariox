@@ -1,5 +1,7 @@
 # MP-08/MP-10/MP-11: multidomain display performance
 
+MP-08/MP-10/MP-11 current phase18 results: [source-bound report](MULTIDOMAIN_DISPLAY_PHASE18_RESULTS.md). Performance remains RED; native privacy is INTERMITTENT_RED; real-app/GPU acceptance is blocked. Protocol447/relay90 are unchanged in phase18. The following measurements are historical and retain their original protocol/source identities.
+
 **RED_PERFORMANCE.** At1920×1080 DPR1, software only, Chariox preserves exact
 settled RGB but misses the≤1 pipeline-core, click/type P95<50ms and scroll≥30fps
 owner targets. It does not beat Selkies on every metric. GPU acceptance is
