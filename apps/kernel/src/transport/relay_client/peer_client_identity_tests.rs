@@ -595,7 +595,9 @@ async fn mp11_persistent_peer_response_rejects_another_key() {
     let response = RelayPeerResponse::Pong {
         value: "forged".into(),
         daemon_id: "worker".into(),
-        relay_peer_protocol_version: Some(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION),
+        relay_peer_protocol_version: Some(
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        ),
     };
     let encrypted = relay_crypto::encrypt_payload_for_peer(
         &attacker.relay_private_key,
