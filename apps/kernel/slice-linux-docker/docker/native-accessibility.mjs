@@ -49,9 +49,9 @@ export class NativeAccessibility {
     if(target.protected || policy?.targets?.length || !target.actions.includes(command.action))throw new UserDomainRefusal('not_granted');
     const {digest,binding,processes,rawDigest}=await this.read(policy,signal);
     if(digest!==observed.digest){this.observers.delete(observer);throw new UserDomainRefusal('stale_reference');}
-    const result=await this.execute({op:'accessibility_action',processes,path:target.path,pid:target.pid,started:target.started,action:command.action,expected_tree_digest:rawDigest},binding.environment,signal);
-    // Handles cannot be reused after a potentially mutating accessibility action.
+    // MP-11: dispatch may apply an effect and then fail. Consume before sending.
     this.observers.delete(observer);
+    const result=await this.execute({op:'accessibility_action',processes,path:target.path,pid:target.pid,started:target.started,action:command.action,expected_tree_digest:rawDigest},binding.environment,signal);
     if(signal?.aborted || this.binding()!==binding)throw new Error('MP-11: accessibility action cancelled');
     return result;
   }

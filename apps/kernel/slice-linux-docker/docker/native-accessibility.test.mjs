@@ -60,3 +60,17 @@ test('MP-08 OpenCode observation budget retains visible actionable targets and f
  current.nodes[0].name='hidden tree changed';
  await assert.rejects(native.action('agent:a',{target_id:file.target_id,tree_revision:seen.tree_revision,action:'click'},{}),e=>e.code==='user_domain_stale_reference');
 });
+
+test('MP-08 / MP-11 failed or cancelled dispatch consumes handles even with an unchanged tree', async () => {
+ for (const reason of ['helper failed after effect', 'action cancelled after effect']) {
+  let effects=0;
+  const native=new NativeAccessibility({binding:()=>binding,execute:async request=>{
+   if(request.op==='accessibility_action'){effects++;throw Error(reason);}
+   return structuredClone(tree);
+  }});
+  const seen=await native.snapshot('agent:a',{}),command={target_id:seen.nodes[0].target_id,tree_revision:seen.tree_revision,action:'click'};
+  await assert.rejects(native.action('agent:a',command,{}),new RegExp(reason));
+  await assert.rejects(native.action('agent:a',command,{}),e=>e.code==='user_domain_stale_reference');
+  assert.equal(effects,1,'MP-11 uncertain dispatch cannot be retried with the same handle');
+ }
+});
