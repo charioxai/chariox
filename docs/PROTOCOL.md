@@ -2600,9 +2600,10 @@ Workflow trigger and deployment direction:
   automatic mutation replay. Numeric versions never replace capability checks.
   This describes the pre-KA framed Unix transport. KA protocol 404 replaces
   that listener with the shared kernel websocket at `ws+unix://`, admitted by
-  OS process identity and session grants. First-party terminal control uses
-  the authenticated TCP or relay websocket path; an external Unix grant does
-  not authorize global disposable-worker or managed-environment controls.
+  OS process identity and access grants. Protocol 451 grants ordinary authority
+  throughout the local kernel, including its managed execution environments.
+  First-party terminal control uses the authenticated TCP or relay websocket
+  path; external Unix grants cannot attach to another kernel.
 - protocol 402: every connection has a class from a fixed vocabulary:
   `terminal` (the kernel's local token on TCP loopback, or a relay client with
   a user id), `external_agent` (reserved for access grants, not assigned yet),

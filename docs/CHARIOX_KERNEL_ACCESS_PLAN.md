@@ -252,7 +252,7 @@ Chariox terminals and local grant holders may list the live grants and running s
 
 ## 6. External agent binding (D9)
 
-The 2026-09-30 draft weighed three ways to keep a token within its scope: (a) binding it to one connection, (b) kernel-side session scoping, and (c) process identity. D9 settles it: there is no token, process identity names the holder, and the local kernel is its entire ordinary authority boundary (owner correction, 2026-10-06). Connection binding is dropped (section 6.3).
+D9 binds access to OS process identity. There is no token, and the local kernel is the holder’s entire ordinary authority boundary (owner correction, 2026-10-06). Connections do not own grants (section 6.3).
 
 ### 6.1 Process identity
 
