@@ -901,7 +901,10 @@ fn managed_context_transfer_caller(
     if disposable_home_caller.is_none()
         && config.kernel_runtime_role == crate::config::KernelRuntimeRole::General
         && profile.kernel_id.as_deref() == Some(config.daemon_id.as_str())
-        && profile.kernel_credential.is_some()
+        && profile
+            .kernel_credential
+            .as_deref()
+            .is_some_and(|credential| !credential.is_empty())
         && profile.machine_id.as_deref() == Some(config.host_machine_id.as_str())
         && profile.kernel_public_key_thumbprint.as_deref()
             == Some(public_key_thumbprint(&config.relay_public_key).as_str())

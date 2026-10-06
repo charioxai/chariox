@@ -329,6 +329,9 @@ pub(crate) async fn authorize_import_ticket(
         || profile.kernel_public_key_thumbprint.as_deref() != Some(key.as_str())
         || source.user_id.as_deref() != Some(profile.user_id.as_str())
         || source.realm_id != profile.realm_id
+        || !valid_identity(&profile.account_id)
+        || !valid_identity(&profile.user_id)
+        || !valid_identity(&profile.realm_id)
     {
         return Err(admission_error(
             "owner-managed destination enrollment, account, user or key does not match",
@@ -337,6 +340,7 @@ pub(crate) async fn authorize_import_ticket(
     let credential = profile
         .kernel_credential
         .as_deref()
+        .filter(|credential| !credential.is_empty())
         .ok_or_else(|| admission_error("target kernel has no enrollment credential"))?;
     let ticket: ManagedContextTransferTicket = crate::runtime::cloud_api_client::post_cloud_json(
         profile.api_url.clone(), TICKET_ENDPOINT,
@@ -376,6 +380,48 @@ pub(crate) async fn authorize_import_ticket(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn mp11_owner_target_rejects_empty_enrollment_before_cloud() {
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            account_id: "account".into(),
+            user_id: "owner".into(),
+            realm_id: "realm".into(),
+            machine_id: Some(config.host_machine_id.clone()),
+            kernel_id: Some(config.daemon_id.clone()),
+            kernel_public_key_thumbprint: Some(
+                crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key),
+            ),
+            kernel_credential: Some(String::new()),
+            ..Default::default()
+        });
+        let destination = OwnerManagedDestination::OwnerManagedMachine {
+            machine_id: config.host_machine_id.clone(),
+            kernel_id: config.daemon_id.clone(),
+        };
+        let plan = ManagedContextPlanBinding {
+            context_id: "context".into(),
+            plan_digest: "digest".into(),
+            destination: Some(destination.clone()),
+            kernel_context: ManagedContextKernelSelection::Empty,
+            development: super::super::package::ManagedContextDevelopmentSelection::Empty,
+            provider_accounts: ManagedContextProviderAccountSelection::None,
+            git_credentials: ManagedContextGitCredentialSelection::None,
+        };
+        let source = chariox_relay::protocol::RelayCallerIdentity {
+            realm_id: "realm".into(),
+            subject: "source".into(),
+            subject_kind: chariox_relay::auth::RelaySubjectKind::Kernel,
+            expires_at_ms: u64::MAX,
+            token_id: None,
+            user_id: Some("owner".into()),
+            public_key_thumbprint: Some("synthetic-source-pin".into()),
+        };
+        let error = authorize_import_ticket(&config, &source, "source", &plan, &destination)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("no enrollment credential"));
+    }
     #[test]
     fn mp08_mp11_owner_destination_rejects_ambiguous_and_foreign_bindings() {
         let destination = OwnerManagedDestination::OwnerManagedMachine {
