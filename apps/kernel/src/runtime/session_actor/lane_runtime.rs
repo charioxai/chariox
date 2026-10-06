@@ -31,6 +31,7 @@ struct SessionCommandEnvelope {
     telemetry: LaneCommandTrace,
     caller_user_id: String,
     caller_metaagent_id: Option<String>,
+    provider_run_id: Option<String>,
     terminal_caller: bool,
     connection_class: Option<KernelConnectionClass>,
     external_grant_id: Option<String>,
@@ -108,6 +109,7 @@ impl SessionRuntime {
         let terminal_caller = command.is_terminal_caller() && caller_metaagent_id.is_none();
         let connection_class = command.caller.connection_class;
         let external_grant_id = command.external_grant_id();
+        let provider_run_id = command.provider_run_id.clone();
         let command_id = command.command_id;
         let command_type = command.command_type;
         match lane.try_send(SessionCommandEnvelope {
@@ -116,6 +118,7 @@ impl SessionRuntime {
             command_type,
             caller_user_id,
             caller_metaagent_id,
+            provider_run_id,
             terminal_caller,
             connection_class,
             external_grant_id,
@@ -255,6 +258,7 @@ impl SessionRuntime {
             ),
             caller_user_id: DEFAULT_LOCAL_USER_ID.to_string(),
             caller_metaagent_id: None,
+            provider_run_id: None,
             terminal_caller: false,
             connection_class: None,
             external_grant_id: None,
@@ -310,6 +314,12 @@ async fn run_session_command_lane(
             .as_deref()
             .map(|id| store.authorize_external_access(id, &envelope.request))
             .transpose();
+        let authorization = authorization.and_then(|_| {
+            store.authorize_room_provider_epoch(
+                envelope.caller_metaagent_id.as_deref(),
+                envelope.provider_run_id.as_deref(),
+            )
+        });
         let result = match authorization {
             Err(error) => Err(error),
             Ok(_) => {
@@ -319,6 +329,10 @@ async fn run_session_command_lane(
                             .external_grant_id
                             .as_deref()
                             .map(|id| (id, &envelope.request)),
+                    )
+                    .with_room_provider_origin(
+                        envelope.caller_metaagent_id.as_deref(),
+                        envelope.provider_run_id.as_deref(),
                     )
                     .execute(
                         envelope.request,

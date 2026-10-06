@@ -37,6 +37,15 @@ pub(super) fn workflow_code_registry_for_session(
     session_id: &str,
 ) -> Result<crate::workflow_code::WorkflowCodeArtifactRegistry, DaemonError> {
     let session = app.sessions().get_session(session_id)?;
+    if app.config().room_agent_tools {
+        return Ok(crate::workflow_code::WorkflowCodeArtifactRegistry::new(
+            vec![app
+                .config()
+                .workflow_code_artifact_root()
+                .join("rooms")
+                .join(session.id())],
+        ));
+    }
     let mut roots = vec![app.config().workflow_code_artifact_root()];
     if let Some(root) = crate::workflow_code::WorkflowCodeArtifactRegistry::user_root() {
         if !roots.contains(&root) {
@@ -144,6 +153,17 @@ pub(super) fn workflow_registry_for_session(
     session_id: &str,
 ) -> Result<crate::workflow_code::WorkflowRegistry, DaemonError> {
     let session = app.sessions().get_session(session_id)?;
+    if app.config().room_agent_tools {
+        return Ok(crate::workflow_code::WorkflowRegistry::new(
+            None,
+            Some(
+                app.config()
+                    .workflow_registry_root()
+                    .join("rooms")
+                    .join(session.id()),
+            ),
+        ));
+    }
     let workspace_root = if !session.workspace_id().trim().is_empty() {
         Some(crate::workflow_code::WorkflowRegistry::workspace_root(
             session.workspace_id(),
@@ -162,6 +182,13 @@ pub(super) fn workflow_registry_write_scope(
     session_id: &str,
     requested: Option<crate::workflow_code::WorkflowRegistrySourceScope>,
 ) -> Result<crate::workflow_code::WorkflowRegistrySourceScope, DaemonError> {
+    if app.config().room_agent_tools
+        && requested == Some(crate::workflow_code::WorkflowRegistrySourceScope::Workspace)
+    {
+        return Err(crate::runtime::room_tool_admission::denied(
+            "room agents cannot administer workspace or owner-wide registry entries",
+        ));
+    }
     if let Some(scope) = requested {
         if scope == crate::workflow_code::WorkflowRegistrySourceScope::Builtin {
             return Err(DaemonError::LocalTransport {

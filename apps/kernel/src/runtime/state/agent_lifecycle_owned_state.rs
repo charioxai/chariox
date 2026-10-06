@@ -5,6 +5,12 @@ impl KernelRuntimeOwnedState {
         &self,
         request: crate::agent::CreateAgentRequest,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let obligation = request
+            .spawned_by_agent_id
+            .as_deref()
+            .map(|id| self.register_room_dispatch_obligation(id, "delegate", None))
+            .transpose()?
+            .flatten();
         let mut sessions = self.session_store.write();
         let agent = self.agent_store.create_agent(request, &mut sessions)?;
         drop(sessions);
@@ -15,6 +21,12 @@ impl KernelRuntimeOwnedState {
                 "agent": &agent,
             }),
         )?;
+        crate::runtime::room_dispatch_registration::receipt(
+            &self.durable_state_store,
+            obligation.as_deref(),
+            true,
+            Some(agent.id()),
+        )?;
         Ok(agent)
     }
 
@@ -22,6 +34,17 @@ impl KernelRuntimeOwnedState {
         &self,
         requests: Vec<crate::agent::CreateAgentRequest>,
     ) -> Result<Vec<crate::agent::AgentInstance>, DaemonError> {
+        let obligations = requests
+            .iter()
+            .map(|request| {
+                request
+                    .spawned_by_agent_id
+                    .as_deref()
+                    .map(|id| self.register_room_dispatch_obligation(id, "delegate", None))
+                    .transpose()
+                    .map(Option::flatten)
+            })
+            .collect::<Result<Vec<_>, DaemonError>>()?;
         let mut sessions = self.session_store.write();
         let agents = self.agent_store.create_agents(requests, &mut sessions)?;
         drop(sessions);
@@ -33,6 +56,14 @@ impl KernelRuntimeOwnedState {
                     "session_id": first_agent.session_id(),
                     "agents": &agents,
                 }),
+            )?;
+        }
+        for (agent, obligation) in agents.iter().zip(obligations.iter()) {
+            crate::runtime::room_dispatch_registration::receipt(
+                &self.durable_state_store,
+                obligation.as_deref(),
+                true,
+                Some(agent.id()),
             )?;
         }
         Ok(agents)

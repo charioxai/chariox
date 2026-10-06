@@ -7,6 +7,20 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         args: MetaSessionOverviewArgs,
     ) -> Result<RuntimeToolResult, DaemonError> {
+        if self.room_agent_tools_enabled() {
+            let session = self.owned.session_store.get_session(session.id())?;
+            return Ok(RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "session_id": session.id(),
+                    "agents": self.owned.agent_store.get_session_agents(session.id()),
+                    "workflows": if args.include_workflows.unwrap_or(true) { session.workflows().to_vec() } else { Vec::new() },
+                    "workflow_runs": if args.include_workflows.unwrap_or(true) { session.workflow_runs().to_vec() } else { Vec::new() },
+                    "activity": self.agent_activity_for_session(&session),
+                "pending_interactions": session.active_interactions().iter().map(|interaction| serde_json::json!({ "id": interaction.id(), "agent_id": interaction.agent_id(), "kind": interaction.kind() })).collect::<Vec<_>>(),
+                }),
+            });
+        }
         let include_workflows = args.include_workflows.unwrap_or(true);
         let include_events = args.include_events.unwrap_or(true);
         let session = self.meta_coherent_session_snapshot(session, agent)?;
@@ -433,7 +447,10 @@ impl KernelRuntimeState {
             .get_session_agents(session_id)
             .into_iter()
             .filter(|agent| {
-                !agent.is_metaagent() && agent.controlled_by_metaagent_id() == Some(metaagent.id())
+                agent.session_id() == metaagent.session_id()
+                    && (self.room_agent_tools_enabled()
+                        || (!agent.is_metaagent()
+                            && agent.controlled_by_metaagent_id() == Some(metaagent.id())))
             })
             .collect()
     }
@@ -444,6 +461,18 @@ impl KernelRuntimeState {
         metaagent: &crate::agent::AgentInstance,
         reference: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        if self.room_agent_tools_enabled() {
+            if session_id != metaagent.session_id() {
+                return Err(crate::runtime::room_tool_admission::denied(
+                    "history target is outside the caller room",
+                ));
+            }
+            let agents = self.owned.agent_store.get_session_agents(session_id);
+            return crate::runtime::room_tool_admission::resolve_agent(
+                &agents, session_id, reference,
+            )
+            .cloned();
+        }
         self.meta_owned_regular_agents(session_id, metaagent)
             .into_iter()
             .find(|agent| {

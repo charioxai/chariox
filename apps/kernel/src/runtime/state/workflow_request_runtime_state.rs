@@ -17,6 +17,9 @@ impl KernelRuntimeState {
         let owned = &self.owned;
 
         if let Some(metaagent_id) = caller_metaagent_id.as_deref() {
+            if let Err(error) = self.authorize_room_agent_request(metaagent_id, &request) {
+                return (Err(error), None);
+            }
             if let Err(error) =
                 owned.ensure_workflow_request_controlled_by_metaagent(&request, metaagent_id)
             {
@@ -85,12 +88,16 @@ impl KernelRuntimeState {
                 None,
             ),
             LocalDaemonRequest::AddWorkflowRegistryEntry(request) => (
-                self.execute_workflow_registry_add_request(request).await,
+                self.execute_workflow_registry_add_request(request, caller_metaagent_id.as_deref())
+                    .await,
                 None,
             ),
             LocalDaemonRequest::AddWorkflowRegistryEntryFromWorkflow(request) => (
-                self.execute_workflow_registry_add_from_workflow_request(request)
-                    .await,
+                self.execute_workflow_registry_add_from_workflow_request(
+                    request,
+                    caller_metaagent_id.as_deref(),
+                )
+                .await,
                 None,
             ),
             LocalDaemonRequest::DeleteWorkflowRegistryEntry(request) => (
@@ -480,8 +487,12 @@ impl KernelRuntimeState {
                 (result, session)
             }
             LocalDaemonRequest::InvokeWorkflowEndpoint(request) => {
-                self.execute_workflow_invoke_endpoint_request(request, &caller_user_id)
-                    .await
+                self.execute_workflow_invoke_endpoint_request(
+                    request,
+                    &caller_user_id,
+                    caller_metaagent_id.as_deref(),
+                )
+                .await
             }
             LocalDaemonRequest::CancelWorkflowRun(request) => {
                 self.execute_workflow_cancel_run_request(request).await

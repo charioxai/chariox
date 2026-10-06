@@ -247,6 +247,7 @@ impl KernelRuntimeState {
                     publication_invocation: None,
                 },
                 &caller_user_id,
+                caller_metaagent_id,
             )
             .await;
         let result = match invoke_response {
@@ -369,6 +370,7 @@ impl KernelRuntimeState {
                     publication_invocation: None,
                 },
                 &caller_user_id,
+                caller_metaagent_id,
             )
             .await;
         let result = match invoke_response {

@@ -377,6 +377,8 @@ impl WorkflowRegistryEntrySummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowRegistryEntryMetadata {
+    #[serde(default)]
+    pub created_by_agent_id: Option<String>,
     pub name: String,
     pub source_scope: WorkflowRegistrySourceScope,
     pub source_kind: WorkflowRegistrySourceKind,
@@ -413,6 +415,8 @@ pub(super) struct WorkflowRegistrySummaryCacheEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct StoredWorkflowRegistryManifest {
+    #[serde(default)]
+    pub(super) created_by_agent_id: Option<String>,
     pub(super) manifest_version: u32,
     pub(super) name: String,
     pub(super) source_kind: WorkflowRegistrySourceKind,
@@ -433,6 +437,7 @@ pub(super) struct StoredWorkflowRegistryManifest {
 }
 
 pub struct WorkflowRegistry {
+    pub(super) created_by_agent_id: Option<String>,
     pub(super) workspace_root: Option<PathBuf>,
     pub(super) user_root: Option<PathBuf>,
 }

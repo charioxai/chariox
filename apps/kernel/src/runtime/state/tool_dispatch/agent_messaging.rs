@@ -143,6 +143,8 @@ impl KernelRuntimeState {
                 None
             };
 
+        let obligation =
+            self.register_room_dispatch_obligation(sender, "message", Some(target.id()))?;
         let sender_label = sender
             .alias()
             .map(str::trim)
@@ -258,6 +260,7 @@ impl KernelRuntimeState {
             {
                 store.record(operation_id, fingerprint, result.clone());
             }
+            self.record_room_dispatch_receipt(obligation.as_deref(), true, Some(&prompt_id))?;
             return Ok(result);
         }
         if !self.agent_message_sender_prompt_is_running(
@@ -291,6 +294,7 @@ impl KernelRuntimeState {
             {
                 store.record(operation_id, fingerprint, result.clone());
             }
+            self.record_room_dispatch_receipt(obligation.as_deref(), true, Some(&prompt_id))?;
             return Ok(result);
         }
         if !self.agent_message_sender_prompt_is_running(
@@ -332,6 +336,7 @@ impl KernelRuntimeState {
             .dispatch
             .as_ref()
             .map(|dispatch| dispatch.provider_run_id.clone());
+        self.record_room_dispatch_receipt(obligation.as_deref(), true, Some(&prompt_id))?;
         if let Some(dispatch) = submission.dispatch.take() {
             self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
         }

@@ -147,6 +147,11 @@ impl SessionService {
             vec![node_run],
             messages,
         );
+        workflow_run = workflow_run.with_creator(
+            queued_prompt
+                .and_then(|p| p.created_by_agent_id())
+                .map(str::to_string),
+        );
         workflow_run.set_invocation_context(
             workflow.revision(),
             queued_prompt
@@ -489,6 +494,32 @@ impl SessionService {
         watchdog_id: Option<String>,
         publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
     ) -> Result<WorkflowQueuedPrompt, DaemonError> {
+        self.enqueue_workflow_prompt_by_agent(
+            session_id,
+            workflow_id,
+            endpoint_id,
+            prompt,
+            queue_ref,
+            source,
+            watchdog_id,
+            publication_invocation,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn enqueue_workflow_prompt_by_agent(
+        &mut self,
+        session_id: &str,
+        workflow_id: &str,
+        endpoint_id: &str,
+        prompt: Option<String>,
+        queue_ref: Option<&str>,
+        source: WorkflowQueuedPromptSource,
+        watchdog_id: Option<String>,
+        publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
+        creator: Option<&str>,
+    ) -> Result<WorkflowQueuedPrompt, DaemonError> {
         let queued = self.prepare_workflow_prompt_with_publication_invocation(
             session_id,
             workflow_id,
@@ -499,6 +530,7 @@ impl SessionService {
             watchdog_id,
             publication_invocation,
         )?;
+        let queued = queued.with_creator(creator.map(str::to_string));
         let session =
             self.store
                 .get_mut(session_id)

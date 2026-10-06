@@ -73,7 +73,13 @@ impl CommandRouter {
                 return Ok(result);
             }
         }
-        if meta_command_requires_task_plan(&tokens)
+        if self.runtime_state.room_agent_tools_enabled() {
+            if let Err(error) = crate::runtime::room_tool_admission::command(&tokens) {
+                return Ok(meta_command_failure_result(&args.command, error));
+            }
+        }
+        if !self.runtime_state.room_agent_tools_enabled()
+            && meta_command_requires_task_plan(&tokens)
             && metaagent_active_task_plan_is_empty(&session, &metaagent)
         {
             let result =
@@ -162,7 +168,12 @@ impl CommandRouter {
                 return Ok(result);
             }
         };
-        let result = meta_command_success_result(&args.command, &response, &metaagent);
+        let result = meta_command_success_result(
+            &args.command,
+            &response,
+            &metaagent,
+            self.runtime_state.room_agent_tools_enabled(),
+        );
         self.audit_meta_run_command(
             Some(provider_run.id()),
             &session,
@@ -189,7 +200,7 @@ impl CommandRouter {
                 context.home_agent_id
             )));
         };
-        if !metaagent.is_metaagent()
+        if (!metaagent.is_metaagent() && !self.runtime_state.room_agent_tools_enabled())
             || metaagent.session_id() != context.home_session_id
             || remote.leased_agent_id != context.leased_agent_id
             || remote.worker_kernel_id != context.worker_kernel_id
@@ -259,7 +270,13 @@ impl CommandRouter {
                 return Ok(result);
             }
         }
-        if meta_command_requires_task_plan(&tokens)
+        if self.runtime_state.room_agent_tools_enabled() {
+            if let Err(error) = crate::runtime::room_tool_admission::command(&tokens) {
+                return Ok(meta_command_failure_result(&args.command, error));
+            }
+        }
+        if !self.runtime_state.room_agent_tools_enabled()
+            && meta_command_requires_task_plan(&tokens)
             && metaagent_active_task_plan_is_empty(&session, &metaagent)
         {
             let result =
@@ -348,7 +365,12 @@ impl CommandRouter {
                 return Ok(result);
             }
         };
-        let result = meta_command_success_result(&args.command, &response, &metaagent);
+        let result = meta_command_success_result(
+            &args.command,
+            &response,
+            &metaagent,
+            self.runtime_state.room_agent_tools_enabled(),
+        );
         self.audit_meta_run_command(
             None,
             &session,
@@ -558,19 +580,31 @@ impl CommandRouter {
             created_slice = Some(slice);
         }
 
+        let same_provider = spawn
+            .provider
+            .as_deref()
+            .is_none_or(|p| p == metaagent.provider());
         let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session.id().to_string(),
             alias: spawn.alias,
             provider: spawn
                 .provider
                 .or_else(|| Some(metaagent.provider().to_string())),
-            account_profile: metaagent.account_profile().map(str::to_string),
-            model: spawn
-                .model
-                .or_else(|| metaagent.model().map(str::to_string)),
-            effort: spawn
-                .effort
-                .or_else(|| metaagent.effort().map(str::to_string)),
+            account_profile: if same_provider {
+                metaagent.account_profile().map(str::to_string)
+            } else {
+                None
+            },
+            model: spawn.model.or_else(|| {
+                same_provider
+                    .then(|| metaagent.model().map(str::to_string))
+                    .flatten()
+            }),
+            effort: spawn.effort.or_else(|| {
+                same_provider
+                    .then(|| metaagent.effort().map(str::to_string))
+                    .flatten()
+            }),
             execution_mode: metaagent.execution_mode_override(),
             permission_level: metaagent.permission_level_override(),
             worktree_id: spawn
@@ -594,7 +628,12 @@ impl CommandRouter {
             Ok(response) => response,
             Err(error) => return Ok(meta_command_failure_result(command, error)),
         };
-        let mut result = meta_command_success_result(command, &response, metaagent);
+        let mut result = meta_command_success_result(
+            command,
+            &response,
+            metaagent,
+            self.runtime_state.room_agent_tools_enabled(),
+        );
         if let Some(slice) = created_slice {
             if let Some(payload) = result.payload.as_object_mut() {
                 payload.insert("created_slice".to_string(), serde_json::json!(slice));
@@ -615,11 +654,23 @@ impl CommandRouter {
         match command {
             "agent" => {
                 let agents = self.runtime_state.session_agents(session.id());
-                meta_agent_request(session, metaagent, &tokens[1..], &agents)
+                meta_agent_request(
+                    session,
+                    metaagent,
+                    &tokens[1..],
+                    &agents,
+                    self.runtime_state.room_agent_tools_enabled(),
+                )
             }
             "workflow" => {
                 let agents = self.runtime_state.session_agents(session.id());
-                meta_workflow_request(session, metaagent, &tokens[1..], &agents)
+                meta_workflow_request(
+                    session,
+                    metaagent,
+                    &tokens[1..],
+                    &agents,
+                    self.runtime_state.room_agent_tools_enabled(),
+                )
             }
             "slice" => meta_slice_request(&tokens[1..]),
             "mcp" => {
@@ -710,22 +761,11 @@ impl CommandRouter {
         reference: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agents = self.runtime_state.session_agents(session_id);
-        let owned_agents = agents
-            .into_iter()
-            .filter(|agent| {
-                !agent.is_metaagent() && agent.controlled_by_metaagent_id() == Some(metaagent.id())
-            })
-            .collect::<Vec<_>>();
-        owned_agents
-            .iter()
-            .find(|agent| {
-                agent.id() == reference
-                    || agent.agent_ref() == reference
-                    || agent.alias() == Some(reference)
-            })
-            .cloned()
-            .ok_or_else(|| {
-                meta_command_error(owned_regular_agent_error_message(reference, &owned_agents))
-            })
+        crate::runtime::room_tool_admission::resolve_agent(
+            &agents,
+            metaagent.session_id(),
+            reference,
+        )
+        .cloned()
     }
 }

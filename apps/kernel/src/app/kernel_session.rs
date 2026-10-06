@@ -280,6 +280,32 @@ impl<'a> KernelSessionService<'a> {
         authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
     ) -> Result<AgentInstance, DaemonError> {
         authorize()?;
+        let obligation = if self.app.config().room_agent_tools {
+            request
+                .spawned_by_agent_id
+                .as_deref()
+                .map(|id| {
+                    let actor = self.app.agents.get_agent(id)?;
+                    if actor.session_id() != request.session_id {
+                        return Err(crate::runtime::room_tool_admission::denied(
+                            "spawn actor left the room",
+                        ));
+                    }
+                    let run = self.app.providers.get_run_for_agent(actor.session_id(), id);
+                    let session = self.app.sessions().get_session(actor.session_id())?;
+                    crate::runtime::room_dispatch_registration::register(
+                        &self.app.durable_state_store(),
+                        &actor,
+                        run.as_ref().map(|r| r.id()),
+                        session.active_prompt_for_agent(id).map(|p| p.id()),
+                        "delegate",
+                        None,
+                    )
+                })
+                .transpose()?
+        } else {
+            None
+        };
         if let Some(kernel_ref) = request.kernel_ref.clone() {
             if self.app.kernel_ref_is_local(&kernel_ref) {
                 request.kernel_ref = None;
@@ -296,6 +322,12 @@ impl<'a> KernelSessionService<'a> {
                 )?;
                 let _ =
                     KernelSessionReadService::new(self.app).session_snapshot(agent.session_id())?;
+                crate::runtime::room_dispatch_registration::receipt(
+                    &self.app.durable_state_store(),
+                    obligation.as_deref(),
+                    true,
+                    Some(agent.id()),
+                )?;
                 return Ok(agent);
             }
         }
@@ -311,6 +343,12 @@ impl<'a> KernelSessionService<'a> {
             }),
         )?;
         let _ = KernelSessionReadService::new(self.app).session_snapshot(agent.session_id())?;
+        crate::runtime::room_dispatch_registration::receipt(
+            &self.app.durable_state_store(),
+            obligation.as_deref(),
+            true,
+            Some(agent.id()),
+        )?;
         Ok(agent)
     }
 

@@ -328,11 +328,14 @@ impl KernelRuntimeState {
         .with_hidden_system_context(hidden_system_context);
         self.owned
             .ensure_metaagent_prompt_target_not_workflow_busy(session_id, target_agent_id)?;
+        let obligation =
+            self.register_room_dispatch_obligation(metaagent, "message", Some(target_agent_id))?;
         if allow_steer {
             if let Some(dispatches) = self
                 .owned
                 .steer_active_metaagent_prompt(session_id, &prompt)?
             {
+                self.record_room_dispatch_receipt(obligation.as_deref(), true, Some(&prompt_id))?;
                 self.spawn_workflow_prompt_dispatches(dispatches);
                 self.persist_metaagent_prompt_submission(
                     session_id,
@@ -360,6 +363,7 @@ impl KernelRuntimeState {
                 refresh_projection: true,
             })
             .await?;
+        self.record_room_dispatch_receipt(obligation.as_deref(), true, Some(&prompt_id))?;
         if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
             (&submission.outcome, submission.dispatch.as_ref())
         {

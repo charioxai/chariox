@@ -64,6 +64,7 @@ async fn invoke_append_failure_rolls_back_before_snapshot_and_retries_once() {
         .execute_workflow_invoke_endpoint_request(
             request.clone(),
             crate::session::DEFAULT_LOCAL_USER_ID,
+            None,
         )
         .await;
     assert!(failed
@@ -94,7 +95,11 @@ async fn invoke_append_failure_rolls_back_before_snapshot_and_retries_once() {
         .execute_batch("DROP TRIGGER fail_workflow_invoke_append;")
         .expect("invoke append failure trigger should be removed");
     let (retried, projected) = runtime
-        .execute_workflow_invoke_endpoint_request(request, crate::session::DEFAULT_LOCAL_USER_ID)
+        .execute_workflow_invoke_endpoint_request(
+            request,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            None,
+        )
         .await;
     let queued_prompt_id = match retried.expect("invoke retry should succeed") {
         crate::local::LocalDaemonResponse::WorkflowPromptEnqueued { queued_prompt, .. } => {

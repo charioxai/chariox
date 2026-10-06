@@ -205,6 +205,9 @@ impl KernelRuntimeState {
             return specs;
         }
         if matches!(provider_runs.as_slice(), [_]) {
+            if self.room_agent_tools_enabled() {
+                specs.extend(crate::transport::runtime_tools::room_runtime_tool_specs());
+            }
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::extension_runtime_tool_specs());
@@ -383,6 +386,18 @@ impl KernelRuntimeState {
                 });
             }
             if is_meta_tool {
+                let run =
+                    unambiguous_runtime_tool_provider_run(&provider_runs, canonical_tool_name)?;
+                if let Some(result) = self
+                    .try_dispatch_remote_meta_runtime_tool_call(
+                        run,
+                        canonical_tool_name,
+                        arguments.clone(),
+                    )
+                    .await?
+                {
+                    return Ok(result);
+                }
                 let (provider_run, _, _) = self.metaagent_context_for_auth_token(auth_token)?;
                 return self
                     .dispatch_meta_runtime_tool_call(&provider_run, canonical_tool_name, arguments)

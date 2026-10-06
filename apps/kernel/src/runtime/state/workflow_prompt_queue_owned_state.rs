@@ -775,6 +775,33 @@ impl KernelRuntimeOwnedState {
         ),
         DaemonError,
     > {
+        self.workflow_enqueue_prompt_by_agent_and_maybe_start(
+            session_id,
+            workflow_ref,
+            endpoint_ref,
+            prompt,
+            queue_ref,
+            publication_invocation,
+            None,
+        )
+    }
+
+    pub(super) fn workflow_enqueue_prompt_by_agent_and_maybe_start(
+        &self,
+        session_id: &str,
+        workflow_ref: &str,
+        endpoint_ref: &str,
+        prompt: Option<String>,
+        queue_ref: Option<&str>,
+        publication_invocation: Option<crate::session::WorkflowPublicationInvocationEnvelope>,
+        creator: Option<&str>,
+    ) -> Result<
+        (
+            crate::app::workflow_runtime::WorkflowLaunchOutcome,
+            WorkflowPromptDispatches,
+        ),
+        DaemonError,
+    > {
         self.workflow_reconcile_live_orphans(session_id);
         let workflow = self
             .session_store
@@ -792,7 +819,7 @@ impl KernelRuntimeOwnedState {
                 "workflow_prompt_enqueued",
                 |sessions| {
                     sessions
-                        .enqueue_workflow_prompt_with_publication_invocation(
+                        .enqueue_workflow_prompt_by_agent(
                             session_id,
                             workflow.id(),
                             endpoint.id(),
@@ -801,6 +828,7 @@ impl KernelRuntimeOwnedState {
                             crate::session::WorkflowQueuedPromptSource::Manual,
                             None,
                             publication_invocation,
+                            creator,
                         )
                         .map(Some)
                 },

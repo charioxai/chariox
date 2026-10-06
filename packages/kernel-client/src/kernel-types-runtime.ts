@@ -354,6 +354,8 @@ export type UserConfigMutationEffect = {
 }
 
 export type AgentInstance = {
+  /** Unknown legacy lineage is never inferred from controller links. */
+  spawned_by_agent_id?: string | null
   id: string
   agent_ref: string
   session_id: string

@@ -176,6 +176,7 @@ fn workflow_registry_enriches_builtin_summary_and_keeps_invalid_entry_metadata()
     let invalid = enrich_workflow_registry_entry_summary(
         WorkflowRegistryResolvedEntry {
             metadata: WorkflowRegistryEntryMetadata {
+                created_by_agent_id: None,
                 name: "broken".to_string(),
                 source_scope: WorkflowRegistrySourceScope::Workspace,
                 source_kind: WorkflowRegistrySourceKind::SingleFile,
