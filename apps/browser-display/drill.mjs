@@ -1,10 +1,10 @@
 // MD-DISPLAY-02/04: real kernel websocket + headed, sandboxed host browser.
 // No credentials/providers/Cloud. External public tools are supplied explicitly.
 import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { createReadStream, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
-import { readFile, writeFile, mkdir, mkdtemp, chmod, chown, cp, rm, statfs, readdir, open } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, mkdtemp, chmod, chown, cp, rm, statfs, readdir, open, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -381,7 +381,24 @@ try {
  await page.evaluate(()=>mdStream.release());
  receipt.agent_after_release=await agentProbe('PROBE_RELEASE');
  if(receipt.agent_after_release.rejected)throw Error('MD-DISPLAY: focused MCP input did not resume after release');
- await page.evaluate(()=>mdStream.close());
+  // MP-11: crash after the real protected encode/presentation flow. Observe
+ // kernel reclamation before the drill removes its disposable state parent.
+ if(process.env.MD_SUPERVISOR_CRASH==='1')try{
+  const packetRoots=(await readdir(shortTmp)).filter(name=>/^chariox-display-[a-f0-9]{32}$/.test(name)).map(name=>path.join(shortTmp,name));
+  let rasterBytes=0;
+  for(const directory of packetRoots)for(const name of await readdir(directory))if(/^encoder-[A-Za-z0-9]{6}$/.test(name))rasterBytes+=(await stat(path.join(directory,name,'raster'))).size;
+  if(!rasterBytes)throw Error('MP-11: abrupt supervisor drill did not create encoder rasters');
+  const supervisors=[];
+  for(const name of await readdir('/proc'))if(/^\d+$/.test(name))try{
+   const pid=Number(name),command=readFileSync(`/proc/${pid}/cmdline`,'utf8').split('\0');
+   if(command.some(arg=>arg.startsWith(root+'/')&&arg.endsWith('/kernel-browser-host.mjs')))supervisors.push(pid);
+  }catch{}
+  if(supervisors.length!==1||!Number.isSafeInteger(supervisors[0])||supervisors[0]<=1)throw Error('MP-11: unsafe or ambiguous owned supervisor PID');
+  process.kill(supervisors[0],'SIGKILL');
+  receipt.supervisor_crash={raster_bytes:rasterBytes,packet_roots:packetRoots,owned_supervisor_pid:supervisors[0]};
+ }catch(error){receipt.cleanup.push(error.message);receipt.status='RED';process.exitCode=1}
+
+ if(!receipt.supervisor_crash)await page.evaluate(()=>mdStream.close());
  await writeFile(path.join(home,'STOP'),'MD-DISPLAY owned stop');
  const exit=await kernelExit;receipt.kernel_exit=exit;if(exit.code!==0)throw Error('MD-DISPLAY kernel drill failed');
  await writeFile(path.join(output,'kernel.log'),Buffer.concat(log));
@@ -414,6 +431,11 @@ finally {
   for(const name of await readdir('/proc'))if(/^\d+$/.test(name)){try{const command=await readFile(`/proc/${name}/cmdline`,'utf8');if(command.includes(root)||(shortTmp&&command.includes(shortTmp)))remaining.push(Number(name));}catch{}}
   if(remaining.length)throw Error('MD-DISPLAY: owned-root processes remain: '+remaining.join(','));
   receipt.cleanup.push('owned Chromium/controller/encoder/kernel/Xvfb settled; exact-root process inventory empty');}catch(error){receipt.cleanup.push(error.message);receipt.status='RED';process.exitCode=1;}
+ if(receipt.supervisor_crash){
+  receipt.supervisor_crash.remaining_packet_roots=[];
+  for(const directory of receipt.supervisor_crash.packet_roots)try{await stat(directory);receipt.supervisor_crash.remaining_packet_roots.push(directory)}catch(error){if(error.code!=='ENOENT')throw error}
+  if(receipt.supervisor_crash.remaining_packet_roots.length){receipt.cleanup.push('MP-11: supervisor death leaked reusable encoder raster');receipt.status='RED';process.exitCode=1}
+ }
  // Read only our non-secret, fixed-label diagnostic files before disposing state.
  const traces=[];
  async function collectTiming(directory){for(const entry of await readdir(directory,{withFileTypes:true}).catch(()=>[])){const p=path.join(directory,entry.name);if(entry.isDirectory()&&entry.name!=='profile')await collectTiming(p);else if(entry.name==='display-timing.jsonl'){const lines=(await readFile(p,'utf8')).trim().split('\n');for(const line of lines)if(line)traces.push(JSON.parse(line));}}}

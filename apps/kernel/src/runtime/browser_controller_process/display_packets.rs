@@ -12,6 +12,73 @@ pub(super) struct DisplayPackets {
 }
 
 impl DisplayPackets {
+    #[cfg(unix)]
+    fn reclaim_encoder_raster(&self, name: &str) {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::os::unix::fs::MetadataExt;
+        // Node mkdtemp appends exactly six ASCII letters/digits. Never walk
+        // arbitrary directories or follow a substituted directory/file link.
+        if name.len() != 14
+            || !name.starts_with("encoder-")
+            || !name.bytes().skip(8).all(|b| b.is_ascii_alphanumeric())
+        {
+            return;
+        }
+        let Ok(name) = std::ffi::CString::new(name) else {
+            return;
+        };
+        let fd = unsafe {
+            libc::openat(
+                self.directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return;
+        }
+        let directory = unsafe { File::from_raw_fd(fd) };
+        let Ok(info) = directory.metadata() else {
+            return;
+        };
+        if info.uid() != unsafe { libc::geteuid() } || info.mode() & 0o077 != 0 {
+            return;
+        }
+        let fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                c"raster".as_ptr(),
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+            )
+        };
+        if fd >= 0 {
+            let raster = unsafe { File::from_raw_fd(fd) };
+            let Ok(info) = raster.metadata() else {
+                return;
+            };
+            if !info.is_file()
+                || info.uid() != unsafe { libc::geteuid() }
+                || info.mode() & 0o077 != 0
+                || info.nlink() != 1
+                || info.len() > 2560 * 1600 * 4
+            {
+                return;
+            }
+            unsafe {
+                libc::unlinkat(directory.as_raw_fd(), c"raster".as_ptr(), 0);
+            }
+        }
+        // An empty partial handoff is disposable too. Unknown contents keep
+        // the directory intact; removal is never recursive.
+        unsafe {
+            libc::unlinkat(
+                self.directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::AT_REMOVEDIR,
+            );
+        }
+    }
+
     pub(super) fn create() -> Result<Self, String> {
         #[cfg(unix)]
         {
@@ -160,6 +227,7 @@ impl Drop for DisplayPackets {
             if let Ok(entries) = std::fs::read_dir(&self.root) {
                 for entry in entries.flatten() {
                     let name = entry.file_name().to_string_lossy().into_owned();
+                    self.reclaim_encoder_raster(&name);
                     if name.len() == 37
                         && name.ends_with(".json")
                         && name.bytes().take(32).all(|b| b.is_ascii_hexdigit())
@@ -182,6 +250,118 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn mp11_native_packets_reclaim_raster_after_supervisor_death() {
+        use std::io::BufRead;
+        use std::process::{Command, Stdio};
+        let spool = DisplayPackets::create().unwrap();
+        let root = spool.root.clone();
+        // The supervisor uses Node's real mkdtemp naming and private modes.
+        // Kill only this child after its raster is durable, without close().
+        let mut child = Command::new("node")
+            .args(["--input-type=module", "-e", r#"
+                import fs from 'node:fs';
+                import path from 'node:path';
+                const directory = fs.mkdtempSync(path.join(process.argv[1], 'encoder-'));
+                fs.writeFileSync(path.join(directory, 'raster'), Buffer.alloc(16384000), {mode:0o600});
+                console.log('ready');
+                setInterval(() => {}, 1000);
+            "#])
+            .arg(&root)
+            .stdout(Stdio::piped())
+            .spawn().unwrap();
+        let mut ready = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        assert_eq!(ready.trim(), "ready");
+        assert!(child.id() > 1, "MP-11: unsafe owned supervisor PID");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        drop(spool);
+        let reclaimed = !root.exists();
+        // Fail-first must not itself leave the reproduced leak behind.
+        if !reclaimed {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        assert!(
+            reclaimed,
+            "MP-11: supervisor crash leaked reusable encoder raster"
+        );
+    }
+    #[test]
+    fn mp11_native_packets_cleanup_rejects_unvalidated_raster_entries() {
+        for case in [
+            "directory_link",
+            "file_link",
+            "hardlink",
+            "permissions",
+            "oversize",
+            "unknown",
+        ] {
+            let spool = DisplayPackets::create().unwrap();
+            let root = spool.root.clone();
+            let outside = DisplayPackets::create().unwrap();
+            let external = outside.root.join("retained");
+            std::fs::write(&external, b"MP-11 retained public sentinel").unwrap();
+            let directory = root.join("encoder-Ab1234");
+            if case == "directory_link" {
+                std::os::unix::fs::symlink(&outside.root, &directory).unwrap();
+            } else {
+                std::fs::create_dir(&directory).unwrap();
+                std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+                    .unwrap();
+                let raster = directory.join("raster");
+                match case {
+                    "file_link" => std::os::unix::fs::symlink(&external, &raster).unwrap(),
+                    "hardlink" => std::fs::hard_link(&external, &raster).unwrap(),
+                    "unknown" => {
+                        std::fs::write(directory.join("other"), b"retain").unwrap();
+                    }
+                    _ => {
+                        let file = OpenOptions::new()
+                            .create_new(true)
+                            .write(true)
+                            .open(&raster)
+                            .unwrap();
+                        file.set_len(if case == "oversize" {
+                            2560 * 1600 * 4 + 1
+                        } else {
+                            16
+                        })
+                        .unwrap();
+                        std::fs::set_permissions(
+                            &raster,
+                            std::fs::Permissions::from_mode(if case == "permissions" {
+                                0o644
+                            } else {
+                                0o600
+                            }),
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+            drop(spool);
+            assert!(directory.symlink_metadata().is_ok(), "{case}");
+            assert_eq!(
+                std::fs::read(&external).unwrap(),
+                b"MP-11 retained public sentinel"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+            std::fs::remove_file(external).unwrap();
+        }
+        let spool = DisplayPackets::create().unwrap();
+        let root = spool.root.clone();
+        std::fs::create_dir(root.join("encoder-Ab1234")).unwrap();
+        std::fs::set_permissions(
+            root.join("encoder-Ab1234"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        drop(spool);
+        assert!(!root.exists(), "empty partial handoff must be reclaimed");
+    }
     fn packet(spool: &DisplayPackets) -> (PathBuf, Value) {
         let name = format!("{}.json", format!("{:032x}", rand::random::<u128>()));
         let row = json!({"row":0,"sequence":1,"key":true,"data_base64":"AA=="});
