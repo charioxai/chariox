@@ -51,6 +51,9 @@ export class BrowserEncoder {
  constructor(browser,targetId,fallback=new PortableEncoder()){this.worldName='chariox-kernel-display-codec-'+randomUUID();this.browser=browser;this.targetId=targetId;this.context=null;this.fallback=fallback;this.fallbackOnly=false;this.closed=false;this.busy=false;}
  get backend(){return this.fallback.backend ?? 'webcodecs';}
  get converter(){return this.fallback.converter;}
+ get workers(){return this.fallback.workers;}
+ discard(encoded){this.fallback.discard?.(encoded)}
+ handedOff(encoded){this.fallback.handedOff?.(encoded)}
  async encodeStripes(...args){return this.fallback.encodeStripes(...args)}
  async contextFor(){
   const {connection,sessionId}=await this.browser.resolvePageTarget(this.targetId);

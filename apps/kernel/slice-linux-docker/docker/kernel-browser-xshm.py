@@ -90,7 +90,7 @@ try:
     stage='damage'
     dam=create_damage(d,window,0) # RawRectangles; retain damage union, coalesce to60Hz.
     event=(L*24)();dirty=True;area=[0,0,width,height];last=0;signature=None;serial=0;previous=None;damage_ready_ms=time.time()*1000
-    fingerprint=raster_damage.RasterFingerprint(width,height);control=b'';urgent_until=0
+    fingerprint=raster_damage.RasterFingerprint(width,height);control=b'';urgent_until=0;wake_ms=None
     while True:
         if not pending(d):select.select([fd(d),sys.stdin.fileno()],[],[],raster_damage.capture_wait(last,dirty,time.monotonic(),urgent_until))
         if select.select([sys.stdin.fileno()],[],[],0)[0]:
@@ -102,7 +102,7 @@ try:
                 line,control=control.split(b'\n',1)
                 release=json.loads(line)
                 if release == {'wake':True}:
-                    urgent_until=time.monotonic()+.1
+                    urgent_until=time.monotonic()+.1;wake_ms=time.time()*1000
                     continue
                 slot=release.get('release')
                 if type(slot) is not int or leased.get(slot)!=release.get('serial'):raise ValueError('pool release')
@@ -120,7 +120,8 @@ try:
             select.select([sys.stdin.fileno()],[],[],.016);continue
         # MP-08/MP-10: pace capture starts, not completion of readback/hash.
         # Adding their cost to16ms misses the next60Hz damage notification.
-        last=time.monotonic();urgent_until=0;at=time.time()*1000
+        input_wake_ms=wake_ms if time.monotonic()<urgent_until else None
+        last=time.monotonic();urgent_until=0;wake_ms=None;at=time.time()*1000
         if pid_of(d,window)!=owner or dims(d,window)!=(ww,hh):raise ValueError('window fence')
         stage='get_image'
         get_image_ms=time.time()*1000
@@ -140,7 +141,7 @@ try:
         if pool:
             slot=min(free_slots);free_slots.remove(slot);leased[slot]=serial
             pool[slot][:]=raw;payload=b"\0";patch=None
-        header=json.dumps(dict(slot=slot,width=width,height=height,length=len(payload),serial=serial,base_serial=serial-1,patch=patch,signature=sig,captured_ms=at,capture_ms=time.time()*1000-at,readback_ms=readback_ms,fingerprint_ms=fingerprint_ms,damage_ms=damage_ms,damage=area,window_height=hh,offset=offset,damage_ready_ms=damage_ready_ms,get_image_ms=get_image_ms,image_ready_ms=image_ready_ms)).encode()
+        header=json.dumps(dict(input_wake_ms=input_wake_ms,slot=slot,width=width,height=height,length=len(payload),serial=serial,base_serial=serial-1,patch=patch,signature=sig,captured_ms=at,capture_ms=time.time()*1000-at,readback_ms=readback_ms,fingerprint_ms=fingerprint_ms,damage_ms=damage_ms,damage=area,window_height=hh,offset=offset,damage_ready_ms=damage_ready_ms,get_image_ms=get_image_ms,image_ready_ms=image_ready_ms)).encode()
         sys.stdout.buffer.write(struct.pack('!I',len(header))+header+payload);sys.stdout.buffer.flush()
 except Exception:
     sys.stderr.write('MD-DISPLAY: native stage '+stage+'\n');sys.exit(1)

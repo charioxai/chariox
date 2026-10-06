@@ -49,7 +49,7 @@ export class LinuxCapture {
     if(header.width!==geometry.width*this.scale||header.height!==geometry.height*this.scale||!Number.isSafeInteger(header.serial)||header.serial<1||!Number.isFinite(header.captured_ms)||!Number.isFinite(header.capture_ms)||!/^[a-f0-9]{16}$/.test(header.signature))throw Error('raw geometry');
    },(header,pixels)=>{
     const received=performance.timeOrigin+performance.now();
-    for(const [name,start,end] of [['native_damage_coalesce',header.damage_ready_ms,header.captured_ms],['native_window_fence',header.captured_ms,header.get_image_ms],['native_xshm_get_image',header.get_image_ms,header.image_ready_ms],['native_readback_copy',header.image_ready_ms,header.readback_ms],['native_readback',header.captured_ms,header.readback_ms],['native_fingerprint',header.readback_ms,header.fingerprint_ms],['native_damage_scan',header.fingerprint_ms,header.damage_ms]]){
+    for(const [name,start,end] of [['input_wake_to_capture',header.input_wake_ms,header.captured_ms],['native_damage_coalesce',header.damage_ready_ms,header.captured_ms],['native_window_fence',header.captured_ms,header.get_image_ms],['native_xshm_get_image',header.get_image_ms,header.image_ready_ms],['native_readback_copy',header.image_ready_ms,header.readback_ms],['native_readback',header.captured_ms,header.readback_ms],['native_fingerprint',header.readback_ms,header.fingerprint_ms],['native_damage_scan',header.fingerprint_ms,header.damage_ms]]){
      if(Number.isFinite(start)&&Number.isFinite(end)&&end>=start)this.timing(name,start,end);
     }
     if(Number.isFinite(header.damage_ms))this.timing('native_pipe',header.damage_ms,received);

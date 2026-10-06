@@ -36,6 +36,7 @@ mod app_view_bridge;
 mod cancellation;
 pub(crate) use cancellation::CancellationSignal as BrowserCancellation;
 mod configuration_cancellation;
+mod display_packets;
 mod lifecycle_cancellation;
 mod owned_process_group;
 mod pending_action;
@@ -316,11 +317,19 @@ impl BrowserControllerProcessStdioBackend {
                 "CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER",
                 "CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER",
                 "CHARIOX_BROWSER_DISPLAY_LIBYUV",
+                "CHARIOX_BROWSER_DISPLAY_STRIPE_WORKERS",
             ] {
                 if let Some(value) = std::env::var_os(key) {
                     command.env(key, value);
                 }
             }
+        }
+        // MP-08/MP-10/MP-11: a kernel-created descriptor root, never an ambient path.
+        let display_packets = if self.host && cfg!(unix) {
+            Some(Arc::new(display_packets::DisplayPackets::create()?))
+        } else { None };
+        if let Some(packets) = &display_packets {
+            command.env("CHARIOX_BROWSER_DISPLAY_PACKET_ROOT", packets.root());
         }
         let mut child = command.spawn().map_err(|error| {
             format!(
@@ -359,6 +368,7 @@ impl BrowserControllerProcessStdioBackend {
                     responses_tx,
                     reader_pending_responses,
                     reader_ownership,
+                    display_packets,
                 )
             })
         {
@@ -1248,6 +1258,7 @@ fn read_controller_responses(
     responses: mpsc::Sender<Result<BrowserControllerRpcResponse, String>>,
     pending_responses: pending_responses::PendingResponses<BrowserControllerRpcResponse>,
     mut ownership: Option<owned_process_group::OwnedProcessGroup>,
+    display_packets: Option<Arc<display_packets::DisplayPackets>>,
 ) {
     for line in BufReader::new(stdout).lines() {
         let response = line
@@ -1255,6 +1266,15 @@ fn read_controller_responses(
             .and_then(|line| {
                 serde_json::from_str::<BrowserControllerRpcResponse>(&line)
                     .map_err(|error| format!("browser controller returned invalid JSON: {error}"))
+                    .and_then(|mut response| {
+                        if let Some(result) = &mut response.result {
+                            if let Some(packets) = &display_packets { packets.hydrate(result)?; }
+                            else if result.pointer("/display_frame/native_packet").is_some() {
+                                return Err("MP-11: native packet without kernel ownership".into());
+                            }
+                        }
+                        Ok(response)
+                    })
             });
         let response = match response {
             Ok(response) => {

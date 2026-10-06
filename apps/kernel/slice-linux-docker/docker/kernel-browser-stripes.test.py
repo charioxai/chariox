@@ -1,9 +1,9 @@
 """MP-08/MP-10/MP-11: real codec row references, idle and collision checks."""
-import base64,importlib.util,unittest,sys
+import base64,importlib.util,unittest,sys,os
 from pathlib import Path
 import av
 sys.dont_write_bytecode=True
-spec=importlib.util.spec_from_file_location('stripes',Path(__file__).with_name('kernel-browser-stripes.py'))
+spec=importlib.util.spec_from_file_location('stripes',Path(os.environ.get('MP_STRIPE_MODULE',Path(__file__).with_name('kernel-browser-stripes.py'))))
 s=importlib.util.module_from_spec(spec);spec.loader.exec_module(s)
 class StripeTests(unittest.TestCase):
  def test_mp10_direct_bgrx_conversion_channel_order_stride_and_fallback(self):
@@ -21,6 +21,22 @@ class StripeTests(unittest.TestCase):
      bb=bytes(pb)[y*pb.line_size:y*pb.line_size+pb.width]
      self.assertTrue(all(abs(x-y)<=1 for x,y in zip(aa,bb)),colour)
   with self.assertRaises(ValueError):fast.convert(b'bad',130,18)
+
+ def test_mp10_pool_preserves_serial_bytes_references_and_idle_skip(self):
+  from unittest.mock import patch
+  outputs=[]
+  for workers in ('1','2','4'):
+   with patch.dict(os.environ,{'CHARIOX_BROWSER_DISPLAY_STRIPE_WORKERS':workers}):encoder=s.StripeEncoder()
+   try:
+    self.assertEqual(encoder.workers,int(workers))
+    pixels=bytearray(128*128*4);rows=[]
+    for n in range(12):
+     pixels[(n%8)*16*128*4+4]=n*17;rows.append(encoder.encode(pixels,128,128,8000000,n==0))
+    self.assertEqual(encoder.encode(pixels,128,128,8000000),[]);outputs.append(rows)
+   finally:encoder.close()
+  self.assertEqual(outputs[0],outputs[1]);self.assertEqual(outputs[0],outputs[2])
+  with patch.dict(os.environ,{'CHARIOX_BROWSER_DISPLAY_STRIPE_WORKERS':'32'}):
+   with self.assertRaises(ValueError):s.StripeEncoder()
 
  def test_real_row_chains_loss_and_idle(self):
   e=s.StripeEncoder();pixels=bytearray(128*128*4);decoders={}

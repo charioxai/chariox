@@ -132,7 +132,7 @@ try {
  });
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  const origin=`http://127.0.0.1:${server.address().port}`;
- kernel=await launchOwned(process.env.MD_BINARY_LOADER || path.join(root,'kernel-tests'),[...(process.env.MD_BINARY_LOADER ? ['--library-path',process.env.MD_BINARY_LIBS,path.join(root,'kernel-tests')] : []),'--ignored','--exact','runtime::router::tests::kernel_browser::display::kernel_browser_display_protocol_drill','--nocapture'],{uid:runUid,gid:runGid,detached:true,cwd:root,env:{...override,PATH:runtimePath,HOME:home,TMPDIR:shortTmp,DISPLAY:`:${screen.trim()}`,CHARIOX_HOME:path.join(home,'chariox'),CHARIOX_LOG_DIR:path.join(home,'logs'),CHARIOX_DISPLAY_DRILL_ROOT:home,CHARIOX_DISPLAY_FIXTURE_URL:`${origin}/${workload}`,CHARIOX_KERNEL_BROWSER_EXECUTABLE:chrome,CHARIOX_KERNEL_BROWSER_DISPLAY:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_BROWSER_DISPLAY_GEOMETRY:process.env.MD_GEOMETRY,CHARIOX_BROWSER_DISPLAY_SOFTWARE:process.env.MD_SOFTWARE,CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER:process.env.MD_ENCODER,CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER:openh264Adapter,CHARIOX_BROWSER_DISPLAY_PYTHON:pythonWrapper},stdio:['ignore','pipe','pipe']});groups.push(kernel.pid);await cpu.track(kernel.pid);
+ kernel=await launchOwned(process.env.MD_BINARY_LOADER || path.join(root,'kernel-tests'),[...(process.env.MD_BINARY_LOADER ? ['--library-path',process.env.MD_BINARY_LIBS,path.join(root,'kernel-tests')] : []),'--ignored','--exact','runtime::router::tests::kernel_browser::display::kernel_browser_display_protocol_drill','--nocapture'],{uid:runUid,gid:runGid,detached:true,cwd:root,env:{...override,PATH:runtimePath,HOME:home,TMPDIR:shortTmp,DISPLAY:`:${screen.trim()}`,CHARIOX_HOME:path.join(home,'chariox'),CHARIOX_LOG_DIR:path.join(home,'logs'),CHARIOX_DISPLAY_DRILL_ROOT:home,CHARIOX_DISPLAY_FIXTURE_URL:`${origin}/${workload}`,CHARIOX_KERNEL_BROWSER_EXECUTABLE:chrome,CHARIOX_KERNEL_BROWSER_DISPLAY:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_BROWSER_DISPLAY_GEOMETRY:process.env.MD_GEOMETRY,CHARIOX_BROWSER_DISPLAY_SOFTWARE:process.env.MD_SOFTWARE,CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER:process.env.MD_ENCODER,CHARIOX_BROWSER_DISPLAY_STRIPE_WORKERS:process.env.MD_STRIPE_WORKERS,CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER:openh264Adapter,CHARIOX_BROWSER_DISPLAY_PYTHON:pythonWrapper},stdio:['ignore','pipe','pipe']});groups.push(kernel.pid);await cpu.track(kernel.pid);
  kernel.stdout.on('data',b=>log.push(b));kernel.stderr.on('data',b=>log.push(b));
  kernelExit=waitChild(kernel);
  ready=await until(async()=>{checkChild(kernel,'kernel');try{return JSON.parse(await readFile(path.join(home,'ready.json'),'utf8'))}catch{return null}},'focused MCP opens user-domain tab',45000);
@@ -371,6 +371,8 @@ finally {
    receipt.status='RED';receipt.error='MP-10: actual encoder/converter does not match the requested comparison';process.exitCode=1;
   }
  }
+ receipt.native_packet_batches=traces.filter(t=>t.stage==='motion_packet_native').length;
+ if(receipt.status==='PASS_LOCAL_COMPONENT'&&process.env.MD_REQUIRE_NATIVE_PACKET==='1'&&!receipt.native_packet_batches){receipt.status='RED';receipt.error='MP-10: native stripe bytes did not bypass Node';process.exitCode=1}
  receipt.stage_breakdown=summarizeStages(receipt);
  if(shaped)try{receipt.netem_stats=await shaped.close();receipt.cleanup.push('owned proxy and namespace-local qdisc removed')}catch{receipt.cleanup.push('RED: owned netem cleanup failed');receipt.status='RED';process.exitCode=1}
  if(server)await new Promise(resolve=>server.close(resolve));

@@ -12,11 +12,13 @@ export class MotionEncoder {
    const sample=this.pending;this.pending=null;const rowMode=Boolean(this.stripes&&sample.raw);if(this.rowMode!==rowMode)this.key=true;this.rowMode=rowMode;const revision=this.revision,key=this.independent||this.key;this.key=false;const reset=key?true:[...this.resetRows];this.resetRows.clear();const at=performance.timeOrigin+this.now();
    let encoded;try{encoded=this.stripes&&sample.raw?await this.encoder.encodeStripes({...sample.raw,motion:true},this.rate.bitrate,reset,this.codec):await this.encoder.encode(sample.raw?{...sample.raw,motion:true}:sample.data_base64,this.rate.bitrate,key,this.codec)}finally{sample.raw?.release?.()}this.timing('motion_encode',at);
    if(['vaapi','x264','openh264','vp8','vp9','webcodecs'].includes(this.encoder.backend))this.timing('motion_backend_'+this.encoder.backend,performance.timeOrigin+this.now());
+   if([1,2,4].includes(this.encoder.workers))this.timing('motion_workers_'+this.encoder.workers,performance.timeOrigin+this.now());
+   if(encoded.packet)this.timing('motion_packet_native',performance.timeOrigin+this.now());
    if(['libyuv','swscale'].includes(this.encoder.converter))this.timing('motion_converter_'+this.encoder.converter,performance.timeOrigin+this.now());
-   if(this.closed||!this.valid())return;
+   if(this.closed||!this.valid()){this.encoder.discard?.(encoded);return;}
    if(encoded.stripes?.length===0)continue;
-   if(revision!==this.revision){if(encoded.stripes&&!this.key)for(const row of encoded.stripes)this.resetRows.add(row.row);else this.key=true;continue;}
-   if(this.frames.length>=2||this.frames.reduce((n,f)=>n+JSON.stringify(f.encoded).length,JSON.stringify(encoded).length)>1024*1024){this.invalidateRows();continue;}
+   if(revision!==this.revision){this.encoder.discard?.(encoded);if(encoded.stripes&&!this.key)for(const row of encoded.stripes)this.resetRows.add(row.row);else this.key=true;continue;}
+   if(this.frames.length>=2||this.frames.reduce((n,f)=>n+JSON.stringify(f.encoded).length+(f.encoded.packet?.length??0),(JSON.stringify(encoded).length+(encoded.packet?.length??0)))>1024*1024){this.encoder.discard?.(encoded);this.invalidateRows();continue;}
    this.frames.push({...sample,encoded});
   }
  }
@@ -37,8 +39,8 @@ export class MotionEncoder {
   const frame=this.frames.shift()??null;this.pump();return frame;
  }
  retireUnsent(){if(this.frames.length||this.active||this.pending)this.invalidateRows(false)}
- invalidateRows(reoffer=true){if(!this.rowMode||this.frames.some(frame=>!frame.encoded.stripes))return this.invalidate(reoffer);for(const frame of this.frames)for(const row of frame.encoded.stripes)this.resetRows.add(row.row);this.revision++;this.frames=[];this.pending?.raw?.release?.();this.pending=null;if(reoffer){this.lastSerial=-1;if(!this.closed)this.offer(this.source.sample())}else this.lastSerial=Math.max(this.lastSerial,this.source.sample()?.serial??-1);}
- invalidate(reoffer=true){this.revision++;this.key=true;this.frames=[];this.pending?.raw?.release?.();this.pending=null;if(reoffer){this.lastSerial=-1;if(!this.closed)this.offer(this.source.sample())}else this.lastSerial=Math.max(this.lastSerial,this.source.sample()?.serial??-1);}
+ invalidateRows(reoffer=true){if(!this.rowMode||this.frames.some(frame=>!frame.encoded.stripes))return this.invalidate(reoffer);for(const frame of this.frames)for(const row of frame.encoded.stripes)this.resetRows.add(row.row);this.revision++;for(const frame of this.frames)this.encoder.discard?.(frame.encoded);this.frames=[];this.pending?.raw?.release?.();this.pending=null;if(reoffer){this.lastSerial=-1;if(!this.closed)this.offer(this.source.sample())}else this.lastSerial=Math.max(this.lastSerial,this.source.sample()?.serial??-1);}
+ invalidate(reoffer=true){this.revision++;this.key=true;for(const frame of this.frames)this.encoder.discard?.(frame.encoded);this.frames=[];this.pending?.raw?.release?.();this.pending=null;if(reoffer){this.lastSerial=-1;if(!this.closed)this.offer(this.source.sample())}else this.lastSerial=Math.max(this.lastSerial,this.source.sample()?.serial??-1);}
  async close(){if(this.closed)return;this.closed=true;this.off?.();this.invalidate();await this.active;}
 }
 

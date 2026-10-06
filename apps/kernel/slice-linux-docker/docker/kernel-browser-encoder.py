@@ -11,6 +11,7 @@ import mmap
 import stat
 import subprocess
 import threading
+import uuid
 from pathlib import Path
 from fractions import Fraction
 import av
@@ -136,7 +137,26 @@ def main():
                 try:rows=stripes.encode(pixels,w,h,request['bitrate'],request.get('reset',False),request.get('codec','avc1.420033'))
                 finally:
                     if raw.get('shared'):mapping.close()
-                print(json.dumps({'stripes':rows,'backend':stripes.effective_backend,'converter':'libyuv' if all(row['converter'].convert_native for row in stripes.rows.values()) else 'swscale'}),flush=True);continue
+                # MP-08/MP-10: packetize all rows once in the native helper. Node
+                # receives headers only; the kernel consumes the private file.
+                reply={'stripes':rows,'backend':stripes.effective_backend,'workers':stripes.workers if stripes.effective_backend=='libx264' else 1,'converter':'libyuv' if all(row['converter'].convert_native for row in stripes.rows.values()) else 'swscale'}
+                root=os.environ.get('CHARIOX_BROWSER_DISPLAY_PACKET_ROOT')
+                if root and rows:
+                    directory=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+                    try:
+                        info=os.fstat(directory)
+                        if info.st_uid!=os.getuid() or info.st_mode & 0o077:raise ValueError('packet root owner')
+                        name=uuid.uuid4().hex+'.json';payload=json.dumps(rows,separators=(',',':')).encode()
+                        if len(payload)>1024*1024:raise ValueError('packet bound')
+                        file=os.open(name,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600,dir_fd=directory)
+                        try:
+                            with os.fdopen(file,'wb') as output:output.write(payload)
+                        except Exception:
+                            os.unlink(name,dir_fd=directory);raise
+                        reply['packet']={'name':name,'length':len(payload)}
+                        reply['stripes']=[{k:v for k,v in row.items() if k!='data_base64'} for row in rows]
+                    finally:os.close(directory)
+                print(json.dumps(reply,separators=(',',':')),flush=True);continue
             if request.get('raw',{}).get('shared'):mapping.close()
             if request.get('operation')=='fingerprint':
                 signature=hashlib.sha256(frame.format.name.encode())
@@ -217,6 +237,7 @@ def main():
             codec, configuration = None, None
             print(json.dumps({'error': 'MD-DISPLAY: protected frame encode failed'}), flush=True)
     if hardware is not None:hardware.close()
+    if stripes is not None:stripes.close()
 
 if __name__ == "__main__":
     main()

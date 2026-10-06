@@ -1,5 +1,7 @@
 // MD-DISPLAY-02/04: flag-gated codec/repair policy over the protected host seam.
 import { spawn } from 'node:child_process';
+import {unlinkSync} from 'node:fs';
+import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -14,7 +16,7 @@ export function safeChildPid(child) {
   return child.pid;
 }
 export class PortableEncoder {
-  constructor() { this.child = null; this.pending = null; this.failure = null; }
+  constructor() { this.child = null; this.pending = null; this.failure = null; this.packets=new Set(); }
   async encode(png, bitrate, reset = false, codec = 'vp09.00.10.08') {
     return typeof png==='object' ? this.exchange({raw:png,bitrate,reset,codec}) : this.exchange({png,bitrate,reset,codec});
   }
@@ -41,7 +43,11 @@ export class PortableEncoder {
           if(reply.error)return fail();
           if(this.pending?.stripes){
             if(!Array.isArray(reply.stripes)||reply.stripes.length>8)return fail();
-            this.backend=({libx264:'x264',libopenh264:'openh264',libvpx:'vp8'})[reply.backend];this.converter=['libyuv','swscale'].includes(reply.converter)?reply.converter:null;this.pending.resolve({stripes:reply.stripes});
+            this.workers=reply.workers;this.backend=({libx264:'x264',libopenh264:'openh264',libvpx:'vp8'})[reply.backend];this.converter=['libyuv','swscale'].includes(reply.converter)?reply.converter:null;if(reply.packet){
+              if(!process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT||!/^[a-f0-9]{32}\.json$/.test(reply.packet.name)||!Number.isSafeInteger(reply.packet.length)||reply.packet.length<1||reply.packet.length>1024*1024||reply.stripes.some(r=>Object.hasOwn(r,'data_base64')))return fail();
+              this.packets.add(reply.packet.name);
+            }
+            this.pending.resolve({stripes:reply.stripes,...(reply.packet?{packet:reply.packet}:{})});
           }else if(this.pending?.hash){
             if(!/^[a-f0-9]{64}$/.test(reply.signature)||!Number.isInteger(reply.width)||!Number.isInteger(reply.height)||reply.width<1||reply.height<1||reply.width>2560||reply.height>1600)return fail();
             this.pending.resolve(reply);
@@ -64,7 +70,13 @@ export class PortableEncoder {
       });
     } catch (error) { await this.close(); throw error; }
   }
+  discard(encoded){
+    const name=encoded?.packet?.name;
+    if(name&&this.packets.delete(name))try{unlinkSync(path.join(process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT,name))}catch(error){if(error.code!=='ENOENT')throw error}
+  }
+  handedOff(encoded){if(encoded?.packet)this.packets.delete(encoded.packet.name)}
   async close() {
+    for(const name of [...this.packets])this.discard({packet:{name}});
     const child = this.child; this.child = null;
     if (!child || child.pid === undefined) return;
     safeChildPid(child);
@@ -107,6 +119,10 @@ export class DisplayStream {
   acceptsCredit(after) { return Number.isSafeInteger(after) && after >= Math.max(0,this.sequence-8) && after <= this.sequence; }
   invalidate() { this.motionActive=false;this.compositorSerial=null;this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null; this.capture?.invalidate();this.refiner?.invalidate();this.producer?.invalidate(); }
   async frame(source, documentId, afterSequence, validate = async () => true, currentBinding = () => true) {
+    try{return await this.buildFrame(source,documentId,afterSequence,validate,currentBinding)}
+    catch(error){this.encoder.discard?.(source.encoded);throw error}
+  }
+  async buildFrame(source, documentId, afterSequence, validate, currentBinding) {
     let at = timestamp();
     const current = source.motion || source.native_tiles ? {width:source.width,height:source.height,signature:source.data_base64,pixels:null}
       : source.pixels ?? await this.pixels.run('decode',{data:source.data_base64,scale:this.device_scale_factor});
@@ -120,7 +136,7 @@ export class DisplayStream {
       this.invalidate();
       // Selection can already have taken a delta from the producer. Resetting
       // only future work cannot make that packet independently decodable.
-      if (source.encoded && (source.encoded.stripes ? source.encoded.stripes.length!==8||source.encoded.stripes.some(r=>!r.key) : !source.encoded.key)) return null;
+      if (source.encoded && (source.encoded.stripes ? source.encoded.stripes.length!==8||source.encoded.stripes.some(r=>!r.key) : !source.encoded.key)) {this.encoder.discard?.(source.encoded);return null;}
     }
     const same = current.signature ? this.previous?.signature === current.signature : Boolean(this.previous?.pixels && this.previous.pixels.equals(current.pixels));
     // Taken packets have already advanced the persistent codec reference chain.
@@ -162,7 +178,7 @@ export class DisplayStream {
     else if (this.codec === 'png') payload = full();
     else {
       const encoded = source.encoded ?? await this.encoder.encode(png(), this.bitrate, !this.dependencies || !bound || !this.previous || this.exact || Boolean(this.repair),this.codec);
-      if(encoded.stripes){payload={kind:'stripes',base_sequence:this.sequence,stripes:encoded.stripes};}
+      if(encoded.stripes){payload={kind:'stripes',base_sequence:this.sequence,stripes:encoded.stripes,...(encoded.packet?{native_packet:encoded.packet}:{})};}
       else {
       if(!this.dependencies && typeof encoded!=='string' && !encoded.key)throw Error('MD-DISPLAY: unnegotiated dependent frame');
       payload = { kind:'video', codec:this.codec, ...(typeof encoded === 'string' ? {key:true,data_base64:encoded} : encoded) };
@@ -173,7 +189,7 @@ export class DisplayStream {
       generation: source.generation, document_id: documentId, sequence: this.sequence + 1,
       width: source.motion ? (this.css_width??1280)*this.device_scale_factor : current.width, height: source.motion ? (this.css_height??800)*this.device_scale_factor : current.height, css_width: this.css_width??1280, css_height: this.css_height??800,
       device_scale_factor: this.device_scale_factor, colour: 'srgb' };
-    const bytes = Math.ceil(Buffer.byteLength(JSON.stringify(packet)) * 4 / 3) + 1024; // reserve transport/encryption envelope
+    const bytes = Math.ceil((Buffer.byteLength(JSON.stringify(packet))+(payload.native_packet?.length??0)) * 4 / 3) + 1024; // reserve transport/encryption envelope
     if (bytes > 1024 * 1024) throw new Error('MD-DISPLAY: packet exceeds bounded egress');
     this.timing('packet_serialize', at); at = timestamp();
     // MD-DISPLAY-02/04: bounded 16 KiB burst accrued while capture/input runs.
@@ -190,7 +206,7 @@ export class DisplayStream {
     while(this.now()<deadline){
       if(!currentBinding()){
         if(['video','stripes'].includes(payload.kind))this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}
-        return null;
+        this.encoder.discard?.(source.encoded);return null;
       }
       const before=this.now(),slice=Math.min(deadline-before,8);await this.wait(slice);
       // Deterministic test clocks may not advance; real clocks always do.
@@ -199,7 +215,8 @@ export class DisplayStream {
     this.tokens = Math.min(16*1024, this.tokens + Math.max(0,this.now()-this.refillAt)*this.bitrate/8000)-bytes;
     this.tokens = Math.max(urgent?-32768:0,this.tokens); this.refillAt = this.now();
     this.timing('pacing', at);
-    if (!await validate()) { if(['video','stripes'].includes(payload.kind))this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}return null; }
+    if (!await validate()) { if(['video','stripes'].includes(payload.kind))this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}this.encoder.discard?.(source.encoded);return null; }
+    this.encoder.handedOff?.(source.encoded);
     this.document_id = documentId; this.previous = current; this.repair = repair?.length ? repair : null;this.repairSerial=source.refinement_serial;
     // A small exact patch can acknowledge input over a lossy video base. It
     // certifies only its damaged pixels; idle native verification still repairs

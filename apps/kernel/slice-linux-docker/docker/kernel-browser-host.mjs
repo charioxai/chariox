@@ -453,7 +453,7 @@ export class KernelBrowserHost {
       const inputAt=this.inputChangedAt.get(tab.tab_id)??-Infinity;
       source.input_triggered=Number.isFinite(inputAt)&&epoch!==stream.deliveredInputEpoch&&Number.isFinite(source.captured_ms)&&source.captured_ms>=performance.timeOrigin+inputAt;
       try { await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id); }
-      catch (error) { stream.invalidate(); throw error; }
+      catch (error) { stream.encoder.discard?.(source.encoded);stream.invalidate(); throw error; }
       assertNotCancelled(signal);
       const frame = await stream.frame(source, source.document_id, command.after_sequence, async () => {
         assertNotCancelled(signal);

@@ -3,6 +3,7 @@ Encoder choice is pluggable: libx264 (GPL) or libopenh264 (BSD), when available.
 No capture, root/window access, credentials or external authority in this module.
 """
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import ctypes
 import ctypes.util
 from fractions import Fraction
@@ -59,6 +60,9 @@ class BgrConverter:
 class StripeEncoder:
     def __init__(self):
         self.rows={};self.config=None
+        self.workers=int(os.environ.get('CHARIOX_BROWSER_DISPLAY_STRIPE_WORKERS','2'))
+        if self.workers not in (1,2,4):raise ValueError('stripe workers')
+        self.pool=ThreadPoolExecutor(max_workers=self.workers) if self.workers>1 else None
         self.backend=os.environ.get('CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER','libx264')
         if self.backend not in ('libx264','libopenh264','libvpx'):raise ValueError('encoder selection')
 
@@ -72,13 +76,14 @@ class StripeEncoder:
         resets=set(range(8)) if reset is True else set(reset or [])
         if any(type(i) is not int or i<0 or i>=8 for i in resets):raise ValueError('stripe reset')
         output=[]
-        for row,(y,h) in enumerate(row_geometry(height)):
+        def encode_row(item):
+            row,(y,h)=item
             data=bytes(pixels[y*width*4:(y+h)*width*4])
             signature=_xxh(ctypes.cast(ctypes.c_char_p(data),ctypes.c_void_p),len(data))
             old=self.rows.get(row)
             # Fast hash is only a prefilter. Equal hash compares exact admitted
             # bytes, so a collision cannot omit a changed row.
-            if old and row not in resets and old['hash']==signature and old['pixels']==data:continue
+            if old and row not in resets and old['hash']==signature and old['pixels']==data:return None
             if old is None or row in resets:
                 if backend=='libopenh264' and os.environ.get('CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER'):
                     spec=importlib.util.spec_from_file_location('native_openh264',Path(__file__).with_name('kernel-browser-openh264.py'));module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
@@ -88,7 +93,7 @@ class StripeEncoder:
                 codec.pix_fmt='yuv420p';codec.time_base=Fraction(1,60);codec.framerate=Fraction(60,1)
                 codec.bit_rate=max(16000,int(bitrate*.45*h/height));codec.thread_count=1
                 if backend=='libx264':
-                    codec.options={'preset':'ultrafast','tune':'zerolatency','profile':'baseline','level':'5.1','crf':'23','g':'120','bf':'0','forced-idr':'1','x264-params':f'sync-lookahead=0:repeat-headers=1:annexb=1:rc-lookahead=0:vbv-maxrate={max(16,codec.bit_rate//1000)}:vbv-bufsize={max(16,codec.bit_rate//20000)}'}
+                    codec.options={'preset':'ultrafast','tune':'zerolatency','profile':'baseline','level':'5.1','crf':'23','g':'120','bf':'0','forced-idr':'1','x264-params':f'scenecut=0:sync-lookahead=0:repeat-headers=1:annexb=1:rc-lookahead=0:vbv-maxrate={max(16,codec.bit_rate//1000)}:vbv-bufsize={max(16,codec.bit_rate//20000)}'}
                 elif backend=='libopenh264':codec.options={'profile':'constrained_baseline','allow_skip_frames':'0','rc_mode':'bitrate','max_nal_size':'0'}
                 else:codec.options={'deadline':'realtime','cpu-used':'8','lag-in-frames':'0','g':'120','error-resilient':'1','bufsize':str(max(16000,codec.bit_rate//20)),'maxrate':str(codec.bit_rate),'minrate':'0','undershoot-pct':'95','overshoot-pct':'5','qmin':'4','qmax':'48','rc_init_occupancy':str(max(16000,codec.bit_rate//20)),'max-intra-rate':'200'}
                 old={'codec':codec,'sequence':0,'converter':BgrConverter()};self.rows[row]=old
@@ -99,6 +104,13 @@ class StripeEncoder:
             if len(packets)!=1:raise ValueError('stripe packet count')
             packet=bytes(packets[0]);key=packets[0].is_keyframe if selected=='vp8' else any(nal and nal[0]&31==5 for nal in re.split(b'\x00\x00\x01',packet))
             previous=old['sequence'];old.update(sequence=previous+1,hash=signature,pixels=data)
-            output.append(dict(row=row,y=y,height=h,codec=selected,key=key,sequence=previous+1,reference_sequence=None if key else previous,data_base64=base64.b64encode(packet).decode()))
+            return dict(row=row,y=y,height=h,codec=selected,key=key,sequence=previous+1,reference_sequence=None if key else previous,data_base64=base64.b64encode(packet).decode())
+        # MP-10: one bounded pool, one codec thread per independent row.
+        # Unchanged rows return before codec conversion or rate control.
+        work=enumerate(row_geometry(height))
+        output=[row for row in (self.pool.map(encode_row,work) if self.pool and backend=='libx264' else map(encode_row,work)) if row is not None]
         if sum(len(row['data_base64']) for row in output)>1024*1024:raise ValueError('stripe payload bound')
         return output
+
+    def close(self):
+        if self.pool:self.pool.shutdown(wait=True);self.pool=None
