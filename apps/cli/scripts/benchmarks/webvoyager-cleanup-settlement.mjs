@@ -24,8 +24,9 @@ export function assertCleanupSettlement({ proof, priorEvidence, runtime, rows, h
   for (const row of failed) {
     assert(row.turnLifecycle === 'completed' && !row.providerError && !row.cancelFailed
       && !row.judgeFailure?.cleanupFailed, 'MP-11 external provider ownership remains unsettled')
-    assert(proof.settledRooms.includes(row.owned?.sessionId))
-    assert(row.owned?.slices.length && row.owned.slices.every(s => proof.settledSlices.includes(s.id)))
+    assert(row.cleanup?.sessionGone === true || proof.settledRooms.includes(row.owned?.sessionId))
+    assert(row.owned?.slices.length && row.owned.slices.every(s => proof.settledSlices.includes(s.id)
+      || row.cleanup?.slices?.some(closed => closed.sliceId === s.id && closed.gone === true)))
   }
   return new Set(proof.settledTaskIds)
 }
