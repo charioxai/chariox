@@ -45,3 +45,17 @@ class ReportTests(unittest.TestCase):
             path=Path(campaign['tasks'][0]['official_result']);record=json.loads(path.read_text())
             record['agent_info']['version']='c'*40;path.write_text(json.dumps(record))
             with self.assertRaises(ValueError):report(root,root/'report')
+
+    def test_unmeasured_rejection_preserves_known_subtotal_and_unknown_total(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);campaign=self.setup_campaign(root)
+            path=Path(campaign['tasks'][1]['official_result']);record=json.loads(path.read_text())
+            record['agent_result']['metadata']['chariox'].update(status='provider_failed',usage=None)
+            path.write_text(json.dumps(record))
+            s=report(root,root/'report')
+            self.assertTrue(s['complete']);self.assertIsNone(s['tokens']['input_tokens'])
+            self.assertEqual(s['known_token_subtotal']['input_tokens'],90)
+            self.assertEqual(s['unknown_token_tasks']['input_tokens'],1)
+            self.assertEqual(s['provider_failures'],1)
+            self.assertIsNone(s['proxy_cost'])
+            self.assertIsNotNone(s['known_proxy_subtotal'])

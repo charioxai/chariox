@@ -9,3 +9,11 @@ class SettledMeasurementTests(unittest.TestCase):
             self.assertFalse(settled_measurement(dict(m,status=status)))
         self.assertFalse(settled_measurement(dict(m,usage=None)))
         self.assertFalse(settled_measurement(dict(m,cleanup_complete=False)))
+
+    def test_settled_rejection_without_counters_still_reaches_verifier(self):
+        m={'status':'provider_failed','provider_turn_settled':True,'cleanup_complete':True,
+           'session_id':'s','agent_id':'a','prompt_id':'p','usage':None,'tui_usage_visible':False}
+        self.assertTrue(settled_measurement(m))
+        for key in ['provider_turn_settled','cleanup_complete','prompt_id']:
+            self.assertFalse(settled_measurement(dict(m,**{key:False})))
+        self.assertFalse(settled_measurement(dict(m,status='completed')))

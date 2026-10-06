@@ -354,7 +354,7 @@ def run(request, evidence):
         stage = 'provider_turn'
         final = wait_owned(settled, deadline)
         screenshot('02-turn-completed')
-        measurement.update(status='provider_failed' if final.get('provider_failed') else 'completed', answer=final['answer'])
+        measurement.update(status='provider_failed' if final.get('provider_failed') else 'completed', answer=final['answer'], provider_turn_settled=True)
         stage = 'usage_report'
         usage_command = [str(root / 'bin/bun'), str(Path(__file__).with_name('usage_status.mjs')), str(root), endpoint, session_id]
         usage_read = subprocess.run(usage_command, env=env, capture_output=True, text=True, timeout=30)

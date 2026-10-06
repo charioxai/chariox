@@ -131,8 +131,12 @@ def session_usage_visible(report, visible):
 
 
 def settled_measurement(measurement):
-    """MP-08 / MP-10 / MP-11: an accounted provider failure is scored by the official verifier."""
-    if measurement.get('status') not in {'completed','provider_failed'} or not measurement.get('cleanup_complete') or not measurement.get('tui_usage_visible'):
+    """MP-08 / MP-10 / MP-11: settled rejections are scored even when counters are unknown."""
+    if measurement.get('status') not in {'completed','provider_failed'} or not measurement.get('cleanup_complete'):
+        return False
+    if measurement.get('status') == 'provider_failed' and measurement.get('usage') is None:
+        return measurement.get('provider_turn_settled') is True and all(measurement.get(key) for key in ['session_id','agent_id','prompt_id'])
+    if not measurement.get('tui_usage_visible'):
         return False
     try:admit_token_usage(measurement.get('usage') or {},measurement['session_id'])
     except (ValueError,KeyError):return False
