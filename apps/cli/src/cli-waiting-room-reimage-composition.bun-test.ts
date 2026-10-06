@@ -232,12 +232,14 @@ reimageTest("selecting a ready managed machine browses its workspace without rep
         session_count: 0, joined_collaborator_count: 0, pending_collaboration_invite_count: 0 }],
     })
     assert.equal(harness.projects()[0]?.workspace_id, "/home/managed")
-    assert.equal(requestCount(harness.local, "GetManagedEnvironmentReimagePreflight"), 1)
+    assert.equal(requestCount(harness.local, "GetManagedEnvironmentReimagePreflight"), 0)
+    assert.equal(harness.cloudPaths.filter(path => path.endsWith("/reimage/preflight")).length, 1)
     assert.equal(requestCount(harness.old, "GetManagedEnvironmentReimagePreflight"), 0)
     assert.equal(harness.observedThroughEndpoint, OLD_ENDPOINT)
     assert.equal(harness.client.currentClient(), harness.local.client)
     await harness.composition.reimageManagedEnvironment("environment-1", "confirm")
-    assert.equal(requestCount(harness.local, "RequestManagedEnvironmentReimage"), 1)
+    assert.equal(requestCount(harness.local, "RequestManagedEnvironmentReimage"), 0)
+    assert.equal(harness.cloudPaths.filter(path => path.endsWith("/reimage")).length, 1)
     assert.equal(requestCount(harness.old, "RequestManagedEnvironmentReimage"), 0)
     assert.equal(requestCount(harness.replacement, "RequestManagedEnvironmentReimage"), 0)
     assert.equal(requestCount(harness.replacement, "CreateSession"), 1)
@@ -260,7 +262,8 @@ reimageTest("remote to local return restores local inventory scope and managed r
     harness.selectManagedWithoutReconcile()
     const prepared = await harness.composition.reimageManagedEnvironment("environment-1", "prepare")
     assert.match(prepared.message, /Destructive confirmation required/)
-    assert.equal(requestCount(harness.local, "GetManagedEnvironmentReimagePreflight"), 1)
+    assert.equal(requestCount(harness.local, "GetManagedEnvironmentReimagePreflight"), 0)
+    assert.equal(harness.cloudPaths.filter(path => path.endsWith("/reimage/preflight")).length, 1)
     assert.equal(requestCount(harness.old, "GetManagedEnvironmentReimagePreflight"), 0)
     assert.equal(harness.client.currentClient().socketPath, LOCAL_ENDPOINT)
   } finally { harness.cleanup() }
@@ -301,9 +304,9 @@ reimageTest("ready managed to New machine restores home source before Current Pr
       managedDevelopmentMode: "current_project", managedKernelContext: "empty",
     })
     await harness.composition.startSessionFromWaitingRoomDefaults()
-    assert.equal(requestCount(harness.local, "CreateManagedEnvironment"), 1)
-    const request = harness.local.requests.find(request => requestKind(request) === "CreateManagedEnvironment")
-    assert.deepEqual(requestPayload(request, "CreateManagedEnvironment").contextPlan, {
+    assert.equal(requestCount(harness.local, "CreateManagedEnvironment"), 0)
+    const request = harness.cloudRequests.find(request => request.path === "/managed-environments" && request.body)
+    assert.deepEqual(request?.body.contextPlan, {
       sourceTargetId: "kernel-local", kernelContext: "empty", developmentSetup: contextPlan.developmentSetup,
       providerAccounts: { kind: "none" }, gitCredentials: { kind: "none" },
     })
@@ -771,12 +774,14 @@ function createHarness(router: TestRouter, options: {
   const noop = () => {}
   // MP-08 / MP-11: terminal authority never enters the enrolled kernel.
   const cloudPaths: string[] = []
+  const cloudRequests: Array<{path: string; body: any}> = []
   const previousFetch = globalThis.fetch
   const credential = {profile: {apiUrl: "http://127.0.0.1:44123", accountId: "account-1", userId: "user-1", clientId: "terminal"}, accessToken: "synthetic-human-access", publicKeyThumbprint: "a".repeat(64)}
   const cloudClient = new CloudClient({load: async () => credential, session: async () => credential} as any, () => ({publicKeyThumbprint: credential.publicKeyThumbprint}) as any)
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input)), body = init?.body ? JSON.parse(String(init.body)) : null
     cloudPaths.push(url.pathname)
+    cloudRequests.push({path: url.pathname, body})
     assert.equal(new Headers(init?.headers).get("authorization"), "Bearer synthetic-human-access")
     if (body) {assert.equal(body.accountId, "account-1"); assert.equal(body.kernelCredential, undefined)}
     if (url.pathname.endsWith("/options")) return Response.json({computeClasses: catalog.computeClasses, contextSources: catalog.contextSources})
@@ -877,6 +882,7 @@ function createHarness(router: TestRouter, options: {
   return {
     composition,
     cloudPaths,
+    cloudRequests,
     initialize: () => composition.refreshWaitingRoomDataNow(),
     workspaceCommand: async (path: string) => {
       const commands = createCliCommandActionComposition({ ...deps, ...composition,

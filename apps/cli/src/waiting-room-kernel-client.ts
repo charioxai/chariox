@@ -13,7 +13,7 @@ type KernelClientTarget = {
   isActive(): boolean
 }
 
-async function openWaitingRoomKernelClient(controlClient: LocalIpcClient, target: KernelClientTarget, cloud?: { client?: CloudClient; kernelConnected?: () => boolean }) {
+async function openWaitingRoomKernelClient(controlClient: LocalIpcClient, target: KernelClientTarget, cloud?: { client?: CloudClient | undefined; kernelConnected?: (() => boolean) | undefined }) {
   const issuingClient = "currentClient" in controlClient && typeof controlClient.currentClient === "function"
     ? controlClient.currentClient() as LocalIpcClient : controlClient
   const localPresence = loadLocalKernelPresences().find(presence => presence.kernelId === target.kernelRef)
@@ -85,7 +85,7 @@ export async function browseWaitingRoomKernelWorkspace(
 
 export function createWaitingRoomKernelConnectionController(deps: {
   client: MutableLocalIpcClient
-  cloudClient?: CloudClient
+  cloudClient?: CloudClient | undefined
   kernelConnected?: () => boolean
   getInventory?: (client: LocalIpcClient) => Promise<WaitingRoomInventory>
   clientId: string

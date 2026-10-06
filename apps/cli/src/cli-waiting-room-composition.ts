@@ -1,3 +1,4 @@
+import type { LocalIpcClient } from "./ipc.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import { createWaitingRoomWorkspaceController, createWaitingRoomWorkspacePlacementController, waitingRoomWorkspaceSelection } from "./waiting-room-workspace-controller.js"
 import { getCloudClientControlProfile } from "./cloud-client-control.js"
