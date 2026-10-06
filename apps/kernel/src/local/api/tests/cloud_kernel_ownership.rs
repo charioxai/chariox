@@ -123,6 +123,7 @@ fn cloud_kernel_ownership_local_router_drill() {
     let approved = harness
         .dispatch(LocalDaemonRequest::PollCloudRelayLogin(
             PollCloudRelayLoginRequest {
+                supports_access_denied: Some(true),
                 api_url: url,
                 device_code: "synthetic-device".into(),
             },
