@@ -74,7 +74,7 @@ const resources = async () => {
 await resources()
 let resourceFailure
 const resourceMonitor = setInterval(()=>resources().catch(error=>{resourceFailure=error}),5000)
-let kernel, relay, terminal, client, sessionId, noiseRoot, progressMonitor
+let kernel, relay, terminal, client, sessionId, noiseRoot
 let buffer = '', nextId = 0
 const pending = new Map()
 const terminalCommand = (action, fields = {}) => new Promise((resolve,reject) => {
@@ -206,12 +206,7 @@ try {
       }
       const originalProcess=await processState()
       assert.ok(originalProcess&&originalProcess.state!=='Z','MP-08 noisy command must be a live OS process before control')
-      const progressSamples = []
-      progressMonitor = setInterval(async()=>{
-        const value = await readFile(path.join(noiseRoot,marker),'utf8').catch(()=>null)
-        const process=await processState()
-        if(value !== null)progressSamples.push({at:Date.now(),value,processAlive:Boolean(process&&process.state!=='Z'&&process.startTicks===originalProcess.startTicks)})
-      },20)
+      await terminalCommand('watch',{pid:commandPid,progressPath:path.join(noiseRoot,marker),startTicks:originalProcess.startTicks})
       const control = await raceKey(action === 'pause' ? '\x10' : '\x13')
       const sample = {round:round+1,action,runId,command,commandPid,controlSentAtMs:control.sentAtMs,progressBeforeControl:progress}
       receipt.noisyInterrupts.push(sample)
@@ -246,7 +241,7 @@ try {
       await capture(label+'-settled',text=>text.includes('0 running')&&text.includes('[Start · Enter]'))
       // MP-08: require an unchanged producer for 500ms after the 1s cutoff.
       await sleep(Math.max(0,control.sentAtMs+1600-Date.now()))
-      clearInterval(progressMonitor)
+      const progressSamples=(await terminalCommand('finishWatch')).samples
       sample.progressSamples=progressSamples
       // Output producers must have stopped, not merely their visible cards.
       let after = await readFile(path.join(noiseRoot,marker),'utf8')
@@ -391,7 +386,6 @@ try {
   else process.exitCode=1
 } finally {
   clearInterval(resourceMonitor)
-  clearInterval(progressMonitor)
   if(tracingInterrupts) {
     const traces=[]
     for(const name of await readdir(path.join(state,'logs')).catch(()=>[])) {
