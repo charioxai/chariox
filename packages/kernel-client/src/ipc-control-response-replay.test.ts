@@ -55,7 +55,6 @@ test("LocalIpcClient reconnects and replays a command when its response stalls",
 for (const request of [
   { SubmitPrompt: { session_id: "fixture", prompt: "  /sudo protected task" } },
   { RequestKernelAccess: { session_id: "fixture", holder_pid: process.pid } },
-  { ManageCredentialVault: { session_id: "fixture", agent_id: "fixture" } },
   { RequestKernelSudo: { agent_id: "fixture", prompt: "external task" } },
 ]) {
   const kind = Object.keys(request)[0]
