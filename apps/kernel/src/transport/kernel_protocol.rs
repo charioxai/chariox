@@ -805,6 +805,9 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             mapped
         }
         DaemonError::SessionNotFound { .. } => kernel_error("session_not_found", error, false),
+        DaemonError::KernelSudoRefused => kernel_error("sudo_refused", error, false),
+        DaemonError::KernelAccessRefused => kernel_error("kernel_access_refused", error, false),
+        DaemonError::OwnerRequestExpired => kernel_error("owner_request_expired", error, false),
         DaemonError::AttachmentNotFound { .. } => {
             kernel_error("attachment_not_found", error, false)
         }

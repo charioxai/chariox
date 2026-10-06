@@ -2,7 +2,7 @@ import { parseKeypress } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { onCleanup } from "solid-js"
 
-import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
+import { createCliStdinKeyController, type CliStdinKeyEvent } from "./cli-stdin-key-controller.js"
 import { createFocusedInteractionChoiceController } from "./focused-interaction-choice-controller.js"
 import { createGlobalKeyboardShortcutController } from "./global-keyboard-shortcut-controller.js"
 import { routeInteractionPastes } from "./interaction-paste-routing.js"
@@ -34,7 +34,7 @@ type AnyFn = (...args: any[]) => any
 export type CliInputRoutingCompositionDeps = {
   handleKernelApprovalKey?: (event: import("./kernel-approval-controller.js").KernelApprovalKey) => boolean
   openKernelApprovals: () => void
-  kernelApprovalOwnsInput?: () => boolean
+  kernelApprovalOwnsInput?: (event?: CliStdinKeyEvent) => boolean
   client: any
   options: any
   appLogger: any
@@ -671,7 +671,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   }
 
   const stdinKeyController = createCliStdinKeyController({
-    kernelApprovalOwnsInput: () => deps.kernelApprovalOwnsInput?.() ?? false,
+    kernelApprovalOwnsInput: (event) => deps.kernelApprovalOwnsInput?.(event) ?? false,
     parseKeypress: (chunk, options) => parseKeypress(chunk, options),
     dialogOverlayOpen: deps.dialogOverlayOpen,
     closeActiveDialogOverlay: deps.closeActiveDialogOverlay,

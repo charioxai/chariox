@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { LocalIpcError } from "./ipc.js"
 import test from "node:test"
 
 import type { PromptAttachmentPart, RuntimeAttachment, RuntimeSession } from "./cli-types.js"
@@ -10,6 +11,18 @@ import {
 import type { PendingPromptAttachment } from "./prompt-attachment-state.js"
 import type { PromptSubmissionResult } from "./prompt-runtime-api.js"
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
+
+test("MP-11 kafix refused and expired owner decisions restore the draft and show an info notice", async () => {
+  for (const [code, message] of [["sudo_refused", "Sudo refused in another terminal"],
+    ["kernel_access_refused", "Access refused in another terminal"],
+    ["owner_request_expired", "Request expired"]]) {
+    const h = createHarness({ submitPrompt: async () => { throw new LocalIpcError("handle kernel response", "untrusted transport detail", code, false) } })
+    await h.controller.submit("/sudo task")
+    assert.deepEqual(h.fatalErrors(), [])
+    assert.deepEqual(h.footerMessages().at(-1), { message, tone: "info" })
+    assert.equal(h.restoredSnapshots().at(-1)?.rawPrompt, "/sudo task")
+  }
+})
 
 test("normal prompt submit requires an attachment", async () => {
   const harness = createHarness({ attachment: null })

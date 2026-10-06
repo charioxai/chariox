@@ -1669,6 +1669,10 @@ fn unlocked_vaults() -> &'static Mutex<BTreeMap<PathBuf, UnlockedVault>> {
     VAULTS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
+pub fn resolve_chariox_vault_path(path: impl Into<PathBuf>) -> PathBuf {
+    normalize_vault_path(path.into())
+}
+
 fn normalize_vault_path(path: PathBuf) -> PathBuf {
     let raw = path.to_string_lossy();
     if raw == "~" {

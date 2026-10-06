@@ -1,4 +1,5 @@
 import { LocalIpcError } from "./ipc.js"
+import { ownerRequestNotice } from "./owner-request-notice.js"
 
 export const DEFAULT_CONNECTED_STATUS = ""
 export const MAX_TRANSIENT_POLL_FAILURES = 5
@@ -24,6 +25,8 @@ export function shouldEndSessionOnCliExit(_createdSession: boolean, _connectedCl
 }
 
 export function describeCliError(error: unknown): string {
+  const notice = ownerRequestNotice(error)
+  if (notice) return notice
   if (error instanceof LocalIpcError || error instanceof Error) {
     return error.message
   }

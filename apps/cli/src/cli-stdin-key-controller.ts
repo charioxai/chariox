@@ -13,7 +13,7 @@ export type CliStdinKeypressParser = (
 
 export type CliStdinKeyControllerDeps = {
   parseKeypress: CliStdinKeypressParser
-  kernelApprovalOwnsInput?: () => boolean
+  kernelApprovalOwnsInput?: (event?: CliStdinKeyEvent) => boolean
   dialogOverlayOpen: () => boolean
   closeActiveDialogOverlay: () => void
   handleManagedMachineDialogKey?: (event: CliStdinKeyEvent) => boolean
@@ -58,7 +58,7 @@ export function createCliStdinKeyController(
       }
       // OpenTUI's global key handler owns this dialog. Do not also dispatch
       // its terminal bytes into focused-agent or workflow shortcuts.
-      if (deps.kernelApprovalOwnsInput?.() || isApprovalShortcut(event)) return true
+      if (deps.kernelApprovalOwnsInput?.(event) || isApprovalShortcut(event)) return true
       if (event.eventType !== "release" && deps.dialogOverlayOpen() && event.name === "escape") {
         deps.closeActiveDialogOverlay()
         return true

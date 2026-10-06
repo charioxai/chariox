@@ -17,6 +17,13 @@ pub enum DaemonError {
         operation: &'static str,
         message: String,
     },
+    // Internal outcomes; clients receive codes in the existing error envelope.
+    #[error("sudo request refused")]
+    KernelSudoRefused,
+    #[error("access request refused")]
+    KernelAccessRefused,
+    #[error("owner request expired")]
+    OwnerRequestExpired,
     #[error(
         "relay transport `{operation}` failed with code `{code}` (retryable={retryable}): {message}"
     )]

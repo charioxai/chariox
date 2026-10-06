@@ -144,8 +144,10 @@ impl KernelRuntimeState {
             ),
             None => format!("Terminal {}", entry.terminal_id),
         };
+        let agent = self.owned.agent_store.get_agent(&entry.agent_id)?;
+        let session = self.owned.session_store.get_session(&entry.session_id)?;
         let interaction = RuntimeInteraction::for_kernel_operation(&entry.entry_id, &entry.entry_id, "Authorize one sudo turn",
-            format!("{} requests one sudo turn for agent {} in session {}. It may answer critical approvals across this kernel until it yields. Requester-supplied prompt:\n{}", requester, entry.agent_id, entry.session_id, prompt),
+            format!("{} requests one sudo turn for agent {} in session {}. It may answer critical approvals across this kernel until it yields. Requester-supplied prompt:\n{}", requester, agent.alias().unwrap_or(agent.id()).escape_debug(), session.alias().unwrap_or(session.id()).escape_debug(), prompt),
             vec![RuntimeInteractionChoice::new("refuse", "Refuse", "refuse", None), RuntimeInteractionChoice::new("approve", "Approve", "approve", None).requiring_passkey()]).with_timeout_sec(seconds);
         let rx = self
             .create_kernel_operation_interaction(
@@ -167,15 +169,13 @@ impl KernelRuntimeState {
         }
         let answer = tokio::time::timeout(Duration::from_secs(seconds), rx)
             .await
-            .map_err(|_| error("sudo request expired; answer the popup in a Chariox terminal"))?
+            .map_err(|_| DaemonError::OwnerRequestExpired)?
             .map_err(|_| error("sudo request cancelled"))?;
         if answer.status == "timed_out" {
-            return Err(error(
-                "sudo request expired; answer the popup in a Chariox terminal",
-            ));
+            return Err(DaemonError::OwnerRequestExpired);
         }
         if answer.choice_id.as_deref() != Some("approve") {
-            return Err(error("sudo request refused"));
+            return Err(DaemonError::KernelSudoRefused);
         }
         // The winning terminal answer records its identity before waking us.
         let entry = self

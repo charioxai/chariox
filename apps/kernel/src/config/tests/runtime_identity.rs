@@ -404,6 +404,7 @@ fn chariox_home_owns_config_identity_state_and_runtime_paths() {
 
     let config = DaemonConfig::load_from_env();
     let durable_state_path = config.durable_state_path();
+    let vault_path = config.user_config.credential_vault.path.clone();
     let expected_socket = DaemonConfig::default_local_socket_path(&config.daemon_id);
 
     unsafe {
@@ -415,6 +416,7 @@ fn chariox_home_owns_config_identity_state_and_runtime_paths() {
     let _ = fs::remove_dir_all(&temp_home);
 
     assert_eq!(config.user_config_path, temp_home.join("config.toml"));
+    assert_eq!(vault_path, temp_home.join("vault/vault.json").display().to_string());
     assert_eq!(
         durable_state_path,
         temp_home.join("state").join("kernel.db")

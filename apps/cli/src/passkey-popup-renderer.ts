@@ -1,5 +1,5 @@
 import {
-  BoxRenderable, MouseButton, RGBA, ScrollBoxRenderable, TextAttributes, TextRenderable, type CliRenderer,
+  BoxRenderable, MouseButton, RGBA, ScrollBoxRenderable, StyledText, TextAttributes, TextRenderable, type CliRenderer,
 } from "@opentui/core"
 import type { PasskeyPopupView } from "./passkey-popup-controller.js"
 import { theme } from "./theme.js"
@@ -28,7 +28,7 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
   let box: BoxRenderable | undefined
   let body: ScrollBoxRenderable | undefined
   let lastFrame = ""
-  const text = (content: string, options: { accent?: boolean; muted?: boolean; bold?: boolean } = {}) =>
+  const text = (content: string | StyledText, options: { accent?: boolean; muted?: boolean; bold?: boolean } = {}) =>
     new TextRenderable(renderer, {
       content, wrapMode: "word", flexShrink: 0,
       fg: options.accent ? theme.primary : options.muted ? theme.textMuted : theme.text,
@@ -61,7 +61,7 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
         return
       }
       box.width = dimensions.width
-      if (!view.open) {
+      if (!view.open && !view.attention) {
         box.height = 2
         const indicator = new BoxRenderable(renderer, {
           position: "absolute", right: 0, top: 1, height: 1,
@@ -102,7 +102,7 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       panel.add(header)
       const prompt = view.prompt
       // The request scrolls when the terminal is too short for all of it.
-      const fixedRows = 14 + (view.error ? 2 : 0)
+      const fixedRows = (view.open ? 14 : 8) + (view.error ? 2 : 0)
       const wanted = 2 + rows(prompt.title || "Critical approval", width - 5) + rows(prompt.message, width - 5)
       body = new ScrollBoxRenderable(renderer, {
         height: Math.max(2, Math.min(wanted, dimensions.height - top - 1 - fixedRows)),
@@ -112,8 +112,17 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       body.add(text(prompt.title || "Critical approval", { accent: true, bold: true }))
       body.add(text(prompt.message))
       panel.add(body)
-      const session = prompt.session_alias ? `${prompt.session_alias} (${prompt.session_id})` : prompt.session_id
-      section(text(`Session: ${session} · expires ${expiry(prompt.expires_at_ms)}`, { muted: true }))
+      section(text(new StyledText([
+        { __isChunk: true, text: `Session: ${prompt.session_alias || prompt.session_id}`, fg: theme.text },
+        { __isChunk: true, text: `${prompt.session_alias ? ` (${prompt.session_id})` : ""} · expires ${expiry(prompt.expires_at_ms)}`, fg: theme.textMuted },
+      ])))
+      if (!view.open) {
+        section(button("Review · F8", true, actions.show), text("F8 reviews · Esc hides · typing stays in composer", { muted: true }))
+        scrim.add(panel)
+        box.add(scrim)
+        box.requestRender()
+        return
+      }
       // Hidden input: only the length is ever rendered.
       const remember = text(prompt.kind === "critical_approval"
         ? `Remember for: ${view.passkey.rememberMinutes ? `${view.passkey.rememberMinutes} minutes` : "off"}`

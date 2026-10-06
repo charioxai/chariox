@@ -24,6 +24,13 @@ test("describeCliError prefers structured error messages", () => {
   assert.equal(SILENT_POLL_THRESHOLD, 8)
 })
 
+test("MP-11 kafix owner decision notices use only structured codes, including standalone CLI errors", () => {
+  assert.equal(describeCliError(new LocalIpcError("handle kernel response", "opaque payload", "sudo_refused", false)), "Sudo refused in another terminal")
+  assert.equal(describeCliError(new LocalIpcError("handle kernel response", "opaque payload", "kernel_access_refused", false)), "Access refused in another terminal")
+  assert.equal(describeCliError(new LocalIpcError("handle kernel response", "opaque payload", "owner_request_expired", false)), "Request expired")
+  assert.equal(describeCliError(new Error("sudo request refused")), "sudo request refused", "English without a code is not classified")
+})
+
 test("poll recovery retries transient IPC failures with backoff", () => {
   const failure = new LocalIpcError("handle local response", "timed out")
 
