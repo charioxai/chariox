@@ -19,7 +19,7 @@ try{
  for(const entry of cases){
   if(interrupted)break;
   const [profile,workload,caseBudget]=entry.split(':');
-  if(caseBudget&&(!Number.isSafeInteger(Number(caseBudget))||Number(caseBudget)<500000||Number(caseBudget)>64000000))throw Error('MD-DISPLAY: invalid case budget');if(!profiles[profile]||!['docs','canvas','video','scroll','scroll30','scroll60','wheel30'].includes(workload))throw Error('MD-DISPLAY: unknown case');
+  if(caseBudget&&(!Number.isSafeInteger(Number(caseBudget))||Number(caseBudget)<500000||Number(caseBudget)>64000000))throw Error('MD-DISPLAY: invalid case budget');if(!profiles[profile]||!['docs','canvas','video','scroll','scroll30','scroll60','wheel30','wheel60'].includes(workload))throw Error('MD-DISPLAY: unknown case');
   const namespace='md-display-'+randomBytes(6).toString('hex'),record={profile,workload,namespace};manifest.cases.push(record);
   let created=false;
   const ip=(...args)=>execFileSync('/usr/sbin/ip',args,{encoding:'utf8'});

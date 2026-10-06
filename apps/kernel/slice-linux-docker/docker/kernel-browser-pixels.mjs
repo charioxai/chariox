@@ -9,16 +9,8 @@ import { locateBrowserRegions } from "./browser-observation-regions.mjs";
 export const displayFullMaskRegions = Symbol('displayFullMaskRegions');
 
 const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-const crcTable = Uint32Array.from({ length: 256 }, (_, byte) => {
-  let value = byte;
-  for (let bit = 0; bit < 8; bit++) value = (value >>> 1) ^ ((value & 1) ? 0xedb88320 : 0);
-  return value >>> 0;
-});
-function crc(bytes) {
-  let value = 0xffffffff;
-  for (const byte of bytes) value = (value >>> 8) ^ crcTable[(value ^ byte) & 255];
-  return (value ^ 0xffffffff) >>> 0;
-}
+// MP-08/MP-10/MP-11: native CRC keeps PNG integrity checks off the JS loop.
+const crc = crc32;
 function chunk(type, data) {
   const body = Buffer.concat([Buffer.from(type), data]);
   const result = Buffer.alloc(body.length + 8);
@@ -126,10 +118,29 @@ export function maskPng(data, regions, scale = 1) {
 // MP-08/MP-11: never mutate a leased raster or let its unmasked shared file
 // bypass protection in an encoder/native tile. Only masked bytes leave here.
 export const displayMaskRegions = Symbol('kernel display protection');
+// Private transform capability, never serialized to a client. The encoder
+// masks a COW mapping before its independent input/output privacy guards.
+export const displayNativeMaskSource = Symbol('kernel native mask source');
 export function maskNativeRaster(raw, regions, previousRegions, previous) {
   if(!regions.length)return raw;
   const {width,height}=raw;
   const stable=previousRegions&&JSON.stringify(previousRegions)===JSON.stringify(regions);
+  if(raw.shared&&typeof raw.copyPixels==='function'&&typeof raw.readRegion==='function'){
+    const masks=regions.map(r=>Object.freeze({...r}));
+    if(masks.length>50000||masks.some(r=>![r.x,r.y,r.width,r.height].every(Number.isFinite)||r.width<0||r.height<0))throw Error('MP-11: native mask geometry');
+    Object.freeze(masks);
+    let snapshot;
+    const result={...raw,[displayMaskRegions]:masks,damage:stable?raw.damage:[0,0,width,height],signature:`masked-${raw.serial}`,
+      retain:()=>raw.retain(),release:()=>raw.release()};
+    delete result.shared;delete result.copyPixels;
+    Object.defineProperties(result,{
+      [displayNativeMaskSource]:{value:raw.shared,enumerable:true},
+      pixels:{get:()=>snapshot??=maskPixels({width,height,pixels:raw.copyPixels()},masks.map(r=>[r.x,r.y,r.width,r.height])).pixels},
+      readRegion:{value:(x,y,w,h)=>maskPixels({width:w,height:h,pixels:raw.readRegion(x,y,w,h)},masks.map(r=>[r.x-x,r.y-y,r.width,r.height])).pixels},
+    });
+    raw.retain(); // wrapper owns a lease independently of its capture caller
+    return result;
+  }
   let pixels;
   const box=raw.damage;
   // MP-08/MP-10/MP-11: these bounds come from the complete native byte

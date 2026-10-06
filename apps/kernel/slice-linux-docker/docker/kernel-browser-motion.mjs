@@ -12,7 +12,8 @@ export class MotionEncoder {
  async run(){
   while(this.pending&&!this.closed&&!this.failure&&this.frames.length<2){
    const sample=this.pending;this.pending=null;const rowMode=Boolean(this.stripes&&sample.raw);if(this.rowMode!==rowMode)this.key=true;this.rowMode=rowMode;const revision=this.revision,key=this.independent||this.key;this.key=false;const reset=key?true:[...this.resetRows];this.resetRows.clear();const at=performance.timeOrigin+this.now();
-   let encoded;try{encoded=this.stripes&&sample.raw?await this.encoder.encodeStripes({...sample.raw,motion:true},this.rate.bitrate,reset,this.codec):await this.encoder.encode(sample.raw?{...sample.raw,motion:true}:sample.data_base64,this.rate.bitrate,key,this.codec,sample[displayMaskRegions]??[])}finally{sample.raw?.release?.()}this.timing('motion_encode',at);
+   try{
+   const encoded=this.stripes&&sample.raw?await this.encoder.encodeStripes({...sample.raw,motion:true},this.rate.bitrate,reset,this.codec):await this.encoder.encode(sample.raw?{...sample.raw,motion:true}:sample.data_base64,this.rate.bitrate,key,this.codec,sample[displayMaskRegions]??[]);this.timing('motion_encode',at);
    if(encoded.dropped){
     // MP-11: discard every lossy byte, retire its references, and present only
     // this already-protected exact raster. Never freeze a newly masked field.
@@ -39,6 +40,7 @@ export class MotionEncoder {
    if(revision!==this.revision){this.encoder.discard?.(encoded);if(encoded.stripes&&!this.key)for(const row of encoded.stripes)this.resetRows.add(row.row);else this.key=true;continue;}
    if(this.frames.length>=2||this.frames.reduce((n,f)=>n+frameBytes(f),(JSON.stringify(encoded).length+(encoded.packet?.length??0)))>1024*1024){this.encoder.discard?.(encoded);this.invalidate();continue;}
    this.frames.push({...sample,encoded});
+   }finally{sample.raw?.release?.()}
   }
  }
  feedback(lag){if(this.rate.feedback(lag))this.key=true;}

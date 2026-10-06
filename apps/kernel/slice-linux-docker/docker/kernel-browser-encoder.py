@@ -106,6 +106,7 @@ def main():
     while True:
         line=sys.stdin.buffer.readline()
         if not line:break
+        mapping = None
         try:
             request = json.loads(line)
             regions=request.get('protected_regions',[])
@@ -127,6 +128,9 @@ def main():
                     pixels=mapping
                 else:pixels=sys.stdin.buffer.read(size)
                 if len(pixels)!=size:raise ValueError('raw truncated')
+                if raw.get('mask_shared'):
+                    if mapping is None or not regions:raise ValueError('private mask lease unavailable')
+                    protection.mask_private(pixels,w,h,regions)
                 if request.get('operation')!='stripes':
                     frame=av.VideoFrame(w,h,'bgr0')
                     frame.planes[0].update(pixels)
@@ -143,9 +147,7 @@ def main():
                     spec=importlib.util.spec_from_file_location('stripes',Path(__file__).with_name('kernel-browser-stripes.py'))
                     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);stripes=module.StripeEncoder()
                 if 'raw' not in request:raise ValueError('stripes require admitted raster')
-                try:rows=stripes.encode(pixels,w,h,request['bitrate'],request.get('reset',False),request.get('codec','avc1.420033'),regions)
-                finally:
-                    if raw.get('shared'):mapping.close()
+                rows=stripes.encode(pixels,w,h,request['bitrate'],request.get('reset',False),request.get('codec','avc1.420033'),regions)
                 # MP-08/MP-10: packetize all rows once in the native helper. Node
                 # receives headers only; the kernel consumes the private file.
                 reply={'stripes':rows,'backend':stripes.effective_backend,'workers':stripes.workers if stripes.effective_backend=='libx264' else 1,'converter':'libyuv' if all(row['converter'].convert_native for row in stripes.rows.values()) else 'swscale'}
@@ -169,7 +171,6 @@ def main():
                     finally:os.close(directory)
                 if os.environ.get('CHARIOX_BROWSER_DISPLAY_TIMING')=='1':reply['timings']=[*stripes.timings,['codec_packetize',at,time.time_ns()/1000000]]
                 print(json.dumps(reply,separators=(',',':')),flush=True);continue
-            if request.get('raw',{}).get('shared'):mapping.close()
             if request.get('operation')=='fingerprint':
                 signature=hashlib.sha256(frame.format.name.encode())
                 for plane in frame.planes:
@@ -261,6 +262,8 @@ def main():
         except Exception:
             codec, configuration = None, None
             print(json.dumps({'error': 'MD-DISPLAY: protected frame encode failed'}), flush=True)
+        finally:
+            if mapping is not None:mapping.close()
     if hardware is not None:hardware.close()
     if stripes is not None:stripes.close()
 

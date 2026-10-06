@@ -85,3 +85,15 @@ test('MP-08/MP-11 native exact byte serial settles once; lossy fallback still ve
   assert.equal(captures,4);assert.equal(r.latest.pixels.pixels.toString(),'hidden RGB','same lossy serial cannot suppress exact deadline verification');
  }finally{await r.close()}
 });
+
+// MP-08/MP-10: native byte serials need no delayed CDP verification.
+test('MP-08/MP-10 native exact preparation starts within30ms of the final byte change',async()=>{
+ let now=29,reads=0;
+ const r=new NativeRefiner(async()=>{reads++;return {data_base64:'png'}},{now:()=>now,pixels:{run:async()=>({}),close:async()=>{}}});
+ try{const native={...binding,native:true};r.request(native,0,()=>true);assert.equal(reads,0);now=30;r.request(native,0,()=>true);await r.active;assert.equal(reads,1)}finally{await r.close()}
+});
+
+test('MP-08/MP-10 an exact PNG within the repair budget skips redundant tile preparation',async()=>{
+ let tiles=0;const r=new NativeRefiner(async()=>({data_base64:'small exact PNG'}),{now:()=>400,prepareTiles:true,pixels:{run:async kind=>{if(kind==='tiles')tiles++;return {pixels:Buffer.alloc(4),width:1,height:1}},close:async()=>{}}});
+ try{r.request({...binding,repairLimit:1000},0,()=>true);await r.active;assert.equal(tiles,0);assert.equal(r.latest.settled_verified,true);assert.equal(r.latest.data_base64,'small exact PNG')}finally{await r.close()}
+});

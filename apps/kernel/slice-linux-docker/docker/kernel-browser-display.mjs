@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { decodePng, encodePng, displayMaskRegions } from './kernel-browser-pixels.mjs';
+import { decodePng, encodePng, displayMaskRegions, displayNativeMaskSource } from './kernel-browser-pixels.mjs';
 import {dirtyTiles, nativeDamageTiles} from './kernel-browser-tiles.mjs';
 import {PixelWorker} from './kernel-browser-pixel-worker.mjs';
 export {dirtyTiles} from './kernel-browser-tiles.mjs';
@@ -78,7 +78,11 @@ export class PortableEncoder {
       return await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('MD-DISPLAY: encode timeout')), 10_000);
         this.pending = { stripes:request.operation==='stripes',hash:request.operation==='fingerprint', resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); } };
-        if(request.raw?.shared){this.child.stdin.write(JSON.stringify(request)+'\n')}else if(request.raw){
+        if(request.raw?.[displayNativeMaskSource]){
+          // MP-08/MP-10/MP-11: lease held by MotionEncoder until the native
+          // helper finishes. No unmasked bytes enter a codec or packet file.
+          this.child.stdin.write(JSON.stringify({...request,raw:{...request.raw,shared:request.raw[displayNativeMaskSource],mask_shared:true}})+'\n');
+        }else if(request.raw?.shared){this.child.stdin.write(JSON.stringify(request)+'\n')}else if(request.raw){
           const {pixels,...raw}=request.raw,root=process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT;
           if(root){
             // MP-08/MP-10/MP-11: one private immutable request snapshot, not
@@ -138,6 +142,8 @@ export function losslessRegion(frame,x,y,width,height) {
   return {x,y,width,height,data_base64:encodePng(width,height,pixels)};
 }
 
+export const exactPatchLimit=bitrate=>Math.min(192_000,Math.max(24_000,bitrate/8*.5*.75-4096));
+
 export class DisplayStream {
   constructor(binding, { encoder = new PortableEncoder(), now = () => performance.now(), wait = delay, timing = () => {} } = {}) {
     this.pixels=new PixelWorker();Object.assign(this, binding); this.encoder = encoder; this.now = now; this.wait = wait;
@@ -189,7 +195,7 @@ export class DisplayStream {
     const patch = { kind: 'tiles', base_sequence: this.sequence, tiles };
     // Half a second of negotiated frame budget, including outer base64. One
     // credit remains outstanding; narrow links reduce batch size/cadence.
-    const patchLimit = Math.min(192_000, Math.max(24_000, this.bitrate / 8 * .5 * .75 - 4096));
+    const patchLimit = exactPatchLimit(this.bitrate);
     let payload, repair = null;
     if (source.native_tiles) payload = {kind:'tiles', base_sequence:this.sequence, tiles:source.native_tiles};
     else if (bound && (same || source.settled_verified) && (!this.exact || !this.previous?.pixels) && !source.motion) {

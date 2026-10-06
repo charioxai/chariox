@@ -21,7 +21,7 @@ import {LinuxCapture,selectNativeCapture} from './kernel-browser-native.mjs';
 import { CompositorSource } from './kernel-browser-compositor.mjs';
 import { SampleLane } from './kernel-browser-sample-lane.mjs';
 import { BrowserEncoder } from './kernel-browser-webcodecs.mjs';
-import { DisplayStream } from "./kernel-browser-display.mjs";
+import { exactPatchLimit, DisplayStream } from "./kernel-browser-display.mjs";
 import {nativeDamageTiles} from './kernel-browser-tiles.mjs';
 import {MotionEncoder} from './kernel-browser-motion.mjs';
 import {NativeRefiner} from './kernel-browser-refiner.mjs';
@@ -436,10 +436,11 @@ export class KernelBrowserHost {
         if(stream.previous&&(stream.document_id!==tab.document_id||!stream.acceptsCredit(command.after_sequence)))stream.invalidate();
         if(!stream.refiner||stream.refinerDocument!==tab.document_id){await stream.refiner?.close();stream.refiner=new NativeRefiner(binding=>binding.native?binding.sample:this.displayScreenshot(tab,null,false),{now:()=>performance.now(),prepareTiles:true,timing:this.timing});stream.refinerDocument=tab.document_id;}
         const policy=this.protection;
-        const binding={source:compositor,document:tab.document_id,policy,epoch,serial:sample.serial,scale:stream.device_scale_factor,native:compositor.attested===true&&Boolean(sample.raw),sample};
+        const binding={source:compositor,document:tab.document_id,policy,epoch,serial:sample.serial,scale:stream.device_scale_factor,native:compositor.attested===true&&Boolean(sample.raw),sample,repairLimit:exactPatchLimit(stream.bitrate)};
         // Always run the deadline/epoch-aware verifier before unchanged reuse.
         // A lossy JPEG fingerprint cannot rule out fine native RGB damage.
-        const exact=stream.refiner.request(binding,Math.max(compositor.changedAt,this.inputChangedAt.get(tab.tab_id)??-Infinity),()=>this.protection===policy&&compositor.sample()?.serial===sample.serial&&(this.inputEpochs.get(tab.tab_id)??0)===epoch);
+        const nativeExact=binding.native&&stream.exact&&(sample.serial===stream.compositorSerial||stream.canPatchNative(sample));
+        const exact=nativeExact?null:stream.refiner.request(binding,Math.max(compositor.changedAt,this.inputChangedAt.get(tab.tab_id)??-Infinity),()=>this.protection===policy&&compositor.sample()?.serial===sample.serial&&(this.inputEpochs.get(tab.tab_id)??0)===epoch);
         stream.creditEpoch=epoch;
         stream.producer.feedback(Math.max(0,stream.sequence-command.after_sequence));
         const patchable=stream.canPatchNative(sample);

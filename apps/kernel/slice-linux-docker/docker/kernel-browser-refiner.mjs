@@ -3,13 +3,13 @@ import {PixelWorker} from './kernel-browser-pixel-worker.mjs';
 import {timestamp} from './kernel-browser-timing.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 export class NativeRefiner {
- constructor(capture,{pixels=new PixelWorker(),now=()=>performance.now(),quietMs=300,verifyMs=250,prepareTiles=false,timing=()=>{}}={}){Object.assign(this,{capture,pixels,now,quietMs,verifyMs,prepareTiles,timing});this.latest=null;this.active=null;this.closed=false;this.verifiedAt=-Infinity;this.revision=0;this.prepared=null;}
+ constructor(capture,{pixels=new PixelWorker(),now=()=>performance.now(),quietMs=300,quietNativeMs=30,verifyMs=250,prepareTiles=false,timing=()=>{}}={}){Object.assign(this,{capture,pixels,now,quietMs,quietNativeMs,verifyMs,prepareTiles,timing});this.latest=null;this.active=null;this.closed=false;this.verifiedAt=-Infinity;this.revision=0;this.prepared=null;}
  same(a,b){return a&&b&&a.source===b.source&&a.document===b.document&&a.policy===b.policy&&a.epoch===b.epoch&&a.serial===b.serial&&a.native===b.native;}
  request(binding,changedAt,valid){
   if(this.closed)throw Error('MD-DISPLAY: refiner closed');
   if(this.failure)throw this.failure;
   if(!this.same(this.wanted,binding)){this.wanted=binding;this.latest=null;this.revision++}
-  if(!this.active&&this.now()-changedAt>=this.quietMs&&(!this.latest||(!binding.native&&this.now()-this.verifiedAt>=this.verifyMs))){
+  if(!this.active&&this.now()-changedAt>=(binding.native?this.quietNativeMs:this.quietMs)&&(!this.latest||(!binding.native&&this.now()-this.verifiedAt>=this.verifyMs))){
    const revision=this.revision;
    this.active=(async()=>{
     let at=timestamp();
@@ -31,7 +31,7 @@ export class NativeRefiner {
     this.timing('exact_decode',at);at=timestamp();
     if(this.closed||revision!==this.revision||!this.same(this.wanted,binding)||!valid())return;
     let repair_tiles;
-    if(this.prepareTiles){
+    if(this.prepareTiles&&source.data_base64.length+64>(binding.repairLimit??0)){
      // Expensive whole-raster PNG tile encoding never owns a capture credit.
      // Reuse only immutable identical verified RGB; every deadline still reads
      // a fresh protected PNG, including fine changes hidden by a lossy source.

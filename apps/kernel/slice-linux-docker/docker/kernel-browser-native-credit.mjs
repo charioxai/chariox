@@ -2,6 +2,7 @@
 // The caller already checked scope/generation and renewed the admitted stream.
 export function nativeCreditEmpty(stream,source,policy,epoch,changedAt,after,now=performance.now()){
  const producer=stream.producer,refiner=stream.refiner;
+ const quiet=refiner?.quietNativeMs??refiner?.quietMs;
  if(!source?.attested||source.closed||source.policy!==policy||!source.valid?.()||!source.allowed(policy)||
     !stream.previous||stream.repair||!stream.acceptsCredit(after)||stream.creditEpoch!==epoch||
     producer?.source!==source||producer.failure||producer.frames.length||
@@ -14,12 +15,11 @@ export function nativeCreditEmpty(stream,source,policy,epoch,changedAt,after,now
   // every empty pipelined slot. Ready exact patches and retired mask bindings
   // still take the full path; this shortcut can only return an empty credit.
   return sample.serial>stream.compositorSerial&&stream.compositorRegionRevision===source.regionRevision&&
-   now-Math.max(source.changedAt,changedAt)<refiner.quietMs&&stream.canPatchNative?.(sample)===false;
+   now-Math.max(source.changedAt,changedAt)<quiet&&stream.canPatchNative?.(sample)===false;
  }
  if(sample.serial!==stream.compositorSerial)return false;
- if(now-Math.max(source.changedAt,changedAt)<refiner.quietMs)return true;
- // Native exact bytes need no periodic recheck. Lossy CDP never enters here.
- const wanted=refiner.wanted;
- return Boolean(stream.exact&&refiner.latest&&!refiner.active&&wanted?.native===true&&
-  wanted.source===source&&wanted.document===stream.document_id&&wanted.policy===policy&&wanted.epoch===epoch&&wanted.serial===sample.serial);
+ if(now-Math.max(source.changedAt,changedAt)<quiet)return true;
+ // MP-08/MP-10/MP-11: complete exact bytes remain exact after every
+ // admitted contiguous native tile patch. No lossy-source equality inference.
+ return Boolean(stream.exact&&!refiner.active&&stream.compositorRegionRevision===source.regionRevision);
 }

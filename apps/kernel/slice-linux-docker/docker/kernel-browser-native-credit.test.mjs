@@ -30,3 +30,16 @@ for(const [name,mutate] of Object.entries({
  encoderFailure:f=>f.stream.producer.failure=Error('fixture'),exactFailure:f=>f.stream.refiner.failure=Error('fixture'),
  policyIdentity:f=>f.source.policy={},sourceIdentity:f=>f.stream.producer.source={},
  }))test('MP-11 '+name+' retains the full observation/refusal path',()=>{const f=fixture();mutate(f);assert.equal(f.empty(),false)});
+
+test('MP-08/MP-10 native exact60ms deadline cannot be hidden by empty credits',()=>{
+ const f=fixture();f.stream.refiner.quietNativeMs=60;
+ assert.equal(nativeCreditEmpty(f.stream,f.source,f.policy,0,-Infinity,1,159),true);
+ assert.equal(nativeCreditEmpty(f.stream,f.source,f.policy,0,-Infinity,1,160),false);
+});
+
+test('MP-08/MP-10/MP-11 a fully exact contiguous native base needs no repeated full refinement',()=>{
+ const f=fixture();f.stream.exact=true;
+ assert.equal(nativeCreditEmpty(f.stream,f.source,f.policy,0,-Infinity,1,1000),true);
+ f.source.regionRevision=1;
+ assert.equal(nativeCreditEmpty(f.stream,f.source,f.policy,0,-Infinity,1,1000),false,'a retired protection binding cannot reuse exact bytes');
+});

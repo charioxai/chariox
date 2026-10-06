@@ -141,3 +141,12 @@ for(const native of [false,true])test('MP-11 overflow recovers incoming and queu
   latest={serial:4,raw:{row:1,serial:4}};offer(latest);await m.active;assert.equal(m.take().encoded.stripes[0].key,false,'next row1 packet may follow the delivered recovery');
  }finally{await m.close()}
 });
+
+test('MP-11 dropped private codec output retains its lease through exact fallback materialization',async()=>{
+ let refs=1,release,offer;
+ const raw={width:16,height:16,retain(){refs++},release(){assert(refs>0);refs--}};
+ Object.defineProperty(raw,'pixels',{get(){assert(refs>0,'fallback read needs a live immutable lease');return Buffer.alloc(16*16*4)}});
+ const source={sample:()=>null,subscribe:fn=>{offer=fn;return()=>{}}};
+ const m=new MotionEncoder(source,{encode:()=>new Promise(done=>release=done)},{bitrate:8000000,codec:'avc1.420033'});
+ try{offer({serial:1,raw});raw.release();assert.equal(refs,1);release({dropped:true});await m.active;assert.equal(m.failure,undefined);assert.equal(m.take().force_lossless,true);assert.equal(refs,0)}finally{await m.close()}
+});

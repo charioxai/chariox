@@ -33,6 +33,23 @@ def black_input(pixels, width, height, regions):
                     raise ValueError('unmasked codec input')
 
 
+def mask_private(pixels, width, height, regions):
+    """MP-08/MP-10/MP-11: only an encoder-private COW raster is writable.
+    Same outward four-pixel padding as the host's exact/crop mask path.
+    Validate all metadata before touching bytes; the capture lease is immutable.
+    """
+    if len(pixels) != width * height * 4:
+        raise ValueError('mask raster unavailable')
+    bounds(regions, width, height)
+    padded = [dict(x=math.floor(r['x'])-4, y=math.floor(r['y'])-4,
+                   width=math.ceil(r['x']+r['width'])-math.floor(r['x'])+8,
+                   height=math.ceil(r['y']+r['height'])-math.floor(r['y'])+8) for r in regions]
+    for left, top, right, bottom in bounds(padded, width, height):
+        row = b'\x00\x00\x00\xff' * (right-left)
+        for y in range(top, bottom):
+            pixels[(y*width+left)*4:(y*width+right)*4] = row
+
+
 class DecodedMaskGuard:
     def __init__(self, codec):
         self.decoder = av.CodecContext.create('h264' if codec.startswith('avc1') else 'vp8' if codec == 'vp8' else 'vp9', 'r')

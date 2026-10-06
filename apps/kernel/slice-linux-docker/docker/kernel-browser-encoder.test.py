@@ -55,6 +55,33 @@ class EncoderTest(unittest.TestCase):
             decoded=av.CodecContext.create('h264','r').decode(av.Packet(base64.b64decode(reply['data_base64'])))
             self.assertEqual((decoded[0].width,decoded[0].height),expected)
 
+    def test_MP11_private_mask_handoff_is_immutable_and_decoded_black(self):
+        import base64,os,tempfile
+        width,height=128,128
+        original=bytes([210,180,160,0])*(width*height)
+        regions=[dict(x=40.5,y=40.5,width=30,height=30),dict(x=-100,y=0,width=20,height=20)]
+        with tempfile.TemporaryDirectory(prefix='mp23-private-mask-') as root:
+            file=Path(root)/'raster';file.write_bytes(original);file.chmod(0o600)
+            header=dict(raw=dict(width=width,height=height,format='bgr0',length=len(original),shared=dict(path=str(file),length=len(original)),mask_shared=True),
+                        operation='stripes',protected_regions=regions,codec='avc1.420033',bitrate=8000000,reset=True)
+            # Invalid metadata must fail without retaining a mmap export or
+            # corrupting a following admitted request on the same helper.
+            invalid={**header,'protected_regions':[dict(x=float('nan'),y=0,width=5,height=5)]}
+            run=subprocess.run([sys.executable,'-u',str(path)],input=(json.dumps(invalid)+'\n'+json.dumps(header)+'\n').encode(),stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=10)
+            replies=[json.loads(line) for line in run.stdout.splitlines()]
+            self.assertIn('error',replies[0]);self.assertEqual(run.returncode,0)
+            self.assertEqual(file.read_bytes(),original)
+            self.assertEqual(len(replies[1]['stripes']),8)
+            checked=0
+            for row in replies[1]['stripes']:
+                frame=av.CodecContext.create('h264','r').decode(av.Packet(base64.b64decode(row['data_base64'])))[0].reformat(format='rgb24')
+                plane=bytes(frame.planes[0]);stride=frame.planes[0].line_size
+                for y in range(max(41,row['y']),min(70,row['y']+row['height'])):
+                    checked+=1
+                    self.assertLessEqual(max(plane[(y-row['y'])*stride+41*3:(y-row['y'])*stride+70*3]),32)
+                self.assertGreater(max(plane[:20*3]),100,'unrelated content stays visible')
+            self.assertEqual(checked,29)
+
     def test_unsafe_signals(self):
         for pid in [None,0,1,-1,-2,float('nan'),2.5]:
             class Child:

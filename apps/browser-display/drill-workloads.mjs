@@ -6,9 +6,9 @@ export async function measureWorkload({page,workload,pair,pause,resource,duratio
  const before=await page.evaluate(()=>({bytes:mdWireBytes,frames:mdFrames.length,presentations:mdPresentations?.length??0}));
  const cpuBefore=(await resource()).cpu;
  const started=performance.now(),cadence=[],samples=[],livePairs=[];
- let wheelStats;
- if(workload==='wheel30'&&process.env.MD_WINDOW==='1')await page.evaluate(()=>{window.mdWheel={pending:new Set(),sent:0,dropped:0,error:null};mdWheel.timer=setInterval(()=>{if(mdWheel.pending.size>=4){mdWheel.dropped++;return}mdWheel.sent++;const job=mdStream.input({kind:'scroll',x:700,y:600,delta_x:0,delta_y:120});mdWheel.pending.add(job);job.catch(()=>mdWheel.error='MD-DISPLAY: wheel input failed').finally(()=>mdWheel.pending.delete(job));},1000/30)});
- if(workload!=='scroll'&&workload!=='wheel30')await page.evaluate(()=>mdStream.input({kind:'click',x:60,y:88}));
+ let wheelStats;const wheel=workload==='wheel30'||workload==='wheel60',wheelHz=workload==='wheel60'?60:30;
+ if(wheel&&process.env.MD_WINDOW==='1')await page.evaluate(hz=>{window.mdWheel={pending:new Set(),sent:0,dropped:0,error:null};mdWheel.timer=setInterval(()=>{if(mdWheel.pending.size>=4){mdWheel.dropped++;return}mdWheel.sent++;const job=mdStream.input({kind:'scroll',x:700,y:600,delta_x:0,delta_y:120});mdWheel.pending.add(job);job.catch(()=>mdWheel.error='MD-DISPLAY: wheel input failed').finally(()=>mdWheel.pending.delete(job));},1000/hz);mdWheel.hz=hz},wheelHz);
+ if(workload!=='scroll'&&!wheel)await page.evaluate(()=>mdStream.input({kind:'click',x:60,y:88}));
  let last=performance.now();const continuous=process.env.MD_WINDOW==='1';
  if(continuous)await page.evaluate(()=>mdStream.start());
  while(performance.now()-started<durationMs){
@@ -24,10 +24,10 @@ export async function measureWorkload({page,workload,pair,pause,resource,duratio
  }
  const cpuAfter=(await resource()).cpu;
  const freezeRequestedMs=performance.timeOrigin+performance.now();
- if(workload==='wheel30'&&continuous)wheelStats=await page.evaluate(async()=>{clearInterval(mdWheel.timer);await Promise.allSettled([...mdWheel.pending]);if(mdWheel.error)throw Error(mdWheel.error);return {sent:mdWheel.sent,dropped:mdWheel.dropped,target_hz:30,max_in_flight:4}});
+ if(wheel&&continuous)wheelStats=await page.evaluate(async()=>{clearInterval(mdWheel.timer);await Promise.allSettled([...mdWheel.pending]);if(mdWheel.error)throw Error(mdWheel.error);return {sent:mdWheel.sent,dropped:mdWheel.dropped,target_hz:mdWheel.hz,max_in_flight:4}});
  const motionEnd=performance.now(),after=await page.evaluate(()=>({bytes:mdWireBytes,frames:mdFrames.slice(),presentations:mdPresentations?.slice()??[]}));
  if(continuous){for(const p of after.presentations.slice(before.presentations)){samples.push({sequence:p.sequence,presented_ms:p.drawn_ms});}for(let i=1;i<samples.length;i++)cadence.push(samples[i].presented_ms-samples[i-1].presented_ms);}
- if(workload!=='scroll'&&workload!=='wheel30')await page.evaluate(()=>mdStream.input({kind:'click',x:60,y:88}));
+ if(workload!=='scroll'&&!wheel)await page.evaluate(()=>mdStream.input({kind:'click',x:60,y:88}));
  const settleStart=performance.now();let first,frozen,repair;
  if(continuous){
   // Credits stay active through the freeze. Readbacks prove exact pixels and

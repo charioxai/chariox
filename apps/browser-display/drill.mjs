@@ -174,7 +174,7 @@ try {
  const port=await until(async()=>{checkChild(viewer,'viewer');try{return Number((await readFile(path.join(viewerHome,'DevToolsActivePort'),'utf8')).split('\n')[0])}catch{return null}},'viewer');
  browser=await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
  const page=await browser.contexts()[0].newPage();page.on('pageerror',()=>errors.push(Error('MD-DISPLAY browser callback failure')));await page.goto(`${origin}/harness.html`);await page.waitForFunction(()=>window.MDDisplay);
- await page.evaluate(async({ready,bitrate,pngOnly,creditWindow,requestedCodec,dpr,defaultDpr,protectedFixture,dynamicProtection})=>{
+ await page.evaluate(async({ready,bitrate,pngOnly,creditWindow,requestedCodec,dpr,defaultDpr,protectedFixture,dynamicProtection,stripes})=>{
   if(pngOnly)globalThis.VideoDecoder=undefined;
   const api=await import('/browser-relay-crypto.mjs');
   const sender=await api.createRelayKeypair();
@@ -217,7 +217,7 @@ try {
   mdTransport.subscribeDisplay=binding=>control({kind:'client_subscribe',subscription_id:binding.subscription_id,target:{daemon_id:bootstrap.daemon_id},session_id:binding.subscription_id,attachment_id:String(binding.generation),client_public_key:sender.publicKeyBase64,subscription_scope:'kernel_browser_display',resume_from_event_id:null});
   mdTransport.unsubscribeDisplay=binding=>control({kind:'client_unsubscribe',subscription_id:binding.subscription_id,client_public_key:sender.publicKeyBase64});
   const motionSamples=new (await import('/motion-samples.mjs')).MotionSamples();window.mdProtection={enabled:!dynamicProtection,frames:0,violations:0,kinds:{},failures:[]};
-  window.mdStream=await MDDisplay.attachBrowserDisplay(MDDisplay.canvas,mdTransport,{tab_id:ready.tab_id,generation:ready.generation},{bitrate,creditWindow,...(defaultDpr?{}:{deviceScaleFactor:dpr}),codec:requestedCodec,onTiming:timing,onPresented:frame=>{
+  window.mdStream=await MDDisplay.attachBrowserDisplay(MDDisplay.canvas,mdTransport,{tab_id:ready.tab_id,generation:ready.generation},{bitrate,creditWindow,stripes,...(defaultDpr?{}:{deviceScaleFactor:dpr}),codec:requestedCodec,onTiming:timing,onPresented:frame=>{
     if(protectedFixture&&mdProtection.enabled){
       const pixels=MDDisplay.canvas.getContext('2d').getImageData(908*dpr,208*dpr,134*dpr,64*dpr).data;
       // MP-11: lossy H264/VP8 may shift a black mask's decoded RGB floor.
@@ -236,7 +236,7 @@ try {
       sample.presented_ms=stamp();
     });
   }});
- },{ready,bitrate:receipt.target_encrypted_bitrate,pngOnly:process.env.MD_PNG_ONLY==='1',creditWindow:Number(process.env.MD_CREDIT_WINDOW||4),requestedCodec:process.env.MD_CODEC||null,dpr:geometry.dpr,defaultDpr:process.env.MD_DEFAULT_DPR==='1',protectedFixture:process.env.MD_PROTECTED==='1',dynamicProtection:process.env.MD_DYNAMIC_PROTECTED==='1'});
+ },{ready,bitrate:receipt.target_encrypted_bitrate,pngOnly:process.env.MD_PNG_ONLY==='1',creditWindow:Number(process.env.MD_CREDIT_WINDOW||4),requestedCodec:process.env.MD_CODEC||null,dpr:geometry.dpr,defaultDpr:process.env.MD_DEFAULT_DPR==='1',protectedFixture:process.env.MD_PROTECTED==='1',dynamicProtection:process.env.MD_DYNAMIC_PROTECTED==='1',stripes:process.env.MD_STRIPES!=='0'});
  receipt.decode_support=await page.evaluate(async()=>Object.fromEntries(await Promise.all(['avc1.420033','vp8'].map(async codec=>[codec,typeof VideoDecoder==='function'&&Boolean((await VideoDecoder.isConfigSupported({codec})).supported)]))));
  receipt.default_dpr_negotiation=process.env.MD_DEFAULT_DPR==='1';
  if(receipt.default_dpr_negotiation&&await page.evaluate(()=>mdStream.binding.device_scale_factor)!==1)throw Error('MP-08: #893 default DPR is unsupported');
