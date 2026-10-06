@@ -108,7 +108,8 @@
   },
   "swe_bench_harness": {
     "repository": "https://github.com/SWE-bench/SWE-bench",
-    "revision": "02e7a74ffd0b707aab73d203fe87bdc7c76afc8e"
+    "revision": "726c5461e2ef52d83cf1ea2107870a8bb3328d57",
+    "release": "v4.1.0"
   },
   "swe_verified_mini": {
     "selection_source": "https://hal.cs.princeton.edu/swebench_verified_mini",

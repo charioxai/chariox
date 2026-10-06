@@ -48,7 +48,7 @@ def main():
     env = dict(os.environ, PYTHONPATH=str(args.harness_root.resolve()), PYTHONDONTWRITEBYTECODE='1')
     command = [os.sys.executable, '-m', 'swebench.harness.run_evaluation',
                '--dataset_name', str(dataset.resolve()), '--predictions_path', str(args.predictions.resolve()),
-               '--max_workers', '1', '--run_id', run_id]
+               '--max_workers', '1', '--run_id', run_id, '--cache_level', 'instance', '--clean', 'false']
     receipt = {'mp_items': ['MP-08', 'MP-10'], 'harness_revision': actual,
                'task_ids': ids, 'run_id': run_id, 'smoke': args.smoke, 'command': command}
     (args.output_root / 'scoring-command.json').write_text(json.dumps(receipt, indent=2) + '\n')

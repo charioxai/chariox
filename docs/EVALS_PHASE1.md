@@ -72,7 +72,7 @@ No replacement subset or modified scoring rule is used.
 | [Terminal-Bench2.0](https://github.com/laude-institute/terminal-bench-2) | `2fd12b88aafdd04a52c298e3940bcb189f9766d6` |89 |
 | [Harbor](https://github.com/harbor-framework/harbor) | `c803185a8b7c88c163abe48a22e9cea0bbd95e90` |89 |
 | [HAL Verified Mini dataset](https://huggingface.co/datasets/MariusHobbhahn/swe-bench-verified-mini) | `b316c349947c29963fce3f4a65967c9807a4b673` |50 |
-| [Official SWE-bench Docker evaluator](https://github.com/SWE-bench/SWE-bench) | `02e7a74ffd0b707aab73d203fe87bdc7c76afc8e` |50 |
+| [Official SWE-bench Docker evaluator](https://github.com/SWE-bench/SWE-bench) | `726c5461e2ef52d83cf1ea2107870a8bb3328d57` |50 |
 
 The [dated version1 price table](../apps/kernel/src/usage_accounting/prices-2026-10-06.json)
 uses integer nanodollars at standard global API list prices. Reasoning counts in
@@ -95,7 +95,7 @@ all required IDs, then invokes its unchanged Docker evaluation.
 
 Round1 preparation had7 Rust normalization/price checks and17 Python admission
 checks. Round2 has18 Python checks, including known tokens with an unavailable
-price, plus shared client formatting/protocol checks. Expanded Rust persistence,
+price, plus shared client formatting/protocol checks. The prescribed Node client suite passes1117/1117. Expanded Rust persistence,
 aggregation and snapshot checks are pending the shared compile slot. These are
 component evidence, not live acceptance. No benchmark task has been scored yet.
 The historical0-run diagnostic CSV/plot is not a zero-cost/zero-accuracy result.
@@ -105,3 +105,13 @@ helpers reject system/invalid PIDs and settle only verified owned descendants.
 Fresh rolling-limit exhaustion pauses campaigns; stale meters and zero purchased
 credits do not. Resource floors are9GiB MemAvailable /10GiB root free. No push,
 PR, CI, deployment, public submission or shared-resource cleanup is authorized.
+
+
+MP-08 / MP-10: scorer admission on originally pinned current evaluator02e7a74f
+failed on missing `image`; that evaluator now requires enriched task records.
+Before any scored run, the evaluator pin was corrected to official release
+v4.1.0 (`726c5461e2ef52d83cf1ea2107870a8bb3328d57`), which admits all50 unchanged
+HAL Mini records. This is an explicit infrastructure correction, not a scoring
+rule change or relabelled result. The evaluator runs with cache level `instance`
+and clean=false, so its global cache cleanup cannot delete other lanes' images.
+Admission success alone does not establish a scored task.
