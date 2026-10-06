@@ -380,6 +380,20 @@ def run(request, evidence):
             os.close(fd)
         for capture in captures:
             capture.close()
+        # Preserve only this numeric allowlist from structured kernel logs;
+        # arbitrary provider payloads, runtime grants and configuration stay out.
+        official = []
+        allowed = {'inputTokens', 'cachedInputTokens', 'outputTokens', 'reasoningOutputTokens', 'totalTokens'}
+        for log in (state / 'logs').glob('*.ndjson'):
+            for line in log.read_text(errors='replace').splitlines():
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if record.get('message') == 'official cumulative usage counters':
+                    official.append({k: v for k, v in record.get('counters', {}).items()
+                                     if k in allowed and type(v) is int and v >= 0})
+        (evidence / 'official-counters.json').write_text(json.dumps(official, indent=2) + '\n')
         measurement['wall_time_seconds'] = time.monotonic() - start
         # Never delete a runtime directory containing a provider credential.
         protected = any(p.name in {'auth.json', '.credentials.json'} for p in state.rglob('*'))
