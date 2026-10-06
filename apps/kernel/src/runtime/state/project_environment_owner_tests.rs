@@ -8,9 +8,25 @@ impl Drop for ReviewCleanup {
     }
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn mp08_mp11_owner_context_review_rejection_prevents_preparation() {
+#[test]
+fn mp08_mp11_owner_context_review_rejection_prevents_preparation() {
     crate::test_support::isolated_env_test!();
+    std::thread::Builder::new()
+        .name("owner-context-review".into())
+        .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(owner_context_review_rejection_inner());
+        })
+        .unwrap()
+        .join()
+        .unwrap_or_else(|error| std::panic::resume_unwind(error));
+}
+
+async fn owner_context_review_rejection_inner() {
     let _guard = crate::env_lock::lock();
     let worktree = crate::test_support::TestWorktree::new("owner-context-review");
     let root = std::env::temp_dir().join(format!(
