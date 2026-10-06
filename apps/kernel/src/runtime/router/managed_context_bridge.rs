@@ -870,12 +870,14 @@ fn managed_context_transfer_caller(
         managed_context_authorization_error("managed context target has no Cloud relay profile")
     })?;
     let registration = router.managed_kernel_registration.as_ref();
+    // MP-08/MP-11: the relay projects ordinary kernels to sender-bound Machine
+    // identities. The Cloud ticket separately pins the exact source kernel/key.
+    let source_subject_is_eligible = match identity.subject_kind {
+        chariox_relay::auth::RelaySubjectKind::Kernel => identity.subject == source_kernel_id,
+        chariox_relay::auth::RelaySubjectKind::Machine => !identity.subject.trim().is_empty(),
+        _ => false,
+    };
     if let Some(registration) = registration {
-        let source_subject_is_eligible = match identity.subject_kind {
-            chariox_relay::auth::RelaySubjectKind::Kernel => identity.subject == source_kernel_id,
-            chariox_relay::auth::RelaySubjectKind::Machine => !identity.subject.trim().is_empty(),
-            _ => false,
-        };
         if !source_subject_is_eligible
             || registration.kernel_id != config.daemon_id
             || registration.machine_id != config.host_machine_id
@@ -909,8 +911,7 @@ fn managed_context_transfer_caller(
         && profile.kernel_public_key_thumbprint.as_deref()
             == Some(public_key_thumbprint(&config.relay_public_key).as_str())
     {
-        if identity.subject_kind != chariox_relay::auth::RelaySubjectKind::Kernel
-            || identity.subject != source_kernel_id
+        if !source_subject_is_eligible
             || profile.realm_id != identity.realm_id
             || profile.user_id != owner_user_id
             || identity.expires_at_ms <= crate::session::unix_epoch_ms()

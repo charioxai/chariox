@@ -124,7 +124,11 @@ async function handleCloud(req,res) {
       response={status:'approved',profile,kernelCredential:credential}
     } else if(req.url==='/relay/token') {
       assert.equal(ownerProfiles.get(body.subject)?.credential,body.kernelCredential)
+      assert.equal(body.subjectKind,'kernel')
+      assert.equal(body.publicKeyThumbprint,ownerProfiles.get(body.subject).profile.publicKeyThumbprint)
       response={token:jwt(body),expiresAt:new Date(Date.now()+3600_000).toISOString()}
+    } else if(req.url.startsWith('/relay/targets?')) {
+      response={targets:[]}
     } else if(req.url==='/kernels/presence') {
       assert.equal(ownerProfiles.get(body.kernelId)?.credential,body.kernelCredential)
       presences.set(body.kernelId,{kernelId:body.kernelId,machineId:body.machineId,status:body.status,metadata:body.metadata})
@@ -139,6 +143,8 @@ async function handleCloud(req,res) {
         response=tickets.get(body.contextId); assert(response)
         assert.equal(body.source.kernelId,source.identity.kernelId)
         assert.equal(body.source.keyThumbprint,source.identity.publicKeyThumbprint)
+        assert.equal(body.source.userId,user)
+        assert.equal(body.source.relayRealmId,realm)
         assert.equal(body.kernelId,target.identity.kernelId)
         assert.equal(body.keyThumbprint,target.identity.publicKeyThumbprint)
         if(faultContext===body.contextId && !faultInjected) {

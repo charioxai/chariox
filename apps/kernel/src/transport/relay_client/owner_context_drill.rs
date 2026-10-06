@@ -587,6 +587,27 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
         }
     }
     let capability = random_managed_context_capability();
+    // MP-08/MP-11: match the REAL relay's ordinary-kernel peer projection.
+    let mut identity = identity;
+    identity.subject = source.host_machine_id.clone();
+    identity.subject_kind = chariox_relay::auth::RelaySubjectKind::Machine;
+    let mut empty_machine = identity.clone();
+    empty_machine.subject.clear();
+    assert!(matches!(
+        send_managed_peer_request(
+            &harness,
+            &source.daemon_id,
+            &empty_machine,
+            &source.relay_private_key,
+            &target.relay_public_key,
+            arm.clone(),
+        )
+        .await,
+        RelayPeerResponse::ManagedContextImportFailed {
+            retryable: false,
+            ..
+        }
+    ));
     let request = ManagedContextOutboundTransferRequest {
         plan: plan.clone(),
         target_environment_id: String::new(),
