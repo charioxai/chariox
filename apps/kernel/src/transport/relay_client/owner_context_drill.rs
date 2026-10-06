@@ -29,6 +29,7 @@ struct EncryptedPeer<'a> {
     identity: RelayCallerIdentity,
     target_public_key: String,
     disconnect_after_chunk: AtomicBool,
+    publication_interrupted: AtomicBool,
     interrupt_import: Option<(
         &'a DaemonConfig,
         &'a crate::managed_context::transfer::ManagedContextTransferStore,
@@ -42,6 +43,19 @@ impl ManagedContextPeerTransport for EncryptedPeer<'_> {
         Box<dyn std::future::Future<Output = Result<RelayPeerResponse, DaemonError>> + Send + '_>,
     > {
         Box::pin(async move {
+            if self.publication_interrupted.load(Ordering::SeqCst)
+                && matches!(
+                    request,
+                    RelayPeerRequest::GetManagedContextImportStatus { .. }
+                )
+            {
+                return Err(DaemonError::ManagedContext {
+                    code: "fixture_import_disconnected",
+                    operation: "owner peer drill",
+                    message: "simulated connection loss after component publication".into(),
+                    retryable: true,
+                });
+            }
             if let (
                 Some((target, store)),
                 RelayPeerRequest::FinalizeManagedContextImport {
@@ -58,6 +72,7 @@ impl ManagedContextPeerTransport for EncryptedPeer<'_> {
                     transfer_id,
                     &capability.clone().into_inner(),
                 )?;
+                self.publication_interrupted.store(true, Ordering::SeqCst);
                 return Err(DaemonError::ManagedContext {
                     code: "fixture_import_interrupted",
                     operation: "owner peer drill",
@@ -584,6 +599,7 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
         identity: identity.clone(),
         target_public_key: target.relay_public_key.clone(),
         disconnect_after_chunk: AtomicBool::new(true),
+        publication_interrupted: AtomicBool::new(false),
         interrupt_import: None,
     };
     assert!(
@@ -604,6 +620,7 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
         identity: identity.clone(),
         target_public_key: target.relay_public_key.clone(),
         disconnect_after_chunk: AtomicBool::new(false),
+        publication_interrupted: AtomicBool::new(false),
         interrupt_import: Some((&target, &store)),
     };
     assert!(
@@ -611,6 +628,7 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
             .await
             .is_err()
     );
+    assert!(peer.publication_interrupted.load(Ordering::SeqCst));
     drop(peer);
     drop(store);
     drop(router);
@@ -625,6 +643,7 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
         identity,
         target_public_key: target.relay_public_key.clone(),
         disconnect_after_chunk: AtomicBool::new(false),
+        publication_interrupted: AtomicBool::new(false),
         interrupt_import: None,
     };
     let result = transfer_managed_context_package(&peer, request.clone(), |_| {})
