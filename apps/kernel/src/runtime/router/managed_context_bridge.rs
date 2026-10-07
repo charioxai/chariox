@@ -1196,6 +1196,7 @@ mod tests {
         use crate::account_profile::*;
         ManagedContextPackageImportReceipt {
             schema_version: 4,
+            destination: None,
             transfer_id: "transfer".into(),
             package_sha256: "package-digest".into(),
             plan_digest: "plan-digest".into(),

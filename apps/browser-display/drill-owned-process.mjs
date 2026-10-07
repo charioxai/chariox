@@ -1,6 +1,7 @@
 // MD-DISPLAY-02/03: signal only children launched here, bound to Linux start time.
 import {spawn} from 'node:child_process';
 import {readFile,readdir} from 'node:fs/promises';
+import {trackOwnedProcess,signalOwnedProcessGroup} from '../kernel/slice-linux-docker/owned-process-signals.mjs';
 const owned=new WeakMap();
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 export const validPid=pid=>Number.isSafeInteger(pid)&&pid>1&&pid!==process.pid;
@@ -16,6 +17,8 @@ export async function launchOwned(command,args,options={}){
  await new Promise((resolve,reject)=>{child.once('spawn',resolve);child.once('error',reject)});
  if(!validPid(child.pid))throw Error('MD-DISPLAY refused unsafe child PID');
  record.pid=child.pid;const p=await identity(child.pid);if(p)record.members.set(p.pid,p.start);
+ // MP-11: group signals go through the shared launch-generation guard.
+ if(record.detached)trackOwnedProcess(child,{group:true});
  return child;
 }
 export const waitChild=child=>owned.get(child).completion;
@@ -45,7 +48,7 @@ export async function stopGroup(child){
   // Recheck every member and its ownership before each negative group signal.
   const members=await rememberGroup(child);if(!members.some(p=>p.state!=='Z'))return;
   if(!validPid(record.pid))throw Error('MD-DISPLAY refused unsafe group PID');
-  try{process.kill(-record.pid,signal)}catch(e){if(e.code!=='ESRCH')throw e}
+  signalOwnedProcessGroup(child,signal);
   await pause(signal==='SIGTERM'?200:100);
  }
 }

@@ -87,6 +87,20 @@ response_policies! {
         CredentialsListed,
     ],
     Withhold => [
+        // Integration candidate 1: user-domain browser/notes/App views, SSH machine
+        // receipts and portability preflight stay with the host terminal (fail closed).
+        KernelBrowser,
+        Notes,
+        VisibleRegionCaptured,
+        UserAppViewOpened,
+        UserAppViewsListed,
+        UserAppViewClosed,
+        UserAppViewFrontend,
+        UserAppViewCallResult,
+        UserAppViewsChanged,
+        UserDomainInteractionAnswered,
+        SshMachine,
+        ProviderAccountPortabilityPreflightPassed,
         SessionInviteCreated,
         DebugBundleExported,
         McpServerInstalled,
@@ -130,6 +144,11 @@ response_policies! {
         EventConnectionAuthorizationObserved,
     ],
     Public => [
+        WorkflowNotificationSourceRegistered,
+        WorkflowNotificationAttached,
+        WorkflowNotificationDetached,
+        WorkflowNotifications,
+        RoomWorkflowRunsControlled,
         CloudRelayLoggedOut,
         KernelSudoRequested,
         KernelAccessGranted,

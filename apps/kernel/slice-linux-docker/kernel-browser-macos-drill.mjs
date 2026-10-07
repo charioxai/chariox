@@ -1,12 +1,13 @@
 // MD-2/MD-4: coordinator replay on macOS. No daemon socket or live profile is used.
 // Usage: node <script> /absolute/chariox-kernel-tests /absolute/external/evidence
 import assert from "node:assert/strict";
-import { spawn, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { access, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { inflateSync } from "node:zlib";
+import { spawnOwned, ownedProcessHandles, signalOwnedProcess } from "./owned-process-signals.mjs";
 async function executable(environment) {
   const names = ["Chromium.app/Contents/MacOS/Chromium", "Google Chrome.app/Contents/MacOS/Google Chrome", "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"];
   const candidates = environment.CHARIOX_KERNEL_BROWSER_EXECUTABLE ? [environment.CHARIOX_KERNEL_BROWSER_EXECUTABLE]
@@ -16,10 +17,6 @@ async function executable(environment) {
     try { await access(candidate, 1); return candidate; } catch {}
   }
   throw new Error("MD-4: install native Chromium/Chrome or select a pinned executable");
-}
-function signalOwnedProcess(pid, signal) {
-  assert(Number.isSafeInteger(pid) && pid > 1, "MD-4: refusing unsafe process ID");
-  process.kill(pid, signal);
 }
 
 assert.equal(process.platform, "darwin", "MD-4: native Mac replay only");
@@ -64,11 +61,11 @@ const sample = () => {
 try {
   sample();
   const nodeDirectory = path.dirname(process.execPath);
-  child = spawn(binary, ["--ignored", "--exact", "runtime::router::tests::kernel_browser::kernel_browser_linux_integration_drill"], {
+  child = spawnOwned(binary, ["--ignored", "--exact", "runtime::router::tests::kernel_browser::kernel_browser_linux_integration_drill"], {
     env: { PATH: `${nodeDirectory}:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: path.join(root, "home"), TMPDIR: temporary,
       CHARIOX_HOME: path.join(root, "home/chariox"), CHARIOX_MD4_DRILL_ROOT: root,
       CHARIOX_KERNEL_BROWSER_EXECUTABLE: chrome, CHARIOX_BROWSER_CONTROLLER_NODE: process.execPath,
-      CHARIOX_MD4_PHASE: "", RUST_BACKTRACE: "0" }, stdio: "inherit",
+      CHARIOX_MD4_PHASE: "", RUST_BACKTRACE: "0" }, stdio: "inherit", detached: true,
   });
   const sampling = setInterval(sample, 5000);
   const timeout = setTimeout(() => {
@@ -98,8 +95,9 @@ try {
 } finally {
   // Also settle this replay's processes if its timeout interrupted normal cleanup.
   for (const signal of ["SIGTERM", "SIGKILL"]) {
-    const remaining = ownedProcesses();
-    for (const row of remaining) { try { signalOwnedProcess(row.pid, signal); } catch (error) { if (error.code !== "ESRCH") throw error; } }
+    // MP-11: only identity-verified members of this replay's launch generation.
+    const remaining = child ? ownedProcessHandles(child) : [];
+    for (const handle of remaining) signalOwnedProcess(handle, signal);
     if (remaining.length) await new Promise(resolve => setTimeout(resolve, signal === "SIGTERM" ? 3000 : 1000));
   }
   const remaining = ownedProcesses();

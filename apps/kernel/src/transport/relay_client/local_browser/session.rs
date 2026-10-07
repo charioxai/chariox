@@ -125,6 +125,7 @@ async fn handle_client_frame(
             let direct = Arc::clone(direct);
             let identity = identity.clone();
             let outgoing_tx = outgoing_tx.clone();
+            let display_subscriptions = Arc::clone(subscription_tasks);
             requests.spawn(async move {
                 let outcome = handle_daemon_request(
                     &direct.router,
@@ -132,6 +133,7 @@ async fn handle_client_frame(
                     Some(identity),
                     encrypted_request,
                     &direct.command_result_cache,
+                    &display_subscriptions,
                     None,
                 )
                 .await;

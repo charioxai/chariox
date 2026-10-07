@@ -146,6 +146,7 @@ pub(super) async fn handle_daemon_request(
                         Ok(Some(grant)) => grant,
                         _ => {
                             return RelayRequestOutcome {
+                                display_event: None,
                                 encrypted_response: None,
                                 error: Some(relay_error(
                                     "authorization_denied",
@@ -208,6 +209,7 @@ pub(super) async fn handle_daemon_request(
         ParsedRelayClientMessage::BrowserImportDelivery(request) => {
             if router.admit_self_host_terminal(&client_public_key).is_err() {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
                         "authorization_denied",
@@ -291,6 +293,7 @@ pub(super) async fn handle_daemon_request(
                 Ok(identity) => identity,
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(error),
                     }

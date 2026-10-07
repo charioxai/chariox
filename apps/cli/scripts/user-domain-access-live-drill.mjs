@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { openSync, closeSync } from 'node:fs';
 import net from 'node:net';
@@ -8,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { LocalIpcClient } from '../../../packages/kernel-client/dist/ipc.js';
 import * as request from '../../../packages/kernel-client/dist/ipc-requests.js';
 import { createAccessCommandController } from '../dist/access-command-controller.js';
+import { spawnOwned, signalOwnedProcessGroup } from '../../kernel/slice-linux-docker/owned-process-signals.mjs';
 const oss = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const evidence = path.resolve(process.argv[2] ?? '/w/evidence/mdgrants');
 assert.ok(!evidence.startsWith(oss + path.sep));
@@ -18,7 +18,7 @@ await mkdir(home, { mode: 0o700 });
 const freePort = async () => { const s = net.createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r)); const p = s.address().port; await new Promise(r => s.close(r)); return p; };
 const port = await freePort(), mcpPort = await freePort();
 const log = openSync(evidence + '/live-kernel.log', 'w', 0o600);
-const kernel = spawn(oss + '/target/debug/chariox-kernel', [], { cwd: oss, detached: true, stdio: ['ignore', log, log], env: { ...process.env,
+const kernel = spawnOwned(oss + '/target/debug/chariox-kernel', [], { cwd: oss, detached: true, stdio: ['ignore', log, log], env: { ...process.env,
   CHARIOX_RELAY_URL: `ws://127.0.0.1:${await freePort()}`, CHARIOX_RELAY_TOKEN: 'disposable-mdgrants', CHARIOX_HOME: home, CHARIOX_LOG_DIR: root + '/logs', CHARIOX_DAEMON_SOCKET: root + '/kernel.sock',
   CHARIOX_KERNEL_PORT: String(port), CHARIOX_MCP_PORT: String(mcpPort), CHARIOX_CODEX_PORT: String(await freePort()), CHARIOX_OPENCODE_PORT: String(await freePort()),
   CHARIOX_DAEMON_ID: 'mdgrants-drill', CHARIOX_DAEMON_ALIAS: 'mdgrants-drill', CHARIOX_DEV_STUB_FIRST_OUTPUT_DELAY_MS: '120000',
@@ -82,9 +82,9 @@ try {
   tui?.stop();
   if (control && sessionId) await control.send(request.teardownProviderProcessesRequest('dev-stub', true)).catch(() => {});
   for (const client of clients) client.destroy();
-  try { process.kill(-kernel.pid, 'SIGTERM'); } catch {}
+  try { signalOwnedProcessGroup(kernel, 'SIGTERM'); } catch {}
   await Promise.race([new Promise(r => kernel.once('exit', r)), sleep(2000)]);
-  try { process.kill(-kernel.pid, 'SIGKILL'); } catch {}
+  try { signalOwnedProcessGroup(kernel, 'SIGKILL'); } catch {}
   closeSync(log);
   await rm(root, { recursive: true, force: true });
 }

@@ -2198,6 +2198,7 @@ mod tests {
                 package_sha256: "c".repeat(64),
                 package_size_bytes: 7,
                 receipt: RelayManagedContextImportReceipt {
+                    provider_accounts: Vec::new(),
                     destination: None,
                     transfer_id: "transfer".into(),
                     archive_sha256: "c".repeat(64),

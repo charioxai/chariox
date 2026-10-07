@@ -95,6 +95,9 @@ impl Kernel {
             machine_id: None,
             machine_alias: None,
             machine_credential: None,
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             cloud_session_token: None,
             cloud_session_expires_at_ms: None,
             token_expires_at_ms: None,
@@ -159,6 +162,7 @@ impl Kernel {
             Some(identity),
             request,
             &self.direct.command_result_cache,
+            &Default::default(),
             Some(&self.direct),
         )
         .await;
@@ -491,6 +495,7 @@ fn mp11_grant_minting_requires_relay_carrier_and_bound_live_identity() {
             Some(browser.identity()),
             request,
             &kernel.direct.command_result_cache,
+            &Default::default(),
             None,
         )
         .await;
@@ -559,6 +564,9 @@ fn mp11_authority_tracks_pairing_origin_and_kernel_key() {
         machine_id: None,
         machine_alias: None,
         machine_credential: None,
+        kernel_id: None,
+        kernel_credential: None,
+        kernel_public_key_thumbprint: None,
         cloud_session_token: None,
         cloud_session_expires_at_ms: None,
         token_expires_at_ms: None,
