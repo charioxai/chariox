@@ -296,10 +296,11 @@ fn public_history_protocol_453_result_shape_hash() {
     f.append("room", "compiler");
     let mut wire = serde_json::to_value(f.search("room", "compiler", 50, None).unwrap()).unwrap();
     wire["hits"][0]["event_ref"] = serde_json::json!("evt_fixture");
+    // Projection version 2 changes coverage values, not the protocol453 shape.
     let hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap()));
     assert_eq!(
         hash,
-        "c99672b199f2f982ba174fcc60e96bdf749f09399e615a1b113f0a6b765dde0b"
+        "958390536707a8fe2a18c07af63cf94c3bb4612444157fdc2dc4338dabb040d2"
     );
 }
 
