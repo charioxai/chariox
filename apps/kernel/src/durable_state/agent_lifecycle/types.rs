@@ -214,6 +214,10 @@ pub(crate) enum Operation {
         owner: String,
         revision: u64,
     },
+    /// Rolls back an admission whose prompt submission was rejected.
+    Withdraw {
+        task: String,
+    },
     OwnerResponse {
         task: String,
         revision: u64,

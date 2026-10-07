@@ -49,6 +49,23 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             bind_first_delegate_task(tx, &task)?;
             Ok(Outcome::Task(task))
         }
+        Operation::Withdraw { task } => {
+            let t = load(tx, &task)?;
+            // Only an untouched fresh admission can be withdrawn; any recorded
+            // work keeps the task supervised.
+            if t.task_id != t.prompt_id
+                || t.state != ExecutionState::Working
+                || t.revision != 1
+                || !t.obligations.is_empty()
+                || t.wait.is_some()
+                || t.pending_prompt_id.is_some()
+            {
+                return Err(error("task already holds supervised work"));
+            }
+            tx.execute("DELETE FROM agent_tasks WHERE task_id=?1", [&task])
+                .map_err(sql)?;
+            Ok(Outcome::Saved)
+        }
         Operation::RegisterObligation {
             owner,
             room,

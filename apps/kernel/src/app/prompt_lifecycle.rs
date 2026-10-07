@@ -701,8 +701,21 @@ impl DaemonApp {
                 self.providers.structured_submit_epoch(),
                 &finished,
             ) {
-                Ok(true) => continue,
-                Ok(false) => {}
+                Ok(Some(receipt)) => {
+                    if let Some(notice) = receipt.notice {
+                        self.record_notice(
+                            &finished.session_id,
+                            Some(&finished.provider_run_id),
+                            self.attachments
+                                .list_session_attachment_ids(&finished.session_id),
+                            notice,
+                        );
+                    }
+                    if receipt.steered {
+                        continue;
+                    }
+                }
+                Ok(None) => {}
                 Err(_) => {
                     self.providers
                         .schedule_finished_structured_prompt_submit_retry(finished);

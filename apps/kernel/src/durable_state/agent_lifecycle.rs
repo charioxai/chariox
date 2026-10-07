@@ -484,20 +484,40 @@ pub(crate) fn occurrence(
     }
 }
 
+/// MP-08/MP-09/MP-10/MP-11: client-visible text for an exact delivery receipt.
+pub(crate) fn receipt_notice(event: &InboxEvent) -> String {
+    let n = event.sequence;
+    match event.state.as_str() {
+        "accepted" if event.target_prompt_id.is_some() => {
+            format!("Agent inbox: event {n} accepted into the running turn")
+        }
+        "accepted" => format!("Agent inbox: event {n} accepted as a new turn"),
+        "pending" => format!("Agent inbox: event {n} not accepted now; retained for the next turn"),
+        state => format!("Agent inbox: event {n} delivery {state}; reconcile before any retry"),
+    }
+}
+
 /// MP-08/MP-10/MP-11: both existing provider reapers settle the exact inbox intent.
 /// An enqueue ACK or a changed/ended run cannot substitute for this receipt.
+pub(crate) struct EventSubmitReceipt {
+    /// The event steered an existing turn; the normal prompt settlement is skipped.
+    pub steered: bool,
+    /// Client-visible receipt, present only when this job recorded it.
+    pub notice: Option<String>,
+}
+
 pub(crate) fn finish_provider_event_submit(
     store: &DurableKernelStateStore,
     epoch: u64,
     finished: &crate::provider::FinishedProviderPromptSubmitJob,
-) -> Result<bool, DaemonError> {
+) -> Result<Option<EventSubmitReceipt>, DaemonError> {
     let Some(event) = store.agent_event_for_prompt(
         &finished.session_id,
         &finished.agent_id,
         &finished.prompt_id,
     )?
     else {
-        return Ok(false);
+        return Ok(None);
     };
     if event.provider_run_id.as_deref() != Some(&finished.provider_run_id)
         || event.submit_epoch != Some(epoch)
@@ -506,18 +526,28 @@ pub(crate) fn finish_provider_event_submit(
             "provider event receipt has a stale run or submit epoch",
         ));
     }
-    if matches!(event.state.as_str(), "submitting" | "uncertain" | "blocked") {
-        let state = match &finished.result {
-            Ok(_) => "accepted",
-            Err(DaemonError::ProviderPromptSteerRejected { .. }) => "rejected",
-            Err(_) => "uncertain",
-        };
-        store.agent_lifecycle(Operation::Receipt {
-            room: finished.session_id.clone(),
-            agent: finished.agent_id.clone(),
-            sequence: event.sequence,
-            state: state.into(),
-        })?;
+    let steered = event.target_prompt_id.is_some();
+    if !matches!(event.state.as_str(), "submitting" | "uncertain" | "blocked") {
+        return Ok(Some(EventSubmitReceipt {
+            steered,
+            notice: None,
+        }));
     }
-    Ok(event.target_prompt_id.is_some())
+    let state = match &finished.result {
+        Ok(_) => "accepted",
+        Err(DaemonError::ProviderPromptSteerRejected { .. }) => "rejected",
+        Err(_) => "uncertain",
+    };
+    match store.agent_lifecycle(Operation::Receipt {
+        room: finished.session_id.clone(),
+        agent: finished.agent_id.clone(),
+        sequence: event.sequence,
+        state: state.into(),
+    })? {
+        Outcome::Event(settled) => Ok(Some(EventSubmitReceipt {
+            steered,
+            notice: Some(receipt_notice(&settled)),
+        })),
+        _ => Err(error("receipt outcome mismatch")),
+    }
 }

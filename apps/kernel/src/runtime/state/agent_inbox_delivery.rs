@@ -152,14 +152,7 @@ impl KernelRuntimeState {
                 .prompt_dispatch_matches_active_prompt(&dispatch)
                 .unwrap_or(false)
             {
-                self.owned
-                    .durable_state_store
-                    .agent_lifecycle(Operation::Receipt {
-                        room: room.into(),
-                        agent: agent.into(),
-                        sequence: event.sequence,
-                        state: "rejected".into(),
-                    })?;
+                self.record_agent_delivery_receipt(room, agent, event.sequence, "rejected")?;
                 return Ok(());
             }
             self.bind_agent_event_attempt(room, agent, event.sequence, &dispatch.provider_run_id)?;
@@ -179,14 +172,7 @@ impl KernelRuntimeState {
                 Err(_) => "uncertain",
             };
             if state != "submitting" {
-                self.owned
-                    .durable_state_store
-                    .agent_lifecycle(Operation::Receipt {
-                        room: room.into(),
-                        agent: agent.into(),
-                        sequence: event.sequence,
-                        state: state.into(),
-                    })?;
+                self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
             }
             result?;
         } else {
@@ -231,31 +217,47 @@ impl KernelRuntimeState {
                             Err(_) => "uncertain",
                         };
                         if state != "submitting" {
-                            self.owned
-                                .durable_state_store
-                                .agent_lifecycle(Operation::Receipt {
-                                    room: room.into(),
-                                    agent: agent.into(),
-                                    sequence: event.sequence,
-                                    state: state.into(),
-                                })?;
+                            self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
                         }
                         result?;
                     }
                 }
                 Err(e) => {
-                    self.owned
-                        .durable_state_store
-                        .agent_lifecycle(Operation::Receipt {
-                            room: room.into(),
-                            agent: agent.into(),
-                            sequence: event.sequence,
-                            state: "uncertain".into(),
-                        })?;
+                    self.record_agent_delivery_receipt(room, agent, event.sequence, "uncertain")?;
                     return Err(e);
                 }
             }
         }
+        Ok(())
+    }
+    fn record_agent_delivery_receipt(
+        &self,
+        room: &str,
+        agent: &str,
+        sequence: u64,
+        state: &str,
+    ) -> Result<(), DaemonError> {
+        let Outcome::Event(event) =
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::Receipt {
+                    room: room.into(),
+                    agent: agent.into(),
+                    sequence,
+                    state: state.into(),
+                })?
+        else {
+            unreachable!()
+        };
+        self.owned.record_notice_for_agent(
+            room,
+            None,
+            Some(agent),
+            self.owned
+                .attachment_store
+                .list_session_attachment_ids(room),
+            ledger::receipt_notice(&event),
+        );
         Ok(())
     }
     fn bind_agent_event_attempt(

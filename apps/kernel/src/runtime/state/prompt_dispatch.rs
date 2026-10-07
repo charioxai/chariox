@@ -697,75 +697,8 @@ impl KernelRuntimeState {
                 )
                 .await?;
             authorize()?;
-            self.owned.admit_agent_task(&prepared)?;
-            if let Some(mut submission) =
-                owned.submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
-            {
-                self.finish_owned_prompt_submission_workflow_start(&mut submission)
-                    .await?;
-                return Ok(submission);
-            }
-            authorize()?;
-            if let Some(mut submission) =
-                owned.submit_remote_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
-            {
-                self.finish_owned_prompt_submission_workflow_start(&mut submission)
-                    .await?;
-                self.spawn_remote_prompt_projection_drain_if_needed(&submission);
-                return Ok(submission);
-            }
-            let session_id = prepared.session_id.clone();
-            let target_agent_id = prepared.prompt.target_agent_id().to_string();
-            let attachment_id = prepared.prompt.source_attachment_id().to_string();
-            let has_active = owned
-                .prompt_state_owner
-                .active_prompt_for_agent(
-                    &owned.session_store.get_session(&session_id)?,
-                    &target_agent_id,
-                )
-                .is_some();
-            let has_run = owned
-                .provider_store
-                .get_run_for_agent(&session_id, &target_agent_id)
-                .is_some();
-            if !has_active && !has_run {
-                let is_remote_agent = owned
-                    .agent_store
-                    .get_agent(&target_agent_id)?
-                    .remote_execution()
-                    .is_some();
-                authorize()?;
-                if crate::scheduler::runtime::is_workflow_prompt_attachment(&attachment_id) {
-                    let fresh_context = owned.workflow_prompt_requires_fresh_provider_context(
-                        &session_id,
-                        &target_agent_id,
-                        &prepared.prompt,
-                    )?;
-                    let (_provider_run_id, _) = owned.workflow_ensure_provider_run(
-                        &session_id,
-                        &target_agent_id,
-                        fresh_context,
-                        prepared.prompt.workflow_node_run_id(),
-                    )?;
-                } else if is_remote_agent {
-                    if let Some(mut submission) = owned
-                        .submit_remote_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
-                    {
-                        self.finish_owned_prompt_submission_workflow_start(&mut submission)
-                            .await?;
-                        self.spawn_remote_prompt_projection_drain_if_needed(&submission);
-                        return Ok(submission);
-                    }
-                } else {
-                    self.with_app_side_effect(|app| {
-                        // The app mutex can outlive the grant. Reauthorize only
-                        // after acquiring it, before launching a cold provider.
-                        authorize()?;
-                        app.ensure_prompt_provider_run_for_agent(&session_id, &target_agent_id)
-                    })
-                    .await?;
-                };
-                authorize()?;
+            let admitted = self.owned.admit_agent_task(&prepared)?;
+            let submission = async {
                 if let Some(mut submission) =
                     owned.submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
                 {
@@ -773,13 +706,92 @@ impl KernelRuntimeState {
                         .await?;
                     return Ok(submission);
                 }
+                authorize()?;
+                if let Some(mut submission) =
+                    owned.submit_remote_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
+                {
+                    self.finish_owned_prompt_submission_workflow_start(&mut submission)
+                        .await?;
+                    self.spawn_remote_prompt_projection_drain_if_needed(&submission);
+                    return Ok(submission);
+                }
+                let session_id = prepared.session_id.clone();
+                let target_agent_id = prepared.prompt.target_agent_id().to_string();
+                let attachment_id = prepared.prompt.source_attachment_id().to_string();
+                let has_active = owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(
+                        &owned.session_store.get_session(&session_id)?,
+                        &target_agent_id,
+                    )
+                    .is_some();
+                let has_run = owned
+                    .provider_store
+                    .get_run_for_agent(&session_id, &target_agent_id)
+                    .is_some();
+                if !has_active && !has_run {
+                    let is_remote_agent = owned
+                        .agent_store
+                        .get_agent(&target_agent_id)?
+                        .remote_execution()
+                        .is_some();
+                    authorize()?;
+                    if crate::scheduler::runtime::is_workflow_prompt_attachment(&attachment_id) {
+                        let fresh_context = owned.workflow_prompt_requires_fresh_provider_context(
+                            &session_id,
+                            &target_agent_id,
+                            &prepared.prompt,
+                        )?;
+                        let (_provider_run_id, _) = owned.workflow_ensure_provider_run(
+                            &session_id,
+                            &target_agent_id,
+                            fresh_context,
+                            prepared.prompt.workflow_node_run_id(),
+                        )?;
+                    } else if is_remote_agent {
+                        if let Some(mut submission) = owned
+                            .submit_remote_prepared_prompt_with_queue_policy(
+                                &prepared,
+                                allow_queue,
+                            )?
+                        {
+                            self.finish_owned_prompt_submission_workflow_start(&mut submission)
+                                .await?;
+                            self.spawn_remote_prompt_projection_drain_if_needed(&submission);
+                            return Ok(submission);
+                        }
+                    } else {
+                        self.with_app_side_effect(|app| {
+                            // The app mutex can outlive the grant. Reauthorize only
+                            // after acquiring it, before launching a cold provider.
+                            authorize()?;
+                            app.ensure_prompt_provider_run_for_agent(&session_id, &target_agent_id)
+                        })
+                        .await?;
+                    };
+                    authorize()?;
+                    if let Some(mut submission) = owned
+                        .submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
+                    {
+                        self.finish_owned_prompt_submission_workflow_start(&mut submission)
+                            .await?;
+                        return Ok(submission);
+                    }
+                }
+                Err(DaemonError::LocalTransport {
+                    operation: "submit prepared prompt",
+                    message:
+                        "owned prompt runtime could not admit prompt without side-effect completion"
+                            .to_string(),
+                })
             }
-            Err(DaemonError::LocalTransport {
-                operation: "submit prepared prompt",
-                message:
-                    "owned prompt runtime could not admit prompt without side-effect completion"
-                        .to_string(),
-            })
+            .await;
+            // A02: a rejected submission must not leave a task that later
+            // blocks on the owner for work that never started.
+            if submission.is_err() && admitted {
+                self.owned.withdraw_agent_task(prepared.prompt.id())?;
+            }
+            submission
         }
     }
 

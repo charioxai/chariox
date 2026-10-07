@@ -5,13 +5,23 @@ use crate::durable_state::agent_lifecycle::{
 };
 
 impl KernelRuntimeOwnedState {
+    /// Returns true when this admission created the task.
     pub(super) fn admit_agent_task(
         &self,
         prepared: &crate::app::KernelPreparedPromptSubmission,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<bool, DaemonError> {
         if !self.config_projection.snapshot().room_agent_tools {
-            return Ok(());
+            return Ok(false);
         }
+        let prompt = prepared.prompt.id();
+        let existed = self
+            .durable_state_store
+            .agent_tasks(
+                Some(&prepared.session_id),
+                Some(prepared.prompt.target_agent_id()),
+            )?
+            .iter()
+            .any(|t| t.prompt_id == prompt || t.pending_prompt_id.as_deref() == Some(prompt));
         self.durable_state_store.agent_lifecycle(Operation::Begin {
             owner: self
                 .session_store
@@ -24,6 +34,13 @@ impl KernelRuntimeOwnedState {
             run: None,
             now: crate::session::unix_epoch_ms(),
         })?;
+        Ok(!existed)
+    }
+    pub(super) fn withdraw_agent_task(&self, prompt: &str) -> Result<(), DaemonError> {
+        self.durable_state_store
+            .agent_lifecycle(Operation::Withdraw {
+                task: prompt.into(),
+            })?;
         Ok(())
     }
     pub(super) fn settle_agent_task(
@@ -347,6 +364,7 @@ impl KernelRuntimeState {
             return Ok(());
         }
         let now = crate::session::unix_epoch_ms();
+        let mut blocked = Vec::new();
         for task in self.owned.durable_state_store.agent_tasks(None, None)? {
             let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {
                 continue;
@@ -497,7 +515,9 @@ impl KernelRuntimeState {
                     .active_prompt_for_agent(&session, &task.agent_id)
                     .is_none()
             {
-                self.owned.durable_state_store.agent_lifecycle(Operation::Block{task:task.task_id,prompt:task.prompt_id,reason:"No live provider turn or confirmed wake delivery; owner must reconcile and resume".into()})?;
+                if let Outcome::Task(task) = self.owned.durable_state_store.agent_lifecycle(Operation::Block{task:task.task_id,prompt:task.prompt_id,reason:"No live provider turn or confirmed wake delivery; owner must reconcile and resume".into()})? {
+                    blocked.push(task);
+                }
             }
         }
         let Outcome::Swept(changed) = self
@@ -507,7 +527,8 @@ impl KernelRuntimeState {
         else {
             unreachable!()
         };
-        for task in changed {
+        // Every transition is a notice so attached clients refresh the projection.
+        for task in blocked.into_iter().chain(changed) {
             self.owned.record_notice_for_agent(
                 &task.room_id,
                 None,

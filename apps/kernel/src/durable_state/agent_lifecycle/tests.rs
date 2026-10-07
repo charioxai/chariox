@@ -1316,3 +1316,94 @@ fn a02_urgent_reply_tracks_corrected_task_and_late_exact_acceptance() {
     });
     assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap().len(), 1);
 }
+
+#[test]
+fn a02_every_delivery_receipt_has_client_visible_text() {
+    let f = Fixture::new();
+    let receipt = |sequence: u64, state: &str| {
+        let Outcome::Event(event) = f.apply(Operation::Receipt {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence,
+            state: state.into(),
+        }) else {
+            panic!()
+        };
+        receipt_notice(&event)
+    };
+    let attempt = |sequence: u64, target: Option<&str>, prompt: &str| {
+        f.apply(Operation::Attempt {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence,
+            prompt: prompt.into(),
+            target: target.map(Into::into),
+            run: Some("run".into()),
+            now: 1,
+        });
+    };
+    let mut steer = occurrence(
+        "room",
+        "parent",
+        "sender",
+        "steer",
+        "message",
+        serde_json::json!({}),
+    );
+    steer.urgent = true;
+    let Outcome::Event(steer) = f.apply(Operation::Occur(steer)) else {
+        panic!()
+    };
+    attempt(steer.sequence, Some("running"), "steer");
+    assert_eq!(
+        receipt(steer.sequence, "accepted"),
+        format!(
+            "Agent inbox: event {} accepted into the running turn",
+            steer.sequence
+        )
+    );
+    let Outcome::Event(queued) = f.apply(Operation::Occur(occurrence(
+        "room",
+        "parent",
+        "sender",
+        "queued",
+        "message",
+        serde_json::json!({}),
+    ))) else {
+        panic!()
+    };
+    attempt(queued.sequence, None, "first");
+    assert!(receipt(queued.sequence, "rejected").contains("retained for the next turn"));
+    attempt(queued.sequence, None, "second");
+    assert!(receipt(queued.sequence, "uncertain").contains("delivery uncertain"));
+    assert!(receipt(queued.sequence, "accepted").ends_with("accepted as a new turn"));
+}
+
+#[test]
+fn a02_rejected_submission_withdraws_only_untouched_admission() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.apply(Operation::Withdraw { task: "p".into() });
+    assert!(f
+        .store
+        .agent_tasks(Some("room"), Some("parent"))
+        .unwrap()
+        .is_empty());
+    f.begin("p2");
+    f.apply(Operation::RegisterObligation {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "parent".into(),
+        prompt: "p2".into(),
+        run: Some("run".into()),
+        id: "obligation".into(),
+        kind: "delegate".into(),
+        resource: Some("child".into()),
+        now: 1,
+    });
+    assert!(f
+        .store
+        .agent_lifecycle(Operation::Withdraw { task: "p2".into() })
+        .is_err());
+    assert_eq!(f.task().obligations.len(), 1);
+}
