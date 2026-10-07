@@ -69,6 +69,39 @@ fn outcomes(f: &Fixture, entry: &str) -> Vec<String> {
 }
 
 #[tokio::test]
+async fn sudo_window_projection_keeps_deadline_and_warning_after_mutation() {
+    let f = fixture_with_options(None, true);
+    let window = running(&f);
+    let plain = session(&f);
+    assert!(plain.sudo_windows().is_empty());
+    let projected = f.state.owned.update_session_projection(plain.clone());
+    assert_eq!(
+        projected.sudo_windows().len(),
+        1,
+        "ordinary projection refreshes must retain the live sudo window"
+    );
+    let current = f
+        .state
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .get_mut(&window.entry_id)
+        .map(|current| {
+            current.warning_sent = true;
+            current.clone()
+        })
+        .unwrap();
+    let projected = f.state.owned.update_session_projection(plain);
+    assert_eq!(projected.sudo_windows(), &[current]);
+    f.state
+        .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
+        .unwrap();
+    let projected = f.state.owned.update_session_projection(session(&f));
+    assert!(projected.sudo_windows().is_empty());
+}
+
+#[tokio::test]
 async fn sudo_popup_defaults_to_one_hour_and_refuses_more_than_eight() {
     let f = fixture_with_options(None, true);
     let state = f.state.clone();

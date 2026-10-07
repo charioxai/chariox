@@ -85,7 +85,6 @@ impl KernelRuntimeOwnedState {
             self.durable_state_store
                 .agent_tasks(Some(session_id), None)?,
         );
-        session.set_sudo_windows(self.sudo_windows_for_session(session_id));
         self.project_session_runtime_view(&mut session);
         Ok(session)
     }
@@ -94,6 +93,8 @@ impl KernelRuntimeOwnedState {
         &self,
         session: &mut crate::session::RuntimeSession,
     ) {
+        // MP-08/MP-10/MP-11: every ordinary refresh carries current window state.
+        session.set_sudo_windows(self.sudo_windows_for_session(session.id()));
         self.prompt_state_owner.project_into_session(session);
         let prompt_session = session.clone();
         let active_prompt_agent_id = self.prompt_state_owner.active_prompt_agent_id(session);
