@@ -131,9 +131,14 @@ export class MirrorService {
     // A local raster tile already includes its own opacity against the native
     // backdrop. Applying that opacity again in the inert renderer is incorrect.
     // Keep ancestor opacity/transforms fenced: their compositing spans siblings.
-    for(const node of source.nodes)if(node.kind==='tile'&&node.style?.opacity&&node.style.opacity!=='1')node.style={...node.style,opacity:'1'};
     const compositingNodes=new Map(source.nodes.map(n=>[n.id,n]));
-    const unsupportedTile=source.nodes.some(n=>{if(n.kind!=='tile')return false;for(let e=n;e;e=compositingNodes.get(e.parent)){const style=e.style??{};if(['transform','filter','backdrop-filter','perspective'].some(key=>style[key]&&style[key]!=='none')||style.opacity&&style.opacity!=='1')return true;}return false;});
+    // Invisible native controls (including Wikipedia's hidden menu controls)
+    // need no pixels and cannot force an otherwise mirrorable page to fallback.
+    // Recompute every packet: becoming partially visible still fails closed.
+    const invisible=node=>{for(let e=node;e;e=compositingNodes.get(e.parent))if(e.style?.opacity&&Number(e.style.opacity)===0)return true;return false;};
+    const invisibleTiles=new Set(source.nodes.filter(n=>n.kind==='tile'&&invisible(n)).map(n=>n.id));
+    for(const node of source.nodes)if(node.kind==='tile'&&!invisibleTiles.has(node.id)&&node.style?.opacity&&node.style.opacity!=='1')node.style={...node.style,opacity:'1'};
+    const unsupportedTile=source.nodes.some(n=>{if(n.kind!=='tile'||invisibleTiles.has(n.id))return false;for(let e=n;e;e=compositingNodes.get(e.parent)){const style=e.style??{};if(['transform','filter','backdrop-filter','perspective'].some(key=>style[key]&&style[key]!=='none')||style.opacity&&style.opacity!=='1')return true;}return false;});
     if(unsupportedTile){stream.fullFallback=true;source=videoSnapshot();delete source.resources;}
     if(['tile','mask'].includes(source.nodes.find(n=>n.id===source.root)?.kind)){stream.fullFallback=true;source=videoSnapshot();delete source.resources;}
     // A tile is an opaque subtree. Descendants must not remain in the wire/map.
@@ -146,7 +151,7 @@ export class MirrorService {
     // MP-10/MP-11: permanently opaque foreign/closed regions render protected
     // placeholders; they need no source pixels or compositor crop bandwidth.
     const globalBox=node=>{const box={...node.box};for(let ancestor=byId.get(node.parent);ancestor;ancestor=byId.get(ancestor.parent))if(ancestor.kind==='frame') {box.x+=ancestor.box.x+(parseFloat(ancestor.style?.['border-left-width'])||0)+(parseFloat(ancestor.style?.['padding-left'])||0);box.y+=ancestor.box.y+(parseFloat(ancestor.style?.['border-top-width'])||0)+(parseFloat(ancestor.style?.['padding-top'])||0);}return box;};
-    const tiles=source.nodes.filter(n=>{if(n.kind!=='tile'||['cross_origin_frame','opaque_shadow'].includes(n.reason)||!(n.box?.width>0&&n.box?.height>0))return false;const b=globalBox(n);return b.x<1280&&b.y<800&&b.x+b.width>0&&b.y+b.height>0;});
+    const tiles=source.nodes.filter(n=>{if(n.kind!=='tile'||invisibleTiles.has(n.id)||['cross_origin_frame','opaque_shadow'].includes(n.reason)||!(n.box?.width>0&&n.box?.height>0))return false;const b=globalBox(n);return b.x<1280&&b.y<800&&b.x+b.width>0&&b.y+b.height>0;});
     const tileBoxes=new Map(tiles.map(n=>[n.id,globalBox(n)]));
     if(tiles.length>64)throw new Error('MP-11: visible tile limit; use display fallback');
     mark('sanitize');

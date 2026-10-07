@@ -1,11 +1,21 @@
 // MD-2: host Chromium lifetime. Never touches a slice or an existing Chrome.
 import { spawn } from "node:child_process";
-import { access, mkdir, readlink } from "node:fs/promises";
+import { access, mkdir, readFile, readlink } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import * as linux from "./kernel-browser-linux.mjs";
 import * as macos from "./kernel-browser-macos.mjs";
 import { connectCdpPipe } from './kernel-browser-cdp-pipe.mjs';
+
+// Only these fixed diagnostics can cross the host error-sanitization boundary.
+// Browser stderr may contain page/profile data and is never returned or logged.
+export class HostChromiumSandboxError extends Error {
+  constructor(restricted = false) {
+    super(restricted
+      ? "MD-2: Chromium has no usable sandbox while AppArmor restricts unprivileged user namespaces (kernel.apparmor_restrict_unprivileged_userns=1). Set CHARIOX_KERNEL_BROWSER_EXECUTABLE to system Chrome/Chromium installed with its AppArmor profile (for example /opt/google/chrome/chrome), or ask an administrator to install a profile permitting userns for this executable or a compatible SUID sandbox. Keep the browser sandbox and host restriction enabled."
+      : "MD-2: Chromium has no usable sandbox. Use system Chrome/Chromium with its sandbox support, or ask an administrator to install an AppArmor userns profile or compatible SUID sandbox. Keep the browser sandbox enabled.");
+  }
+}
 
 function platformPolicy(platform) {
   if (platform === "linux") return linux;
@@ -65,7 +75,13 @@ export class HostChromium {
     }
     const child = spawn(await executable(environment), launchArguments(profile,
       environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1"), {
-      stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env: environment,
+      stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], env: environment,
+    });
+    let stderrTail = '', sandboxFailed = false;
+    child.stderr.on('data', chunk => {
+      const text = stderrTail + chunk.toString('utf8');
+      sandboxFailed ||= /No usable sandbox|SUID sandbox helper binary.*not configured correctly/i.test(text);
+      stderrTail = text.slice(-128);
     });
     this.child = child;
     const connection = connectCdpPipe(child.stdio[3], child.stdio[4]);
@@ -75,6 +91,13 @@ export class HostChromium {
     try { await connection.send('Browser.getVersion'); return connection; }
     catch {}
     await this.stop();
+    if (sandboxFailed) {
+      let restricted = false;
+      if (process.platform === 'linux') {
+        try { restricted = (await readFile('/proc/sys/kernel/apparmor_restrict_unprivileged_userns', 'utf8')).trim() === '1'; } catch {}
+      }
+      throw new HostChromiumSandboxError(restricted);
+    }
     throw new Error("MD-2: sandboxed host Chromium did not become ready (check executable, display and profile ownership)");
   }
   async stop(connection = this.connection) {

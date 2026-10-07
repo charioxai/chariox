@@ -11,7 +11,7 @@ import { encodePng, decodePng, maskPng } from "./kernel-browser-pixels.mjs";
 import { KernelBrowserHost, navigationUrl } from "./kernel-browser-host.mjs";
 import { candidates as macCandidates, launchEnvironment as macEnvironment } from "./kernel-browser-macos.mjs";
 import { launchEnvironment as linuxEnvironment } from "./kernel-browser-linux.mjs";
-import { launchArguments, HostChromium } from "./kernel-browser-process.mjs";
+import { launchArguments, HostChromium, HostChromiumSandboxError } from "./kernel-browser-process.mjs";
 
 function fixture(root) {
   const pages = new Map();
@@ -647,4 +647,21 @@ test('private CDP pipe loss retires the browser generation even while child is l
   assert.equal(after.generation,before.generation+1);
   assert.equal(after.tabs[0].tab_id,before.tab_id);
   await assert.rejects(host.request({op:'screenshot',tab_id:before.tab_id,generation:before.generation}),{code:'user_domain_stale_epoch'});
+}));
+
+
+test('sandbox launch failures expose only the fixed actionable host diagnostic',()=>using(async({host})=>{
+ for(const restricted of [false,true]){
+  const failure=new HostChromiumSandboxError(restricted);
+  host.request=async()=>{throw failure};
+  const reply=await host.handle({id:'sandbox',method:'host.browser',params:{op:'open',url:'about:blank'}});
+  assert.equal(reply.error.code,'kernel_browser_failed');assert.equal(reply.error.message,failure.message);
+  assert.match(reply.error.message,/AppArmor/);assert.match(reply.error.message,/SUID sandbox/);
+  if(restricted)assert.match(reply.error.message,/kernel.apparmor_restrict_unprivileged_userns=1/);
+ }
+ for(const error of [new Error('No usable sandbox; synthetic-private-profile'),Object.assign(new Error('synthetic-private-page'),{code:'host_sandbox_unavailable'})]){
+  host.request=async()=>{throw error};
+  const reply=await host.handle({id:'private',method:'host.browser',params:{op:'open'}});
+  assert.equal(reply.error.message,'MD-2: host browser operation failed; refresh state or check host browser readiness');
+ }
 }));

@@ -245,3 +245,32 @@ test('composited ancestors and transformed tiles still require protected full fa
   const stream=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');const packet=await service.next(next(stream.subscription_id),'a');assert(packet.nodes.some(n=>n.reason==='observer_bounds_or_unavailable'));
  }
 });
+
+
+test('zero-opacity ancestors do not turn invisible native controls into full-page fallback',async()=>{
+ for(const dpr of [1,2]){
+  const {service,state,host}=fixture();
+  state.snapshot.nodes[0].children.push('hidden-parent');
+  state.snapshot.nodes.push({id:'hidden-parent',parent:'n1',children:['hidden-input'],kind:'element',tag:'div',style:{opacity:'0',transform:'translateX(5px)'},box:{x:10,y:10,width:80,height:30}},
+   {id:'hidden-input',parent:'hidden-parent',children:[],kind:'tile',tag:'input',reason:'native_control',style:{opacity:'1'},box:{x:10,y:10,width:80,height:30}});
+  host.screenshot=async()=>{throw Error('Invisible native controls must not require source pixels')};
+  const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:dpr},'a');
+  const packet=await service.next(next(s.subscription_id),'a');
+  assert(packet.nodes.some(n=>n.id==='n2'&&n.kind==='text'),'Ordinary article text remains mirrored');
+  assert.equal(packet.nodes.find(n=>n.id==='hidden-parent').style.opacity,'0');
+  assert.deepEqual(packet.tiles,[]);
+  state.snapshot.nodes.find(n=>n.id==='hidden-parent').style.opacity='0.6';
+  host.screenshot=async()=>({data_base64:encodePng(1280*dpr,800*dpr,Buffer.alloc(1280*800*dpr*dpr*4,100)),protected_regions:[]});
+  const shown=await service.next(next(s.subscription_id,packet.sequence),'a');
+  assert(shown.nodes.some(n=>n.reason==='observer_bounds_or_unavailable'),'A partially visible composited ancestor still requires protected fallback');
+ }
+});
+
+test('a zero-opacity tile is never normalized into visible source pixels',async()=>{
+ const {service,state,host}=fixture();state.snapshot.nodes[0].children.push('hidden');
+ state.snapshot.nodes.push({id:'hidden',parent:'n1',children:[],kind:'tile',tag:'img',reason:'opaque_media',style:{opacity:'0'},box:{x:10,y:10,width:80,height:30}});
+ host.screenshot=async()=>{throw Error('Invisible tile must not be captured')};
+ const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:2},'a');
+ const packet=await service.next(next(s.subscription_id),'a');
+ assert.equal(packet.nodes.find(n=>n.id==='hidden').style.opacity,'0');assert.deepEqual(packet.tiles,[]);
+});
