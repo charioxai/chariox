@@ -132,7 +132,7 @@ impl KernelRuntimeState {
         let windows = self.owned.sudo_windows_for_session(run.session_id());
         windows
             .iter()
-            .any(|turn| turn.agent_id == agent && turn.prompt_id.is_some() && self.sudo_live(turn))
+            .any(|turn| turn.agent_id == agent && self.sudo_live(turn))
     }
 
     pub(in crate::runtime::state) fn sudo_for_provider_run(

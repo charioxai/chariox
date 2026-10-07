@@ -472,6 +472,14 @@ async fn sudo_extension_before_the_first_turn_keeps_the_window() {
     .await
     .unwrap();
     assert!(queued.prompt_id.is_none());
+    // A provider that is already running must see the tool before the first
+    // elevated turn starts; calls stay refused until that turn is bound.
+    assert!(f
+        .router
+        .runtime_tool_specs_for_auth_token("sudo-fixture-bearer")
+        .iter()
+        .any(|spec| spec.name == "chariox_kernel_request"));
+    assert!(f.state.sudo_for_auth_token("sudo-fixture-bearer").is_err());
     let state = f.state.clone();
     let extend = tokio::spawn({
         let request = ExtendKernelSudoRequest {

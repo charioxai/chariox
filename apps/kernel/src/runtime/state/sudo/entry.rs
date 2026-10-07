@@ -209,6 +209,9 @@ impl KernelRuntimeState {
         let entry = &entry;
         self.audit_sudo(entry, "authorized")?;
         self.arm_sudo_timer(&entry.entry_id, entry.revision);
+        // A provider that is already running re-lists its tools now, before
+        // the first elevated turn; every call still needs that bound turn.
+        crate::transport::mcp_server::catalog_changed();
         let attachments = crate::runtime::agent_actor::prompt_attachment_materialization::materialize_inline_prompt_attachments(&entry.session_id, &entry.agent_id, request.attachments.clone())?;
         // A cold launch uses the normal provider path. No elevated authority is
         // usable until admission installs the exact prompt and run identity.
