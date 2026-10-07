@@ -1,5 +1,6 @@
 # MP-08 / MP-10: accounting and MP-11 signal guards, no real browser required.
 import json
+import os
 import pathlib
 import subprocess
 import tempfile
@@ -9,7 +10,7 @@ from measure import quantile, summarize, stop_owned, process_tree, resource, sli
 
 class DrillEvidence(unittest.TestCase):
     def setUp(self):
-        self.directory = tempfile.TemporaryDirectory(prefix='appsbudget-evidence-', dir='/root/.chariox/dev')
+        self.directory = tempfile.TemporaryDirectory(prefix='appsbudget-evidence-')
         self.addCleanup(self.directory.cleanup)
         self.root = pathlib.Path(self.directory.name)
         self.validation = {'mp_items':['MP-08','MP-10'], 'calls_per_view':[2,3,4,5],
@@ -86,10 +87,12 @@ class DrillEvidence(unittest.TestCase):
                 with self.assertRaises(RuntimeError): self.check()
                 self.samples = samples
 
-class Accounting(unittest.TestCase):
+@unittest.skipUnless(os.environ.get('CHARIOX_APPS_MEMORY_WRAPPER_TEST') == '1',
+                     'MP-08 / MP-10: set CHARIOX_APPS_MEMORY_WRAPPER_TEST=1 on the root measurement builder')
+class WrapperIntegration(unittest.TestCase):
     def test_zero_exit_without_drill_evidence_is_red(self):
         # MP-08 / MP-10: exercise the real wrapper/child/cleanup path, without a browser.
-        with tempfile.TemporaryDirectory(prefix='appsbudget-review-', dir='/root/.chariox/dev') as output:
+        with tempfile.TemporaryDirectory(prefix='appsbudget-review-') as output:
             child = subprocess.run([
                 'python3', str(pathlib.Path(__file__).with_name('measure.py')),
                 '--binary', '/bin/true', '--output', output,
@@ -102,6 +105,7 @@ class Accounting(unittest.TestCase):
             self.assertNotEqual(child.returncode, 0, child.stdout + child.stderr)
             self.assertEqual(receipt['result'], 'RED')
 
+class Accounting(unittest.TestCase):
     def test_next_view_opening_is_not_charged_to_previous_interaction(self):
         samples = [{'topology':'host','views':2,'activity':'interacting','at_ms':100000,
                     'sample_at':at, 'processes':[{'class':'browser','rss_kib':rss,'pss_kib':rss}]}
