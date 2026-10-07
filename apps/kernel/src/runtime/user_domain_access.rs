@@ -79,7 +79,11 @@ pub(crate) struct UserDomainAccess {
 
 impl UserDomainAccess {
     pub(crate) fn focus(&mut self, user: &str, agent: Option<&str>) {
-        if self.focused(user) == agent && agent.is_none_or(|agent| self.grant(user, agent).is_ok())
+        if self.focused(user) == agent
+            && agent.is_none_or(|agent| {
+                self.grant(user, agent)
+                    .is_ok_and(|grant| grant.cause == GrantCause::Focus)
+            })
         {
             return;
         }
@@ -94,9 +98,15 @@ impl UserDomainAccess {
                 self.revoke(user, Some(agent));
                 self.focus.insert(user.into(), agent.into());
             }
-            self.grants
+            let grant = self
+                .grants
                 .entry(key)
                 .or_insert_with(|| Grant::new(GrantCause::Focus, None));
+            // MP-08/MP-11: explicit owner focus supersedes prompt/delegation
+            // expiry while preserving resources, subscriptions and the epoch.
+            grant.cause = GrantCause::Focus;
+            grant.expires_at = None;
+            grant.expires_at_ms = None;
         } else {
             self.focus.remove(user);
         }
@@ -501,6 +511,45 @@ mod tests {
     use super::*;
     fn tab(id: &str) -> UserDomainResource {
         UserDomainResource::BrowserTab { tab_id: id.into() }
+    }
+    /// MP-08/MP-11 (#922 round 3): owner focus supersedes a timed cause
+    /// without retiring the grant's resources, subscriptions or epoch.
+    #[test]
+    fn capability_review_round3_focus_preserves_requested_and_delegated_grants() {
+        for agent in ["parent", "child"] {
+            let mut access = UserDomainAccess::default();
+            access.request("owner", "parent", "prompt", DEFAULT_GRANT_LIFETIME);
+            access.opened_tab("owner", "parent", "tab").unwrap();
+            access
+                .transfer("owner", "parent", "child", &[tab("tab")])
+                .unwrap();
+            access.subscribe("owner", agent, "stream", "tab").unwrap();
+            let grant = access.grant("owner", agent).unwrap();
+            let deadline = grant.expires_at.unwrap();
+            let epoch = grant.epoch.clone();
+            let scope = grant.subscription_owner.clone();
+
+            access.focus("owner", Some(agent));
+            access.focus("owner", Some(agent));
+            let grant = access.grant("owner", agent).unwrap();
+            assert_eq!(grant.cause, GrantCause::Focus);
+            assert!(grant.expires_at.is_none());
+            assert!(grant.expires_at_ms.is_none());
+            assert!(Arc::ptr_eq(&grant.epoch, &epoch));
+            assert!(!epoch.requested());
+            assert_eq!(grant.subscription_owner, scope);
+            assert_eq!(grant.resources, BTreeSet::from([tab("tab")]));
+            assert_eq!(grant.subscriptions.get("stream"), Some(&"tab".into()));
+            assert!(!access
+                .due(deadline + Duration::from_secs(1))
+                .contains(&("owner".into(), agent.into())));
+            assert_eq!(access.focused("owner"), Some(agent));
+            if agent == "child" {
+                access.revoke("owner", Some("parent"));
+                assert!(access.grant("owner", agent).is_ok());
+                assert_eq!(access.focused("owner"), Some(agent));
+            }
+        }
     }
     /// MP-08 (#922 review 4): focus is the owner's live act; its grant has
     /// no absolute lifetime and retires only through idle, revoke or end.

@@ -296,7 +296,10 @@ impl KernelRuntimeState {
         {
             return Err(refused(UserDomainRefusalReason::NotGranted));
         }
-        Ok((resolution.choice_id.as_deref() == Some("allow")).then_some(prompt))
+        if resolution.choice_id.as_deref() != Some("allow") {
+            return Err(refused(UserDomainRefusalReason::NotRequested));
+        }
+        Ok(Some(prompt))
     }
 
     pub(super) fn app_binding_revision(&self, agent: &str, installation: &str) -> u64 {

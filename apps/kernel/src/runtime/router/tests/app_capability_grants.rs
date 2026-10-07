@@ -453,65 +453,108 @@ async fn capability_agent_origin_cannot_use_an_owner_only_app_binding_helper() {
 }
 
 async fn approved_app(room: &Room, token: &str, name: &str) -> bool {
-    let (result, ()) = tokio::join!(request_app(room, token, name), async {
-        let interaction = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-            loop {
-                let session = room
-                    .router
-                    .runtime_state
-                    .session_snapshot(&room.session)
-                    .await
-                    .unwrap();
-                if let Some(interaction) = session
-                    .active_interactions()
-                    .iter()
-                    .find(|interaction| interaction.title() == Some("Chariox resource access"))
-                {
-                    break interaction.id().to_string();
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("resource-specific owner interaction");
-        assert!(
-            room.router
-                .runtime_state
-                .answer_terminal_runtime_interaction(
-                    &room.session,
-                    &interaction,
-                    "allow",
-                    None,
-                    Some("alice"),
-                    None,
-                    None,
-                    Some(crate::local::KernelConnectionClass::KernelAgent),
-                )
-                .await
-                .is_err(),
-            "MP-11: an agent cannot answer its resource approval"
-        );
-        assert!(
-            room.router
-                .runtime_state
-                .resolve_runtime_interaction(&room.session, &interaction, "allow", None,)
-                .await
-                .is_err(),
-            "MP-11: ownerless agent replies cannot mint authority"
-        );
+    let (result, ()) = tokio::join!(
+        request_app(room, token, name),
+        answer_app_decision(room, "allow")
+    );
+    result
+}
+
+/// MP-08/MP-11 (#922 round 3): App and Browser Deny share the typed refusal.
+#[tokio::test]
+async fn capability_review_round3_app_deny_is_typed_not_requested() {
+    let room = room();
+    let (agent, token) = room.agents[0].clone();
+    running_prompt(&room, &agent, ClientCapabilityLevel::FullTerminal, "owner").await;
+    let (result, ()) = tokio::join!(
         room.router
             .runtime_state
-            .resolve_terminal_runtime_interaction(
+            .dispatch_authenticated_runtime_tool_call(
+                &token,
+                crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL,
+                serde_json::json!({"kind":"app","name":"installed"}),
+            ),
+        answer_app_decision(&room, "deny")
+    );
+    assert!(
+        matches!(
+            result,
+            Err(DaemonError::UserDomainRefused {
+                reason: crate::error::UserDomainRefusalReason::NotRequested
+            })
+        ),
+        "MP-11: owner Deny must return user_domain_not_requested: {result:?}"
+    );
+    assert!(!bound(&room, &agent).await);
+    assert!(room
+        .router
+        .runtime_state
+        .session_snapshot(&room.session)
+        .await
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .all(|item| item.title() != Some("Chariox resource access")));
+    room.router.runtime_state.shutdown_cleanup().await.unwrap();
+}
+
+async fn answer_app_decision(room: &Room, choice: &str) {
+    let interaction = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let session = room
+                .router
+                .runtime_state
+                .session_snapshot(&room.session)
+                .await
+                .unwrap();
+            if let Some(interaction) = session
+                .active_interactions()
+                .iter()
+                .find(|interaction| interaction.title() == Some("Chariox resource access"))
+            {
+                break interaction.id().to_string();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("resource-specific owner interaction");
+    assert!(
+        room.router
+            .runtime_state
+            .answer_terminal_runtime_interaction(
                 &room.session,
                 &interaction,
                 "allow",
                 None,
                 Some("alice"),
+                None,
+                None,
+                Some(crate::local::KernelConnectionClass::KernelAgent),
             )
             .await
-            .unwrap();
-    });
-    result
+            .is_err(),
+        "MP-11: an agent cannot answer its resource approval"
+    );
+    assert!(
+        room.router
+            .runtime_state
+            .resolve_runtime_interaction(&room.session, &interaction, "allow", None,)
+            .await
+            .is_err(),
+        "MP-11: ownerless agent replies cannot mint authority"
+    );
+    room.router
+        .runtime_state
+        .resolve_terminal_runtime_interaction(
+            &room.session,
+            &interaction,
+            choice,
+            None,
+            Some("alice"),
+        )
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

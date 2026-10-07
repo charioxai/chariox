@@ -74,6 +74,8 @@ decision. Provider MCP errors carry the same code. Existing focus grants remain
 available through the shared browser authority path; focus is the owner's live
 act, so focus grants have no absolute lifetime (no `expires_at_ms`) and retire
 through idle, revocation or session/agent end.
+Explicit owner focus promotes an existing requested or delegated browser grant
+to that focus lifecycle without retiring its resources, subscriptions or epoch.
 
 Browser loader arguments may request `lifetime_hours` from 1 through 24; the
 default is 8 hours. A prompt grant covers newly opened tabs, while claiming an
