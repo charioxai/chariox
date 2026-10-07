@@ -48,14 +48,27 @@ impl AgentConversation {
 
     /// The conversation a dispatch of `prompt_id` continues. History records a
     /// prompt before its dispatch, and the provider receives that prompt as the
-    /// request itself.
+    /// request itself. An interrupted trailing attempt keeps its output and
+    /// details, with only the duplicated user line removed.
     pub(super) fn before_prompt(mut self, prompt_id: &str) -> Self {
         if self
             .turns
             .last()
             .is_some_and(|turn| turn.prompt_id.as_deref() == Some(prompt_id))
         {
-            self.turns.pop();
+            let turn = self.turns.last_mut().unwrap();
+            if turn
+                .assistant_outputs
+                .iter()
+                .any(|output| !output.trim().is_empty())
+                || !turn.latest_details.is_empty()
+            {
+                // The retry supplies the request, but needs the half-applied work
+                // and the failure that interrupted it.
+                turn.user_prompt.clear();
+            } else {
+                self.turns.pop();
+            }
         }
         self
     }
@@ -168,8 +181,14 @@ fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
                     ));
                 }
             }
-            HistoryEventKind::ProviderReasoning
-            | HistoryEventKind::PromptInput
+            HistoryEventKind::ProviderReasoning => {
+                // Claude -p shares the text merge key across blocks. Thinking
+                // between them is a block boundary, not an answer delta.
+                if let Some(turn) = turns.last_mut() {
+                    turn.output_item = None;
+                }
+            }
+            HistoryEventKind::PromptInput
             | HistoryEventKind::SessionCreated
             | HistoryEventKind::AgentCreated
             | HistoryEventKind::AgentMoved
@@ -250,10 +269,14 @@ fn omitted_turns_line(count: usize) -> String {
 
 fn format_latest_turn(turn: &HandoffTurn, max_bytes: usize) -> String {
     let mut lines = Vec::new();
-    lines.push(format!(
-        "- User: {}",
-        truncate_bytes(turn.user_prompt.trim(), MAX_LATEST_ITEM_BYTES)
-    ));
+    if turn.user_prompt.is_empty() {
+        lines.push("- Interrupted attempt of the current request:".to_string());
+    } else {
+        lines.push(format!(
+            "- User: {}",
+            truncate_bytes(turn.user_prompt.trim(), MAX_LATEST_ITEM_BYTES)
+        ));
+    }
     let assistant = truncate_bytes(&turn.answer(), MAX_LATEST_ITEM_BYTES * 2);
     if !assistant.trim().is_empty() {
         lines.push(format!("- Assistant output: {}", assistant.trim()));
@@ -515,6 +538,23 @@ mod tests {
         );
         assert!(
             handoff.contains("- Assistant output: Checking.\nIt holds the lexer."),
+            "{handoff}"
+        );
+    }
+
+    #[test]
+    fn claude_text_blocks_separated_by_thinking_stay_apart() {
+        let mut thinking = item_event(3, "claude:run-1:reasoning", "thinking");
+        thinking.kind = HistoryEventKind::ProviderReasoning;
+        let events = vec![
+            user_event(1, "session", "agent", "inspect"),
+            item_event(2, "claude:run-1:assistant", "Checking."),
+            thinking,
+            item_event(4, "claude:run-1:assistant", "The parser is half migrated."),
+        ];
+        let handoff = build_agent_context_handoff(&events, MAX_HANDOFF_BYTES).unwrap();
+        assert!(
+            handoff.contains("Checking.\nThe parser is half migrated."),
             "{handoff}"
         );
     }
