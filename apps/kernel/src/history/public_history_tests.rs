@@ -238,7 +238,9 @@ fn public_history_version_change_and_unknown_legacy_have_no_raw_fallback() {
         .connection
         .lock()
         .unwrap()
-        .execute("UPDATE public_history_version SET version=0", [])
+        // MP-08 / MP-10 / MP-11: version 1 can contain private MCP server
+        // records admitted before server-identity classification was added.
+        .execute("UPDATE public_history_version SET version=1", [])
         .unwrap();
     let reopened = OperationalHistoryStore::open(f.store.path().to_path_buf()).unwrap();
     // No installed projection means raw events remain unknown and unindexed.
