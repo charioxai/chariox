@@ -690,76 +690,74 @@ async fn agent_message_to_busy_provider_does_not_queue_a_user_prompt_inner() {
     assert!(delivered, "active provider must receive the agent message");
 }
 
-#[test]
-fn agent_message_during_provider_startup_does_not_enter_the_user_queue() {
-    crate::test_support::block_on_kernel_stack(async {
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, sender) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                "message-provider-startup",
-                std::env::temp_dir().to_string_lossy(),
-            ))
-            .expect("session should be created");
-        let target = spawn_test_agent(&mut app, session.id(), "target", "dev-stub");
-        let sender_run = launch_test_provider(
-            &mut app,
+#[tokio::test]
+async fn agent_message_during_provider_startup_does_not_enter_the_user_queue() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, sender) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "message-provider-startup",
+            std::env::temp_dir().to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let target = spawn_test_agent(&mut app, session.id(), "target", "dev-stub");
+    let sender_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        sender.id(),
+        "dev-stub",
+        "dev-stub",
+        "sender-model",
+    );
+    let sender_prompt_id = start_agent_message_sender_turn(&mut app, session.id(), sender.id());
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
             session.id(),
-            sender.id(),
-            "dev-stub",
-            "dev-stub",
-            "sender-model",
-        );
-        let sender_prompt_id = start_agent_message_sender_turn(&mut app, session.id(), sender.id());
-        let attachment = crate::app::KernelSessionService::new(&mut app)
-            .attach(crate::attachment::AttachRequest::new(
-                session.id(),
-                "client-message-provider-startup",
-                crate::attachment::ClientCapabilityLevel::FullTerminal,
-            ))
-            .expect("test client should attach");
-        let active = crate::session::PromptQueueItem::new(
-            app.sessions_mut().reserve_prompt_id(),
-            attachment.id(),
-            target.id(),
-            "starting task",
-            crate::session::PromptStatus::Queued,
-        );
-        assert!(matches!(
-            app.prompt_owner_submit_prepared_prompt(session.id(), active, false)
-                .expect("target should start a prompt"),
-            crate::session::PromptSubmissionOutcome::Started { .. }
-        ));
-        let token = sender_run
-            .runtime_mcp_auth_token()
-            .expect("sender needs runtime MCP auth");
-        let app = Arc::new(Mutex::new(app));
-        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
-        let result = router
-            .runtime_state
-            .dispatch_authenticated_runtime_tool_call(
-                token,
-                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
-                serde_json::json!({
-                    "agent": target.id(),
-                    "message": "new information",
-                    "origin_prompt_id": sender_prompt_id,
-                }),
-            )
-            .await;
-        let snapshot = router
-            .runtime_state
-            .session_snapshot(session.id())
-            .await
-            .expect("session should remain readable");
-        assert_eq!(
-            snapshot
-                .queued_prompts_for_agent(target.id())
-                .map(|queue| queue.len()),
-            Some(0),
-            "agent messages must never become queued user prompts"
-        );
-        assert!(result.is_err(), "provider startup must not claim delivery");
-    });
+            "client-message-provider-startup",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("test client should attach");
+    let active = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        target.id(),
+        "starting task",
+        crate::session::PromptStatus::Queued,
+    );
+    assert!(matches!(
+        app.prompt_owner_submit_prepared_prompt(session.id(), active, false)
+            .expect("target should start a prompt"),
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ));
+    let token = sender_run
+        .runtime_mcp_auth_token()
+        .expect("sender needs runtime MCP auth");
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let result = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            token,
+            crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+            serde_json::json!({
+                "agent": target.id(),
+                "message": "new information",
+                "origin_prompt_id": sender_prompt_id,
+            }),
+        )
+        .await;
+    let snapshot = router
+        .runtime_state
+        .session_snapshot(session.id())
+        .await
+        .expect("session should remain readable");
+    assert_eq!(
+        snapshot
+            .queued_prompts_for_agent(target.id())
+            .map(|queue| queue.len()),
+        Some(0),
+        "agent messages must never become queued user prompts"
+    );
+    assert!(result.is_err(), "provider startup must not claim delivery");
 }
 
 #[test]

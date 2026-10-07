@@ -475,74 +475,72 @@ async fn metaagent_event_subscriptions_persist_and_can_be_removed() {
     );
 }
 
-#[test]
-fn metaagent_event_subscription_rejects_unknown_kinds_with_suggestions() {
-    crate::test_support::block_on_kernel_stack(async {
-        let env = TestMetaRuntimeEnv::new("event-subscription-validation");
-        let workspace = env.root.join("workspace");
-        std::fs::create_dir_all(&workspace).expect("workspace should be created");
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                workspace.to_string_lossy(),
-                workspace.to_string_lossy(),
-            ))
-            .expect("session should be created");
-        let metaagent = crate::app::KernelSessionService::new(&mut app)
-            .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
-            .expect("metaagent should spawn");
-        let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
-        let meta_run = launch_test_provider(
-            &mut app,
-            session.id(),
-            metaagent.id(),
-            "dev-stub",
-            "dev-stub",
-            "meta-model",
-        );
-        let meta_auth_token = meta_run
-            .runtime_mcp_auth_token()
-            .expect("meta run should expose runtime MCP auth token")
-            .to_string();
-        let app = Arc::new(Mutex::new(app));
-        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+#[tokio::test]
+async fn metaagent_event_subscription_rejects_unknown_kinds_with_suggestions() {
+    let env = TestMetaRuntimeEnv::new("event-subscription-validation");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
+        .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
 
-        let rejected = router
-            .runtime_state
-            .dispatch_authenticated_runtime_tool_call(
-                &meta_auth_token,
-                crate::transport::runtime_tools::META_SUBSCRIBE_EVENTS_TOOL,
-                serde_json::json!({ "kind": "workflow_output" }),
-            )
-            .await
-            .expect("subscribe should dispatch");
+    let rejected = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_SUBSCRIBE_EVENTS_TOOL,
+            serde_json::json!({ "kind": "workflow_output" }),
+        )
+        .await
+        .expect("subscribe should dispatch");
 
-        assert!(!rejected.ok);
-        assert_eq!(
-            rejected
-                .payload
-                .get("kind")
-                .and_then(serde_json::Value::as_str),
-            Some("workflow_output")
-        );
-        let suggestions = rejected
+    assert!(!rejected.ok);
+    assert_eq!(
+        rejected
             .payload
-            .get("suggestions")
-            .and_then(serde_json::Value::as_array)
-            .expect("suggestions should be returned");
-        assert!(suggestions.iter().any(|suggestion| {
-            suggestion.as_str()
-                == Some(crate::transport::runtime_tools::META_EVENT_KIND_WORKFLOW_OUTPUT_FINAL)
-        }));
-        let valid_event_kinds = rejected
-            .payload
-            .get("valid_event_kinds")
-            .and_then(serde_json::Value::as_array)
-            .expect("valid event kinds should be returned");
-        assert!(valid_event_kinds.iter().any(|kind| {
-            kind.as_str() == Some(crate::transport::runtime_tools::META_EVENT_KIND_AGENT_TURN_COMPLETED)
-        }));
-    });
+            .get("kind")
+            .and_then(serde_json::Value::as_str),
+        Some("workflow_output")
+    );
+    let suggestions = rejected
+        .payload
+        .get("suggestions")
+        .and_then(serde_json::Value::as_array)
+        .expect("suggestions should be returned");
+    assert!(suggestions.iter().any(|suggestion| {
+        suggestion.as_str()
+            == Some(crate::transport::runtime_tools::META_EVENT_KIND_WORKFLOW_OUTPUT_FINAL)
+    }));
+    let valid_event_kinds = rejected
+        .payload
+        .get("valid_event_kinds")
+        .and_then(serde_json::Value::as_array)
+        .expect("valid event kinds should be returned");
+    assert!(valid_event_kinds.iter().any(|kind| {
+        kind.as_str() == Some(crate::transport::runtime_tools::META_EVENT_KIND_AGENT_TURN_COMPLETED)
+    }));
 }
 
 #[test]

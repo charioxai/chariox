@@ -108,132 +108,130 @@ fn fixture_with_options(script: Option<&str>, room_tools: bool) -> Fixture {
 }
 
 // MP-08 / MP-11, P2: exercise the actual MCP router with room tools enabled.
-#[test]
-fn sudo_room_tools_preserve_host_authority_and_revocation() {
-    crate::test_support::block_on_kernel_stack(async {
-        let f = fixture_with_options(None, true);
-        assert!(
-            f.router
-                .dispatch_authenticated_runtime_tool_call(
-                    "sudo-fixture-bearer",
-                    "chariox_kernel_request",
-                    serde_json::json!({"request":{"ListSessions":null}}),
-                )
-                .await
-                .is_err(),
-            "room tools alone must not confer sudo authority"
-        );
-        let turn = running(&f);
-        let other =
-            crate::session::RuntimeSession::new("sudo-room-tools-other", None, "w", "wt", "m", "k");
-        f.state
-            .owned
-            .session_store
-            .write()
-            .restore_session(other.clone());
-        let responder = f
-            .state
-            .create_kernel_operation_interaction(
-                other.id(),
-                "local",
-                RuntimeInteraction::for_kernel_operation(
-                    "sudo-room-tools-critical",
-                    "payment",
-                    "Payment",
-                    "Fixture only",
-                    vec![
-                        RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
-                        RuntimeInteractionChoice::new("approve", "Approve", "approve", None)
-                            .requiring_passkey(),
-                    ],
-                ),
+#[tokio::test]
+async fn sudo_room_tools_preserve_host_authority_and_revocation() {
+    let f = fixture_with_options(None, true);
+    assert!(
+        f.router
+            .dispatch_authenticated_runtime_tool_call(
+                "sudo-fixture-bearer",
+                "chariox_kernel_request",
+                serde_json::json!({"request":{"ListSessions":null}}),
             )
             .await
-            .unwrap();
-        let answer = serde_json::json!({"RespondToInteraction": {
-            "session_id":other.id(), "interaction_id":"sudo-room-tools-critical",
-            "choice_id":"approve", "custom_reply":null, "passkey":null,
-            "passkey_remember_minutes":null,
-        }});
+            .is_err(),
+        "room tools alone must not confer sudo authority"
+    );
+    let turn = running(&f);
+    let other =
+        crate::session::RuntimeSession::new("sudo-room-tools-other", None, "w", "wt", "m", "k");
+    f.state
+        .owned
+        .session_store
+        .write()
+        .restore_session(other.clone());
+    let responder = f
+        .state
+        .create_kernel_operation_interaction(
+            other.id(),
+            "local",
+            RuntimeInteraction::for_kernel_operation(
+                "sudo-room-tools-critical",
+                "payment",
+                "Payment",
+                "Fixture only",
+                vec![
+                    RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
+                    RuntimeInteractionChoice::new("approve", "Approve", "approve", None)
+                        .requiring_passkey(),
+                ],
+            ),
+        )
+        .await
+        .unwrap();
+    let answer = serde_json::json!({"RespondToInteraction": {
+        "session_id":other.id(), "interaction_id":"sudo-room-tools-critical",
+        "choice_id":"approve", "custom_reply":null, "passkey":null,
+        "passkey_remember_minutes":null,
+    }});
+    let result = f
+        .router
+        .dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            "chariox_kernel_request",
+            serde_json::json!({"request":answer}),
+        )
+        .await
+        .expect("explicit sudo must answer a critical interaction in another room");
+    assert!(result.ok);
+    assert_eq!(
+        responder.await.unwrap().choice_id.as_deref(),
+        Some("approve")
+    );
+    let receipts = f
+        .state
+        .owned
+        .durable_state_store
+        .load_events_by_kind("kernel_access.sudo_approval")
+        .unwrap();
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].payload["turn"]["entry_id"], turn.entry_id);
+    let peer = {
+        let mut app = f.app.lock().await;
+        crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(&turn.session_id, "dev-stub")
+                    .with_alias("sudo-room-peer"),
+            )
+            .unwrap()
+    };
+    for request in [
+        serde_json::json!({"AliasAgent":{"session_id":turn.session_id,
+            "agent_id":peer.id(),"alias":"sudo-renamed-peer"}}),
+        serde_json::json!({"DestroyAgent":{"session_id":turn.session_id,
+            "agent_id":peer.id()}}),
+        serde_json::json!({"EndSession":{"session_id":other.id()}}),
+    ] {
         let result = f
             .router
             .dispatch_authenticated_runtime_tool_call(
                 "sudo-fixture-bearer",
                 "chariox_kernel_request",
-                serde_json::json!({"request":answer}),
+                serde_json::json!({"request":request}),
             )
             .await
-            .expect("explicit sudo must answer a critical interaction in another room");
+            .expect("explicit sudo retains peer lifecycle and session teardown authority");
         assert!(result.ok);
-        assert_eq!(
-            responder.await.unwrap().choice_id.as_deref(),
-            Some("approve")
-        );
-        let receipts = f
-            .state
-            .owned
-            .durable_state_store
-            .load_events_by_kind("kernel_access.sudo_approval")
-            .unwrap();
-        assert_eq!(receipts.len(), 1);
-        assert_eq!(receipts[0].payload["turn"]["entry_id"], turn.entry_id);
-        let peer = {
-            let mut app = f.app.lock().await;
-            crate::app::KernelSessionService::new(&mut app)
-                .spawn_agent(
-                    crate::agent::CreateAgentRequest::new(&turn.session_id, "dev-stub")
-                        .with_alias("sudo-room-peer"),
-                )
-                .unwrap()
-        };
-        for request in [
-            serde_json::json!({"AliasAgent":{"session_id":turn.session_id,
-                "agent_id":peer.id(),"alias":"sudo-renamed-peer"}}),
-            serde_json::json!({"DestroyAgent":{"session_id":turn.session_id,
-                "agent_id":peer.id()}}),
-            serde_json::json!({"EndSession":{"session_id":other.id()}}),
-        ] {
-            let result = f
-                .router
-                .dispatch_authenticated_runtime_tool_call(
-                    "sudo-fixture-bearer",
-                    "chariox_kernel_request",
-                    serde_json::json!({"request":request}),
-                )
-                .await
-                .expect("explicit sudo retains peer lifecycle and session teardown authority");
-            assert!(result.ok);
-        }
-        // Room tools do not remove the sudo forbidden-operation policy.
-        for request in [
-            serde_json::json!({"RevokeKernelAccessGrant":{"grant_id":null}}),
-            serde_json::json!({"SubmitPrompt":f.request}),
-        ] {
-            assert!(f
-                .router
-                .dispatch_authenticated_runtime_tool_call(
-                    "sudo-fixture-bearer",
-                    "chariox_kernel_request",
-                    serde_json::json!({"request":request}),
-                )
-                .await
-                .is_err());
-        }
-        f.state
-            .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
-            .unwrap();
-        assert!(
-            f.router
-                .dispatch_authenticated_runtime_tool_call(
-                    "sudo-fixture-bearer",
-                    "chariox_kernel_request",
-                    serde_json::json!({"request":{"ListSessions":null}}),
-                )
-                .await
-                .is_err(),
-            "room flag must not revive revoked sudo"
-        );
-    });
+    }
+    // Room tools do not remove the sudo forbidden-operation policy.
+    for request in [
+        serde_json::json!({"RevokeKernelAccessGrant":{"grant_id":null}}),
+        serde_json::json!({"SubmitPrompt":f.request}),
+    ] {
+        assert!(f
+            .router
+            .dispatch_authenticated_runtime_tool_call(
+                "sudo-fixture-bearer",
+                "chariox_kernel_request",
+                serde_json::json!({"request":request}),
+            )
+            .await
+            .is_err());
+    }
+    f.state
+        .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
+        .unwrap();
+    assert!(
+        f.router
+            .dispatch_authenticated_runtime_tool_call(
+                "sudo-fixture-bearer",
+                "chariox_kernel_request",
+                serde_json::json!({"request":{"ListSessions":null}}),
+            )
+            .await
+            .is_err(),
+        "room flag must not revive revoked sudo"
+    );
 }
 
 pub(super) fn running(f: &Fixture) -> KernelSudoTurn {

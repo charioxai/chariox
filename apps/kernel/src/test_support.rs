@@ -31,28 +31,6 @@ pub(crate) use isolated_env_test;
 
 static TEST_WORKTREE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Runs a runtime-tool dispatch test on the product kernel thread stack;
-/// debug builds of the full dispatch path exceed the 2 MiB libtest default.
-pub(crate) fn block_on_kernel_stack<F>(future: F)
-where
-    F: std::future::Future<Output = ()> + Send + 'static,
-{
-    std::thread::Builder::new()
-        .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
-        .spawn(move || {
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .thread_stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
-                .enable_all()
-                .build()
-                .expect("kernel-stack test runtime should build")
-                .block_on(future);
-        })
-        .expect("kernel-stack test thread should spawn")
-        .join()
-        .unwrap_or_else(|error| std::panic::resume_unwind(error));
-}
-
 /// Dropped router tasks may briefly retain the durable store's ownership fence.
 /// Yield until they finish, retrying only that explicit busy-owner error.
 pub(crate) async fn bootstrap_after_test_owner_exit(config: DaemonConfig) -> DaemonApp {
