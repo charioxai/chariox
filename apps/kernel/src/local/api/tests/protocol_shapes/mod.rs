@@ -96,3 +96,5 @@ mod room_workflows;
 mod screenshot;
 
 mod agent_lifecycle;
+
+mod ssh_machine;
