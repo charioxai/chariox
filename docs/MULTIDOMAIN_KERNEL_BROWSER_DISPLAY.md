@@ -1,4 +1,33 @@
-# MD-DISPLAY-02/04: experimental kernel browser display, protocol 419
+# MD-DISPLAY-02/04: kernel browser display implementation and history
+
+MD-DISPLAY-02/04: current transport uses reserved local 441 / relay 84; dependent
+video requires the explicit `chariox-video-dependencies-v1` codec capability.
+Legacy offers retain independent frames. The client minimum is 441.
+
+Current Phase 10 native motion prefers negotiated H.264, with realtime VP9 fallback,
+three default display credits, bounded reference recovery and exact PNG damage
+repair. PyAV needs libx264/libvpx; optional FFmpeg plus an accessible render device
+can attempt VAAPI, falling back on actual failure. Builder evidence is software
+only. The portable [Linux LAN kit](../apps/browser-display/LAN_KIT.md) supplies the
+coordinator-run laptop matrix, still unmeasured here. Sparse native damage piping
+and reduced software motion scale are implemented; exact settled pixels stay
+native DPR. Current results remain RED and the flag stays off. See the source-bound
+Phase 10 matrix and integration limits in the performance doc.
+
+MP-08/MP-10/MP-11 phase 28: unprotected, whole-frame software motion at
+1920×1080 and 2560×1600 uses 1280×720 and 1280×800 video respectively.
+Resizing precedes color conversion. Reduced video certifies no native pixels;
+lossless repair restores native resolution. Protected, striped and hardware
+frames retain native geometry. Capture manually redirects the owned window on
+its private X server, avoiding composition onto an unused root, and falls back
+to automatic redirection when another capture owns the manual redirect.
+These changes do not establish performance or live acceptance.
+
+The historical427/74 configuration, pipeline, client and Phase7 evidence are
+in [MULTIDOMAIN_DISPLAY_PERFORMANCE.md](MULTIDOMAIN_DISPLAY_PERFORMANCE.md).
+The sections below record earlier419-era implementation and receipts; their
+codec, source, pacing and credit descriptions are historical, not current
+configuration. Their source identities and limitations remain unchanged.
 
 This implements the Phase-2 recommendation as an opt-in, removable adapter.
 It does not close an MD or MP acceptance item. The owner still decides the final
@@ -208,7 +237,7 @@ open. Native secrets/masking source tests are narrower than those live gates.
 
 Clean implementation source `836e64630bc53d42e488dc97142416fdb0c92271`, rebased
 onto kbrowser `d6d03751ffea37198fb33530829f4cd76ae30fbf`. Final receipt:
-`/root/.codex/evidence/browser-resume-20260930/display/phase3/final-typed-relay-2mbps/results.json`.
+`<lane evidence>/phase3/final-typed-relay-2mbps/results.json`.
 `phase3/provenance.json` binds this source, the test binary SHA-256, 118 source
 file hashes, 28 exact embedded controller assets, commands, exits and receipt.
 This is historical Phase-3 coverage; Phase-4 execution files differ and the
@@ -371,3 +400,50 @@ Owner decisions: acceptable moving and settled fidelity, p95 input latency/WAN
 and total-egress budgets, required client codecs/platforms, initial page scope,
 cursor/IME/file-chooser coverage, and criteria for Room desktop migration. Until
 those decisions and independent review, keep the flag off by default.
+
+
+## MD-DISPLAY-02/04: current Cloud integration handoff,427/74
+
+Copy `apps/browser-display/presenter.mjs`, `decoder-worker.mjs`, `tile-cache.mjs`
+and `scroll-prediction.mjs` together at their relative URLs. Serve worker modules
+with the application's restrictive CSP and correct JavaScript MIME; no page
+scripts or provider/account state are added to the client. The self-contained
+`harness.html` demonstrates the transport adapter; coordinator wires private
+Cloud separately. Do not use the historical419 instructions as a version bump.
+
+`attachBrowserDisplay(canvas, transport, {tab_id,generation}, options)` needs the
+existing encrypted kernel `request`, event listener and scoped
+`subscribeDisplay`/`unsubscribeDisplay` adapter. Preserve shared-client sender
+pinning, display-next no-replay and durable session replay-cursor separation.
+Use native `deviceScaleFactor`, negotiated bitrate and default `creditWindow:4`;
+`start()` maintains bounded continuous credits and `stop()` awaits them. For
+manual polls use `next()` while stopped. Input/takeover/release/actors route
+through the same kernel actor/document seam; `close()` releases local presenter,
+scoped relay registration and kernel subscription. Polling unchanged frames
+still renews display admission. Default-off feature and minimum427 remain.
+
+Worker decode adds no jitter buffer; authoritative frames retain dependency
+order. Keep `scrollPredictionRegion` unset unless product geometry is explicitly
+trusted; prediction does not count as source acknowledgement. Surface stream
+errors and actor takeover to users through existing flows. The presenter canvas
+is an image surface, so IME/clipboard/file chooser/drag-drop remain existing
+kernel input capability questions rather than DOM replay inferred from pixels.
+See `MULTIDOMAIN_DISPLAY_PERFORMANCE.md` for RED performance targets and exact
+execution/binary evidence; this module is reviewable, not rollout acceptance.
+
+## MD-DISPLAY-04: protocol441 dependent-video compatibility
+
+Phase9 uses reservation local 441 / relay 84 for the dependent-video transport
+contract. A display subscription explicitly offers
+`chariox-video-dependencies-v1` alongside its real codecs and PNG. The kernel
+retains independent keyframes for older offers using the same VP9/H.264 names.
+Only admitted modern offers may receive persistent key/delta chains. Sequence,
+document, source and actor fences still apply; a missing dependency needs an
+independent recovery frame. H.264 intra-refresh recovery points are delta
+packets, not independent IDRs; explicit resets force an IDR.
+
+Cloud should use the supplied441-minimum presenter and its capability offer.
+The local/relay versions and shared client constant are bumped together; the
+focused subscription snapshot/hash now pins the capability value, and the
+frame-contract drill covers both legacy independent offers and negotiated
+dependencies. Historical427/74 receipts retain their own source identities.

@@ -1,4 +1,4 @@
-//! MD-2: protocol 443 sessionless host-browser snapshots.
+//! MD-2: protocol 447 sessionless host-browser snapshots.
 use super::*;
 use crate::local::{
     KernelBrowserCommand as Command, KernelBrowserInput as Input, KernelBrowserRequest,
@@ -6,7 +6,7 @@ use crate::local::{
 
 #[test]
 fn kernel_browser_protocol_443_request_snapshots() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 443);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 447);
     let cases = [
         (Command::Start, serde_json::json!({"op":"start"})),
         (Command::State, serde_json::json!({"op":"state"})),
@@ -130,7 +130,7 @@ fn kernel_browser_protocol_443_request_snapshots() {
 
 #[test]
 fn kernel_browser_protocol_443_response_snapshot() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 443);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 447);
     let result = serde_json::json!({"generation":2,"state":"ready","tabs":[{"tab_id":"host-tab-t","document_id":"d","url":"https://example.com/","title":"Example"}]});
     let response = LocalDaemonResponse::KernelBrowser {
         result: result.clone(),
@@ -142,13 +142,13 @@ fn kernel_browser_protocol_443_response_snapshot() {
 }
 
 #[test]
-fn kernel_browser_display_protocol_443_shapes_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 443);
+fn kernel_browser_display_protocol_447_shapes_and_hash() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 447);
     let commands = [
         Command::DisplaySubscribe {
             tab_id: "t".into(),
             generation: 2,
-            codecs: vec!["vp09.00.10.08".into(), "png".into()],
+            codecs: vec!["avc1.420033".into(), "png".into(), "chariox-stripes-v1".into()],
             bitrate: 2_000_000,
             device_scale_factor: 2,
         },
@@ -193,7 +193,7 @@ fn kernel_browser_display_protocol_443_shapes_and_hash() {
     }
     let event = crate::transport::kernel_protocol::KernelEvent::KernelBrowserFrame {
         subscription_id: "s".into(),
-        frame: serde_json::json!({"kind":"tiles","base_sequence":3,"sequence":4,"document_id":"d","generation":2,"tab_id":"t","width":2560,"height":1600,"device_scale_factor":2,"tiles":[]}),
+        frame: serde_json::json!({"kind":"stripes","base_sequence":3,"sequence":4,"document_id":"d","generation":2,"tab_id":"t","width":2560,"height":1600,"device_scale_factor":2,"stripes":[{"row":0,"y":0,"height":200,"codec":"avc1.420033","key":false,"sequence":5,"reference_sequence":4,"data_base64":"opaque"}]}),
     };
     let snapshot = serde_json::json!({"requests":values,"event":event});
     assert_eq!(
@@ -201,6 +201,6 @@ fn kernel_browser_display_protocol_443_shapes_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "9df723cb7058e131e171fcc0856836b14b98fd8556da51962f11070d533cda51"
+        "f05ef1a0d9d1646c9aa62587066d749fb76d16dee504e42cab61222e2cf81b11"
     );
 }
