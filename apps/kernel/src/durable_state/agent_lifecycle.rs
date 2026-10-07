@@ -267,6 +267,7 @@ fn decode<T: serde::de::DeserializeOwned>(s: &str) -> Result<T, DaemonError> {
 pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS agent_tasks(task_id TEXT PRIMARY KEY,room_id TEXT NOT NULL,agent_id TEXT NOT NULL,prompt_id TEXT NOT NULL,payload TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS agent_tasks_room ON agent_tasks(room_id,agent_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS agent_task_turn ON agent_tasks(room_id,agent_id,prompt_id);
     CREATE TABLE IF NOT EXISTS agent_registrations(id TEXT PRIMARY KEY,task_id TEXT NOT NULL,payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS agent_lifecycle_quarantine(kind TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,at_ms INTEGER NOT NULL,PRIMARY KEY(kind,id));
     CREATE TABLE IF NOT EXISTS agent_source_occurrences(sequence INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL,source_id TEXT NOT NULL,occurrence_id TEXT NOT NULL,success INTEGER NOT NULL,UNIQUE(room_id,source_id,occurrence_id));
@@ -306,7 +307,8 @@ impl DurableKernelStateStore {
             .map_err(sql)?;
         rows.map(|row| {
             let (id, room, agent, prompt, payload) = row.map_err(sql)?;
-            Ok(decode(&payload).unwrap_or_else(|_| quarantine::task(id, room, agent, prompt)))
+            Ok(decode_task(&id, &room, &agent, &prompt, &payload)
+                .unwrap_or_else(|_| quarantine::task(id, room, agent, prompt)))
         })
         .collect()
     }
@@ -370,15 +372,16 @@ pub(super) fn execute(db: &mut Connection, request: Request) -> bool {
     uncertain
 }
 fn load(tx: &Transaction<'_>, id: &str) -> Result<AgentTaskExecution, DaemonError> {
-    let s: Option<String> = tx
+    let row: Option<(String, String, String, String)> = tx
         .query_row(
-            "SELECT payload FROM agent_tasks WHERE task_id=?1",
+            "SELECT room_id,agent_id,prompt_id,payload FROM agent_tasks WHERE task_id=?1",
             [id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()
         .map_err(sql)?;
-    decode(s.as_deref().ok_or_else(|| error("task unavailable"))?)
+    let (room, agent, prompt, payload) = row.ok_or_else(|| error("task unavailable"))?;
+    decode_task(id, &room, &agent, &prompt, &payload)
 }
 fn for_turn(
     tx: &Transaction<'_>,
@@ -386,15 +389,40 @@ fn for_turn(
     agent: &str,
     prompt: &str,
 ) -> Result<Option<AgentTaskExecution>, DaemonError> {
-    let s: Option<String> = tx
-        .query_row(
-            "SELECT payload FROM agent_tasks WHERE room_id=?1 AND agent_id=?2 AND prompt_id=?3",
-            params![room, agent, prompt],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(sql)?;
-    s.map(|s| decode(&s)).transpose()
+    let row: Option<(String,String)> = tx.query_row("SELECT task_id,payload FROM agent_tasks WHERE room_id=?1 AND agent_id=?2 AND prompt_id=?3",params![room,agent,prompt],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql)?;
+    row.map(|(id, payload)| decode_task(&id, room, agent, prompt, &payload))
+        .transpose()
+}
+fn decode_task(
+    id: &str,
+    room: &str,
+    agent: &str,
+    prompt: &str,
+    payload: &str,
+) -> Result<AgentTaskExecution, DaemonError> {
+    let t: AgentTaskExecution = decode(payload)?;
+    if t.task_id != id || t.room_id != room || t.agent_id != agent || t.prompt_id != prompt {
+        return Err(error("task identity corrupt; quarantine required"));
+    }
+    if t.state == ExecutionState::Waiting
+        && t.wait.as_ref().is_none_or(|w| {
+            w.registration_ids.is_empty()
+                || w.deadline_ms <= w.started_at_ms
+                || w.deadline_ms > i64::MAX as u64
+        })
+    {
+        return Err(error("wait state corrupt; quarantine required"));
+    }
+    if t.state == ExecutionState::Done
+        && t.obligations
+            .iter()
+            .any(|o| matches!(o.status.as_str(), "open" | "failed" | "settling"))
+    {
+        return Err(error(
+            "done has unfinished obligations; quarantine required",
+        ));
+    }
+    Ok(t)
 }
 fn save(tx: &Transaction<'_>, task: &AgentTaskExecution) -> Result<(), DaemonError> {
     tx.execute("INSERT INTO agent_tasks VALUES(?1,?2,?3,?4,?5) ON CONFLICT(task_id) DO UPDATE SET prompt_id=excluded.prompt_id,payload=excluded.payload",params![task.task_id,task.room_id,task.agent_id,task.prompt_id,encode(task)?]).map_err(sql)?;
@@ -422,7 +450,7 @@ fn tasks(tx: &Transaction<'_>) -> Result<Vec<AgentTaskExecution>, DaemonError> {
     drop(q);
     let mut result = vec![];
     for (id, room, agent, prompt, payload) in rows {
-        match decode(&payload) {
+        match decode_task(&id, &room, &agent, &prompt, &payload) {
             Ok(t) => result.push(t),
             Err(_) => {
                 quarantine::retain(tx, "task", &id, &payload)?;

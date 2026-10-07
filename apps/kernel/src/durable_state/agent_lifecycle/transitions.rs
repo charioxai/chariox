@@ -574,6 +574,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if t.state != ExecutionState::Blocked || t.blocked_revision != revision {
                 return Err(error("owner response is stale"));
             }
+            let quarantined:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_lifecycle_quarantine WHERE kind='task' AND id=?1)",[&task],|r|r.get(0)).map_err(sql)?;
+            if resume && quarantined {
+                return Err(error("quarantined obligation coverage must be restored before resume; explicit cancellation remains available"));
+            }
             let mut q = tx.prepare("SELECT payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') IN ('blocked','submitting','uncertain')").map_err(sql)?;
             let deliveries = q
                 .query_map(params![t.room_id, t.agent_id], |r| r.get::<_, String>(0))
