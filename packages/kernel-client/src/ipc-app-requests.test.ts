@@ -9,7 +9,7 @@ import { grantAppFileRequest, saveAppFileExportRequest } from "./ipc-app-request
 import { prepareDeploymentAppsRequest, previewDeploymentAppsRequest } from "./ipc-app-requests.js"
 
 test("App inspection shares protocol 297 without client owner or host paths", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 435)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 455)
   assert.deepEqual(listAppInstallationsRequest(), { ListAppInstallations: { after: null, limit: null } })
   assert.deepEqual(listAppInstallationsRequest({ after: "todo", limit: 1 }), { ListAppInstallations: { after: "todo", limit: 1 } })
   assert.deepEqual(getAppInstallationRequest("todo"), { GetAppInstallation: { installation_id: "todo" } })
@@ -177,13 +177,13 @@ test("deployment App preview names the publication and optionally a release", ()
 
 test("App host acceptance names only the session and operation, never a client payload or owner", async () => {
   const { acceptAppHostActionRequest } = await import("./ipc-app-requests.js")
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 435)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 455)
   assert.deepEqual(acceptAppHostActionRequest("s", "offer"), { AcceptAppHostAction: { session_id: "s", operation_id: "offer" } })
 })
 
 import { restoreAppDataSnapshotRequest } from "./ipc-app-requests.js"
 test("snapshot restore binds installation, generation and saved identity without authority", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 435)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 455)
   assert.deepEqual(restoreAppDataSnapshotRequest("todo", "3", "snapshot-1"), {
     RestoreAppDataSnapshot: { installation_id: "todo", expected_generation: "3", snapshot_id: "snapshot-1" },
   })

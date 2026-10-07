@@ -875,6 +875,7 @@ mod tests {
 
     fn receipt(package_sha256: &str, plan_digest: &str) -> RelayManagedContextImportReceipt {
         RelayManagedContextImportReceipt {
+            provider_accounts: Vec::new(),
             transfer_id: "transfer-1".to_string(),
             archive_sha256: package_sha256.to_string(),
             plan_digest: plan_digest.to_string(),

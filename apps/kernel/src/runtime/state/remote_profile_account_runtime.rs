@@ -30,6 +30,13 @@ impl KernelRuntimeState {
         } else {
             ProviderAccountMaterializationTargetKind::Worker
         };
+        if registry
+            .get(&owner, provider, &update.account_profile)?
+            .is_installed_at(target_kind, &update.worker_kernel_id)
+        {
+            return Ok(());
+        }
+        let mut received_copy = None;
         let result = async {
             let mut materialization =
                 registry.export_materialization(&owner, provider, &update.account_profile)?;
@@ -59,11 +66,13 @@ impl KernelRuntimeState {
                 .await?;
             match response {
                 RelayPeerResponse::RemoteProviderAccountEnsured {
+                    copy,
                     provider: confirmed_provider,
                     account_profile,
                 } if confirmed_provider == provider
                     && account_profile == update.account_profile =>
                 {
+                    received_copy = copy;
                     Ok(())
                 }
                 _ => Err(DaemonError::LocalTransport {
@@ -80,6 +89,7 @@ impl KernelRuntimeState {
             provider,
             &update.account_profile,
             ProviderAccountMaterializationStatus {
+                copy: None,
                 target_kind,
                 target_ref: update.worker_kernel_id.clone(),
                 state: if result.is_ok() {
@@ -97,6 +107,23 @@ impl KernelRuntimeState {
         // Never destroy an existing lease or discard queued work on failure.
         result?;
         status?;
+        if let Some(status) = received_copy {
+            let binding = agent
+                .remote_execution()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "record account copy",
+                    message: "worker binding disappeared".into(),
+                })?;
+            registry.record_confirmed_account_copy(
+                &owner,
+                provider,
+                &update.account_profile,
+                &binding.worker_machine_id,
+                &update.worker_kernel_id,
+                &update.account_profile,
+                status,
+            )?;
+        }
         Ok(())
     }
 }

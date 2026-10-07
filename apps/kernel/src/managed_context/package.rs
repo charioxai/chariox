@@ -857,11 +857,14 @@ fn import_provider_accounts(
                     )
                     .and_then(|receipt| {
                         accounts.push(receipt);
-                        target.registry.record_credential_copy(
-                            &target.owner_user_id,
-                            materialization,
-                            &request.expected_binding.source_kernel_id,
-                        )
+                        let receipt = accounts.last_mut().unwrap();
+                        target.registry.record_received_account_copy(
+                            &target.owner_user_id, materialization, &receipt.profile_id,
+                            crate::account_profile::ProviderAccountMaterializationTargetKind::Worker,
+                        )?;
+                        receipt.copy = target.registry.get(&target.owner_user_id, &receipt.provider, &receipt.profile_id)?
+                            .materializations.into_iter().find(|status| status.copy.as_ref().is_some_and(|copy| copy.target_account_id == receipt.profile_id));
+                        Ok(())
                     }) {
                     Ok(()) => {}
                     Err(error) => {
@@ -1028,6 +1031,7 @@ pub(crate) fn rollback_persisted_managed_context_publication(
                 .iter()
                 .map(|materialization| {
                     Ok(ManagedContextProviderAccountReceipt {
+                        copy: None,
                         context_id: context_id.clone(),
                         package_sha256: package_sha256.clone(),
                         materialization_sha256: provider_account_materialization_sha256(
@@ -1166,6 +1170,7 @@ fn preflight_import_receipt_capacity(
                     .iter()
                     .map(|materialization| {
                         Ok(ManagedContextProviderAccountReceipt {
+                            copy: None,
                             context_id: request.expected_binding.plan.context_id.clone(),
                             package_sha256: request.expected_package_sha256.clone(),
                             materialization_sha256: provider_account_materialization_sha256(

@@ -995,6 +995,7 @@ fn relay_receipt(
         }
     };
     Ok(RelayManagedContextImportReceipt {
+        provider_accounts: Vec::new(),
         transfer_id: receipt.transfer_id,
         archive_sha256: receipt.package_sha256,
         plan_digest: receipt.plan_digest,

@@ -714,14 +714,25 @@ impl<'a> RemoteLeaseRuntime<'a> {
         if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
             agent.projected_output_history_keys = Vec::new();
         }
+        let account_copy_observations = self
+            .app
+            .provider_account_profile_registry()
+            .received_copy_observations(&lease.owner_user_id, &lease.home_kernel_id)?;
+        let copies_changed = account_copy_observations != leased_agent.projected_account_copies;
         if output_chunks.is_empty()
             && notices.is_empty()
             && completions.is_empty()
             && prompts.is_empty()
+            && !copies_changed
             && !provider_run_changed
             && !(replay_settled_completion && provider_run.is_some())
         {
             return Ok(None);
+        }
+        if copies_changed {
+            if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
+                agent.projected_account_copies = account_copy_observations.clone();
+            }
         }
         if provider_run_changed {
             if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
@@ -731,6 +742,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(Some((
             lease.home_kernel_id,
             RelayPeerEvent::LeasedRuntimeProjection {
+                account_copy_observations,
                 home_session_id: lease.home_session_id,
                 home_agent_id: lease.home_agent_id,
                 provider_run_id: provider_run_id.to_string(),
@@ -898,6 +910,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             output_chunks,
             notices,
             completions,
+            account_copy_observations: _,
         } = event;
         let session_id = home_session_id.as_str();
         let agent_id = home_agent_id.as_str();
@@ -2887,6 +2900,7 @@ mod explicit_completion_tests {
             .project_remote_runtime_projection(
                 crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
                 crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    account_copy_observations: Vec::new(),
                     home_session_id: leased_agent.backing_session_id.to_string(),
                     home_agent_id: leased_agent.backing_agent_id.to_string(),
                     provider_run_id: provider_run_id.to_string(),
@@ -2949,6 +2963,7 @@ mod explicit_completion_tests {
             .project_remote_runtime_projection(
                 crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
                 crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    account_copy_observations: Vec::new(),
                     home_session_id: leased_agent.backing_session_id.to_string(),
                     home_agent_id: leased_agent.backing_agent_id.to_string(),
                     provider_run_id: provider_run_id.to_string(),
@@ -3063,6 +3078,7 @@ mod mp11_projection_admission_tests {
                 .project_remote_runtime_projection(
                     authority,
                     crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                        account_copy_observations: Vec::new(),
                         home_session_id: session_id.to_string(),
                         home_agent_id: agent.id().to_string(),
                         provider_run_id: "run".to_string(),
@@ -3114,6 +3130,7 @@ mod mp11_projection_admission_tests {
             .project_remote_runtime_projection(
                 crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
                 crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    account_copy_observations: Vec::new(),
                     home_session_id: session.id().to_string(),
                     home_agent_id: agent.id().to_string(),
                     provider_run_id: "foreign-run".to_string(),

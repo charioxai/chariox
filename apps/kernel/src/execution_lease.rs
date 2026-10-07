@@ -51,6 +51,9 @@ impl ExecutionLease {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeasedAgent {
+    #[serde(skip)]
+    pub(crate) projected_account_copies:
+        Vec<crate::account_profile::ProviderAccountCopyObservation>,
     pub id: String,
     pub lease_id: String,
     pub home_agent_id: String,
@@ -172,6 +175,7 @@ impl LeasedAgent {
             projected_prompt_ids: Vec::new(),
             projected_completion_keys: Vec::new(),
             projected_output_history_keys: Vec::new(),
+            projected_account_copies: Vec::new(),
             projected_provider_run: None,
             active_home_prompt_id: None,
             active_home_prompt_started_at_ms: None,

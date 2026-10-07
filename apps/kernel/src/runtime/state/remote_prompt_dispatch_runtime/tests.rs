@@ -1082,6 +1082,7 @@ mod receipt_reconciliation {
                 &home_public_key,
                 RelayPeerResponse::LeasedRuntimeProjectionDrained {
                     event: Some(RelayPeerEvent::LeasedRuntimeProjection {
+                        account_copy_observations: Vec::new(),
                         home_session_id: session_id,
                         home_agent_id: agent_id,
                         provider_run_id: run_id.clone(),
@@ -1497,6 +1498,7 @@ mod receipt_reconciliation {
                 &listener_home_public_key,
                 RelayPeerResponse::LeasedRuntimeProjectionDrained {
                     event: Some(RelayPeerEvent::LeasedRuntimeProjection {
+                        account_copy_observations: Vec::new(),
                         home_session_id: listener_session_id,
                         home_agent_id: listener_agent_id,
                         provider_run_id: "worker-run-completed-receipt".to_string(),
@@ -2265,6 +2267,7 @@ mod receipt_reconciliation {
         .unwrap();
         assert!(no_receipt.is_none());
         let completion_event = RelayPeerEvent::LeasedRuntimeProjection {
+            account_copy_observations: Vec::new(),
             home_session_id: dispatch.session_id.clone(),
             home_agent_id: dispatch.agent_id.clone(),
             provider_run_id: "worker-receipt-run".to_string(),
@@ -2285,6 +2288,7 @@ mod receipt_reconciliation {
             &completion_event
         ));
         let conflicting_event = RelayPeerEvent::LeasedRuntimeProjection {
+            account_copy_observations: Vec::new(),
             home_session_id: dispatch.session_id.clone(),
             home_agent_id: dispatch.agent_id.clone(),
             provider_run_id: "worker-receipt-run".to_string(),
@@ -2593,6 +2597,7 @@ fn completed_worker_projection(
     home_prompt_id: &str,
 ) -> crate::transport::relay_peer::RelayPeerEvent {
     crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+        account_copy_observations: Vec::new(),
         home_session_id: session_id.to_string(),
         home_agent_id: agent_id.to_string(),
         provider_run_id: provider_run_id.to_string(),

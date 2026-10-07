@@ -1135,7 +1135,7 @@ fn relay_presence_from_started_slice<'a>(
     Ok(discovered)
 }
 
-async fn local_docker_slice_relay(
+pub(super) async fn local_docker_slice_relay(
     config_projection: &DaemonConfigProjectionStore,
     slice: &crate::slice::SliceRecord,
 ) -> Result<crate::slice::LocalDockerSliceRelay, DaemonError> {

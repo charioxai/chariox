@@ -1373,6 +1373,7 @@ impl KernelRuntimeState {
             provider_run,
             output_chunks,
             completions,
+            account_copy_observations,
             ..
         } = &event;
 
@@ -1384,6 +1385,7 @@ impl KernelRuntimeState {
                 }) || !completions.is_empty(),
             )
         });
+        let copy_observations = account_copy_observations.clone();
         let session_id = home_session_id.clone();
         let agent_id = home_agent_id.clone();
         let outcome = self
@@ -1393,6 +1395,37 @@ impl KernelRuntimeState {
             .await?;
         if !outcome.accepted {
             return Ok(());
+        }
+        if let Ok(agent) = self.owned.agent_store.get_agent(&agent_id) {
+            if let Some(binding) = agent.remote_execution() {
+                let config = self.owned.config_projection.snapshot();
+                let owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+                for observation in copy_observations {
+                    if let Some(copy) = &observation.status.copy {
+                        if copy.source_kernel_id == config.daemon_id
+                            && copy.source_machine_id == config.host_machine_id
+                            && copy.target_kernel_id == binding.worker_kernel_id
+                            && copy.target_machine_id == binding.worker_machine_id
+                        {
+                            if self
+                                .owned
+                                .provider_account_profiles
+                                .get(&owner, &observation.provider, &copy.source_account_id)
+                                .is_ok()
+                            {
+                                self.owned
+                                    .provider_account_profiles
+                                    .update_materialization_status(
+                                        &owner,
+                                        &observation.provider,
+                                        &copy.source_account_id,
+                                        observation.status.clone(),
+                                    )?;
+                            }
+                        }
+                    }
+                }
+            }
         }
         for intent in outcome.remote_dispatches {
             self.spawn_remote_prompt_dispatch(intent.dispatch);
@@ -1421,6 +1454,27 @@ impl KernelRuntimeState {
         account_profile: &str,
         state: crate::slice_provider_auth::SliceProviderAuthState,
     ) -> Result<(), DaemonError> {
+        if state != crate::slice_provider_auth::SliceProviderAuthState::Authenticated {
+            if let Ok(agent) = self.owned.agent_store.get_agent(agent_id) {
+                if let Some(binding) = agent.remote_execution() {
+                    let owner =
+                        self.provider_account_authority_owner_user_id(agent.owner_user_id());
+                    self.owned.provider_account_profiles.observe_target_copy(
+                        &owner,
+                        provider,
+                        &binding.worker_kernel_id,
+                        account_profile,
+                        if state
+                            == crate::slice_provider_auth::SliceProviderAuthState::Authenticated
+                        {
+                            crate::account_profile::ProviderAccountCopyAuthState::Authenticated
+                        } else {
+                            crate::account_profile::ProviderAccountCopyAuthState::NeedsLogin
+                        },
+                    )?;
+                }
+            }
+        }
         let source = if state == crate::slice_provider_auth::SliceProviderAuthState::Authenticated {
             "provider_runtime_authenticated"
         } else {
@@ -1490,17 +1544,9 @@ fn remote_provider_auth_observation(
 }
 
 fn provider_diagnostic_is_auth_failure(diagnostic: &str) -> bool {
-    let normalized = diagnostic.to_ascii_lowercase();
-    [
-        "401 unauthorized",
-        "access token could not be refreshed",
-        "authentication token has been invalidated",
-        "refresh token was revoked",
-        "please log out and sign in again",
-        "please try signing in again",
-    ]
-    .iter()
-    .any(|needle| normalized.contains(needle))
+    crate::provider::renewal_failure::renewal_failed("codex", diagnostic)
+        || crate::provider::renewal_failure::renewal_failed("opencode", diagnostic)
+        || crate::provider::renewal_failure::renewal_failed("claude", diagnostic)
 }
 
 #[cfg(test)]

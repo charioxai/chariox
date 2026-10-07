@@ -428,6 +428,46 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::ImportManagedSliceProviderAccountCopy {
+            slice_id,
+            materialization,
+        } => {
+            let authorized = materialization.copy_source.as_ref().is_some_and(|source| {
+                router.authorize_managed_slice_account_copy(
+                    &slice_id,
+                    source,
+                    &stable_peer_daemon_id(from_daemon_id),
+                    &requester_public_key,
+                )
+            });
+            if !authorized {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "unauthorized",
+                        "account copy does not match the managed slice owner",
+                        false,
+                    )),
+                };
+            }
+            match crate::runtime::provider_account_control::import_managed_account_copy(
+                &router.runtime_state(),
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                materialization,
+            )
+            .await
+            {
+                Ok(profile) => {
+                    RelayPeerResponse::ManagedSliceProviderAccountCopyImported { profile }
+                }
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
         RelayPeerRequest::Ping { value } => RelayPeerResponse::Pong { value, daemon_id },
         RelayPeerRequest::InstallManagedSliceRelayToken {
             slice_id,
@@ -1813,6 +1853,16 @@ pub(super) async fn handle_daemon_peer_request(
                 .await;
             match ensured {
                 Ok(profile) => RelayPeerResponse::RemoteProviderAccountEnsured {
+                    copy: profile
+                        .materializations
+                        .iter()
+                        .find(|status| {
+                            status
+                                .copy
+                                .as_ref()
+                                .is_some_and(|copy| copy.target_account_id == profile.profile_id)
+                        })
+                        .cloned(),
                     provider: profile.provider,
                     account_profile: profile.profile_id,
                 },

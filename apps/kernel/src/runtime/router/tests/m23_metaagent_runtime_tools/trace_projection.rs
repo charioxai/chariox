@@ -474,6 +474,7 @@ async fn remote_runtime_projection_records_metaagent_turn_completion_event() {
         .project_relay_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-1"),
             crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                account_copy_observations: Vec::new(),
                 home_session_id: session.id().to_string(),
                 home_agent_id: worker.id().to_string(),
                 provider_run_id: "remote:worker:provider-run-1".to_string(),

@@ -251,7 +251,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
                         home_agent_id: plan.agent.id().to_string(),
                         execution_lease_id: lease_id.clone(),
                     },
-                    materialization: account_materialization,
+                    materialization: account_materialization.clone(),
                 },
                 use_connected_relay,
                 plan.authorizer.as_ref(),
@@ -261,15 +261,25 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
                 Ok(response)
                     if remote_provider_account_response_matches(&response, &expected_account) =>
                 {
-                    if let Err(error) = update_remote_binding_materialization_status(
-                        &plan.provider_account_profiles,
-                        &account_owner_user_id,
-                        &plan.agent,
-                        materialization_target_kind,
-                        &materialization_target_ref,
-                        crate::account_profile::ProviderAccountMaterializationState::Materialized,
-                        None,
-                    ) {
+                    let receipt_result = if let RelayPeerResponse::RemoteProviderAccountEnsured {
+                        copy: Some(status),
+                        ..
+                    } = response
+                    {
+                        plan.provider_account_profiles
+                            .record_confirmed_account_copy(
+                                &account_owner_user_id,
+                                plan.agent.provider(),
+                                &source_profile.profile_id,
+                                &worker_kernel.machine_id,
+                                &worker_kernel.kernel_id,
+                                &expected_account.profile_id,
+                                status,
+                            )
+                    } else {
+                        Ok(())
+                    };
+                    if let Err(error) = receipt_result {
                         cleanup_remote_binding_setup_off_lock(
                             &relay_config,
                             &plan.relay_state,
@@ -869,7 +879,8 @@ impl DaemonApp {
                                 agent.provider(),
                                 agent.provider_account_profile(),
                                 crate::account_profile::ProviderAccountMaterializationStatus {
-                                    target_kind: materialization_target_kind,
+                                                                        copy: None,
+target_kind: materialization_target_kind,
                                     target_ref: materialization_target_ref.clone(),
                                     state: crate::account_profile::ProviderAccountMaterializationState::Error,
                                     observed_at_ms: crate::session::unix_epoch_ms(),
@@ -897,7 +908,7 @@ impl DaemonApp {
                             home_agent_id: agent.id().to_string(),
                             execution_lease_id: lease.id.clone(),
                         },
-                        materialization: account_materialization,
+                        materialization: account_materialization.clone(),
                     },
                     use_connected_relay,
                     authorize,
@@ -908,23 +919,26 @@ impl DaemonApp {
                             &expected_account,
                         ) =>
                     {
-                        if let Err(error) = self
-                            .provider_account_profiles
-                            .update_materialization_status(
-                                &account_owner_user_id,
-                                agent.provider(),
-                                agent.provider_account_profile(),
-                                crate::account_profile::ProviderAccountMaterializationStatus {
-                                    target_kind: materialization_target_kind,
-                                    target_ref: materialization_target_ref.clone(),
-                                    state: crate::account_profile::ProviderAccountMaterializationState::Materialized,
-                                    observed_at_ms: crate::session::unix_epoch_ms(),
-                                    last_error: None,
-                                },
-                            )
+                        if let RelayPeerResponse::RemoteProviderAccountEnsured {
+                            copy: Some(status),
+                            ..
+                        } = response
                         {
-                            cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
-                            return Err(error);
+                            if let Err(error) = self
+                                .provider_account_profiles
+                                .record_confirmed_account_copy(
+                                    &account_owner_user_id,
+                                    agent.provider(),
+                                    &source_profile.profile_id,
+                                    &worker_kernel.machine_id,
+                                    &worker_kernel.kernel_id,
+                                    &expected_account.profile_id,
+                                    status,
+                                )
+                            {
+                                cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
+                                return Err(error);
+                            }
                         }
                         materialized_account = Some(expected_account);
                     }
@@ -934,7 +948,8 @@ impl DaemonApp {
                             agent.provider(),
                             agent.provider_account_profile(),
                             crate::account_profile::ProviderAccountMaterializationStatus {
-                                target_kind: materialization_target_kind,
+                                                                copy: None,
+target_kind: materialization_target_kind,
                                 target_ref: materialization_target_ref.clone(),
                                 state:
                                     crate::account_profile::ProviderAccountMaterializationState::Error,
@@ -956,7 +971,8 @@ impl DaemonApp {
                             agent.provider(),
                             agent.provider_account_profile(),
                             crate::account_profile::ProviderAccountMaterializationStatus {
-                                target_kind: materialization_target_kind,
+                                                                copy: None,
+target_kind: materialization_target_kind,
                                 target_ref: materialization_target_ref,
                                 state:
                                     crate::account_profile::ProviderAccountMaterializationState::Error,
@@ -1981,6 +1997,7 @@ fn update_remote_binding_materialization_status(
             agent.provider(),
             agent.provider_account_profile(),
             crate::account_profile::ProviderAccountMaterializationStatus {
+                copy: None,
                 target_kind,
                 target_ref: target_ref.to_string(),
                 state,
@@ -2073,6 +2090,7 @@ fn remote_provider_account_response_matches(
     matches!(
         response,
         RelayPeerResponse::RemoteProviderAccountEnsured {
+                    copy: _,
             provider,
             account_profile,
         } if provider == &expected.provider && account_profile == &expected.profile_id
@@ -2179,6 +2197,7 @@ mod tests {
 
         assert!(super::remote_provider_account_response_matches(
             &crate::transport::relay_peer::RelayPeerResponse::RemoteProviderAccountEnsured {
+                copy: None,
                 provider: "codex".to_string(),
                 account_profile: "codex-1-vfx4dshw".to_string(),
             },
@@ -2186,6 +2205,7 @@ mod tests {
         ));
         assert!(!super::remote_provider_account_response_matches(
             &crate::transport::relay_peer::RelayPeerResponse::RemoteProviderAccountEnsured {
+                copy: None,
                 provider: "codex".to_string(),
                 account_profile: "default".to_string(),
             },
@@ -2230,6 +2250,7 @@ mod tests {
                 "codex",
                 &profile.profile_id,
                 crate::account_profile::ProviderAccountMaterializationStatus {
+                    copy: None,
                     target_kind:
                         crate::account_profile::ProviderAccountMaterializationTargetKind::Worker,
                     target_ref: "worker-kernel".to_string(),

@@ -452,3 +452,78 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 }
+
+pub(crate) async fn import_managed_account_copy(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    mut materialization: crate::account_profile::ProviderAccountMaterialization,
+) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+    let owner_user_id = runtime_state.provider_account_authority_owner_user_id(owner_user_id);
+    let registry = runtime_state.provider_account_profile_registry().clone();
+    let response = tokio::task::spawn_blocking(move || {
+        crate::account_profile::validate_managed_context_materialization_shape(
+            &materialization.profile.provider,
+            &materialization,
+        )?;
+        if materialization.copy_source.is_none() {
+            return Err(DaemonError::LocalTransport {
+                operation: "import provider account copy",
+                message: "managed account copy requires source machine identity".into(),
+            });
+        }
+        materialization.profile.owner_user_id = owner_user_id.clone();
+        materialization.profile.origin =
+            crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated;
+        // Reconnects and repeated imports preserve a receiving machine's own login.
+        if let Some(profile) = registry
+            .list(&owner_user_id, Some(&materialization.profile.provider))?
+            .into_iter()
+            .find(|profile| profile.profile_id == materialization.profile.profile_id)
+        {
+            crate::local::provider_requests::observe_provider_auth_status(
+                &registry,
+                &owner_user_id,
+                &profile.provider,
+                &profile.profile_id,
+            )?;
+            return registry.get(&owner_user_id, &profile.provider, &profile.profile_id);
+        }
+        let profile = registry.materialize_replica(&owner_user_id, &materialization)?;
+        registry.record_received_account_copy(
+            &owner_user_id,
+            &materialization,
+            &profile.profile_id,
+            crate::account_profile::ProviderAccountMaterializationTargetKind::Slice,
+        )?;
+        if crate::local::provider_requests::observe_provider_auth_status(
+            &registry,
+            &owner_user_id,
+            &profile.provider,
+            &profile.profile_id,
+        )
+        .is_err()
+        {
+            registry.update_observation(
+                &owner_user_id,
+                &profile.provider,
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Error,
+                None,
+                None,
+                None,
+                None,
+            )?;
+        }
+        registry.get(&owner_user_id, &profile.provider, &profile.profile_id)
+    })
+    .await
+    .map_err(|_| DaemonError::LocalTransport {
+        operation: "import provider account copy",
+        message: "account import task failed".into(),
+    })??;
+    runtime_state
+        .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+        .await;
+    runtime_state.record_waiting_room_change();
+    Ok(response)
+}

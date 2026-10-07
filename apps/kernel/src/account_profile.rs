@@ -130,8 +130,52 @@ pub struct ProviderAccountReplicaMetadata {
     pub is_default: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderAccountCopySource {
+    pub machine_id: String,
+    pub kernel_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAccountCopyAuthState {
+    Unknown,
+    Authenticated,
+    NeedsLogin,
+    Removed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderAccountCopyObservation {
+    pub provider: String,
+    pub status: ProviderAccountMaterializationStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct RetiredProviderAccountCopy {
+    owner_user_id: String,
+    observation: ProviderAccountCopyObservation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderAccountCopyMetadata {
+    pub source_machine_id: String,
+    pub source_kernel_id: String,
+    pub source_account_id: String,
+    pub target_machine_id: String,
+    pub target_kernel_id: String,
+    pub target_account_id: String,
+    pub renewable_services: Vec<String>,
+    pub auth_state: ProviderAccountCopyAuthState,
+    pub copied_at_ms: u64,
+    #[serde(default)]
+    pub warning_seen: bool,
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderAccountMaterialization {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy_source: Option<ProviderAccountCopySource>,
     pub profile: ProviderAccountReplicaMetadata,
     pub files: Vec<ProviderAccountMaterializationFile>,
     pub generated_at_ms: u64,
@@ -139,7 +183,9 @@ pub struct ProviderAccountMaterialization {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ManagedContextProviderAccountReceipt {
+pub struct ManagedContextProviderAccountReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy: Option<ProviderAccountMaterializationStatus>,
     pub context_id: String,
     pub package_sha256: String,
     pub materialization_sha256: String,
@@ -270,6 +316,8 @@ pub enum ProviderAccountMaterializationState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderAccountMaterializationStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy: Option<ProviderAccountCopyMetadata>,
     pub target_kind: ProviderAccountMaterializationTargetKind,
     pub target_ref: String,
     pub state: ProviderAccountMaterializationState,
@@ -925,6 +973,8 @@ struct ReplacedProviderAccountProfile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RegistryDocument {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    retired_account_copies: Vec<RetiredProviderAccountCopy>,
     version: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     credential_copy_notices: Vec<copy_notice::CredentialCopyNotice>,
@@ -945,6 +995,7 @@ struct PendingReplicaCleanup {
 impl Default for RegistryDocument {
     fn default() -> Self {
         Self {
+            retired_account_copies: Vec::new(),
             version: REGISTRY_VERSION,
             credential_copy_notices: Vec::new(),
             profiles: Vec::new(),
@@ -955,6 +1006,7 @@ impl Default for RegistryDocument {
 
 #[derive(Clone)]
 pub struct ProviderAccountProfileRegistry {
+    copy_identity: Option<ProviderAccountCopySource>,
     path: PathBuf,
     document: Arc<RwLock<RegistryDocument>>,
     usage_refresh_attempts: Arc<ProviderAccountUsageRefreshCoordinator>,
@@ -994,6 +1046,14 @@ impl Drop for ProviderAccountUsageRefreshLease {
 }
 
 impl ProviderAccountProfileRegistry {
+    pub(crate) fn with_machine_identity(mut self, machine_id: &str, kernel_id: &str) -> Self {
+        self.copy_identity = Some(ProviderAccountCopySource {
+            machine_id: machine_id.into(),
+            kernel_id: kernel_id.into(),
+        });
+        self
+    }
+
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, DaemonError> {
         let path = path.into();
         let (mut document, migrated_legacy_replicas) = if path.exists() {
@@ -1040,6 +1100,7 @@ impl ProviderAccountProfileRegistry {
             | migrate_legacy_managed_claude_scope(&mut document)
             | migrate_automatic_labels(&mut document);
         let registry = Self {
+            copy_identity: None,
             path,
             document: Arc::new(RwLock::new(document)),
             usage_refresh_attempts: Arc::new(ProviderAccountUsageRefreshCoordinator::default()),
@@ -1243,6 +1304,11 @@ impl ProviderAccountProfileRegistry {
             }
             return Ok(profile);
         }
+        // Admit copied logins needing human recovery, retaining the prompt/queue.
+        // The launch/dispatch seams open the same official receiving-kernel login workflow.
+        if self.copied_login_needs_login(owner_user_id, provider, profile_id)? {
+            return Ok(profile);
+        }
         let action = match profile.auth_state {
             ProviderAccountAuthState::Expired => "reconnect",
             ProviderAccountAuthState::Error => "test or reconnect",
@@ -1360,6 +1426,11 @@ impl ProviderAccountProfileRegistry {
         let profile = &mut document.profiles[profile_index];
         let previous_identity = profile.public.identity_summary.take();
         profile.public.auth_state = auth_state;
+        copy_notice::observe_received_copies(
+            &mut profile.public,
+            auth_state,
+            self.copy_identity.as_ref(),
+        );
         profile.public.identity_summary = identity_summary;
         profile.public.plan = plan;
         profile.public.detected_provider_version = detected_provider_version;
@@ -1386,6 +1457,11 @@ impl ProviderAccountProfileRegistry {
         let profile =
             resolve_stored_profile_mut(&mut document, owner_user_id, provider, profile_id)?;
         profile.public.auth_state = ProviderAccountAuthState::NotConfigured;
+        copy_notice::observe_received_copies(
+            &mut profile.public,
+            ProviderAccountAuthState::NotConfigured,
+            self.copy_identity.as_ref(),
+        );
         profile.public.identity_summary = None;
         profile.public.plan = None;
         profile.public.services.clear();
@@ -1500,7 +1576,7 @@ impl ProviderAccountProfileRegistry {
         owner_user_id: &str,
         provider: &str,
         profile_id: &str,
-        status: ProviderAccountMaterializationStatus,
+        mut status: ProviderAccountMaterializationStatus,
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let provider = normalize_provider(provider)?;
         let mut document = self.write_document()?;
@@ -1509,6 +1585,9 @@ impl ProviderAccountProfileRegistry {
         if let Some(existing) = profile.public.materializations.iter_mut().find(|existing| {
             existing.target_kind == status.target_kind && existing.target_ref == status.target_ref
         }) {
+            if status.copy.is_none() {
+                status.copy = existing.copy.clone();
+            }
             *existing = status;
         } else {
             profile.public.materializations.push(status);
@@ -1818,6 +1897,11 @@ impl ProviderAccountProfileRegistry {
         let mut document = self.write_document()?;
         let index = resolved_profile_index(&document, owner_user_id, provider, profile_id)?;
         let removed = document.profiles.remove(index);
+        copy_notice::retire_received_copies(
+            &mut document,
+            &removed.public,
+            self.copy_identity.as_ref(),
+        );
         if removed.public.is_default {
             if let Some(next) = document.profiles.iter_mut().find(|profile| {
                 profile.public.owner_user_id == owner_user_id && profile.public.provider == provider
@@ -1871,6 +1955,11 @@ impl ProviderAccountProfileRegistry {
             remove_managed_root(&managed_root, &self.path)?;
         }
         let removed = document.profiles.remove(index);
+        copy_notice::retire_received_copies(
+            &mut document,
+            &removed.public,
+            self.copy_identity.as_ref(),
+        );
         if removed.public.is_default {
             if let Some(next) = document.profiles.iter_mut().find(|profile| {
                 profile.public.owner_user_id == owner_user_id && profile.public.provider == provider
@@ -2252,6 +2341,11 @@ impl ProviderAccountProfileRegistry {
 
         let original_document = document.clone();
         let removed = document.profiles.remove(index);
+        copy_notice::retire_received_copies(
+            &mut document,
+            &removed.public,
+            self.copy_identity.as_ref(),
+        );
         document.pending_replica_cleanup.push(pending_cleanup);
         if removed.public.is_default {
             if let Some(previous_default_profile_id) = previous_default_profile_id.as_deref() {
@@ -2351,8 +2445,10 @@ impl ProviderAccountProfileRegistry {
         let provider = normalize_provider(provider)?;
         let document = self.read_document()?;
         let stored = resolve_stored_profile(&document, owner_user_id, provider, profile_id)?;
+        // Official artifacts only. An empty Claude profile remains the separate Vault setup-token path.
         let files = materialization_files(&stored.locator)?;
         Ok(ProviderAccountMaterialization {
+            copy_source: self.copy_identity.clone(),
             profile: ProviderAccountReplicaMetadata {
                 owner_user_id: stored.public.owner_user_id.clone(),
                 provider: stored.public.provider.clone(),
@@ -2396,6 +2492,7 @@ impl ProviderAccountProfileRegistry {
         self.materialize_replica(
             owner_user_id,
             &ProviderAccountMaterialization {
+                copy_source: None,
                 profile: ProviderAccountReplicaMetadata {
                     owner_user_id: owner_user_id.to_string(),
                     provider: provider.to_string(),
@@ -2479,6 +2576,7 @@ impl ProviderAccountProfileRegistry {
         }
         files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
         Ok(ProviderAccountMaterialization {
+            copy_source: self.copy_identity.clone(),
             profile: ProviderAccountReplicaMetadata {
                 owner_user_id: stored.public.owner_user_id.clone(),
                 provider: stored.public.provider.clone(),
@@ -2769,6 +2867,11 @@ impl ProviderAccountProfileRegistry {
         };
         let original = document.clone();
         let removed = document.profiles.remove(index);
+        copy_notice::retire_received_copies(
+            &mut document,
+            &removed.public,
+            self.copy_identity.as_ref(),
+        );
         if removed.public.is_default {
             if let Some(next) = document.profiles.iter_mut().find(|profile| {
                 profile.public.owner_user_id == owner_user_id && profile.public.provider == provider
@@ -2852,6 +2955,7 @@ impl ProviderAccountProfileRegistry {
             false,
         )?;
         Ok(ManagedContextProviderAccountReceipt {
+            copy: None,
             context_id: context_id.to_string(),
             package_sha256: package_sha256.to_string(),
             materialization_sha256,
@@ -3468,7 +3572,7 @@ fn managed_context_default_can_be_replaced(
         && materialization.profile.is_default
 }
 
-fn validate_managed_context_materialization_shape(
+pub(crate) fn validate_managed_context_materialization_shape(
     provider: &str,
     materialization: &ProviderAccountMaterialization,
 ) -> Result<(), DaemonError> {
@@ -5001,6 +5105,7 @@ mod tests {
         is_default: bool,
     ) -> ProviderAccountMaterialization {
         ProviderAccountMaterialization {
+            copy_source: None,
             profile: ProviderAccountReplicaMetadata {
                 owner_user_id: "owner-a".to_string(),
                 provider: "codex".to_string(),

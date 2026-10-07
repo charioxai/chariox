@@ -2068,6 +2068,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
         .get_run(&worker_provider_run_id)
         .expect("acknowledged worker run must exist");
     let event = RelayPeerEvent::LeasedRuntimeProjection {
+        account_copy_observations: Vec::new(),
         home_session_id: session_id.clone(),
         home_agent_id: remote_agent_id.clone(),
         provider_run_id: worker_provider_run_id.clone(),

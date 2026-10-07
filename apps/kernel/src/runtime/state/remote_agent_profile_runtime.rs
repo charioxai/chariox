@@ -35,7 +35,7 @@ impl KernelRuntimeState {
         }
     }
 
-    pub(super) async fn send_remote_profile_request(
+    pub(crate) async fn send_remote_profile_request(
         &self,
         config: &crate::config::DaemonConfig,
         worker_kernel_id: &str,
