@@ -24,6 +24,7 @@ mod extension_apps;
 mod fresh_remote_relay_inventory;
 mod kernel_access;
 mod kernel_browser;
+mod kernel_computer;
 mod kernel_operation_interactions;
 mod managed_activity;
 mod managed_context;

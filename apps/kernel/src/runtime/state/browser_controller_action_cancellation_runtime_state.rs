@@ -27,7 +27,7 @@ impl KernelRuntimeState {
                     if cancellation_delivered { continue; }
                     let cancel = self.ensure_browser_import_execution_allowed(session_id).is_err() || match self.room_environment_snapshot(session_id) {
                         Ok(room) => room.actions.iter().find(|action| action.action_id == action_id)
-                            .is_none_or(|action| action.cancellation_requested || action.state != EnvironmentActionState::Running),
+                            .is_none_or(|action| action.cancellation_requested || action.state != EnvironmentActionState::Running || (action.mode == crate::session::EnvironmentMode::Computer && self.require_room_computer_actor(&action.actor_id).is_err())),
                         Err(_) => false,
                     };
                     if !cancel { continue; }

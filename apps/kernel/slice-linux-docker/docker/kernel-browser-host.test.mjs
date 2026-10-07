@@ -11,7 +11,16 @@ import { encodePng, decodePng, maskPng } from "./kernel-browser-pixels.mjs";
 import { KernelBrowserHost, navigationUrl } from "./kernel-browser-host.mjs";
 import { candidates as macCandidates, launchEnvironment as macEnvironment } from "./kernel-browser-macos.mjs";
 import { launchEnvironment as linuxEnvironment } from "./kernel-browser-linux.mjs";
-import { launchArguments, HostChromium, HostChromiumSandboxError } from "./kernel-browser-process.mjs";
+import { launchArguments, HostChromium, HostChromiumSandboxError, chromiumTemporaryEnvironment } from "./kernel-browser-process.mjs";
+
+test('MP-08 / MP-11: Chromium temporary sockets use the held private directory through a bounded path', () => {
+  const environment = { TMPDIR: '/private/' + 'long/'.repeat(60), XAUTHORITY: '/private/authority' };
+  const bounded = chromiumTemporaryEnvironment(environment, 5, 12345);
+  assert.equal(bounded.TMPDIR, '/proc/12345/fd/5');
+  assert.equal(bounded.XAUTHORITY, environment.XAUTHORITY);
+  assert(!bounded.TMPDIR.includes(environment.TMPDIR));
+  for (const pid of [0, 1, -1, NaN]) assert.throws(() => chromiumTemporaryEnvironment(environment, 5, pid));
+});
 
 function fixture(root) {
   const pages = new Map();
@@ -109,6 +118,11 @@ test("MD-2: native launch keeps sandbox and a private inherited CDP pipe", () =>
   assert(!args.some(arg => /remote-debugging-(port|address)/.test(arg)));
   assert(args.includes("--user-data-dir=/tmp/private-profile"));
   assert(!args.some(arg => /no-sandbox|disable-setuid-sandbox/.test(arg)));
+});
+test('MP-08 / MP-11: owned headed Chromium enables its native accessibility tree', () => {
+  assert(launchArguments('/tmp/private-profile', false, false, true).includes('--force-renderer-accessibility'));
+  assert(!launchArguments('/tmp/private-profile', true, false, true).includes('--force-renderer-accessibility'));
+  assert(!launchArguments('/tmp/private-profile', false).includes('--force-renderer-accessibility'));
 });
 test("MD-2: URL boundary rejects local files, script URLs and credentials", () => {
   for (const url of ["file:///tmp/a", "javascript:alert(1)", "chrome://settings", "https://alice:secret@example.com"]) assert.throws(() => navigationUrl(url));
@@ -234,6 +248,27 @@ test('MP-08/MP-10 physical input preserves video references while retiring exact
  assert.equal(host.inputEpochs.get(tab.tab_id),3,'every dispatched input must retire stale exact work');
  assert.equal(retired,0,'input cannot force row IDRs for already queued normal video');
  assert.equal(wakes,6,'wake owned source before and after every physical input');
+}));
+
+test("MP-08 / MP-10 / MP-11: native navigation adopts the keepalive tab and reserves a background replacement", () => using(async ({ host, chromium, sent, pages }) => {
+  const initial = await host.request({ op: "start" });
+  const navigatedTarget = host.keepaliveTarget;
+  const creations = sent.filter(call => call.method === "Target.createTarget").length;
+  pages.set(navigatedTarget, { url: "https://www.libreoffice.org/", document_id: "native-navigation" });
+  const state = await host.request({ op: "state" });
+  assert.equal(state.tabs.length, 1);
+  assert.equal(state.tabs[0].url, "https://www.libreoffice.org/");
+  assert.notEqual(host.keepaliveTarget, navigatedTarget);
+  const replacement = sent.filter(call => call.method === "Target.createTarget").slice(creations);
+  assert.deepEqual(replacement.map(call => call.params), [{ url: "about:blank", background: true }]);
+  assert.equal((await host.request({ op: "state" })).tabs[0].tab_id, state.tabs[0].tab_id);
+  assert.equal(sent.filter(call => call.method === "Target.createTarget").length, creations + 1);
+  await host.request({ op: "close", tab_id: state.tabs[0].tab_id, generation: state.generation });
+  assert.equal((await host.request({ op: "state" })).tabs.length, 0);
+  assert.equal(state.generation, initial.generation);
+  assert.equal(chromium.child.exitCode, null);
+  assert(pages.has(host.keepaliveTarget));
+  assert(!pages.has(navigatedTarget));
 }));
 
 test("MD-2: closing the last user tab keeps a hidden browser target alive", () => using(async ({ host, chromium, sent }) => {
@@ -804,4 +839,12 @@ test('MD-454: a wrong capture geometry is refused, not turned into a successful 
  delete host.browser.ensureConnection; // Empty, known fixture target set; no observation failure before capture.
  connection.send=async(method,...args)=>method==='Page.captureScreenshot'?{data:encodePng(1279,800,Buffer.alloc(1279*800*4,255))}:send(method,...args);
  await assert.rejects(host.screenshot(tab),/capture.*dimensions/);
+}));
+
+test('MP-11 agent native input cannot bypass App human-channel admission', () => using(async ({host}) => {
+  await host.request({op:'open',url:'https://example.com'});
+  host.browser.appTabs={apps:new Map([['app',{targetId:'target-1'}]])};
+  let calls=0;host.nativeComputer.execute=async()=>{calls++;return {};};
+  const result=await host.handle({id:'native-app-denial',method:'host.computer',params:{op:'input',surface_id:'s',generation:'g',input:{kind:'click',x:1,y:1},_agent_input:true,observed_by:'agent:a'}});
+  assert.equal(result.ok,false);assert.equal(calls,0);
 }));

@@ -650,6 +650,9 @@ pub(in crate::runtime::state) async fn execute_room_computer_observation(
     prune: impl Fn(&[u64]) -> Result<(), DaemonError>,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
     let args = match &call {
+        crate::transport::relay_peer::RemoteRoomComputerObservationCall::Snapshot { .. } => {
+            unreachable!("snapshot uses the owned controller")
+        }
         crate::transport::relay_peer::RemoteRoomComputerObservationCall::ScreenStatus => {
             vec!["status".to_string()]
         }

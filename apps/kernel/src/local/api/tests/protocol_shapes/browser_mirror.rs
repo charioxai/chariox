@@ -1,4 +1,4 @@
-//! MP-8/MP-10/MP-11: protocol 454 mirroring shape and rejection contract.
+//! MP-8/MP-10/MP-11: protocol 461 mirroring shape and rejection contract.
 use super::*;
 use crate::local::{
     KernelBrowserCommand as C, KernelBrowserInput, KernelBrowserMirrorAction as A,

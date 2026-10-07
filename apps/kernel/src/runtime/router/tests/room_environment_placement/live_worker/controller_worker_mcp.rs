@@ -1203,7 +1203,9 @@ async fn check_room_browser_on_environment_worker_serves_remote_agent_and_web_vi
     }
 }
 
-async fn prepare_cross_worker_room_display(fixture: &LiveWorker) -> (String, String, String) {
+pub(super) async fn prepare_cross_worker_room_display(
+    fixture: &LiveWorker,
+) -> (String, String, String) {
     dispatch_json(
         &fixture.home,
         json!({"CreateSlice": {

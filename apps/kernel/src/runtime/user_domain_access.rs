@@ -234,7 +234,7 @@ impl UserDomainAccess {
     pub(crate) fn cursor(&self, user: &str) -> u64 {
         self.cursors.get(user).copied().unwrap_or(0)
     }
-    fn changed(&mut self, user: &str) {
+    pub(crate) fn changed(&mut self, user: &str) {
         *self.cursors.entry(user.into()).or_default() += 1;
     }
     pub(crate) fn snapshot(

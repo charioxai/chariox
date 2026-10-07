@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Protocol 443: user-domain view lifecycle/channel, detached approval, and
+// Protocol 461: user-domain view lifecycle/channel, detached approval, and
 // unchanged Room views. Synthetic fixtures only; no live accounts or desktop.
 import { spawnSync } from "node:child_process";
 import { closeSync, mkdirSync, mkdtempSync, openSync, writeFileSync } from "node:fs";
@@ -38,7 +38,7 @@ for (const [name, command, args] of checks) {
     closeSync(log);
   }
   results.push({ name, command: [command, ...args], exitCode: result.status });
-  writeFileSync(path.join(evidence, "results.json"), JSON.stringify({ protocol: 443,
+  writeFileSync(path.join(evidence, "results.json"), JSON.stringify({ protocol: 461,
     scope: "kernel dispatcher, real fixed App ABI worker, durable approval boundary, synthetic passkey; no native browser/frontend rendering claim", results }, null, 2));
   console.log(`MD-APP ${name}: ${result.status === 0 ? "PASS" : "FAIL"}`);
   if (result.status !== 0) process.exit(1);

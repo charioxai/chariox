@@ -93,6 +93,14 @@ impl KernelBrowserHost {
             crate::transport::mcp_server::catalog_changed();
         }
     }
+    // MP-08 / MP-10 / MP-11: Room permissions share the Access cursor.
+    pub(crate) fn access_projection_changed(&self, user: &str) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .access
+            .changed(user);
+    }
     pub(crate) fn grant_snapshot(&self, user: &str, kernel: &str) -> Value {
         self.inner
             .lock()

@@ -431,6 +431,7 @@ pub enum EnvironmentError {
         max_utf8_bytes: usize,
     },
     InvalidKeyboardKey,
+    InvalidTargetAction,
     InvalidHoldDuration {
         duration_ms: u32,
         max_duration_ms: u32,
@@ -499,6 +500,7 @@ impl EnvironmentError {
             Self::InvalidKeyboardText { .. } => "environment_invalid_keyboard_text",
             Self::InvalidHoldDuration { .. } => "environment_invalid_hold_duration",
             Self::InvalidKeyboardKey => "environment_invalid_keyboard_key",
+            Self::InvalidTargetAction => "environment_invalid_target_action",
             Self::InvalidKeyboardRepeat { .. } => "environment_invalid_keyboard_repeat",
             Self::InvalidClipboardText { .. } => "environment_invalid_clipboard_text",
             Self::InvalidIdempotencyKey => "environment_invalid_idempotency_key",
