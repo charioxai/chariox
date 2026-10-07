@@ -340,8 +340,9 @@ try {
       sample.stopToProducerStoppedMs=sample.producerStopped ? lastChange-control.sentAtMs : null
       await writeFile(path.join(args.output,label+'-timing.json'),JSON.stringify({mpItems:receipt.mpItems,...sample},null,2)+'\n',{mode:0o600})
       if(!sample.producerStopped)receipt.noisyProducerFailures.push({round:round+1,action,
-        seam:'provider turn ended but shell output continued',stopToInterruptSentMs:sample.stopToInterruptSentMs,
-        stopToTurnEndedMs:sample.stopToTurnEndedMs})
+        seam:!sample.commandExitedWithinBudget?'command survived one-second cancellation budget':!sample.outputStoppedWithinBudget?'buffered provider output received after one-second cancellation budget':'producer progress advanced after one-second cancellation budget',
+        stopToInterruptSentMs:sample.stopToInterruptSentMs,stopToTurnEndedMs:sample.stopToTurnEndedMs,
+        stopToCommandExitedMs:sample.stopToCommandExitedMs,stopToLastOutputReceivedMs:sample.stopToLastOutputReceivedMs})
       if(action === 'pause') {
         await key('\x13')
         await stateUntil(s=>s.room_workflows.workflows[0].paused_count===0)
