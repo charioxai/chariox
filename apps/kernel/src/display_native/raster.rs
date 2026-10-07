@@ -11,6 +11,7 @@ pub(super) struct Slot {
     pub length: usize,
     pub serial: Option<u64>,
     pub bounds: [i32; 4],
+    pub tiles: Option<Vec<[i32; 4]>>,
     file: File,
     path: PathBuf,
 }
@@ -46,6 +47,7 @@ impl Slot {
             length,
             serial: None,
             bounds: [0; 4],
+            tiles: None,
             file,
             path,
         })

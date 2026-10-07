@@ -179,6 +179,23 @@ test('MD-DISPLAY native small damage requires an exact contiguous source and ret
  }finally{await stream.close()}
 });
 
+test('MP-08/MP-10/MP-11 sparse native repair survives dropped captures only against the complete exact base',async()=>{
+ const {nativeDamageTiles}=await import('./kernel-browser-tiles.mjs');
+ const raw={width:1280,height:800,length:1280*800*4,format:'bgr0',nativeExact(){},readRegion(){assert.fail('Node must not read pixels')},damage:[0,0,1280,800],damage_tiles:[[0,0,32,32],[1248,768,1280,800]],base_serial:7};
+ assert.equal(nativeDamageTiles(raw,true),true);
+ assert.throws(()=>nativeDamageTiles(raw),/native sparse/);
+ for(const damage_tiles of [[],Array(33).fill([0,0,32,32]),[[0,0,33,32]],[[0,0,32,801]],[[0,0,NaN,32]],[[32,0,0,32]]])assert.equal(nativeDamageTiles({...raw,damage_tiles},true),null);
+ const stream=new DisplayStream({...binding,device_scale_factor:1},{encoder:{close:async()=>{}},now:()=>0,wait:async()=>{}});
+ try{
+  stream.previous={signature:'exact'};stream.compositorSerial=7;
+  assert.equal(stream.canPatchNative({serial:12,raw}),false,'lossy canvas cannot authorize exact sparse reuse');
+  stream.exact=true;
+  assert.equal(stream.canPatchNative({serial:12,raw}),true,'captures 8–11 were never presented');
+  assert.equal(stream.canPatchNative({serial:12,raw:{...raw,base_serial:8}}),false,'a source-admitted capture is not the presented exact base');
+  stream.repair=[{}];assert.equal(stream.canPatchNative({serial:12,raw}),false);
+ }finally{await stream.close()}
+});
+
 test('MD-DISPLAY pacing uses elapsed time during delayed timers and bounds its byte window',async()=>{
  let time=0;let calls=0;
  const stream=new DisplayStream({...binding,bitrate:500000},{encoder:{encode:async()=>({key:true,data_base64:'Y'.repeat(60000)}),close:async()=>{}},now:()=>time,wait:async ms=>{calls++;time+=ms+400}});

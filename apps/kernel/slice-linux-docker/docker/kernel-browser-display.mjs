@@ -173,7 +173,7 @@ export class DisplayStream {
     this.encoder.timing = timing;
   }
   canPatchNative(sample) {
-    return Boolean(this.previous) && !this.repair && sample.serial === this.compositorSerial + 1 &&
+    return Boolean(this.previous) && !this.repair && (Number.isSafeInteger(sample.raw?.base_serial)?this.exact&&sample.raw.base_serial===this.compositorSerial:sample.serial===this.compositorSerial+1) &&
       nativeDamageTiles(sample.raw, true) !== null;
   }
   acceptsCredit(after) { return Number.isSafeInteger(after) && after >= Math.max(0,this.sequence-8) && after <= this.sequence; }

@@ -26,7 +26,7 @@ import { exactPatchLimit, DisplayStream } from "./kernel-browser-display.mjs";
 import {nativeDamageTiles} from './kernel-browser-tiles.mjs';
 import {MotionEncoder} from './kernel-browser-motion.mjs';
 import {NativeRefiner} from './kernel-browser-refiner.mjs';
-import {nativeCreditEmpty} from './kernel-browser-native-credit.mjs';
+import {nativeCreditEmpty,nativeRegionBaseCurrent,nativeRegionPending} from './kernel-browser-native-credit.mjs';
 import { DisplayCapture } from './kernel-browser-display-capture.mjs';
 
 // Private display operations may overlap input; lifecycle still settles all
@@ -188,6 +188,7 @@ export class KernelBrowserHost {
     this.browser = null;
     for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
     this.streams.clear();
+    this.timing.flush?.();
     return { state: "stopped", generation: this.generation, tabs: [] };
   }
   async reconcile() {
@@ -429,7 +430,21 @@ export class KernelBrowserHost {
       const epoch = this.inputEpochs.get(tab.tab_id) ?? 0;
       const compositor=await this.compositorFor(tab,stream);
       const regionRevision=compositor?.regionRevision;
-      if(stream.compositorRegionRevision!==regionRevision){stream.invalidate();stream.compositorRegionRevision=regionRevision;}
+      if(stream.compositorRegionRevision!==regionRevision){
+        // MP-11: no pixels may leave during the metadata fence. Keep only the
+        // local canvas bookkeeping until a fresh capture decides whether its
+        // masks/base are identical; pending codecs/refinements always retire.
+        if(nativeRegionPending(stream,compositor,tab.document_id,this.protection)){
+          stream.producer?.retireUnsent();stream.refiner?.invalidate();
+          return {generation:this.generation,frame_sent:false,display_frame:null};
+        }
+        // MP-08/MP-10/MP-11: keep only a COMPLETE exact canvas after a fresh
+        // post-fence capture proves the same masks and an exact source base.
+        // Unsent old frames still retire; unknown/new geometry takes a key.
+        const stable=nativeRegionBaseCurrent(stream,compositor,tab.document_id,this.protection);
+        if(stable){stream.producer.retireUnsent();stream.refiner?.invalidate();}else stream.invalidate();
+        stream.compositorRegionRevision=regionRevision;
+      }
       const sample=compositor?.sample();
       let source;
       // MP-08/MP-10/MP-11: an admitted native source refreshing its masks
@@ -480,7 +495,7 @@ export class KernelBrowserHost {
         await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
         return !compositor?.closed&&compositor?.regionRevision===regionRevision&&(source.motion || ((this.inputEpochs.get(tab.tab_id) ?? 0) === epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision))));
       },()=>!compositor?.closed&&compositor?.regionRevision===regionRevision&&this.protection===capturePolicy&&(source.motion||((this.inputEpochs.get(tab.tab_id)??0)===epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision)))));
-      if(frame){stream.compositorSerial=source.refinement_serial ?? source.serial;if(source.input_triggered)stream.deliveredInputEpoch=epoch;if(stream.exact)source.raw?.nativeCommit?.(stream.encoder.nativeSession);}
+      if(frame){stream.compositorMasks=JSON.stringify(source.raw?.[displayMaskRegions]??[]);stream.compositorSerial=source.refinement_serial ?? source.serial;if(source.input_triggered)stream.deliveredInputEpoch=epoch;if(stream.exact)source.raw?.nativeCommit?.(stream.encoder.nativeSession);}
       return { generation: this.generation, frame_sent: frame !== null, display_frame: frame };
     }
     if (["poll", "unsubscribe"].includes(command.op)) {

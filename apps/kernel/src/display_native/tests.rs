@@ -4,6 +4,44 @@ use super::{
     raster,
 };
 #[test]
+fn mp08_native_damage_covers_disjoint_changes_since_the_exact_base_and_rejects_dense_tiles() {
+    let (w, h) = (1280, 800);
+    let base = vec![255; w * h * 4];
+    let mut current = base.clone();
+    let mut bounds = [0; 4];
+    let mut tiles = [0; 128];
+    let diff = |raw: &[u8], bounds: &mut [i32; 4], tiles: &mut [i32; 128]| unsafe {
+        ffi::cx_capture_difference(
+            raw.as_ptr(),
+            base.as_ptr(),
+            w as i32,
+            h as i32,
+            bounds.as_mut_ptr(),
+            tiles.as_mut_ptr(),
+        )
+    };
+    assert_eq!(diff(&current, &mut bounds, &mut tiles), 0);
+    current[4 * (20 * w + 10)] = 0;
+    assert_eq!(diff(&current, &mut bounds, &mut tiles), 1);
+    assert_eq!(&tiles[..4], &[0, 0, 32, 32]);
+    // An intermediate capture was not presented. Both changes must ship.
+    current[4 * (780 * w + 1270)] = 0;
+    assert_eq!(diff(&current, &mut bounds, &mut tiles), 2);
+    assert_eq!(&tiles[..8], &[0, 0, 32, 32, 1248, 768, 1280, 800]);
+    assert_eq!(bounds, [0, 20, 1280, 781]);
+    for x in (0..w).step_by(32) {
+        current[x * 4] = 0;
+    }
+    assert_eq!(
+        diff(&current, &mut bounds, &mut tiles),
+        -1,
+        "more than 32 exact tiles takes full repair"
+    );
+    current.fill(0);
+    assert_eq!(diff(&current, &mut bounds, &mut tiles), -1);
+    assert_eq!(bounds, [0, 0, 1280, 800]);
+}
+#[test]
 fn mp11_native_masks_intersect_offscreen_bounds_before_pointer_arithmetic() {
     let regions = serde_json::from_value::<Vec<raster::Region>>(serde_json::json!([
         {"x":-100.,"y":0.,"width":20.,"height":20.},

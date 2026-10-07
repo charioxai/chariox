@@ -1,5 +1,6 @@
 //! MP-08/MP-10/MP-11: private control, bounded leases and packet ownership.
 use super::{
+    exact::ExactWorker,
     ffi::{self, Capture},
     raster::Slot,
     sessions::{Encode, Exact, Sessions},
@@ -51,7 +52,7 @@ fn emit(header: Value, payload: &[u8]) -> Result<(), String> {
         .and_then(|_| out.flush())
         .map_err(|_| "MP-11: native reply pipe".into())
 }
-fn reply(id: u64, value: Value) -> Result<(), String> {
+pub(super) fn reply(id: u64, value: Value) -> Result<(), String> {
     let bytes = serde_json::to_vec(&value).map_err(|_| "MP-11: native reply")?;
     emit(json!({"reply":id,"length":bytes.len()}), &bytes)
 }
@@ -102,6 +103,8 @@ pub(super) fn run() -> Result<(), String> {
         .collect::<Result<Vec<_>, _>>()?;
     let mut control = Vec::new();
     let mut serial = 0u64;
+    let mut admitted = 0u64;
+    let exact = ExactWorker::new();
     let mut dirty = true;
     let mut refresh = true;
     let mut last = Instant::now() - Duration::from_secs(1);
@@ -137,13 +140,27 @@ pub(super) fn run() -> Result<(), String> {
                         .ok_or("MP-11: native serial overflow")?;
                     slot.serial = Some(serial);
                     slot.bounds = bounds;
+                    let mut tile_bounds = [0i32; 128];
+                    let count =
+                        unsafe { ffi::cx_capture_tiles(capture.0, tile_bounds.as_mut_ptr()) };
+                    slot.tiles = if changed > 0 && (1..=32).contains(&count) {
+                        Some(
+                            tile_bounds[..count as usize * 4]
+                                .chunks_exact(4)
+                                .map(|r| [r[0], r[1], r[2], r[3]])
+                                .collect(),
+                        )
+                    } else {
+                        None
+                    };
+                    let tile_headers = slot.tiles.clone();
                     let index = slots.iter().position(|s| s.serial == Some(serial)).unwrap();
                     let mut cpu = [0f64; 3];
                     unsafe {
                         ffi::cx_capture_cpu(capture.0, cpu.as_mut_ptr());
                     }
                     emit(
-                        json!({"native_cpu":cpu,"slot":index,"width":w,"height":h,"length":1,"serial":serial,"base_serial":serial-1,"patch":null,"signature":format!("{serial:016x}"),"captured_ms":at,"capture_ms":epoch()-at,"damage":bounds,"damage_ready_ms":damage_at,"native_read_ms":epoch(),"input_wake_ms":wake}),
+                        json!({"damage_tiles":tile_headers,"native_cpu":cpu,"slot":index,"width":w,"height":h,"length":1,"serial":serial,"base_serial":admitted,"patch":null,"signature":format!("{serial:016x}"),"captured_ms":at,"capture_ms":epoch()-at,"damage":bounds,"damage_ready_ms":damage_at,"native_read_ms":epoch(),"input_wake_ms":wake}),
                         &[0],
                     )?;
                     refresh = false;
@@ -215,8 +232,13 @@ pub(super) fn run() -> Result<(), String> {
                     commit,
                     serial: committed,
                 } => {
-                    if committed == serial {
-                        sessions.commit(&commit, committed);
+                    if committed == serial && sessions.commit(&commit, committed) {
+                        if let Some(slot) = slots.iter().find(|s| s.serial == Some(committed)) {
+                            unsafe {
+                                ffi::cx_capture_admit(capture.0, slot.pixels);
+                            }
+                            admitted = committed;
+                        }
                     }
                 }
                 Command::Delivered {
@@ -237,7 +259,7 @@ pub(super) fn run() -> Result<(), String> {
                         .iter()
                         .find(|s| s.serial == Some(q.serial))
                         .ok_or("MP-11: native exact lease")?;
-                    reply(id, sessions.exact(q, slot)?)?;
+                    exact.submit(id, sessions.exact(q, slot)?)?;
                 }
             }
         }

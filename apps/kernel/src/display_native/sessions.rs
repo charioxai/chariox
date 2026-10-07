@@ -1,5 +1,6 @@
 //! MP-08/MP-10/MP-11: native codec sessions, delivered references and exact repairs.
 use super::{
+    exact::ExactPlan,
     ffi::{self, Codec, Rect, RowResult},
     raster::{self, Region, Slot},
     worker::epoch,
@@ -76,7 +77,7 @@ fn packet(root: &PathBuf, rows: &[Value]) -> Result<Value, String> {
         .map_err(|_| "MP-11: native packet write")?;
     Ok(json!({"name":name,"length":bytes.len()}))
 }
-fn tiles(
+fn clips(
     pixels: &[u8],
     w: i32,
     h: i32,
@@ -84,7 +85,7 @@ fn tiles(
     block: i32,
     rows: u8,
     session: Option<&Session>,
-) -> Result<Vec<Value>, String> {
+) -> Vec<[i32; 4]> {
     let mut output = Vec::new();
     for y in ((bounds[1] / block * block)..bounds[3]).step_by(block as usize) {
         let height = block.min(h - y);
@@ -117,19 +118,10 @@ fn tiles(
                     continue;
                 }
             }
-            let [x, y, right, bottom] = clip;
-            let (width, height) = (right - x, bottom - y);
-            let offset = ((y * w + x) * 4) as usize;
-            let bytes = raster::png(
-                &pixels[offset..],
-                width as u32,
-                height as u32,
-                (w * 4) as usize,
-            )?;
-            output.push(json!({"x":x,"y":y,"width":width,"height":height,"data_base64":STANDARD.encode(bytes)}));
+            output.push(clip);
         }
     }
-    Ok(output)
+    output
 }
 pub(super) struct Sessions {
     sessions: HashMap<String, Session>,
@@ -162,7 +154,7 @@ impl Sessions {
             }
         }
     }
-    pub fn commit(&mut self, name: &str, serial: u64) {
+    pub fn commit(&mut self, name: &str, serial: u64) -> bool {
         if let Some(s) = self.sessions.get_mut(name) {
             if s.prepared.as_ref().is_some_and(|(id, _)| *id == serial) {
                 let (_, pixels) = s.prepared.take().unwrap();
@@ -170,8 +162,10 @@ impl Sessions {
                 s.video_rows = 0;
                 s.dirty = 0;
                 s.exact = true;
+                return true;
             }
         }
+        false
     }
     pub fn delivered(&mut self, name: &str, revision: u64) {
         if let Some(s) = self.sessions.get_mut(name) {
@@ -312,10 +306,8 @@ impl Sessions {
             json!({"stripes":headers,"packet":descriptor,"backend":if unsafe {ffi::cx_codec_backend(session.codec.0)}==1 {"native-vaapi"}else{"native-x264"},"hardware_fallback":unsafe {ffi::cx_codec_backend(session.codec.0)}==2,"converter":"libyuv","workers":1,"timings":spans,"whole":!q.stripes,"revision":session.revision}),
         )
     }
-    pub fn exact(&mut self, q: Exact, slot: &Slot) -> Result<Value, String> {
+    pub fn exact(&mut self, q: Exact, slot: &Slot) -> Result<ExactPlan, String> {
         let (w, h) = (self.w, self.h);
-        let sessions = &mut self.sessions;
-
         let started = epoch();
         session_name(&q.encoder)?;
         if q.limit < 24000 || q.limit > 192000 {
@@ -323,36 +315,38 @@ impl Sessions {
         }
         let regions = raster::regions(&q.regions, w, h)?;
         let pixels = raster::masked(slot.bytes(), w, h, &regions);
-        let mut value = json!({"width":w,"height":h,"native_exact":true});
+        let mut rectangles = Vec::new();
         if q.patch {
-            if (slot.bounds[2] - slot.bounds[0]) * (slot.bounds[3] - slot.bounds[1]) > 32768 {
-                return Err("MP-11: native patch bound".into());
+            if let Some(rects) = &slot.tiles {
+                for rect in rects {
+                    rectangles.extend(clips(&pixels, w, h, *rect, 32, 255, None));
+                }
+            } else {
+                if (slot.bounds[2] - slot.bounds[0]) * (slot.bounds[3] - slot.bounds[1]) > 32768 {
+                    return Err("MP-11: native patch bound".into());
+                }
+                rectangles = clips(&pixels, w, h, slot.bounds, 32, 255, None);
             }
-            value["native_tiles"] = tiles(&pixels, w, h, slot.bounds, 32, 255, None)?.into();
         } else {
-            let png = raster::png(&pixels, w as u32, h as u32, (w * 4) as usize)?;
-            let full = STANDARD.encode(png);
-            value["data_base64"] = full.into();
-            let session = sessions.get(&q.encoder);
-            let rows = session
-                .filter(|s| s.exact && s.regions == regions)
-                .map_or(255, |s| s.dirty);
-            value["repair_tiles"] = tiles(
-                &pixels,
-                w,
-                h,
-                [0, 0, w, h],
-                128,
-                rows,
-                session.filter(|s| s.regions == regions),
-            )?
-            .into();
+            let session = self
+                .sessions
+                .get(&q.encoder)
+                .filter(|s| s.regions == regions);
+            let rows = session.filter(|s| s.exact).map_or(255, |s| s.dirty);
+            rectangles = clips(&pixels, w, h, [0, 0, w, h], 128, rows, session);
         }
-        if let Some(session) = sessions.get_mut(&q.encoder) {
-            value["native_revision"] = session.revision.into();
-            session.prepared = Some((q.serial, pixels));
-        }
-        value["timings"] = json!([["native_exact_prepare", started, epoch()]]);
-        Ok(value)
+        let revision = self.sessions.get_mut(&q.encoder).map(|session| {
+            session.prepared = Some((q.serial, pixels.clone()));
+            session.revision
+        });
+        Ok(ExactPlan {
+            pixels,
+            rectangles,
+            w,
+            h,
+            patch: q.patch,
+            revision,
+            started,
+        })
     }
 }

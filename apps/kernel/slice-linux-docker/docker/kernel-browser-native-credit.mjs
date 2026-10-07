@@ -1,5 +1,18 @@
 // MP-08/MP-10/MP-11: negative-only readiness; never authorize or emit pixels.
 // The caller already checked scope/generation and renewed the admitted stream.
+import {displayMaskRegions} from './kernel-browser-pixels.mjs';
+export function nativeRegionPending(stream,source,document,policy){
+ return Boolean(source?.attested&&source.valid()&&source.policy===policy&&source.allowed(policy)&&
+  source.tab?.tab_id===stream.tab_id&&source.tab.document_id===document&&!source.sample());
+}
+export function nativeRegionBaseCurrent(stream,source,document,policy){
+ const sample=source?.sample();
+ return Boolean(stream.exact&&stream.document_id===document&&stream.producer?.source===source&&
+  source.attested&&source.valid()&&source.policy===policy&&source.allowed(policy)&&
+  sample?.document_id===document&&sample.tab_id===stream.tab_id&&sample.raw?.nativeExact&&
+  sample.raw.base_serial===stream.compositorSerial&&
+  JSON.stringify(sample.raw[displayMaskRegions]??[])===stream.compositorMasks);
+}
 export function nativeCreditEmpty(stream,source,policy,epoch,changedAt,after,now=performance.now()){
  const producer=stream.producer,refiner=stream.refiner;
  const quiet=refiner?.quietNativeMs??refiner?.quietMs;

@@ -1,6 +1,7 @@
 // MP-08/MP-10/MP-11: empty-only shortcut retains every delivery/refusal fence.
 import test from 'node:test';import assert from 'node:assert/strict';
-import {nativeCreditEmpty} from './kernel-browser-native-credit.mjs';
+import {nativeCreditEmpty,nativeRegionBaseCurrent,nativeRegionPending} from './kernel-browser-native-credit.mjs';
+import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 function fixture(){
  const policy={},sample={raw:{},serial:1,document_id:'d',tab_id:'t'};
  const source={attested:true,policy,changedAt:100,valid:()=>true,allowed:()=>true,sample:()=>sample};
@@ -42,4 +43,19 @@ test('MP-08/MP-10/MP-11 a fully exact contiguous native base needs no repeated f
  assert.equal(nativeCreditEmpty(f.stream,f.source,f.policy,0,-Infinity,1,1000),true);
  f.source.regionRevision=1;
  assert.equal(nativeCreditEmpty(f.stream,f.source,f.policy,0,-Infinity,1,1000),false,'a retired protection binding cannot reuse exact bytes');
+});
+
+test('MP-11 region refresh reuses only post-fence identical masks on the exact displayed native base',()=>{
+ function ready(){const f=fixture();f.stream.exact=true;f.stream.compositorMasks='[]';f.sample.raw={nativeExact(){},base_serial:1};return f}
+ const f=ready();assert(nativeRegionBaseCurrent(f.stream,f.source,'d',f.policy));
+ for(const mutate of [f=>f.stream.exact=false,f=>f.sample.raw.base_serial=2,f=>f.source.valid=()=>false,f=>f.source.policy={},f=>f.source.allowed=()=>false,f=>f.source.attested=false,f=>f.stream.producer.source={},f=>f.sample.document_id='next',f=>f.sample.tab_id='other',f=>f.sample.raw[displayMaskRegions]=[{x:0,y:0,width:10,height:10}],f=>f.source.sample=()=>null]){
+  const r=ready();mutate(r);assert.equal(nativeRegionBaseCurrent(r.stream,r.source,'d',r.policy),false);
+ }
+});
+test('MP-11 a region fence emits nothing while preserving only exact-canvas bookkeeping',()=>{
+ const f=fixture();f.source.tab={tab_id:'t',document_id:'d'};f.source.sample=()=>null;
+ assert(nativeRegionPending(f.stream,f.source,'d',f.policy));
+ f.source.valid=()=>false;assert.equal(nativeRegionPending(f.stream,f.source,'d',f.policy),false);
+ f.source.valid=()=>true;f.source.tab.document_id='next';assert.equal(nativeRegionPending(f.stream,f.source,'d',f.policy),false);
+ f.source.tab.document_id='d';f.source.policy={};assert.equal(nativeRegionPending(f.stream,f.source,'d',f.policy),false);
 });

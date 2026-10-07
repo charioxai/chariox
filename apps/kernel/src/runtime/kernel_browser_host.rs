@@ -325,18 +325,34 @@ impl KernelBrowserHost {
             return Err("MD-3: browser admission belongs to another user".into());
         }
         self.check_admission(admission)?;
+        let browser = self.backend(user)?;
         // MP-08/MP-10/MP-11: mutations keep their existing serial admission,
         // but never hold the shared controller lock during input/CDP waits.
         // Takeover/cancellation use the actor model and remain independent.
-        let mutation = method == "host.secret" || (method == "host.browser"
-            && matches!(params["op"].as_str(),Some("open"|"close"|"navigate"|"input"|"stop")));
+        let mutation = method == "host.secret"
+            || (method == "host.browser"
+                && matches!(
+                    params["op"].as_str(),
+                    Some("open" | "close" | "navigate" | "input" | "stop")
+                ));
         let mutation_lane = if mutation {
-            Some(self.inner.lock().map_err(|_|"MD-2: browser host lock poisoned")?
-                .mutation_lanes.entry(user.into()).or_default().clone())
-        } else {None};
-        let _mutation_guard = mutation_lane.as_ref().map(|lane|lane.lock())
-            .transpose().map_err(|_|"MD-3: browser mutation lane poisoned")?;
-        let browser = self.backend(user)?;
+            Some(
+                self.inner
+                    .lock()
+                    .map_err(|_| "MD-2: browser host lock poisoned")?
+                    .mutation_lanes
+                    .entry(user.into())
+                    .or_default()
+                    .clone(),
+            )
+        } else {
+            None
+        };
+        let _mutation_guard = mutation_lane
+            .as_ref()
+            .map(|lane| lane.lock())
+            .transpose()
+            .map_err(|_| "MD-3: browser mutation lane poisoned")?;
         let mut backend = browser
             .lock()
             .map_err(|_| "MD-2: browser operation lock poisoned")?;
@@ -370,11 +386,15 @@ impl KernelBrowserHost {
             return Ok(serde_json::json!({ "state": "stopped", "tabs": [] }));
         }
         if params["_host_generation"].is_u64() {
-            if !backend.host_is_live().map_err(crate::error::HostFailure::Other)?
+            if !backend
+                .host_is_live()
+                .map_err(crate::error::HostFailure::Other)?
             {
                 return Err("MD-APP: App host is no longer live".into());
             }
-        } else if !backend.host_is_live().map_err(crate::error::HostFailure::Other)?
+        } else if !backend
+            .host_is_live()
+            .map_err(crate::error::HostFailure::Other)?
         {
             // MP-11: state/observation reads cannot start or recover a
             // controller. Startup is explicit and uses the same grant for
@@ -448,15 +468,23 @@ impl KernelBrowserHost {
         let action = if mutation {
             // Reconcile the SAME supervised browser before ledger admission. Takeover
             // uses only the model lock, so it can cancel while CDP holds the backend.
-            let state = backend.host_request_cancellable(
+            let observed_input = method == "host.browser"
+                && params["op"] == "input"
+                && model
+                    .lock()
+                    .map_err(|_| "MD-3: actor lock poisoned")?
+                    .input_is_current(&params);
+            if !observed_input {
+                let state = backend.host_request_cancellable(
                 "host.browser",
                 serde_json::json!({"op":if params["op"] == "open" { "start" } else { "state" }}),
                 admission.map(|a| a.cancellation.clone()),
             )?;
-            model
-                .lock()
-                .map_err(|_| "MD-3: actor lock poisoned")?
-                .reconcile(&state)?;
+                model
+                    .lock()
+                    .map_err(|_| "MD-3: actor lock poisoned")?
+                    .reconcile(&state)?;
+            }
             let actor = browser_actor(admission, &params);
             let (id, cancellation) = {
                 // Disconnect/focus retirement takes the same model lock. Either
@@ -491,13 +519,18 @@ impl KernelBrowserHost {
         // MP-11: focused and retained input share grant/run cancellation.
         // Vault requests also carry their live focus authority from admission.
         let request_params = params.clone();
-        let display = method == "host.browser" && params["op"] == "screenshot"
+        let display = method == "host.browser"
+            && params["op"] == "screenshot"
             && params["display_subscription_id"].is_string();
         let mut result = if display || (method == "host.browser" && params["op"] == "input") {
-            let signal = cancellation.clone().unwrap_or_else(|| Arc::new(BrowserCancellation::default()));
+            let signal = cancellation
+                .clone()
+                .unwrap_or_else(|| Arc::new(BrowserCancellation::default()));
             let pending = backend.begin_cancellable_mutation(method, &params, &signal)?;
             drop(backend);
-            pending.wait(&signal).map_err(crate::error::HostFailure::Other)
+            pending
+                .wait(&signal)
+                .map_err(crate::error::HostFailure::Other)
                 .and_then(|response| response.into_host_result(method))
         } else {
             backend.host_request_cancellable(method, params, cancellation.clone())

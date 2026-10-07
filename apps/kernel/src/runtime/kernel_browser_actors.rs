@@ -113,6 +113,22 @@ impl KernelBrowserActors {
         self.host_tabs.retain(|tab, _| retained.contains(tab));
         Ok(())
     }
+    // MP-08/MP-10/MP-11: reuse only an already observed exact generation/document.
+    // The controller still checks that live document before physical dispatch.
+    pub(crate) fn input_is_current(&self, params: &Value) -> bool {
+        if params["generation"].as_u64() != Some(self.generation) {
+            return false;
+        }
+        let Some(host) = params["tab_id"].as_str() else {
+            return false;
+        };
+        self.tab(host)
+            .ok()
+            .and_then(|tab| self.tabs.controller_binding(&tab).ok())
+            .is_some_and(|binding| {
+                params["document_id"].as_str() == Some(binding.document_id.as_str())
+            })
+    }
     fn tab(&self, host_tab: &str) -> Result<String, String> {
         self.tabs
             .tab_id_for_controller_target(host_tab)
@@ -349,6 +365,28 @@ mod tests {
     }
     fn input(tab: &str) -> Value {
         json!({"op":"input","tab_id":tab,"generation":1,"input":{"kind":"text","text":"synthetic-private-value"}})
+    }
+    #[test]
+    fn mp11_input_cache_requires_exact_observed_generation_target_and_document() {
+        let mut model = ready();
+        let current = json!({"generation":1,"tab_id":"host-tab-a","document_id":"d"});
+        assert!(model.input_is_current(&current));
+        for stale in [
+            json!({"generation":0,"tab_id":"host-tab-a","document_id":"d"}),
+            json!({"generation":1,"tab_id":"missing","document_id":"d"}),
+            json!({"generation":1,"tab_id":"host-tab-a","document_id":"old"}),
+            json!({"generation":1,"tab_id":"host-tab-a"}),
+        ] {
+            assert!(!model.input_is_current(&stale));
+        }
+        model
+            .reconcile(
+                &json!({"generation":2,"tabs":[{"tab_id":"host-tab-a","document_id":"new"}]}),
+            )
+            .unwrap();
+        assert!(!model.input_is_current(&current));
+        assert!(model
+            .input_is_current(&json!({"generation":2,"tab_id":"host-tab-a","document_id":"new"})));
     }
     #[test]
     fn mp08_pointer_projection_uses_the_bounded_host_viewport() {

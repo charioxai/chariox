@@ -23,9 +23,10 @@ struct Capture {
     XShmSegmentInfo shm;
     int attached, event, width, height, window_height, offset;
     unsigned long owner;
-    uint8_t *previous;
-    int initialized;
+    uint8_t *previous,*captured;
+    int initialized,captured_initialized;
     double cpu[3];
+    int tile_count,tiles[32][4];
 };
 static unsigned long window_pid(Display *d, Window w) {
     Atom actual; int format; unsigned long count, remaining; unsigned char *data = NULL;
@@ -48,7 +49,7 @@ void cx_capture_close(struct Capture *c) {
     if (c->shm.shmaddr && c->shm.shmaddr != (void *)-1) shmdt(c->shm.shmaddr);
     if (c->shm.shmid >= 0) shmctl(c->shm.shmid,IPC_RMID,NULL);
     if (c->display) XCloseDisplay(c->display);
-    free(c->previous); free(c);
+    free(c->previous); free(c->captured); free(c);
 }
 struct Capture *cx_capture_open(unsigned long owner, int width, int height) {
     struct Capture *c = calloc(1,sizeof(*c));
@@ -82,8 +83,8 @@ struct Capture *cx_capture_open(unsigned long owner, int width, int height) {
     if (!XShmAttach(c->display,&c->shm)) goto fail;
     c->attached=1; XSync(c->display,False);
     if (shmctl(c->shm.shmid,IPC_RMID,NULL)) goto fail;
-    c->previous=malloc(size);
-    if (!c->previous) goto fail;
+    c->previous=malloc(size);c->captured=malloc(size);
+    if (!c->previous||!c->captured) goto fail;
     c->damage=XDamageCreate(c->display,c->window,XDamageReportRawRectangles);
     return c;
 fail:
@@ -102,28 +103,56 @@ int cx_capture_damage(struct Capture *c) {
     }
     return dirty;
 }
+/* MP-08/MP-10/MP-11: exact changed tiles relative to the delivered base. */
+int cx_capture_difference(const uint8_t *raw,const uint8_t *previous,int width,int height,int *bounds,int *tile_out) {
+    if(width<1||width>2560||height<1||height>1600)return -2;
+    size_t stride=(size_t)width*4;int initialized=previous!=NULL,count=-1,tiles[32][4];
+    int top=height,bottom=0,left=width,right=0,changed_count=0;
+    unsigned char changed_rows[1600]={0};
+    if (initialized) {
+        for (int y=0;y<height;y++) if (memcmp(raw+y*stride,previous+y*stride,stride)) { if (top==height) top=y; bottom=y+1;changed_rows[y]=1;changed_count++; }
+        if (top==height) {return 0;}
+        if (changed_count<=height*.15) {
+            unsigned char marked[80*50]={0};int columns=(width+31)/32;count=0;
+            for(int y=top;y<bottom;y++)if(changed_rows[y])for(int x=0;x<width;x+=32){int n=width-x<32?width-x:32;
+                if(memcmp(raw+y*stride+x*4,previous+y*stride+x*4,n*4)){int index=y/32*columns+x/32;
+                    if(!marked[index]){marked[index]=1;if(count==32){count=-1;goto dense_tiles;}int *rect=tiles[count++];rect[0]=x;rect[1]=y/32*32;rect[2]=x+n;rect[3]=rect[1]+32<height?rect[1]+32:height;}
+                }
+            }
+        }
+        dense_tiles:
+        if (changed_count<=height*.15) {
+            for (int y=top;y<bottom;y++) for (int x=0;x<width;x+=16) {
+                int n=width-x<16?width-x:16;
+                if (memcmp(raw+y*stride+x*4,previous+y*stride+x*4,n*4)) { if (x<left)left=x; if (x+n>right)right=x+n; }
+            }
+        } else { left=0;right=width;top=0;bottom=height; }
+    } else { left=0;right=width;top=0;bottom=height; }
+    bounds[0]=left;bounds[1]=top;bounds[2]=right;bounds[3]=bottom;
+    if(count>0)memcpy(tile_out,tiles,count*4*sizeof(int));
+    return count;
+}
 /* Return -1 on retirement, 0 for byte-identical, 1 for new immutable snapshot.
  * A sparse bound is proved from every row; XDamage bounds never authorize it. */
 int cx_capture_read(struct Capture *c, uint8_t *out, int *bounds) {
+    c->tile_count=-1;
     memset(c->cpu,0,sizeof(c->cpu));double at=capture_cpu();
     unsigned w,h;
     if (window_pid(c->display,c->window)!=c->owner || !dimensions(c->display,c->window,&w,&h) || w!=(unsigned)c->width || h!=(unsigned)c->window_height || !XShmGetImage(c->display,c->pixmap,c->image,0,c->offset,AllPlanes)) return -1;
     c->cpu[0]=capture_cpu()-at;at=capture_cpu();
     size_t stride=(size_t)c->width*4, size=stride*c->height;
     uint8_t *raw=(uint8_t *)c->image->data;
-    int top=c->height,bottom=0,left=c->width,right=0;
-    if (c->initialized) {
-        for (int y=0;y<c->height;y++) if (memcmp(raw+y*stride,c->previous+y*stride,stride)) { if (top==c->height) top=y; bottom=y+1; }
-        if (top==c->height) { c->cpu[1]=capture_cpu()-at;at=capture_cpu();memcpy(out,raw,size);c->cpu[2]=capture_cpu()-at;return 0; }
-        if (bottom-top<=c->height*.15) {
-            for (int y=top;y<bottom;y++) for (int x=0;x<c->width;x+=16) {
-                int n=c->width-x<16?c->width-x:16;
-                if (memcmp(raw+y*stride+x*4,c->previous+y*stride+x*4,n*4)) { if (x<left)left=x; if (x+n>right)right=x+n; }
-            }
-        } else { left=0;right=c->width;top=0;bottom=c->height; }
-    } else { left=0;right=c->width;top=0;bottom=c->height; }
+    if(c->captured_initialized&&!memcmp(raw,c->captured,size)){
+        c->cpu[1]=capture_cpu()-at;at=capture_cpu();memcpy(out,raw,size);c->cpu[2]=capture_cpu()-at;return 0;
+    }
+    c->tile_count=cx_capture_difference(raw,c->initialized?c->previous:NULL,c->width,c->height,bounds,(int*)c->tiles);
+    if(c->tile_count==0){/* Pixels returned to the exact base; ship a conservative full update. */bounds[0]=bounds[1]=0;bounds[2]=c->width;bounds[3]=c->height;c->tile_count=-1;}
+    memcpy(c->captured,raw,size);c->captured_initialized=1;
     c->cpu[1]=capture_cpu()-at;at=capture_cpu();
-    memcpy(out,raw,size); memcpy(c->previous,raw,size);c->cpu[2]=capture_cpu()-at; c->initialized=1;
-    bounds[0]=left;bounds[1]=top;bounds[2]=right;bounds[3]=bottom;
+    memcpy(out,raw,size);c->cpu[2]=capture_cpu()-at;
     return 1;
 }
+
+/* MP-08/MP-10/MP-11: exact sparse damage, not the union's collateral pixels. */
+int cx_capture_tiles(struct Capture *c,int *out){if(c->tile_count>0)memcpy(out,c->tiles,c->tile_count*4*sizeof(int));return c->tile_count;}
+void cx_capture_admit(struct Capture *c,const uint8_t *pixels){memcpy(c->previous,pixels,(size_t)c->width*c->height*4);c->initialized=1;}
