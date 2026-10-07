@@ -254,7 +254,11 @@ impl Sessions {
         if count == -2 {
             session.dirty = 255;
             session.exact = false;
-            return Ok(json!({"dropped":true,"backend":"native-x264","converter":"libyuv"}));
+            // MP-10: a protected packet rejection must retain the actual
+            // hardware init outcome even when no video bytes are admitted.
+            return Ok(
+                json!({"dropped":true,"backend":if unsafe {ffi::cx_codec_backend(session.codec.0)}==1 {"native-vaapi"}else{"native-x264"},"hardware_fallback":unsafe {ffi::cx_codec_backend(session.codec.0)}==2,"hardware_diagnostic":unsafe {std::ffi::CStr::from_ptr(ffi::cx_codec_diagnostic(session.codec.0))}.to_string_lossy(),"converter":"libyuv"}),
+            );
         }
         if !(0..=8).contains(&count) {
             return Err("MP-11: native encode unavailable".into());
