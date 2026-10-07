@@ -21,3 +21,15 @@ test('MD-454: repeated frame races and unrelated protection errors never render'
   let calls=0;await assert.rejects(readMirrorFrame(async()=>{calls++;throw Error(message)},'s','t',1));assert.equal(calls,message.includes('frame changed')?2:1);
  }
 });
+
+test('MD-454: restarted observations discard drift reports tied to the retired native base',async()=>{
+ const parts=chunks();let calls=0;const seen:boolean[]=[];
+ await readMirrorFrame(async(cursor,restarted=false)=>{
+  seen.push(restarted);calls++;
+  if(calls===1)return parts[0]!;
+  if(calls===2)throw Error('MP-11: mirror frame changed before commit');
+  assert(restarted,'A fresh native base cannot validate drift IDs from the retired frame');
+  return parts[cursor===null?0:cursor+1]!;
+ },'s','t',1);
+ assert.deepEqual(seen.slice(0,3),[false,false,true]);
+});

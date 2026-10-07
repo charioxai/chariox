@@ -336,7 +336,7 @@ export async function attachBrowserMirror(transport:MirrorTransport,container:HT
       if(closed||busy)throw Error('MP-08: mirror credit unavailable')
       busy=true
       try {
-        const packet=await readMirrorFrame(cursor=>request({op:'mirror_next',subscription_id,generation:binding.generation,after_sequence:sequence,...(cursor===null?{}:{after_chunk:cursor}),drift_nodes:cursor===null?renderer.driftNodes():[]}) as Promise<MirrorPacket|MirrorChunk>,subscription_id,binding.tab_id,binding.generation)
+        const packet=await readMirrorFrame((cursor,restarted)=>request({op:'mirror_next',subscription_id,generation:binding.generation,after_sequence:sequence,...(cursor===null?{}:{after_chunk:cursor}),drift_nodes:cursor===null&&!restarted?renderer.driftNodes():[]}) as Promise<MirrorPacket|MirrorChunk>,subscription_id,binding.tab_id,binding.generation)
         if(closed)throw Error('MP-08: mirror closed during transfer')
         await renderer.apply(packet);sequence=packet.sequence;document_id=packet.document_id;return packet
       }catch(error){closed=true;renderer.close();await request({op:'mirror_close',subscription_id,generation:binding.generation}).catch(()=>{});throw error}finally{busy=false}
