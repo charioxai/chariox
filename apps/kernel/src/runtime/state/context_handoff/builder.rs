@@ -102,8 +102,32 @@ impl AgentConversation {
 struct HandoffTurn {
     prompt_id: Option<String>,
     user_prompt: String,
+    /// One entry per answer item: a streamed item's deltas, or a whole block.
     assistant_outputs: Vec<String>,
+    /// The merge key of the item the last output row extended.
+    output_item: Option<Option<String>>,
     latest_details: Vec<String>,
+}
+
+impl HandoffTurn {
+    /// Deltas of one streamed item join as written; separate items, or text
+    /// on either side of a tool call, start a new line.
+    fn push_output(&mut self, event: &HistoryEvent, content: &str) {
+        let item = event
+            .metadata
+            .get("merge_key")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        match self.assistant_outputs.last_mut() {
+            Some(output) if self.output_item.as_ref() == Some(&item) => output.push_str(content),
+            _ => self.assistant_outputs.push(content.to_string()),
+        }
+        self.output_item = Some(item);
+    }
+
+    fn answer(&self) -> String {
+        self.assistant_outputs.join("\n")
+    }
 }
 
 fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
@@ -118,6 +142,7 @@ fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
                         prompt_id: event.prompt_id.clone(),
                         user_prompt: content,
                         assistant_outputs: Vec::new(),
+                        output_item: None,
                         latest_details: Vec::new(),
                     });
                 }
@@ -125,7 +150,7 @@ fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
             HistoryEventKind::ProviderOutput => {
                 // Answers stream as deltas whose spacing is part of the text.
                 if let (Some(turn), Some(content)) = (turns.last_mut(), event.content.as_ref()) {
-                    turn.assistant_outputs.push(content.clone());
+                    turn.push_output(&event, content);
                 }
             }
             HistoryEventKind::ProviderTool
@@ -133,6 +158,9 @@ fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
             | HistoryEventKind::ProviderStatus
             | HistoryEventKind::Notice => {
                 if let (Some(turn), Some(content)) = (turns.last_mut(), non_empty_content(&event)) {
+                    if event.kind == HistoryEventKind::ProviderTool {
+                        turn.output_item = None;
+                    }
                     turn.latest_details.push(format!(
                         "{}: {}",
                         event_kind_label(event.kind),
@@ -184,10 +212,7 @@ fn format_prior_turns(turns: &[HandoffTurn], budget: usize) -> String {
     let answers = turns
         .iter()
         .map(|turn| {
-            let answer = single_line(&truncate_bytes(
-                &turn.assistant_outputs.concat(),
-                MAX_PRIOR_ASSISTANT_BYTES,
-            ));
+            let answer = single_line(&truncate_bytes(&turn.answer(), MAX_PRIOR_ASSISTANT_BYTES));
             (!answer.is_empty()).then(|| format!("  Assistant: {answer}"))
         })
         .collect::<Vec<_>>();
@@ -229,7 +254,7 @@ fn format_latest_turn(turn: &HandoffTurn, max_bytes: usize) -> String {
         "- User: {}",
         truncate_bytes(turn.user_prompt.trim(), MAX_LATEST_ITEM_BYTES)
     ));
-    let assistant = truncate_bytes(&turn.assistant_outputs.concat(), MAX_LATEST_ITEM_BYTES * 2);
+    let assistant = truncate_bytes(&turn.answer(), MAX_LATEST_ITEM_BYTES * 2);
     if !assistant.trim().is_empty() {
         lines.push(format!("- Assistant output: {}", assistant.trim()));
     }
@@ -444,13 +469,13 @@ mod tests {
     fn streamed_answer_chunks_render_as_one_answer() {
         let events = vec![
             user_event(1, "session", "agent", "Invent a release name."),
-            output_event(2, "session", "agent", "run-1", "silver-l"),
-            output_event(3, "session", "agent", "run-1", "antern"),
+            item_event(2, "msg-1", "silver-l"),
+            item_event(3, "msg-1", "antern"),
             user_event(4, "session", "agent", "Multiply."),
-            output_event(5, "session", "agent", "run-1", "410"),
-            output_event(6, "session", "agent", "run-1", "39518"),
-            output_event(7, "session", "agent", "run-1", " is the"),
-            output_event(8, "session", "agent", "run-1", " product."),
+            item_event(5, "msg-2", "410"),
+            item_event(6, "msg-2", "39518"),
+            item_event(7, "msg-2", " is the"),
+            item_event(8, "msg-2", " product."),
         ];
 
         let handoff = build_agent_context_handoff(&events, MAX_HANDOFF_BYTES).unwrap();
@@ -458,6 +483,38 @@ mod tests {
         assert!(handoff.contains("Assistant: silver-lantern"), "{handoff}");
         assert!(
             handoff.contains("- Assistant output: 41039518 is the product."),
+            "{handoff}"
+        );
+    }
+
+    #[test]
+    fn whole_answer_blocks_stay_apart() {
+        let events = vec![
+            user_event(1, "session", "agent", "What is in the file?"),
+            item_event(
+                2,
+                "claude-transcript:run-1:assistant:m1:0",
+                "Let me check the file.",
+            ),
+            item_event(
+                3,
+                "claude-transcript:run-1:assistant:m2:0",
+                "The file contains a parser.",
+            ),
+            user_event(4, "session", "agent", "And the other one?"),
+            item_event(5, "claude:run-1:assistant", "Checking."),
+            tool_event(6, "session", "agent", "run-1", "cat other.rs"),
+            item_event(7, "claude:run-1:assistant", "It holds the lexer."),
+        ];
+
+        let handoff = build_agent_context_handoff(&events, MAX_HANDOFF_BYTES).unwrap();
+
+        assert!(
+            handoff.contains("Assistant: Let me check the file. The file contains a parser."),
+            "{handoff}"
+        );
+        assert!(
+            handoff.contains("- Assistant output: Checking.\nIt holds the lexer."),
             "{handoff}"
         );
     }
@@ -549,6 +606,21 @@ mod tests {
                 Some(agent_id),
                 TerminalOutputKind::ProviderOutput,
                 None,
+                output,
+            ),
+            HistoryEventTurnContext::default(),
+        )
+    }
+
+    fn item_event(sequence: u64, merge_key: &str, output: &str) -> HistoryEvent {
+        HistoryEvent::transcript(
+            sequence,
+            &SessionHistoryEntry::provider_output(
+                "session",
+                "run-1",
+                Some("agent"),
+                TerminalOutputKind::ProviderOutput,
+                Some(merge_key.to_string()),
                 output,
             ),
             HistoryEventTurnContext::default(),

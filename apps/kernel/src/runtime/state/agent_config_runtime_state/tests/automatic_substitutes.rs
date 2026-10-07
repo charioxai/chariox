@@ -696,10 +696,15 @@ async fn assert_conversation_crosses_the_substitute(turn: &FailingTurn, substitu
     turn.fail_run(&turn.failed_run_id, SERVER_OVERLOADED).await;
 
     let substitute = turn.assert_rerun_on(0, substitute_model);
+    let inputs = turn.provider_inputs(&substitute);
     assert!(
-        turn.provider_inputs(&substitute)
-            .contains("The parser lives in parse.rs."),
+        inputs.contains("The parser lives in parse.rs."),
         "the substitute receives the conversation it never saw"
+    );
+    assert_eq!(
+        inputs.matches("review this change").count(),
+        1,
+        "the retried prompt is the request, not part of the handoff: {inputs}"
     );
     turn.record_history(
         Some(&substitute),

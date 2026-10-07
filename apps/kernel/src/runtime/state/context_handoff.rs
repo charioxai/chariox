@@ -287,10 +287,13 @@ impl super::KernelRuntimeOwnedState {
         if steering {
             return None;
         }
-        if let Some(handoff) = self
+        if let Some(mut handoff) = self
             .pending_agent_context_handoffs
             .peek_matching(session_id, agent_id, target_run)
         {
+            // A substitute is prepared after the failed turn was recorded and
+            // receives that turn's prompt as its request.
+            handoff.conversation = handoff.conversation.before_prompt(prompt_id);
             return Some(handoff);
         }
         if target_run.workflow_fresh_context_node_run_id().is_some()
