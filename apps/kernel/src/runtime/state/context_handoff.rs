@@ -8,9 +8,7 @@ use builder::build_agent_context_handoff_from_history;
 
 #[derive(Debug, Clone)]
 pub(super) struct PendingAgentContextHandoff {
-    pub(super) source_provider_run_id: String,
     pub(super) source_provider: String,
-    pub(super) source_account_profile: String,
     pub(super) source_model: String,
     pub(super) target_provider_run_id: Option<String>,
     pub(super) target_provider: String,
@@ -19,6 +17,9 @@ pub(super) struct PendingAgentContextHandoff {
     pub(super) context: String,
 }
 
+/// Explicit handoffs for runs that start outside the agent's own conversation:
+/// a fork target and a turn substitute. Profile switches need no entry; the
+/// kernel derives them from history at dispatch.
 #[derive(Debug, Clone, Default)]
 pub(super) struct PendingAgentContextHandoffStore {
     inner: Arc<StdMutex<BTreeMap<String, PendingAgentContextHandoff>>>,
@@ -97,60 +98,6 @@ pub(super) fn inject_context_handoff(prompt: &str, handoff: &PendingAgentContext
 }
 
 impl super::KernelRuntimeOwnedState {
-    pub(super) fn prepare_provider_switch_context_handoff(
-        &self,
-        source_run: &RuntimeProviderRun,
-        target_run: &RuntimeProviderRun,
-    ) {
-        let Some(agent_id) = target_run.agent_instance_id() else {
-            return;
-        };
-        if source_run.agent_instance_id() != Some(agent_id) {
-            return;
-        }
-        if !requires_provider_context_handoff(source_run, target_run) {
-            return;
-        }
-        self.prepare_provider_switch_context_handoff_for_target(
-            source_run,
-            target_run.session_id(),
-            agent_id,
-            agent_id,
-            Some(target_run.id()),
-            target_run.provider(),
-            target_run.account_profile(),
-            Some(target_run.model()),
-        );
-    }
-
-    pub(super) fn prepare_agent_profile_context_handoff(
-        &self,
-        source_run: &RuntimeProviderRun,
-        target_provider: &str,
-        target_account_profile: &str,
-        target_model: Option<&str>,
-    ) {
-        let Some(agent_id) = source_run.agent_instance_id() else {
-            return;
-        };
-        if source_run.provider() == target_provider
-            && target_model.is_some_and(|model| model == source_run.model())
-            && source_run.account_profile() == target_account_profile
-        {
-            return;
-        }
-        self.prepare_provider_switch_context_handoff_for_target(
-            source_run,
-            source_run.session_id(),
-            agent_id,
-            agent_id,
-            None,
-            target_provider,
-            target_account_profile,
-            target_model,
-        );
-    }
-
     /// A turn substitute runs in a new provider session, and the configured
     /// profile's own session never sees the substitute's turn. Each side of
     /// that boundary gets the conversation, even when the profiles differ only
@@ -166,7 +113,7 @@ impl super::KernelRuntimeOwnedState {
         let Some(agent_id) = source_run.agent_instance_id() else {
             return;
         };
-        self.prepare_provider_switch_context_handoff_for_target(
+        self.prepare_context_handoff_for_target(
             source_run,
             source_run.session_id(),
             agent_id,
@@ -188,7 +135,7 @@ impl super::KernelRuntimeOwnedState {
             return;
         }
         let source_agent_id = source_run.agent_instance_id().unwrap_or(target_agent_id);
-        self.prepare_provider_switch_context_handoff_for_target(
+        self.prepare_context_handoff_for_target(
             source_run,
             target_run.session_id(),
             source_agent_id,
@@ -200,7 +147,7 @@ impl super::KernelRuntimeOwnedState {
         );
     }
 
-    fn prepare_provider_switch_context_handoff_for_target(
+    fn prepare_context_handoff_for_target(
         &self,
         source_run: &RuntimeProviderRun,
         session_id: &str,
@@ -213,48 +160,121 @@ impl super::KernelRuntimeOwnedState {
     ) {
         self.pending_agent_context_handoffs
             .clear(session_id, agent_id);
-        match build_agent_context_handoff_from_history(
+        if let Some(context) = self.agent_conversation_context(session_id, source_history_agent_id)
+        {
+            self.pending_agent_context_handoffs.set(
+                session_id,
+                agent_id,
+                PendingAgentContextHandoff {
+                    source_provider: source_run.provider().to_string(),
+                    source_model: source_run.model().to_string(),
+                    target_provider_run_id: target_provider_run_id.map(str::to_string),
+                    target_provider: target_provider.to_string(),
+                    target_account_profile: target_account_profile.to_string(),
+                    target_model: target_model.map(str::to_string),
+                    context,
+                },
+            );
+        }
+    }
+
+    fn agent_conversation_context(&self, session_id: &str, agent_id: &str) -> Option<String> {
+        build_agent_context_handoff_from_history(
             &self.operational_history_store,
             session_id,
-            source_history_agent_id,
+            agent_id,
             &self.room_secret_observations,
-        ) {
-            Ok(Some(context)) => {
-                self.pending_agent_context_handoffs.set(
-                    session_id,
-                    agent_id,
-                    PendingAgentContextHandoff {
-                        source_provider_run_id: source_run.id().to_string(),
-                        source_provider: source_run.provider().to_string(),
-                        source_account_profile: source_run.account_profile().to_string(),
-                        source_model: source_run.model().to_string(),
-                        target_provider_run_id: target_provider_run_id.map(str::to_string),
-                        target_provider: target_provider.to_string(),
-                        target_account_profile: target_account_profile.to_string(),
-                        target_model: target_model.map(str::to_string),
-                        context,
-                    },
-                );
-            }
-            Ok(None) => {}
-            Err(error) => {
+        )
+        .unwrap_or_else(|error| {
+            crate::logging::warn_with_fields(
+                "daemon.provider_context_handoff",
+                "failed to build the agent conversation handoff",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "agent_id": agent_id,
+                    "error": error.to_string(),
+                }),
+            );
+            None
+        })
+    }
+
+    /// The handoff a prompt to `target_run` carries: an explicit fork or
+    /// substitute handoff, otherwise the agent's conversation whenever the
+    /// run's native session has never answered this agent. That covers
+    /// provider and account switches, sessions a provider could not resume,
+    /// and switches made while no run was live or across a restart. The new
+    /// session's first answer ends it without any stored state.
+    fn context_handoff_for_run(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        target_run: &RuntimeProviderRun,
+    ) -> Option<PendingAgentContextHandoff> {
+        if let Some(handoff) = self
+            .pending_agent_context_handoffs
+            .peek_matching(session_id, agent_id, target_run)
+        {
+            return Some(handoff);
+        }
+        if target_run.workflow_fresh_context_node_run_id().is_some()
+            || target_run.turn_substitute().is_some()
+        {
+            return None;
+        }
+        let latest = self
+            .operational_history_store
+            .load_latest_provider_output_event(session_id, agent_id)
+            .unwrap_or_else(|error| {
                 crate::logging::warn_with_fields(
                     "daemon.provider_context_handoff",
-                    "failed to prepare provider switch context handoff",
+                    "failed to read the agent's latest provider output",
                     serde_json::json!({
                         "session_id": session_id,
                         "agent_id": agent_id,
-                        "source_history_agent_id": source_history_agent_id,
-                        "source_provider_run_id": source_run.id(),
-                        "target_provider_run_id": target_provider_run_id,
-                        "target_provider": target_provider,
-                        "target_account_profile": target_account_profile,
-                        "target_model": target_model,
                         "error": error.to_string(),
                     }),
                 );
-            }
+                None
+            })?;
+        let latest_session = latest.provider_session_id.as_deref()?;
+        let run_sessions = [
+            target_run.provider_session_id(),
+            target_run
+                .resume_state()
+                .provider_session_id(target_run.adapter_key()),
+        ];
+        if run_sessions.contains(&Some(latest_session))
+            || run_sessions.into_iter().flatten().any(|run_session| {
+                self.operational_history_store
+                    .provider_session_answered_agent(session_id, agent_id, run_session)
+                    .unwrap_or(true)
+            })
+        {
+            return None;
         }
+        let context = self.agent_conversation_context(session_id, agent_id)?;
+        crate::logging::info_with_fields(
+            "daemon.provider_context_handoff",
+            "transferring the agent conversation to a new provider session",
+            serde_json::json!({
+                "session_id": session_id,
+                "agent_id": agent_id,
+                "source_provider_run_id": latest.provider_run_id,
+                "source_provider_session_id": latest_session,
+                "target_provider_run_id": target_run.id(),
+                "context_bytes": context.len(),
+            }),
+        );
+        Some(PendingAgentContextHandoff {
+            source_provider: latest.provider.unwrap_or_default(),
+            source_model: latest.model.unwrap_or_default(),
+            target_provider_run_id: Some(target_run.id().to_string()),
+            target_provider: target_run.provider().to_string(),
+            target_account_profile: target_run.account_profile().to_string(),
+            target_model: Some(target_run.model().to_string()),
+            context,
+        })
     }
 
     pub(super) fn prompt_with_pending_context_handoff(
@@ -265,8 +285,7 @@ impl super::KernelRuntimeOwnedState {
         target_run: &RuntimeProviderRun,
         prompt: &str,
     ) -> String {
-        self.pending_agent_context_handoffs
-            .peek_matching(session_id, agent_id, target_run)
+        self.context_handoff_for_run(session_id, agent_id, target_run)
             .map(|handoff| inject_context_handoff(prompt, &handoff))
             .unwrap_or_else(|| prompt.to_string())
     }
@@ -278,10 +297,7 @@ impl super::KernelRuntimeOwnedState {
         target_run: &RuntimeProviderRun,
         hidden_system_context: &str,
     ) -> String {
-        let Some(handoff) = self
-            .pending_agent_context_handoffs
-            .peek_matching(session_id, agent_id, target_run)
-        else {
+        let Some(handoff) = self.context_handoff_for_run(session_id, agent_id, target_run) else {
             return hidden_system_context.to_string();
         };
         join_context_sections(
@@ -305,30 +321,15 @@ impl super::KernelRuntimeOwnedState {
     }
 }
 
-fn requires_provider_context_handoff(
-    source_run: &RuntimeProviderRun,
-    target_run: &RuntimeProviderRun,
-) -> bool {
-    source_run.provider() != target_run.provider()
-        || source_run.model() != target_run.model()
-        || source_run.account_profile() != target_run.account_profile()
-}
-
 fn context_handoff_for_provider(handoff: &PendingAgentContextHandoff) -> String {
     format!(
-        "{}\n\nProvider/account switch: {} [{}] ({}) from run {} -> {} [{}] ({}) run {}.",
+        "{}\n\nProvider/account switch: {} ({}) -> {} [{}] ({}).",
         handoff.context.trim(),
         handoff.source_provider,
-        handoff.source_account_profile,
         model_label(Some(&handoff.source_model)),
-        handoff.source_provider_run_id,
         handoff.target_provider,
         handoff.target_account_profile,
         model_label(handoff.target_model.as_deref()),
-        handoff
-            .target_provider_run_id
-            .as_deref()
-            .unwrap_or("pending")
     )
 }
 
@@ -442,9 +443,7 @@ mod tests {
             "session",
             "agent",
             PendingAgentContextHandoff {
-                source_provider_run_id: "run-old".to_string(),
                 source_provider: "opencode".to_string(),
-                source_account_profile: "default".to_string(),
                 source_model: "model-old".to_string(),
                 target_provider_run_id: Some("run-new".to_string()),
                 target_provider: "codex".to_string(),
@@ -470,17 +469,6 @@ mod tests {
             crate::provider::normalized_observed_prompt_text(&injected),
             Some("next request".to_string())
         );
-    }
-
-    #[test]
-    fn same_provider_and_model_with_different_account_requires_handoff() {
-        let source = test_run_with_account(
-            "run-old", "session", "agent", "codex", "gpt-5.5", "personal",
-        );
-        let target =
-            test_run_with_account("run-new", "session", "agent", "codex", "gpt-5.5", "work");
-
-        assert!(requires_provider_context_handoff(&source, &target));
     }
 
     #[tokio::test]
@@ -584,7 +572,7 @@ mod tests {
             .pending_agent_context_handoffs
             .peek_matching(session.id(), forked_agent.id(), &target_run)
             .expect("fork target should receive pending source context handoff");
-        assert_eq!(handoff.source_provider_run_id, source_run.id());
+        assert_eq!(handoff.source_provider, source_run.provider());
         assert_eq!(
             handoff.target_provider_run_id.as_deref(),
             Some(target_run.id())
@@ -598,6 +586,133 @@ mod tests {
             .is_none());
     }
 
+    #[tokio::test]
+    async fn new_provider_session_receives_the_conversation_until_it_answers() {
+        let mut app = crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-derived-handoff",
+                "worktree-derived-handoff",
+            ))
+            .expect("session should be created");
+        let history = app.operational_history_store();
+        let append =
+            |sequence: u64, entry: crate::history::SessionHistoryEntry, psid: Option<&str>| {
+                history
+                    .append(&crate::history::HistoryEvent::transcript(
+                        sequence,
+                        &entry,
+                        crate::history::HistoryEventTurnContext {
+                            provider: psid.map(|_| "codex".to_string()),
+                            model: psid.map(|_| "gpt-5.5".to_string()),
+                            provider_run_id: psid.map(|_| "run-old".to_string()),
+                            provider_session_id: psid.map(str::to_string),
+                            prompt_id: Some(format!("prompt-{sequence}")),
+                            ..crate::history::HistoryEventTurnContext::default()
+                        },
+                    ))
+                    .expect("history should append");
+            };
+        append(
+            1,
+            crate::history::SessionHistoryEntry::user_prompt(
+                session.id(),
+                "attachment-1",
+                agent.id(),
+                "remember the codename amber-kestrel",
+            ),
+            None,
+        );
+        append(
+            2,
+            crate::history::SessionHistoryEntry::provider_output(
+                session.id(),
+                "run-old",
+                Some(agent.id()),
+                crate::terminal::TerminalOutputKind::ProviderOutput,
+                None,
+                "OK",
+            ),
+            Some("thread-old"),
+        );
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let prompt = |run: &RuntimeProviderRun| {
+            runtime.owned.prompt_with_pending_context_handoff(
+                session.id(),
+                agent.id(),
+                "attachment-1",
+                run,
+                "next",
+            )
+        };
+
+        let resumed = test_run_in_session(
+            "run-resumed",
+            agent.id(),
+            "codex",
+            "gpt-6",
+            Some("thread-old"),
+        );
+        assert_eq!(prompt(&resumed), "next");
+
+        let fresh = test_run_in_session("run-new", agent.id(), "claude", "sonnet", None);
+        let transferred = prompt(&fresh);
+        assert!(transferred.contains("amber-kestrel"), "{transferred}");
+        assert!(transferred
+            .contains("Provider/account switch: codex (gpt-5.5) -> claude [default] (sonnet)."));
+        assert_eq!(
+            crate::provider::normalized_observed_prompt_text(&transferred),
+            Some("next".to_string())
+        );
+
+        append(
+            3,
+            crate::history::SessionHistoryEntry::provider_output(
+                session.id(),
+                "run-new",
+                Some(agent.id()),
+                crate::terminal::TerminalOutputKind::ProviderOutput,
+                None,
+                "codename amber-kestrel",
+            ),
+            Some("claude-session"),
+        );
+        let answered = test_run_in_session(
+            "run-new",
+            agent.id(),
+            "claude",
+            "sonnet",
+            Some("claude-session"),
+        );
+        assert_eq!(prompt(&answered), "next");
+        // A session that answered this agent before holds its own conversation;
+        // turns it missed, such as a substitute's, travel as explicit handoffs.
+        assert_eq!(prompt(&resumed), "next");
+    }
+
+    fn test_run_in_session(
+        run_id: &str,
+        agent_id: &str,
+        provider: &str,
+        model: &str,
+        provider_session_id: Option<&str>,
+    ) -> RuntimeProviderRun {
+        let mut resume_state = crate::provider::ProviderResumeState::default();
+        if let Some(session_id) = provider_session_id {
+            resume_state.set_provider_session_id(provider, session_id);
+        }
+        test_run_from_request(
+            run_id,
+            crate::provider::LaunchProviderRequest::new(
+                "session", provider, provider, "default", model,
+            )
+            .with_agent_id(agent_id)
+            .with_resume_state(resume_state),
+        )
+    }
+
     #[test]
     fn handoff_injection_is_source_agnostic() {
         let store = PendingAgentContextHandoffStore::default();
@@ -605,9 +720,7 @@ mod tests {
             "session",
             "agent",
             PendingAgentContextHandoff {
-                source_provider_run_id: "run-old".to_string(),
                 source_provider: "opencode".to_string(),
-                source_account_profile: "default".to_string(),
                 source_model: "model-old".to_string(),
                 target_provider_run_id: None,
                 target_provider: "codex".to_string(),
@@ -632,9 +745,7 @@ mod tests {
     #[test]
     fn handoff_hidden_context_does_not_duplicate_active_user_request() {
         let handoff = PendingAgentContextHandoff {
-            source_provider_run_id: "run-old".to_string(),
             source_provider: "codex".to_string(),
-            source_account_profile: "default".to_string(),
             source_model: "gpt-5.5".to_string(),
             target_provider_run_id: None,
             target_provider: "claude-headless".to_string(),
@@ -652,7 +763,9 @@ mod tests {
 
         assert!(hidden.contains("existing hidden context"));
         assert!(hidden.contains("<chariox_context_handoff>prior context</chariox_context_handoff>"));
-        assert!(hidden.contains("Provider/account switch: codex [default] (gpt-5.5)"));
+        assert!(hidden.contains(
+            "Provider/account switch: codex (gpt-5.5) -> claude-headless [default] (claude-opus-4-7)."
+        ));
         assert!(hidden.contains("The active user request is supplied separately."));
         assert!(!hidden.contains("<user_request>"));
     }
@@ -664,9 +777,7 @@ mod tests {
             "session",
             "agent",
             PendingAgentContextHandoff {
-                source_provider_run_id: "run-old".to_string(),
                 source_provider: "claude".to_string(),
-                source_account_profile: "default".to_string(),
                 source_model: "opus".to_string(),
                 target_provider_run_id: None,
                 target_provider: "codex".to_string(),
@@ -714,6 +825,14 @@ mod tests {
             model,
         )
         .with_agent_id(agent_id);
+        test_run_from_request(run_id, request)
+    }
+
+    fn test_run_from_request(
+        run_id: &str,
+        request: crate::provider::LaunchProviderRequest,
+    ) -> RuntimeProviderRun {
+        let provider = request.provider.clone();
         RuntimeProviderRun::new(
             run_id,
             &request,
