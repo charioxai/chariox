@@ -30,6 +30,8 @@ pub enum Mode {
     NoReport,
     BrokerCall,
     ToolEcho,
+    /// MP-08 / MP-10: bounded ten-minute/1000-call echo for memory phases.
+    ToolMemoryBudget,
     /// Declares the echo tool; its first call is never answered.
     ToolStall,
     /// As ToolStall, and the worker's resource check then finds it over its
@@ -69,6 +71,7 @@ impl Mode {
             Self::NoReport => "sdk_no_report",
             Self::BrokerCall => "sdk_broker_call",
             Self::ToolEcho => "sdk_tool",
+            Self::ToolMemoryBudget => "sdk_tool_memory",
             Self::ToolStall | Self::ToolOverMemory => "sdk_tool_stall",
             Self::ToolKilledAtMemoryLimit => "sdk_tool_killed",
             Self::Files => "sdk_files",
