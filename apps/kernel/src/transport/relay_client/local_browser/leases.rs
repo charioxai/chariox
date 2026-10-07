@@ -71,7 +71,13 @@ impl LocalBrowserDirect {
         {
             return Err(denied());
         }
-        let expires_at_ms = short_identity_deadline(identity, now).ok_or_else(denied)?;
+        let expires_at_ms = short_identity_deadline(identity, now).ok_or_else(|| {
+            relay_error(
+                "local_browser_lease_clock_skew",
+                "local browser lease renewal requires a live 30-second relay identity; check that the system clock is synchronized",
+                false,
+            )
+        })?;
         lease.sequence = sequence.checked_add(1).ok_or_else(denied)?;
         lease.expiry.send_replace(LocalBrowserLeaseState {
             expires_at_ms,

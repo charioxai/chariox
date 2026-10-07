@@ -911,7 +911,11 @@ fn mp11_relay_renewal_extends_the_socket_only_to_short_identity_expiry() {
 }
 
 fn renewed_lease(browser: &Browser, outcome: RelayRequestOutcome) -> serde_json::Value {
-    assert!(outcome.error.is_none(), "renewal refused: {:?}", outcome.error);
+    assert!(
+        outcome.error.is_none(),
+        "renewal refused: {:?}",
+        outcome.error
+    );
     let plaintext = relay_crypto::decrypt_payload_for_private_key(
         &browser.private_key,
         &outcome.encrypted_response.unwrap(),
@@ -1019,5 +1023,36 @@ fn mp11_renewal_recovers_a_lost_response_without_accepting_replays() {
             renew(&kernel, &browser, browser.identity(), &grant, 3, true).await,
         );
         assert_eq!(lease["next_sequence"], 4);
+    });
+}
+
+// MP-08/MP-11: a clock step has an actionable reason and does not spend the sequence.
+#[test]
+fn mp11_renewal_skew_refusal_is_distinct_and_sequence_stays_usable() {
+    large_stack(async {
+        let capture = crate::logging::capture::start();
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let (_socket, grant) = admitted_lease(&kernel, &browser).await;
+        let mut skewed = browser.identity();
+        skewed.expires_at_ms += CLOCK_SKEW_ALLOWANCE_MS + 1_000;
+        let error = renew(&kernel, &browser, skewed, &grant, 1, true)
+            .await
+            .error
+            .expect("skewed identity renewed");
+        assert!(
+            capture.records().iter().any(|record| record
+                .contains("local browser lease renewal refused")
+                && record.contains("local_browser_lease_clock_skew")
+                && record.contains("system clock is synchronized")),
+            "encrypted renewal refusal produced no actionable kernel warning"
+        );
+        assert_eq!(error.code, "local_browser_lease_clock_skew");
+        assert!(error.message.contains("system clock is synchronized"));
+        let lease = renewed_lease(
+            &browser,
+            renew(&kernel, &browser, browser.identity(), &grant, 1, true).await,
+        );
+        assert_eq!(lease["next_sequence"], 2);
     });
 }

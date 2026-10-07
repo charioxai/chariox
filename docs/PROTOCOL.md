@@ -537,6 +537,10 @@ can instead use a dedicated loopback carrier that has no authority of its own:
    Only a live relay-verified client with the original browser key, user and
    realm can renew. The kernel refuses long-lived renewal identities, expired
    leases, unredeemed/retired grants, replays and direct-carrier renewals.
+   Successful renewals remain quiet; refusals emit a warning at most once per
+   10 seconds per kernel process, with the reason and no grant or caller keys.
+   An out-of-bounds identity returns `local_browser_lease_clock_skew` with a
+   system-clock synchronization hint, without consuming the sequence.
    Cloud stamps identity expiry on its clock and the kernel reads it on the
    user's clock with a 10-second skew allowance: an identity counts as short
    when it expires at most 40 seconds ahead of the kernel clock, so a machine

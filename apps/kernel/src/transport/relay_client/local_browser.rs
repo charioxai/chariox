@@ -73,6 +73,7 @@ pub(crate) struct LocalBrowserDirect {
     grants: std::sync::Mutex<BTreeMap<String, LocalBrowserGrant>>,
     leases: std::sync::Mutex<BTreeMap<String, leases::LocalBrowserLease>>,
     authority: watch::Sender<Option<LocalBrowserAuthority>>,
+    pub(super) renewal_refusal_warning: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 impl LocalBrowserDirect {
@@ -115,6 +116,7 @@ impl LocalBrowserDirect {
             grants: std::sync::Mutex::new(BTreeMap::new()),
             leases: std::sync::Mutex::new(BTreeMap::new()),
             authority: watch::channel(authority).0,
+            renewal_refusal_warning: std::sync::Mutex::new(None),
         });
         // Spawned here rather than on bind: the accept loop dispatches requests
         // that can issue grants, so it must not be part of `ensure_endpoint`.
@@ -319,8 +321,8 @@ fn configured_port(value: Option<&str>) -> Option<u16> {
 /// `GRANT_TTL_MS` and never past the identity's expiry. `None` when the
 /// identity is expired or long-lived even allowing for clock skew.
 fn short_identity_deadline(identity: &RelayCallerIdentity, now_ms: u64) -> Option<u64> {
-    let short = identity.expires_at_ms
-        <= now_ms.saturating_add(GRANT_TTL_MS + CLOCK_SKEW_ALLOWANCE_MS);
+    let short =
+        identity.expires_at_ms <= now_ms.saturating_add(GRANT_TTL_MS + CLOCK_SKEW_ALLOWANCE_MS);
     (identity.expires_at_ms > now_ms && short)
         .then(|| identity.expires_at_ms.min(now_ms + GRANT_TTL_MS))
 }
