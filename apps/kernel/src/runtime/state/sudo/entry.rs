@@ -209,9 +209,15 @@ impl KernelRuntimeState {
         let entry = &entry;
         self.audit_sudo(entry, "authorized")?;
         self.arm_sudo_timer(&entry.entry_id, entry.revision);
-        // A provider that is already running re-lists its tools now, before
-        // the first elevated turn; every call still needs that bound turn.
-        crate::transport::mcp_server::catalog_changed();
+        // A provider that caches its tool catalog and already runs listed it
+        // before this window: reload it once, idle, before the first turn.
+        let mut reload = self
+            .owned
+            .provider_store
+            .get_run_for_agent(&entry.session_id, &entry.agent_id)
+            .is_some_and(|run| {
+                crate::provider::provider_runtime_catalog_requires_reload(run.provider())
+            });
         let attachments = crate::runtime::agent_actor::prompt_attachment_materialization::materialize_inline_prompt_attachments(&entry.session_id, &entry.agent_id, request.attachments.clone())?;
         // A cold launch uses the normal provider path. No elevated authority is
         // usable until admission installs the exact prompt and run identity.
@@ -229,6 +235,17 @@ impl KernelRuntimeState {
         })
         .await?;
         loop {
+            if reload && !self.sudo_agent_busy(entry)? {
+                reload = matches!(
+                    self.reload_agent_provider_if_idle_for_reason(
+                        &entry.session_id,
+                        &entry.agent_id,
+                        &super::super::provider_reload::ProviderReloadReason::RuntimeToolCatalog,
+                    )
+                    .await?,
+                    super::super::provider_reload::ProviderReloadOutcome::Deferred
+                );
+            }
             let submission = self.try_start_sudo(entry, request, prompt, &attachments)?;
             if let Some(submission) = submission {
                 if let Some(dispatch) = submission.dispatch {
@@ -250,6 +267,14 @@ impl KernelRuntimeState {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+    fn sudo_agent_busy(&self, entry: &KernelSudoTurn) -> Result<bool, DaemonError> {
+        let session = self.owned.session_store.get_session(&entry.session_id)?;
+        Ok(self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &entry.agent_id)
+            .is_some())
     }
     fn try_start_sudo(
         &self,

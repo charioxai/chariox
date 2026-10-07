@@ -279,7 +279,6 @@ impl KernelRuntimeState {
         turn: &KernelSudoTurn,
         reason: &str,
     ) -> Result<(), DaemonError> {
-        crate::transport::mcp_server::catalog_changed();
         self.owned
             .sudo_process_cutoffs
             .lock()
