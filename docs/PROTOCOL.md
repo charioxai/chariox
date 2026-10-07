@@ -2824,7 +2824,9 @@ Workflow trigger and deployment direction:
 
   Kernel user config settings are live runtime policy. Set/unset is supported;
   unset restores the default. An extension popup is raised at the notice
-  time and a verified answer starts a new term.
+  time and a verified answer starts a new term. These terms apply to
+  external-agent grants only (default 8 h, at most 24 h); an older config
+  outside that range is clamped at load with a warning, never refused.
 
   ```toml
   [kernel_access]
@@ -2901,7 +2903,7 @@ Workflow trigger and deployment direction:
   `KernelSudoTurn` gains `task_id`, `duration_minutes`, `expires_at_ms`
   (display only; authority uses the kernel's monotonic deadline, never
   serialized), `revision` and `warning_sent`. `RuntimeSession.sudo_windows`
-  projects live windows to every client. `ExtendKernelSudo { session_id,
+  projects live windows only to each window's owner; other members see none. `ExtendKernelSudo { session_id,
   attachment_id, entry_id, revision }` (host terminal only) raises one
   fresh-passkey popup (`kernel_operation_id` `<entry>:extend:<revision>`); on
   approval the expiry becomes now plus the chosen duration and `revision`
