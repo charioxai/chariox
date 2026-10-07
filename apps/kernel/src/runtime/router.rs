@@ -162,6 +162,7 @@ mod tests {
             )
             .expect("provider run should launch");
         app.update_provider_run_projection(provider_run.clone());
+        if app.config().room_agent_tools { crate::test_support::admit_room_test_turn(app, session_id, agent_id); }
         provider_run
     }
 
