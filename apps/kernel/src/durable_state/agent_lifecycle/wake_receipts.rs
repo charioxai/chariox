@@ -25,12 +25,15 @@ impl DurableKernelStateStore {
     pub(crate) fn agent_has_live_wake_admission(
         &self,
         task: &AgentTaskExecution,
-        now: u64,
+        clock: impl FnOnce() -> u64,
     ) -> Result<bool, DaemonError> {
         // Admission promotes the pending prompt before provider I/O starts.
         // Its exact submitting receipt remains the bounded liveness witness.
         let prompt = task.pending_prompt_id.as_deref().unwrap_or(&task.prompt_id);
         let events = self.agent_inbox(&task.room_id, &task.agent_id, 0)?;
+        // A sweep may await recovery before this read. Sample afterward so its
+        // newly committed receipt is not rejected against the sweep-start clock.
+        let now = clock();
         Ok(events.iter().any(|event| {
             event.state == "submitting"
                 && event.prompt_id.as_deref() == Some(prompt)

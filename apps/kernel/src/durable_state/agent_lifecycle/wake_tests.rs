@@ -473,24 +473,24 @@ fn a03_overdue_wake_cold_admission_has_a_bounded_clock_without_fake_progress() {
     assert!(lacks_live_executor(&task, 300_002, false, false));
     assert!(f
         .store
-        .agent_has_live_wake_admission(&task, 300_002)
+        .agent_has_live_wake_admission(&task, || 300_002)
         .unwrap());
     assert!(!f
         .store
-        .agent_has_live_wake_admission(&task, 300_001 + DELIVERY_TIMEOUT_MS)
+        .agent_has_live_wake_admission(&task, || 300_001 + DELIVERY_TIMEOUT_MS)
         .unwrap());
     assert_eq!(task.last_progress_at_ms, progress_before_admission);
     let mut wrong = task.clone();
     wrong.pending_prompt_id = Some("unrelated".into());
     assert!(!f
         .store
-        .agent_has_live_wake_admission(&wrong, 300_002)
+        .agent_has_live_wake_admission(&wrong, || 300_002)
         .unwrap());
     let mut foreign = task.clone();
     foreign.room_id = "foreign".into();
     assert!(!f
         .store
-        .agent_has_live_wake_admission(&foreign, 300_002)
+        .agent_has_live_wake_admission(&foreign, || 300_002)
         .unwrap());
     f.apply(Operation::Begin {
         owner: "owner".into(),
@@ -506,18 +506,18 @@ fn a03_overdue_wake_cold_admission_has_a_bounded_clock_without_fake_progress() {
     assert_eq!(promoted.last_progress_at_ms, progress_before_admission);
     assert!(
         f.store
-            .agent_has_live_wake_admission(&promoted, 300_004)
+            .agent_has_live_wake_admission(&promoted, || 300_004)
             .unwrap(),
         "promoting the exact wake prompt is admission, not an abandoned executor"
     );
     assert!(!f
         .store
-        .agent_has_live_wake_admission(&promoted, 300_001 + DELIVERY_TIMEOUT_MS)
+        .agent_has_live_wake_admission(&promoted, || 300_001 + DELIVERY_TIMEOUT_MS)
         .unwrap());
     let mut unrelated = promoted;
     unrelated.prompt_id = "unrelated".into();
     assert!(!f
         .store
-        .agent_has_live_wake_admission(&unrelated, 300_004)
+        .agent_has_live_wake_admission(&unrelated, || 300_004)
         .unwrap());
 }

@@ -527,7 +527,7 @@ impl KernelRuntimeState {
                 && !self
                     .owned
                     .durable_state_store
-                    .agent_has_live_wake_admission(&task, now)?
+                    .agent_has_live_wake_admission(&task, crate::session::unix_epoch_ms)?
             {
                 if let Outcome::Task(task) = self.owned.durable_state_store.agent_lifecycle(Operation::Block{task:task.task_id,prompt:task.prompt_id,reason:"No live provider turn or confirmed wake delivery; owner must reconcile and resume".into()})? {
                     blocked.push(task);
