@@ -623,3 +623,40 @@ fn a02_clock_rollback_wakes_after_a_persisted_sweep() {
     assert_eq!(inbox.len(), 1);
     assert_eq!(inbox[0].kind, "deadline_reached");
 }
+
+#[test]
+fn a02_superseded_native_settlement_cannot_replace_a_corrected_task() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    let Outcome::Settled { task, .. } = f.settle("p", true) else {
+        panic!()
+    };
+    let correction = task.pending_prompt_id.unwrap();
+    f.begin(&correction);
+    let before = f.task();
+    assert!(f
+        .store
+        .agent_lifecycle(Operation::Settle {
+            room: "room".into(),
+            agent: "parent".into(),
+            prompt: "p".into(),
+            run: "run".into(),
+            has_answer: true,
+            cancelled: false,
+            now: 4
+        })
+        .is_err());
+    assert!(f
+        .store
+        .agent_lifecycle(Operation::Begin {
+            owner: "foreign".into(),
+            room: "foreign".into(),
+            agent: "peer".into(),
+            prompt: "p".into(),
+            run: None,
+            now: 4
+        })
+        .is_err());
+    assert_eq!(f.task(), before);
+}

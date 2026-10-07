@@ -428,6 +428,26 @@ fn current(task: &AgentTaskExecution, prompt: &str) -> Result<(), DaemonError> {
     }
     Ok(())
 }
+fn new_admitted_task(
+    tx: &Transaction<'_>,
+    room: String,
+    agent: String,
+    prompt: String,
+    run: Option<String>,
+    now: u64,
+) -> Result<AgentTaskExecution, DaemonError> {
+    let exists: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_tasks WHERE task_id=?1)",
+            [&prompt],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    if exists {
+        return Err(error("superseded turn or conflicting task identity"));
+    }
+    Ok(new_task(room, agent, prompt, run, now))
+}
 fn new_task(
     room: String,
     agent: String,

@@ -27,7 +27,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     t.revision += 1;
                     t
                 } else {
-                    new_task(room, agent, prompt, run.clone(), now)
+                    new_admitted_task(tx, room, agent, prompt, run.clone(), now)?
                 }
             };
             if task.owner_user_id.is_empty() {
@@ -48,8 +48,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             resource,
             now,
         } => {
-            let mut task = for_turn(tx, &room, &agent, &prompt)?
-                .unwrap_or_else(|| new_task(room, agent, prompt.clone(), run, now));
+            let mut task = match for_turn(tx, &room, &agent, &prompt)? {
+                Some(task) => task,
+                None => new_admitted_task(tx, room, agent, prompt.clone(), run, now)?,
+            };
             current(&task, &prompt)?;
             if task.owner_user_id.is_empty() {
                 task.owner_user_id = owner;
@@ -282,8 +284,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             cancelled,
             now,
         } => {
-            let mut t = for_turn(tx, &room, &agent, &prompt)?
-                .unwrap_or_else(|| new_task(room, agent, prompt.clone(), Some(run.clone()), now));
+            let mut t = match for_turn(tx, &room, &agent, &prompt)? {
+                Some(task) => task,
+                None => new_admitted_task(tx, room, agent, prompt.clone(), Some(run.clone()), now)?,
+            };
             if t.provider_run_id.as_deref().is_some_and(|r| r != run) {
                 return Err(error("stale provider settlement"));
             }
