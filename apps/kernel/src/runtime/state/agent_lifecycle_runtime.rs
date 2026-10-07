@@ -262,7 +262,7 @@ impl KernelRuntimeState {
                     .agent_lifecycle(Operation::SourceOutcome {
                         room: task.room_id.clone(),
                         source: task.agent_id.clone(),
-                        occurrence: format!("{}:{}", task.task_id, task.revision),
+                        occurrence: format!("task-terminal-{}", task.task_id),
                         success: task.state == ExecutionState::Done,
                         now: crate::session::unix_epoch_ms(),
                     })?;
@@ -272,7 +272,7 @@ impl KernelRuntimeState {
                 .agent_lifecycle(Operation::SourceOutcome {
                     room: task.room_id.clone(),
                     source: task.prompt_id.clone(),
-                    occurrence: format!("{}:{}", task.task_id, task.revision),
+                    occurrence: format!("task-terminal-{}", task.task_id),
                     success: task.state == ExecutionState::Done,
                     now: crate::session::unix_epoch_ms(),
                 })?;
@@ -285,7 +285,7 @@ impl KernelRuntimeState {
                 .agent_lifecycle(Operation::SourceOutcome {
                     room: task.room_id.clone(),
                     source: task.task_id.clone(),
-                    occurrence: format!("{}:{}", task.task_id, task.revision),
+                    occurrence: format!("task-terminal-{}", task.task_id),
                     success: task.state == ExecutionState::Done,
                     now: crate::session::unix_epoch_ms(),
                 })?;
@@ -339,6 +339,16 @@ impl KernelRuntimeState {
             let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {
                 continue;
             };
+            if task.state == ExecutionState::Cancelled
+                && task
+                    .obligations
+                    .iter()
+                    .any(|o| o.dispatch_state == "cancel_requested" && o.status == "open")
+            {
+                if let Err(error) = Box::pin(self.cancel_agent_task_resources(&task)).await {
+                    tracing::warn!(%error,"MP-08/MP-09/MP-10/MP-11 A02: cancellation remains supervised");
+                }
+            }
             for obligation in task.obligations.iter().filter(|o| o.status == "open") {
                 let Some(source) = obligation.resource_id.as_ref() else {
                     continue;
@@ -354,6 +364,24 @@ impl KernelRuntimeState {
                                     .find(|t| &t.task_id == id)
                                     .and_then(|t| match t.state {
                                         ExecutionState::Done => Some(true),
+                                        ExecutionState::Cancelled
+                                            if self
+                                                .owned
+                                                .prompt_state_owner
+                                                .active_prompt_for_agent(&session, source)
+                                                .is_some_and(|p| p.id() == t.prompt_id)
+                                                || session
+                                                    .queued_prompts_for_agent(source)
+                                                    .is_some_and(|q| {
+                                                        q.iter().any(|p| {
+                                                            p.id() == t.prompt_id
+                                                                || t.pending_prompt_id.as_deref()
+                                                                    == Some(p.id())
+                                                        })
+                                                    }) =>
+                                        {
+                                            None
+                                        }
                                         ExecutionState::Cancelled => Some(false),
                                         _ => None,
                                     })

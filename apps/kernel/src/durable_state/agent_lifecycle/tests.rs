@@ -660,3 +660,104 @@ fn a02_superseded_native_settlement_cannot_replace_a_corrected_task() {
         .is_err());
     assert_eq!(f.task(), before);
 }
+
+#[test]
+fn a02_first_delegate_task_binding_is_not_replaced_by_independent_work() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.apply(Operation::DispatchReceipt {
+        id: "obligation".into(),
+        accepted: true,
+        resource: Some("child".into()),
+    });
+    for prompt in ["first-child-task", "independent-child-task"] {
+        f.apply(Operation::Begin {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: "child".into(),
+            prompt: prompt.into(),
+            run: Some("child-run".into()),
+            now: 2,
+        });
+    }
+    assert_eq!(
+        f.task().obligations[0].completion_task_id.as_deref(),
+        Some("first-child-task")
+    );
+    assert_eq!(
+        f.store.agent_registrations("p").unwrap()[0].source_id,
+        "first-child-task"
+    );
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "independent-child-task".into(),
+        occurrence: "other-result".into(),
+        success: true,
+        now: 3,
+    });
+    assert_eq!(f.task().obligations[0].status, "open");
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "first-child-task".into(),
+        occurrence: "result".into(),
+        success: true,
+        now: 3,
+    });
+    assert_eq!(f.task().obligations[0].status, "settling");
+}
+#[test]
+fn a02_owner_cancel_closes_sources_without_faking_physical_completion() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.apply(Operation::CancelTask {
+        task: "p".into(),
+        owner: "owner".into(),
+        revision: f.task().revision,
+    });
+    assert_eq!(f.task().state, ExecutionState::Cancelled);
+    assert_eq!(f.task().obligations[0].status, "open");
+    assert_eq!(f.task().obligations[0].dispatch_state, "cancel_requested");
+    assert!(!f.store.agent_registrations("p").unwrap()[0].live);
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "physical-cancellation".into(),
+        success: false,
+        now: 3,
+    });
+    assert_eq!(f.task().obligations[0].status, "cancelled");
+    assert_eq!(f.task().state, ExecutionState::Cancelled);
+}
+#[test]
+fn a02_default_message_does_not_replace_an_independent_wait() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.yield_now();
+    f.settle("p", true);
+    let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
+        "room",
+        "parent",
+        "peer",
+        "new-task",
+        "message",
+        serde_json::json!({}),
+    ))) else {
+        panic!()
+    };
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: e.sequence,
+        prompt: "message-task".into(),
+        target: None,
+        run: None,
+        now: 4,
+    });
+    assert_eq!(f.task().state, ExecutionState::Waiting);
+    assert_eq!(f.task().no_progress_wakes, 0);
+}

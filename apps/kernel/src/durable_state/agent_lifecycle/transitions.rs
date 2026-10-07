@@ -93,7 +93,14 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         &id,
                         serde_json::json!({"schema_version":1,"id":id,"dispatch_state":if accepted{"accepted"}else{"rejected"},"status":if accepted{"open"}else{"failed"},"resource_id":resource,"recorded_at_ms":crate::session::unix_epoch_ms()}),
                     )?;
-                    o.dispatch_state = if accepted { "accepted" } else { "rejected" }.into();
+                    o.dispatch_state = if accepted && task.state == ExecutionState::Cancelled {
+                        "cancel_requested"
+                    } else if accepted {
+                        "accepted"
+                    } else {
+                        "rejected"
+                    }
+                    .into();
                     if resource.is_some() {
                         o.resource_id = resource;
                     }
@@ -380,7 +387,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     }
                 }
                 for mut reg in registrations(tx, &t.task_id)? {
-                    if reg.source_id == source {
+                    if reg.source_id == source && reg.live {
                         reg.live = false;
                         tx.execute(
                             "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
@@ -670,9 +677,9 @@ fn bind_first_delegate_task(
             {
                 obligation.completion_task_id = Some(child.task_id.clone());
                 let id = format!("completion-{}", obligation.id);
-                if let Some(mut registration) = registrations(tx, &parent.task_id)?
+                for mut registration in registrations(tx, &parent.task_id)?
                     .into_iter()
-                    .find(|r| r.id == id)
+                    .filter(|r| r.id == id || r.obligation_id.as_deref() == Some(&obligation.id))
                 {
                     registration.source_id = child.task_id.clone();
                     tx.execute(

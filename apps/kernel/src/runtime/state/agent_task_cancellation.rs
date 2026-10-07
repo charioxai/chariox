@@ -172,7 +172,7 @@ impl KernelRuntimeState {
                     .agent_lifecycle(Operation::SourceOutcome {
                         room: task.room_id.clone(),
                         source: task.task_id.clone(),
-                        occurrence: format!("{}:{}", task.task_id, task.revision),
+                        occurrence: format!("task-terminal-{}", task.task_id),
                         success: false,
                         now: crate::session::unix_epoch_ms(),
                     })?;
