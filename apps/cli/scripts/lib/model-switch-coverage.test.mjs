@@ -9,7 +9,7 @@ import { agentSnapshot, assertContinuedPlacement, assertToolProbe, evidenceName,
 test("OpenCode model IDs produce one evidence filename", () => {
   assert.equal(evidenceName({provider:"opencode",model:"opencode/big-pickle"}, {provider:"codex",model:"gpt-6"}, 1), "opencode-opencode-big-pickle-to-codex-gpt-6-1.json")
 })
-test("recall scoring stays exact per key and retains the round-four totals", () => {
+test("recall scoring matches exact values for each key", () => {
   const facts = {codename:"amber-kestrel",port:"31234",created_file:"ctx-amber.txt"}
   assert.deepEqual(scoreSummary(scoreFacts("codename=amber-kestrel port=31234 created_file=ctx-amber.txt",facts)),{correct:3,total:3})
   assert.deepEqual(scoreSummary(scoreFacts("codename=UNKNOWN amber-kestrel port=312345 created_file=other",facts)),{correct:1,total:3})
