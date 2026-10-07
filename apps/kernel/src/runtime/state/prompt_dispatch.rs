@@ -664,7 +664,12 @@ impl KernelRuntimeState {
         allow_queue: bool,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
-        let authorize = || self.authorize_prompt_command(authority);
+        // MP-08 / MP-11: delegated prompts also retain the room caller's epoch
+        // and typed authority, including after waiting to launch a cold peer.
+        let authorize = || {
+            self.authorize_current_external_command()?;
+            self.authorize_prompt_command(authority)
+        };
         authorize()?;
         self.owned.require_publication_activation()?;
         {

@@ -133,10 +133,9 @@ impl CommandRouter {
             .with_connection_class(crate::local::KernelConnectionClass::KernelAgent);
             command.caller.caller_id = turn.entry_id;
             command.caller.user_id = Some(turn.owner_user_id);
-            if self.runtime_state.room_agent_tools_enabled() {
-                command.caller.metaagent_id = Some(turn.agent_id);
-                command.caller.caller_kind = crate::runtime::command::KernelCallerKind::Metaagent;
-            }
+            // MP-08 / MP-11: the exact live sudo turn is the authority here.
+            // Ordinary room-agent restrictions must not narrow this host grant;
+            // dispatch still rechecks its forbidden operations and revocation.
             let response = Box::pin(self.dispatch(command, request)).await?;
             return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                 ok: true,
