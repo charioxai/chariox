@@ -3589,14 +3589,31 @@ impl KernelRuntimeState {
             if !dispatch.steering {
                 owned.note_prompt_started(&dispatch.provider_run_id);
             }
-            let prompt_with_handoff = owned.prompt_with_pending_context_handoff(
+            let handoff = match owned.context_handoff_for_dispatch(
                 &dispatch.session_id,
                 &dispatch.agent_id,
                 &provider_run,
                 &dispatch.prompt_id,
-                &dispatch.prompt,
                 dispatch.steering,
-            );
+            ) {
+                Some(handoff) => Some(
+                    self.with_current_handoff_brief(
+                        owned,
+                        handoff,
+                        &dispatch.session_id,
+                        &dispatch.agent_id,
+                        &dispatch.prompt_id,
+                        &provider_run,
+                    )
+                    .await,
+                ),
+                None => None,
+            };
+            let prompt_with_handoff = handoff
+                .map(|handoff| {
+                    super::context_handoff::inject_context_handoff(&dispatch.prompt, &handoff)
+                })
+                .unwrap_or_else(|| dispatch.prompt.clone());
             let granted_skill_context = owned.granted_skill_hidden_context(
                 &dispatch.session_id,
                 &dispatch.agent_id,
