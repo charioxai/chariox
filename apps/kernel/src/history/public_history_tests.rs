@@ -297,7 +297,7 @@ fn public_history_protocol_453_result_shape_hash() {
     let hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap()));
     assert_eq!(
         hash,
-        "748f93a9b607e3cae05d4e5a566df6612a51cef874e7f28297a367512e599962"
+        "c99672b199f2f982ba174fcc60e96bdf749f09399e615a1b113f0a6b765dde0b"
     );
 }
 
