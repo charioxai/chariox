@@ -53,11 +53,36 @@ function observeGuardResponse(value) {
 function toolCall(text) {
   try { return JSON.parse(text.slice(text.indexOf('{'))) } catch { return null }
 }
+const isValidateCall = (call) => String(call?.tool ?? '').replace(/^mcp__chariox__/, '').replaceAll('.', '_') === 'chariox_workflow_code_validate'
 // The room agent's compile request reached the workflow-code validator and the
 // isolated compiler refused host access.
 function refusedCompile(call) {
-  const name = String(call?.tool ?? '').replace(/^mcp__chariox__/, '').replaceAll('.', '_')
-  return name === 'chariox_workflow_code_validate' && /not defined|script failed/.test(`${call.output ?? ''}\n${call.error ?? ''}`)
+  return isValidateCall(call) && /not defined|script failed/.test(`${call.output ?? ''}\n${call.error ?? ''}`)
+}
+// The room agent's TypeScript source compiled inside the boundary and validated.
+function validatedTypeScript(call) {
+  return isValidateCall(call) && ['typescript', 'type_script'].includes(call.input?.language) &&
+    call.status === 'completed' && !call.error && /"ok"\s*:\s*true/.test(call.output ?? '')
+}
+// Sanitized diagnostics only: lifecycle, tool identifiers and verdict flags.
+async function awaitRoomToolCall(agentId, key, matches) {
+  await until(async () => {
+    const result = await client.send(requests.getSessionHistoryOutlineRequest(sessionId, [agentId], 5))
+    const turns = result.SessionHistoryOutline?.agents?.flatMap((agent) => agent.turns) ?? []
+    report[`${key}TurnLifecycles`] = turns.map((turn) => turn.lifecycle)
+    report[`${key}ToolCalls`] = []
+    for (const turn of turns) {
+      for (const blob of turn.blobs.filter((blob) => blob.kind === 'provider_tool')) {
+        const content = await client.send(requests.getSessionHistoryBlobContentRequest(sessionId, agentId, blob.blob_id))
+        for (const { entry, fragment_end, total_chars } of content.SessionHistoryBlobContent?.entries ?? []) {
+          const call = toolCall(entry.text)
+          report[`${key}ToolCalls`].push({ tool: call?.tool ?? null, status: call?.status ?? null, language: call?.input?.language ?? null, truncated: fragment_end < total_chars, matched: matches(call) })
+          if (matches(call)) return true
+        }
+      }
+    }
+    return false
+  }, 180_000)
 }
 async function freePort() {
   const server = createServer()
@@ -216,27 +241,15 @@ workflow.endpoint(worker,{handle:'entry'});`)
   const source = String.fromCharCode(112,114,111,99,101,115,115,46,99,119,100,40,41,59)
   const prompt = `Call the Chariox workflow_code validate MCP tool exactly once using this inline source: ${source}\nDo not run any shell tools or read any files. The expected result is refusal. After the tool returns, reply only "compiler refused host access".`
   await client.send(requests.submitPromptRequest(sessionId, attached.attachmentId, agentId, prompt, []))
-  await until(async () => {
-    const result = await client.send(requests.getSessionHistoryOutlineRequest(sessionId, [agentId], 5))
-    const turns = result.SessionHistoryOutline?.agents?.flatMap((agent) => agent.turns) ?? []
-    // Sanitized diagnostics only: lifecycle, tool identifiers and verdict flags.
-    report.guardTurnLifecycles = turns.map((turn) => turn.lifecycle)
-    report.guardToolCalls = []
-    for (const turn of turns) {
-      for (const blob of turn.blobs.filter((blob) => blob.kind === 'provider_tool')) {
-        const content = await client.send(requests.getSessionHistoryBlobContentRequest(sessionId, agentId, blob.blob_id))
-        for (const { entry, fragment_end, total_chars } of content.SessionHistoryBlobContent?.entries ?? []) {
-          const call = toolCall(entry.text)
-          report.guardToolCalls.push({ tool: call?.tool ?? null, status: call?.status ?? null, truncated: fragment_end < total_chars, refused: refusedCompile(call) })
-          if (refusedCompile(call)) {
-            report.roomAgentId = agentId
-            return true
-          }
-        }
-      }
-    }
-    return false
-  }, 180_000)
+  await awaitRoomToolCall(agentId, 'guard', refusedCompile)
+  report.roomAgentId = agentId
+  passed(stage)
+  step('room-agent-validates-typescript-workflow')
+  // MP-08/MP-11: TypeScript (including transform-only syntax) compiles inside the
+  // boundary on every Node build, through a real provider's tool call.
+  const typescript = 'enum Lane { Primary = 1 }\ntype Provider = "codex";\nconst provider: Provider = "codex";\nworkflow.define({alias: "seatbelt-typescript", maxConcurrent: Lane.Primary});\nconst worker = workflow.node({handle: "worker", agent: workflow.newAgent({provider, model: "default"}), canCompleteWorkflowRun: true});\nworkflow.endpoint(worker, {handle: "entry"});'
+  await client.send(requests.submitPromptRequest(sessionId, attached.attachmentId, agentId, `Call the Chariox workflow_code validate MCP tool exactly once with language "typescript" and this inline source:\n${typescript}\nDo not run any shell tools or read any files. After the tool returns, reply only "typescript validated".`, []))
+  await awaitRoomToolCall(agentId, 'typescript', validatedTypeScript)
   passed(stage)
   report.status = 'passed'
 } catch (error) {
