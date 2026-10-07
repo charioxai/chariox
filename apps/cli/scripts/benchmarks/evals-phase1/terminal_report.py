@@ -60,7 +60,7 @@ def report(campaign_dir, output):
              'successes':successes,'complete':complete,'accuracy_percent':100*successes/len(expected) if complete else None,
              'harness_errors':sum(bool(r['official_exception']) for r in rows),'cleanup_complete':all(r['cleanup_complete'] for r in rows),
              'wall_time_seconds':campaign['finished_at']-campaign['started_at'],
-             # Harbor job wall per retained task and archived attempt; excludes idle resume pauses.
+             # Harbor job wall (incl. compile-slot waits) per retained task and archived attempt; excludes idle resume pauses.
              'harbor_job_wall_time_seconds':sum(item['wall_time_seconds'] for kind in ['tasks',*attempts] for item in campaign.get(kind,[])),
              'archived_attempts':{kind[:-len('_attempts')]:len(campaign.get(kind,[])) for kind in attempts},
              'solver_wall_time_seconds':sum(solver_walls) if all(type(w) in [int,float] for w in solver_walls) else None,

@@ -126,7 +126,11 @@ image ID afterward, and used by no container. Shared caches/images are untouched
 MP-08 / MP-10 / MP-11: `terminal_campaign.py --resume` accepts an unchanged
 campaign identity only when the last attempt was a clean `quota_exhausted`
 admission. It preserves that attempt and all scored official tasks, then checks
-the fresh product quota. SWE campaigns archive clean quota attempts automatically
+the fresh product quota. `--resume-admission` archives only a clean
+runtime/profile admission failure before any task prompt, usage or verifier.
+`--resume-interrupted` continues a runner exception that left no unrecorded
+Harbor job. The memory/disk reserve stops only a started Harbor job; while
+queued for the compile slot the runner waits. SWE campaigns archive clean quota attempts automatically
 on re-invocation. Each invocation retains its own runner identity. Benchmark
 measurements select the submitted agent/prompt; descendants require explicit
 agent/prompt bindings. The real TUI session aggregate is validated separately.

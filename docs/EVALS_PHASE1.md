@@ -1,4 +1,4 @@
-# MP-08 / MP-10 / MP-11 — evals phase 1, round 3
+# MP-08 / MP-10 / MP-11 — evals phase 1, round 5
 
 MP-08 / MP-10: input, cached input, output and reasoning tokens are the primary
 cost metrics. These are local Codex baselines using official provider execution
@@ -12,21 +12,24 @@ scope; ordinary/managed parity requires its own matrix cells.
 | --- | ---: | ---: | ---: | --- |
 | SWE Verified Mini, fresh full | 44/50 (88%) | 4,950.44 | Not recorded | 5.6229604–12.1132338 |
 | Terminal-Bench 2.0, fresh smoke | 7/10 (70%) | 1,698.69 | 2,224.54 | 1.2024776–2.5021632 |
-| Terminal-Bench 2.0, fresh full | NOT DONE: 83/89 scored, 61 passes; 6 unscored | 10,723.93 (83 scored) | 30,898.48 (through block) | 8.5807188–17.8438666 (83-task subtotal; total unknown) |
+| Terminal-Bench 2.0, fresh full | 65/89 (73.03%) | 13,089.14 | 40,780.97 Harbor job wall; 53,438.58 elapsed | 9.4442332–19.6523254 (88 measured tasks; 1-task total unknown) |
 
 | Benchmark | Input tokens (includes cached) | Cached input tokens | Output tokens (includes reasoning) | Reasoning tokens |
 | --- | ---: | ---: | ---: | ---: |
 | SWE full 50 | 18,013,227 | 16,588,544 | 111,474 | 8,110 |
 | TB2 smoke 10 | 4,429,809 | 4,185,216 | 29,477 | 2,790 |
-| TB2 full 89, incomplete | 28,801,847 (83-task subtotal) | 26,990,208 (83-task subtotal) | 225,842 (83-task subtotal) | 28,186 (83-task subtotal) |
+| TB2 full 89 (88 measured; 1 unknown) | 32,243,711 | 30,257,152 | 244,540 | 31,237 |
 
-MP-08 / MP-10: The full campaign is blocked, with 83 measured/scored tasks: 61 passes and 22 failures. Task 84 failed admission before a prompt; that task and the five remaining tasks are unscored. No full-89 accuracy is emitted. The full 89 tasks are fresh attempts; no smoke
+MP-08 / MP-10: The full campaign completed all 89 official tasks: 65 passes and 24 failures, no harness errors, complete cleanup. Three are settled provider failures: the official verifier still passed two, and scored `vulnerable-secret` 0 after a Codex `[cyber_policy]` rejection with no counters, so full-89 token and proxy totals stay unknown; the TB2 token row and proxy interval are the 88-task measured subtotal. The full 89 tasks are fresh attempts; no smoke
 outcomes are reused. Official verifier outcomes decide the score, including
 provider failures. Transport/account admission failures remain distinguishable
 from scored failures. No scored task is retried after verifier feedback.
 Solver wall sums the scored end-to-end turn receipts, including native runtime
-startup and TUI interaction; it is not inference-only time. Campaign wall also includes setup,
-verification, resource waiting and any preserved quota-window pauses.
+startup and TUI interaction; it is not inference-only time. Harbor job wall sums
+every retained task and archived attempt, including setup, verification and
+shared compile-slot waiting. Elapsed time also includes idle pauses: 11,827
+seconds from the authentication block to the owner-repaired resume, 112 seconds
+before the interrupted-runner resume, and the earlier QEMU setup correction.
 
 MP-08 / MP-10: external reports retain task CSVs, summaries and the
 `cost-vs-accuracy.png` comparison. The plot places provider tokens per task (input plus output) first, alongside
@@ -38,11 +41,12 @@ that the total upper bound is unknown.
 
 MP-08 / MP-10 / MP-11: evidence root is
 `/root/.codex/evidence/browser-resume-20260930/evals/round3/`.
-The blocked TB2 summary, all-89 task CSV and comparison plot are in
-`tb2-full-blocked-report/`; `tb2-full-blocked-partial83-native-equality.json`
-binds counters, TUI usage and cleanup to all 83 scored receipts, with failed
-admission recorded separately. Full token and proxy totals stay unknown. The
-plot lists the incomplete full run without plotting a full accuracy point. Fresh smoke evidence is in `tb2-smoke-v2/` and its
+The final TB2 summary, task CSV and comparison plot (TB2 full, TB2 smoke, SWE
+full) are in `../round5/tb2-full-report/`. `tb2-full-native-equality.json` binds
+native counters, visible TUI usage and cleanup to all 88 measured receipts; the
+unmeasured policy rejection is settled and cleaned up. The plot marks TB2 full
+tokens and proxy cost as lower bounds. The earlier blocked report stays in
+`tb2-full-blocked-report/`. Fresh smoke evidence is in `tb2-smoke-v2/` and its
 report in `tb2-smoke-report-v2/`. The repriced SWE report is `swe-full-report-v3/`.
 `full-runner-provenance.json` records the frozen adapter hashes. Review-local
 runtime evidence is in `review-local-accounting/`; paired-accounting attempts
@@ -52,38 +56,26 @@ source changes do not relabel earlier native receipts: those retain their
 version-1 proxy, original adapter identity and frozen kernel. Offline final
 version-2 reports use their unchanged measured counters.
 
-## MP-08 / MP-10 — final authentication blocker and owner action
+## MP-08 / MP-10 / MP-11 — authentication block and resume
 
-MP-08 / MP-10: the real `train-fasttext` attempt stopped during the normal
-linked Codex account refresh, before task session/agent/prompt creation or
-verification. An isolated same-image admission-only run reproduced fixed
-`401` and `unauthorized` error classes at `profile_refresh`, using the real
-built TUI/kernel/relay and normal product account RPC. It performs no benchmark
-prompt and cannot reach the verifier. Neither attempt contributes a score or
-invented zero tokens. Both clean up their disposable runtime state. The
-underlying cause and provider-versus-kernel attribution remain unproved.
-
-MP-08 / MP-10: the coordinator must restore authentication for the approved
-product-linked acct-686 Codex profile through normal Chariox account operations,
-then continue the six unscored tasks: `train-fasttext`, `tune-mjcf`,
-`video-processing`, `vulnerable-secret`, `winning-avg-corewars`, and
-`write-compressor`. Preserve all 83 scored receipts and never rerun a task after
-oracle feedback. The existing setup-only resume guard correctly rejects this
-later agent-wrapper failure; do not bypass it or edit stage receipts. A future
-continuation must explicitly prove pre-prompt admission failure and preserve
-that failed receipt. No authentication repair or full-89 acceptance is claimed.
-Claude/OpenCode leases and the separate leased-accounting binding remain
-independent owner blockers.
-
-MP-08 / MP-10 / MP-11: original failed official receipt is
-`tb2-full/jobs/chariox-evals-full-b065984f1466/train-fasttext__3rhq6R4/result.json`.
-The diagnostic official receipt is
-`profile-probe-red-1/jobs/chariox-evals-profile-probe-red-1/train-fasttext__iS3XMKe/result.json`.
-Its nested `profile-status-error-classes.jsonl` contains only fixed allowlisted
-class names and codes; screenshots and terminal captures show the real waiting
-room. `profile-probe-provenance.json`, `profile-probe-cleanup.json` and the
-final handoff manifest bind source hashes, command outcomes and cleanup.
-Normal benchmark mode remains the default; the probe is separate evidence.
+MP-08 / MP-10: the first `train-fasttext` attempt stopped at `profile_link`
+(normal linked Codex account refresh, fixed `401`/`unauthorized` classes) before
+task session/agent/prompt creation or verification. The admission-only probe
+reproduced it. After the owner re-logged acct-686, `--resume-admission`
+archived that receipt in `admission_attempts`. It accepts only a pre-prompt seam
+with no prompt, usage, verifier or leftover resources. Quota and setup guards
+still reject it. The first resume invocation stopped on the runner's own
+memory reserve while queued for the shared compile slot, before Harbor started.
+The reserve now stops only a started Harbor job, the lane-local slot launcher waits for
+task headroom, and `--resume-interrupted` continued with no unrecorded Harbor
+job. All 83 scored receipts were preserved and none was rerun. The six
+remaining tasks ran once: `train-fasttext`, `tune-mjcf`,
+`winning-avg-corewars` and `write-compressor` pass; `video-processing` fails;
+`vulnerable-secret` is a settled `[cyber_policy]` provider rejection. Its
+recorded failure class is `provider_error_unknown` because the classifier
+reads error entries and Codex surfaced the policy as a notice; screenshots
+show the policy text. Round-5 evidence is
+`/root/.codex/evidence/browser-resume-20260930/evals/round5/`.
 
 ## MP-08 / MP-10 — dated, editable proxy mapping
 
@@ -137,7 +129,8 @@ owned directory. Files below it are not altered by that restoration.
 
 MP-08 / MP-10: the initial full adapter is
 `abda7679dc88e7088e7769c41a44f40151d6394c`; the setup-only resumed adapter is
-`e0e029f0a51f2c96b1db791dcfe63b13aae776cf`. External module hashes and per-turn
+`e0e029f0a51f2c96b1db791dcfe63b13aae776cf`; the six final tasks ran with
+`9f56b437d` (resume and reserve guards only). External module hashes and per-turn
 runner hashes bind both. The task-turn accounting code and proxy mapping are
 unchanged across that setup correction. The full benchmark runtime is not relabeled as a later
 review kernel. Ordered task IDs and public revisions are in
@@ -163,7 +156,7 @@ or 50 denominator. Diagnostic admission attempts are separate.
 MP-08 / MP-10: real accounting base 435 completes its provider turn but fails
 usage projection; candidate 448 displays counters matching native usage through
 the built TUI, kernel and relay. SWE full 50 and TB2 smoke 10 each match all native
-counters and clean up. All 83 scored full-campaign tasks have measured native-counter equality, visible numeric TUI reports and complete owned cleanup; this establishes accounting for those 83, not completion of all 89.
+counters and clean up. All 88 measured full-campaign tasks have native-counter equality, visible numeric TUI reports and complete owned cleanup; the one unmeasured policy rejection stays unknown.
 Real Harbor admission also reproduces native loader failure and the 0777 linked
 profile rejection before the corrections. Ubuntu/Bookworm task admission and
 Bullseye kernel/zsh loader probes pass afterward; full task receipts establish
