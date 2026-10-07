@@ -1175,3 +1175,85 @@ async fn sudo_failed_admission_rollback_child() {
         .is_empty());
     assert!(f.state.owned.sudo_verified_at.lock().unwrap().is_empty());
 }
+
+// MP-08/MP-10/MP-11: a held queue head must not monopolize the App lock.
+#[test]
+fn sudo_deferred_app_queue_keeps_other_commands_responsive() {
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "runtime::state::sudo::window_tests::sudo_deferred_app_queue_child",
+            "--ignored",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(12);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(
+                status.success(),
+                "sudo deferred queue subprocess failed: {status}"
+            );
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            assert!(i32::try_from(child.id()).is_ok_and(|pid| pid > 1));
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("sudo deferred queue monopolized the App instead of returning pending");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "isolated subprocess for the deferred queue regression"]
+async fn sudo_deferred_app_queue_child() {
+    let f = fixture_with_options(None, true);
+    let window = open(&f, None).await;
+    f.state
+        .owned
+        .prompt_state_owner
+        .cancel_active_prompt_only(&session(&f), &window.agent_id)
+        .unwrap();
+    let unrelated = crate::app::KernelPreparedPromptSubmission {
+        session_id: window.session_id.clone(),
+        prompt: PromptQueueItem::new(
+            "deferred-app-command",
+            &f.request.attachment_id,
+            &window.agent_id,
+            "ordinary owner work",
+            PromptStatus::Queued,
+        ),
+        force_queue: false,
+        refresh_projection: true,
+    };
+    assert!(matches!(
+        f.state
+            .owned
+            .submit_local_prepared_prompt_with_queue_policy(&unrelated, true)
+            .unwrap()
+            .unwrap()
+            .outcome,
+        PromptSubmissionOutcome::Queued { .. }
+    ));
+    let mut app = f.app.lock().await;
+    assert!(app
+        .advance_next_queued_prompt(&window.session_id, &window.agent_id)
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        app.prompt_owner_queued_prompt_count_for_agent(&window.session_id, &window.agent_id)
+            .unwrap(),
+        1
+    );
+    drop(app);
+    assert_eq!(f.state.list_sudo_turns("local").len(), 1);
+    f.state
+        .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
+        .unwrap();
+}
