@@ -442,3 +442,76 @@ fn mp08_mp10_mp11_leased_reused_run_preserves_unmeasured_rejection() {
         .destroy_leased_agent(&leased.id)
         .unwrap();
 }
+
+#[test]
+fn mp08_mp10_mp11_replay_accepted_receipt_binds_worker_prompt_usage() {
+    let (mut app, leased) = worker_lease();
+    let home_prompt = "home-prompt-replayed";
+    let context = crate::transport::relay_peer::RemoteGitTurnContext {
+        home_session_id: "session".into(),
+        home_agent_id: "agent".into(),
+        home_prompt_id: home_prompt.into(),
+        home_turn_id: home_prompt.into(),
+        source_attachment_id: None,
+        workspace_live_sync_mode: None,
+        prompt_origin: None,
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        prompt_summary: home_prompt.into(),
+    };
+    // The worker prompt is active, but its admission receipt was never recorded.
+    let (run_id, _) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt_with_workflow_context(
+            &leased.id,
+            "replayed turn",
+            Vec::new(),
+            None,
+            Some(context.clone()),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .unwrap();
+    assert!(RemoteLeaseRuntime::new(&mut app)
+        .begin_leased_prompt_receipt(&leased.id, home_prompt)
+        .unwrap()
+        .is_none());
+    let (replayed_run, _) = RemoteLeaseRuntime::new(&mut app)
+        .replay_and_accept_leased_prompt(&leased.id, Some(&context), true)
+        .unwrap()
+        .expect("active prompt replays");
+    assert_eq!(replayed_run, run_id);
+    let measured = crate::usage_accounting::codex_usage(&serde_json::json!({
+        "inputTokens": 30, "cachedInputTokens": 10, "outputTokens": 7
+    }))
+    .unwrap();
+    let batch = crate::provider::ProviderPromptSignalBatch {
+        resolved_usage: Some(crate::provider::ProviderRunTokenUsage {
+            accounting: Some(measured),
+            turn_accounting: Some(measured),
+            ..Default::default()
+        }),
+        prompt_completed: true,
+        ..Default::default()
+    };
+    crate::app::provider_output::ProviderOutputPump::new(&mut app)
+        .apply_structured_output_metadata_for_tests(&leased.backing_session_id, &run_id, batch)
+        .unwrap();
+    RemoteLeaseRuntime::new(&mut app)
+        .complete_leased_prompt(&leased.id)
+        .unwrap();
+    let (_, event) = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased.id, &run_id, false)
+        .unwrap()
+        .expect("completed turn projects");
+    let RelayPeerEvent::LeasedRuntimeProjection { provider_run, .. } = &event;
+    assert_eq!(
+        provider_run.as_ref().unwrap().usage().turn_accounting,
+        Some(measured),
+        "replay-accepted receipt keeps the measured worker turn"
+    );
+    RemoteLeaseRuntime::new(&mut app)
+        .destroy_leased_agent(&leased.id)
+        .unwrap();
+}
