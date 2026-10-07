@@ -68,6 +68,15 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
     ) -> Option<crate::session::PromptQueueItem> {
+        let session = self.owned.session_store.get_session(session_id).ok()?;
+        if self
+            .owned
+            .prompt_state_owner
+            .peek_next_queued_prompt(&session, agent_id)
+            .is_none()
+        {
+            return None;
+        }
         let result = self
             .with_project_prompt_environment(session_id, agent_id, |app| {
                 // The existing queue boundary resolves/compares revisions before activation,

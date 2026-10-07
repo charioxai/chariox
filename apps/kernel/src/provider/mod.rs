@@ -221,6 +221,36 @@ pub(crate) fn model_context_window_tokens(provider: &str, model: &str) -> u64 {
     }
 }
 
+/// Apply the account's native CLI cap to both the switch guard and its packet.
+pub(crate) fn effective_model_context_window_tokens(
+    provider: &str,
+    model: &str,
+    disable_1m: bool,
+) -> u64 {
+    let window = model_context_window_tokens(provider, model);
+    if disable_1m && canonical_provider_family(provider) == Some("claude") {
+        window.min(200_000)
+    } else {
+        window
+    }
+}
+
+pub(crate) fn claude_1m_context_disabled(run: &RuntimeProviderRun) -> bool {
+    run.pty_env()
+        .get("CLAUDE_CODE_DISABLE_1M_CONTEXT")
+        .cloned()
+        .or_else(|| {
+            (!run
+                .pty_env_remove()
+                .iter()
+                .any(|key| key == "CLAUDE_CODE_DISABLE_1M_CONTEXT"))
+            .then(|| std::env::var("CLAUDE_CODE_DISABLE_1M_CONTEXT").ok())
+            .flatten()
+        })
+        .as_deref()
+        == Some("1")
+}
+
 pub(crate) fn provider_run_is_claude_headless(run: &RuntimeProviderRun) -> bool {
     run.adapter_key() == "claude" && run.provider() == "claude-headless"
 }

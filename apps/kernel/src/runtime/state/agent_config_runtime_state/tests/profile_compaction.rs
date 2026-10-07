@@ -31,7 +31,15 @@ async fn compact_fixture_with_lease(
     let root = crate::test_support::TestWorktree::new("profile-compact");
     let mut config = crate::config::DaemonConfig::for_tests();
     config.accept_remote_leases = leased;
-    let (app, runtime, mut session, mut agent) = agent_config_runtime_with_config(config).await;
+    if !leased {
+        crate::test_support::serve_runtime_mcp(&mut config);
+    }
+    let (app, runtime, mut session, mut agent) = agent_config_runtime_in_worktree(
+        config,
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        root.session_request(),
+    )
+    .await;
     let lease = if leased {
         let mut app = app.lock().await;
         let mut worker = crate::app::RemoteLeaseRuntime::new(&mut app);
@@ -461,4 +469,289 @@ async fn leased_worker_validates_before_compaction_and_confirms_busy_unchanged_p
         .provider_store
         .terminate_run_provider_only(&session, run.id())
         .unwrap();
+}
+
+#[tokio::test]
+async fn empty_profile_queue_does_not_prepare_project_or_request_a_vault_unlock() {
+    let root = crate::test_support::TestWorktree::new("profile-empty-vault");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.credential_vault.backend =
+        crate::config::CredentialVaultBackend::CharioxEncrypted;
+    config.user_config.credential_vault.unlock_policy =
+        crate::config::CredentialVaultUnlockPolicy::Always;
+    config.user_config.credential_vault.path = root
+        .path()
+        .join("synthetic-vault.json")
+        .display()
+        .to_string();
+    let (app, runtime, session_id, agent_id) = agent_config_runtime_with_config(config).await;
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let evidence = crate::project_environment::ProjectEnvironmentEvidence::default();
+    crate::project_environment::ProjectEnvironmentStore::new(
+        &runtime
+            .owned
+            .config_projection
+            .snapshot()
+            .private_runtime_state_root(),
+    )
+    .save(&crate::project_environment::StoredProjectEnvironment {
+        source: None,
+        manifest: crate::project_environment::ProjectEnvironmentManifest {
+            schema_version: 1,
+            project_id: session.project_id().into(),
+            evidence_digest: evidence.digest(),
+            entries: vec![],
+            private_files: vec![],
+            toolchain_hints: vec![],
+            package_hints: vec![],
+            service_hints: vec![],
+        },
+        evidence,
+        reported_missing: Default::default(),
+        reviewed_manifest: None,
+        last_review: None,
+    })
+    .unwrap();
+    for account in [None, Some("missing-account".into())] {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            runtime.update_agent_profile(
+                &session_id,
+                &agent_id,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                account.as_ref().map(|_| "codex".to_string()),
+                account.clone(),
+                None,
+                None,
+            ),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "an empty queue must not wait on the Always-policy vault interaction"
+        );
+        assert_eq!(result.unwrap().is_err(), account.is_some());
+    }
+    drop(app);
+}
+
+#[tokio::test]
+async fn profile_compaction_does_not_block_session_commands_or_interaction_responses() {
+    let (root, app, runtime, session_id, agent_id, run) = compact_fixture().await;
+    let actor =
+        crate::runtime::session_actor::SessionRuntime::with_queue_limit_and_focus_projection(
+            runtime.clone(),
+            8,
+            crate::runtime::session_actor::FocusedAgentProjection::default(),
+            runtime.owned.session_projection.clone(),
+            crate::runtime::projection::AgentRuntimeProjectionStore::default(),
+            runtime.owned.terminal_stream.clone(),
+        );
+    let request = crate::local::LocalDaemonRequest::UpdateAgentProfile(
+        crate::local::UpdateAgentProfileRequest {
+            session_id: session_id.clone(),
+            agent_id: agent_id.clone(),
+            provider: None,
+            account_profile: None,
+            model: Some("haiku".into()),
+            effort: None,
+            clear_effort: false,
+        },
+    );
+    let update_actor = actor.clone();
+    let update = tokio::spawn(async move {
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "profile", None, None, &request,
+        );
+        update_actor
+            .dispatch_session_command(command, request)
+            .await
+    });
+    for _ in 0..100 {
+        if root.path().join("started").exists() || update.is_finished() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let started = root.path().join("started").exists();
+    let request = crate::local::LocalDaemonRequest::RespondToInteraction(
+        crate::local::RespondToInteractionRequest {
+            session_id: session_id.clone(),
+            interaction_id: "missing-interaction".into(),
+            choice_id: "deny".into(),
+            custom_reply: None,
+            passkey: None,
+            passkey_remember_minutes: None,
+        },
+    );
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "interaction",
+        None,
+        None,
+        &request,
+    );
+    let available = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        actor.dispatch_session_command(command, request),
+    )
+    .await;
+    std::fs::write(root.path().join("release"), "").unwrap();
+    let updated = update.await.unwrap();
+    runtime
+        .owned
+        .provider_store
+        .terminate_run_provider_only(&session_id, run.id())
+        .unwrap();
+    assert!(started, "fixture must reach /compact: {updated:?}");
+    assert!(
+        available.is_ok(),
+        "another agent's interaction response must reach the session lane during /compact"
+    );
+    assert!(
+        updated.is_ok(),
+        "profile must commit after compaction: {updated:?}"
+    );
+    drop(app);
+}
+
+#[tokio::test]
+async fn a_prompt_queued_during_compaction_reaches_the_committed_profile() {
+    crate::test_support::isolated_env_test!();
+    let (root, app, runtime, session_id, agent_id, run) = compact_fixture().await;
+    let received = root.path().join("new-profile-input");
+    let executable = root.path().join("claude-queue-fixture");
+    std::fs::write(&executable, format!("#!/bin/sh\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> '{}'; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done\n", received.display())).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    std::env::set_var("CHARIOX_CLAUDE_BIN", &executable);
+    let account = runtime
+        .owned
+        .agent_store
+        .get_agent(&agent_id)
+        .unwrap()
+        .provider_account_profile()
+        .to_string();
+    crate::test_support::authenticate_provider_account(
+        &runtime.owned.provider_account_profiles,
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        "claude",
+        &account,
+    )
+    .unwrap();
+    // This isolated child uses a fake CLI and never discovers a real login.
+    let environment = runtime
+        .owned
+        .provider_account_profiles
+        .resolve_environment(crate::session::DEFAULT_LOCAL_USER_ID, "claude", &account)
+        .unwrap();
+    let config_dir = environment
+        .get("CLAUDE_CONFIG_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join(".claude")
+        });
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join(".credentials.json"),
+        br#"{"claudeAiOauth":{"refreshToken":"synthetic-fixture"}}"#,
+    )
+    .unwrap();
+    let attachment = {
+        let mut app = app.lock().await;
+        crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "queue-fixture",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap()
+    };
+    let state = runtime.clone();
+    let session = session_id.clone();
+    let agent = agent_id.clone();
+    let update = tokio::spawn(async move {
+        state
+            .update_agent_profile(
+                &session,
+                &agent,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                None,
+                None,
+                Some("haiku".into()),
+                None,
+            )
+            .await
+    });
+    for _ in 0..100 {
+        if root.path().join("started").exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let snapshot = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let queued = runtime
+        .owned
+        .prompt_state_owner
+        .submit_prepared_prompt(
+            &snapshot,
+            crate::session::PromptQueueItem::new(
+                "queued-after-compact",
+                attachment.id(),
+                &agent_id,
+                "request after source compact",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
+        )
+        .unwrap();
+    std::fs::write(root.path().join("release"), "").unwrap();
+    let updated = update.await.unwrap().unwrap();
+    assert!(matches!(
+        queued,
+        crate::session::PromptSubmissionOutcome::Queued { .. }
+    ));
+    assert_eq!(updated.model(), Some("haiku"));
+    for _ in 0..300 {
+        if received.exists() {
+            break;
+        }
+        if let Some(current) = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+        {
+            let _ = runtime
+                .pump_owned_provider_output(&session_id, current.id(), vec![], false)
+                .await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let current = runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&session_id, &agent_id)
+        .unwrap();
+    let input = std::fs::read_to_string(&received).unwrap_or_default();
+    runtime
+        .owned
+        .provider_store
+        .terminate_run_provider_only(&session_id, current.id())
+        .unwrap();
+    assert!(
+        input.contains("request after source compact"),
+        "queued request must reach the new runtime: {input:?}"
+    );
+    assert_eq!(current.model(), "haiku");
+    assert_ne!(current.id(), run.id());
 }
