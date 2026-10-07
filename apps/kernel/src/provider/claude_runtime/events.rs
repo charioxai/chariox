@@ -63,6 +63,13 @@ fn apply_stream_event(
         return;
     }
     if event_kind == "message_start" {
+        if let Some(usage) = event
+            .get("message")
+            .and_then(|message| message.get("usage"))
+            .and_then(usage_from_value)
+        {
+            apply_message_usage(state, batch, usage);
+        }
         state.active_stream_message_id = event
             .get("message")
             .and_then(|message| message.get("id"))
@@ -142,8 +149,7 @@ fn apply_stream_event(
             })
             .and_then(usage_from_value)
         {
-            batch.resolved_usage_tokens_total = usage.total_tokens;
-            batch.resolved_usage = Some(usage);
+            apply_message_usage(state, batch, usage);
         }
     }
 }
@@ -249,8 +255,7 @@ fn apply_assistant_message(
         }
     }
     if let Some(usage) = message.get("usage").and_then(usage_from_value) {
-        batch.resolved_usage_tokens_total = usage.total_tokens;
-        batch.resolved_usage = Some(usage);
+        apply_message_usage(state, batch, usage);
     }
     if let Some(content) = message.get("content").and_then(Value::as_array) {
         for (index, block) in content.iter().enumerate() {
@@ -282,7 +287,9 @@ fn apply_result_message(
     if let Some(session_id) = string_field(value, "session_id") {
         record_claude_session_id(state, batch, session_id);
     }
-    if let Some(usage) = value.get("usage").and_then(usage_from_value) {
+    if let Some(mut usage) = value.get("usage").and_then(usage_from_value) {
+        // The result sums API calls. Preserve billing, replace only context.
+        usage.context_tokens = state.last_context_tokens;
         batch.resolved_usage_tokens_total = usage.total_tokens;
         batch.resolved_usage = Some(usage);
     }
@@ -513,6 +520,20 @@ fn format_claude_model(model: &str) -> String {
     }
 }
 
+fn apply_message_usage(
+    state: &mut ClaudeRuntimeState,
+    batch: &mut ProviderPromptSignalBatch,
+    mut usage: ProviderRunTokenUsage,
+) {
+    if let Some(context) = usage.context_tokens {
+        state.last_context_tokens = Some(context);
+    }
+    // Output-only streaming deltas must not erase the input context.
+    usage.context_tokens = state.last_context_tokens;
+    batch.resolved_usage_tokens_total = usage.total_tokens;
+    batch.resolved_usage = Some(usage);
+}
+
 fn usage_from_value(value: &Value) -> Option<ProviderRunTokenUsage> {
     let input = u64_field(value, "input_tokens")
         .or_else(|| u64_field(value, "input"))
@@ -527,7 +548,15 @@ fn usage_from_value(value: &Value) -> Option<ProviderRunTokenUsage> {
     (total > 0).then_some(ProviderRunTokenUsage {
         total_tokens: Some(total),
         last_tokens: Some(output),
-        context_tokens: Some(input + cache_create + cache_read),
+        context_tokens: [
+            "input_tokens",
+            "input",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        ]
+        .iter()
+        .any(|field| value.get(*field).is_some())
+        .then_some(input + cache_create + cache_read),
         context_window: None,
     })
 }

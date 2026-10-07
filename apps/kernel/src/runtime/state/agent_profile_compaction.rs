@@ -52,6 +52,14 @@ impl KernelRuntimeState {
         if !idle || !needs_compaction(&run, target_provider, target_account, target_model) {
             return;
         }
+        self.owned.record_notice(
+            session_id,
+            Some(run.id()),
+            self.owned
+                .attachment_store
+                .list_session_attachment_ids(session_id),
+            "Compacting the Claude session before changing to a smaller context window…",
+        );
         let started = Instant::now();
         let result = self
             .run_structured_provider_utility_prompt(
@@ -88,8 +96,7 @@ impl KernelRuntimeState {
 
 /// A live Chariox Claude run whose session the profile change keeps, on a
 /// smaller window that its last turn's context nearly fills or exceeds.
-/// Claude reports a turn's usage summed over its API calls, so a turn with
-/// tool calls overstates the context and compacts early.
+/// Its context figure is the last API call input, including cached input.
 fn needs_compaction(
     run: &RuntimeProviderRun,
     target_provider: &str,
@@ -98,19 +105,43 @@ fn needs_compaction(
 ) -> bool {
     let claude =
         |provider: &str| crate::provider::canonical_provider_family(provider) == Some("claude");
-    let window = crate::provider::model_context_window_tokens(target_provider, target_model);
+    let window = effective_window(run, target_provider, target_model);
     matches!(
         run.state(),
         ProviderRunState::Running | ProviderRunState::Parked
     ) && claude(run.provider())
         && claude(target_provider)
         && run.account_profile() == target_account
-        && crate::provider::provider_run_uses_runtime_structured_utility_prompt(run)
-        && window < crate::provider::model_context_window_tokens(run.provider(), run.model())
+        && crate::provider::provider_run_uses_structured_prompt_io(run)
+        && window < effective_window(run, run.provider(), run.model())
         && run
             .usage()
             .context_tokens
             .is_some_and(|tokens| tokens * 100 > window * COMPACT_ABOVE_WINDOW_PERCENT)
+}
+
+// Source and target share this account's launch environment. Honor Claude's
+// documented cap instead of compacting between two effectively equal windows.
+fn effective_window(run: &RuntimeProviderRun, provider: &str, model: &str) -> u64 {
+    let window = crate::provider::model_context_window_tokens(provider, model);
+    let disabled = run
+        .pty_env()
+        .get("CLAUDE_CODE_DISABLE_1M_CONTEXT")
+        .map(String::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            (!run
+                .pty_env_remove()
+                .iter()
+                .any(|key| key == "CLAUDE_CODE_DISABLE_1M_CONTEXT"))
+            .then(|| std::env::var("CLAUDE_CODE_DISABLE_1M_CONTEXT").ok())
+            .flatten()
+        });
+    if disabled.as_deref() == Some("1") {
+        window.min(200_000)
+    } else {
+        window
+    }
 }
 
 #[cfg(test)]
@@ -118,8 +149,16 @@ mod tests {
     use super::*;
 
     fn claude_run(model: &str, context_tokens: Option<u64>) -> RuntimeProviderRun {
+        claude_run_for_provider("claude", model, context_tokens)
+    }
+
+    fn claude_run_for_provider(
+        provider: &str,
+        model: &str,
+        context_tokens: Option<u64>,
+    ) -> RuntimeProviderRun {
         let request = crate::provider::LaunchProviderRequest::new(
-            "session", "claude", "claude", "work", model,
+            "session", "claude", provider, "work", model,
         )
         .with_agent_id("agent");
         let mut run = RuntimeProviderRun::new(
@@ -146,25 +185,32 @@ mod tests {
     }
 
     #[test]
+    fn claude_headless_is_not_compacted_through_structured_io() {
+        let run = claude_run_for_provider("claude-headless", "sonnet[1m]", Some(320_000));
+        assert!(!needs_compaction(&run, "claude-headless", "work", "haiku"));
+    }
+
+    #[test]
     fn only_a_session_too_large_for_the_smaller_claude_window_is_compacted_first() {
         // Claude resolves `sonnet[1m]` to its model id; the run keeps the `[1m]`.
         let large = claude_run("claude-sonnet-5-5[1m]", Some(320_000));
 
-        assert!(needs_compaction(&large, "claude", "work", "sonnet"));
+        assert!(needs_compaction(&large, "claude", "work", "haiku"));
+        assert!(!needs_compaction(&large, "claude", "work", "sonnet"));
         assert!(!needs_compaction(
             &claude_run("claude-sonnet-5-5[1m]", Some(90_000)),
             "claude",
             "work",
-            "sonnet"
+            "haiku"
         ));
         assert!(!needs_compaction(
             &claude_run("sonnet[1m]", None),
             "claude",
             "work",
-            "sonnet"
+            "haiku"
         ));
         assert!(!needs_compaction(&large, "claude", "work", "opus[1m]"));
-        assert!(!needs_compaction(&large, "claude", "other", "sonnet"));
+        assert!(!needs_compaction(&large, "claude", "other", "haiku"));
         assert!(!needs_compaction(&large, "codex", "work", "gpt-6"));
         assert!(!needs_compaction(
             &claude_run("sonnet", Some(190_000)),

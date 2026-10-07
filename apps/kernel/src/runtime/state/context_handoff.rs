@@ -1200,7 +1200,7 @@ mod tests {
             )
             .await;
         assert!(handoff.derived);
-        assert_eq!(handoff.budget(), 90_000);
+        assert_eq!(handoff.budget(), MAX_PROMPT_HANDOFF_BYTES as usize);
         assert!(handoff
             .render(handoff.budget())
             .unwrap()
