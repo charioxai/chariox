@@ -1,30 +1,30 @@
-# Push readiness — NOT READY
+# MP-08 / MP-10 / MP-11 — PUSH_READY: NOT READY FOR ACCEPTANCE
 
-Do not push or merge this lane yet. Code is committed locally with `[skip ci]`;
-real acceptance is incomplete. See `LANE_STATUS.md` for exact live evidence and
-blockers. New receiving-machine login and resumed queued work require the human
-login response. OpenCode needs a linked account; Claude is BLOCKED(owner).
+Round 2 addresses all three PR #913 findings on the exact `1f43bfc7a` base.
+Coordinator publishes local commits; this lane never pushes or stages anything.
 
-Compatibility: local protocol 455, relay peer 74, unchanged relay transport.
-Managed publication producers need explicit original machine/kernel/account
-provenance. Direct slice import requires an upgraded receiver with the pinned
-home key. Retired raw/startup provider imports fail with an actionable command.
+| MP items / finding | Fix | Fail-first and final evidence |
+| --- | --- | --- |
+| MP-10 / MP-11, P1 protocol guards | Ten local guards expect 455; four stale peer fixtures exercise 74 and reject 73 | `red-guard-*.log`; `red-additional-peer-gate.log`; earlier broad/full RED logs; `clean-focused-*.log` |
+| MP-08 / MP-10 / MP-11, P2 account-copy receipts | Forward selected receipts and remaps on fresh completion and completed replay | `red-mp08_mp10_mp11_*receipt*.log`; final receipt checks |
+| MP-08 / MP-10 / MP-11, P2 missing receiving login | Fresh observation; authenticated receiver retained, missing login returns actionable failure | `red-mp08_mp10_mp11_slice_reimport_missing_login_is_actionable_failure.log`; final missing/valid checks |
 
-Focused local checks:
+Evidence root:
+`/root/.codex/evidence/browser-resume-20260930/credcopies/round2/`.
+All 19 final focused checks pass. Full final kernel lib suite remains RED:
+5,992 passed, 79 failed, 22 ignored, exit 101. Full command, exact source patches,
+binary hashes, failure comparisons, toolchain workaround and cleanup are recorded
+there and explained in `LANE_STATUS.md`. A passing source check is not acceptance.
 
-- Kernel/relay and CLI builds: passed, including the exact final kernel source.
-- Rust protocol snapshots/hashes: 184 passed on the final test build.
-- Runtime recovery regressions: 4 passed (supplementary fake OAuth fixtures).
-- Auth failure classifier: 3 passed.
-- Managed-context package: 15 passed.
-- Publication account materialization: 6 passed.
-- Peer transport: 10 passed.
-- Account materialization: 10 passed.
-- CLI provider-account handlers/details: 25 passed.
-- Slice identity/protocol contract: 3 passed.
-- Kernel-client request contracts: 85 passed.
-- Managed Docker broker: 32 passed, 4 environment-dependent skips.
-- Copy/default-remap fixtures: 3 passed; lease policy/receipt fixtures: 8 passed.
-- Slice owner-pin rejection and receiving account paths: 1 passed each.
+**BLOCKED(owner re-login):** receiving Codex login and real queued-work resumption
+remain required. Do not run an official logout/revocation on the shared login.
+Historical live results are retained separately and are not builder1 evidence.
+No new real client/provider/hosted-relay acceptance success is claimed.
 
-No GitHub CI, push, PR, merge or deployment was performed.
+Protocol constants remain local 455 / relay peer 74. No serialized shape changed.
+The absolute credcopies review inbox was absent at milestone checks; no additional
+inbox findings were available. The three supplied findings map to the rows above.
+MP-11 narrowed scope applies; full parity and current independent security review
+are not closed by these supplementary checks.
+
+No GitHub CI, push, PR, merge, deployment or Cloud staging activity.

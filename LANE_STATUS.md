@@ -1,86 +1,83 @@
-# Lane credcopies — FINAL
+# MP-08 / MP-10 / MP-11 — credcopies round 2 FINAL (2026-10-07)
 
-Branch: `cred/managed-login-copies`, based on GitHub main
-`e325afa580d81954e2c179757fc53fa02ed2a2b3`. No push or GitHub CI.
+Local branch `cred/managed-login-copies`; exact starting source
+`1f43bfc7a2a7fd0df42d23798d05abcc4332d19a` (PR #913). Read its public PR body,
+AGENTS.md and the three frozen Browser/Computer/Path-1 plans. Builder1 evidence:
+`/root/.codex/evidence/browser-resume-20260930/credcopies/round2/`.
+Historical p1b reports are preserved there as `historical-LANE_STATUS.md` and
+`historical-PUSH_READY.md`; their runs are not relabelled as builder1 results.
 
-Implemented the owner's copied-login model: track Chariox-performed transfers,
-warn that copies can log the user out, offer official receiving-machine login,
-and retain admitted/queued work behind a human-only recovery interaction.
-There is no refresher broker or background credential synchronization.
+## MP-08 / MP-10 / MP-11 — implementation and review mapping
 
-Implementation follows audit order:
+- P1: all ten remaining local-protocol assertion guards now expect 455,
+  including the four included `lib_tests.rs` guards. Full-suite discovery also
+  found four stale peer fixtures: they now exercise 74 admission and explicit
+  rejection of 73. Shared local 455 / peer 74 constants remain unchanged.
+- P2 receipt: forward selected imported provider-account receipts, preserving
+  receiving-default remaps and complete copy metadata. Fresh completion and
+  stored completed-import replay use the same projection.
+- P2 slice reimport: observe an existing receiving profile freshly. Preserve
+  authenticated receiving credentials and their tracked generation; otherwise
+  fail with the receiving `/slice auth login` command instead of claiming an
+  import. This chooses the review's actionable-failure option.
 
-- G2: managed-context copy receipts/notices use the actual receiving profile,
-  including default remaps. G3: OpenCode recognizes renewable OAuth entries
-  across services. G4: managed Claude transfers accept only portable official
-  login credentials; metadata-only/Vault setup-token launch stays separate.
-- G1/G5/G7/G8: one copy recorder creates credential-free provenance. Context
-  commits, lease/rebind/account selection, direct slice imports and publication
-  bindings retain real source/target machine/kernel/account IDs. Confirmed
-  receiving receipts preserve an existing receiver login and copy generation.
-  Auth observations and removal tombstones update scoped copy records.
-- TUI Provider Accounts list, selected-account details and command-center
-  account descriptions show copies, warnings and receiving login commands.
-- G6: bounded official auth errors share classification. Missing copied login
-  artifacts also trigger recovery when an app-server has cached auth state.
-  Existing interactions retain ownership; recovery waits for them, preserving
-  the run and admitted prompt identity. Workspace-routing errors are excluded.
+No serialized shape change or new protocol allocation. Existing home-owner,
+bootstrap slice and pinned-home-key admission checks remain intact. Synthetic
+fixtures contain no real credentials; no shared official logout/revocation ran.
 
-Local protocol **455**. Relay peer **74**; relay transport is unchanged.
-The peer bump is required by direct slice import: the removed file-copy/Unix
-helper path cannot obtain live kernel authority. The replacement is an encrypted
-home-to-slice request checked against bootstrap slice ownership and the pinned
-home public key. Old receivers must be upgraded before this operation.
+## MP-10 / MP-11 — checks, exact identities and limits
 
-## Live validation
+- Fail-first build: base plus new regression tests and a neutral extraction of
+  the synchronous import body (`red-source.patch/json`). Ten stale local guards,
+  fresh/replayed copy receipts and absent receiving login each failed (exit 101).
+  Authenticated-login preservation and empty receipt controls passed.
+- Final source (`clean-green-source.patch/json`): all **19 focused checks PASS**
+  (exit 0), covering all ten local guards, five receipt/import checks and four
+  peer fixtures. Earlier broader selected suite: 66 passed, 1 X11-dependent
+  Computer test ignored (`final-green-focused.log`, earlier recorded source).
+- Full final kernel library suite: **RED**, **5,992 passed / 79 failed / 22
+  ignored**, exit 101 (`clean-full-kernel-lib.log`). First failing seam:
+  `direct_prompt_cancel_uses_explicit_target_agent_when_multiple_agents_are_active`
+  expects `Some(Running)` but sees `None`; the next cancellation fixture reports
+  `NoActivePrompt`. Remaining prompt/runtime/workflow fixture failures are
+  unresolved; no full-suite success or original-base regression claim is made.
+- Reran all 79 failures individually on the saved pre-binding-fixture build:
+  78 failed again; `remote_completion_dispatches_prompts_queued_by_detached_clients`
+  passed. That build includes the main P1/P2 fixes and differs only by the last
+  peer test update (`full-baseline-hold.json`, `final-green-source.patch`). This
+  comparison is not original-base evidence.
+- Installed Node 22.22.1 lacks TypeScript support. Final checks used an isolated
+  official same-version Node download verified against its official SHA manifest
+  (`node-toolchain.json`); shared Node was unchanged. Short disposable HOME and
+  no inherited provider credentials prevented long Unix socket paths and default
+  Claude-profile environment interference. Command/exit/build identities are in
+  `clean-batch-results.json` and `clean-green-test-binary.json`.
 
-Evidence: `/Users/miguel/.codex/evidence/credcopies/` (outside Git).
-Real built Bun TUI, built kernel and relay, official installed Codex harness,
-existing linked ChatGPT login, and a real kernel-managed leased worker ran here.
-The drill never opened, printed or manually copied provider credential files.
+Rust work held the shared compile lock, used four build jobs and resource
+watchdogs. Across recorded runs, minima: 12.08 GiB
+MemAvailable, 91.53 GiB disk free. Disposable HOME/state,
+saved test-binary holds, temporary Node and exactly inventoried lane-generated
+test state were removed. No own live child remained. Shared cache, old
+PID-collision paths, provider accounts, reviewer state and other lanes were
+preserved. See cleanup manifests and resource samples outside Git.
 
-**PASS:** Chariox copied the selected account; inventory contained actual machine
-and kernel IDs; the built TUI showed the warning and receiving login command;
-the worker answered `CREDCOPIES_LIVE_OK`; official `codex logout` removed the
-receiving login and `codex login status` reported `Not logged in`.
+## MP-08 / MP-10 — Owner questions
 
-**PASS after fix:** the actual receiving copy raised “Log in to Codex on this
-machine”; the built TUI showed that request, with the admitted prompt retained
-and a second prompt queued. This final recovery observation was made directly
-on the original receiving kernel after restart, rather than claiming a new
-successful home-worker reconnect. Source refresh returned workspace-routing 401
-and restarting the ephemeral drill relay identity hit the existing changed-key
-pin check. No trust pin was replaced to bypass that check.
+**BLOCKED(owner re-login):** owner must perform a new official receiving Codex
+login. Then run the real built-client/kernel/hosted-relay/official-provider drill
+and confirm the admitted turn and queued work resume. No replacement login,
+logout or revocation is attempted here. These source checks do not establish
+real live acceptance. Existing OpenCode/Claude account and broader real-path
+acceptance gaps from the historical report are not closed by this round.
 
-**BLOCKED(owner):** new official receiving Codex login and queued-work resumption.
-The human-only login question timed out without a user response. It was not
-answered automatically; no new-login/resumption success is claimed.
+## MP-11 — Coordinator asks
 
-**BLOCKED:** real OpenCode drill: `opencode auth list` reported zero credentials;
-no alternative linked account was supplied. **BLOCKED(owner): Claude**:
-`claude auth status --json` reported no linked login.
+Investigate the remaining full-suite prompt/runtime fixture failures and the
+shared Node build's missing TypeScript support. No protocol number requested.
+The narrowed MP-11 scope applies: this report is focused behavior/security-anchor
+inspection, not closure of the full parity matrix or independent semantic review.
 
-Managed-context/Path-1, direct Docker import, publication and home-worker
-reconnect/rebind permutations still need real acceptance drills. Fixtures and
-protocol tests below are supplementary, not replacements for these gates.
-
-## Checks and cleanup
-
-See `PUSH_READY.md` for final focused check results. Own live kernels, relay,
-TUI and provider children were stopped. Durable account/identity state was
-preserved; shared reviewer services and unrelated kernels were untouched.
-Large compiler outputs are removed after retaining reviewable built binaries.
-
-## Cloud follow-up (G9)
-
-Pin the current `chariox-cloud` main and audit its Provider Accounts renderer.
-Render shared `materializations[].copy`, the copied-login warning, observation
-state/time and the actual receiving profile/machine. Use existing human-only
-runtime login projection/input and require local protocol 455 for these fields.
-Do not proxy terminal traffic or create a second credential policy.
-
-Managed publication binding producers must supply `source: {machine_id,
-kernel_id}` plus `source_account_id` for each staged managed account. The OSS
-consumer fails loudly when managed provenance is absent; legacy same-machine,
-unmanaged imports remain supported. Coordinate that producer change before
-rollout. Cloud producer and renderer changes are not implemented in this lane.
+Review inbox absolute path:
+`/root/.chariox/dev/browser-resume-20260930/agents/credcopies/REVIEW_INBOX.md`.
+Absent at checks through this milestone; review mapping is in `PUSH_READY.md`.
+Local `[skip ci]` commit only; no GitHub CI, push, PR, merge, staging or deployment.

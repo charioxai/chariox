@@ -2311,8 +2311,14 @@ mod tests {
             ..legacy.clone()
         };
         assert!(!pre_artifact.relay_peer_protocol_compatible());
-        let current = RemoteAgentBinding {
+        // MP-08/MP-10/MP-11: direct slice imports require the allocated peer 74.
+        let pre_slice_import = RemoteAgentBinding {
             relay_peer_protocol_version: Some(73),
+            ..legacy.clone()
+        };
+        assert!(!pre_slice_import.relay_peer_protocol_compatible());
+        let current = RemoteAgentBinding {
+            relay_peer_protocol_version: Some(74),
             ..legacy
         };
         assert!(current.relay_peer_protocol_compatible());
