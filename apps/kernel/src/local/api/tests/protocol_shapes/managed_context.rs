@@ -187,6 +187,7 @@ fn local_daemon_managed_context_completed_receipt_uses_public_camel_case_shape()
     };
 
     let relay_receipt = RelayManagedContextImportReceipt {
+        provider_accounts: Vec::new(),
         transfer_id: "transfer-1".to_string(),
         archive_sha256: "a".repeat(64),
         plan_digest: "sha256:plan".to_string(),

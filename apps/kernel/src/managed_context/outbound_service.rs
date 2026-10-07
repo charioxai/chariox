@@ -71,6 +71,8 @@ pub struct ManagedContextTransferTicket {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedContextOutboundImportReceipt {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_accounts: Vec<crate::account_profile::ManagedContextProviderAccountReceipt>,
     pub transfer_id: String,
     pub archive_sha256: String,
     pub plan_digest: String,
@@ -133,6 +135,7 @@ pub enum ManagedContextOutboundKernelContextImportReceipt {
 impl From<RelayManagedContextImportReceipt> for ManagedContextOutboundImportReceipt {
     fn from(receipt: RelayManagedContextImportReceipt) -> Self {
         Self {
+            provider_accounts: receipt.provider_accounts,
             transfer_id: receipt.transfer_id,
             archive_sha256: receipt.archive_sha256,
             plan_digest: receipt.plan_digest,
@@ -639,7 +642,7 @@ pub(crate) fn start_managed_context_outbound_operation(
             status.package_size_bytes = prepared.package.package_size_bytes;
         });
         let transport = RelayManagedContextPeerTransport::new(
-            config,
+            config.clone(),
             relay_state,
             authoritative_ticket.target.kernel_id.clone(),
             authoritative_ticket.target.relay_public_key.clone(),
@@ -648,9 +651,9 @@ pub(crate) fn start_managed_context_outbound_operation(
             &transport,
             ManagedContextOutboundTransferRequest {
                 plan,
-                target_environment_id: authoritative_ticket.environment_id,
-                target_kernel_id: authoritative_ticket.target.kernel_id,
-                target_key_thumbprint: authoritative_ticket.target.key_thumbprint,
+                target_environment_id: authoritative_ticket.environment_id.clone(),
+                target_kernel_id: authoritative_ticket.target.kernel_id.clone(),
+                target_key_thumbprint: authoritative_ticket.target.key_thumbprint.clone(),
                 package: prepared.package,
                 capability: prepared.capability,
             },
@@ -670,7 +673,44 @@ pub(crate) fn start_managed_context_outbound_operation(
         )
         .await;
         match transfer {
-            Ok(result) => match remove_artifact_root(&prepared.artifact_root) {
+            Ok(result) => match (|| {
+                let owner = crate::account_profile::provider_account_authority_owner_user_id(
+                    &config,
+                    config
+                        .cloud_relay
+                        .as_ref()
+                        .map(|cloud| cloud.user_id.as_str())
+                        .unwrap_or("local"),
+                );
+                for receipt in &result.receipt.provider_accounts {
+                    if let Some(status) = &receipt.copy {
+                        let copy = status.copy.as_ref().ok_or_else(|| {
+                            outbound_service_error(
+                                "target account receipt has no copy identity",
+                                false,
+                            )
+                        })?;
+                        if copy.source_kernel_id != config.daemon_id
+                            || copy.source_machine_id != config.host_machine_id
+                            || copy.target_machine_id != authoritative_ticket.target.machine_id
+                            || copy.target_kernel_id != authoritative_ticket.target.kernel_id
+                            || copy.target_account_id != receipt.profile_id
+                        {
+                            return Err(outbound_service_error(
+                                "target account copy receipt identity mismatch",
+                                false,
+                            ));
+                        }
+                        provider_account_profiles.update_materialization_status(
+                            &owner,
+                            &receipt.provider,
+                            &copy.source_account_id,
+                            status.clone(),
+                        )?;
+                    }
+                }
+                remove_artifact_root(&prepared.artifact_root)
+            })() {
                 Ok(()) => task_store.update(&task_context_id, |status| {
                     status.phase = ManagedContextOutboundOperationPhase::Completed;
                     status.accepted_bytes = result.package_size_bytes;
@@ -912,7 +952,7 @@ fn prepare_managed_context_package_with_environment(
             let mut materializations = Vec::with_capacity(accounts.len());
             let mut serialized_component_bytes = 2u64;
             for account in accounts {
-                let materialization = provider_account_profiles
+                let mut materialization = provider_account_profiles
                     .export_managed_context_materialization(
                         &owner_user_id,
                         &account.provider,
@@ -927,6 +967,11 @@ fn prepare_managed_context_package_with_environment(
                             false,
                         )
                     })?;
+                materialization.copy_source =
+                    Some(crate::account_profile::ProviderAccountCopySource {
+                        machine_id: config.host_machine_id.clone(),
+                        kernel_id: config.daemon_id.clone(),
+                    });
                 append_bounded_provider_account_materialization(
                     &mut materializations,
                     &mut serialized_component_bytes,
@@ -1845,6 +1890,7 @@ mod tests {
     fn provider_account_component_budget_rejects_before_retaining_the_next_account() {
         fn materialization(profile_id: &str) -> ProviderAccountMaterialization {
             ProviderAccountMaterialization {
+                copy_source: None,
                 profile: ProviderAccountReplicaMetadata {
                     owner_user_id: "owner-a".to_string(),
                     provider: "codex".to_string(),

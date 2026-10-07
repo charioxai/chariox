@@ -1,5 +1,34 @@
 # Chariox v1 Protocol
 
+### Managed provider login copies (local protocol 455, relay peer 74)
+
+Provider account materialization statuses may carry `copy`: source and target
+machine/kernel/account identities, renewable service identifiers, copy time,
+last observed authentication state and warning delivery state. It contains no
+credentials. Materializations carry source identity internally; managed-context
+commit receipts and leased account acknowledgements carry the actual receiving
+profile/copy receipt. Sources persist confirmed receipts, including default
+profile remaps, rather than assuming their profile ID was installed.
+
+`provider_account_control::import_managed_account_copy` uses the existing kernel account materializer.
+Direct slice imports reach it through the encrypted
+`ImportManagedSliceProviderAccountCopy` peer request, authorized against the
+slice bootstrap owner and pinned home public key. This new request requires
+peer 74; the relay transport protocol itself is unchanged. An unauthenticated
+Unix helper is not an account authority. Leased projections carry optional,
+credential-free copy observations, including removals. These observations never
+transfer or refresh tokens.
+
+Existing clients can ignore optional copy fields. Clients rendering these
+fields or importing a copy must require local protocol 455. Legacy inventory
+with no machine provenance is displayed as unrecorded; machine IDs are never
+invented. Official provider login remains local to the receiving kernel and
+human-only login interactions use the existing home-worker projection.
+
+Focused guards: `managed_login_copies.rs`; real-path drill:
+`apps/cli/scripts/live-managed-login-copies-drill.mjs`. Fixtures do not establish
+live logout, new login, or queued-work acceptance.
+
 ### MP-11 F7 public provider-run boundary (local protocol 435)
 
 All client-facing provider-run responses (single/batch launch, read, selection,

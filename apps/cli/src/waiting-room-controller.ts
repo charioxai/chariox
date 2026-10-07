@@ -1,3 +1,4 @@
+import { providerAccountCopiesSummary } from "./waiting-room-provider-accounts.js"
 import {
   catalogModelOptions,
   selectConfiguredVariant,
@@ -488,7 +489,7 @@ export function deriveWaitingRoomControlActivationDecision(options: {
       return {
         action: "info",
         message: account
-          ? `${account.provider}/${account.label}: ${account.auth_state}; usage ${account.usage.availability}`
+          ? `${account.provider}/${account.label}: ${account.auth_state}; usage ${account.usage.availability}${providerAccountCopiesSummary(account) ? `\n${providerAccountCopiesSummary(account)}` : ""}`
           : "No discovered account is selected. Open Provider Accounts to add or link one.",
       }
     }

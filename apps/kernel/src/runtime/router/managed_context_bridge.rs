@@ -995,6 +995,14 @@ fn relay_receipt(
         }
     };
     Ok(RelayManagedContextImportReceipt {
+        provider_accounts: match receipt.provider_accounts {
+            crate::managed_context::package::ManagedContextImportedProviderAccounts::None => {
+                Vec::new()
+            }
+            crate::managed_context::package::ManagedContextImportedProviderAccounts::Selected {
+                accounts,
+            } => accounts,
+        },
         transfer_id: receipt.transfer_id,
         archive_sha256: receipt.package_sha256,
         plan_digest: receipt.plan_digest,
@@ -1093,6 +1101,99 @@ fn managed_context_authorization_error(message: impl Into<String>) -> DaemonErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // MP-08/MP-10/MP-11: receipts retain the actual receiving-default mapping.
+    fn account_import_receipt() -> ManagedContextPackageImportReceipt {
+        use crate::account_profile::*;
+        ManagedContextPackageImportReceipt {
+            schema_version: 4,
+            transfer_id: "transfer".into(),
+            package_sha256: "package-digest".into(),
+            plan_digest: "plan-digest".into(),
+            development: crate::managed_context::package::ManagedContextImportedDevelopment::Empty,
+            kernel_context: ManagedContextImportedKernelContext::Empty,
+            provider_accounts:
+                crate::managed_context::package::ManagedContextImportedProviderAccounts::Selected {
+                    accounts: vec![ManagedContextProviderAccountReceipt {
+                        context_id: "context".into(),
+                        package_sha256: "package-digest".into(),
+                        materialization_sha256: "account-digest".into(),
+                        provider: "codex".into(),
+                        profile_id: "receiving-default".into(),
+                        copy: Some(ProviderAccountMaterializationStatus {
+                            target_kind: ProviderAccountMaterializationTargetKind::Worker,
+                            target_ref: "target-kernel".into(),
+                            state: ProviderAccountMaterializationState::Materialized,
+                            observed_at_ms: 42,
+                            last_error: None,
+                            copy: Some(ProviderAccountCopyMetadata {
+                                source_machine_id: "source-machine".into(),
+                                source_kernel_id: "source-kernel".into(),
+                                source_account_id: "source-default".into(),
+                                target_machine_id: "target-machine".into(),
+                                target_kernel_id: "target-kernel".into(),
+                                target_account_id: "receiving-default".into(),
+                                renewable_services: vec!["codex".into()],
+                                auth_state: ProviderAccountCopyAuthState::Authenticated,
+                                copied_at_ms: 41,
+                                warning_seen: true,
+                            }),
+                        }),
+                    }],
+                },
+            git_credentials: Default::default(),
+        }
+    }
+
+    #[test]
+    fn mp08_mp10_mp11_relay_receipt_forwards_remapped_account_copy() {
+        let receipt = account_import_receipt();
+        let crate::managed_context::package::ManagedContextImportedProviderAccounts::Selected {
+            accounts: expected,
+        } = receipt.provider_accounts.clone()
+        else {
+            unreachable!()
+        };
+        let forwarded = relay_receipt(receipt, "receipt-digest").unwrap();
+        assert_eq!(forwarded.provider_accounts, expected);
+        assert_eq!(forwarded.receipt_sha256, "receipt-digest");
+    }
+
+    #[test]
+    fn mp08_mp10_mp11_completed_import_replay_forwards_account_copy() {
+        let receipt = account_import_receipt();
+        let crate::managed_context::package::ManagedContextImportedProviderAccounts::Selected {
+            accounts: expected,
+        } = receipt.provider_accounts.clone()
+        else {
+            unreachable!()
+        };
+        let response = relay_status_response(ManagedContextTransferStatus {
+            transfer_id: receipt.transfer_id.clone(),
+            phase: ManagedContextTransferPhase::Consumed,
+            accepted_bytes: 123,
+            archive_size_bytes: 123,
+            expires_at_ms: 100,
+            import_receipt_sha256: Some("receipt-digest".into()),
+            import_receipt_json: Some(serde_json::to_string(&receipt).unwrap()),
+            failure_code: None,
+        })
+        .unwrap();
+        let RelayPeerResponse::ManagedContextImportStatus { status } = response else {
+            panic!("completed import must return its stored status");
+        };
+        assert_eq!(status.receipt.unwrap().provider_accounts, expected);
+    }
+
+    #[test]
+    fn mp08_mp10_mp11_relay_receipt_without_accounts_stays_empty() {
+        let mut receipt = account_import_receipt();
+        receipt.provider_accounts = Default::default();
+        assert!(relay_receipt(receipt, "receipt-digest")
+            .unwrap()
+            .provider_accounts
+            .is_empty());
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn import_thread_creation_failure_is_retryable() {

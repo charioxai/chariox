@@ -100,10 +100,12 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// `event_actions_enabled` and leased provider-run projections lose
 /// `workflow_event_actions_enabled`, which a peer at v68 or below still requires.
 /// Version70 combines Apps Phase1 and autonomous Room observation contracts (MP-08/MP-10).
+/// Version 74 adds owner-authenticated direct slice account-copy import.
 /// Version 82 adds owner-private workflow notifications to the Browser/Computer peer union (MP-08/MP-11).
 /// MP-08/MP-10/MP-11: version 86 combines the multidomain and main worker shapes.
 /// Version 93 is integration candidate 1: the union of every merged peer shape
-/// (82 workflow notifications, 86 multidomain, 90 display, 92 Linux computer use).
+/// (74 account-copy import, 82 workflow notifications, 86 multidomain, 90 display,
+/// 92 Linux computer use).
 /// Older worker contracts are rejected before dispatch.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 93;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
@@ -184,6 +186,8 @@ pub struct RelayManagedContextImportedRepository {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayManagedContextImportReceipt {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_accounts: Vec<crate::account_profile::ManagedContextProviderAccountReceipt>,
     pub transfer_id: String,
     pub archive_sha256: String,
     pub plan_digest: String,
@@ -605,6 +609,10 @@ pub enum RelayPeerRequest {
         subscription_id: String,
         envelope: crate::local::WorkflowNotificationEnvelope,
     },
+    ImportManagedSliceProviderAccountCopy {
+        slice_id: String,
+        materialization: crate::account_profile::ProviderAccountMaterialization,
+    },
     RoomBrowserController {
         session_id: String,
         slice_id: String,
@@ -1020,6 +1028,9 @@ pub enum RelayPeerResponse {
     WorkflowNotificationAccepted {
         ack: crate::local::WorkflowNotificationAck,
     },
+    ManagedSliceProviderAccountCopyImported {
+        profile: crate::account_profile::ProviderAccountProfile,
+    },
     RoomBrowserController {
         session_id: String,
         slice_id: String,
@@ -1241,6 +1252,8 @@ pub enum RelayPeerResponse {
         materialized: Vec<RemoteSkillMaterialization>,
     },
     RemoteProviderAccountEnsured {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        copy: Option<crate::account_profile::ProviderAccountMaterializationStatus>,
         provider: String,
         account_profile: String,
     },
@@ -1291,6 +1304,8 @@ pub struct RelayProjectedPrompt {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerEvent {
     LeasedRuntimeProjection {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        account_copy_observations: Vec<crate::account_profile::ProviderAccountCopyObservation>,
         home_session_id: String,
         home_agent_id: String,
         provider_run_id: String,

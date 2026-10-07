@@ -308,6 +308,7 @@ fn remote_completion_dispatches_prompts_queued_by_detached_clients() {
         // The worker finishes the first turn and reports it to the home.
         let worker_run_id = fixture.complete_worker_turn().await;
         let event = RelayPeerEvent::LeasedRuntimeProjection {
+            account_copy_observations: Vec::new(),
             home_session_id: fixture.session_id.clone(),
             home_agent_id: fixture.agent_id.clone(),
             provider_run_id: worker_run_id,

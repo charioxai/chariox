@@ -5,11 +5,26 @@ pub(crate) fn renewal_failed(provider: &str, error: &str) -> bool {
         return false;
     }
     let error = error.to_ascii_lowercase();
+    if error.contains("workspace service") || error.contains("workspace routing") {
+        return false;
+    }
     // MP-08/MP-10: OpenCode may omit the OAuth response code. Recovery still
     // requires a renewable profile because this is not strong OAuth evidence.
     (provider == "opencode"
         && error.trim_end().ends_with("token refresh failed")
         && !error.contains("workspace service"))
+        || [
+            "access token could not be refreshed",
+            "authentication token has been invalidated",
+            "refresh token was revoked",
+            "please log out and sign in again",
+            "please try signing in again",
+            "not_logged_in",
+            "not logged in",
+            "login required",
+        ]
+        .iter()
+        .any(|code| error.contains(code))
         || oauth_renewal_evidence(&error)
         || error.contains("provider_authentication_failed")
         || error.contains("claude stopfailure [authentication_failed]")
@@ -81,5 +96,22 @@ mod tests {
             "claude",
             "Claude StopFailure [authentication_failed]: login required"
         ));
+    }
+    #[test]
+    fn official_logged_out_variants_share_recovery_and_slice_classification() {
+        for provider in ["codex", "opencode", "claude"] {
+            for message in [
+                "access token could not be refreshed",
+                "authentication token has been invalidated",
+                "please log out and sign in again",
+                "not_logged_in",
+            ] {
+                assert!(renewal_failed(provider, message));
+                assert!(!renewal_failed(
+                    provider,
+                    &format!("workspace service: {message}")
+                ));
+            }
+        }
     }
 }

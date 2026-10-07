@@ -89,3 +89,17 @@ export function providerAccountLoginHint(profile: ProviderAccountProfile): strin
     ? `login not finished · /provider login ${profile.provider} ${profile.label} to continue`
     : null
 }
+
+export function providerAccountCopiesSummary(profile: ProviderAccountProfile): string {
+  return (profile.materializations ?? []).map((status) => {
+    const copy = status.copy
+    if (!copy) return `Copy on ${status.target_kind} ${status.target_ref}: ${status.state} (machine identity not recorded)`
+    const warning = copy.renewable_services.length > 0
+      ? " This copy can log you out. Consider logging in on that machine."
+      : ""
+    const login = status.target_kind === "slice"
+      ? `/slice auth login ${status.target_ref} ${profile.provider} ${copy.target_account_id}`
+      : `/provider login ${profile.provider} ${copy.target_account_id}`
+    return `Copy on ${copy.target_machine_id} (${copy.target_kernel_id}), account ${copy.target_account_id}; copied from ${copy.source_machine_id} (${copy.source_account_id}); ${copy.auth_state.replaceAll("_", " ")} observed ${new Date(status.observed_at_ms).toISOString()}.${warning} Official login on receiving machine: ${login}`
+  }).join("\n")
+}

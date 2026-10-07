@@ -1,12 +1,12 @@
 //! MP-08/MP-10/MP-11: a controlled advertisement over the real encrypted relay.
-//! Both workers use the current kernel dispatcher; v70 changes only the lease
+//! Both workers use the current kernel dispatcher; obsolete versions change only the lease
 //! advertisement, avoiding any artifact/upload dispatch to an obsolete worker.
 use super::support::*;
 use futures_util::FutureExt;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 #[test]
-fn mp08_mp10_mp11_browser_artifact_peer_73_encrypted_lease_admission() {
+fn mp08_mp10_mp11_browser_artifact_peer_74_encrypted_lease_admission() {
     crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("browser-artifact-peer-version", check);
 }
@@ -186,11 +186,14 @@ async fn check() {
             })
             .await
             .unwrap();
-            if advertised == 70 {
-                let error =
-                    result.expect_err("v70 must be rejected before spawn or artifact dispatch");
+            if advertised < 74 {
+                let error = result.expect_err(
+                    "obsolete peers must be rejected before spawn or artifact dispatch",
+                );
                 assert!(
-                    error.to_string().contains("protocol 70"),
+                    error
+                        .to_string()
+                        .contains(&format!("protocol {advertised}")),
                     "{error}; request kinds: {:?}",
                     *requests.lock().await
                 );

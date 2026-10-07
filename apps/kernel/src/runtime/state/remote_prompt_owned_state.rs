@@ -820,6 +820,7 @@ mod tests {
                         crate::app::RemoteLeaseRuntime::new(app).project_remote_runtime_projection(
                             authority,
                             crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                                account_copy_observations: Vec::new(),
                                 home_session_id: session.to_string(),
                                 home_agent_id: agent.to_string(),
                                 provider_run_id: "worker-run-1".to_string(),

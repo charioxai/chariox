@@ -12,6 +12,7 @@ import {
   providerAccountDisplayLabel,
   providerAccountIdentityLabel,
   providerAccountLoginHint,
+  providerAccountCopiesSummary,
   providerAccountsForProvider,
   selectedProviderAccount,
 } from "./waiting-room-provider-accounts.js"
@@ -346,7 +347,8 @@ async function handleProviderAccountsCommand(
       const services = formatProviderAccountServices(entry)
       const identity = providerAccountIdentityLabel(entry)
       const loginHint = providerAccountLoginHint(entry)
-      return `${entry.provider} ${entry.label}${entry.is_default ? " [default]" : ""} · ${credentialKindLabel(entry)} · ${entry.auth_state}${identity ? ` · ${identity}` : ""}${loginHint ? ` · ${loginHint}` : ""}${services ? ` · ${services}` : ""} · ${formatProviderAccountUsage(entry)}`
+      const copies = providerAccountCopiesSummary(entry)
+      return `${entry.provider} ${entry.label}${entry.is_default ? " [default]" : ""} · ${credentialKindLabel(entry)} · ${entry.auth_state}${identity ? ` · ${identity}` : ""}${loginHint ? ` · ${loginHint}` : ""}${services ? ` · ${services}` : ""} · ${formatProviderAccountUsage(entry)}${copies ? `\n${copies}` : ""}`
     })
     deps.appendNotice(lines.length > 0 ? lines.join("\n") : "No provider accounts registered")
     deps.flashFooter(`${profiles.length} provider account profile${profiles.length === 1 ? "" : "s"}`, "info")

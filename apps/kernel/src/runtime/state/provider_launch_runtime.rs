@@ -32,6 +32,16 @@ impl KernelRuntimeState {
             if crate::provider::canonical_provider_family(&launch_request.provider)
                 == Some("claude")
                 && provider_launch_credential.is_none()
+                && !owned
+                    .provider_account_profiles
+                    .has_renewable_login(
+                        &self.provider_account_authority_owner_user_id(
+                            &launch_request.owner_user_id,
+                        ),
+                        "claude",
+                        &launch_request.account_profile,
+                    )
+                    .unwrap_or(false)
             {
                 return Err(DaemonError::LocalTransport {
                     operation: "launch remote provider without credential",
@@ -599,6 +609,23 @@ impl KernelRuntimeState {
                 );
                 return;
             }
+        }
+        let owner = self.provider_account_authority_owner_user_id(started.run.owner_user_id());
+        if self
+            .owned
+            .provider_account_profiles
+            .copied_login_needs_login(
+                &owner,
+                started.run.adapter_key(),
+                started.run.account_profile(),
+            )
+            .unwrap_or(false)
+            && self
+                .try_provider_launch_auth_recovery(started, "not_logged_in")
+                .await
+                .unwrap_or(false)
+        {
+            return;
         }
         let mut retry_metaagent_event_dispatches = WorkflowPromptDispatches::default();
         {
