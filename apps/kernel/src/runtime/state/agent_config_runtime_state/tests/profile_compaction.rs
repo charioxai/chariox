@@ -370,21 +370,11 @@ async fn leased_worker_compacts_before_retiring_the_source_and_reserves_admissio
         .await
         .is_ok();
     let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
-    let outcome = runtime
+    let admission_reserved = runtime
         .owned
         .prompt_state_owner
-        .submit_prepared_prompt(
-            &snapshot,
-            crate::session::PromptQueueItem::new(
-                "during-worker-compact",
-                "fixture",
-                &agent,
-                "request during worker compact",
-                crate::session::PromptStatus::Queued,
-            ),
-            false,
-        )
-        .unwrap();
+        .claim_idle_agent_profile_transition(&snapshot, &agent)
+        .is_err();
     std::fs::write(root.path().join("release"), "").unwrap();
     let result = update.await.unwrap();
     assert!(
@@ -397,16 +387,20 @@ async fn leased_worker_compacts_before_retiring_the_source_and_reserves_admissio
         "worker compaction must not hold the app mutex"
     );
     assert!(
-        matches!(
-            outcome,
-            crate::session::PromptSubmissionOutcome::Queued { .. }
-        ),
+        admission_reserved,
         "backing agent admission must be reserved"
     );
     let result = result.unwrap();
     assert_eq!(result.model.as_deref(), Some("haiku"));
     assert_eq!(result.backing_agent_id, lease.backing_agent_id);
     assert_eq!(result.lease_id, lease.lease_id);
+    drop(
+        runtime
+            .owned
+            .prompt_state_owner
+            .claim_idle_agent_profile_transition(&snapshot, &agent)
+            .unwrap(),
+    );
     assert_eq!(
         runtime
             .owned
@@ -621,7 +615,18 @@ async fn profile_compaction_does_not_block_session_commands_or_interaction_respo
 #[tokio::test]
 async fn a_prompt_queued_during_compaction_reaches_the_committed_profile() {
     crate::test_support::isolated_env_test!();
-    let (root, app, runtime, session_id, agent_id, run) = compact_fixture().await;
+    assert_queued_prompt_reaches_committed_profile(false).await;
+}
+
+#[tokio::test]
+async fn a_leased_prompt_queued_during_compaction_reaches_the_committed_profile() {
+    crate::test_support::isolated_env_test!();
+    assert_queued_prompt_reaches_committed_profile(true).await;
+}
+
+async fn assert_queued_prompt_reaches_committed_profile(leased: bool) {
+    let (root, app, runtime, session_id, agent_id, run, lease) =
+        compact_fixture_with_lease(leased).await;
     let received = root.path().join("new-profile-input");
     let executable = root.path().join("claude-queue-fixture");
     std::fs::write(&executable, format!("#!/bin/sh\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> '{}'; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done\n", received.display())).unwrap();
@@ -677,17 +682,31 @@ async fn a_prompt_queued_during_compaction_reaches_the_committed_profile() {
     let session = session_id.clone();
     let agent = agent_id.clone();
     let update = tokio::spawn(async move {
-        state
-            .update_agent_profile(
-                &session,
-                &agent,
-                crate::session::DEFAULT_LOCAL_USER_ID,
-                None,
-                None,
-                Some("haiku".into()),
-                None,
-            )
-            .await
+        if let Some(lease) = lease {
+            state
+                .update_relay_leased_agent_profile(
+                    &lease.id,
+                    "claude".into(),
+                    "default".into(),
+                    Some("haiku".into()),
+                    None,
+                )
+                .await
+                .map(|updated| updated.model)
+        } else {
+            state
+                .update_agent_profile(
+                    &session,
+                    &agent,
+                    crate::session::DEFAULT_LOCAL_USER_ID,
+                    None,
+                    None,
+                    Some("haiku".into()),
+                    None,
+                )
+                .await
+                .map(|updated| updated.model().map(str::to_string))
+        }
     });
     for _ in 0..100 {
         if root.path().join("started").exists() {
@@ -721,7 +740,7 @@ async fn a_prompt_queued_during_compaction_reaches_the_committed_profile() {
         queued,
         crate::session::PromptSubmissionOutcome::Queued { .. }
     ));
-    assert_eq!(updated.model(), Some("haiku"));
+    assert_eq!(updated.as_deref(), Some("haiku"));
     for _ in 0..300 {
         if received.exists() {
             break;
@@ -740,18 +759,20 @@ async fn a_prompt_queued_during_compaction_reaches_the_committed_profile() {
     let current = runtime
         .owned
         .provider_store
-        .get_run_for_agent(&session_id, &agent_id)
-        .unwrap();
+        .get_run_for_agent(&session_id, &agent_id);
     let input = std::fs::read_to_string(&received).unwrap_or_default();
-    runtime
-        .owned
-        .provider_store
-        .terminate_run_provider_only(&session_id, current.id())
-        .unwrap();
+    if let Some(current) = &current {
+        runtime
+            .owned
+            .provider_store
+            .terminate_run_provider_only(&session_id, current.id())
+            .unwrap();
+    }
     assert!(
         input.contains("request after source compact"),
         "queued request must reach the new runtime: {input:?}"
     );
+    let current = current.unwrap();
     assert_eq!(current.model(), "haiku");
     assert_ne!(current.id(), run.id());
 }

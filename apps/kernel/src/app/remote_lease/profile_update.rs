@@ -68,7 +68,7 @@ impl RemoteLeaseRuntime<'_> {
             }
             return Ok(PreparedLeasedProfileUpdate {
                 leased_agent,
-                profile: crate::transport::relay_peer::RelayAgentExecutionProfile {
+                profile: RelayAgentExecutionProfile {
                     provider,
                     account_profile,
                     model,
@@ -116,7 +116,7 @@ impl RemoteLeaseRuntime<'_> {
         &mut self,
         prepared: PreparedLeasedProfileUpdate,
     ) -> Result<LeasedAgent, DaemonError> {
-        let crate::transport::relay_peer::RelayAgentExecutionProfile {
+        let RelayAgentExecutionProfile {
             provider,
             account_profile,
             model,
