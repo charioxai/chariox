@@ -100,7 +100,6 @@ impl KernelRuntimeOwnedState {
                 );
             }
             prompt.id() == dispatch.prompt_id
-                && prompt.status() != crate::session::PromptStatus::Cancelling
         };
         Ok(self
             .prompt_state_owner
@@ -2602,6 +2601,120 @@ mod tests {
     #[tokio::test]
     async fn app_async_rejection_preserves_successor_prompt() {
         assert_async_rejection_settlement(true, true).await;
+    }
+
+    #[tokio::test]
+    async fn claude_native_cancel_before_acknowledgement_settles_as_cancelled() {
+        crate::test_support::isolated_env_test!();
+        let (_worktree, runtime, session_id, agent_id, source_id, run, dispatch) =
+            runtime_with_claude_headless_active_prompt().await;
+        // The retirement fixture normally creates metadata only. This test
+        // needs a live fake PTY for the native dispatch and abort paths.
+        runtime
+            .with_app_side_effect(|app| {
+                crate::app::ProviderLaunchProcessRuntime::new(app).spawn_for_launch(&run)
+            })
+            .await
+            .unwrap();
+        let prompt_id = dispatch.prompt_id.clone();
+        let marker = std::path::Path::new(&run.pty_env()["CHARIOX_CLAUDE_NATIVE_CONTEXT"])
+            .with_file_name("active-prompt-id");
+        // Seed the state after PTY injection, before UserPromptSubmit. This
+        // fixture exercises acknowledgement/cancellation, not cold-start UI.
+        std::fs::write(&marker, format!("injected:{prompt_id}")).unwrap();
+        let origin = std::path::PathBuf::from(format!(
+            "{}.approval-origin",
+            run.pty_env()["CHARIOX_CLAUDE_NATIVE_CONTEXT"]
+        ));
+        runtime.spawn_prompt_dispatch(dispatch, runtime.provider_runtime_lanes.clone());
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if std::fs::read_to_string(&origin).ok().as_deref() == Some(prompt_id.as_str()) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "dispatch must reach the native acknowledgement wait; failed={:?}",
+                failed_requests(&runtime, &agent_id)
+            )
+        });
+        let cancellation = runtime
+            .owned
+            .cancel_local_prompt(&session_id, &agent_id, &source_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            cancellation.cancellation.prompt.status(),
+            PromptStatus::Cancelling
+        );
+        runtime.spawn_prompt_abort(
+            cancellation.dispatch.unwrap(),
+            runtime.provider_runtime_lanes.clone(),
+        );
+        // Let the native dispatch retry while cancellation owns the prompt,
+        // before simulating Claude's delayed UserPromptSubmit acknowledgement.
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        std::fs::write(&marker, format!("accepted:{prompt_id}")).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let session = runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .unwrap();
+                if runtime
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &agent_id)
+                    .is_none()
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the cancellation must settle after acknowledgement");
+        runtime
+            .retire_owned_provider_run_after_terminal_failure(&session_id, run.id())
+            .await;
+        assert!(
+            failed_requests(&runtime, &agent_id).is_empty(),
+            "a cancelled native request must not be remembered as failed"
+        );
+        assert_ne!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .unwrap()
+                .state(),
+            crate::agent::AgentState::Error
+        );
+        let settlement = runtime
+            .owned
+            .operational_history_store
+            .load_prompt_settlement_event(&session_id, &agent_id, &prompt_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            settlement.metadata[crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY],
+            "cancelled"
+        );
+        let history = runtime
+            .owned
+            .operational_history_store
+            .load_session_events(&session_id, Some(&agent_id))
+            .unwrap();
+        assert!(!history.iter().any(|event| event
+            .content
+            .as_deref()
+            .is_some_and(|text| text.contains("Provider prompt dispatch failed")
+                || text.contains("Request not carried out"))));
     }
 
     #[tokio::test]

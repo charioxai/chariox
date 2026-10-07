@@ -1097,6 +1097,11 @@ fn direct_prompt_cancel_uses_explicit_target_agent_when_multiple_agents_are_acti
     assert!(session_state
         .active_prompt_for_agent(prompt_agent.id())
         .is_none_or(|prompt| prompt.status() == crate::session::PromptStatus::Cancelling));
+    harness.with_app(|app| {
+        let agent = app.agents().get_agent(prompt_agent.id()).unwrap();
+        assert_ne!(agent.state(), crate::agent::AgentState::Error);
+        assert!(agent.failed_requests().is_empty());
+    });
 }
 
 #[test]

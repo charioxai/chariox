@@ -85,6 +85,7 @@ The update passes the remaining part of its 120-second deadline into each utilit
 - `runtime::state::context_handoff::brief::tests::long_history_is_read_oldest_first_in_bounded_chunks`
 - `runtime::state::context_handoff::tests::a_switch_carries_the_stored_brief_and_the_packet_fits_the_target_window`
 - `runtime::state::local_prompt_dispatch_runtime::tests::cancelling_during_handoff_brief_never_submits_or_saves_the_cancelled_fold`
+- `runtime::state::local_prompt_dispatch_runtime::tests::claude_native_cancel_before_acknowledgement_settles_as_cancelled`
 - `history::handoff_brief::tests::a_stored_brief_never_moves_its_watermark_back`
 - Live drill: `apps/cli/scripts/live-model-switch-context-drill.mjs`. It plants facts and can add filler turns or restart the kernel before or after the switch. It then changes the agent profile and probes recall without tools. For long sessions:
   - `--bulk-turns N --bulk-kb K` scripts a session that outgrows the target window;

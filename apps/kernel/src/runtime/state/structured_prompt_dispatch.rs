@@ -139,6 +139,16 @@ impl KernelRuntimeOwnedState {
         self.ensure_prompt_dispatch_matches_active_prompt(dispatch)
             .unwrap_or(false)
             && self
+                .session_store
+                .get_session(&dispatch.session_id)
+                .is_ok_and(|session| {
+                    self.prompt_state_owner
+                        .active_prompt_for_agent(&session, &dispatch.agent_id)
+                        .is_some_and(|prompt| {
+                            prompt.status() != crate::session::PromptStatus::Cancelling
+                        })
+                })
+            && self
                 .provider_store
                 .get_run_for_agent(&dispatch.session_id, &dispatch.agent_id)
                 .is_some_and(|run| {
