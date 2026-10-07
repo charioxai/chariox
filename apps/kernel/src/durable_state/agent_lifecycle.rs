@@ -35,6 +35,8 @@ pub struct AgentTaskExecution {
     pub prompt_id: String,
     pub provider_run_id: Option<String>,
     pub revision: u64,
+    #[serde(default)]
+    pub blocked_revision: u64,
     pub state: ExecutionState,
     pub reason: String,
     pub obligations: Vec<AgentObligation>,
@@ -429,6 +431,7 @@ fn new_task(
         prompt_id: prompt,
         provider_run_id: run,
         revision: 1,
+        blocked_revision: 0,
         state: ExecutionState::Working,
         reason: String::new(),
         obligations: vec![],

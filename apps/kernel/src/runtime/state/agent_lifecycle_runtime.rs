@@ -622,10 +622,6 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let id = format!("task-blocked-{}", task.task_id);
         let session = self.owned.session_store.get_session(&task.room_id)?;
-        // Owner responses bind the settled revision; native turn settlement must
-        // not invalidate an interaction that was answered exactly once.
-        if self.owned.prompt_state_owner.active_prompt_for_agent(&session, &task.agent_id).is_some() { return Ok(()); }
-
         if session.active_interactions().iter().any(|i| i.id() == id) {
             return Ok(());
         }
@@ -650,7 +646,7 @@ impl KernelRuntimeState {
                         .durable_state_store
                         .agent_lifecycle(Operation::OwnerResponse {
                             task: task.task_id,
-                            revision: task.revision,
+                            revision: task.blocked_revision,
                             resume,
                             now: crate::session::unix_epoch_ms(),
                         })

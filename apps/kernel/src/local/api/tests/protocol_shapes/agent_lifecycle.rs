@@ -12,6 +12,7 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
         prompt_id: "turn".into(),
         provider_run_id: Some("run".into()),
         revision: 2,
+        blocked_revision: 0,
         state: ExecutionState::Waiting,
         reason: "delegate result".into(),
         obligations: vec![],
@@ -29,11 +30,11 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
         pending_prompt_id: None,
     };
     let value = serde_json::to_value(task).unwrap();
-    let expected = serde_json::json!({"task_id":"task","room_id":"room","owner_user_id":"owner","agent_id":"agent","prompt_id":"turn","provider_run_id":"run","revision":2,"state":"waiting","reason":"delegate result","obligations":[],"wait":{"registration_ids":["reg"],"deadline_ms":60000,"started_at_ms":1,"inbox_cursor":3,"long_wait_notified":false},"last_progress_at_ms":1,"progress_sequence":0,"no_progress_wakes":1,"correction_used":false,"pending_prompt_id":null});
+    let expected = serde_json::json!({"task_id":"task","room_id":"room","owner_user_id":"owner","agent_id":"agent","prompt_id":"turn","provider_run_id":"run","revision":2,"blocked_revision":0,"state":"waiting","reason":"delegate result","obligations":[],"wait":{"registration_ids":["reg"],"deadline_ms":60000,"started_at_ms":1,"inbox_cursor":3,"long_wait_notified":false},"last_progress_at_ms":1,"progress_sequence":0,"no_progress_wakes":1,"correction_used":false,"pending_prompt_id":null});
     assert_eq!(value, expected);
     use sha2::{Digest, Sha256};
     assert_eq!(
         format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
-        "dd9ea6a6f41045c3b8e5b96a350ecc860c5a808092bf35ec256d2a6887c7f646"
+        "6bcc4e301f4ff72d075eb60dd595055bbcc4e949419f425c4763fb5f13b93669"
     );
 }

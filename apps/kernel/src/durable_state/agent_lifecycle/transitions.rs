@@ -230,6 +230,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Err(error("blocked requires an owner action"));
             }
             t.state = ExecutionState::Blocked;
+            t.blocked_revision = t.revision + 1;
             t.reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
             t.revision += 1;
             save(tx, &t)?;
@@ -289,6 +290,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 };
                 if t.no_progress_wakes >= NO_PROGRESS_LIMIT {
                     t.state = ExecutionState::Blocked;
+                    t.blocked_revision = t.revision + 1;
                     t.reason="Three consecutive wakes without handled progress; owner must resume or cancel".into();
                 } else if valid_wait {
                     t.state = ExecutionState::Waiting;
@@ -302,6 +304,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     t.reason="Turn ended without completing its obligations or a valid live wait; correct once".into();
                 } else {
                     t.state = ExecutionState::Blocked;
+                    t.blocked_revision = t.revision + 1;
                     t.wait = None;
                     t.reason = "Repeated invalid turn end; owner must resume or cancel".into();
                 }
@@ -387,6 +390,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     t.no_progress_wakes += 1;
                     if t.no_progress_wakes > NO_PROGRESS_LIMIT {
                         t.state = ExecutionState::Blocked;
+                        t.blocked_revision = t.revision + 1;
                         t.reason="Three consecutive wakes without a handled result; owner must resume or cancel".into();
                         e.state = "blocked".into();
                         save_event(tx, &e)?;
@@ -561,6 +565,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         Ok(regs) => regs,
                         Err(_) => {
                             t.state = ExecutionState::Blocked;
+                            t.blocked_revision = t.revision + 1;
                             t.reason="Source registration is corrupt; owner must restore the exact source receipt".into();
                             t.revision += 1;
                             save(tx, &t)?;
@@ -658,6 +663,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             && !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
                         {
                             t.state = ExecutionState::Blocked;
+                            t.blocked_revision = t.revision + 1;
                             t.reason=format!("Unconfirmed delivery {}: owner must reconcile the original attempt",e.sequence);
                             t.revision += 1;
                             save(tx, &t)?;
@@ -675,7 +681,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             now,
         } => {
             let mut t = load(tx, &task)?;
-            if t.state != ExecutionState::Blocked || t.revision != revision {
+            if t.state != ExecutionState::Blocked || t.blocked_revision != revision {
                 return Err(error("owner response is stale"));
             }
             t.state = if resume {

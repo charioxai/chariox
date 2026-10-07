@@ -71,6 +71,7 @@ pub(super) fn migrate(db: &mut Connection) -> Result<(), DaemonError> {
                 .into(),
         });
         task.state = ExecutionState::Blocked;
+        task.blocked_revision = task.revision + 1;
         task.reason="Recovered legacy dispatch obligation; owner must reconcile its exact resource and resume or cancel".into();
         task.revision += 1;
         save(&tx, &task)?;

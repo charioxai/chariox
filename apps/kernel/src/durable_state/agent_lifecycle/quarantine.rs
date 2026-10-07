@@ -13,6 +13,7 @@ pub(super) fn task(id: String, room: String, agent: String, prompt: String) -> A
     let mut t = new_task(room, agent, prompt, None, crate::session::unix_epoch_ms());
     t.task_id = id;
     t.state = ExecutionState::Blocked;
+    t.blocked_revision = t.revision;
     t.reason="Task ledger is quarantined; owner must restore authoritative state or cancel. Obligation coverage is unknown".into();
     t
 }

@@ -355,7 +355,7 @@ export type WorkspaceLiveSyncStatus = {
 // MP-08 / MP-09 / MP-10 / MP-11 A02, protocol 452.
 export type AgentTaskExecution = {
   task_id: string; room_id: string; owner_user_id: string; agent_id: string; prompt_id: string
-  provider_run_id: string | null; revision: number
+  provider_run_id: string | null; revision: number; blocked_revision: number
   state: "working" | "waiting" | "blocked" | "done" | "cancelled"
   reason: string
   obligations: { id: string; kind: string; resource_id: string | null; status: string; dispatch_state: string }[]
