@@ -120,7 +120,8 @@ impl LocalBrowserDirect {
         self: &Arc<Self>,
         identity: &RelayCallerIdentity,
     ) -> Result<serde_json::Value, RelayError> {
-        let authority = current_authority(&self.router.relay_config_snapshot())
+        let authority = self
+            .refresh_authority()
             .ok_or_else(|| unavailable("this kernel is not paired with a Cloud origin"))?;
         let now_ms = crate::session::unix_epoch_ms();
         let thumbprint = identity.public_key_thumbprint.clone().unwrap_or_default();
@@ -246,15 +247,21 @@ impl LocalBrowserDirect {
             if *shutdown.borrow() {
                 return;
             }
-            let next = current_authority(&self.router.relay_config_snapshot());
-            self.authority.send_if_modified(|current| {
-                if *current == next {
-                    return false;
-                }
-                *current = next;
-                true
-            });
+            self.refresh_authority();
         }
+    }
+
+    /// Publishes the current pairing authority; a change retires every session.
+    fn refresh_authority(&self) -> Option<LocalBrowserAuthority> {
+        let next = current_authority(&self.router.relay_config_snapshot());
+        self.authority.send_if_modified(|current| {
+            if *current == next {
+                return false;
+            }
+            *current = next.clone();
+            true
+        });
+        next
     }
 }
 

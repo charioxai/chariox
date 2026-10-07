@@ -74,6 +74,12 @@ struct Kernel {
 
 impl Kernel {
     fn new() -> Self {
+        Self::with_pairing(true)
+    }
+
+    /// `paired_at_start: false` pairs only after the carrier exists, as when a
+    /// running kernel completes `/cloud link`.
+    fn with_pairing(paired_at_start: bool) -> Self {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
             api_url: ORIGIN.into(),
@@ -99,6 +105,10 @@ impl Kernel {
                 .unwrap()
                 .to_path_buf(),
         );
+        let profile = config.cloud_relay.clone();
+        if !paired_at_start {
+            config.cloud_relay = None;
+        }
         let daemon_id = config.daemon_id.clone();
         let daemon_public_key = config.relay_public_key.clone();
         let app = DaemonApp::bootstrap(config).unwrap();
@@ -116,6 +126,11 @@ impl Kernel {
             shutdown_rx,
             Some(0),
         );
+        if !paired_at_start {
+            let mut paired = projection.snapshot();
+            paired.cloud_relay = profile;
+            projection.update(paired);
+        }
         Self {
             direct,
             projection,
@@ -329,6 +344,17 @@ fn request_key_payload(kernel: &Kernel) -> EncryptedRelayPayload {
         b"{}",
     )
     .unwrap()
+}
+
+#[test]
+fn mp08_kernel_paired_after_start_admits_its_first_browser() {
+    large_stack(async {
+        let kernel = Kernel::with_pairing(false);
+        let browser = Browser::new();
+        let grant = kernel.mint(&browser, browser.identity()).await.unwrap();
+        let (_socket, verdict) = connect(&kernel, &browser, &grant).await;
+        assert_eq!(verdict["kind"], "local_connected", "{verdict}");
+    });
 }
 
 #[test]
