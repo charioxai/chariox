@@ -63,11 +63,16 @@ export class CompositorSource {
       const deadline=this.now()+2000;
       while(!this.latest&&!this.closed&&this.now()<deadline)await delay(10);
       const native=this.width===geometry.width*this.scale&&this.height===geometry.height*this.scale;
-      const reference=await this.screenshot(native?null:{x:0,y:0,width:this.width,height:this.height,scale:1/this.scale});
+      // A protected source already captures and verifies each native raster.
+      // Comparing its paint to a later capture falsely refuses live motion.
+      // Unprotected screencast pixels still require an exact native reference.
+      if(!this.protect){
+        const reference=await this.screenshot(native?null:{x:0,y:0,width:this.width,height:this.height,scale:1/this.scale});
+        const expected=decodePng(reference.data_base64,this.scale),actual=this.latest&&decodePng(this.latest.data_base64,this.scale);
+        if(!actual||expected.width!==actual.width||expected.height!==actual.height||!expected.pixels.equals(actual.pixels))throw Error('MD-DISPLAY: compositor attestation differed');
+      }
       await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id);
       if(this.closed||this.fenced||!this.latest||!this.allowed(this.policy))throw Error('MD-DISPLAY: compositor source changed');
-      const expected=decodePng(reference.data_base64,this.scale),actual=decodePng(this.latest.data_base64,this.scale);
-      if(expected.width!==actual.width||expected.height!==actual.height||!expected.pixels.equals(actual.pixels))throw Error('MD-DISPLAY: compositor attestation differed');
       this.attested=true;
       if(this.format==='jpeg'){await this.connection.send('Page.stopScreencast',{},this.sessionId);await this.connection.send('Page.startScreencast',{format:'jpeg',quality:95,maxWidth:this.width,maxHeight:this.height,everyNthFrame:1},this.sessionId)}
       return this;

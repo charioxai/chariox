@@ -87,3 +87,9 @@ test('MP-11 smaller screencast wakes verified Retina capture and bounded protect
  f.source.protect=async()=>({data_base64:protectedPng});f.source.screenshot=f.source.protect;
  try{await f.source.start();const sample=f.source.sample();assert.equal(sample.data_base64,protectedPng);assert.equal(sample.raw.width,16);assert.equal(sample.raw.height,16);assert.equal(sample.raw.length,pixels.length);assert.deepEqual(Array.from(sample.raw.pixels.subarray(0,4)),[184,85,20,255]);assert.equal(sample.raw.format,'bgr0')}finally{await f.source.close()}
 });
+test('MP-11 protected capture admits live motion without comparing two different paint times',async()=>{
+ const f=fixture();f.source.protect=async()=>({data_base64:encodePng(8,8,Buffer.alloc(8*8*4,255))});
+ // A later paint can differ. It is not the reference for already-verified pixels.
+ f.source.screenshot=async()=>({data_base64:encodePng(8,8,Buffer.alloc(8*8*4,0))});
+ try{await f.source.start();assert(f.source.sample());assert.equal(f.source.sample().raw.pixels[0],255)}finally{await f.source.close()}
+});
