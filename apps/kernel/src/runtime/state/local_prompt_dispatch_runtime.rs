@@ -3614,9 +3614,10 @@ impl KernelRuntimeState {
             let prompt_with_handoff = owned.prompt_with_pending_context_handoff(
                 &dispatch.session_id,
                 &dispatch.agent_id,
-                &dispatch.source_attachment_id,
                 &provider_run,
+                &dispatch.prompt_id,
                 &dispatch.prompt,
+                dispatch.steering,
             );
             let granted_skill_context = owned.granted_skill_hidden_context(
                 &dispatch.session_id,
@@ -3676,13 +3677,23 @@ impl KernelRuntimeState {
                 Err(error) => return Err(error),
             }
         }
-        let prompt_with_handoff = owned.prompt_with_pending_context_handoff(
+        let uses_claude_native_bridge =
+            crate::provider::provider_run_uses_claude_native_bridge(&provider_run);
+        let context_handoff = owned.context_handoff_for_dispatch(
             &dispatch.session_id,
             &dispatch.agent_id,
-            &dispatch.source_attachment_id,
             &provider_run,
-            &dispatch.prompt,
+            &dispatch.prompt_id,
+            dispatch.steering,
         );
+        // Claude native turns carry the handoff as hidden context, sized to
+        // the room the turn's other hidden context leaves.
+        let prompt_with_handoff = match &context_handoff {
+            Some(handoff) if !uses_claude_native_bridge => {
+                super::context_handoff::inject_context_handoff(&dispatch.prompt, handoff)
+            }
+            _ => dispatch.prompt.clone(),
+        };
         let prompt_with_hidden_context =
             join_hidden_context(&hidden_system_context, &prompt_with_handoff);
         let provider_prompt = owned.apply_granted_skill_summary(
@@ -3690,8 +3701,6 @@ impl KernelRuntimeState {
             &dispatch.agent_id,
             &prompt_with_hidden_context,
         )?;
-        let uses_claude_native_bridge =
-            crate::provider::provider_run_uses_claude_native_bridge(&provider_run);
         let provider_pty_input =
             crate::app::terminal_input::provider_prompt_input(&provider_prompt);
         if !internal_recovery {
@@ -3767,7 +3776,7 @@ impl KernelRuntimeState {
             return Ok(true);
         }
         if uses_claude_native_bridge {
-            let dispatch_with_handoff = crate::app::KernelPromptDispatch {
+            let native_dispatch = crate::app::KernelPromptDispatch {
                 session_id: dispatch.session_id.clone(),
                 provider_run_id: dispatch.provider_run_id.clone(),
                 agent_id: dispatch.agent_id.clone(),
@@ -3775,12 +3784,7 @@ impl KernelRuntimeState {
                 target_active_prompt_id: dispatch.target_active_prompt_id.clone(),
                 source_attachment_id: dispatch.source_attachment_id.clone(),
                 prompt: dispatch.prompt.clone(),
-                hidden_system_context: owned.hidden_context_with_pending_context_handoff(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    &provider_run,
-                    &hidden_system_context,
-                ),
+                hidden_system_context: hidden_system_context.clone(),
                 attachments: dispatch.attachments.clone(),
                 prompt_origin: dispatch.prompt_origin,
                 external_provider: dispatch.external_provider.clone(),
@@ -3811,7 +3815,13 @@ impl KernelRuntimeState {
                             &dispatch.session_id,
                             &dispatch.provider_run_id,
                             &provider_run,
-                            &dispatch_with_handoff,
+                            &native_dispatch,
+                            &|room| {
+                                context_handoff
+                                    .as_ref()
+                                    .map(|handoff| handoff.render_hidden(room))
+                                    .unwrap_or_default()
+                            },
                         )
                     })
                     .await?;

@@ -134,14 +134,6 @@ impl KernelRuntimeOwnedState {
                     crate::provider::ProviderRunState::Starting
                     | crate::provider::ProviderRunState::Running
                     | crate::provider::ProviderRunState::Parked => {
-                        if provider_model_or_account_changed {
-                            self.prepare_agent_profile_context_handoff(
-                                &run,
-                                &target_provider,
-                                &target_account_profile,
-                                target_model.as_deref(),
-                            );
-                        }
                         let outcome = self
                             .provider_store
                             .terminate_run_provider_only(session_id, run.id())?;
@@ -162,12 +154,12 @@ impl KernelRuntimeOwnedState {
         let agent = if remote_update.is_some() {
             agent
         } else {
-            let mut resume_state = agent.provider_resume_state().clone();
-            if provider_model_or_account_changed {
-                resume_state = resume_state
-                    .without_provider_session_id(agent.provider())
-                    .without_provider_session_id(&target_provider);
-            }
+            let resume_state = agent.provider_resume_state().after_profile_change(
+                agent.provider(),
+                agent.provider_account_profile(),
+                &target_provider,
+                &target_account_profile,
+            );
             let agent = self
                 .agent_store
                 .set_agent_runtime_profile_with_account_profile(
@@ -235,10 +227,12 @@ impl KernelRuntimeOwnedState {
                 });
             }
         }
-        let resume_state = agent
-            .provider_resume_state()
-            .without_provider_session_id(agent.provider())
-            .without_provider_session_id(&provider);
+        let resume_state = agent.provider_resume_state().after_profile_change(
+            agent.provider(),
+            agent.provider_account_profile(),
+            &provider,
+            &account_profile,
+        );
         self.agent_store
             .set_agent_runtime_profile_with_account_profile(
                 agent_id,

@@ -1511,3 +1511,66 @@ fn operational_history_capture_can_be_disabled_and_reenabled_live() {
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
 }
+
+#[test]
+fn answered_provider_sessions_outlive_retention_and_backfill_once() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-operational-history-answered-sessions-{}-{}.db",
+        std::process::id(),
+        super::unix_epoch_ms()
+    ));
+    let answer = |sequence: u64, provider_session_id: &str| {
+        let mut event = HistoryEvent::transcript(
+            sequence,
+            &SessionHistoryEntry::provider_output(
+                "session-1",
+                "run-1",
+                Some("agent-1"),
+                TerminalOutputKind::ProviderOutput,
+                None,
+                "answer",
+            ),
+            HistoryEventTurnContext {
+                provider_session_id: Some(provider_session_id.to_string()),
+                ..HistoryEventTurnContext::default()
+            },
+        );
+        event.timestamp_ms = 1_000;
+        event
+    };
+    let answered = |store: &OperationalHistoryStore, provider_session_id: &str| {
+        store
+            .provider_session_answered_agent("session-1", "agent-1", provider_session_id)
+            .expect("answered sessions should load")
+    };
+
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history should open");
+    store
+        .append(&answer(1, "thread-1"))
+        .expect("answer should append");
+    store
+        .prune_events_before(2_000, true)
+        .expect("retention should prune the answer");
+    assert!(answered(&store, "thread-1"));
+    assert!(!answered(&store, "thread-2"));
+    store
+        .append(&answer(2, "thread-2"))
+        .expect("answer should append");
+    drop(store);
+
+    // A history written before the table existed is backfilled when opened.
+    rusqlite::Connection::open(&path)
+        .and_then(|connection| {
+            connection.execute("DROP TABLE history_answered_provider_sessions", [])
+        })
+        .expect("the answered-session table should drop");
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history should reopen");
+    assert!(answered(&store, "thread-2"));
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}

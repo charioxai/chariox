@@ -51,8 +51,8 @@ pub(crate) use account_credential::{
 };
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude::{
-    ensure_claude_native_hidden_context_fits, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
-    CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
+    claude_native_hidden_context_room, ensure_claude_native_hidden_context_fits,
+    CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS, CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
 };
 pub(crate) use claude::{
     probe_claude_account_usage, verify_claude_account_credential, ClaudeCredentialCheckError,
