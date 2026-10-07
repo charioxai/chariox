@@ -149,16 +149,24 @@ int cx_capture_read(struct Capture *c, uint8_t *out, int *bounds) {
     c->cpu[0]=capture_cpu()-at;at=capture_cpu();
     size_t stride=(size_t)c->width*4, size=stride*c->height;
     uint8_t *raw=(uint8_t *)c->image->data;
+    /* MP-08/MP-10/MP-11: admission can canonically bind the latest exact
+     * readback to the owned base. Equality is proved before rebinding; no
+     * serial, damage event or lossy reconstruction supplies this witness. */
+    int base_current=c->initialized&&c->last==c->previous;
     int adjacent_bounds[4];
     c->adjacent_count=cx_capture_difference(raw,c->last,c->width,c->height,adjacent_bounds,(int*)c->adjacent,&c->motion_height);
     if(c->adjacent_count==0){
-        c->cpu[1]=capture_cpu()-at;at=capture_cpu();memcpy(out,raw,size);c->last=out;c->cpu[2]=capture_cpu()-at;return 0;
+        c->cpu[1]=capture_cpu()-at;at=capture_cpu();memcpy(out,raw,size);if(!base_current)c->last=out;c->cpu[2]=capture_cpu()-at;return 0;
     }
     /* MP-08/MP-10/MP-11: dense motion needs no second full-frame comparison.
      * Sparse cumulative damage alone checks the complete delivered exact base.
      * Adjacent tiles can echo input over a contiguous LOSSY canvas; they never
      * certify its untouched pixels. Dropped captures still use cumulative tiles. */
-    if(c->adjacent_count>0)c->tile_count=cx_capture_difference(raw,c->initialized?c->previous:NULL,c->width,c->height,bounds,(int*)c->tiles,NULL);
+    if(base_current){
+        memcpy(bounds,adjacent_bounds,sizeof(adjacent_bounds));
+        c->tile_count=c->adjacent_count;
+        if(c->tile_count>0)memcpy(c->tiles,c->adjacent,c->tile_count*4*sizeof(int));
+    }else if(c->adjacent_count>0)c->tile_count=cx_capture_difference(raw,c->initialized?c->previous:NULL,c->width,c->height,bounds,(int*)c->tiles,NULL);
     else {bounds[0]=bounds[1]=0;bounds[2]=c->width;bounds[3]=c->height;}
     if(c->tile_count==0){/* Pixels returned to the exact base; ship a conservative full update. */bounds[0]=bounds[1]=0;bounds[2]=c->width;bounds[3]=c->height;c->tile_count=-1;}
     c->cpu[1]=capture_cpu()-at;at=capture_cpu();
@@ -169,7 +177,14 @@ int cx_capture_read(struct Capture *c, uint8_t *out, int *bounds) {
 /* MP-08/MP-10/MP-11: exact sparse damage, not the union's collateral pixels. */
 int cx_capture_tiles(struct Capture *c,int *out){if(c->tile_count>0)memcpy(out,c->tiles,c->tile_count*4*sizeof(int));return c->tile_count;}
 int cx_capture_adjacent_tiles(struct Capture *c,int *out){if(c->adjacent_count>0)memcpy(out,c->adjacent,c->adjacent_count*4*sizeof(int));return c->adjacent_count;}
-void cx_capture_admit(struct Capture *c,const uint8_t *pixels){memcpy(c->previous,pixels,(size_t)c->width*c->height*4);c->initialized=1;}
+void cx_capture_admit(struct Capture *c,const uint8_t *pixels){
+    size_t size=(size_t)c->width*c->height*4;
+    int current=c->last&&!memcmp(c->last,pixels,size);
+    memcpy(c->previous,pixels,size);c->initialized=1;
+    /* MP-11: an older/different admission retires the latest-byte shortcut.
+     * A following read then conservatively compares as a fresh full capture. */
+    c->last=current?c->previous:NULL;
+}
 
 /* MP-08/MP-10/MP-11: scheduling only; exact/base bounds stay conservative. */
 int cx_capture_motion_height(struct Capture *c){return c->motion_height;}
