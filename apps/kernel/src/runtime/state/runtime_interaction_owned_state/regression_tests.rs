@@ -272,6 +272,98 @@ impl Drop for Fixture {
 }
 
 #[tokio::test]
+async fn a02_owner_resume_failure_is_visible_and_cannot_leave_idle_working() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
+    for stale in [false, true] {
+        let f = Fixture::new();
+        let store = &f.state.owned.durable_state_store;
+        let task_id = f.id("task");
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: DEFAULT_LOCAL_USER_ID.into(),
+                room: f.session.clone(),
+                agent: "deleted-agent".into(),
+                prompt: task_id.clone(),
+                run: None,
+                now: 1,
+            })
+            .unwrap();
+        let Outcome::Task(blocked) = store
+            .agent_lifecycle(Operation::Block {
+                task: task_id.clone(),
+                prompt: task_id.clone(),
+                reason: "Owner clarification required".into(),
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        let interaction = format!("task-blocked-{}-{}", task_id, blocked.blocked_revision);
+        f.state
+            .ensure_task_owner_interaction(blocked.clone())
+            .await
+            .unwrap();
+        if stale {
+            store
+                .agent_lifecycle(Operation::OwnerResponse {
+                    task: task_id.clone(),
+                    revision: blocked.blocked_revision,
+                    resume: true,
+                    now: 2,
+                })
+                .unwrap();
+            store
+                .agent_lifecycle(Operation::Block {
+                    task: task_id.clone(),
+                    prompt: task_id.clone(),
+                    reason: "Newer owner decision required".into(),
+                })
+                .unwrap();
+        }
+        f.state
+            .owned
+            .resolve_runtime_interaction(
+                &f.session,
+                &interaction,
+                "resume",
+                None,
+                Some(DEFAULT_LOCAL_USER_ID),
+                false,
+            )
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let history = f
+                    .state
+                    .owned
+                    .operational_history_store
+                    .load_session_history_entries(&f.session, Some("deleted-agent"))
+                    .unwrap();
+                if history
+                    .iter()
+                    .any(|entry| entry.text.contains("Owner action failed"))
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("rejected owner disposition must be visible to every client");
+        let task = store
+            .agent_tasks(Some(&f.session), Some("deleted-agent"))
+            .unwrap()
+            .remove(0);
+        assert_eq!(task.state, ExecutionState::Blocked);
+        if stale {
+            assert_eq!(task.reason, "Newer owner decision required");
+        } else {
+            assert!(task.reason.contains("Owner action failed"));
+        }
+    }
+}
+
+#[tokio::test]
 async fn sweep_releases_abandoned_and_expired_decisions_without_resolving_live_ones() {
     let fixture = Fixture::new();
     drop(fixture.register("abandoned").unwrap());
