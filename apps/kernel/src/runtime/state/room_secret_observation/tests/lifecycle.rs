@@ -280,8 +280,8 @@ async fn public_history_new_vault_credential_retires_prior_public_value() {
         crate::secret::VaultUnlockLease::KernelShutdown,
     )
     .unwrap();
-    let service = crate::secret::RuntimeSecretService::with_vault_config(Vec::new(), &vault_config)
-        .unwrap();
+    let service =
+        crate::secret::RuntimeSecretService::with_vault_config(Vec::new(), &vault_config).unwrap();
     room.runtime
         .upsert_observed_vault_credential(
             &service,
@@ -315,4 +315,79 @@ async fn public_history_new_vault_credential_retires_prior_public_value() {
         .read_public_history_locked(&owner, &room.session_id, &prior.event_id)
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn public_history_assembled_answers_scrub_secrets_across_delta_boundaries() {
+    // MP-08 / MP-10 / MP-11: each retained delta is safe individually, but
+    // joining it must not reveal a protected value through read or turn.
+    let _environment = crate::env_lock::lock();
+    let root = TestRoot::new();
+    let _home = IsolatedHome::new(root.path());
+    let room = TestRoom::new("public-history-split-secret");
+    let mut config = room.runtime.owned.config_projection.snapshot();
+    config.room_agent_tools = true;
+    room.runtime.owned.config_projection.update(config);
+    let session = room
+        .runtime
+        .owned
+        .session_store
+        .get_session(&room.session_id)
+        .unwrap();
+    let actor = room
+        .runtime
+        .owned
+        .agent_store
+        .get_agent(&room.agent_id)
+        .unwrap();
+    room.runtime
+        .owned
+        .room_secret_observations
+        .register(&room.session_id, "split_canary")
+        .unwrap();
+    let history = &room.runtime.owned.operational_history_store;
+    let append = |text: &str| {
+        history
+            .append_transcript(
+                &crate::history::SessionHistoryEntry::provider_output(
+                    &room.session_id,
+                    "split-run",
+                    Some(&room.agent_id),
+                    crate::terminal::TerminalOutputKind::ProviderOutput,
+                    Some("split-message".into()),
+                    text.to_owned(),
+                ),
+                crate::history::HistoryEventTurnContext {
+                    session_id: Some(room.session_id.clone()),
+                    agent_id: Some(room.agent_id.clone()),
+                    provider_run_id: Some("split-run".into()),
+                    prompt_id: Some("split-prompt".into()),
+                    public_history_owner_user_id: Some(session.owner_user_id().into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+    };
+    let first = append("prefix split_");
+    append("canary suffix");
+    let read = room
+        .runtime
+        .read_room_history(&session, &actor, first.event_id, None)
+        .await
+        .unwrap();
+    assert!(read.ok);
+    assert_eq!(read.payload["event"]["text"], "prefix [redacted] suffix");
+    let turn = room
+        .runtime
+        .room_public_turn(
+            &session,
+            &actor,
+            serde_json::from_value(serde_json::json!({"turn_ref":"split-prompt"})).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(turn.ok);
+    let events = turn.payload["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["text"], "prefix [redacted] suffix");
 }
