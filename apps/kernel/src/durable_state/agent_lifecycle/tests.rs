@@ -193,9 +193,11 @@ fn a02_deadline_occurrence_and_long_notice_coalesce() {
     assert_eq!(f.task().state, ExecutionState::Waiting);
     f.apply(Operation::Sweep {
         now: LONG_WAIT_MS + 1,
+        busy_recipients: Vec::new(),
     });
     f.apply(Operation::Sweep {
         now: LONG_WAIT_MS + 2,
+        busy_recipients: Vec::new(),
     });
     assert!(f.task().wait.unwrap().long_wait_notified);
     assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap().len(), 1);
@@ -277,6 +279,7 @@ fn a02_uncertain_attempt_blocks_fifo_and_ack_never_repairs_it() {
         agent: "parent".into(),
         sequence: e.sequence,
         state: "uncertain".into(),
+        now: 11,
     });
     assert!(f
         .store
@@ -303,6 +306,7 @@ fn a02_uncertain_attempt_blocks_fifo_and_ack_never_repairs_it() {
         .is_err());
     f.apply(Operation::Sweep {
         now: DELIVERY_TIMEOUT_MS + 10,
+        busy_recipients: Vec::new(),
     });
     assert_eq!(f.task().state, ExecutionState::Blocked);
 }
@@ -395,6 +399,7 @@ fn a02_no_progress_blocks_on_third_wake_and_durable_counter_survives_reopen() {
             agent: "parent".into(),
             sequence: e.sequence,
             state: "accepted".into(),
+            now: 10 + n,
         });
         f.begin(&prompt);
         f.apply(Operation::Yield {
@@ -439,7 +444,10 @@ fn a02_corrupt_delivery_is_quarantined_without_replay() {
         [sql_integer(e.sequence).unwrap()],
     )
     .unwrap();
-    f.apply(Operation::Sweep { now: 10 });
+    f.apply(Operation::Sweep {
+        now: 10,
+        busy_recipients: Vec::new(),
+    });
     let row = f
         .store
         .agent_delivery_front("room", "parent")
@@ -517,6 +525,7 @@ fn a02_cancel_independent_task_preserves_uncertain_recipient_delivery() {
         });
         f.apply(Operation::Sweep {
             now: DELIVERY_TIMEOUT_MS + 1,
+            busy_recipients: Vec::new(),
         });
         let task = f
             .store
@@ -587,6 +596,7 @@ fn a02_exact_late_receipt_unlocks_owner_resume_and_cancel_abandons_without_repla
         });
         f.apply(Operation::Sweep {
             now: DELIVERY_TIMEOUT_MS + 1,
+            busy_recipients: Vec::new(),
         });
         let blocked = f.task();
         assert_eq!(blocked.state, ExecutionState::Blocked);
@@ -605,6 +615,7 @@ fn a02_exact_late_receipt_unlocks_owner_resume_and_cancel_abandons_without_repla
                 agent: "parent".into(),
                 sequence: e.sequence,
                 state: "accepted".into(),
+                now: DELIVERY_TIMEOUT_MS + 2,
             });
         }
         f.apply(Operation::OwnerResponse {
@@ -743,8 +754,14 @@ fn a02_clock_rollback_wakes_after_a_persisted_sweep() {
     f.subscribe();
     f.yield_now();
     f.settle("p", true);
-    f.apply(Operation::Sweep { now: 20 });
-    f.apply(Operation::Sweep { now: 10 });
+    f.apply(Operation::Sweep {
+        now: 20,
+        busy_recipients: Vec::new(),
+    });
+    f.apply(Operation::Sweep {
+        now: 10,
+        busy_recipients: Vec::new(),
+    });
     let inbox = f.store.agent_inbox("room", "parent", 0).unwrap();
     assert_eq!(inbox.len(), 1);
     assert_eq!(inbox[0].kind, "deadline_reached");
@@ -971,6 +988,7 @@ fn a02_artifact_receipt_resets_guard_once_and_survives_restart() {
         agent: "parent".into(),
         sequence: event.sequence,
         state: "accepted".into(),
+        now: 11,
     });
     f.begin("wake");
     assert_eq!(f.task().no_progress_wakes, 1);
@@ -1150,6 +1168,7 @@ fn a02_urgent_steers_past_nonurgent_queue_but_never_uncertain_receipts() {
         agent: "parent".into(),
         sequence: urgent.sequence,
         state: "uncertain".into(),
+        now: 1,
     });
     let mut later = occurrence(
         "room",
@@ -1189,6 +1208,7 @@ fn a02_urgent_steers_past_nonurgent_queue_but_never_uncertain_receipts() {
         agent: "parent".into(),
         sequence: urgent.sequence,
         state: "accepted".into(),
+        now: 2,
     });
     assert_eq!(
         f.store
@@ -1292,6 +1312,7 @@ fn a02_urgent_reply_tracks_corrected_task_and_late_exact_acceptance() {
         agent: "child".into(),
         sequence: event.sequence,
         state: "accepted".into(),
+        now: 6,
     });
     let reply = f.store.agent_inbox("room", "parent", 0).unwrap();
     assert_eq!(reply.len(), 1);
@@ -1338,6 +1359,7 @@ fn a02_every_delivery_receipt_has_client_visible_text() {
             agent: "parent".into(),
             sequence,
             state: state.into(),
+            now: 1,
         }) else {
             panic!()
         };
@@ -1474,6 +1496,7 @@ fn a02_review_rejected_wake_returns_the_task_to_its_wait() {
             agent: "parent".into(),
             sequence: e.sequence,
             state: "rejected".into(),
+            now: 5,
         });
         let t = f.task();
         assert_eq!(t.state, ExecutionState::Waiting, "admitted={admitted}");
@@ -1672,15 +1695,20 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
             agent: "child".into(),
             sequence: e.sequence,
             state: "rejected".into(),
+            now,
         });
         assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
-        let Outcome::Swept(changed) = f.apply(Operation::Sweep { now }) else {
+        let Outcome::Swept(changed) = f.apply(Operation::Sweep {
+            now,
+            busy_recipients: Vec::new(),
+        }) else {
             panic!()
         };
         assert!(changed.is_empty());
     }
     let Outcome::Swept(changed) = f.apply(Operation::Sweep {
         now: 10 + DELIVERY_TIMEOUT_MS,
+        busy_recipients: Vec::new(),
     }) else {
         panic!()
     };
@@ -1701,6 +1729,7 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
     );
     let Outcome::Swept(changed) = f.apply(Operation::Sweep {
         now: 10 + DELIVERY_TIMEOUT_MS + SWEEP_MS,
+        busy_recipients: Vec::new(),
     }) else {
         panic!()
     };
@@ -1740,6 +1769,7 @@ fn a02_review_timed_out_delivery_blocks_only_its_own_task() {
     });
     f.apply(Operation::Sweep {
         now: 10 + DELIVERY_TIMEOUT_MS,
+        busy_recipients: Vec::new(),
     });
     let tasks = f.store.agent_tasks(Some("room"), Some("parent")).unwrap();
     let waiting = tasks.iter().find(|t| t.task_id == "p").unwrap();
@@ -1771,4 +1801,542 @@ fn a02_review_delivery_receipt_classification() {
     assert_eq!(delivery_receipt_state(Some(&busy), true), "uncertain");
     // Nothing reached the provider: retain for a later wake, never uncertain.
     assert_eq!(delivery_receipt_state(None, true), "rejected");
+}
+
+// MP-08/MP-10/MP-11: a refusal cannot shorten a later admitted attempt.
+#[test]
+fn a02_r4_submitting_after_refusal_gets_full_delivery_timeout() {
+    a02_r4_admission_after_refusal_gets_full_delivery_timeout("submitting");
+}
+#[test]
+fn a02_r4_uncertain_after_refusal_gets_full_delivery_timeout() {
+    a02_r4_admission_after_refusal_gets_full_delivery_timeout("uncertain");
+}
+fn a02_r4_admission_after_refusal_gets_full_delivery_timeout(receipt: &str) {
+    let f = Fixture::new();
+    let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
+        "room",
+        "child",
+        "parent",
+        "retry",
+        "message",
+        serde_json::json!({}),
+    ))) else {
+        panic!()
+    };
+    for now in [10, 90_010] {
+        f.apply(Operation::Attempt {
+            room: "room".into(),
+            agent: "child".into(),
+            sequence: e.sequence,
+            prompt: "delivery".into(),
+            target: None,
+            run: None,
+            now,
+            work: None,
+        });
+        if now == 10 || receipt == "uncertain" {
+            f.apply(Operation::Receipt {
+                room: "room".into(),
+                agent: "child".into(),
+                sequence: e.sequence,
+                state: if now == 10 { "rejected" } else { receipt }.into(),
+                now,
+            });
+        }
+    }
+    f.apply(Operation::Sweep {
+        now: 120_010,
+        busy_recipients: Vec::new(),
+    });
+    let event = f
+        .store
+        .agent_delivery_front("room", "child")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        event.state, receipt,
+        "a refusal must not consume in-flight time"
+    );
+    assert_eq!(event.attempted_at_ms, Some(90_010));
+    f.apply(Operation::Sweep {
+        now: 90_010 + DELIVERY_TIMEOUT_MS - 1,
+        busy_recipients: Vec::new(),
+    });
+    assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
+    f.apply(Operation::Sweep {
+        now: 90_010 + DELIVERY_TIMEOUT_MS,
+        busy_recipients: Vec::new(),
+    });
+    assert_eq!(
+        f.store
+            .agent_delivery_front("room", "child")
+            .unwrap()
+            .unwrap()
+            .state,
+        "blocked"
+    );
+}
+
+// MP-08/MP-10: late busy refusals must leave an idle delivery opportunity.
+#[test]
+fn a02_r5_late_steer_rejection_before_timeout_retries_idle() {
+    late_steer_rejection_retries_idle(false);
+}
+
+#[test]
+fn a02_r5_late_steer_rejection_after_timeout_retries_idle() {
+    late_steer_rejection_retries_idle(true);
+}
+
+fn late_steer_rejection_retries_idle(timed_out: bool) {
+    let f = Fixture::new();
+    let attempted_at = crate::session::unix_epoch_ms() - if timed_out { 130_000 } else { 100_000 };
+    let idle_at = attempted_at
+        + if timed_out {
+            150_000
+        } else {
+            DELIVERY_TIMEOUT_MS
+        };
+    let mut e = occurrence(
+        "room",
+        "child",
+        "parent",
+        "late-steer",
+        "message",
+        serde_json::json!({}),
+    );
+    e.urgent = true;
+    let Outcome::Event(e) = f.apply(Operation::Occur(e)) else {
+        panic!()
+    };
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "child".into(),
+        sequence: e.sequence,
+        prompt: "steer".into(),
+        target: Some("ending-turn".into()),
+        run: Some("run".into()),
+        now: attempted_at,
+        work: None,
+    });
+    f.apply(Operation::BindAttempt {
+        room: "room".into(),
+        agent: "child".into(),
+        sequence: e.sequence,
+        run: "run".into(),
+        submit_epoch: 7,
+    });
+    if timed_out {
+        f.apply(Operation::Sweep {
+            now: attempted_at + DELIVERY_TIMEOUT_MS,
+            busy_recipients: Vec::new(),
+        });
+        assert_eq!(
+            f.store
+                .agent_delivery_front("room", "child")
+                .unwrap()
+                .unwrap()
+                .state,
+            "blocked"
+        );
+    }
+    // Exercise the real structured-submit reconciliation seam, including its
+    // exact run/epoch binding and the already-blocked receipt path.
+    let finished = crate::provider::FinishedProviderPromptSubmitJob {
+        session_id: "room".into(),
+        agent_id: "child".into(),
+        prompt_id: "steer".into(),
+        provider_run_id: "run".into(),
+        result: Err(crate::error::DaemonError::ProviderPromptSteerRejected {
+            source: Box::new(error("target turn ended")),
+        }),
+        settlement_retry_attempt: 0,
+    };
+    let receipt = finish_provider_event_submit(&f.store, 7, &finished)
+        .unwrap()
+        .unwrap();
+    assert!(
+        f.store
+            .agent_tasks(None, None)
+            .unwrap()
+            .iter()
+            .all(|t| t.state != ExecutionState::Blocked),
+        "an exact late receipt must close the synthetic delivery task"
+    );
+    assert!(receipt.steered);
+    assert!(receipt
+        .notice
+        .unwrap()
+        .contains("retained for the next turn"));
+    let Outcome::Swept(changed) = f.apply(Operation::Sweep {
+        now: idle_at,
+        busy_recipients: Vec::new(),
+    }) else {
+        panic!()
+    };
+    assert!(
+        changed.is_empty(),
+        "a busy refusal cannot consume the idle retry"
+    );
+    assert_eq!(
+        f.store
+            .agent_delivery_front("room", "child")
+            .unwrap()
+            .unwrap()
+            .state,
+        "pending"
+    );
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "child".into(),
+        sequence: e.sequence,
+        prompt: "idle-retry".into(),
+        target: None,
+        run: Some("next-run".into()),
+        now: idle_at,
+        work: None,
+    });
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "child".into(),
+        sequence: e.sequence,
+        state: "accepted".into(),
+        now: idle_at,
+    });
+    assert_eq!(
+        f.store.agent_inbox("room", "child", 0).unwrap()[0].state,
+        "accepted"
+    );
+}
+
+#[test]
+fn a02_r5_idle_refusal_clock_starts_at_receipt() {
+    let f = Fixture::new();
+    let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
+        "room",
+        "child",
+        "parent",
+        "idle-refusal",
+        "message",
+        serde_json::json!({}),
+    ))) else {
+        panic!()
+    };
+    let now = crate::session::unix_epoch_ms();
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "child".into(),
+        sequence: e.sequence,
+        prompt: "idle".into(),
+        target: None,
+        run: None,
+        now: now - 100_000,
+        work: None,
+    });
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "child".into(),
+        sequence: e.sequence,
+        state: "rejected".into(),
+        now: crate::session::unix_epoch_ms(),
+    });
+    // Only the refusal budget is under test, rather than the attempt window.
+    let db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    let at: i64 = db
+        .query_row(
+            "SELECT first_refused_at_ms FROM agent_inbox_refusals WHERE sequence=?1",
+            [sql_integer(e.sequence).unwrap()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        at as u64 >= now,
+        "receipt time must start the idle-refusal clock"
+    );
+    f.apply(Operation::Sweep {
+        now: now + 30_000,
+        busy_recipients: Vec::new(),
+    });
+    assert_eq!(
+        f.store
+            .agent_delivery_front("room", "child")
+            .unwrap()
+            .unwrap()
+            .state,
+        "pending"
+    );
+    f.apply(Operation::Sweep {
+        now: at as u64 + DELIVERY_TIMEOUT_MS,
+        busy_recipients: Vec::new(),
+    });
+    assert_eq!(
+        f.store
+            .agent_delivery_front("room", "child")
+            .unwrap()
+            .unwrap()
+            .state,
+        "blocked"
+    );
+}
+
+// MP-08/MP-10: isolate damaged clocks while supervising other Rooms normally.
+#[test]
+fn a02_r5_text_refusal_clock_is_quarantined_without_aborting_sweep() {
+    damaged_refusal_clock_is_quarantined(rusqlite::types::Value::Text("damaged".into()));
+}
+
+#[test]
+fn a02_r5_negative_refusal_clock_is_quarantined_without_aborting_sweep() {
+    damaged_refusal_clock_is_quarantined(rusqlite::types::Value::Integer(-1));
+}
+
+fn damaged_refusal_clock_is_quarantined(clock: rusqlite::types::Value) {
+    let f = Fixture::new();
+    let mut sequences = Vec::new();
+    for room in ["damaged-room", "healthy-room"] {
+        let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
+            room,
+            "child",
+            "parent",
+            "refused",
+            "message",
+            serde_json::json!({}),
+        ))) else {
+            panic!()
+        };
+        f.apply(Operation::Attempt {
+            room: room.into(),
+            agent: "child".into(),
+            sequence: e.sequence,
+            prompt: room.into(),
+            target: None,
+            run: None,
+            now: 10,
+            work: None,
+        });
+        f.apply(Operation::Receipt {
+            room: room.into(),
+            agent: "child".into(),
+            sequence: e.sequence,
+            state: "rejected".into(),
+            now: 10,
+        });
+        sequences.push(e.sequence);
+    }
+    let db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    db.execute(
+        "UPDATE agent_inbox_refusals SET first_refused_at_ms=?2 WHERE sequence=?1",
+        params![sql_integer(sequences[0]).unwrap(), clock],
+    )
+    .unwrap();
+    let expected_raw: String = db.query_row(
+        "SELECT typeof(first_refused_at_ms) || ':' || hex(CAST(first_refused_at_ms AS BLOB)) FROM agent_inbox_refusals WHERE sequence=?1",
+        [sql_integer(sequences[0]).unwrap()], |r| r.get(0),
+    ).unwrap();
+    let Outcome::Swept(changed) = f.apply(Operation::Sweep {
+        now: 120_010,
+        busy_recipients: Vec::new(),
+    }) else {
+        panic!()
+    };
+    assert_eq!(
+        changed.len(),
+        2,
+        "one damaged row must not stop another Room's owner transition"
+    );
+    let damaged = changed
+        .iter()
+        .find(|t| t.room_id == "damaged-room")
+        .unwrap();
+    assert_eq!(damaged.state, ExecutionState::Blocked);
+    assert!(
+        damaged.reason.contains("quarantined"),
+        "owner must see the damaged clock"
+    );
+    assert_eq!(
+        f.store
+            .agent_delivery_front("healthy-room", "child")
+            .unwrap()
+            .unwrap()
+            .state,
+        "blocked"
+    );
+    let retained: String = db
+        .query_row(
+            "SELECT payload FROM agent_lifecycle_quarantine WHERE kind='refusal-clock' AND id=?1",
+            [sequences[0].to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        retained, expected_raw,
+        "retain the damaged clock for owner reconciliation"
+    );
+    let remaining: i64 = db
+        .query_row("SELECT count(*) FROM agent_inbox_refusals", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(remaining, 0);
+    let Outcome::Swept(changed) = f.apply(Operation::Sweep {
+        now: 150_010,
+        busy_recipients: Vec::new(),
+    }) else {
+        panic!()
+    };
+    assert!(
+        changed.is_empty(),
+        "quarantine must project one owner transition"
+    );
+}
+
+// MP-08/MP-10/MP-11: pre-work can receive a refusal after Sweep captured now.
+#[test]
+fn a02_r6_delivery_clocks_tolerate_sweep_receipt_race() {
+    for receipt in ["rejected", "uncertain", "submitting"] {
+        for ahead in [1, DELIVERY_TIMEOUT_MS, DELIVERY_TIMEOUT_MS + 1] {
+            let f = Fixture::new();
+            let now = 10;
+            let at = now + ahead;
+            let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
+                "room",
+                "child",
+                "parent",
+                "sweep-race",
+                "message",
+                serde_json::json!({}),
+            ))) else {
+                panic!()
+            };
+            f.apply(Operation::Attempt {
+                room: "room".into(),
+                agent: "child".into(),
+                sequence: e.sequence,
+                prompt: "delivery".into(),
+                target: None,
+                run: None,
+                now: if receipt == "rejected" { now } else { at },
+                work: None,
+            });
+            if receipt != "submitting" {
+                f.apply(Operation::Receipt {
+                    room: "room".into(),
+                    agent: "child".into(),
+                    sequence: e.sequence,
+                    state: receipt.into(),
+                    now: at,
+                });
+            }
+            f.apply(Operation::Sweep {
+                now,
+                busy_recipients: Vec::new(),
+            });
+            let expected = if ahead > DELIVERY_TIMEOUT_MS {
+                "blocked"
+            } else if receipt == "rejected" {
+                "pending"
+            } else {
+                receipt
+            };
+            assert_eq!(
+                f.store
+                    .agent_delivery_front("room", "child")
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                expected,
+                "receipt={receipt}, ahead={ahead}"
+            );
+            if ahead <= DELIVERY_TIMEOUT_MS {
+                assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
+                f.apply(Operation::Sweep {
+                    now: at + DELIVERY_TIMEOUT_MS - 1,
+                    busy_recipients: Vec::new(),
+                });
+                assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
+                f.apply(Operation::Sweep {
+                    now: at + DELIVERY_TIMEOUT_MS,
+                    busy_recipients: Vec::new(),
+                });
+                assert_eq!(
+                    f.store
+                        .agent_delivery_front("room", "child")
+                        .unwrap()
+                        .unwrap()
+                        .state,
+                    "blocked"
+                );
+            }
+        }
+    }
+}
+
+// MP-08/MP-10/MP-11: every exact receipt retracts the synthetic timeout decision.
+#[test]
+fn a02_r6_late_receipts_close_only_synthetic_delivery_tasks() {
+    for receipt in ["accepted", "uncertain", "rejected"] {
+        let f = Fixture::new();
+        f.begin("real-task");
+        f.apply(Operation::Block {
+            task: "real-task".into(),
+            prompt: "real-task".into(),
+            reason: "unrelated owner action".into(),
+        });
+        let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
+            "room",
+            "parent",
+            "peer",
+            "late-receipt",
+            "message",
+            serde_json::json!({}),
+        ))) else {
+            panic!()
+        };
+        f.apply(Operation::Attempt {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence: e.sequence,
+            prompt: "delivery".into(),
+            target: None,
+            run: None,
+            now: 10,
+            work: None,
+        });
+        f.apply(Operation::Sweep {
+            now: 10 + DELIVERY_TIMEOUT_MS,
+            busy_recipients: Vec::new(),
+        });
+        let synthetic = format!("delivery-{}", e.sequence);
+        assert_eq!(
+            f.store
+                .agent_tasks(None, None)
+                .unwrap()
+                .iter()
+                .find(|t| t.task_id == synthetic)
+                .unwrap()
+                .state,
+            ExecutionState::Blocked
+        );
+        f.apply(Operation::Receipt {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence: e.sequence,
+            state: receipt.into(),
+            now: 10 + DELIVERY_TIMEOUT_MS,
+        });
+        let tasks = f.store.agent_tasks(None, None).unwrap();
+        assert_eq!(
+            tasks.iter().find(|t| t.task_id == synthetic).unwrap().state,
+            ExecutionState::Done
+        );
+        assert_eq!(
+            tasks
+                .iter()
+                .find(|t| t.task_id == "real-task")
+                .unwrap()
+                .state,
+            ExecutionState::Blocked
+        );
+    }
 }

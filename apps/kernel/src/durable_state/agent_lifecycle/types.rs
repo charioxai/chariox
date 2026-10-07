@@ -186,6 +186,7 @@ pub(crate) enum Operation {
         agent: String,
         sequence: u64,
         state: String,
+        now: u64,
     },
     Ack {
         room: String,
@@ -210,6 +211,7 @@ pub(crate) enum Operation {
     },
     Sweep {
         now: u64,
+        busy_recipients: Vec<(String, String)>,
     },
     CancelTask {
         task: String,

@@ -78,8 +78,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             e.prompt_id = Some(prompt.clone());
             e.target_prompt_id = target;
             e.provider_run_id = run;
-            // Retrying a refused delivery must not renew its supervision deadline.
-            e.attempted_at_ms.get_or_insert(now);
+            // Every admitted attempt gets its full receipt window.
+            e.attempted_at_ms = Some(now);
             save_event(tx, &e)?;
             // Wake retains the original task. Progress is not an ACK/cursor or deadline edit.
             for mut t in tasks(tx)? {
@@ -127,7 +127,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if e.state != "pending" {
                 return Err(error("cannot defer an admitted attempt"));
             }
-            // Retrying a refused delivery must not renew its supervision deadline.
+            // Unsupported steering stays queued for idle delivery; this marker
+            // prevents repeated steering, but is not an admitted-attempt clock.
             e.attempted_at_ms.get_or_insert(now);
             save_event(tx, &e)?;
             Ok(Outcome::Event(e))
@@ -153,6 +154,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             agent,
             sequence,
             state,
+            now,
         } => {
             if !matches!(state.as_str(), "accepted" | "rejected" | "uncertain") {
                 return Err(error("invalid delivery receipt"));
@@ -160,6 +162,23 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             let mut e = get_event(tx, &room, &agent, sequence)?;
             if !matches!(e.state.as_str(), "submitting" | "uncertain" | "blocked") {
                 return Err(error("receipt does not match a pending delivery"));
+            }
+            // A timeout-only task is an owner projection of this delivery,
+            // not provider work. Keep a terminal row so the next runtime sweep
+            // retracts its interaction, without suppressing the pending retry.
+            if e.state == "blocked" {
+                let id = format!("delivery-{}", e.sequence);
+                if let Some(mut task) = for_turn(tx, &e.room_id, &e.agent_id, &id)? {
+                    if task.task_id == id
+                        && task.state == ExecutionState::Blocked
+                        && task.obligations.is_empty()
+                    {
+                        task.state = ExecutionState::Done;
+                        task.reason = "Delivery receipt reconciled".into();
+                        task.revision += 1;
+                        save(tx, &task)?;
+                    }
+                }
             }
             e.state = if state == "rejected" {
                 "pending".into()
@@ -170,10 +189,17 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 if let Some(prompt) = e.prompt_id.as_deref() {
                     revert_refused_wake(tx, &e.room_id, &e.agent_id, prompt)?;
                 }
+                // Steering is a busy refusal even when its receipt arrives
+                // after the turn ends or the admitted attempt times out.
+                if e.target_prompt_id.is_none() {
+                    tx.execute(
+                        "INSERT INTO agent_inbox_refusals VALUES(?1,?2) ON CONFLICT(sequence) DO NOTHING",
+                        params![sql_integer(e.sequence)?, sql_integer(now)?],
+                    ).map_err(sql)?;
+                }
                 e.prompt_id = None;
                 e.target_prompt_id = None;
                 e.provider_run_id = None;
-                // Keep the rejected-at marker: native rejection falls back to a later wake.
                 e.submit_epoch = None;
             }
             save_event(tx, &e)?;

@@ -52,6 +52,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     CREATE TABLE IF NOT EXISTS agent_lifecycle_quarantine(kind TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,at_ms INTEGER NOT NULL,PRIMARY KEY(kind,id));
     CREATE TABLE IF NOT EXISTS agent_source_occurrences(sequence INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL,source_id TEXT NOT NULL,occurrence_id TEXT NOT NULL,success INTEGER NOT NULL,public_answer TEXT,UNIQUE(room_id,source_id,occurrence_id));
     CREATE TABLE IF NOT EXISTS agent_inbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL,agent_id TEXT NOT NULL,source_id TEXT NOT NULL,occurrence_id TEXT NOT NULL,payload TEXT NOT NULL,UNIQUE(room_id,agent_id,source_id,occurrence_id));
+    CREATE TABLE IF NOT EXISTS agent_inbox_refusals(sequence INTEGER PRIMARY KEY,first_refused_at_ms INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS agent_inbox_recipient ON agent_inbox(room_id,agent_id,sequence);").map_err(sql)?;
     let columns: Vec<String> = db
         .prepare("PRAGMA table_info(agent_source_occurrences)")
@@ -447,6 +448,13 @@ fn save_event(tx: &Transaction<'_>, e: &InboxEvent) -> Result<(), DaemonError> {
         params![sql_integer(e.sequence)?, encode(e)?],
     )
     .map_err(sql)?;
+    if !matches!(e.state.as_str(), "pending" | "submitting") {
+        tx.execute(
+            "DELETE FROM agent_inbox_refusals WHERE sequence=?1",
+            [sql_integer(e.sequence)?],
+        )
+        .map_err(sql)?;
+    }
     Ok(())
 }
 fn decode_inbox(
@@ -633,6 +641,7 @@ pub(crate) fn finish_provider_event_submit(
         agent: finished.agent_id.clone(),
         sequence: event.sequence,
         state: state.into(),
+        now: crate::session::unix_epoch_ms(),
     })? {
         Outcome::Event(settled) => Ok(Some(EventSubmitReceipt {
             steered,
