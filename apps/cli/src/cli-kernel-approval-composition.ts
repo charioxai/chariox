@@ -95,7 +95,8 @@ export function createCliKernelApprovalComposition(deps: {
   })
   const renderBand = () => {
     const session = deps.session()
-    band.render(deps.attached() ? session.sudo_windows ?? [] : [], Date.now(),
+    // MP-08/MP-10/MP-11: resolved kernel status is visible during startup too.
+    band.render(session.sudo_windows ?? [], Date.now(),
       (agentId) => session.agents.find((agent) => agent.id === agentId)?.alias ?? agentId)
   }
   const bandTick = setInterval(renderBand, 15_000)

@@ -37,3 +37,20 @@ test("MP-08/MP-10/MP-11 A04 the sudo band shows the kernel deadline with Extend 
     assert.equal(box.visible, false)
   } finally { harness.renderer.destroy() }
 })
+
+test("MP-08/MP-10/MP-11 A04 cached rendering restores visibility after layout mount", async () => {
+  const harness = await createTestRenderer({ width: 120, height: 10, useThread: false })
+  const box = new BoxRenderable(harness.renderer, { flexDirection: "column", visible: false })
+  harness.renderer.root.add(box)
+  const band = createSudoWindowBand(harness.renderer, { extend: () => {}, revoke: () => {} })
+  band.assign(box)
+  try {
+    const now = Date.parse("2026-10-07T13:58:00Z")
+    band.render([window], now, () => "builder")
+    // The workspace's initial visible=false property is applied after its ref.
+    box.visible = false
+    band.render([window], now, () => "builder")
+    await harness.renderOnce()
+    assert.match(harness.captureCharFrame(), /sudo · builder .* expiring soon/)
+  } finally { harness.renderer.destroy() }
+})

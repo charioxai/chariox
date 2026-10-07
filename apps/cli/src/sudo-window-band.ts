@@ -15,13 +15,19 @@ export function createSudoWindowBand(renderer: CliRenderer, actions: {
       if (!band) return
       const lines = windows.map((window) => sudoWindowLine(window, now, agentLabel(window.agent_id)))
       const frame = JSON.stringify([lines, theme.warning, theme.backgroundElement])
-      if (frame === lastFrame) return
+      // MP-08/MP-10/MP-11: a layout mount can hide the box after its ref;
+      // cached content still has to restore the current visibility.
+      const visibilityChanged = band.visible !== (windows.length > 0)
+      band.visible = windows.length > 0
+      if (frame === lastFrame) {
+        if (visibilityChanged) band.requestRender()
+        return
+      }
       lastFrame = frame
       for (const child of [...band.getChildren()]) {
         band.remove(String(child.id))
         child.destroyRecursively()
       }
-      band.visible = windows.length > 0
       band.backgroundColor = theme.backgroundElement
       band.paddingLeft = 1
       band.paddingRight = 1
