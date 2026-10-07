@@ -140,7 +140,13 @@ impl ProviderAccountProfileRegistry {
         provider: &str,
         profile_id: &str,
     ) -> Result<bool, DaemonError> {
-        let profile = self.get(owner, provider, profile_id)?;
+        // Only a registered account profile can be a copied login; dev and default runs are not.
+        if normalize_provider(provider).is_err() {
+            return Ok(false);
+        }
+        let Some(profile) = self.find(owner, provider, profile_id)? else {
+            return Ok(false);
+        };
         Ok(
             (self.copied_login_artifact_missing(owner, provider, profile_id)?
                 || matches!(
@@ -524,6 +530,24 @@ mod tests {
             "opencode",
             &serde_json::json!({"other":{"type":"oauth","refresh":" "}})
         ));
+    }
+
+    #[test]
+    fn mp08_mp10_mp11_unregistered_or_unsupported_profile_is_not_a_copied_login() {
+        let root =
+            std::env::temp_dir().join(format!("chariox-copy-notice-{}", rand::random::<u64>()));
+        fs::create_dir_all(&root).unwrap();
+        let registry = ProviderAccountProfileRegistry::open(&root.join("registry.json"))
+            .unwrap()
+            .with_machine_identity("worker-machine", "worker-kernel");
+        assert!(!registry
+            .copied_login_needs_login("owner", "dev-stub", "default")
+            .unwrap());
+        assert!(!registry
+            .copied_login_needs_login("owner", "codex", "default")
+            .unwrap());
+        drop(registry);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

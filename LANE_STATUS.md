@@ -1,4 +1,58 @@
-# MP-08 / MP-10 / MP-11 — credcopies round 2 FINAL (2026-10-07)
+# MP-08 / MP-10 / MP-11 — credcopies round 3 FINAL (2026-10-07)
+
+Start: `05aebd7d9` (PR #913). Evidence:
+`/root/.codex/evidence/browser-resume-20260930/credcopies/round3/`
+(`round3-summary.json`, `*-79.tsv`, logs, binary hashes, `env.sh`, cleanup).
+
+## MP-10 / MP-11 — full kernel lib suite: GREEN
+
+- Root cause of all 79 round-2 failures (introduced by this branch): the new
+  copied-login check on the local dispatch and launch seams called
+  `copied_login_needs_login`, which errored for unsupported providers
+  (`dev-stub`) and unregistered profiles; dispatch propagated it with `?`, so
+  no stub prompt ever became active. Fix: a non-account provider or an
+  unregistered profile is never a copied login (`Ok(false)`).
+- Fail-first: `mp08_mp10_mp11_unregistered_or_unsupported_profile_is_not_a_copied_login`
+  fails on the pre-fix binary (exit 101, `red-unregistered_or_unsupported_profile.log`).
+- 79 round-2 failures run one by one, same CI-like env: pre-fix 79/79 FAIL,
+  base `e325afa58` 79/79 PASS, fixed 79/79 PASS. **Pre-existing on base: none.**
+- Full fixed suite: **6,072 passed / 0 failed / 22 ignored, exit 0**
+  (`green-full2-kernel-lib.log`, `--test-threads=2`, `RUST_MIN_STACK=16777216` as CI).
+  A first attempt without CI's `RUST_MIN_STACK` aborted on a stack overflow and an
+  exported `CLAUDE_CONFIG_DIR` broke two default-profile tests; both were
+  environment-only and superseded (`green-full-kernel-lib.log`).
+- Base full suite was not run; only the 79 were compared on base.
+
+## MP-08 / MP-10 — live acceptance: BLOCKED
+
+**BLOCKED(owner: one disposable Codex device login for the drill).** No shared
+login was logged out or revoked; no live drill ran this round. The receiving-copy
+`logout` step runs official `codex logout` on a copy that shares the source
+refresh token, so it can revoke the shared login. Steps once the owner provides
+a disposable account used by nothing else:
+1. Owner signs in with official `codex login --device-auth` in a fresh, lane-owned
+   `CODEX_HOME`; link it through Chariox (`ImportNativeProviderAccountProfile`).
+2. Build `chariox-kernel`, `chariox-relay` and the CLI from this branch; run
+   `apps/cli/scripts/live-managed-login-copies-drill.mjs` with
+   `CREDCOPIES_{RUNTIME,BINARY,EVIDENCE}_ROOT` and that `CODEX_HOME`.
+3. `prompt` (CREDCOPIES_LIVE_OK on the worker copy) → `logout` (disposable copy
+   only) → `queued` (two turns held, receiving login request shown) → `login`
+   (owner completes the new official device login) → expect
+   CREDCOPIES_AFTER_LOGIN then CREDCOPIES_QUEUE_RESUMED → `stop`.
+4. Real-path acceptance also requires the same flow through the built TUI and the
+   hosted `wss` relay. The drill script drives IPC and a local relay only, so it is
+   supplementary. Then revoke the disposable login.
+
+Rust work held the shared compile lock, except the pre-fix 79 single-test runs
+(test binary only); `CARGO_BUILD_JOBS=4`. Minimum during full run: 20.68 GiB
+MemAvailable, 88.48 GiB free. Removed own base worktree and disposable scratch
+(HOME/state, verified Node, binary copies). Shared target, provider accounts,
+reviewer state and other lanes are untouched. Review inbox absent. No protocol change or
+number requested. Local `[skip ci]` commit only.
+
+---
+
+# (previous) MP-08 / MP-10 / MP-11 — credcopies round 2 FINAL (2026-10-07)
 
 Local branch `cred/managed-login-copies`; exact starting source
 `1f43bfc7a2a7fd0df42d23798d05abcc4332d19a` (PR #913). Read its public PR body,
