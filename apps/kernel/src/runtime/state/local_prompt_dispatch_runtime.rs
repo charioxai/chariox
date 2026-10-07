@@ -75,7 +75,7 @@ fn current_starting_workflow_provider_run(
 }
 
 impl KernelRuntimeOwnedState {
-    fn prompt_dispatch_matches_active_prompt(
+    pub(super) fn prompt_dispatch_matches_active_prompt(
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
     ) -> Result<bool, DaemonError> {

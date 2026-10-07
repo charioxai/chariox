@@ -185,7 +185,21 @@ impl KernelRuntimeState {
                 if args.urgent { "urgent" } else { "next turn" }
             ),
         );
-        Box::pin(self.deliver_agent_inbox(session.id(), target.id())).await?;
+        if let Err(error) = Box::pin(self.deliver_agent_inbox(session.id(), target.id())).await {
+            self.owned.record_notice_for_agent(
+                session.id(),
+                None,
+                Some(target.id()),
+                self.owned
+                    .attachment_store
+                    .list_session_attachment_ids(session.id()),
+                format!(
+                    "Event {} is durable and pending: {}",
+                    event.sequence,
+                    crate::secret_redaction::redact_secrets(&error.to_string())
+                ),
+            );
+        }
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({"status":"durable","sequence":event.sequence,"urgent":event.urgent,"reply_requested":event.reply_requested}),

@@ -65,8 +65,8 @@ impl KernelRuntimeState {
         );
         let steer = if active.is_some() {
             match self.prepare_local_active_agent_message_dispatch(room, &prompt) {
-                Ok(dispatch) => dispatch,
-                Err(_) => {
+                Ok(Some(dispatch)) => Some(dispatch),
+                Ok(None) | Err(_) => {
                     self.owned
                         .durable_state_store
                         .agent_lifecycle(Operation::Defer {
@@ -108,6 +108,21 @@ impl KernelRuntimeState {
                 .provider_runtime_lanes
                 .acquire(&dispatch.provider_run_id)
                 .await;
+            if !self
+                .owned
+                .prompt_dispatch_matches_active_prompt(&dispatch)
+                .unwrap_or(false)
+            {
+                self.owned
+                    .durable_state_store
+                    .agent_lifecycle(Operation::Receipt {
+                        room: room.into(),
+                        agent: agent.into(),
+                        sequence: event.sequence,
+                        state: "rejected".into(),
+                    })?;
+                return Ok(());
+            }
             self.bind_agent_event_attempt(room, agent, event.sequence, &dispatch.provider_run_id)?;
             let structured = self.owned.provider_store.run_uses_structured_prompt_io(
                 &self
