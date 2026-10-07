@@ -3,6 +3,110 @@ use super::*;
 mod workflow_claim_release;
 
 #[tokio::test]
+async fn a02_native_settlement_never_reacquires_held_provider_lane() {
+    use crate::durable_state::agent_lifecycle::{InboxEvent, Operation, Outcome};
+    let worktree = crate::test_support::TestWorktree::new("am2-held-settlement-lane");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "am2-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "read actual source",
+            Vec::new(),
+        )
+        .unwrap()
+    else {
+        panic!()
+    };
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: session.id().into(),
+            agent: agent.id().into(),
+            prompt: prompt.id().into(),
+            run: Some(run.id().into()),
+            now: 1,
+        })
+        .unwrap();
+    let Outcome::Settled { task, correction } = store
+        .agent_lifecycle(Operation::Settle {
+            room: session.id().into(),
+            agent: agent.id().into(),
+            prompt: prompt.id().into(),
+            run: run.id().into(),
+            has_answer: true,
+            cancelled: false,
+            now: 2,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    runtime
+        .owned
+        .complete_local_prompt_without_advance(session.id(), agent.id(), Some(run.id()))
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Occur(InboxEvent {
+            sequence: 0,
+            room_id: session.id().into(),
+            agent_id: agent.id().into(),
+            source_id: "peer".into(),
+            occurrence_id: "next-turn".into(),
+            kind: "message".into(),
+            payload: serde_json::json!({"text":"Review the completed source finding"}),
+            urgent: false,
+            reply_requested: false,
+            state: "pending".into(),
+            prompt_id: None,
+            target_prompt_id: None,
+            provider_run_id: None,
+            attempted_at_ms: None,
+            submit_epoch: None,
+        }))
+        .unwrap();
+    let held = runtime.provider_runtime_lanes.acquire(run.id()).await;
+    // Output pumping holds this permit until native settlement returns. Its
+    // completion wake must not wait for the same permit on the same stack.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        runtime.finish_agent_task_settlement(Some((task, correction)), &prompt),
+    )
+    .await
+    .expect("native settlement must release its caller's provider lane before wake dispatch")
+    .unwrap();
+    drop(held);
+}
+
+#[tokio::test]
 async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable() {
     let worktree = crate::test_support::TestWorktree::new("output-settlement-managed");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
