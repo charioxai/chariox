@@ -123,7 +123,20 @@ impl OperationalHistoryStore {
             })
             .map(|entry| (entry, HistoryEventTurnContext::default()))
             .collect::<Vec<_>>();
-        self.append_transcripts(missing)
+        // MP-08 / MP-11 A09: unknown legacy provenance cannot enter public FTS.
+        let events = missing
+            .into_iter()
+            .map(|(entry, context)| {
+                let mut event = HistoryEvent::transcript(self.reserve_sequence(), entry, context);
+                event.metadata.insert(
+                    "legacy_history_import".into(),
+                    serde_json::Value::Bool(true),
+                );
+                event
+            })
+            .collect::<Vec<_>>();
+        self.append_many(&events)?;
+        Ok(events)
     }
 }
 

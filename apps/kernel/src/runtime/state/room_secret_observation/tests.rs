@@ -882,6 +882,47 @@ fn empty_or_revoked_rooms_never_match_vault_keys() {
 
 // MP-08/MP-10/MP-11: revoked values are scrub-only, including after restart.
 #[test]
+fn public_history_stored_values_scrub_after_restart_without_fencing_streams() {
+    // MP-08 / MP-10 / MP-11: persistence must preserve stored-versus-inserted
+    // provenance, and every value-match observation policy must include it.
+    let root = TestRoot::new();
+    let key = crate::transport::relay_crypto::generate_private_key_base64();
+    let path = root.path().join("observations");
+    let store = RoomSecretObservations::new(path.clone(), BTreeSet::new()).with_identity(&key);
+    store
+        .register_stored_with_locked_public_history("room", "synthetic-stored-value")
+        .unwrap();
+    let restarted = RoomSecretObservations::new(path, BTreeSet::new()).with_identity(&key);
+    for store in [&store, &restarted] {
+        assert!(!store.protects_bytes("room"));
+        assert_eq!(
+            store.protect_unframed_bytes("room", b"later answer"),
+            b"later answer"
+        );
+        assert_eq!(
+            store.scrub_text_or_withhold("room", "echo synthetic-stored-value"),
+            "echo [redacted]"
+        );
+        assert!(store
+            .controller_values("room")
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str() == "synthetic-stored-value"));
+        let policy: serde_json::Value =
+            serde_json::from_str(&store.capture_policy("room").unwrap()).unwrap();
+        assert_eq!(
+            policy["values"],
+            serde_json::json!(["synthetic-stored-value"])
+        );
+    }
+    // The normal insertion path promotes it to the existing split-stream fence.
+    restarted
+        .register("room", "synthetic-stored-value")
+        .unwrap();
+    assert!(restarted.protects_bytes("room"));
+}
+
+#[test]
 fn retired_values_scrub_prior_echoes_without_fencing_runtime_results() {
     let root = TestRoot::new();
     let key = crate::transport::relay_crypto::generate_private_key_base64();

@@ -13,6 +13,8 @@ struct Registry {
     #[serde(default)]
     retired_values: Vec<String>,
     #[serde(default)]
+    stored_values: Vec<String>,
+    #[serde(default)]
     vault_keys: BTreeSet<String>,
     #[serde(default)]
     provenance_known: bool,
@@ -27,6 +29,7 @@ impl Drop for Registry {
         use zeroize::Zeroize;
         self.values.zeroize();
         self.retired_values.zeroize();
+        self.stored_values.zeroize();
     }
 }
 
@@ -49,6 +52,11 @@ impl RoomSecretObservations {
             values: protection.values.iter().map(|v| v.to_string()).collect(),
             retired_values: protection
                 .retired_values
+                .iter()
+                .map(|v| v.to_string())
+                .collect(),
+            stored_values: protection
+                .stored_values
                 .iter()
                 .map(|v| v.to_string())
                 .collect(),
@@ -151,13 +159,15 @@ impl RoomSecretObservations {
         .map_err(|_| protection_error())?;
         let mut registry: Registry =
             serde_json::from_slice(&plaintext.plaintext).map_err(|_| protection_error())?;
-        if registry.values.len() + registry.retired_values.len() > 256
+        if registry.values.len() + registry.retired_values.len() + registry.stored_values.len()
+            > 256
             || registry.targets.len() > 256
             || registry.vault_keys.len() > 256
             || registry
                 .values
                 .iter()
                 .chain(&registry.retired_values)
+                .chain(&registry.stored_values)
                 .any(String::is_empty)
         {
             return Err(protection_error());
@@ -176,6 +186,10 @@ impl RoomSecretObservations {
                 .map(Zeroizing::new)
                 .collect(),
             retired_values: std::mem::take(&mut registry.retired_values)
+                .into_iter()
+                .map(Zeroizing::new)
+                .collect(),
+            stored_values: std::mem::take(&mut registry.stored_values)
                 .into_iter()
                 .map(Zeroizing::new)
                 .collect(),
@@ -286,6 +300,7 @@ impl RoomSecretObservations {
     // resolve credentials or match Vault keys, but keep prior echoes scrubbed.
     pub(in crate::runtime::state) fn forget(&self, room: &str) -> Result<(), DaemonError> {
         let room = self.room_key(room);
+        let _history_guard = self.invalidate_public_history(room)?;
         self.blocked(room, false)?;
         let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
         let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
@@ -320,6 +335,7 @@ impl RoomSecretObservations {
         room: &str,
     ) -> Result<(), DaemonError> {
         let room = self.room_key(room);
+        let _history_guard = self.invalidate_public_history(room)?;
         let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
         let protection = rooms.entry(room.into()).or_insert_with(|| {
             self.initial(room).unwrap_or_else(|_| Protection {
@@ -328,7 +344,9 @@ impl RoomSecretObservations {
                 ..Default::default()
             })
         });
+        // Vault-stored values are not environment state; keep scrubbing them.
         *protection = Protection {
+            stored_values: std::mem::take(&mut protection.stored_values),
             recovered_artifacts: true,
             history_before_ms: protection
                 .history_before_ms
@@ -357,6 +375,7 @@ impl RoomSecretObservations {
     pub(in crate::runtime::state) fn delete_room(&self, room: &str) -> Result<(), DaemonError> {
         // Keep an in-memory tombstone for already admitted late callbacks.
         let room = self.room_key(room);
+        let _history_guard = self.invalidate_public_history(room)?;
         let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
         rooms.insert(
             room.into(),
