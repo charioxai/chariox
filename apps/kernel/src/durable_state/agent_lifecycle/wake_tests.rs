@@ -445,3 +445,51 @@ fn a03_wake_creation_is_bounded_and_bound_to_the_current_turn() {
         })
         .is_err());
 }
+
+// MP-09: real abrupt-restart drill exposed this old-progress/new-admission race.
+#[test]
+fn a03_overdue_wake_cold_admission_has_a_bounded_clock_without_fake_progress() {
+    let f = Fixture::new();
+    f.create("process", "process", None, None);
+    f.wait_on(&["process"]);
+    f.apply(Operation::ProcessExited {
+        id: "process".into(),
+        exit_code: None,
+        tail: "process_lost".into(),
+        now: 300_000,
+    });
+    let event = f.inbox().remove(0);
+    let progress_before_admission = f.task().last_progress_at_ms;
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: event.sequence,
+        prompt: "fresh-wake".into(),
+        target: None,
+        run: None,
+        now: 300_001,
+    });
+    let task = f.task();
+    assert!(lacks_live_executor(&task, 300_002, false, false));
+    assert!(f
+        .store
+        .agent_has_live_wake_admission(&task, 300_002)
+        .unwrap());
+    assert!(!f
+        .store
+        .agent_has_live_wake_admission(&task, 300_001 + DELIVERY_TIMEOUT_MS)
+        .unwrap());
+    assert_eq!(task.last_progress_at_ms, progress_before_admission);
+    let mut wrong = task.clone();
+    wrong.pending_prompt_id = Some("unrelated".into());
+    assert!(!f
+        .store
+        .agent_has_live_wake_admission(&wrong, 300_002)
+        .unwrap());
+    let mut foreign = task.clone();
+    foreign.room_id = "foreign".into();
+    assert!(!f
+        .store
+        .agent_has_live_wake_admission(&foreign, 300_002)
+        .unwrap());
+}

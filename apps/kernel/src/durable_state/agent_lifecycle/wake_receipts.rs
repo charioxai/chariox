@@ -20,6 +20,31 @@ pub(super) fn initialize(db: &Connection) -> Result<(), DaemonError> {
 }
 
 impl DurableKernelStateStore {
+    /// MP-09: provider cold admission has its own bounded delivery clock;
+    /// waiting for a wake did not constitute model progress.
+    pub(crate) fn agent_has_live_wake_admission(
+        &self,
+        task: &AgentTaskExecution,
+        now: u64,
+    ) -> Result<bool, DaemonError> {
+        let Some(prompt) = task.pending_prompt_id.as_deref() else {
+            return Ok(false);
+        };
+        let events = self.agent_inbox(&task.room_id, &task.agent_id, 0)?;
+        Ok(events.iter().any(|event| {
+            event.state == "submitting"
+                && event.prompt_id.as_deref() == Some(prompt)
+                && event
+                    .attempted_at_ms
+                    .is_some_and(|started| started <= now && now - started < DELIVERY_TIMEOUT_MS)
+                && (event.payload["task_id"].as_str() == Some(task.task_id.as_str())
+                    || event.payload["task_ids"].as_array().is_some_and(|ids| {
+                        ids.iter()
+                            .any(|id| id.as_str() == Some(task.task_id.as_str()))
+                    }))
+        }))
+    }
+
     pub(crate) fn agent_wake_receipts(
         &self,
         room: Option<&str>,
