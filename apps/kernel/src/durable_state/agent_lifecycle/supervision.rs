@@ -251,7 +251,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 if matches!(e.state.as_str(), "pending" | "submitting" | "uncertain")
                     && (clock_quarantined
                         || deadline_start.is_some_and(|at| {
-                            now < at || now.saturating_sub(at) >= DELIVERY_TIMEOUT_MS
+                            // Receipt time can advance during Sweep's awaited pre-work.
+                            // Tolerate that race (and small clock rollbacks), but
+                            // still block clocks beyond the delivery window.
+                            at > now.saturating_add(DELIVERY_TIMEOUT_MS)
+                                || now.saturating_sub(at) >= DELIVERY_TIMEOUT_MS
                         }))
                 {
                     let reason = if clock_quarantined {

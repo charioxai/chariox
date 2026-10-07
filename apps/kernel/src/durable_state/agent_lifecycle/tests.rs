@@ -1681,7 +1681,7 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
             agent: "child".into(),
             sequence: e.sequence,
             state: "rejected".into(),
-            now: now,
+            now,
         });
         assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
         let Outcome::Swept(changed) = f.apply(Operation::Sweep {
@@ -1825,7 +1825,7 @@ fn a02_r4_admission_after_refusal_gets_full_delivery_timeout(receipt: &str) {
                 agent: "child".into(),
                 sequence: e.sequence,
                 state: if now == 10 { "rejected" } else { receipt }.into(),
-                now: now,
+                now,
             });
         }
     }
@@ -1939,6 +1939,14 @@ fn late_steer_rejection_retries_idle(timed_out: bool) {
     let receipt = finish_provider_event_submit(&f.store, 7, &finished)
         .unwrap()
         .unwrap();
+    assert!(
+        f.store
+            .agent_tasks(None, None)
+            .unwrap()
+            .iter()
+            .all(|t| t.state != ExecutionState::Blocked),
+        "an exact late receipt must close the synthetic delivery task"
+    );
     assert!(receipt.steered);
     assert!(receipt
         .notice
@@ -2161,4 +2169,152 @@ fn damaged_refusal_clock_is_quarantined(clock: rusqlite::types::Value) {
         changed.is_empty(),
         "quarantine must project one owner transition"
     );
+}
+
+// MP-08/MP-10/MP-11: pre-work can receive a refusal after Sweep captured now.
+#[test]
+fn a02_r6_delivery_clocks_tolerate_sweep_receipt_race() {
+    for receipt in ["rejected", "uncertain", "submitting"] {
+        for ahead in [1, DELIVERY_TIMEOUT_MS, DELIVERY_TIMEOUT_MS + 1] {
+            let f = Fixture::new();
+            let now = 10;
+            let at = now + ahead;
+            let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
+                "room",
+                "child",
+                "parent",
+                "sweep-race",
+                "message",
+                serde_json::json!({}),
+            ))) else {
+                panic!()
+            };
+            f.apply(Operation::Attempt {
+                room: "room".into(),
+                agent: "child".into(),
+                sequence: e.sequence,
+                prompt: "delivery".into(),
+                target: None,
+                run: None,
+                now: if receipt == "rejected" { now } else { at },
+            });
+            if receipt != "submitting" {
+                f.apply(Operation::Receipt {
+                    room: "room".into(),
+                    agent: "child".into(),
+                    sequence: e.sequence,
+                    state: receipt.into(),
+                    now: at,
+                });
+            }
+            f.apply(Operation::Sweep {
+                now,
+                busy_recipients: Vec::new(),
+            });
+            let expected = if ahead > DELIVERY_TIMEOUT_MS {
+                "blocked"
+            } else if receipt == "rejected" {
+                "pending"
+            } else {
+                receipt
+            };
+            assert_eq!(
+                f.store
+                    .agent_delivery_front("room", "child")
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                expected,
+                "receipt={receipt}, ahead={ahead}"
+            );
+            if ahead <= DELIVERY_TIMEOUT_MS {
+                assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
+                f.apply(Operation::Sweep {
+                    now: at + DELIVERY_TIMEOUT_MS - 1,
+                    busy_recipients: Vec::new(),
+                });
+                assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
+                f.apply(Operation::Sweep {
+                    now: at + DELIVERY_TIMEOUT_MS,
+                    busy_recipients: Vec::new(),
+                });
+                assert_eq!(
+                    f.store
+                        .agent_delivery_front("room", "child")
+                        .unwrap()
+                        .unwrap()
+                        .state,
+                    "blocked"
+                );
+            }
+        }
+    }
+}
+
+// MP-08/MP-10/MP-11: every exact receipt retracts the synthetic timeout decision.
+#[test]
+fn a02_r6_late_receipts_close_only_synthetic_delivery_tasks() {
+    for receipt in ["accepted", "uncertain", "rejected"] {
+        let f = Fixture::new();
+        f.begin("real-task");
+        f.apply(Operation::Block {
+            task: "real-task".into(),
+            prompt: "real-task".into(),
+            reason: "unrelated owner action".into(),
+        });
+        let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
+            "room",
+            "parent",
+            "peer",
+            "late-receipt",
+            "message",
+            serde_json::json!({}),
+        ))) else {
+            panic!()
+        };
+        f.apply(Operation::Attempt {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence: e.sequence,
+            prompt: "delivery".into(),
+            target: None,
+            run: None,
+            now: 10,
+        });
+        f.apply(Operation::Sweep {
+            now: 10 + DELIVERY_TIMEOUT_MS,
+            busy_recipients: Vec::new(),
+        });
+        let synthetic = format!("delivery-{}", e.sequence);
+        assert_eq!(
+            f.store
+                .agent_tasks(None, None)
+                .unwrap()
+                .iter()
+                .find(|t| t.task_id == synthetic)
+                .unwrap()
+                .state,
+            ExecutionState::Blocked
+        );
+        f.apply(Operation::Receipt {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence: e.sequence,
+            state: receipt.into(),
+            now: 10 + DELIVERY_TIMEOUT_MS,
+        });
+        let tasks = f.store.agent_tasks(None, None).unwrap();
+        assert_eq!(
+            tasks.iter().find(|t| t.task_id == synthetic).unwrap().state,
+            ExecutionState::Done
+        );
+        assert_eq!(
+            tasks
+                .iter()
+                .find(|t| t.task_id == "real-task")
+                .unwrap()
+                .state,
+            ExecutionState::Blocked
+        );
+    }
 }

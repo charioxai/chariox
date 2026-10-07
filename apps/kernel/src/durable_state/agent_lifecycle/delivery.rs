@@ -155,6 +155,23 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if !matches!(e.state.as_str(), "submitting" | "uncertain" | "blocked") {
                 return Err(error("receipt does not match a pending delivery"));
             }
+            // A timeout-only task is an owner projection of this delivery,
+            // not provider work. Keep a terminal row so the next runtime sweep
+            // retracts its interaction, without suppressing the pending retry.
+            if e.state == "blocked" {
+                let id = format!("delivery-{}", e.sequence);
+                if let Some(mut task) = for_turn(tx, &e.room_id, &e.agent_id, &id)? {
+                    if task.task_id == id
+                        && task.state == ExecutionState::Blocked
+                        && task.obligations.is_empty()
+                    {
+                        task.state = ExecutionState::Done;
+                        task.reason = "Delivery receipt reconciled".into();
+                        task.revision += 1;
+                        save(tx, &task)?;
+                    }
+                }
+            }
             e.state = if state == "rejected" {
                 "pending".into()
             } else {

@@ -3087,7 +3087,7 @@ async fn a02_r4_busy_message_survives_timeout(deferred: bool) {
                 agent: agent.id().into(),
                 sequence: e.sequence,
                 state: "rejected".into(),
-                now: now,
+                now,
             })
             .unwrap();
     }
@@ -3166,5 +3166,96 @@ async fn a02_r4_busy_message_survives_timeout(deferred: bool) {
     assert_eq!(
         store.agent_inbox(session.id(), agent.id(), 0).unwrap()[1].state,
         "accepted"
+    );
+}
+
+// MP-08/MP-10/MP-11: closing a synthetic delivery task retracts its owner prompt.
+#[tokio::test]
+async fn a02_r6_late_receipt_retracts_delivery_owner_interaction() {
+    use crate::durable_state::agent_lifecycle::{
+        occurrence, Operation, Outcome, DELIVERY_TIMEOUT_MS,
+    };
+    let worktree = crate::test_support::TestWorktree::new("am2-r6-late-receipt");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    let Outcome::Event(e) = store
+        .agent_lifecycle(Operation::Occur(occurrence(
+            session.id(),
+            agent.id(),
+            "peer",
+            "late-accepted",
+            "message",
+            serde_json::json!({}),
+        )))
+        .unwrap()
+    else {
+        panic!()
+    };
+    store
+        .agent_lifecycle(Operation::Attempt {
+            room: session.id().into(),
+            agent: agent.id().into(),
+            sequence: e.sequence,
+            prompt: "late-prompt".into(),
+            target: Some("old-turn".into()),
+            run: Some("old-run".into()),
+            now: crate::session::unix_epoch_ms() - DELIVERY_TIMEOUT_MS,
+        })
+        .unwrap();
+    runtime.sweep_agent_lifecycle().await.unwrap();
+    let blocked = store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap()
+        .remove(0);
+    let id = format!(
+        "task-blocked-{}-{}",
+        blocked.task_id, blocked.blocked_revision
+    );
+    assert!(runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .any(|i| i.id() == id));
+    store
+        .agent_lifecycle(Operation::Receipt {
+            room: session.id().into(),
+            agent: agent.id().into(),
+            sequence: e.sequence,
+            state: "accepted".into(),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    runtime.sweep_agent_lifecycle().await.unwrap();
+    assert!(
+        runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .all(|i| i.id() != id),
+        "exact reconciliation must retract the stale owner choice"
+    );
+    assert!(
+        store
+            .agent_lifecycle(Operation::OwnerResponse {
+                task: blocked.task_id,
+                revision: blocked.blocked_revision,
+                resume: true,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .is_err(),
+        "the old Resume cannot dispatch synthetic work"
     );
 }
