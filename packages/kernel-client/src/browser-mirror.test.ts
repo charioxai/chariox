@@ -48,6 +48,17 @@ test('MP-08/MP-11: cached tree hash preserves canonical bytes across retained an
  const changed=validateMirrorPacket({...p,reset:false,nodes:[{...p.nodes[0]!,style:{color:'rgb(1, 2, 3)'}}]},base);tree.nodes=[...changed.values()];
  assert.equal(mirrorTreeCanonicalJson(tree,cache),mirrorCanonicalJson(tree));
 });
+test('inert word-break opportunities preserve inline flow without admitting active markup',()=>{
+ validateMirrorNode({id:'n1',parent:null,children:[],kind:'element',tag:'wbr'});
+});
+test('hidden geometry cannot rasterize its public parent; becoming visible restores the drift fence',()=>{
+ const renderer=Object.create(BrowserMirrorRenderer.prototype) as any;
+ const child={id:'n2',parent:'n1',children:[],kind:'element',tag:'span',box:{x:0,y:0,width:20,height:20},style:{visibility:'hidden'}};
+ const parent={id:'n1',parent:null,children:['n2'],kind:'element',tag:'div'};
+ const node={getBoundingClientRect:()=>({x:1,y:0,width:20,height:20}),ownerDocument:{defaultView:{getComputedStyle:()=>({getPropertyValue:()=>''})}}};
+ Object.assign(renderer,{records:new Map<string,unknown>([['n1',parent],['n2',child]]),dom:new Map([['n2',node]]),timings:[]});
+ assert.deepEqual(renderer.driftNodes(),[]);child.style.visibility='visible';assert.deepEqual(renderer.driftNodes(),['n2']);
+});
 
 test('MP-08/MP-11: sorted Rust style maps cannot reset vendor paint properties after assignment',()=>{
  const properties=new Map<string,string>();const element={removeAttribute(){properties.clear()},style:{setProperty(key:string,value:string){if(key==='all')properties.clear();properties.set(key,value)}}} as unknown as HTMLElement;

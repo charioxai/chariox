@@ -1,13 +1,14 @@
 import {protectedTextScanner} from './kernel-browser-mirror-protected-text.mjs';
 import {mirrorCssFingerprint} from './kernel-browser-mirror-css.mjs';
+import {mirrorFontKey} from './kernel-browser-mirror-local-fonts.mjs';
 // MP-08/MP-10/MP-11: install only in the controller's #607 isolated world.
 // Raw mutation records and page code never cross the mirror boundary.
-export const mirrorObserverExpression = initial => `(${installMirrorObserver.toString()})(${JSON.stringify(initial)},${mirrorCssFingerprint.toString()},${protectedTextScanner.toString()})`;
-function installMirrorObserver(initialStyles = {},inspectCss,makeTextScanner) {
+export const mirrorObserverExpression = initial => `(${installMirrorObserver.toString()})(${JSON.stringify(initial)},${mirrorCssFingerprint.toString()},${protectedTextScanner.toString()},${mirrorFontKey.toString()})`;
+function installMirrorObserver(initialStyles = {},inspectCss,makeTextScanner,fontKey) {
   if (globalThis.__charioxMirror) return true;
-  const nativeCustom=new WeakMap();
+  const nativeCustom=new WeakMap(),opaqueFlow=new WeakMap();
   const ids = new WeakMap(),eventRoots=new WeakSet();let observed = new WeakSet(),cssCache=new WeakMap(),cssFingerprint=null;
-  let lastCssRoots=new Set(),lastCssForms=[],lastCssCustom=[];
+  let lastCssRoots=new Set(),lastCssForms=[],lastCssCustom=[],fontRepresentatives=[];
   let serial = 0, live = new Map(), revision = 0, protectedVariants=[], maskedNodes=new WeakSet();
   const observer = new MutationObserver(() => { revision++; });
   const watch = root => {
@@ -16,7 +17,7 @@ function installMirrorObserver(initialStyles = {},inspectCss,makeTextScanner) {
     observed.add(root); observer.observe(root, { subtree:true, childList:true, attributes:true, characterData:true });
   };
   const id = node => { if (!ids.has(node)) ids.set(node, `n${++serial}`); return ids.get(node); };
-  const tags = new Set('html head body div span p a article section main header footer nav aside h1 h2 h3 h4 h5 h6 ul ol li dl dt dd pre code blockquote b strong i em u s small sub sup br hr table thead tbody tfoot tr th td caption colgroup col input textarea button select option optgroup label fieldset legend form details summary dialog img figure figcaption picture source slot'.split(' '));
+  const tags = new Set('html head body div span p a article section main header footer nav aside h1 h2 h3 h4 h5 h6 ul ol li dl dt dd pre code blockquote b strong i em u s small sub sup br wbr hr table thead tbody tfoot tr th td caption colgroup col input textarea button select option optgroup label fieldset legend form details summary dialog img figure figcaption picture source slot'.split(' '));
   const attributes = new Set('title alt role aria-label aria-hidden aria-expanded aria-checked aria-selected aria-disabled slot dir lang colspan rowspan span type placeholder disabled readonly multiple size rows cols wrap open start reversed value checked selected'.split(' '));
   const active = new Set('script style link meta base noscript template'.split(' '));
   const media = new Set('canvas video audio svg object embed applet'.split(' '));
@@ -73,6 +74,20 @@ function installMirrorObserver(initialStyles = {},inspectCss,makeTextScanner) {
     let reusableCss=true;lastCssRoots=styleRoots;lastCssForms=formNodes;lastCssCustom=customNodes;
     try{const fingerprint=inspectCss(styleRoots,formNodes,customNodes,revision,variants,id);if(fingerprint!==cssFingerprint){cssCache=new WeakMap();cssFingerprint=fingerprint}}catch{reusableCss=false;cssCache=new WeakMap();cssFingerprint=null}
     const sharedStyles=new Map();
+    // A deferred auto-height block still carries its anonymous flow and the
+    // margins which collapse through transparent first/last descendant blocks.
+    // Read CSS geometry only; no deferred text/content enters the placeholder.
+    const flowMargin=(element,edge)=>{
+      let positive=0,negative=0;
+      for(let e=element,depth=0;e&&depth<128;depth++){
+        const s=getComputedStyle(e),margin=parseFloat(s.getPropertyValue('margin-'+edge))||0;positive=Math.max(positive,margin);negative=Math.min(negative,margin);
+        const child=edge==='top'?e.firstElementChild:e.lastElementChild;
+        if(!child||!['block','list-item'].includes(s.display)||!['static','relative'].includes(s.position)||s.float!=='none'||s.overflowY!=='visible'||parseFloat(s.getPropertyValue('padding-'+edge))||parseFloat(s.getPropertyValue('border-'+edge+'-width'))||edge==='bottom'&&e.computedStyleMap?.().get('height')?.toString()!=='auto')break;
+        const c=getComputedStyle(child);if(!['block','list-item','flow-root'].includes(c.display)||!['static','relative'].includes(c.position)||c.float!=='none')break;
+        const a=e.getBoundingClientRect(),b=child.getBoundingClientRect();if(Math.abs(a[edge]-b[edge])>.1)break;e=child;
+      }
+      return positive+negative;
+    };
     const safeStyle = (element,pseudo=null,resourcesAllowed=true,bounds=null) => {
       const computed=getComputedStyle(element,pseudo),cached=reusableCss?cssCache.get(element)?.get(pseudo):null;
       const out=cached?{...cached}:{all:'initial'};
@@ -82,11 +97,20 @@ function installMirrorObserver(initialStyles = {},inspectCss,makeTextScanner) {
         if(sharedStyles.has(sharedKey))return {...sharedStyles.get(sharedKey)};
       }
       if(!cached)for (const property of computed) {
-        if(property.startsWith('--') || property.startsWith('animation') || property.startsWith('transition') || ['content','cursor'].includes(property)) continue;
+        if(property.startsWith('--') || property.startsWith('animation') || property.startsWith('transition') || ['content','cursor','inline-size','block-size','min-inline-size','min-block-size','max-inline-size','max-block-size'].includes(property)) continue;
         const value=computed.getPropertyValue(property);
         if(value===initialStyles[property] && !['direction','unicode-bidi','color','background-color','border-top-color','border-right-color','border-bottom-color','border-left-color'].includes(property))continue;
         if(value.length<=2048 && !forbiddenCss.test(value) && !tainted(value)) out[property]=value;
       }
+      // CSSOM resolved height turns auto into pixels, changing margin collapse,
+      // flex sizing and intrinsic flow. Typed OM retains the computed sizing
+      // contract. Native tiles keep their used dimensions for their blank text.
+      if(!pseudo&&element instanceof HTMLElement&&!['img','iframe','video','canvas','object','embed'].includes(element.localName)&&!(['button','input','textarea','select'].includes(element.localName)&&computed.appearance!=='none')&&element.computedStyleMap){
+        const typed=element.computedStyleMap();for(const property of ['width','height','min-width','min-height','max-width','max-height']){
+          const value=typed.get(property)?.toString();if(value&&value.length<=2048&&!forbiddenCss.test(value)&&!tainted(value))out[property]=value;
+        }
+      }
+      if(!pseudo&&computed.transform==='none'&&computed.writingMode==='horizontal-tb'&&['auto','scroll'].includes(computed.overflowY)&&element.offsetWidth-element.clientWidth-parseFloat(computed.borderLeftWidth)-parseFloat(computed.borderRightWidth)>1)out['scrollbar-gutter']='stable';
       if(reusableCss&&!cached){let entries=cssCache.get(element);if(!entries){entries=new Map();cssCache.set(element,entries)}entries.set(pseudo,{...out})}
       // Inline URLs are never shipped. Computed image URLs become kernel resource refs.
       if (!pseudo && !variants.length && resourcesAllowed) {
@@ -126,7 +150,15 @@ function installMirrorObserver(initialStyles = {},inspectCss,makeTextScanner) {
         // subtrees through the ordinary authenticated delta/removal path.
         // Pseudo paint/effects may extend beyond element bounds: do not defer it.
         if(!viewportAncestors.has(node)&&record.box.width>0&&record.box.height>0&&['div','section','article','main','aside','p','pre','li','ul','ol'].includes(tag)&&['block','list-item'].includes(record.style.display)&&['static','relative'].includes(record.style.position??'static')&&!node.shadowRoot&&getComputedStyle(node).filter==='none'&&getComputedStyle(node).boxShadow==='none'&&getComputedStyle(node).textShadow==='none'&&['::before','::after'].every(p=>['none','normal','""'].includes(getComputedStyle(node,p).content))) {
-          record.kind='tile';record.reason='viewport_deferred';return done(record);
+          record.kind='tile';record.reason='viewport_deferred';
+          if(record.style.height==='auto'){
+            const computed=getComputedStyle(node),children=[...node.children],first=children[0],last=children.at(-1),top=first?flowMargin(first,'top'):0,bottom=last?flowMargin(last,'bottom'):0;
+            const paddingTop=parseFloat(computed.paddingTop)||0,paddingBottom=parseFloat(computed.paddingBottom)||0,borderTop=parseFloat(computed.borderTopWidth)||0,borderBottom=parseFloat(computed.borderBottomWidth)||0;
+            const height=record.box.height-paddingTop-paddingBottom-borderTop-borderBottom;
+            const internalTop=first?Math.max(0,first.getBoundingClientRect().top-record.box.y-paddingTop-borderTop):0,internalBottom=last?Math.max(0,record.box.y+record.box.height-paddingBottom-borderBottom-last.getBoundingClientRect().bottom):0;
+            record.pseudo={'::before':{text:'',style:{all:'initial',display:'block',height:Math.max(0,height-Math.min(internalTop,top)-Math.min(internalBottom,bottom))+'px','margin-top':top+'px','margin-bottom':bottom+'px'}}};
+          }
+          return done(record);
         }
         record.attributes={};
         for(const attr of node.attributes) if((attributes.has(attr.name)||tag==='slot'&&attr.name==='name') && attr.value.length<=2048 && !tainted(attr.value)) record.attributes[attr.name]=attr.value;
@@ -138,7 +170,16 @@ function installMirrorObserver(initialStyles = {},inspectCss,makeTextScanner) {
         if(tag==='input' || tag==='textarea' || tag==='select') record.form={value:(node.value??'').slice(0,16384),checked:!!node.checked,selected_index:node.selectedIndex??-1,selection_start:node.selectionStart??null,selection_end:node.selectionEnd??null};
         record.scroll={x:node.scrollLeft,y:node.scrollTop};
         if(['button','input','textarea','select'].includes(tag) && getComputedStyle(node).appearance!=='none'){record.kind='tile';record.reason='native_control';return done(record);}
-        if(media.has(tag) || tag.includes('-') && !node.shadowRoot&&nativeCustom.get(node)!=='light') {record.kind='tile';record.tag='img';record.reason=tag.includes('-')?'opaque_shadow':'opaque_media';return done(record);}
+        // URL-backed masks/border images cannot become a flat coloured shape
+        // when their executable paint source is stripped. Use protected native
+        // pixels for this region, retaining the page's DOM elsewhere.
+        const opaquePaint=style=>['mask-image','-webkit-mask-image','border-image-source'].some(property=>style.getPropertyValue(property)!=='none'&&forbiddenCss.test(style.getPropertyValue(property)));
+        if(opaquePaint(getComputedStyle(node))||['::before','::after'].some(p=>{const s=getComputedStyle(node,p);return !['none','normal'].includes(s.content)&&(opaquePaint(s)||s.backgroundImage!=='none')})){
+          record.kind='tile';record.tag='img';record.reason='unsupported_paint';
+          const used=getComputedStyle(node);for(const property of ['width','height','inline-size','block-size']){const value=used.getPropertyValue(property);if(value!=='auto')record.style[property]=value}
+          return done(record);
+        }
+        if(media.has(tag) || tag.includes('-') && !node.shadowRoot&&nativeCustom.get(node)!=='light') {record.kind='tile';record.tag='img';record.reason=tag.includes('-')?'opaque_shadow':'opaque_media';const flow=opaqueFlow.get(node);if(flow)record.style={...record.style,...flow};return done(record);}
         if(tag==='iframe') {
           try {
             const nested=node.contentDocument;
@@ -185,6 +226,14 @@ function installMirrorObserver(initialStyles = {},inspectCss,makeTextScanner) {
       for(const sheet of document.styleSheets) {try{collect(sheet.cssRules,sheet.href??document.baseURI);}catch{}}
     }
     live=nextLive;maskedNodes=new WeakSet(records.filter(n=>n.kind==='mask').map(n=>nextLive.get(n.id)));
+    const recordMap=new Map(records.map(n=>[n.id,n])),fontSamples=new Map();
+    if(!variants.length)for(const record of records)if(record.kind==='text'&&record.text.trim()||record.reason==='native_control'){
+      const parent=record.reason==='native_control'?record:recordMap.get(record.parent);if(parent?.kind!=='element'&&parent?.reason!=='native_control')continue;
+      const key=fontKey(parent.style),node=nextLive.get(parent.id),previous=fontSamples.get(key);
+      const painted=element=>{for(let e=element;e;e=e.parentElement){const s=getComputedStyle(e);if(s.visibility!=='visible'||Number(s.opacity)===0)return false}return true};
+      if(!previous&&fontSamples.size<64||previous&&!painted(previous)&&painted(node))fontSamples.set(key,node);
+    }
+    fontRepresentatives=[...fontSamples];
     let focused=document.activeElement;for(let i=0;i<128;i++){let child=focused?.shadowRoot?.activeElement;try{child??=focused?.localName==='iframe'?focused.contentDocument?.activeElement:null;}catch{}if(!child||child===focused)break;focused=child;}
     let selection=null;for(const owner of new Set([...nextLive.values()].map(n=>n.ownerDocument??document))){const selected=owner.getSelection();if(!selected||selected.isCollapsed)continue;const anchor=ids.get(selected.anchorNode),focus=ids.get(selected.focusNode);if(records.some(n=>n.id===anchor&&n.kind==='text')&&records.some(n=>n.id===focus&&n.kind==='text'))selection={anchor_id:anchor,anchor_offset:selected.anchorOffset,focus_id:focus,focus_offset:selected.focusOffset};}
     let nodes=records,removed=[],incremental=false;
@@ -287,5 +336,5 @@ function installMirrorObserver(initialStyles = {},inspectCss,makeTextScanner) {
     return keys.map(key=>{const node=live.get(key);if(!node?.isConnected||node.nodeType!==3||maskedNodes.has(node))throw new Error('mirror unavailable text geometry');const range=node.ownerDocument.createRange();range.selectNodeContents(node);return {id:key,rects:[...range.getClientRects()].map(r=>({x:r.x,y:r.y,width:r.width,height:r.height}))};});
   };
   const customHosts=()=>{const hosts=[],pending=[document.documentElement];let visited=0;while(pending.length){if(++visited>400000)throw Error('mirror custom host memory budget');const node=pending.pop();if(node.nodeType===1&&node.localName.includes('-'))hosts.push(node);pending.push(...node.children??[]);if(node.shadowRoot)pending.push(node.shadowRoot);if(node.localName==='iframe'){let nested;try{nested=node.contentDocument}catch{}if(nested?.documentElement)pending.push(nested.documentElement)}}return hosts.length?hosts:null};
-  globalThis.__charioxMirror=Object.freeze({read,customHosts,admitCustomHost:(node,closed)=>nativeCustom.set(node,closed?'closed':'light'),epoch:()=>{if(observer.takeRecords().length)revision++;if(cssFingerprint!==null){try{if(inspectCss(lastCssRoots,lastCssForms,lastCssCustom,revision,protectedVariants,id)!==cssFingerprint)revision++}catch{revision++}}return revision},locate,focus,select,validate,coordinateTarget,activeTarget,textRuns});return true;
+  globalThis.__charioxMirror=Object.freeze({read,customHosts,fontKeys:()=>fontRepresentatives.map(([key])=>key),fontHosts:()=>fontRepresentatives.map(([,node])=>node),admitCustomHost:(node,closed,flow)=>{nativeCustom.set(node,closed?'closed':'light');if(closed&&flow)opaqueFlow.set(node,flow);else opaqueFlow.delete(node)},epoch:()=>{if(observer.takeRecords().length)revision++;if(cssFingerprint!==null){try{if(inspectCss(lastCssRoots,lastCssForms,lastCssCustom,revision,protectedVariants,id)!==cssFingerprint)revision++}catch{revision++}}return revision},locate,focus,select,validate,coordinateTarget,activeTarget,textRuns});return true;
 }

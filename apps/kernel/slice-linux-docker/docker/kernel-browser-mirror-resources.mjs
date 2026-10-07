@@ -29,7 +29,7 @@ export async function materializeMirrorResources(connection,sessionId,descriptor
   if(protectedValues.length && descriptors.length) throw new Error('MP-11: protected resources refused');
   if(!Array.isArray(descriptors)||descriptors.length>100000)throw Error('MP-11: mirror descriptor working set exceeds memory budget');
   const readUrls=new Map();
-  if(!descriptors.length){cache.clear();return {mapped:new Map(),resources:new Map()};}
+  if(!descriptors.length){cache.clear();return {mapped:new Map(),resources:new Map(),encodedBytes:0,decodedBytes:0};}
   const {frameTree}=await connection.send('Page.getResourceTree',{},sessionId),allowed=new Map();
   const collect=tree=>{for(const r of tree.resources??[]) allowed.set(r.url,tree.frame.id);for(const child of tree.childFrames??[])collect(child);};
   collect(frameTree);
@@ -61,7 +61,7 @@ export async function materializeMirrorResources(connection,sessionId,descriptor
     mapped.set(item.key,resource_id);
   }
   for(const resourceId of cache.keys())if(!resources.has(resourceId))cache.delete(resourceId);
-  return {mapped,resources};
+  return {mapped,resources,encodedBytes:total,decodedBytes:decodedTotal};
 }
 
 // MP-08/MP-10: canonical node strings are reusable across unchanged patches.

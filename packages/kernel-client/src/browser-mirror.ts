@@ -134,7 +134,7 @@ export class BrowserMirrorRenderer {
     // MP-10: child/text changes do not invalidate unchanged sanitized styles.
     if(!previous||JSON.stringify(previous.style??{})!==JSON.stringify(record.style??{}))this.style(element,record.style??{},previous?.style)
     if(record.kind==='mask'){element.style.boxSizing='border-box';if(record.tag==='div'&&(!record.style?.display||record.style.display==='inline'))element.style.display='inline-block';element.style.appearance='none';element.style.borderStyle='solid';element.style.boxShadow='none';element.style.borderRadius='0';if(record.tag==='input'||record.tag==='textarea'){(element as HTMLInputElement).readOnly=true;(element as HTMLInputElement).disabled=true}element.style.background='black';element.style.color='transparent';element.style.borderColor='black';element.setAttribute('aria-label','Protected content')}
-    if(record.kind==='mask'||record.kind==='tile'&&record.reason!=='native_control') {
+    if(record.kind==='mask'||record.kind==='tile'&&!['native_control','viewport_deferred'].includes(record.reason??'')) {
       element.style.boxSizing='border-box';element.style.width=record.style?.width??`${record.box?.width??0}px`;element.style.height=record.style?.height??`${record.box?.height??0}px`;element.style.overflow='hidden';element.style.background='black'
     }
     if(record.kind==='tile'&&record.reason==='observer_bounds_or_unavailable') {
@@ -296,7 +296,11 @@ export class BrowserMirrorRenderer {
   }
   driftNodes():string[] {
     const started=performance.now(),drift=new Set<string>()
-    for(const [id,record]of this.records){if(!['element','text','frame','tile'].includes(record.kind)||!record.box)continue;const node=this.dom.get(id);if(!node)continue;let box:DOMRect;if(record.kind==='text'){const range=node.ownerDocument!.createRange();range.selectNodeContents(node);box=range.getBoundingClientRect()}else box=(node as HTMLElement).getBoundingClientRect()
+    for(const [id,record]of this.records){if(!['element','text','frame','tile'].includes(record.kind)||!record.box)continue;
+      // Unpainted descendants cannot invalidate surrounding public geometry.
+      // Re-evaluate every packet; input still checks the native target/epoch.
+      let unpainted=false;for(let n:MirrorNode|undefined=record;n;n=this.records.get(n.parent??''))if(n.style?.visibility==='hidden'||n.style?.visibility==='collapse'||n.style?.opacity!==undefined&&Number(n.style.opacity)===0){unpainted=true;break}if(unpainted)continue;
+      const node=this.dom.get(id);if(!node)continue;let box:DOMRect;if(record.kind==='text'){const range=node.ownerDocument!.createRange();range.selectNodeContents(node);box=range.getBoundingClientRect()}else box=(node as HTMLElement).getBoundingClientRect()
       const textDrift=record.kind==='text'&&node.textContent!==record.text
       const style=['element','frame'].includes(record.kind)?node.ownerDocument!.defaultView!.getComputedStyle(node as Element):null
       const colorDrift=style&&Object.entries(record.style??{}).some(([key,value])=>(key==='color'||key.endsWith('-color'))&&value!=='initial'&&value!=='inherit'&&style.getPropertyValue(key)!==value)

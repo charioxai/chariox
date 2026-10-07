@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { mirrorInitialStyles } from './kernel-browser-mirror-styles.mjs';
 import { mirrorObserverExpression } from './kernel-browser-mirror-observer.mjs';
 import { materializeMirrorResources,MirrorTreeHasher } from './kernel-browser-mirror-resources.mjs';
+import {materializeMirrorLocalFonts} from './kernel-browser-mirror-local-fonts.mjs';
 import { observationProtectedVariants } from './browser-controller-snapshot.mjs';
 import { locateBrowserRegions } from './browser-observation-regions.mjs';
 import { assertCurrentDocument,assertNotCancelled } from './browser-controller-actions.mjs';
@@ -171,6 +172,9 @@ export class MirrorService {
     const unavailableFonts=[...new Set(source.fonts.map(family))].filter(f=>!admittedFamilies.has(f));
     for(const node of source.nodes)if(node.kind==='element'&&unavailableFonts.some(f=>(node.style?.['font-family']??'').split(',').some(value=>value.replaceAll('"','').replaceAll("'",'').trim().toLowerCase()===f))){node.kind='tile';node.tag='img';node.reason='font_unavailable';}
     source.fonts=source.fonts.flatMap(f=>{const resource=material.mapped.get(f.resource);return resource?[{...f,resource}]:[];});
+    const localFonts=stream.fullFallback?{resources:[],fonts:[]}:await materializeMirrorLocalFonts(world,source,policy.values,{wireBudget:16*1024*1024-material.encodedBytes,decodedBudget:64*1024*1024-material.decodedBytes});
+    for(const resource of localFonts.resources)material.resources.set(resource.resource_id,resource);
+    source.fonts.push(...localFonts.fonts);
     const sourceRevision=source.revision??0,sourceEpoch=source.revision??null,animating=source.animating??false;
     delete source.animating;
     delete source.resources;delete source.revision;source.selection??=null;

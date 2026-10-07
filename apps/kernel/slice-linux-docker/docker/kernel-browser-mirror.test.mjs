@@ -18,6 +18,7 @@ function fixture() {
     if(method==='Emulation.setDeviceMetricsOverride')return {};
     if(method==='Runtime.releaseObjectGroup')return {};
     if(method==='Runtime.evaluate'&&params.expression.includes('.customHosts()'))return {result:{value:null}};
+    if(method==='Runtime.evaluate'&&params.expression.includes('.fontKeys()'))return {result:{value:[]}};
     if(method==='Runtime.evaluate')return {result:{value:params.expression.includes('.read(')?structuredClone(state.snapshot):params.expression.includes('Object.fromEntries([...style]')?{}:params.expression.includes('.epoch()')?(state.snapshot.revision??0):true}};
     throw Error(`unexpected CDP method ${method}`);
   }};
