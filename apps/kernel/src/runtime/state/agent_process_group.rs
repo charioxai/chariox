@@ -1,4 +1,4 @@
-//! MP-09 / MP-11 A03: verify an isolated owned session before group signals.
+//! MP-09 / MP-11 A03: verify an isolated owned session before pinned signals.
 use std::io;
 
 #[cfg(target_os = "linux")]
@@ -55,12 +55,15 @@ fn members(pid: u32, birth: u64) -> io::Result<Vec<Member>> {
             Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
             Err(e) => return Err(e),
         };
-        if current.group != pid {
+        if current.session != pid {
+            if current.group == pid {
+                return Err(io::Error::other("process group contains an unowned member"));
+            }
             continue;
         }
-        // Only descendants can join this new session. The unreaped leader
-        // pins its identity while the caller holds its Child mutex.
-        if current.session != pid || current.start < leader.start {
+        // A child may change groups without leaving this owned session.
+        // The unreaped leader pins the session identity under its Child mutex.
+        if current.start < leader.start {
             return Err(io::Error::other("process group contains an unowned member"));
         }
         members.push(current);
@@ -71,22 +74,76 @@ fn members(pid: u32, birth: u64) -> io::Result<Vec<Member>> {
     Ok(members)
 }
 
-/// Caller holds the unreaped Child handle; no arbitrary PID is admitted.
-pub(super) fn signal_group(pid: u32, birth: u64, signal: libc::c_int) -> bool {
-    let Ok(group) = libc::pid_t::try_from(pid) else {
-        return false;
+#[cfg(target_os = "linux")]
+fn pin_member(current: &Member) -> io::Result<Option<std::os::fd::OwnedFd>> {
+    use std::os::fd::FromRawFd;
+    let pid = libc::pid_t::try_from(current.pid).map_err(io::Error::other)?;
+    if pid <= 1 {
+        return Err(io::Error::other("reserved process target"));
+    }
+    let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if raw < 0 {
+        let error = io::Error::last_os_error();
+        return if error.raw_os_error() == Some(libc::ESRCH) {
+            Ok(None)
+        } else {
+            Err(error)
+        };
+    }
+    let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw as libc::c_int) };
+    let verified = match member(current.pid) {
+        Ok(verified) => verified,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
     };
-    if group <= 1 {
+    if verified.start != current.start || verified.session != current.session {
+        return Err(io::Error::other("owned process identity changed"));
+    }
+    Ok(Some(fd))
+}
+
+/// Caller holds the unreaped Child; only verified session members are pinned.
+pub(super) fn signal_session(pid: u32, birth: u64, signal: libc::c_int) -> bool {
+    if libc::pid_t::try_from(pid).is_err() || pid <= 1 {
         return false;
     }
     #[cfg(target_os = "linux")]
-    if members(pid, birth).is_ok() {
-        return unsafe { libc::kill(-group, signal) == 0 };
+    {
+        use std::os::fd::AsRawFd;
+        let Ok(owned) = members(pid, birth) else {
+            return false;
+        };
+        // Pin and revalidate every executing member before signaling any.
+        let mut pins = Vec::new();
+        for current in owned.iter().filter(|member| !member.exited) {
+            match pin_member(current) {
+                Ok(Some(fd)) => pins.push(fd),
+                Ok(None) => {}
+                Err(_) => return false,
+            }
+        }
+        for fd in pins {
+            if unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    fd.as_raw_fd(),
+                    signal,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                )
+            } < 0
+                && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+            {
+                return false;
+            }
+        }
+        return true;
     }
+    #[cfg(not(target_os = "linux"))]
     false
 }
 
-/// Keep the leader unreaped until every executing group member settles.
+/// Keep the leader unreaped until every executing session member settles.
 #[cfg(target_os = "linux")]
 pub(super) fn poll_exit(
     child: &mut std::process::Child,
@@ -97,7 +154,7 @@ pub(super) fn poll_exit(
         return Ok(None);
     }
     if group.iter().any(|m| !m.exited) {
-        if !signal_group(child.id(), birth, libc::SIGKILL) {
+        if !signal_session(child.id(), birth, libc::SIGKILL) {
             return Err(io::Error::other("owned descendants could not be settled"));
         }
         return Ok(None);

@@ -1,8 +1,8 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A03: kernel-owned watched processes.
 //! The kernel starts argv (no shell) in the agent's workspace, owns the
-//! process group, drains bounded sanitized output and reports exit or one
+//! isolated process session, drains bounded sanitized output and reports exit or one
 //! output match. It never attaches to an arbitrary PID.
-use super::agent_process_group::signal_group;
+use super::agent_process_group::signal_session;
 use super::agent_process_output::{drain, room_protector, Output, Signal};
 use super::*;
 use crate::durable_state::agent_lifecycle::{AgentWake, Operation};
@@ -66,28 +66,28 @@ impl WatchedProcesses {
     pub(super) fn contains(&self, id: &str) -> bool {
         self.live.lock().is_ok_and(|l| l.contains_key(id))
     }
-    /// Signals the owned group only while its leader is unreaped, so the
+    /// Signals the owned session only while its leader is unreaped, so the
     /// group id cannot have been reused; SIGKILL follows after a grace period.
     pub(super) fn terminate(&self, id: &str) -> bool {
         let Some(child) = self.live.lock().ok().and_then(|l| l.get(id).cloned()) else {
             return false;
         };
-        if !signal_owned_group(&child, libc::SIGTERM) {
+        if !signal_owned_session(&child, libc::SIGTERM) {
             return false;
         }
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(3));
-            signal_owned_group(&child, libc::SIGKILL);
+            signal_owned_session(&child, libc::SIGKILL);
         });
         true
     }
 }
 
-fn signal_owned_group(child: &Owned, signal: libc::c_int) -> bool {
+fn signal_owned_session(child: &Owned, signal: libc::c_int) -> bool {
     let Ok(child) = child.lock() else {
         return false;
     };
-    signal_group(child.child.id(), child.birth, signal)
+    signal_session(child.child.id(), child.birth, signal)
 }
 
 fn spawn(
@@ -378,7 +378,7 @@ mod tests {
             .spawn()
             .unwrap();
         let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child).unwrap()));
-        let refused = !signal_owned_group(&owned, 0);
+        let refused = !signal_owned_session(&owned, 0);
         let mut child = owned.lock().unwrap();
         assert!(child.child.id() > 1);
         child.child.kill().unwrap();
@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn a03_signal_guard_rejects_reserved_and_invalid_targets() {
         for pid in [0, 1, u32::MAX, (i32::MAX as u32) + 1] {
-            assert!(!signal_group(pid, 1, 0), "pid {pid} must be rejected");
+            assert!(!signal_session(pid, 1, 0), "pid {pid} must be rejected");
         }
     }
 
@@ -436,7 +436,7 @@ mod tests {
         let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child).unwrap()));
         owned.lock().unwrap().birth += 1;
         assert!(
-            !signal_owned_group(&owned, 0),
+            !signal_owned_session(&owned, 0),
             "a reused or stale process identity must never authorize a signal"
         );
         let mut child = owned.lock().unwrap();
@@ -448,8 +448,27 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a03_termination_settles_a_resisting_descendant_after_its_leader_exits() {
+        verify_resisting_descendant(false);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a03_termination_settles_a_descendant_that_changes_its_process_group() {
+        verify_resisting_descendant(true);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn verify_resisting_descendant(change_group: bool) {
         use std::io::BufRead;
         let script = "import os, signal\nr,w=os.pipe()\np=os.fork()\nif p==0:\n os.close(r)\n signal.signal(signal.SIGTERM,signal.SIG_IGN)\n os.write(w,b'r')\n os.close(w)\n while True: signal.pause()\nos.close(w)\nos.read(r,1)\nprint(p,flush=True)\nwhile True: signal.pause()";
+        let script = if change_group {
+            script.replace(
+                "os.close(r)\n signal.signal",
+                "os.close(r)\n os.setpgid(0,0)\n signal.signal",
+            )
+        } else {
+            script.into()
+        };
         let mut child = spawn(
             &["python3".into(), "-c".into(), script.into()],
             Path::new("/"),
@@ -468,7 +487,7 @@ mod tests {
         let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, descendant, 0) as libc::c_int };
         assert!(fd >= 0);
         let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child).unwrap()));
-        assert!(signal_owned_group(&owned, libc::SIGTERM));
+        assert!(signal_owned_session(&owned, libc::SIGTERM));
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut status = None;
         while Instant::now() < deadline {
