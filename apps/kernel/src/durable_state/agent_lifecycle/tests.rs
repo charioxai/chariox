@@ -87,6 +87,54 @@ impl Drop for Fixture {
     }
 }
 #[test]
+fn a02_queue_dispatch_revalidates_blocked_cancelled_and_done_tasks() {
+    for state in ["blocked", "cancelled", "done"] {
+        let f = Fixture::new();
+        f.begin("p");
+        match state {
+            "blocked" => {
+                f.apply(Operation::Block {
+                    task: "p".into(),
+                    prompt: "p".into(),
+                    reason: "owner must resolve missing input".into(),
+                });
+            }
+            "cancelled" => {
+                f.apply(Operation::CancelTask {
+                    task: "p".into(),
+                    owner: "owner".into(),
+                    revision: f.task().revision,
+                });
+            }
+            _ => {
+                f.settle("p", true);
+            }
+        }
+        let before = f.task();
+        assert!(f
+            .store
+            .agent_lifecycle(Operation::Begin {
+                owner: "owner".into(),
+                room: "room".into(),
+                agent: "parent".into(),
+                prompt: "p".into(),
+                run: Some("late-run".into()),
+                now: 20,
+            })
+            .is_err());
+        assert_eq!(f.task(), before);
+        // The blocked older task cannot suppress independent authorized work.
+        f.begin("new-user-prompt");
+        assert!(f
+            .store
+            .agent_tasks(Some("room"), Some("parent"))
+            .unwrap()
+            .iter()
+            .any(|t| t.task_id == "new-user-prompt" && t.state == ExecutionState::Working));
+    }
+}
+
+#[test]
 fn a02_done_with_obligation_corrects_once_across_restart() {
     let f = Fixture::new();
     f.begin("p");

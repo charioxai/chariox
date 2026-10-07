@@ -1072,11 +1072,6 @@ impl PromptStateOwner {
             }
         }
         validate_prompt_target_agent("activate queued prompt", agent_id, front)?;
-        let prompt_id = if front.durable_operation_id().is_some() {
-            front.id().to_string()
-        } else {
-            prompt_id
-        };
         let mut active = state
             .queued_prompts
             .pop_front()
@@ -1181,6 +1176,11 @@ impl PromptStateOwner {
             }
         }
         validate_prompt_target_agent("activate queued prompt", agent_id, front)?;
+        let prompt_id = if front.durable_operation_id().is_some() {
+            front.id().to_string()
+        } else {
+            prompt_id
+        };
         let mut active = state
             .queued_prompts
             .pop_front()

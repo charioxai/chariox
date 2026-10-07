@@ -314,7 +314,9 @@ impl KernelRuntimeState {
                 crate::app::KernelPreparedPromptSubmission {
                     session_id: task.room_id.clone(),
                     prompt,
-                    force_queue: true,
+                    // Start an idle provider immediately; the shared owner
+                    // still queues behind an actually running turn.
+                    force_queue: false,
                     refresh_projection: true,
                 },
                 true,
@@ -450,6 +452,31 @@ impl KernelRuntimeState {
                         })?;
                 }
             }
+            // A queue item is not a live executor. Recover the exact eligible
+            // head through normal provider/project admission; do not advance
+            // a different (possibly blocked) task on this task's authority.
+            if task.state == ExecutionState::Working
+                && self
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &task.agent_id)
+                    .is_none()
+                && self
+                    .owned
+                    .prompt_state_owner
+                    .peek_next_queued_prompt(&session, &task.agent_id)
+                    .is_some_and(|p| p.id() == task.prompt_id)
+                && Box::pin(
+                    self.advance_project_queued_prompt_after_settlement(
+                        &task.room_id,
+                        &task.agent_id,
+                    ),
+                )
+                .await
+                .is_some()
+            {
+                continue;
+            }
             if task.state == ExecutionState::Working
                 && now.saturating_sub(task.last_progress_at_ms) >= ledger::DELIVERY_TIMEOUT_MS
                 && self
@@ -457,9 +484,6 @@ impl KernelRuntimeState {
                     .prompt_state_owner
                     .active_prompt_for_agent(&session, &task.agent_id)
                     .is_none()
-                && session
-                    .queued_prompts_for_agent(&task.agent_id)
-                    .is_none_or(|q| q.is_empty())
             {
                 self.owned.durable_state_store.agent_lifecycle(Operation::Block{task:task.task_id,prompt:task.prompt_id,reason:"No live provider turn or confirmed wake delivery; owner must reconcile and resume".into()})?;
             }
