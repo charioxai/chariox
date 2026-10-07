@@ -169,6 +169,15 @@ export class KernelBrowserHost {
         await delay(25);
       }
     }
+    // Native address-bar navigation turns the initial blank target into a user
+    // tab. Replace the reserve without taking focus before adopting that tab.
+    const keepalive = state.tabs.find(tab => tab.target_id === this.keepaliveTarget);
+    if (keepalive && keepalive.url !== "about:blank") {
+      const connection = await this.browser.ensureConnection();
+      this.keepaliveTarget = (await connection.send("Target.createTarget", {
+        url: "about:blank", background: true,
+      })).targetId;
+    }
     const byTarget = new Map([...this.tabs.values()].map(tab => [tab.target_id, tab]));
     this.tabs.clear();
     const discovered = state.tabs.filter(tab => tab.target_id !== this.keepaliveTarget);

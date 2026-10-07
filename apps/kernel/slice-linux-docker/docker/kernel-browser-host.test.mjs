@@ -192,6 +192,27 @@ test("MD-2: text input uses isolated focus checks and rejects secret fields", ()
   await assert.rejects(host.request({ op: "input", ...binding, input: { kind: "click", x: 1280, y: 0 } }), /viewport/);
 }));
 
+test("MP-08 / MP-10 / MP-11: native navigation adopts the keepalive tab and reserves a background replacement", () => using(async ({ host, chromium, sent, pages }) => {
+  const initial = await host.request({ op: "start" });
+  const navigatedTarget = host.keepaliveTarget;
+  const creations = sent.filter(call => call.method === "Target.createTarget").length;
+  pages.set(navigatedTarget, { url: "https://www.libreoffice.org/", document_id: "native-navigation" });
+  const state = await host.request({ op: "state" });
+  assert.equal(state.tabs.length, 1);
+  assert.equal(state.tabs[0].url, "https://www.libreoffice.org/");
+  assert.notEqual(host.keepaliveTarget, navigatedTarget);
+  const replacement = sent.filter(call => call.method === "Target.createTarget").slice(creations);
+  assert.deepEqual(replacement.map(call => call.params), [{ url: "about:blank", background: true }]);
+  assert.equal((await host.request({ op: "state" })).tabs[0].tab_id, state.tabs[0].tab_id);
+  assert.equal(sent.filter(call => call.method === "Target.createTarget").length, creations + 1);
+  await host.request({ op: "close", tab_id: state.tabs[0].tab_id, generation: state.generation });
+  assert.equal((await host.request({ op: "state" })).tabs.length, 0);
+  assert.equal(state.generation, initial.generation);
+  assert.equal(chromium.child.exitCode, null);
+  assert(pages.has(host.keepaliveTarget));
+  assert(!pages.has(navigatedTarget));
+}));
+
 test("MD-2: closing the last user tab keeps a hidden browser target alive", () => using(async ({ host, chromium, sent }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
   await host.request({ op: "close", tab_id: opened.tab_id, generation: opened.generation });
