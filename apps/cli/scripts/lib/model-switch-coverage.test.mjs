@@ -1,8 +1,8 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { spawnSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs"
-import { homedir } from "node:os"
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { agentSnapshot, assertContinuedPlacement, assertToolProbe, evidenceName, scoreFacts, scoreSummary } from "./model-switch-coverage.mjs"
@@ -31,9 +31,7 @@ test("file probes require a real tool and its verified output", () => {
 })
 
 function runDrill(scenario, placement, roundTrip = false) {
-  const devRoot = path.join(homedir(), ".chariox/dev/ctxswitch-round7-tests")
-  mkdirSync(devRoot, { recursive: true, mode: 0o700 })
-  const root = mkdtempSync(path.join(devRoot, "fixture-"))
+  const root = mkdtempSync(path.join(tmpdir(), "ctxswitch-drill-fixture-"))
   try {
     const result = spawnSync(process.execPath, [
       "--import", fileURLToPath(new URL("./model-switch-drill-fixture.mjs", import.meta.url)),
@@ -42,7 +40,7 @@ function runDrill(scenario, placement, roundTrip = false) {
       "--evidence-root", path.join(root, "evidence"), "--rich-probes",
       "--from", "codex:source:low@creator", "--to", "claude:target:low@broken-target",
       `--${placement}`, "execution-place", ...(roundTrip ? ["--round-trip"] : []),
-    ], { encoding: "utf8", timeout: 10000, env: { ...process.env, CHARIOX_HOME: root, CTXSWITCH_FIXTURE_SCENARIO: scenario } })
+    ], { encoding: "utf8", timeout: 10000, env: { ...process.env, CTXSWITCH_FIXTURE_ROOT: root, CTXSWITCH_FIXTURE_SCENARIO: scenario } })
     assert.ifError(result.error)
     const evidenceDir = path.join(root, "evidence")
     const evidence = JSON.parse(readFileSync(path.join(evidenceDir, readdirSync(evidenceDir)[0]), "utf8"))

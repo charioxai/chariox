@@ -7,7 +7,7 @@ import path from "node:path"
 export class LocalIpcClient {
   constructor() {
     this.scenario = process.env.CTXSWITCH_FIXTURE_SCENARIO
-    this.root = process.env.CHARIOX_HOME
+    this.root = process.env.CTXSWITCH_FIXTURE_ROOT
     this.calls = []
     this.facts = { release_name: "fixture-release" }
   }
