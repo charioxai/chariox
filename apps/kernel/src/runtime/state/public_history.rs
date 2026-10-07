@@ -140,7 +140,14 @@ fn public_tool_value(value: serde_json::Value) -> serde_json::Value {
                             "hidden",
                             "overlay",
                             "attachment",
-                            "body_base64",
+                            "base64",
+                            "api_key",
+                            "apikey",
+                            "raw",
+                            "headers",
+                            "image_url",
+                            "imageurl",
+                            "data_url",
                         ]
                         .iter()
                         .any(|private| name.contains(private))
@@ -421,6 +428,11 @@ mod tests {
             r#"{"output":"{\"tool\":\"vault.read\",\"output\":\"nested_auth_canary\"}"}"#,
         );
 
+        append(
+            HistoryEventKind::ProviderTool,
+            r#"{"tool":"bash","raw":"provider_raw_canary","input":{"api_key":"provider_api_canary"},"output":{"image_url":"image_body_canary","text":"safe_media_result"}}"#,
+        );
+
         let _guard = store.lock_public_history().unwrap();
         for query in [
             "sensitive_canary",
@@ -429,6 +441,9 @@ mod tests {
             "private_argument_canary",
             "nested_private_canary",
             "nested_auth_canary",
+            "provider_raw_canary",
+            "provider_api_canary",
+            "image_body_canary",
         ] {
             assert!(store
                 .search_public_history_locked("owner", "room", None, query, 50, None)

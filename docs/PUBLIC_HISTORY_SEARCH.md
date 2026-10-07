@@ -66,3 +66,6 @@ Acceptance requires built TUI/web/kernel, official real-account providers, hoste
 network conditions, placements, protected login/hand-off and all appendix faults.
 A missing account or integrated client/environment is an explicit coordinator
 blocker, never a fixture substitute or an acceptance pass.
+
+MP-08 / MP-10 / MP-11: see [the real TUI replay](../scripts/public-history-search-drill.md)
+for the focused user-driven protocol drill and exact resource prerequisites.
