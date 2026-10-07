@@ -65,7 +65,11 @@ agent-launched command, or is refused when that isolation is unavailable.
    the command. The agent must re-evaluate or become visibly blocked. Include a
    descendant that leaves the process session: a graceful kernel stop settles
    it before exit; after a hard kernel kill the restarted kernel stops it and
-   reports the count in the lost answer.
+   reports the count in the lost answer. On managed kernels the Bubblewrap PID
+   namespace settles every descendant. Unmanaged kernels find a descendant that
+   left the session only by its inherited `CHARIOX_AGENT_WAKE_ID`; one that also
+   cleared its environment (`env -i`, `sudo`, `systemd-run`, daemonizers) is not
+   attributed at exit, stop or restart, and the lost answer says so.
 5. End the Room or delete the agent while wakes are armed and an unowned
    (delivery-blocked) task exists. Teardown must complete and retire the wakes.
 6. Supplement the real command runs with tests of protected output, unknown

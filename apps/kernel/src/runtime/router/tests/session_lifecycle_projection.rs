@@ -1108,7 +1108,7 @@ async fn a_page_load_never_brings_back_an_agent_a_person_deleted() {
 
 #[tokio::test]
 async fn a03_agent_and_room_teardown_retire_wakes_despite_unowned_tasks() {
-    use crate::durable_state::agent_lifecycle::{AgentWake, Operation};
+    use crate::durable_state::agent_lifecycle::{AgentWake, ExecutionState, Operation};
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -1167,6 +1167,17 @@ async fn a03_agent_and_room_teardown_retire_wakes_despite_unowned_tasks() {
             .find(|w| w.id == format!("wake-{id}"))
             .map(|w| w.state)
     };
+    // A removed recipient keeps no running task or pending event for the
+    // delivery sweep to retry.
+    let settled = |id: &str| {
+        let finished = store
+            .agent_tasks(Some(&room), Some(id))
+            .unwrap()
+            .iter()
+            .all(|t| matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled));
+        let pending = store.agent_pending_inbox_recipients().unwrap();
+        finished && !pending.contains(&(room.clone(), id.to_string()))
+    };
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
     router
         .runtime_state
@@ -1175,6 +1186,8 @@ async fn a03_agent_and_room_teardown_retire_wakes_despite_unowned_tasks() {
         .expect("deleting an agent is not blocked by its task ledger");
     assert_eq!(wake_state(other.id()).as_deref(), Some("cancelled"));
     assert_eq!(wake_state(agent.id()).as_deref(), Some("scheduled"));
+    assert!(settled(other.id()));
+    assert!(!settled(agent.id()), "the remaining agent keeps its task");
 
     let end_request = LocalDaemonRequest::EndSession(EndSessionRequest {
         session_id: room.clone(),
@@ -1189,4 +1202,5 @@ async fn a03_agent_and_room_teardown_retire_wakes_despite_unowned_tasks() {
         crate::local::LocalDaemonResponse::SessionEnded { .. }
     ));
     assert_eq!(wake_state(agent.id()).as_deref(), Some("cancelled"));
+    assert!(settled(agent.id()));
 }

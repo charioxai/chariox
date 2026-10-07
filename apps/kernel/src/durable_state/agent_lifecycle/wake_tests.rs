@@ -681,6 +681,7 @@ fn a03_teardown_retires_wakes_without_owner_authority() {
         pid: 42,
         now: 20,
     });
+    f.wait_on(&["t1", "process"]);
     // A Sweep/Settle-admitted task has no owner; owner cancellation refuses it.
     f.apply(Operation::Begin {
         owner: String::new(),
@@ -710,6 +711,11 @@ fn a03_teardown_retires_wakes_without_owner_authority() {
         now: 40,
     });
     assert_eq!(f.wake("process").state, "cancelled");
+    // The removed recipient keeps no work for the delivery sweep to retry.
+    let tasks = f.store.agent_tasks(Some("room"), Some("agent")).unwrap();
+    assert!(tasks.iter().all(|t| t.state == ExecutionState::Cancelled));
+    assert!(f.inbox().iter().all(|e| e.state != "pending"));
+    assert!(f.store.agent_pending_inbox_recipients().unwrap().is_empty());
 }
 
 #[test]

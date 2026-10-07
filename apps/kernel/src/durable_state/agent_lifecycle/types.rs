@@ -299,8 +299,9 @@ pub(crate) enum Operation {
         id: String,
         sequence: u64,
     },
-    /// Kernel teardown of a Room (`agent: None`) or agent: settles its armed
-    /// wakes without owner authority; processes settle on physical exit.
+    /// Kernel teardown of a Room (`agent: None`) or agent, without owner
+    /// authority: cancels its unfinished tasks, settles its armed wakes
+    /// (processes on physical exit) and expires its pending events.
     RetireWakes {
         room: String,
         agent: Option<String>,

@@ -315,10 +315,15 @@ impl KernelRuntimeState {
             &lost.iter().map(|wake| wake.id.clone()).collect(),
         );
         for wake in lost {
-            let orphans = match stopped.get(&wake.id) {
+            let mut orphans = match stopped.get(&wake.id) {
                 Some(count) => format!("; {count} process(es) it left running were stopped"),
                 None => String::new(),
             };
+            // Without the managed PID namespace, survivors are found only by
+            // their inherited wake marker.
+            if !crate::provider::managed_provider_isolation_required() {
+                orphans.push_str("; descendants that cleared their environment cannot be attributed and may still be running");
+            }
             self.owned.durable_state_store.agent_lifecycle(Operation::ProcessExited {
                 id: wake.id.clone(),
                 exit_code: None,

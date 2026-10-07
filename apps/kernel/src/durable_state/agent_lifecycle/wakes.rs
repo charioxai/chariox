@@ -468,9 +468,21 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             Ok(Outcome::Wakes(vec![wake]))
         }
         Operation::RetireWakes { room, agent, now } => {
+            let removed = |r: &str, a: &str| r == room && agent.as_deref().is_none_or(|x| x == a);
+            // The recipient is going away, so its tasks can never progress.
+            for mut t in tasks(tx)? {
+                if removed(&t.room_id, &t.agent_id)
+                    && !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
+                {
+                    super::supervision::cancel_intent(tx, &mut t)?;
+                    t.reason = "Room ended or agent removed".into();
+                    t.revision += 1;
+                    save(tx, &t)?;
+                }
+            }
             let mut retired = vec![];
             for mut wake in wakes_in(tx, ARMED)? {
-                if wake.room_id != room || agent.as_ref().is_some_and(|a| *a != wake.agent_id) {
+                if !removed(&wake.room_id, &wake.agent_id) {
                     continue;
                 }
                 if wake.kind == "timer" {
@@ -480,6 +492,24 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     save_wake(tx, &wake)?;
                 }
                 retired.push(wake);
+            }
+            // Nothing delivers to a removed recipient: drop its pending events
+            // with an expired receipt instead of leaving them to the retry sweep.
+            let mut q = tx.prepare("SELECT agent_id,sequence FROM agent_inbox WHERE room_id=?1 AND json_extract(payload,'$.state')='pending'").map_err(sql)?;
+            let pending = q
+                .query_map([&room], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+                })
+                .map_err(sql)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sql)?;
+            drop(q);
+            for (a, seq) in pending.into_iter().filter(|(a, _)| removed(&room, a)) {
+                let seq = u64::try_from(seq).map_err(|_| error("corrupt inbox sequence"))?;
+                let mut e = get_event(tx, &room, &a, seq)?;
+                e.state = "expired".into();
+                save_event(tx, &e)?;
+                record_delivery(tx, &e)?;
             }
             Ok(Outcome::Wakes(retired))
         }

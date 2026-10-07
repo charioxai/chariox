@@ -193,12 +193,9 @@ fn command(
     command
         .args(launch.pty_args)
         .env_clear()
-        .envs(
-            launch
-                .pty_env
-                .into_iter()
-                .filter(|(key, _)| !launch.pty_env_remove.contains(key)),
-        )
+        // Isolation already scrubbed pty_env; its remove list names only
+        // inherited variables, which env_clear drops.
+        .envs(launch.pty_env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -548,6 +545,26 @@ mod tests {
             "a watched process gets exactly the managed command isolation boundary"
         );
         assert_eq!(watched.get_current_dir(), managed.get_current_dir());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a03_unmanaged_watched_process_keeps_the_allowed_environment() {
+        crate::test_support::isolated_env_test!();
+        std::env::remove_var("CHARIOX_MANAGED_PROVIDER_ISOLATION");
+        let env = BTreeMap::from([
+            ("XDG_RUNTIME_DIR".to_string(), "/run/user/4242".to_string()),
+            ("GH_CONFIG_DIR".to_string(), "/srv/gh".to_string()),
+        ]);
+        let argv: Vec<String> = vec!["/bin/sh".into(), "-c".into(), "true".into()];
+        let watched = command(&w(), &argv, &std::env::temp_dir(), &env, &[]).unwrap();
+        let envs: BTreeMap<_, _> = watched
+            .get_envs()
+            .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
+            .collect();
+        for (key, value) in env {
+            assert_eq!(envs.get(&key), Some(&value), "{key} reaches the process");
+        }
     }
 
     #[cfg(target_os = "linux")]
