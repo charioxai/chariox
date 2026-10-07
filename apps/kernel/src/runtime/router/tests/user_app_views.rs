@@ -1,6 +1,7 @@
 //! No-session public-protocol drill with a real fixed App ABI worker.
 //! Validation enters at the durable broker boundary; the normal pump and
 //! RuntimeInteraction/passkey verifier handle the decision.
+mod memory_budget;
 use super::*;
 use crate::{
     durable_state::app_validations::{
