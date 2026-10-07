@@ -356,3 +356,105 @@ fn mp08_native_recovery_keys_fit_the_paced_link_before_any_rate_feedback() {
         );
     }
 }
+
+/// Coded luma size from the first SPS of an Annex B baseline packet.
+fn sps_size(packet: &[u8]) -> (u32, u32) {
+    let start = packet
+        .windows(4)
+        .position(|w| w[..3] == [0, 0, 1] && w[3] & 31 == 7)
+        .expect("SPS")
+        + 4;
+    let mut rbsp = Vec::new();
+    for &byte in &packet[start..start + 32] {
+        if byte == 3 && rbsp.ends_with(&[0, 0]) {
+            continue;
+        }
+        rbsp.push(byte);
+    }
+    struct Bits<'a> { bytes: &'a [u8], bit: usize }
+    impl Bits<'_> {
+        fn read(&mut self, n: usize) -> u32 {
+            let mut value = 0;
+            for _ in 0..n {
+                value = value << 1 | (self.bytes[self.bit / 8] >> (7 - self.bit % 8) & 1) as u32;
+                self.bit += 1;
+            }
+            value
+        }
+        fn golomb(&mut self) -> u32 {
+            let mut zeros = 0;
+            while self.read(1) == 0 { zeros += 1; }
+            (1 << zeros) - 1 + self.read(zeros)
+        }
+    }
+    let mut bits = Bits { bytes: &rbsp, bit: 24 };
+    bits.golomb(); // sps id
+    bits.golomb(); // log2_max_frame_num
+    if bits.golomb() == 0 { bits.golomb(); } // log2_max_pic_order_cnt_lsb
+    bits.golomb(); // max_num_ref_frames
+    bits.read(1);
+    let (width, height) = (bits.golomb() + 1, bits.golomb() + 1);
+    (width * 16, height * 16)
+}
+
+#[test]
+fn mp08_dense_unprotected_motion_encodes_the_client_admitted_reduced_geometry() {
+    let encode = |w: usize, h: usize, rows: i32, regions: &[Rect]| {
+        let source = vec![255u8; w * h * 4];
+        let codec = Codec(unsafe { ffi::cx_codec_open(w as i32, h as i32, 8000000, rows) });
+        let mut results = [RowResult::default(); 8];
+        let count = unsafe {
+            ffi::cx_codec_encode(
+                codec.0,
+                source.as_ptr(),
+                255,
+                regions.as_ptr(),
+                regions.len(),
+                results.as_mut_ptr(),
+            )
+        };
+        assert_eq!(count, rows);
+        let packet = unsafe { std::slice::from_raw_parts(results[0].bytes, results[0].length) };
+        let mut bounds = [0; 4];
+        unsafe {
+            ffi::cx_codec_repair_bounds(
+                codec.0,
+                source.as_ptr(),
+                std::ptr::null(),
+                255,
+                0,
+                0,
+                128,
+                128,
+                bounds.as_mut_ptr(),
+            );
+        }
+        if w > 1280 && regions.is_empty() && rows == 1 {
+            let mut edge = [0; 4];
+            unsafe { ffi::cx_codec_repair_bounds(codec.0, source.as_ptr(), std::ptr::null(), 255,
+                w as i32 - 128, h as i32 - 128, 128, 128, edge.as_mut_ptr()); }
+            assert_eq!(edge, [w as i32 - 128, h as i32 - 128, w as i32, h as i32],
+                "scaled video cannot certify even the last native tile");
+        }
+        (sps_size(packet), bounds)
+    };
+    let (size, bounds) = encode(1920, 1080, 1, &[]);
+    assert_eq!(size, (1280, 720), "1080p whole-frame motion is 720p");
+    assert_eq!(
+        bounds,
+        [0, 0, 128, 128],
+        "a client-scaled frame certifies nothing"
+    );
+    assert_eq!(encode(2560, 1600, 1, &[]).0, (1280, 800), "Retina motion is CSS size");
+    let (size, bounds) = encode(1280, 800, 1, &[]);
+    assert_eq!(size, (1280, 800));
+    assert!(bounds[0] >= bounds[2], "native white remains certified");
+    let protected = [Rect {
+        left: 100,
+        top: 100,
+        right: 200,
+        bottom: 200,
+    }];
+    assert_eq!(encode(1920, 1080, 1, &protected).0, (1920, 1088), "protected motion stays native");
+    assert_eq!(encode(1920, 1080, 8, &[]).0 .0, 1920, "stripes stay native");
+}
