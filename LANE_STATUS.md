@@ -1,25 +1,16 @@
-# MP-08 / MP-10 / MP-11 — kaext round 3 FINAL
+# MP-08 / MP-10 / MP-11 — kaext round 4 IN PROGRESS
 
-## 2026-10-07 — MP-08 / MP-10 / MP-11: assigned real managed-agent cells PASS
-- Started exact `7a448954e0674fa377c86b9859db6751c0739279` on the lane branch. Local implementation commits: `e7d3068ee` (response boundary and stable sudo discovery), `ee43566ec` (exact public refusal/revocation diagnostics). No push, PR action, deployment or GitHub CI.
-- Wfpause normal product linking authenticated acct-686, official outside and kernel-managed Codex **0.159.3**. Outside Codex spawned/prompted agents across sessions `18dc19dc4e465375` / `18dc19ed2ea62432`; both completed source reviews and ordinary Unix probes denied inherited authority.
-- Two real managed sudo turns completed cross-session maintenance through documented chariox_kernel_request MCP, each with separate real TUI passkey verification: `sudo:063b969e9b38a5ee` / `sudo:72fb1af4b929fee2`. Both changed the other session's visible label. A spawned ordinary child was denied through MCP and Unix while its parent remained active; both subsequent ordinary turns were denied through both transports after sudo yielded. Durable timestamps and real compiled TUI screenshots verify these claims.
-- New 23:30 review P1: source7a-equivalent real outside Codex exposed literal credential headers through registration and removal. Fixed-source rerun succeeded with both replies redacted; owner-path boolean confirms the stored value unchanged. Shared response boundary explicitly classifies all 390 responses; generated finalizer regression covers all 436 request names, without claiming execution of every operation.
-- Exact `ee43566ec652ab590452c2fa993b46025e7e9509`: response **5 PASS**, kernel access **79 PASS / 4 ignored**, sudo **22 PASS**, build exit0. New kernel copied under compile lock. Retained actual TUI build06b9f1806, launcher buildf0d355b2d; client-source equality verified, no build relabeling. Protocol shapes unchanged: local451 / peer73.
-- Evidence `/root/.codex/evidence/browser-resume-20260930/kaext/round3/README.md`; definitive `source-ee43566ec-live-green/` has reports, official Codex console, real PTY PNG/ANSI, registry booleans, hashes, audit proof and cleanup. All disposable runtimes/workspaces/providers removed; protected profiles and other lanes untouched. Measured minimum MemAvailable12.02GiB, disk81.94GiB.
-- App install/bind: **DEFERRED(coordinator: integrated validation candidate)**. Coordinator runs where the signed Linux App runtime is enrolled. No bypass or signing key on this builder.
+## 2026-10-07 02:18 UTC — MP-08 / MP-10 / MP-11: implementation, validation running
+- One socket boundary handles every response/cache, live/coalesced/replay event, terminal stream and control write. Shared exhaustive policy covers 389 response variants and 21 event variants; unknown payloads fail closed. Structured remote credentials and literal registry header values are projected at delivery, with free-form terminal bytes retained.
+- Fail-first base + identity helper: exit101, three generated boundary failures; 32 other filtered tests pass. Unix fixture stopped at its owner credential control and is NOT credited as leak proof. Corrected fixture/replay assertions queued with final checks/builds under the compile flock.
+- Real official outside Codex + real compiled TUI + product-linked acct-686 + product-created Docker slice running. Earlier GLIBC/namespace/setup/replay diagnostics retained honestly. The slice has a real provider profile, but its command projection currently omits the binding credential; investigating the real RED precondition. No provider401 observed.
+- Disposable slice uses documented sandbox compatibility, derivative worker image and operator-only signal guards. Exact binary/support provenance and validation-only deltas are recorded outside the repo. Protected hosts/services and other lanes untouched.
 
-## MP-11 — diagnostics and scope
-- Source7a real approved sudo turns were RED because Codex cached a catalog without the tool. Stable discovery exposes the interface before ordinary turns; dispatch still requires exact live run/prompt authorization. Real rerun passed.
-- Warm-provider Unix sudo probes remain denied. Public ancestry shows a persistent Codex process below the launched Node wrapper; fresh-descendant protection is unchanged. MCP maintenance passed. This is not successful Unix-shell sudo acceptance or permission to relax that guard.
-- First fixed-source attempt stopped at a case-sensitive alias assertion although the kernel correctly lowercased it. Reused-state repeat failed setup and is excluded. Fresh-state first sudo/child passed, but followup used a FullTerminal automation attachment without heartbeats and it expired. Normal AutomationOnly attachment plus fresh outside grant completed remaining cells in the same kernel. Stopped attempts remain separately archived; final combined receipt explicitly records the continuation.
-- Earlier invalid setup entered a generated test phrase into the composer; affected capture deleted, owned runtime/workspace cleaned. Another Vault-form attempt stored a different substring and failed approval; affected captures removed. Both excluded. Corrected runs used verified masked forms/popups only; final cleanup proves phrase absent from terminal output. No native account credential files inspected or printed.
-- Historical round2 unscoped Rust bootstrap incident remains disclosed in `round3/round2-historical-LANE_STATUS.md`; protected native profiles not inspected or cleaned. Current Rust checks scope HOME/provider/XDG/TMPDIR to disposable lane roots.
-
-## Owner questions — MP-08 / MP-10 / MP-11
-- None blocking assigned managed-agent cells. Successful sudo uses documented MCP; additional warm-provider Unix-shell acceptance needs a separately specified policy/drill preserving descendant protection.
+## 2026-10-07 — MP-11: subscription credential boundary
+- Required base verified: c0dd72e77fab48bd902cdb46f7f91f94a4156b1d, clean worktree. Required plans and frozen AGENTS read. Prior handoff retained in external round4 evidence.
+- First seam: socket writer checks authority but emits events/replay without credential projection. Adding fail-first separate-process Unix initial/update/replay regression, all response/event variant inventory, one delivery boundary.
+- Resource starting sample: disk94GiB, MemAvailable20GiB. Every Cargo command will use the shared compile flock and scoped disposable homes.
 
 ## Coordinator asks — MP-08 / MP-10 / MP-11
-- Run deferred App install/bind on the integrated validation candidate with its enrolled runtime.
-- These bounded real local TUI/provider/admin cells do not establish hosted shaped-network, separate-machine, multi-hour or browser public-site/DPR/latency acceptance. Additional validation requires coordinator-supplied approved machines/relay path; protected relay/Apps machines not contacted. No full MP closure or staging-ready claim.
-- Compile-slot waits resolved without signaling other lanes. No protocol allocation. Absolute review inbox checked after implementation milestones and final commit; mappings in PUSH_READY.md.
+- No serialized shape change intended; no protocol allocation requested.
+- Hosted real-machine/network acceptance needs approved resources; protected relay/Apps hosts remain prohibited. Local real provider/TUI drill will run; no full MP acceptance claim.

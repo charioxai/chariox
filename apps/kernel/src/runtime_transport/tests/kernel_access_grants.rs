@@ -10,6 +10,7 @@ const AUTH: &str = "test-terminal";
 const SESSION: &str = "access-session";
 
 mod credential_authority;
+mod outbound_credentials;
 
 #[test]
 #[ignore = "subprocess entry point"]
@@ -45,7 +46,7 @@ fn kernel_access_child_server() {
                 crate::config::CredentialVaultUnlockPolicy::KernelInit;
             crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY).unwrap();
             let app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
-            for id in [SESSION, "other-session"] {
+            for id in [SESSION, "other-session", "credential-session"] {
                 let mut session = crate::session::RuntimeSession::new(
                     id,
                     // A valid alias can collide with another session's ID.
@@ -53,8 +54,10 @@ fn kernel_access_child_server() {
                     Some(
                         if id == SESSION {
                             "other-session"
-                        } else {
+                        } else if id == "other-session" {
                             "other-alias"
+                        } else {
+                            "credential-alias"
                         }
                         .into(),
                     ),
@@ -84,6 +87,18 @@ fn kernel_access_child_server() {
                         crate::agent::GridPosition::new(0, 0, 1, 1),
                     ));
             }
+            // MP-11: a different owner session holds a worker admission credential.
+            let mut remote = crate::agent::AgentInstance::new(
+                "remote-canary", "remote-canary", "credential-session", None,
+                "codex", None, None, None, crate::agent::GridPosition::new(0, 0, 1, 1),
+            );
+            remote.set_remote_execution(Some(crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker".into(), worker_machine_id: "worker-machine".into(),
+                execution_lease_id: "lease".into(), leased_agent_id: "leased".into(),
+                active_worker_provider_run_id: None, relay_url: None,
+                relay_token: Some(outbound_credentials::CANARY.into()), relay_peer_protocol_version: None,
+            }));
+            app.agents_mut().restore_agent(remote);
             let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
                 Arc::new(Mutex::new(app)),
                 32,
@@ -239,6 +254,9 @@ fn kernel_access_client_child() {
                     second.send(Message::Text(serde_json::json!({"type":"subscribe","request_id":"second-subscribe","session_id":"other-session","attachment_id":attachment}).to_string().into())).await.unwrap();
                     assert!(response(&mut second, "second-subscribe").await["error"].is_null());
                     println!("ACCESS {{\"second_session\":true}}");
+                } else if line == "credential-subscribe" {
+                    outbound_credentials::check_subscription(&root).await;
+                    println!("ACCESS {{\"credential_subscription\":true}}");
                 } else if line == "next" {
                     loop {
                         let next = timeout(Duration::from_secs(5), socket.next())

@@ -1,0 +1,167 @@
+//! MP-11: adversarial serialized payloads generated from EVERY response/event declaration.
+use super::*;
+const CANARY: &str = "MP-11-outbound-test-only-secret";
+
+fn enum_names(source: &str, declaration: &str) -> Vec<String> {
+    source
+        .split_once(declaration)
+        .unwrap()
+        .1
+        .split_once("\n}")
+        .unwrap()
+        .0
+        .lines()
+        .filter_map(|line| {
+            let line = line.strip_prefix("    ")?;
+            let name = line.split(['{', '(', ',']).next()?.trim();
+            (name.chars().next()?.is_ascii_uppercase()
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+            .then(|| name.to_owned())
+        })
+        .collect()
+}
+fn snake(name: &str) -> String {
+    let mut out = String::new();
+    for (index, c) in name.chars().enumerate() {
+        if c.is_ascii_uppercase() && index > 0 {
+            out.push('_');
+        }
+        out.push(c.to_ascii_lowercase());
+    }
+    out
+}
+fn tainted_body() -> Value {
+    serde_json::json!({"nested":[{"remote_execution":{"relay_token":CANARY,"worker_kernel_id":"worker"}}],
+        "credential":{"injection":{"kind":"header","name":"Authorization","value":CANARY}},
+        "credentials":[{"injection":{"kind":"header","name":"Authorization","value":CANARY}}]})
+}
+#[test]
+fn outbound_generated_every_response_variant_hides_worker_credentials() {
+    let names = enum_names(
+        include_str!("../../local/api/types/response.rs"),
+        "pub enum LocalDaemonResponse {",
+    );
+    assert!(names.len() >= 380);
+    eprintln!("MP-11 generated response variants: {}", names.len());
+    let mut delivered = 0;
+    for name in names {
+        // Inject a remote binding at multiple depths regardless of the producing
+        // handler; the final byte boundary must protect even cached raw Values.
+        let body = tainted_body();
+        let input = serde_json::json!({"type":"response", "request_id":"generated", "error":null,
+            "response":{name.clone():body}});
+        if let Ok(output) = project_payload(input) {
+            delivered += 1;
+            assert!(
+                !output.to_string().contains(CANARY),
+                "MP-11 secret escaped response {name}"
+            );
+        }
+    }
+    assert!(delivered > 300, "MP-11 public replies must remain usable");
+}
+#[test]
+fn outbound_generated_every_event_variant_hides_worker_credentials() {
+    let names = enum_names(
+        include_str!("../../transport/kernel_protocol.rs"),
+        "pub(crate) enum KernelEvent {",
+    );
+    assert!(names.len() >= 21);
+    eprintln!("MP-11 generated event variants: {}", names.len());
+    let mut delivered = 0;
+    for name in names {
+        let mut event = serde_json::json!({"event":snake(&name),
+            "session":{"agents":[{"remote_execution":{"relay_token":CANARY}}]},
+            "workflow_run":{"nodes":[{"remote_execution":{"relay_token":CANARY}}]}});
+        event["credential"] = tainted_body()["credential"].clone();
+        event["public_text"] = "MP-11 unmodified terminal/history text".into();
+        let input = serde_json::json!({"type":"event","event_id":42,"event":event});
+        if let Ok(output) = project_payload(input) {
+            assert!(
+                !output.to_string().contains(CANARY),
+                "MP-11 secret escaped event {name}"
+            );
+            delivered += 1;
+            assert_eq!(
+                output["event"]["public_text"],
+                "MP-11 unmodified terminal/history text"
+            );
+        }
+    }
+    assert_eq!(
+        delivered, 20,
+        "MP-11 current public events remain deliverable"
+    );
+}
+#[test]
+fn outbound_credential_mutations_and_unknown_payloads_fail_closed() {
+    for name in [
+        "CredentialRegistered",
+        "CredentialUpserted",
+        "CredentialRemoved",
+        "Credential",
+        "CredentialsListed",
+        "McpServer",
+        "McpServersListed",
+        "McpServerInstalled",
+        "ConnectorRegistered",
+        "ProviderLoginStarted",
+        "FutureSecretResponse",
+    ] {
+        let input = serde_json::json!({"type":"response","request_id":"x","error":null,"response":{name:tainted_body()}});
+        if let Ok(output) = project_payload(input) {
+            assert!(!output.to_string().contains(CANARY), "MP-11 {name}");
+        }
+    }
+    for input in [
+        serde_json::json!({"type":"event","event_id":1,"event":{"event":"future_secret_event","value":CANARY}}),
+        serde_json::json!({"type":"response","request_id":"x","error":null,"response":{"ok":true,"value":CANARY}}),
+        serde_json::json!({"type":"response","request_id":"x","error":{"code":"test","message":CANARY,"retryable":false},"response":null}),
+    ] {
+        if let Ok(output) = project_payload(input) {
+            assert!(!output.to_string().contains(CANARY));
+        }
+    }
+}
+
+#[test]
+fn outbound_preserves_terminal_bytes_and_closed_transport_acknowledgments() {
+    let input = serde_json::json!({"type":"event","event_id":7,"event":{"event":"terminal_output",
+        "records":[{"bytes":[27,91,51,49,109,240,159,146,187],"text":"user transcript"}]}});
+    assert_eq!(project_payload(input.clone()).unwrap(), input);
+    for body in [
+        serde_json::json!({"ok":true}),
+        serde_json::json!({"ok":true,
+        "resumed_from_event_id":7, "replay_gap":{"requested_from_event_id":7,
+            "first_retained_event_id":10,"latest_event_id":12}}),
+    ] {
+        let input =
+            serde_json::json!({"type":"response","request_id":"sub","response":body,"error":null});
+        assert_eq!(project_payload(input.clone()).unwrap(), input);
+    }
+    assert!(
+        project_payload(serde_json::json!({"type":"event","event_id":7,
+        "event":{"event":"passkey_prompts_changed","prompts":[]}}))
+        .is_err()
+    );
+}
+
+#[test]
+fn outbound_is_the_only_kernel_socket_writer() {
+    let source = include_str!("../../runtime_transport.rs");
+    let writer = source
+        .split_once("async fn serve_kernel_socket")
+        .unwrap()
+        .1
+        .split_once("fn incoming_frame_decode_error")
+        .unwrap()
+        .0;
+    assert!(!writer.contains("writer.send("));
+    assert!(!writer.contains("send_kernel_frame("));
+    assert_eq!(
+        include_str!("../outbound.rs")
+            .matches("writer.send(")
+            .count(),
+        1
+    );
+}
