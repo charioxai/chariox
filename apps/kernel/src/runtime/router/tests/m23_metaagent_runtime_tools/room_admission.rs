@@ -424,11 +424,8 @@ async fn room_boundaries() {
         .unwrap()
         .to_string()
     };
-    assert!(
-        room_command(&router, &auth_b, "agent spawn d --provider dev-stub")
-            .await
-            .ok
-    );
+    let grandchild = room_command(&router, &auth_b, "agent spawn d --provider dev-stub").await;
+    assert!(grandchild.ok, "grandchild admission: {grandchild:?}");
     for command in [
         "agent alias d stolen",
         "agent delete d",
