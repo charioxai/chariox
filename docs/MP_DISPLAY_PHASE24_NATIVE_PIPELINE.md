@@ -12,4 +12,4 @@ MP-08/MP-10: `CHARIOX_BROWSER_DISPLAY_SOFTWARE=1` requests x264. Otherwise the n
 
 MP-08/MP-10: mutations remain serial independently of capture. Per-credit supervisor liveness uses owned child exit detection; startup and explicit health retain health RPCs. A successful protection policy cache belongs only to that child; any change crosses the original barrier and respawn drops the cache. Public serialized frame and daemon/relay contracts remain unchanged.
 
-MP-10: component fixtures and native contracts are supplementary. Performance thresholds, unchanged masking/crash gates, actual real-app/hosted public-site DPR1/2 drills and multi-hour stability must all pass before acceptance. See LANE_STATUS.md and the phase24 evidence report for the exact state.
+MP-10: component fixtures and native contracts are supplementary. Performance thresholds, unchanged masking/crash gates, actual real-app/hosted public-site DPR1/2 drills and multi-hour stability must all pass before acceptance. See [the phase24 results](MP_DISPLAY_PHASE24_RESULTS.md) and LANE_STATUS.md: component masking/crash gates pass, performance is RED, and real live acceptance is BLOCKED.
