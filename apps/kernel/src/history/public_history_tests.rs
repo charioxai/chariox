@@ -296,11 +296,12 @@ fn public_history_protocol_453_result_shape_hash() {
     f.append("room", "compiler");
     let mut wire = serde_json::to_value(f.search("room", "compiler", 50, None).unwrap()).unwrap();
     wire["hits"][0]["event_ref"] = serde_json::json!("evt_fixture");
-    // Projection version 2 changes coverage values, not the protocol453 shape.
+    // MP-08 / MP-10 / MP-11: projection version 3 changes coverage values,
+    // not the protocol453 shape.
     let hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap()));
     assert_eq!(
         hash,
-        "958390536707a8fe2a18c07af63cf94c3bb4612444157fdc2dc4338dabb040d2"
+        "d4559571dd2a2a647b55a49e3bc155b372acbff14ed7228057c4bf4b20e0f717"
     );
 }
 
@@ -870,7 +871,7 @@ fn public_history_previous_turn_groups_prompt_and_native_output() {
 #[test]
 fn public_history_assembled_answer_is_bounded_and_uses_only_retained_public_parts() {
     // MP-08 / MP-10 / MP-11: bound Unicode text after joining, then prove
-    // removal of a public source chunk cannot resurrect its raw content.
+    // removal of the public message cannot resurrect its raw content.
     let f = Fixture::new();
     let append = |text: String| {
         f.store
@@ -912,13 +913,24 @@ fn public_history_assembled_answer_is_bounded_and_uses_only_retained_public_part
             [&first.event_id],
         )
         .unwrap();
-    let document = f
+    // Removing the message row withholds every delta; raw text never returns.
+    assert!(f
         .store
         .read_public_history_locked("owner", "room", &second.event_id)
         .unwrap()
-        .unwrap();
-    assert_eq!(document.text.chars().count(), 40_000);
-    assert!(!document.truncated);
+        .is_none());
+    drop(_guard);
+    let exact = append("界".repeat(64 * 1024));
+    append("additional tail".into());
+    let _guard = f.store.lock_public_history().unwrap();
+    assert!(
+        f.store
+            .read_public_history_locked("owner", "room", &exact.event_id)
+            .unwrap()
+            .unwrap()
+            .truncated,
+        "a full buffer must report an omitted later delta"
+    );
 }
 
 #[test]
@@ -947,7 +959,14 @@ fn public_history_search_matches_streamed_message_once() {
             .unwrap()
     };
     let first = append("message", "The stale ");
-    for delta in ["cur", "sor must restart", " the query. Restart", " now."] {
+    for delta in [
+        "cur",
+        "sor",
+        " ",
+        "must restart",
+        " the query. Restart",
+        " now.",
+    ] {
         append("message", delta);
     }
     append("other-message", "unrelated restart");
@@ -969,6 +988,48 @@ fn public_history_search_matches_streamed_message_once() {
             .text,
         "The stale cursor must restart the query. Restart now."
     );
+}
+
+#[test]
+fn public_history_stream_growth_invalidates_offset_cursor() {
+    // MP-08 / MP-10 / MP-11: an existing row gaining a search term can
+    // otherwise shift OFFSET pages below an unchanged sequence ceiling.
+    let f = Fixture::new();
+    f.append("room", "compiler oldest");
+    let append = |text: &str| {
+        f.store
+            .append_transcript(
+                &SessionHistoryEntry::provider_output(
+                    "room",
+                    "run",
+                    Some("peer"),
+                    crate::terminal::TerminalOutputKind::ProviderOutput,
+                    Some("message".into()),
+                    text.to_owned(),
+                ),
+                HistoryEventTurnContext {
+                    session_id: Some("room".into()),
+                    agent_id: Some("peer".into()),
+                    provider_run_id: Some("run".into()),
+                    prompt_id: Some("prompt".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+    };
+    let growing = append("streaming ");
+    f.append("room", "compiler newest");
+    let first = f.search("room", "compiler", 1, None).unwrap();
+    append("compiler answer");
+    assert!(f
+        .search("room", "compiler", 1, first.next_cursor.as_deref())
+        .is_err());
+    assert!(f
+        .search("room", "compiler", 50, None)
+        .unwrap()
+        .hits
+        .iter()
+        .any(|hit| hit.event_ref == growing.event_id));
 }
 
 #[test]

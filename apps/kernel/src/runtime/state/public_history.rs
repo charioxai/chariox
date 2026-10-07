@@ -47,17 +47,18 @@ impl room_secret_observation::RoomSecretObservations {
         let mut protected = self.protect_history_events(vec![event.clone()]);
         let protected = protected.pop()?;
         let text = protected.content?;
-        if text.trim().is_empty()
+        if text.is_empty()
+            || (event.kind != HistoryEventKind::ProviderOutput && text.trim().is_empty())
             || text.starts_with("[sensitive Room")
             || text.starts_with("[recovered sensitive")
         {
             return None;
         }
-        // Provider-normalized tool records can contain private arguments. Exclude
-        // auth/protected tools entirely and omit private keys before indexing.
+        // Provider-normalized tool records can contain private arguments. Only
+        // provider-native tools are public; omit private keys before indexing.
         let text = if event.kind == HistoryEventKind::ProviderTool {
             let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-            if private_tool(&value) {
+            if !native_tool(event.provider.as_deref(), &value) || private_tool(&value) {
                 return None;
             }
             serde_json::to_string(&public_tool_value(value)).ok()?
@@ -80,6 +81,83 @@ impl room_secret_observation::RoomSecretObservations {
         // into another identity. A secret collision excludes the entire document.
         let scrubbed = self.scrub(room, document.clone()).ok()?;
         (scrubbed == document).then_some(document)
+    }
+}
+
+// MP-08 / MP-10 / MP-11: MCP, dynamic, Chariox runtime and unknown tools can
+// return external secrets that never entered the Room registry. They stay
+// private unless the normalized record proves a provider-native tool.
+fn native_tool(provider: Option<&str>, value: &serde_json::Value) -> bool {
+    let tool = value
+        .get("tool")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let title = value.get("title").and_then(|v| v.as_str());
+    match provider {
+        // Codex MCP records carry their server in `title`; native file changes
+        // carry only a generated change count.
+        Some("codex") => match tool {
+            "bash" => {
+                title.is_none()
+                    && value
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|v| v.starts_with("cwd "))
+                    && value.get("input").is_some_and(|v| {
+                        v.get("command").is_some_and(|v| v.is_string())
+                            && v.get("cwd").is_some_and(|v| v.is_string())
+                    })
+            }
+            "apply_patch" => title.is_some_and(|title| {
+                title
+                    .strip_suffix(" file changes")
+                    .and_then(|count| count.parse::<usize>().ok())
+                    .is_some_and(|count| {
+                        value
+                            .get("raw")
+                            .and_then(|v| v.as_str())
+                            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+                            .and_then(|raw| raw.as_array().map(|changes| changes.len()))
+                            == Some(count)
+                    })
+            }),
+            _ => false,
+        },
+        // Claude MCP tools are always `mcp__<server>__<tool>`.
+        Some("claude") => matches!(
+            tool,
+            "Bash"
+                | "Read"
+                | "Write"
+                | "Edit"
+                | "MultiEdit"
+                | "Glob"
+                | "Grep"
+                | "LS"
+                | "NotebookEdit"
+                | "WebFetch"
+                | "WebSearch"
+                | "TodoWrite"
+                | "Task"
+        ),
+        // OpenCode MCP tools are `<server>_<tool>`.
+        Some("opencode") => matches!(
+            tool,
+            "bash"
+                | "read"
+                | "write"
+                | "edit"
+                | "glob"
+                | "grep"
+                | "list"
+                | "patch"
+                | "webfetch"
+                | "websearch"
+                | "todowrite"
+                | "todoread"
+                | "task"
+        ),
+        _ => false,
     }
 }
 
@@ -500,85 +578,34 @@ mod tests {
     }
 
     #[test]
-    fn public_history_excludes_codex_private_mcp_server_records() {
-        // MP-08 / MP-10 / MP-11 A09: Codex's MCP normalizer retains the
-        // unqualified tool in `tool` and the server identity in `title`.
-        // These values have never entered the Room secret registry.
-        let root = std::env::temp_dir().join(format!(
-            "chariox-am9-private-mcp-{:016x}",
-            rand::random::<u64>()
-        ));
-        std::fs::create_dir(&root).unwrap();
+    fn public_history_projection_preserves_whitespace_deltas() {
+        // MP-08 / MP-10 / MP-11: provider chunks can contain only a word separator.
         let protection = room_secret_observation::RoomSecretObservations::new(
-            root.join("observation"),
+            std::env::temp_dir().join(format!(
+                "chariox-am9-whitespace-{:016x}",
+                rand::random::<u64>()
+            )),
             Default::default(),
         );
-        let store = OperationalHistoryStore::open(root.join("history.sqlite")).unwrap();
-        store.set_public_history_projector(Arc::new(move |event| {
-            protection.public_history_document(event, "owner")
-        }));
-        let append = |server: &str, output: &str| {
-            store
-                .append_operational_event(
-                    HistoryEventKind::ProviderTool,
-                    Some(HistoryEventRole::Tool),
-                    Some(
-                        serde_json::json!({
-                            "id":"mcp-private-read", "tool":"read", "status":"completed",
-                            "title":server, "input":{"path":"account"}, "output":output
-                        })
-                        .to_string(),
-                    ),
-                    Default::default(),
-                    HistoryEventTurnContext {
-                        session_id: Some("room".into()),
-                        agent_id: Some("peer".into()),
-                        ..Default::default()
-                    },
-                )
-                .unwrap()
-        };
-        let private = append("vault", "external_credential_canary");
-        let public = append("documents", "public_document_marker");
-        let guard = store.lock_public_history().unwrap();
-        assert!(store
-            .search_public_history_locked(
-                "owner",
-                "room",
-                None,
-                "external_credential_canary",
-                50,
-                None
-            )
-            .unwrap()
-            .hits
-            .is_empty());
-        assert!(store
-            .read_public_history_locked("owner", "room", &private.event_id)
-            .unwrap()
-            .is_none());
-        assert_eq!(
-            store
-                .search_public_history_locked(
-                    "owner",
-                    "room",
-                    None,
-                    "public_document_marker",
-                    50,
-                    None
-                )
-                .unwrap()
-                .hits
-                .len(),
-            1
+        let event = HistoryEvent::operational(
+            1,
+            HistoryEventKind::ProviderOutput,
+            Some(crate::history::HistoryEventRole::Assistant),
+            Some(" ".into()),
+            Default::default(),
+            crate::history::HistoryEventTurnContext {
+                session_id: Some("room".into()),
+                agent_id: Some("peer".into()),
+                ..Default::default()
+            },
         );
-        assert!(store
-            .read_public_history_locked("owner", "room", &public.event_id)
-            .unwrap()
-            .is_some());
-        drop(guard);
-        drop(store);
-        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            protection
+                .public_history_document(&event, "owner")
+                .unwrap()
+                .text,
+            " "
+        );
     }
 
     #[test]
@@ -625,7 +652,7 @@ mod tests {
             ),
             append(
                 "codex",
-                serde_json::json!({"id":"3","tool":"lookup","status":"completed","output":"codex_dynamic_canary"}),
+                serde_json::json!({"id":"3","tool":"bash","status":"completed","input":{"command":"read private file"},"output":"codex_dynamic_canary"}),
             ),
             append(
                 "claude",
@@ -639,14 +666,18 @@ mod tests {
                 "other",
                 serde_json::json!({"id":"6","tool":"bash","status":"completed","output":"unknown_provider_canary"}),
             ),
+            append(
+                "codex",
+                serde_json::json!({"id":"11","tool":"apply_patch","status":"completed","title":"2 file changes","output":"codex_patch_shadow_canary"}),
+            ),
         ];
         append(
             "codex",
-            serde_json::json!({"id":"7","tool":"bash","status":"completed","input":{"command":"cargo check"},"output":"codex_native_marker"}),
+            serde_json::json!({"id":"7","tool":"bash","status":"completed","description":"cwd /workspace","input":{"command":"cargo check","cwd":"/workspace"},"output":"codex_native_marker"}),
         );
         append(
             "codex",
-            serde_json::json!({"id":"8","tool":"apply_patch","status":"completed","title":"2 file changes","output":"codex_patch_marker"}),
+            serde_json::json!({"id":"8","tool":"apply_patch","status":"completed","title":"2 file changes","raw":"[{\"path\":\"a\"},{\"path\":\"b\"}]","output":"codex_patch_marker"}),
         );
         append(
             "claude",
@@ -671,6 +702,7 @@ mod tests {
             "claude_mcp_canary",
             "opencode_mcp_canary",
             "unknown_provider_canary",
+            "codex_patch_shadow_canary",
             "credentials",
         ] {
             assert_eq!(hits(query), 0, "{query}");
@@ -721,12 +753,14 @@ mod tests {
                     HistoryEventTurnContext {
                         session_id: Some("room".into()),
                         agent_id: Some("peer".into()),
+                        provider: Some("codex".into()),
                         ..Default::default()
                     },
                 )
                 .unwrap()
         };
         let prior = append(HistoryEventKind::UserPrompt, "prior sensitive_canary");
+        let safe = append(HistoryEventKind::UserPrompt, "prior useful public finding");
         protection.register("room", "sensitive_canary").unwrap();
         append(
             HistoryEventKind::ProviderReasoning,
@@ -738,7 +772,7 @@ mod tests {
         );
         append(
             HistoryEventKind::ProviderTool,
-            r#"{"tool":"shell","arguments":{"password":"private_argument_canary","command":"cargo check"},"output":"safe_compiler_result sensitive_canary"}"#,
+            r#"{"tool":"bash","description":"cwd /workspace","input":{"cwd":"/workspace","password":"private_argument_canary","command":"cargo check"},"output":"safe_compiler_result sensitive_canary"}"#,
         );
         append(
             HistoryEventKind::UserPrompt,
@@ -746,7 +780,7 @@ mod tests {
         );
         append(
             HistoryEventKind::ProviderTool,
-            r#"{"tool":"shell","arguments":"{\"password\":\"nested_private_canary\",\"command\":\"cargo check\"}","output":"safe_nested_result"}"#,
+            r#"{"tool":"bash","arguments":"{\"password\":\"nested_private_canary\",\"command\":\"cargo check\"}","output":"safe_nested_result"}"#,
         );
 
         append(
@@ -787,6 +821,13 @@ mod tests {
             .read_public_history_locked("owner", "room", &prior.event_id)
             .unwrap()
             .is_none());
+        assert!(
+            store
+                .read_public_history_locked("owner", "room", &safe.event_id)
+                .unwrap()
+                .is_some(),
+            "registration must preserve unrelated earlier public findings"
+        );
         for query in ["safe_compiler_result", "public_prompt_marker"] {
             let result = store
                 .search_public_history_locked("owner", "room", None, query, 50, None)

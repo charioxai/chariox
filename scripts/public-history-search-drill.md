@@ -1,7 +1,7 @@
 # MP-08 / MP-10 / MP-11 — A09 real history search replay
 
 This is a user-driven replay for PR9. It requires the exact built kernel/TUI and
-an authorized Chariox-linked official provider profile. Use the profile authorized for the current round. Rounds 3 and 4 permit linking
+an authorized Chariox-linked official provider profile. Use the profile authorized for the current round. Rounds 3–5 permit linking
 the existing `/root/.codex-agents` login through the product command. Do not substitute a stub
 provider, synthetic page or internal IPC call for a live acceptance step. Record
 source/binary hashes, exit codes and screenshots per step outside the checkout.
@@ -153,6 +153,40 @@ These TEST resources are lane-creatable and need no owner credential transfer.
 The exact round4 source/binary identities and results are recorded in
 [MP-08 / MP-10 / MP-11 live validation](../docs/PUBLIC_HISTORY_SEARCH_LIVE_VALIDATION.md).
 
+## MP-08 / MP-10 / MP-11: round 5 review replay
+
+Run against base `1be2719e8` and the built candidate. Preserve expanded actual
+TUI tool JSON and masked screenshots for each result.
+
+1. Ask Codex for a useful six-sentence review of history pagination. From a real
+   peer, search ordinary terms such as `stale cursor`, `cursor revision` and
+   `search pagination`. Each matching streamed answer must yield one
+   `provider_output` hit. Read it and select its logical turn; both must return
+   the complete answer. Report queries absent from the actual answer separately.
+2. Register the official filesystem MCP as `files`, a name containing no
+   private keyword, and grant it to the root agent. Read only a lane-owned TEST
+   document. Search its output-only witness and read the private call references
+   alongside a guessed reference. Expected: zero private-record hits and the same
+   unavailable response for all references. The base admits the private record.
+3. In the same ordinary session, without `/room start` or browser insertion,
+   create an encrypted TEST Vault credential through the hidden-input product
+   flow. Then request another useful repository explanation. The answer must
+   remain visible in terminal fan-out, persisted operational history and a peer's
+   `history.search`/`history.read`; the base withholds the entire later stream.
+4. Preserve earlier public references unrelated to the new Vault value. When a
+   previously public TEST word becomes that value, its matching messages and FTS
+   tokens must disappear while unrelated earlier reviews remain available.
+5. Hold an operational-history read snapshot open during that hidden-input Vault
+   creation. This fault injection supplements the real TUI/provider flow; it must
+   not replace it. The base reports a stale-cursor tool error after committing
+   public deletion. The candidate must report successful storage despite delayed
+   WAL truncation, with the matching public messages removed. Close the reader
+   and capture the actual tool result, then verify subsequent output and peer
+   recall remain visible. Source checks also cover the 65,536-character bound.
+
+These local real-provider checks cover the reviewed seams. They do not close
+the hosted, managed, all-provider/client or stability matrix below.
+
 ## MP-10 / MP-11: full acceptance and cleanup
 
 Execute every A09 G01–G18 / S01–S04 axis cell using the frozen appendix: all three
@@ -167,5 +201,5 @@ owned descendants exited, inventory the exact disposable state path and remove
 its generated runtime identities/materialized profiles. Preserve native linked
 profiles, durable key stores, shared reviewer state and all other lanes' resources.
 
-MP-08 / MP-10 / MP-11: [round 4 live results](../docs/PUBLIC_HISTORY_SEARCH_LIVE_VALIDATION.md)
+MP-08 / MP-10 / MP-11: [live results](../docs/PUBLIC_HISTORY_SEARCH_LIVE_VALIDATION.md)
 record local real RED → GREEN results and the remaining hosted/managed acceptance scope.

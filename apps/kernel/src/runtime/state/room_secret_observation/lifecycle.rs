@@ -142,8 +142,8 @@ impl KernelRuntimeState {
             }
         }
         // MP-08 / MP-10 / MP-11: runtime creation stamps its authoritative
-        // Room into metadata. A value becomes private when stored, before any
-        // later browser insertion; previously public echoes must be retired now.
+        // Room into metadata. A value becomes private (scrub-only) when stored,
+        // before any later browser insertion; prior public echoes are retired now.
         let room = credential
             .metadata
             .as_ref()
@@ -167,7 +167,7 @@ impl KernelRuntimeState {
                     let protection = self
                         .owned
                         .room_secret_observations
-                        .register_with_locked_public_history(&room, secret);
+                        .register_stored_with_locked_public_history(&room, secret);
                     source?;
                     protection?;
                 }

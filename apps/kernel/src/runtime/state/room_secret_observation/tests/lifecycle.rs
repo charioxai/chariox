@@ -254,6 +254,20 @@ async fn public_history_new_vault_credential_retires_prior_public_value() {
             },
         )
         .unwrap();
+    let safe = history
+        .append_operational_event(
+            crate::history::HistoryEventKind::UserPrompt,
+            None,
+            Some("earlier useful public review".into()),
+            Default::default(),
+            crate::history::HistoryEventTurnContext {
+                session_id: Some(room.session_id.clone()),
+                agent_id: Some(room.agent_id.clone()),
+                public_history_owner_user_id: Some(owner.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
     {
         let _guard = history.lock_public_history().unwrap();
         assert!(history
@@ -279,6 +293,13 @@ async fn public_history_new_vault_credential_retires_prior_public_value() {
         .read_public_history_locked(&owner, &room.session_id, &prior.event_id)
         .unwrap()
         .is_none());
+    assert!(
+        history
+            .read_public_history_locked(&owner, &room.session_id, &safe.event_id)
+            .unwrap()
+            .is_some(),
+        "Vault creation must preserve unrelated public messages"
+    );
 }
 
 #[tokio::test]
@@ -463,4 +484,47 @@ async fn public_history_agent_vault_credential_keeps_room_output_visible() {
         .unwrap();
     assert!(read.ok);
     assert_eq!(read.payload["event"]["text"], "later visible answer");
+    let split = |text: &str| {
+        history
+            .append_transcript(
+                &crate::history::SessionHistoryEntry::provider_output(
+                    &room.session_id,
+                    "later-run",
+                    Some(&room.agent_id),
+                    crate::terminal::TerminalOutputKind::ProviderOutput,
+                    Some("split-stored-message".into()),
+                    text.to_owned(),
+                ),
+                crate::history::HistoryEventTurnContext {
+                    session_id: Some(room.session_id.clone()),
+                    agent_id: Some(room.agent_id.clone()),
+                    provider_run_id: Some("later-run".into()),
+                    prompt_id: Some("later-prompt".into()),
+                    public_history_owner_user_id: Some(session.owner_user_id().into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+    };
+    let first = split("prefix synthetic_");
+    split("generated_value suffix");
+    let read = room
+        .runtime
+        .read_room_history(&session, &actor, first.event_id, None)
+        .await
+        .unwrap();
+    assert_eq!(read.payload["event"]["text"], "prefix [redacted] suffix");
+    let _guard = history.lock_public_history().unwrap();
+    assert!(history
+        .search_public_history_locked(
+            session.owner_user_id(),
+            &room.session_id,
+            None,
+            "synthetic_generated_value",
+            50,
+            None
+        )
+        .unwrap()
+        .hits
+        .is_empty());
 }

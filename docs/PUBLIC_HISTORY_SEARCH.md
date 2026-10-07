@@ -31,7 +31,12 @@ base has observation scrubbing but no durable public FTS source. Public prompts,
 answers, normalized tool records and safe errors are projected before insertion
 into SQLite FTS5. Private reasoning, hidden/protected metadata, attachment
 bodies, private overlays and auth/Vault/login/passkey/hand-off tools are excluded.
+Tool records are private unless they are a provider-native tool of the recorded
+provider (Codex `bash`/`apply_patch`, Claude built-ins, OpenCode built-ins); MCP,
+dynamic, Chariox runtime and unknown tools are never indexed.
 Known Vault echoes and encoded variants use the existing Room protection registry.
+A Vault value that was stored but never inserted into the Room is scrub-only: it
+redacts echoes without withholding the session's provider stream.
 Nested private tool fields are removed. Protection failure fences reads; legacy
 raw/semantic recall tools are unavailable to agents while the transition flag is
 on, preventing a raw-history bypass. Legacy sessions with the flag off retain
@@ -45,18 +50,22 @@ raw history. Retention/source replacement invalidates rows and cursors. Leased c
 and deduplication bookkeeping preserves public documents. Late lower-sequence
 appends invalidate this room's cursors: restart the initial query on a stale-cursor
 error. Later increasing-sequence appends preserve the bounded snapshot. Changes
-to secret provenance conservatively remove prior public rows for that Room
-(all worker-local rows for a home-bound slice), invalidate pagination and truncate
-the index WAL before the protected mutation proceeds. Safe earlier rows may
-therefore become unavailable; coverage reports that exclusion rather than
-silently replaying raw history. SQLite and FTS secure-delete are enabled, temporary
-pages remain in memory, and the history database is private to its owner.
+to registered secret values remove matching prior public messages and invalidate
+pagination while preserving unrelated messages. Unknown or revoked browser
+provenance conservatively invalidates the Room (all worker-local rows for a
+home-bound slice). Coverage reports exclusions rather than replaying raw history.
+SQLite and FTS secure-delete are enabled. After committing deletion, the kernel
+attempts WAL truncation; an active reader can delay it without failing an already
+committed Vault mutation. Temporary pages remain in memory, and the history
+database is private to its owner.
 
 MP-08 / MP-10 / MP-11: coverage reports index/redaction versions, indexed and
 excluded counts, sequence coverage, rebuild progress, retention gaps and truncated
 records. Public text is bounded to 64 Ki characters, snippets to 512 characters,
 queries to 1,024 bytes / 32 literal terms, pages to 50 hits and turn reads to 200
-records. Any exclusion, truncation, retention gap or unfinished rebuild makes
+messages. Streamed provider output is indexed as one message per owner, room,
+agent, run, prompt and merge key, so terms spanning deltas match once; indexed
+counts are public messages and excluded counts are unrepresented events. Any exclusion, truncation, retention gap or unfinished rebuild makes
 `complete=false`. This is coverage of the retained public projection, not a claim
 of complete provider archival history.
 
@@ -82,15 +91,18 @@ a result. Invalidated snapshots fail visibly and require a fresh query.
 
 MP-08 / MP-11: appends enqueue sanitized records while holding the projection
 fence, then wait for the existing batched writer outside that fence. Protection
-invalidation drains the queue before deleting public rows and changing provenance,
-so delayed writes cannot restore a stale sanitized projection.
+invalidation drains the queue before changing provenance, so delayed writes cannot
+restore a stale sanitized projection. Stored Vault values remove matching public
+messages only; unrelated earlier reviews remain available. Message growth changes
+the index revision, so pagination restarts when a streamed message gains matches.
 
-MP-08 / MP-11: projection version2 classifies normalized MCP server identity
-(`title`, `server`, `server_name`) alongside the tool name. Upgrading from version1
-fences and removes predecessor public projections before reads or rebuilds; it
-never reimports raw records that may contain private MCP output. This internal
-projection change does not alter daemon453 or relay73 wire shapes.
+MP-08 / MP-11: projection version3 indexes whole messages and admits only
+provider-native tools. Upgrading from an earlier version fences and removes
+predecessor public projections before reads or rebuilds; it never reimports raw
+records that may contain private MCP output. Joined message text is projected
+again, so a protected value split across deltas is scrubbed before FTS insertion. This
+internal projection change does not alter daemon453 or relay73 wire shapes.
 
-MP-08 / MP-10 / MP-11: [round 3 live validation](PUBLIC_HISTORY_SEARCH_LIVE_VALIDATION.md)
-reports real local Codex results, including answer-fragmentation and logical-turn
-failures. These results do not establish full A09 acceptance.
+MP-08 / MP-10 / MP-11: [live validation](PUBLIC_HISTORY_SEARCH_LIVE_VALIDATION.md)
+reports the latest real local Codex recall, privacy and search-quality results.
+These results do not establish full A09 acceptance.

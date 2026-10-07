@@ -665,11 +665,19 @@ impl OperationalHistoryStore {
             mpsc::sync_channel(OPERATIONAL_HISTORY_WRITE_QUEUE_LIMIT);
         let writer_health = Arc::new(OperationalHistoryWriterHealth::default());
         let worker_health = Arc::clone(&writer_health);
+        let public_history_projector = Arc::<public_history::ProjectorSlot>::default();
+        let worker_projector = Arc::clone(&public_history_projector);
         let writer_worker = thread::Builder::new()
             .name("chariox-history-writer".to_string())
-            .stack_size(512 * 1024)
+            // MP-08 / MP-10 / MP-11: joined messages are re-projected here.
+            .stack_size(2 * 1024 * 1024)
             .spawn(move || {
-                run_operational_history_writer(writer_connection, writer_receiver, worker_health)
+                run_operational_history_writer(
+                    writer_connection,
+                    writer_receiver,
+                    worker_health,
+                    worker_projector,
+                )
             })
             .map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: None,
@@ -681,7 +689,7 @@ impl OperationalHistoryStore {
             connection: Arc::new(Mutex::new(connection)),
             legacy_import_lock: Arc::new(Mutex::new(())),
             projection_schema_initialized: Arc::new(AtomicBool::new(false)),
-            public_history_projector: Default::default(),
+            public_history_projector,
             public_history_lock: Default::default(),
             read_connections: Arc::new(read_connections),
             next_read_connection: Arc::new(AtomicU64::new(0)),
@@ -882,8 +890,13 @@ impl OperationalHistoryStore {
                 operation: "replace operational history event",
                 message: error.to_string(),
             })?;
-        public_history::write_public_document(&transaction, &replacement, document.as_ref())
-            .map_err(|error| operational_history_error("replace public history", error))?;
+        public_history::write_public_document(
+            &transaction,
+            &replacement,
+            document.as_ref(),
+            &|event| self.project_public_history(event),
+        )
+        .map_err(|error| operational_history_error("replace public history", error))?;
         transaction
             .commit()
             .map_err(|error| operational_history_error("replace public history", error))?;
@@ -1052,7 +1065,7 @@ impl OperationalHistoryStore {
     // Caller holds the projection mutex. Every previously projected record is
     // committed before invalidation, and no new projection can enqueue until
     // the protected mutation releases that mutex. No writer takes this mutex.
-    pub(super) fn flush_public_history_appends_locked(&self) -> Result<(), DaemonError> {
+    pub(crate) fn flush_public_history_appends_locked(&self) -> Result<(), DaemonError> {
         self.await_history_write(self.enqueue_history_records(Vec::new())?)
     }
 }
@@ -1069,6 +1082,7 @@ fn run_operational_history_writer(
     mut connection: Connection,
     receiver: Receiver<OperationalHistoryWriteRequest>,
     health: Arc<OperationalHistoryWriterHealth>,
+    projector: Arc<public_history::ProjectorSlot>,
 ) {
     while let Ok(first) = receiver.recv() {
         let mut record_count = first.records.len();
@@ -1087,7 +1101,7 @@ fn run_operational_history_writer(
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
-        commit_operational_history_batch(&mut connection, batch, &health);
+        commit_operational_history_batch(&mut connection, batch, &health, &projector);
     }
 }
 
@@ -1095,6 +1109,7 @@ fn commit_operational_history_batch(
     connection: &mut Connection,
     batch: Vec<OperationalHistoryWriteRequest>,
     health: &OperationalHistoryWriterHealth,
+    projector: &public_history::ProjectorSlot,
 ) {
     let transaction = match connection.transaction() {
         Ok(transaction) => transaction,
@@ -1136,6 +1151,7 @@ fn commit_operational_history_batch(
                     &transaction,
                     event,
                     record.public_document.as_ref(),
+                    &|event| projector.project(event),
                 )?;
             }
         }

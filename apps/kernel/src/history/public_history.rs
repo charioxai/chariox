@@ -10,13 +10,20 @@ fn read_u64(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
 }
 
 // Version 1 may contain MCP records admitted without their private server
-// identity. The existing version fence removes those projections on upgrade.
-pub(crate) const PUBLIC_HISTORY_VERSION: u32 = 2;
+// identity; version 2 indexed streamed deltas and allowed unknown tools. The
+// existing version fence removes those projections on upgrade.
+pub(crate) const PUBLIC_HISTORY_VERSION: u32 = 3;
 pub(crate) type PublicHistoryProjector =
     dyn Fn(&HistoryEvent) -> Option<PublicHistoryDocument> + Send + Sync;
 
 #[derive(Default)]
 pub(super) struct ProjectorSlot(pub Mutex<Option<Arc<PublicHistoryProjector>>>);
+impl ProjectorSlot {
+    pub(super) fn project(&self, event: &HistoryEvent) -> Option<PublicHistoryDocument> {
+        let projector = self.0.lock().ok()?.clone()?;
+        projector(event)
+    }
+}
 impl std::fmt::Debug for ProjectorSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("PublicHistoryProjector")
@@ -102,7 +109,59 @@ impl OperationalHistoryStore {
         &self,
         event: &HistoryEvent,
     ) -> Option<PublicHistoryDocument> {
-        self.public_history_projector.0.lock().ok()?.as_ref()?(event)
+        self.public_history_projector.project(event)
+    }
+
+    // MP-08 / MP-10 / MP-11: caller holds the projection fence and has drained
+    // pending writes. Evaluate only sanitized messages, outside SQLite locks.
+    pub(crate) fn retain_public_history_locked(
+        &self,
+        room: Option<&str>,
+        retain: &dyn Fn(&PublicHistoryDocument) -> bool,
+    ) -> Result<(), DaemonError> {
+        let rows = {
+            let connection = self.lock_read_connection(room)?;
+            let mut statement = connection.prepare(
+                "SELECT sequence,document_json FROM public_history WHERE (?1 IS NULL OR session_id=?1)",
+            ).map_err(public_error)?;
+            let rows = statement
+                .query_map([room], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(public_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(public_error)?;
+            rows
+        };
+        let removed: Vec<_> = rows
+            .into_iter()
+            .filter_map(|(sequence, json)| {
+                serde_json::from_str(&json)
+                    .ok()
+                    .filter(retain)
+                    .is_none()
+                    .then_some(sequence)
+            })
+            .collect();
+        if removed.is_empty() {
+            return Ok(());
+        }
+        let mut connection = self.connection.lock().map_err(|_| invalid_search())?;
+        let tx = connection.transaction().map_err(public_error)?;
+        for sequence in removed {
+            tx.execute(
+                "INSERT INTO public_history_revision(session_id,revision)
+                SELECT session_id,1 FROM public_history WHERE sequence=?1
+                ON CONFLICT(session_id) DO UPDATE SET revision=revision+1",
+                [sequence],
+            )
+            .map_err(public_error)?;
+            tx.execute("DELETE FROM public_history WHERE sequence=?1", [sequence])
+                .map_err(public_error)?;
+        }
+        tx.commit().map_err(public_error)?;
+        checkpoint_public_history(&connection, room);
+        Ok(())
     }
 
     // Caller holds the public projection lock through the observation mutation.
@@ -127,13 +186,9 @@ impl OperationalHistoryStore {
         .map_err(public_error)?;
         tx.commit().map_err(public_error)?;
         // SQLite + FTS secure-delete erase obsolete tokens; truncate the WAL too.
-        // Fail closed if an active reader prevents complete checkpointing.
-        let busy: i64 = connection
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
-            .map_err(public_error)?;
-        if busy != 0 {
-            return Err(invalid_search());
-        }
+        // The deletion is committed: an active reader only delays truncation
+        // until a later checkpoint, so it must not fail the protected mutation.
+        checkpoint_public_history(&connection, room);
         Ok(())
     }
 
@@ -287,7 +342,7 @@ impl OperationalHistoryStore {
         let connection = self.lock_read_connection(Some(room))?;
         // MP-08 / MP-10 / MP-11: one kernel prompt may have a different
         // provider-native turn ID. Accept either reference, select the logical
-        // prompt first, then bound assembled messages rather than token deltas.
+        // prompt first, then bound its messages in this one query.
         let mut statement = connection.prepare(
             "WITH selected_turn AS (
                 SELECT COALESCE(h.prompt_id,json_extract(p.document_json,'$.turn_id')) AS turn_id
@@ -296,20 +351,12 @@ impl OperationalHistoryStore {
                   AND (?4 IS NULL OR COALESCE(h.prompt_id,json_extract(p.document_json,'$.turn_id'))=?4 OR h.turn_id=?4)
                 GROUP BY COALESCE(h.prompt_id,json_extract(p.document_json,'$.turn_id')) ORDER BY max(p.sequence) DESC LIMIT 1 OFFSET ?5
              )
-             , messages AS (
-                SELECT p.event_ref,p.sequence,row_number() OVER (
-                    PARTITION BY p.kind,h.provider_run_id,
-                    CASE WHEN p.kind='provider_output' AND h.merge_key IS NOT NULL
-                         AND h.provider_run_id IS NOT NULL AND t.turn_id IS NOT NULL
-                         THEN h.merge_key ELSE p.event_ref END
-                    ORDER BY p.sequence DESC
-                ) AS message_rank
-                FROM public_history p
-                JOIN history_events h ON h.event_id=p.event_ref AND h.sequence=p.sequence
-                JOIN selected_turn t ON COALESCE(h.prompt_id,json_extract(p.document_json,'$.turn_id')) IS t.turn_id
-                WHERE p.owner_user_id=?1 AND p.session_id=?2 AND p.agent_id=?3
-             )
-             SELECT event_ref FROM messages WHERE message_rank=1 ORDER BY sequence DESC LIMIT ?6"
+             SELECT p.document_json,h.prompt_id
+             FROM public_history p
+             JOIN history_events h ON h.event_id=p.event_ref AND h.sequence=p.sequence
+             JOIN selected_turn t ON COALESCE(h.prompt_id,json_extract(p.document_json,'$.turn_id')) IS t.turn_id
+             WHERE p.owner_user_id=?1 AND p.session_id=?2 AND p.agent_id=?3
+             ORDER BY p.sequence DESC LIMIT ?6"
         ).map_err(public_error)?;
         let rows = statement
             .query_map(
@@ -321,18 +368,16 @@ impl OperationalHistoryStore {
                     offset,
                     limit.clamp(1, 200) as i64
                 ],
-                |r| r.get::<_, String>(0),
+                |r| Ok((r.get::<_, String>(0)?, r.get(1)?)),
             )
             .map_err(public_error)?;
-        let mut documents = Vec::new();
-        for reference in rows {
-            if let Some(document) =
-                read_public_document(&connection, owner, room, &reference.map_err(public_error)?)?
-            {
-                documents.push(document);
-            }
-        }
-        Ok(documents)
+        let documents = rows
+            .map(|row| {
+                let (json, prompt) = row.map_err(public_error)?;
+                public_document(&json, prompt)
+            })
+            .collect();
+        documents
     }
 
     /// Start/resume a bounded rebuild from sanitized source, never raw rows.
@@ -390,65 +435,50 @@ impl OperationalHistoryStore {
     }
 }
 
-// MP-08 / MP-10 / MP-11: only sanitized source text is assembled. Raw history
-// contributes non-content identity columns, never prompt/output or event_json.
+fn checkpoint_public_history(connection: &Connection, room: Option<&str>) {
+    if connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+        r.get::<_, i64>(0)
+    }) != Ok(0)
+    {
+        crate::logging::warn_with_fields(
+            "daemon.history",
+            "MP-08/MP-10/MP-11: committed public history deletion; WAL truncation deferred",
+            serde_json::json!({ "room": room }),
+        );
+    }
+}
+
+// MP-08 / MP-10 / MP-11: any projected event resolves to its sanitized message.
+// Raw history contributes only the canonical prompt identity, never content.
 fn read_public_document(
     connection: &Connection,
     owner: &str,
     room: &str,
     reference: &str,
 ) -> Result<Option<PublicHistoryDocument>, DaemonError> {
-    let row: Option<(String, Option<String>, Option<String>, Option<String>)> = connection.query_row(
-        "SELECT p.document_json,h.merge_key,h.provider_run_id,h.prompt_id
-         FROM public_history p JOIN history_events h ON h.event_id=p.event_ref AND h.sequence=p.sequence
-         WHERE p.owner_user_id=?1 AND p.session_id=?2 AND p.event_ref=?3",
-        params![owner, room, reference], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-    ).optional().map_err(public_error)?;
-    let Some((json, merge_key, run, prompt)) = row else {
-        return Ok(None);
-    };
+    connection
+        .query_row(
+            "SELECT p.document_json,h.prompt_id FROM public_history_member m
+             JOIN public_history p ON p.sequence=m.sequence
+             JOIN history_events h ON h.event_id=p.event_ref AND h.sequence=p.sequence
+             WHERE m.event_ref=?3 AND p.owner_user_id=?1 AND p.session_id=?2",
+            params![owner, room, reference],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+        )
+        .optional()
+        .map_err(public_error)?
+        .map(|(json, prompt)| public_document(&json, prompt))
+        .transpose()
+}
+
+fn public_document(
+    json: &str,
+    prompt: Option<String>,
+) -> Result<PublicHistoryDocument, DaemonError> {
     let mut document: PublicHistoryDocument =
-        serde_json::from_str(&json).map_err(|_| invalid_search())?;
+        serde_json::from_str(json).map_err(|_| invalid_search())?;
     document.turn_id = prompt.or(document.turn_id);
-    let key = if document.kind == HistoryEventKind::ProviderOutput {
-        merge_key
-            .zip(run)
-            .zip(document.turn_id.clone())
-            .map(|((merge_key, run), turn)| (document.agent_id.clone(), run, turn, merge_key))
-    } else {
-        None
-    };
-    if let Some((agent, run, turn, merge_key)) = &key {
-        let mut statement = connection.prepare(
-            "SELECT p.text,json_extract(p.document_json,'$.truncated')
-             FROM public_history p JOIN history_events h ON h.event_id=p.event_ref AND h.sequence=p.sequence
-             WHERE p.owner_user_id=?1 AND p.session_id=?2 AND p.agent_id=?3 AND p.kind='provider_output'
-               AND h.provider_run_id=?4 AND h.merge_key=?5
-               AND COALESCE(h.prompt_id,json_extract(p.document_json,'$.turn_id'))=?6
-             ORDER BY p.sequence"
-        ).map_err(public_error)?;
-        let parts = statement
-            .query_map(params![owner, room, agent, run, merge_key, turn], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?))
-            })
-            .map_err(public_error)?;
-        document.text.clear();
-        let mut remaining = 64 * 1024;
-        for part in parts {
-            let (text, truncated) = part.map_err(public_error)?;
-            let count = text.chars().count();
-            document.text.extend(text.chars().take(remaining));
-            document.truncated |= truncated || count > remaining;
-            remaining = remaining.saturating_sub(count);
-            if remaining == 0 {
-                // Even if the next chunk is empty, report the bounded read
-                // conservatively. Never silently claim complete oversized text.
-                document.truncated = true;
-                break;
-            }
-        }
-    }
-    Ok(Some(document))
+    Ok(document)
 }
 
 fn public_error(error: rusqlite::Error) -> DaemonError {
@@ -479,7 +509,8 @@ fn coverage(
     let finished = pending == 0;
     let excluded_events: u64=connection.query_row("SELECT count(*) FROM history_events h WHERE h.session_id=?1
         AND h.kind IN ('user_prompt','provider_output','provider_tool','provider_error')
-        AND NOT EXISTS(SELECT 1 FROM public_history p WHERE p.event_ref=h.event_id AND p.owner_user_id=?2)",params![room,owner],|r|read_u64(r,0)).map_err(public_error)?;
+        AND NOT EXISTS(SELECT 1 FROM public_history_member m JOIN public_history p ON p.sequence=m.sequence
+            WHERE m.event_ref=h.event_id AND p.owner_user_id=?2)",params![room,owner],|r|read_u64(r,0)).map_err(public_error)?;
     let retention_gap_events:u64=connection.query_row("SELECT COALESCE((SELECT deleted_events FROM public_history_retention WHERE session_id=?1),0)",[room],|r|read_u64(r,0)).map_err(public_error)?;
     let truncated_events:u64=connection.query_row("SELECT count(*) FROM public_history WHERE owner_user_id=?1 AND session_id=?2 AND json_extract(document_json,'$.truncated')=1",params![owner,room],|r|read_u64(r,0)).map_err(public_error)?;
     Ok(PublicHistoryCoverage {
@@ -499,20 +530,77 @@ fn coverage(
     })
 }
 
+// MP-08 / MP-10 / MP-11: FTS indexes whole streamed messages. Deltas of one
+// owner/room/agent/run/prompt/merge key append to the row of the first retained
+// delta. Each delta was sanitized alone; the joined text is projected again so
+// a protected value split across deltas is scrubbed before FTS insertion.
 pub(super) fn write_public_document(
     connection: &Connection,
     event: &HistoryEvent,
     document: Option<&PublicHistoryDocument>,
+    project: &dyn Fn(&HistoryEvent) -> Option<PublicHistoryDocument>,
 ) -> Result<(), rusqlite::Error> {
     connection.execute(
-        "DELETE FROM public_history WHERE event_ref=?1",
+        "DELETE FROM public_history WHERE event_ref=?1
+         OR sequence IN (SELECT sequence FROM public_history_member WHERE event_ref=?1)",
         [&event.event_id],
     )?;
-    if let Some(doc) = document {
-        let json = serde_json::to_string(doc)
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        connection.execute("INSERT INTO public_history(sequence,event_ref,owner_user_id,session_id,agent_id,kind,text,document_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![doc.sequence as i64,doc.event_ref,doc.owner_user_id,doc.session_id,doc.agent_id,history_event_kind_key(doc.kind),doc.text,json])?;
-    }
+    let Some(doc) = document else {
+        return Ok(());
+    };
+    let message = match (
+        doc.kind,
+        history_event_merge_key(event),
+        event.provider_run_id.as_deref(),
+        event.prompt_id.as_deref().or(doc.turn_id.as_deref()),
+    ) {
+        (HistoryEventKind::ProviderOutput, Some(key), Some(run), Some(turn)) => connection
+            .query_row(
+                "SELECT p.sequence,p.document_json FROM public_history p
+                 JOIN history_events h ON h.event_id=p.event_ref AND h.sequence=p.sequence
+                 WHERE p.owner_user_id=?1 AND p.session_id=?2 AND p.agent_id=?3 AND p.kind='provider_output'
+                   AND h.session_id=?2 AND h.agent_id=?3
+                   AND h.provider_run_id=?4 AND h.merge_key=?5
+                   AND COALESCE(h.prompt_id,json_extract(p.document_json,'$.turn_id'))=?6",
+                params![doc.owner_user_id, doc.session_id, doc.agent_id, run, key, turn],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()?,
+        _ => None,
+    };
+    let encode = |doc: &PublicHistoryDocument| {
+        serde_json::to_string(doc).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+    };
+    let sequence = if let Some((sequence, json)) = message {
+        let mut message: PublicHistoryDocument = serde_json::from_str(&json).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+        if message.text.chars().count() < 64 * 1024 {
+            let mut joined = event.clone();
+            joined.content = Some(format!("{}{}", message.text, doc.text));
+            let Some(projected) = project(&joined) else {
+                connection.execute("DELETE FROM public_history WHERE sequence=?1", [sequence])?;
+                return Ok(());
+            };
+            message.truncated |= projected.truncated || projected.text.chars().count() > 64 * 1024;
+            message.text = projected.text.chars().take(64 * 1024).collect();
+        } else if !doc.text.is_empty() {
+            message.truncated = true;
+        }
+        message.truncated |= doc.truncated;
+        connection.execute(
+            "UPDATE public_history SET text=?2,document_json=?3 WHERE sequence=?1",
+            params![sequence, message.text, encode(&message)?],
+        )?;
+        sequence
+    } else {
+        connection.execute("INSERT INTO public_history(sequence,event_ref,owner_user_id,session_id,agent_id,kind,text,document_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![doc.sequence as i64,doc.event_ref,doc.owner_user_id,doc.session_id,doc.agent_id,history_event_kind_key(doc.kind),doc.text,encode(doc)?])?;
+        doc.sequence as i64
+    };
+    connection.execute(
+        "INSERT OR REPLACE INTO public_history_member(event_ref,sequence) VALUES(?1,?2)",
+        params![event.event_id, sequence],
+    )?;
     Ok(())
 }
 
@@ -546,7 +634,7 @@ pub(super) fn initialize_public_history(connection: &Connection) -> Result<(), D
     if version != PUBLIC_HISTORY_VERSION {
         // Never repopulate from old/raw provenance after a redaction/schema change.
         let tx = connection.unchecked_transaction().map_err(public_error)?;
-        tx.execute_batch("DELETE FROM public_history; UPDATE public_history_revision SET revision=revision+1; UPDATE public_history_build SET cursor=0,complete=0,epoch=epoch+1;").map_err(public_error)?;
+        tx.execute_batch("DELETE FROM public_history; DELETE FROM public_history_member; UPDATE public_history_revision SET revision=revision+1; UPDATE public_history_build SET cursor=0,complete=0,epoch=epoch+1;").map_err(public_error)?;
         tx.execute(
             "UPDATE public_history_version SET version=?1",
             [PUBLIC_HISTORY_VERSION],
