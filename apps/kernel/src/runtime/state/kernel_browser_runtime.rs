@@ -585,23 +585,23 @@ impl KernelRuntimeState {
                 arguments.lifetime_hours,
             )
             .map_err(host_error)?;
-            let cursor = host.grant_snapshot(&user, "")["cursor"].as_u64();
+            let fence = host.acquisition_fence(&user, agent.id());
             if self
                 .confirm_capability_request(&agent, "new tabs in your kernel browser", || {
-                    host.grant_snapshot(&user, "")["cursor"].as_u64() == cursor
+                    host.acquisition_fence(&user, agent.id()) == fence
                 })
                 .await?
                 .as_deref()
                 != Some(prompt.as_str())
             {
-                return Err(host_error(
-                    "MP-08: not_requested: browser access was not approved".into(),
+                return Err(super::capability_grant_runtime::refused(
+                    crate::error::UserDomainRefusalReason::NotRequested,
                 ));
             }
             self.user_domain_agent_placement(run)?;
-            if host.grant_snapshot(&user, "")["cursor"].as_u64() != cursor {
-                return Err(host_error(
-                    "MP-11: not_granted: grants changed while approval was pending".into(),
+            if host.acquisition_fence(&user, agent.id()) != fence {
+                return Err(super::capability_grant_runtime::refused(
+                    crate::error::UserDomainRefusalReason::NotGranted,
                 ));
             }
             let granted = host
@@ -610,7 +610,7 @@ impl KernelRuntimeState {
                     agent.id(),
                     &prompt,
                     lifetime,
-                    cursor,
+                    Some(fence),
                     agent.session_id(),
                 )
                 .map_err(host_error)?;

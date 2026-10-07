@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
-// MP-08 / MP-10 / MP-11, A05: supplementary live refusal drill using the built
-// kernel, built TUI and official Codex. Full S01–S04 acceptance requires the
-// production App adapter, owning user browser and hosted conditions separately.
+// MP-08 / MP-10 / MP-11, A05: supplementary live drill using the built kernel,
+// built TUI and official Codex: owner Deny (typed refusal), owner Allow (local
+// 462 grant shape over the real client transport) and the live expiry wake.
+// Full S01–S04 acceptance requires the production App adapter, owning user
+// browser and hosted conditions separately.
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createConnection, createServer } from 'node:net'
 import path from 'node:path'
@@ -23,7 +25,9 @@ for (const name of ['home', 'workspace-parent', 'evidence']) {
   if (resolved === repo || resolved.startsWith(repo + path.sep)) throw new Error(`${name} must be outside the repository`)
 }
 process.env.CHARIOX_HOME = options.home
-const report = { mp: ['MP-08', 'MP-10', 'MP-11'], node: process.env.NODE ?? null, platform: process.platform, architecture: process.arch, cases: [], status: 'running', acceptance: 'BLOCKED', scope: 'local built TUI/kernel/official Codex resource denial only' }
+const report = { mp: ['MP-08', 'MP-10', 'MP-11'], node: process.env.NODE ?? null, platform: process.platform, architecture: process.arch, cases: [], status: 'running', acceptance: 'BLOCKED', scope: 'local built TUI/kernel/official Codex resource deny, allow and expiry' }
+// The operator lifetime override keeps the live expiry wake inside the drill.
+const GRANT_LIFETIME_SECONDS = 120
 let stage = 'setup', kernel, tui, client, automation, sessionId, workspace, socketPath, homeCreated = false, screen = ''
 const step = (name) => { stage = name; console.log(`MP-08/MP-10/MP-11 ${name}: running`) }
 const passed = (name, data = {}) => { report.cases.push({ name, status: 'passed', ...data }); console.log(`MP-08/MP-10/MP-11 ${name}: passed`) }
@@ -108,7 +112,7 @@ try {
   const port = await freePort(), mcpPort = await freePort(), codexPort = await freePort(), opencodePort = await freePort()
   const url = `ws://127.0.0.1:${port}`
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('CHARIOX_')))
-  const env = { ...inherited, CHARIOX_HOME: options.home, CHARIOX_LOG_DIR: path.join(options.home, 'logs'), CHARIOX_KERNEL_PORT: String(port), CHARIOX_MCP_PORT: String(mcpPort), CHARIOX_CODEX_PORT: String(codexPort), CHARIOX_OPENCODE_PORT: String(opencodePort), CHARIOX_ROOM_AGENT_TOOLS: '1', CHARIOX_TEST_TUI: '1', CHARIOX_DAEMON_SOCKET: path.join(options.home, 'daemon.sock'), CHARIOX_KERNEL_BROWSER_SCRIPT: path.join(repo, 'apps/kernel/slice-linux-docker/docker/kernel-browser-linux.mjs') }
+  const env = { ...inherited, CHARIOX_HOME: options.home, CHARIOX_LOG_DIR: path.join(options.home, 'logs'), CHARIOX_KERNEL_PORT: String(port), CHARIOX_MCP_PORT: String(mcpPort), CHARIOX_CODEX_PORT: String(codexPort), CHARIOX_OPENCODE_PORT: String(opencodePort), CHARIOX_ROOM_AGENT_TOOLS: '1', CHARIOX_USER_DOMAIN_GRANT_LIFETIME_SECONDS: String(GRANT_LIFETIME_SECONDS), CHARIOX_TEST_TUI: '1', CHARIOX_DAEMON_SOCKET: path.join(options.home, 'daemon.sock'), CHARIOX_KERNEL_BROWSER_SCRIPT: path.join(repo, 'apps/kernel/slice-linux-docker/docker/kernel-browser-linux.mjs') }
   step('built-kernel-ready')
   kernel = Bun.spawn([options.kernel], { cwd: repo, env, stdout: 'ignore', stderr: 'ignore' })
   report.kernelPid = kernel.pid
@@ -159,21 +163,25 @@ try {
   const grants = async () => (await client.send(requests.kernelBrowserRequest({op: 'list_grants'}))).KernelBrowser.result.grants
   await until(async () => (await grants()).length === 0, 10_000)
   passed(stage)
+  const requestBrowser = async (evidence) => {
+    await automation.send('submit_prompt', {prompt: 'Use the Chariox kernel browser to open https://www.wikipedia.org/. First call the Chariox load_kernel_browser tool exactly once, with no arguments. Do not use shell tools, files or another browser. If the tool fails, stop and quote its exact error message.'})
+    let pending
+    await until(async () => {
+      const snapshot = await automation.send('snapshot')
+      pending = snapshot.interactions.find(item => item.title === 'Chariox resource access')
+      return Boolean(pending)
+    }, 180_000)
+    requireValue(pending.agentId == null && pending.choices.at(0)?.id === 'allow' && pending.choices.at(-1)?.id === 'deny')
+    requireValue((await grants()).length === 0)
+    // Kernel-owned decisions use the shared F8 approval panel. Agent interaction
+    // automation does not drive that panel, so use the actual terminal keys.
+    await press('\x1b[19~')
+    await until(async () => visibleScreen().includes('Chariox resource access'), 10_000)
+    await writeFile(path.join(options.evidence, evidence), screen)
+    return pending
+  }
   step('official-codex-requests-browser-tools-through-tui')
-  await automation.send('submit_prompt', {prompt: 'Use the Chariox kernel browser to open https://www.wikipedia.org/. First call the Chariox load_kernel_browser tool exactly once. Do not use shell tools, files or another browser. If access is denied, stop and report the denial.'})
-  let approval
-  await until(async () => {
-    const snapshot = await automation.send('snapshot')
-    approval = snapshot.interactions.find(item => item.title === 'Chariox resource access')
-    return Boolean(approval)
-  }, 180_000)
-  requireValue(approval.agentId == null && approval.choices.some(choice => choice.id === 'deny'))
-  requireValue((await grants()).length === 0)
-  // Kernel-owned decisions use the shared F8 approval panel. Agent interaction
-  // automation does not drive that panel, so use the actual terminal keys.
-  await press('\x1b[19~')
-  await until(async () => visibleScreen().includes('Chariox resource access'), 10_000)
-  await writeFile(path.join(options.evidence, 'resource-approval-tui.ansi'), screen)
+  let approval = await requestBrowser('resource-approval-tui.ansi')
   passed(stage, {newAuthorityBeforeOwnerReply: false})
   step('owner-denies-resource-acquisition-through-tui')
   // Opening starts with no selected decision. Up selects the final Deny
@@ -187,6 +195,32 @@ try {
   requireValue((await grants()).length === 0)
   await writeFile(path.join(options.evidence, 'resource-denied-tui.ansi'), screen)
   passed(stage, {newAuthorityAfterDenial: false})
+  step('provider-receives-typed-not-requested-refusal')
+  // The provider's MCP error carries the local 462 refusal code.
+  await until(async () => visibleScreen().includes('user_domain_not_requested'), 180_000)
+  await writeFile(path.join(options.evidence, 'resource-denied-code-tui.ansi'), screen)
+  passed(stage, {refusalCode: 'user_domain_not_requested'})
+  step('owner-allows-resource-acquisition-through-tui')
+  await until(async () => !(await automation.send('snapshot')).session.agents.some(agent => agent.isProcessing), 180_000)
+  approval = await requestBrowser('resource-allow-approval-tui.ansi')
+  await press('\x1b[B')
+  await until(async () => visibleScreen().includes('Selected: Allow'), 5_000)
+  await press('\r')
+  let grant
+  await until(async () => { grant = (await grants())[0]; return Boolean(grant) }, 30_000)
+  // Local 462 grant shape over the real kernel-client transport.
+  requireValue(typeof grant.prompt_id === 'string' && grant.prompt_id.length > 0)
+  requireValue(grant.focused === false && grant.delegated_by_agent_id == null)
+  requireValue(Math.abs(grant.expires_at_ms - grant.since_ms - GRANT_LIFETIME_SECONDS * 1000) < 5_000)
+  await writeFile(path.join(options.evidence, 'resource-allowed-tui.ansi'), screen)
+  await writeFile(path.join(options.evidence, 'resource-allowed-grant.json'), JSON.stringify(grant, null, 2) + '\n')
+  passed(stage, {promptId: grant.prompt_id, lifetimeMs: grant.expires_at_ms - grant.since_ms})
+  step('grant-expiry-wake-retires-without-owner-action')
+  await until(async () => !(await grants()).some(item => item.prompt_id === grant.prompt_id), (grant.expires_at_ms - Date.now()) + 15_000)
+  report.expiryObservedLateMs = Date.now() - grant.expires_at_ms
+  requireValue(report.expiryObservedLateMs > -2_000)
+  await writeFile(path.join(options.evidence, 'resource-expired-tui.ansi'), screen)
+  passed(stage, {expiredAfterMs: report.expiryObservedLateMs})
   report.status = 'passed'
   report.blockers = [
     'S01/S03: trusted installed production GitHub App with admitted executable adapter/key/capabilities and linked real GitHub account is required.',
@@ -220,6 +254,6 @@ try {
   if (workspace) await rm(workspace, {recursive: true, force: true})
   if (homeCreated) await rm(options.home, {recursive: true, force: true})
   report.cleanup = {kernelExited: true, tuiExited: true, ownedWorkspaceRemoved: true, disposableKernelHomeRemoved: homeCreated, kernelHomeRetained: process.platform === 'darwin' ? options.home : null}
-  await writeFile(path.join(options.evidence, 'capability-live-refusal.json'), JSON.stringify(report, null, 2) + '\n')
+  await writeFile(path.join(options.evidence, 'capability-live-drill.json'), JSON.stringify(report, null, 2) + '\n')
   console.log(`MP-08/MP-10/MP-11 drill: ${report.status}; acceptance: ${report.acceptance}`)
 }

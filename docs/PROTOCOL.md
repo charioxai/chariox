@@ -66,8 +66,14 @@ With `CHARIOX_ROOM_AGENT_TOOLS=1`, a running prompt submitted by the owner
 through a human attachment supplies acquisition causation. Agent messages,
 workflows, schedules and continuations do not. A new App binding or kernel
 browser grant also requires the owner's resource-specific `RuntimeInteraction`
-reply; a human prompt alone cannot authorize unrelated resources. Existing
-focus grants remain available through the shared browser authority path.
+reply; a human prompt alone cannot authorize unrelated resources. Owner Deny
+and a missing owner request return the typed `user_domain_not_requested`
+refusal; a revoke reaching that agent while its decision is pending returns
+`user_domain_not_granted`. Other holders' grant changes do not affect a pending
+decision. Provider MCP errors carry the same code. Existing focus grants remain
+available through the shared browser authority path; focus is the owner's live
+act, so focus grants have no absolute lifetime (no `expires_at_ms`) and retire
+through idle, revocation or session/agent end.
 
 Browser loader arguments may request `lifetime_hours` from 1 through 24; the
 default is 8 hours. A prompt grant covers newly opened tabs, while claiming an
@@ -86,12 +92,16 @@ bindings inherit the parent's deadline. Revocation removes only bindings
 actually delegated from that generation, wakes retained calls and prevents an
 old call or expiry wake from adopting a replacement binding. Recovery rearms
 absolute expiry; an untimed legacy binding needs fresh owner approval in room
-mode, and recovery without a live expiry executor fails closed. Leased, remote and slice agents cannot acquire these user-domain
+mode, and recovery without a live expiry executor fails closed. Recovery
+removals record the normal `agent.extension_revoked` event and
+`home_extension.grant.revoked` audit. Leased, remote and slice agents cannot acquire these user-domain
 resources; they use their Room Browser/Computer route.
 
 Clients consuming this metadata require local 462; relay peer shapes are
 unchanged. The focused A05 drill exercises the built TUI, kernel and official
-Codex resource-approval path. Source refusal and protocol snapshot tests are
+Codex resource-approval path: owner Deny with the typed refusal code, owner
+Allow with the 462 grant projection over the real client transport, and the
+live absolute-expiry wake. Source refusal and protocol snapshot tests are
 supplementary and do not establish hosted, public-site or managed acceptance.
 
 ## 1. Scope

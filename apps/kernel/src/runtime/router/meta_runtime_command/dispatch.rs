@@ -167,36 +167,40 @@ impl CommandRouter {
             }
         };
         let command = meta_kernel_command(Some(&provider_run), &metaagent, &request);
-        let dispatched = if let LocalDaemonRequest::GrantAgentExtension(grant) = &request {
-            if grant.kind == ExtensionKind::App {
-                match self
+        let app_grant = match &request {
+            LocalDaemonRequest::GrantAgentExtension(grant) if grant.kind == ExtensionKind::App => {
+                Some(grant.clone())
+            }
+            _ => None,
+        };
+        let dispatched = match app_grant {
+            Some(grant) => match self
+                .runtime_state
+                .authorize_agent_app_binding(
+                    session.id(),
+                    metaagent.id(),
+                    &grant.agent_ref,
+                    &grant.name,
+                )
+                .await
+            {
+                // Room mode refuses non-terminal App grants at the router, so
+                // the approved permit binds here through the same grant path.
+                Ok(Some(permit)) if self.runtime_state.room_agent_tools_enabled() => self
                     .runtime_state
-                    .authorize_agent_app_binding(
-                        session.id(),
-                        metaagent.id(),
+                    .grant_agent_app(
                         &grant.agent_ref,
-                        &grant.name,
+                        crate::extension::ExtensionGrant::app(&grant.name),
+                        metaagent.owner_user_id(),
+                        Some(permit),
                     )
                     .await
-                {
-                    Ok(Some(permit)) => self
-                        .runtime_state
-                        .grant_agent_app_for_tool(
-                            &grant.agent_ref,
-                            crate::extension::ExtensionGrant::app(&grant.name),
-                            metaagent.owner_user_id(),
-                            Some(permit),
-                        )
-                        .await
-                        .map(|agent| LocalDaemonResponse::AgentExtensionGranted { agent }),
-                    Ok(None) => Err(meta_command_error("App binding was not approved")),
-                    Err(error) => Err(error),
-                }
-            } else {
-                self.dispatch(command, request).await
-            }
-        } else {
-            self.dispatch(command, request).await
+                    .map(|agent| LocalDaemonResponse::AgentExtensionGranted { agent }),
+                Ok(Some(_)) => self.dispatch(command, request).await,
+                Ok(None) => Err(meta_command_error("App binding was not approved")),
+                Err(error) => Err(error),
+            },
+            None => self.dispatch(command, request).await,
         };
         let response = match dispatched {
             Ok(response) => response,

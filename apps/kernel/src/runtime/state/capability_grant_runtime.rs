@@ -2,9 +2,15 @@
 //! typed (human attachment); agents never mint authority or widen a transfer.
 use super::kernel_browser_runtime::host_error;
 use super::*;
+use crate::error::UserDomainRefusalReason;
 use crate::local::UserDomainResource;
 use crate::runtime::room_tool_admission::{denied, direct_child, resolve_agent};
 use crate::transport::runtime_tools::RuntimeToolResult;
+
+/// MP-08/MP-11: the typed refusal clients and providers classify by code.
+pub(super) fn refused(reason: UserDomainRefusalReason) -> DaemonError {
+    DaemonError::UserDomainRefused { reason }
+}
 
 /// MP-11: serialize binding changes with pending acquisition and delegation.
 /// Revisions are process-local; persisted grants carry their own generation.
@@ -174,6 +180,42 @@ mod tests {
             "MP-11: shutdown cannot admit authority without a live expiry wake"
         );
     }
+
+    /// MP-11 (#922 review 5): recovery that drops a legacy untimed binding
+    /// records the normal revoke events and audit.
+    #[tokio::test]
+    async fn capability_recovery_revoke_records_the_normal_revoke_events() {
+        let worktree = crate::test_support::TestWorktree::new("capability-app-recovery");
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let mut app = DaemonApp::bootstrap(config).unwrap();
+        crate::durable_state::app_state::fixture_catalog(&app.durable_state_store());
+        let (_, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request().with_owner_user_id("alice"))
+            .unwrap();
+        app.agents_mut()
+            .grant_extension(agent.id(), ExtensionGrant::app("installed"))
+            .unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            4,
+        );
+        let state = router.runtime_state();
+        assert!(!state
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .unwrap()
+            .has_extension_grant(ExtensionKind::App, "installed"));
+        let audit = state
+            .list_home_extension_audit_events(agent.id(), "alice", 20)
+            .unwrap();
+        assert!(audit.iter().any(|event| {
+            event.kind == "home_extension.grant.revoked"
+                && event.payload.pointer("/grant/name") == Some(&"installed".into())
+        }));
+        state.shutdown_cleanup().await.unwrap();
+    }
 }
 
 pub(crate) struct AppBindingPermit {
@@ -203,7 +245,7 @@ impl KernelRuntimeState {
     ) -> Result<Option<String>, DaemonError> {
         let prompt = self
             .owner_requested_prompt(agent)
-            .ok_or_else(|| denied("resource acquisition requires the owner's running request"))?;
+            .ok_or_else(|| refused(UserDomainRefusalReason::NotRequested))?;
         let interaction_id = format!("capability-request-{:032x}", rand::random::<u128>());
         let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
             &interaction_id,
@@ -228,10 +270,10 @@ impl KernelRuntimeState {
         // MP-11: the owner decision itself also has a live expiry wake. A turn
         // disappearing while the owner is deciding withdraws the stale popup.
         let resolution = tokio::select! {
-            result = receiver => result.map_err(|_| denied("resource approval closed without a decision"))?,
+            result = receiver => result.map_err(|_| refused(UserDomainRefusalReason::NotGranted))?,
             _ = tokio::time::sleep(Duration::from_secs(300)) => {
                 let _ = self.owned.timeout_runtime_interaction(agent.session_id(), &interaction_id);
-                return Err(denied("resource approval expired; ask the owner again"));
+                return Err(refused(UserDomainRefusalReason::NotGranted));
             }
             _ = async {
                 while self.owner_requested_prompt(agent).as_deref() == Some(prompt.as_str())
@@ -241,7 +283,7 @@ impl KernelRuntimeState {
                 }
             } => {
                 let _ = self.owned.timeout_runtime_interaction(agent.session_id(), &interaction_id);
-                return Err(denied("resource request ended while approval was pending"));
+                return Err(refused(UserDomainRefusalReason::NotGranted));
             }
         };
         self.authorize_current_external_command()?;
@@ -252,7 +294,7 @@ impl KernelRuntimeState {
             || self.owner_requested_prompt(&current).as_deref() != Some(prompt.as_str())
             || !scope_live()
         {
-            return Err(denied("resource request is stale; ask the owner again"));
+            return Err(refused(UserDomainRefusalReason::NotGranted));
         }
         Ok((resolution.choice_id.as_deref() == Some("allow")).then_some(prompt))
     }
@@ -309,11 +351,7 @@ impl KernelRuntimeState {
                 {
                     // MP-11: legacy untimed bindings need fresh owner approval
                     // before they can become A05 authority.
-                    let _ = self.owned.agent_store.revoke_extension(
-                        agent.id(),
-                        crate::extension::ExtensionKind::App,
-                        &grant.name,
-                    );
+                    self.revoke_recovered_app_binding(agent.id(), &grant.name);
                     continue;
                 }
                 if let Some(cause) = &grant.app_grant {
@@ -322,15 +360,33 @@ impl KernelRuntimeState {
                     } else {
                         // MP-11: recovery without a live executor must not retain
                         // authority whose mandatory expiry wake cannot be armed.
-                        let _ = self.owned.agent_store.revoke_extension(
-                            agent.id(),
-                            crate::extension::ExtensionKind::App,
-                            &grant.name,
-                        );
+                        self.revoke_recovered_app_binding(agent.id(), &grant.name);
                         tracing::warn!("App grant recovery refused without a live expiry executor");
                     }
                 }
             }
+        }
+    }
+
+    /// MP-11: recovery removes the binding at once and records the normal
+    /// revoke; the async follow-up runs when an executor exists.
+    fn revoke_recovered_app_binding(&self, agent: &str, name: &str) {
+        let Ok(agent) = self.owned.agent_store.revoke_extension(
+            agent,
+            crate::extension::ExtensionKind::App,
+            name,
+        ) else {
+            return;
+        };
+        let owner = agent.owner_user_id().to_string();
+        if let Err(error) = self.record_revoked_app_binding(&agent, name, &owner) {
+            tracing::warn!(%error, "App grant recovery revoke was not recorded");
+        }
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let state = self.clone();
+            handle.spawn(async move {
+                let _ = state.propagate_revoked_app_binding(agent, &owner).await;
+            });
         }
     }
 

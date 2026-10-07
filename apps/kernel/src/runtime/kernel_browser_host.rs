@@ -796,7 +796,7 @@ mod tests {
     #[tokio::test]
     async fn capability_empty_revoke_invalidates_a_pending_browser_acquisition() {
         let host = KernelBrowserHost::new(PathBuf::from("/unused/capability-revoke"));
-        let cursor = host.grant_snapshot("owner", "kernel")["cursor"].as_u64();
+        let fence = host.acquisition_fence("owner", "agent");
         host.revoke_grants("owner", None);
         assert!(
             host.request_grant(
@@ -804,13 +804,38 @@ mod tests {
                 "agent",
                 "request",
                 Duration::from_secs(60),
-                cursor,
+                Some(fence),
                 "room"
             )
             .is_err(),
             "MP-11: a revoke must fence pending acquisition before any holder exists"
         );
         assert!(host.grant_holders().is_empty());
+    }
+    /// MP-11 (#922 review 1): only a revoke that reaches this agent fences
+    /// its pending acquisition; other holders' grant changes do not.
+    #[tokio::test]
+    async fn capability_unrelated_grant_changes_keep_a_pending_browser_acquisition() {
+        let host = KernelBrowserHost::new(PathBuf::from("/unused/capability-fence"));
+        let lifetime = Duration::from_secs(60);
+        host.request_grant("owner", "busy", "prompt", lifetime, None, "room")
+            .unwrap();
+        let fence = host.acquisition_fence("owner", "agent");
+        host.set_focus("owner", Some("focused"));
+        host.load("owner", "focused").unwrap();
+        host.bind_activity("owner", "busy", "room", false);
+        host.bind_activity("owner", "busy", "room", true);
+        host.revoke_grants("owner", Some("focused"));
+        host.request_grant("other-owner", "agent", "prompt", lifetime, None, "room")
+            .unwrap();
+        assert!(host
+            .request_grant("owner", "agent", "request", lifetime, Some(fence), "room")
+            .unwrap());
+        let fence = host.acquisition_fence("owner", "child");
+        host.revoke_grants("owner", Some("child"));
+        assert!(host
+            .request_grant("owner", "child", "request", lifetime, Some(fence), "room")
+            .is_err());
     }
     #[test]
     fn mdaccess_focus_switch_keeps_existing_grant_and_admission() {

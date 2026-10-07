@@ -981,6 +981,18 @@ async fn mcp_get_catalog_stream_requires_running_agent_auth() {
     );
 }
 
+// MP-08/MP-11 (#922 review 3/6): providers see the typed refusal code.
+#[test]
+fn capability_tool_refusal_keeps_its_typed_code() {
+    let refused = crate::error::DaemonError::UserDomainRefused {
+        reason: crate::error::UserDomainRefusalReason::NotRequested,
+    };
+    assert_eq!(
+        super::tool_error_message(&refused),
+        "User-domain request refused: user_domain_not_requested"
+    );
+}
+
 // MP-08/MP-10: scripts may return any JSON value, but MCP structuredContent is an object.
 #[test]
 fn runtime_tool_content_wraps_non_objects_as_structured_results() {

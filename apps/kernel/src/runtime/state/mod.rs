@@ -917,6 +917,14 @@ impl KernelRuntimeState {
     }
 
     #[cfg(test)]
+    pub(crate) fn pending_provider_reload_for_test(&self, agent_id: &str) -> bool {
+        self.owned
+            .pending_provider_reloads
+            .write()
+            .contains_key(agent_id)
+    }
+
+    #[cfg(test)]
     pub(crate) fn observe_app_lock_wait_for_test(&mut self, probe: Arc<tokio::sync::Notify>) {
         self.app_lock_wait_probe = Some(probe);
     }
@@ -1025,13 +1033,20 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         capability_name: Option<&str>,
     ) -> Result<(), DaemonError> {
-        let agent = agent.clone();
-        let capability_name = capability_name.map(str::to_string);
+        self.record_agent_durable_event(kind, agent, capability_name)
+    }
+
+    fn record_agent_durable_event(
+        &self,
+        kind: &'static str,
+        agent: &crate::agent::AgentInstance,
+        capability_name: Option<&str>,
+    ) -> Result<(), DaemonError> {
         self.owned.durable_state_store.append_event(
             kind,
             Some(agent.id().to_string()),
             serde_json::json!({
-                "agent": &agent,
+                "agent": agent,
                 "capability_name": capability_name,
             }),
         )?;

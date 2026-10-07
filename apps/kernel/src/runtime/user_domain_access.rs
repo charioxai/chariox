@@ -26,8 +26,9 @@ pub(crate) struct Grant {
     pub(crate) subscription_owner: String,
     subscription_deadlines: BTreeMap<String, Instant>,
     pub(crate) cause: GrantCause,
-    pub(crate) expires_at: Instant,
-    expires_at_ms: u64,
+    /// None for focus: the owner's live act retires through idle or revoke.
+    pub(crate) expires_at: Option<Instant>,
+    expires_at_ms: Option<u64>,
     session: String,
     since_ms: u64,
     idle_since: Option<Instant>,
@@ -35,8 +36,8 @@ pub(crate) struct Grant {
 }
 
 impl Grant {
-    fn new(cause: GrantCause, lifetime: Duration) -> Self {
-        let lifetime = lifetime.min(MAX_GRANT_LIFETIME);
+    fn new(cause: GrantCause, lifetime: Option<Duration>) -> Self {
+        let lifetime = lifetime.map(|lifetime| lifetime.min(MAX_GRANT_LIFETIME));
         let now_ms = crate::session::unix_epoch_ms();
         Self {
             epoch: Arc::new(BrowserCancellation::default()),
@@ -45,8 +46,9 @@ impl Grant {
             subscription_deadlines: BTreeMap::new(),
             subscription_owner: format!("grant-{:032x}", rand::random::<u128>()),
             cause,
-            expires_at: Instant::now() + lifetime,
-            expires_at_ms: now_ms.saturating_add(lifetime.as_millis() as u64),
+            expires_at: lifetime.map(|lifetime| Instant::now() + lifetime),
+            expires_at_ms: lifetime
+                .map(|lifetime| now_ms.saturating_add(lifetime.as_millis() as u64)),
             session: String::new(),
             since_ms: now_ms,
             idle_since: Some(Instant::now()),
@@ -54,7 +56,7 @@ impl Grant {
         }
     }
     fn live(&self, now: Instant) -> bool {
-        now < self.expires_at
+        self.expires_at.is_none_or(|expires_at| now < expires_at)
     }
 }
 
@@ -70,6 +72,8 @@ pub(crate) struct UserDomainAccess {
     focus: BTreeMap<String, String>,
     grants: BTreeMap<(String, String), Grant>,
     cursors: BTreeMap<String, u64>,
+    /// MP-11: revokes per (owner, agent); agent "" counts owner-wide revokes.
+    fences: BTreeMap<(String, String), u64>,
     notices: BTreeMap<String, UserDomainNotice>,
 }
 
@@ -92,7 +96,7 @@ impl UserDomainAccess {
             }
             self.grants
                 .entry(key)
-                .or_insert_with(|| Grant::new(GrantCause::Focus, DEFAULT_GRANT_LIFETIME));
+                .or_insert_with(|| Grant::new(GrantCause::Focus, None));
         } else {
             self.focus.remove(user);
         }
@@ -160,7 +164,7 @@ impl UserDomainAccess {
         }
         self.grants.insert(
             (user.into(), agent.into()),
-            Grant::new(GrantCause::Prompt(prompt_id.into()), lifetime),
+            Grant::new(GrantCause::Prompt(prompt_id.into()), Some(lifetime)),
         );
         self.changed(user);
         true
@@ -193,7 +197,7 @@ impl UserDomainAccess {
             }
         } else {
             self.revoke(user, Some(child));
-            let mut grant = Grant::new(cause, DEFAULT_GRANT_LIFETIME);
+            let mut grant = Grant::new(cause, None);
             grant.expires_at = expires_at;
             grant.expires_at_ms = expires_at_ms;
             grant.session = session;
@@ -208,7 +212,9 @@ impl UserDomainAccess {
         self.grants
             .values()
             .flat_map(|grant| {
-                std::iter::once(grant.expires_at)
+                grant
+                    .expires_at
+                    .into_iter()
                     .chain(grant.idle_since.map(|since| since + idle_window))
                     .chain(grant.subscription_deadlines.values().copied())
             })
@@ -372,6 +378,10 @@ impl UserDomainAccess {
     }
     pub(crate) fn revoke(&mut self, user: &str, agent: Option<&str>) -> Vec<String> {
         let holders = self.revocation_set(user, agent);
+        let target = (user.to_string(), agent.unwrap_or_default().to_string());
+        for key in holders.iter().chain([&target]) {
+            *self.fences.entry(key.clone()).or_default() += 1;
+        }
         let mut subscriptions = Vec::new();
         for key in &holders {
             if let Some(grant) = self.grants.remove(key) {
@@ -442,6 +452,18 @@ impl UserDomainAccess {
             self.changed(user);
         }
     }
+    /// MP-11: fences a pending acquisition for this owner and agent. Only a
+    /// revoke reaching this agent (direct, cascaded or owner-wide) moves it;
+    /// other holders' grant changes do not.
+    pub(crate) fn acquisition_fence(&self, user: &str, agent: &str) -> u64 {
+        let fence = |agent: &str| {
+            self.fences
+                .get(&(user.to_string(), agent.to_string()))
+                .copied()
+                .unwrap_or(0)
+        };
+        fence("") + fence(agent)
+    }
     pub(crate) fn cursor(&self, user: &str) -> u64 {
         self.cursors.get(user).copied().unwrap_or(0)
     }
@@ -463,7 +485,7 @@ impl UserDomainAccess {
             expiry_rule: "retained during active turn or pending wake; expires after fully idle window, absolute lifetime, session/agent end or parent revocation".into(),
             prompt_id: match &grant.cause { GrantCause::Prompt(id) => Some(id.clone()), _ => None },
             delegated_by_agent_id: match &grant.cause { GrantCause::Delegated(id) => Some(id.clone()), _ => None },
-            expires_at_ms: Some(grant.expires_at_ms),
+            expires_at_ms: grant.expires_at_ms,
         }).collect();
         serde_json::json!({"event":"user_domain_grants_changed","cursor":self.cursor(user),"grants":grants,"notice":self.notices.get(user)})
     }
@@ -479,6 +501,21 @@ mod tests {
     use super::*;
     fn tab(id: &str) -> UserDomainResource {
         UserDomainResource::BrowserTab { tab_id: id.into() }
+    }
+    /// MP-08 (#922 review 4): focus is the owner's live act; its grant has
+    /// no absolute lifetime and retires only through idle, revoke or end.
+    #[test]
+    fn capability_focus_grants_have_no_absolute_lifetime() {
+        let mut access = UserDomainAccess::default();
+        access.focus("owner", Some("focused"));
+        let later = Instant::now() + MAX_GRANT_LIFETIME + Duration::from_secs(60);
+        assert!(access.due(later).is_empty());
+        assert!(access
+            .due_retention(later, MAX_GRANT_LIFETIME * 2)
+            .is_empty());
+        let snapshot = access.snapshot("owner", "kernel", Duration::from_secs(60));
+        assert!(snapshot["grants"][0].get("expires_at_ms").is_none());
+        assert_eq!(access.focused("owner"), Some("focused"));
     }
     #[test]
     fn mdaccess_focus_retains_only_claimed_resources_and_sensitive_requires_focus() {
@@ -574,7 +611,7 @@ mod tests {
             .grants
             .get_mut(&("owner".into(), "child".into()))
             .unwrap()
-            .expires_at = Instant::now();
+            .expires_at = Some(Instant::now());
         access
             .transfer("owner", "parent", "child", &[tab("tab")])
             .unwrap();
@@ -592,12 +629,12 @@ mod tests {
         let mut access = UserDomainAccess::default();
         access.request("owner", "agent", "prompt", MAX_GRANT_LIFETIME * 2);
         let expires = access.grant("owner", "agent").unwrap().expires_at;
-        assert!(expires <= Instant::now() + MAX_GRANT_LIFETIME);
+        assert!(expires.is_some_and(|expires| expires <= Instant::now() + MAX_GRANT_LIFETIME));
         access
             .grants
             .get_mut(&("owner".into(), "agent".into()))
             .unwrap()
-            .expires_at = Instant::now();
+            .expires_at = Some(Instant::now());
         assert!(access.grant("owner", "agent").is_err());
         assert_eq!(
             access.due(Instant::now()),

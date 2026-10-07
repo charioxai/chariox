@@ -232,6 +232,37 @@ async fn capability_app_child_transfer_is_a_held_subset_and_revocation_cascades(
     );
 }
 
+/// MP-08 (#922 review 2): a room transfer of a running App refreshes the
+/// target's provider catalog like every other grant path.
+#[tokio::test]
+async fn capability_room_app_transfer_refreshes_the_target_catalog() {
+    let room = room();
+    let [(parent, parent_token), (child, _), _] = room.agents.clone();
+    running_prompt(&room, &parent, ClientCapabilityLevel::FullTerminal, "owner").await;
+    assert!(approved_app(&room, &parent_token, "installed").await);
+    // The App is dormant: its tools are listable, so a new binding is due a refresh.
+    let control = room.router.runtime_state.app_control();
+    crate::runtime::app_lifecycle::tests::stage(&room.app.lock().await.durable_state_store());
+    control.seed_dormant("alice", "installed");
+    assert!(control.is_app_dormant("alice", "installed"));
+    running_prompt(&room, &child, ClientCapabilityLevel::FullTerminal, "owner").await;
+    assert!(
+        room_command(
+            &room,
+            &parent_token,
+            format!("extension grant app {child} installed")
+        )
+        .await
+    );
+    assert!(bound(&room, &child).await);
+    assert!(
+        room.router
+            .runtime_state
+            .pending_provider_reload_for_test(&child),
+        "the busy child's catalog refresh is queued"
+    );
+}
+
 #[tokio::test]
 async fn capability_app_peer_cannot_revoke_or_grant_foreign_bindings() {
     let room = room();

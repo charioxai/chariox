@@ -100,14 +100,15 @@ impl KernelBrowserHost {
         agent: &str,
         prompt_id: &str,
         lifetime: Duration,
-        expected_cursor: Option<u64>,
+        expected_fence: Option<u64>,
         session: &str,
     ) -> Result<bool, String> {
         tokio::runtime::Handle::try_current()
             .map_err(|_| "MP-11: a live runtime is required for grant expiry")?;
         let created = self.update_grant(user, Some(agent), |state| {
             if state.stopped
-                || expected_cursor.is_some_and(|cursor| state.access.cursor(user) != cursor)
+                || expected_fence
+                    .is_some_and(|fence| state.access.acquisition_fence(user, agent) != fence)
             {
                 return Err(
                     "MP-11: not_granted: grant state changed while acquisition was pending".into(),
@@ -319,6 +320,13 @@ impl KernelBrowserHost {
             drop(state);
         }
         self.arm_expiry();
+    }
+    pub(crate) fn acquisition_fence(&self, user: &str, agent: &str) -> u64 {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .access
+            .acquisition_fence(user, agent)
     }
     pub(crate) fn grant_snapshot(&self, user: &str, kernel: &str) -> Value {
         self.inner

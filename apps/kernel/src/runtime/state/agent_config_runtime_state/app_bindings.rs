@@ -3,14 +3,15 @@ use crate::extension::{AppCapabilityGrant, ExtensionGrant, ExtensionKind};
 use crate::runtime::state::capability_grant_runtime::AppBindingPermit;
 
 impl KernelRuntimeState {
-    pub(super) async fn grant_agent_app(
+    pub(crate) async fn grant_agent_app(
         &self,
         agent_ref: &str,
         grant: ExtensionGrant,
         caller_user_id: &str,
+        permit: Option<AppBindingPermit>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent = self
-            .grant_agent_app_for_tool(agent_ref, grant, caller_user_id, None)
+            .grant_agent_app_for_tool(agent_ref, grant, caller_user_id, permit)
             .await?;
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         if self.app_control().has_active_apps_for_agent(&agent) {
@@ -447,25 +448,44 @@ impl KernelRuntimeState {
         name: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.record_revoked_app_binding(&agent, name, caller_user_id)?;
+        self.propagate_revoked_app_binding(agent, caller_user_id)
+            .await
+    }
+
+    /// The durable record of a removed binding, written before anything async.
+    pub(in crate::runtime::state) fn record_revoked_app_binding(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        name: &str,
+        caller_user_id: &str,
+    ) -> Result<(), DaemonError> {
         // The foreground App is not bound to this agent again on a focus change.
         self.app_control()
             .views()
             .set_revoked(agent.session_id(), agent.id(), name, true);
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-        self.app_control().forget_unlisted_binding(&agent, name);
-        self.append_agent_durable_event(
+        self.app_control().forget_unlisted_binding(agent, name);
+        self.record_agent_durable_event(
             "agent.extension_revoked",
-            &agent,
+            agent,
             Some(&format!("app:{name}")),
-        )
-        .await?;
+        )?;
         self.append_home_extension_named_grant_audit_event(
             "home_extension.grant.revoked",
-            &agent,
+            agent,
             caller_user_id,
             ExtensionKind::App,
             name,
-        )?;
+        )
+    }
+
+    /// Manifest, workflow-copy and provider-catalog follow-up of a revoke.
+    pub(in crate::runtime::state) async fn propagate_revoked_app_binding(
+        &self,
+        agent: crate::agent::AgentInstance,
+        caller_user_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
         self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id), Some(true))
             .await?;
         self.invalidate_workflow_copies_after_source_agent_change(agent.session_id(), agent.id())?;

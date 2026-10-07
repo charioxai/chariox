@@ -82,6 +82,7 @@ impl UserDomainRefusalReason {
             | "MP-08: not_granted: user-domain grant revoked"
             | "MP-08: not_granted: revoked subscription"
             | "MP-08: not_granted: transfer must name resources the caller holds"
+            | "MP-11: not_granted: grant state changed while acquisition was pending"
             | "MD-N4: note grant changed" => Some(Self::NotGranted),
             "MP-11: sensitive_requires_focus: sensitive user-domain action requires focus or human approval; focus this agent"
             | "MP-11: sensitive_requires_focus: Vault fill requires focus or human approval; ask the user to focus this agent" => Some(Self::SensitiveRequiresFocus),

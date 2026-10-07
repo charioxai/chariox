@@ -269,6 +269,98 @@ fn capability_owner_request_grants_only_opened_tabs_until_revoked() {
     });
 }
 
+/// MP-08 (#922 review 3): the owner's Deny is the typed `not_requested` refusal.
+#[test]
+fn capability_owner_deny_is_a_typed_not_requested_refusal() {
+    run_test(|| {
+        Box::pin(async {
+            let setup = setup("capability-deny", &[], &[]);
+            let (agent, token) = setup.agents[0].clone();
+            let room = start(setup, agent.owner_user_id());
+            running_prompt(
+                &room,
+                agent.id(),
+                ClientCapabilityLevel::FullTerminal,
+                "owner",
+            )
+            .await;
+            let error = decided_tool(
+                &room,
+                &token,
+                "chariox.load_kernel_browser",
+                json!({}),
+                "deny",
+                None,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                refusal(error),
+                Some(crate::error::UserDomainRefusalReason::NotRequested)
+            );
+            assert!(grants(&room.router).await.is_empty());
+            room.router
+                .runtime_state()
+                .shutdown_cleanup()
+                .await
+                .unwrap();
+            std::fs::remove_dir_all(&room.root).unwrap();
+        })
+    });
+}
+
+/// MP-11 (#922 review 1): another holder browsing while the owner decides
+/// neither withdraws nor invalidates this agent's pending approval.
+#[test]
+fn capability_other_holder_activity_keeps_a_pending_browser_approval() {
+    run_test(|| {
+        Box::pin(async {
+            let setup = setup("capability-busy-room", &[], &["browsing", "asking"]);
+            let (browsing, browsing_token) = setup.agents[1].clone();
+            let (asking, asking_token) = setup.agents[2].clone();
+            let room = start(setup, browsing.owner_user_id());
+            for agent in [&browsing, &asking] {
+                running_prompt(
+                    &room,
+                    agent.id(),
+                    ClientCapabilityLevel::FullTerminal,
+                    &format!("owner-{}", agent.id()),
+                )
+                .await;
+            }
+            approved_tool(
+                &room,
+                &browsing_token,
+                "chariox.load_kernel_browser",
+                json!({}),
+            )
+            .await
+            .unwrap();
+            decided_tool(
+                &room,
+                &asking_token,
+                "chariox.load_kernel_browser",
+                json!({}),
+                "allow",
+                Some((
+                    &browsing_token,
+                    "chariox.kernel_browser",
+                    json!({"command":{"op":"open","url":"https://developer.mozilla.org/"}}),
+                )),
+            )
+            .await
+            .expect("MP-11: an unrelated holder's grant change keeps this approval");
+            assert_eq!(grants(&room.router).await.len(), 2);
+            room.router
+                .runtime_state()
+                .shutdown_cleanup()
+                .await
+                .unwrap();
+            std::fs::remove_dir_all(&room.root).unwrap();
+        })
+    });
+}
+
 #[test]
 fn capability_unrequested_turns_cannot_acquire_browser_access() {
     run_test(|| {
@@ -546,6 +638,19 @@ async fn approved_tool(
     name: &str,
     args: Value,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, crate::DaemonError> {
+    decided_tool(room, token, name, args, "allow", None).await
+}
+
+/// Answers the owner's resource decision with `choice`, after `meanwhile`
+/// (another agent's tool call) ran while the decision was pending.
+async fn decided_tool(
+    room: &Room,
+    token: &str,
+    name: &str,
+    args: Value,
+    choice: &str,
+    meanwhile: Option<(&str, &str, Value)>,
+) -> Result<crate::transport::runtime_tools::RuntimeToolResult, crate::DaemonError> {
     let (result, ()) = tokio::join!(tool(&room.router, token, name, args), async {
         let interaction = tokio::time::timeout(std::time::Duration::from_secs(3), async {
             loop {
@@ -567,6 +672,9 @@ async fn approved_tool(
         })
         .await
         .expect("resource-specific owner interaction");
+        if let Some((token, name, args)) = meanwhile {
+            tool(&room.router, token, name, args).await.unwrap();
+        }
         let owner = room
             .router
             .runtime_state()
@@ -580,7 +688,7 @@ async fn approved_tool(
             .resolve_terminal_runtime_interaction(
                 &room.session,
                 &interaction,
-                "allow",
+                choice,
                 None,
                 Some(&owner),
             )

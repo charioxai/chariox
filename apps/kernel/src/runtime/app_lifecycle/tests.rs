@@ -79,7 +79,8 @@ fn wait(mut predicate: impl FnMut() -> bool) {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
-fn stage(store: &DurableKernelStateStore) {
+/// Stages the fixture App release so its catalog can be listed or started.
+pub(crate) fn stage(store: &DurableKernelStateStore) {
     let (bytes, publisher) = fixture_event_package();
     let verified = verify(
         &bytes,
