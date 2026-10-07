@@ -1,3 +1,15 @@
+# Staging 454 display integration
+
+The staging union uses local protocol 454 and relay peer 94. Display source
+through `78a43bb304dfd017def21b292aceb2909cc231e9` is integrated, including
+masking, opaque-bootstrap native-chain retirement, exact presentation metrics,
+and reduced software motion before color conversion. Whole-frame software
+motion may reduce resolution; protected/striped frames retain native geometry
+and lossless repair restores settled pixels. No performance or live acceptance
+is implied. Historical phase reports stay omitted from the staging union.
+
+The 419 implementation notes below are historical.
+
 # MD-DISPLAY-02/04: experimental kernel browser display, protocol 419
 
 This implements the Phase-2 recommendation as an opt-in, removable adapter.
@@ -208,7 +220,7 @@ open. Native secrets/masking source tests are narrower than those live gates.
 
 Clean implementation source `836e64630bc53d42e488dc97142416fdb0c92271`, rebased
 onto kbrowser `d6d03751ffea37198fb33530829f4cd76ae30fbf`. Final receipt:
-`/root/.codex/evidence/browser-resume-20260930/display/phase3/final-typed-relay-2mbps/results.json`.
+`<lane evidence>/phase3/final-typed-relay-2mbps/results.json`.
 `phase3/provenance.json` binds this source, the test binary SHA-256, 118 source
 file hashes, 28 exact embedded controller assets, commands, exits and receipt.
 This is historical Phase-3 coverage; Phase-4 execution files differ and the

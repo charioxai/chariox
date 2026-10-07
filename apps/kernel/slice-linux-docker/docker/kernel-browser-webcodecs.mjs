@@ -59,6 +59,7 @@ export class BrowserEncoder {
  set timing(value){this.fallback.timing=value;}
  discard(encoded){this.fallback.discard?.(encoded)}
  handedOff(encoded){this.fallback.handedOff?.(encoded)}
+ retire(){this.fallback.retire?.()}
  async encodeStripes(...args){return this.fallback.encodeStripes(...args)}
  async contextFor(){
   const {connection,sessionId}=await this.browser.resolvePageTarget(this.targetId);

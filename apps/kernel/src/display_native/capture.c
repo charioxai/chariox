@@ -21,7 +21,7 @@ struct Capture {
     Damage damage;
     XImage *image;
     XShmSegmentInfo shm;
-    int attached, event, width, height, window_height, offset;
+    int attached, event, width, height, window_height, offset, redirected, redirect_mode;
     unsigned long owner;
     uint8_t *previous;
     /* The slot holding the latest readback. Only this worker writes slots,
@@ -45,7 +45,8 @@ static int dimensions(Display *d, Window w, unsigned *width, unsigned *height) {
 }
 void cx_capture_close(struct Capture *c) {
     if (!c) return;
-    if (c->display && c->pixmap) { XFreePixmap(c->display,c->pixmap); XCompositeUnredirectWindow(c->display,c->window,CompositeRedirectAutomatic); }
+    if (c->display && c->pixmap) XFreePixmap(c->display,c->pixmap);
+    if (c->display && c->redirected) XCompositeUnredirectWindow(c->display,c->window,c->redirect_mode);
     if (c->display && c->damage) XDamageDestroy(c->display,c->damage);
     if (c->display && c->attached) { XShmDetach(c->display,&c->shm); XSync(c->display,False); }
     if (c->image) { c->image->data = NULL; XDestroyImage(c->image); }
@@ -53,6 +54,24 @@ void cx_capture_close(struct Capture *c) {
     if (c->shm.shmid >= 0) shmctl(c->shm.shmid,IPC_RMID,NULL);
     if (c->display) XCloseDisplay(c->display);
     free(c->previous); free(c);
+}
+/* MP-08/MP-10/MP-11: the dedicated native worker is the only Xlib caller
+ * in this process. Trap only this synchronous request, then restore the
+ * previous handler. Another capture/compositor may already own Manual. */
+static Display *redirect_display;
+static int redirect_error;
+static XErrorHandler redirect_previous;
+static int redirect_failed(Display *display,XErrorEvent *event) {
+    if(display==redirect_display){redirect_error=event->error_code;return 0;}
+    return redirect_previous?redirect_previous(display,event):0;
+}
+static int redirect_window(struct Capture *c,int mode) {
+    XSync(c->display,False);redirect_display=c->display;redirect_error=0;
+    redirect_previous=XSetErrorHandler(redirect_failed);
+    XCompositeRedirectWindow(c->display,c->window,mode);XSync(c->display,False);
+    XSetErrorHandler(redirect_previous);redirect_display=NULL;
+    if(redirect_error)return 0;
+    c->redirected=1;c->redirect_mode=mode;return 1;
 }
 struct Capture *cx_capture_open(unsigned long owner, int width, int height) {
     struct Capture *c = calloc(1,sizeof(*c));
@@ -72,7 +91,9 @@ struct Capture *cx_capture_open(unsigned long owner, int width, int height) {
     if (children) XFree(children);
     if (found!=1) goto fail;
     c->offset=c->window_height-height;
-    XCompositeRedirectWindow(c->display,c->window,CompositeRedirectAutomatic); XSync(c->display,False);
+    /* The kernel owns a private X server; its root is never presented. Manual
+     * keeps the named owned-window pixmap without compositing an unused root. */
+    if(!redirect_window(c,CompositeRedirectManual)&&!redirect_window(c,CompositeRedirectAutomatic))goto fail;
     c->pixmap=XCompositeNameWindowPixmap(c->display,c->window); XSync(c->display,False);
     if (!c->pixmap) goto fail;
     c->image=XShmCreateImage(c->display,DefaultVisual(c->display,0),DefaultDepth(c->display,0),ZPixmap,NULL,&c->shm,width,height);

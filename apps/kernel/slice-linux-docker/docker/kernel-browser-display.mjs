@@ -12,6 +12,9 @@ import {PixelWorker} from './kernel-browser-pixel-worker.mjs';
 export {dirtyTiles} from './kernel-browser-tiles.mjs';
 import { timestamp } from './kernel-browser-timing.mjs';
 
+// Base64 transport plus the reserved encryption envelope, per packet.
+const egressLimit = 1024 * 1024;
+const egressBytes = packet => Math.ceil((Buffer.byteLength(JSON.stringify(packet))+(packet.native_packet?.length??0)) * 4 / 3) + 1024;
 export function safeChildPid(child) {
   if (!Number.isSafeInteger(child?.pid) || child.pid <= 1) throw new Error('MD-DISPLAY: unsafe child PID');
   return child.pid;
@@ -127,6 +130,8 @@ export class PortableEncoder {
     const name=encoded?.packet?.name;
     if(name&&this.packets.delete(name))try{unlinkSync(path.join(process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT,name))}catch(error){if(error.code!=='ENOENT')throw error}
   }
+  // MP-11: forget the native reference chain and its delivery certificates.
+  retire(){this.nativeRetire?.(this.nativeSession);this.nativeRevision=undefined;this.nativeDeliveredRevision=undefined;}
   handedOff(encoded){if(encoded?.packet)this.packets.delete(encoded.packet.name);if(Number.isSafeInteger(encoded?.native_revision)){encoded.native_deliver?.(this.nativeSession,encoded.native_revision);this.nativeDeliveredRevision=encoded.native_revision;}}
   async close() {
     try{this.nativeRetire?.(this.nativeSession);this.nativeRetire=null;await this.closeChild()}finally{
@@ -259,7 +264,12 @@ export class DisplayStream {
     // its protected PNG may exceed the wire bound. Admit an opaque black PNG
     // first, then repair the SAME protected raster with ordinary tile credits.
     // No lossy pixels or partial canvas can authorize this bootstrap.
-    if (payload.kind === 'png' && JSON.stringify(payload).length > 700_000) {
+    const envelope = payload => ({ ...payload, subscription_id: this.subscription_id, tab_id: this.tab_id,
+      generation: source.generation, document_id: documentId, sequence: this.sequence + 1,
+      width: source.motion ? (this.css_width??1280)*this.device_scale_factor : current.width, height: source.motion ? (this.css_height??800)*this.device_scale_factor : current.height, css_width: this.css_width??1280, css_height: this.css_height??800,
+      device_scale_factor: this.device_scale_factor, colour: 'srgb' });
+    let packet = envelope(payload);
+    if (payload.kind === 'png' && egressBytes(packet) > egressLimit) {
       // Existing repair certificates belong to the replaced video canvas,
       // not this new black base. Bootstrap must cover EVERY protected pixel.
       const raster=current.pixels?current:await this.pixels.run('decode',{data:payload.data_base64,scale:this.device_scale_factor});
@@ -269,14 +279,11 @@ export class DisplayStream {
       payload={kind:'png',data_base64:encodePng(current.width,current.height,black)};
       repair=remaining;
       bootstrap=true;
+      packet=envelope(payload);
     }
     this.timing('select_encode', at); at = timestamp();
-    const packet = { ...payload, subscription_id: this.subscription_id, tab_id: this.tab_id,
-      generation: source.generation, document_id: documentId, sequence: this.sequence + 1,
-      width: source.motion ? (this.css_width??1280)*this.device_scale_factor : current.width, height: source.motion ? (this.css_height??800)*this.device_scale_factor : current.height, css_width: this.css_width??1280, css_height: this.css_height??800,
-      device_scale_factor: this.device_scale_factor, colour: 'srgb' };
-    const bytes = Math.ceil((Buffer.byteLength(JSON.stringify(packet))+(payload.native_packet?.length??0)) * 4 / 3) + 1024; // reserve transport/encryption envelope
-    if (bytes > 1024 * 1024) throw new Error('MD-DISPLAY: packet exceeds bounded egress');
+    const bytes = egressBytes(packet);
+    if (bytes > egressLimit) throw new Error('MD-DISPLAY: packet exceeds bounded egress');
     this.timing('packet_serialize', at); at = timestamp();
     // MD-DISPLAY-02/04: bounded 16 KiB burst accrued while capture/input runs.
     // Account all base64/envelope bytes, including bootstrap and exact repairs.
@@ -304,8 +311,7 @@ export class DisplayStream {
     if (!await validate()) { if(['video','stripes'].includes(payload.kind))this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}this.encoder.discard?.(source.encoded);return null; }
     if(bootstrap){
       this.producer?.retireUnsent();this.refiner?.invalidate();
-      this.encoder.nativeRetire?.(this.encoder.nativeSession);
-      this.encoder.nativeRevision=undefined;this.encoder.nativeDeliveredRevision=undefined;
+      this.encoder.retire?.();
     }
     this.encoder.handedOff?.(source.encoded);
     this.document_id = documentId; this.previous = current; this.repair = repair?.length ? repair : null;this.repairSerial=source.refinement_serial;
