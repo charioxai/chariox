@@ -3,10 +3,19 @@ use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
 
 use crate::provider::RuntimeProviderRun;
 
+mod brief;
+mod brief_refresh;
 mod builder;
-use builder::{load_agent_conversation, AgentConversation, MAX_HANDOFF_BYTES};
+mod facts;
+use builder::{load_agent_conversation, AgentConversation};
 
 const HIDDEN_HANDOFF_SUFFIX: &str = "The active user request is supplied separately.";
+/// The packet's share of the target model's window, and the bytes it allows
+/// per token: conservative, since code and paths tokenize densely.
+const HANDOFF_WINDOW_PERCENT: u64 = 15;
+const HANDOFF_BYTES_PER_TOKEN: u64 = 3;
+/// The prompt-prefix transport's cap, whatever the window.
+const MAX_PROMPT_HANDOFF_BYTES: u64 = 256_000;
 
 #[derive(Debug, Clone)]
 pub(super) struct PendingAgentContextHandoff {
@@ -17,6 +26,9 @@ pub(super) struct PendingAgentContextHandoff {
     pub(super) target_account_profile: String,
     pub(super) target_model: Option<String>,
     pub(super) conversation: AgentConversation,
+    /// Derived from history for a provider switch, so it carries the agent's
+    /// handoff brief.
+    pub(super) derived: bool,
 }
 
 /// Explicit handoffs for runs that start outside the agent's own conversation:
@@ -115,6 +127,17 @@ impl PendingAgentContextHandoff {
                 .is_none_or(|model| model == target_run.model())
     }
 
+    /// The packet size the target allows: 15% of its model's window, within
+    /// the prompt transport's cap.
+    fn budget(&self) -> usize {
+        let window = crate::provider::model_context_window_tokens(
+            &self.target_provider,
+            self.target_model.as_deref().unwrap_or_default(),
+        );
+        (window * HANDOFF_WINDOW_PERCENT / 100 * HANDOFF_BYTES_PER_TOKEN)
+            .min(MAX_PROMPT_HANDOFF_BYTES) as usize
+    }
+
     /// The handoff as the provider reads it, in at most `max_bytes`.
     fn render(&self, max_bytes: usize) -> Option<String> {
         let switch = format!(
@@ -136,6 +159,7 @@ impl PendingAgentContextHandoff {
                 "target_provider_run_id": self.target_provider_run_id,
                 "max_bytes": max_bytes,
                 "context_bytes": handoff.len(),
+                "brief_bytes": self.conversation.brief.as_ref().map(String::len),
             }),
         );
         Some(handoff)
@@ -144,7 +168,7 @@ impl PendingAgentContextHandoff {
     /// The handoff as Claude native hidden context, sized to `room`: the space
     /// the turn's other hidden context leaves under the hook ceiling.
     pub(super) fn render_hidden(&self, room: usize) -> String {
-        room.min(MAX_HANDOFF_BYTES)
+        room.min(self.budget())
             .checked_sub(HIDDEN_HANDOFF_SUFFIX.len() + 2)
             .and_then(|max_bytes| self.render(max_bytes))
             .map(|handoff| format!("{handoff}\n\n{HIDDEN_HANDOFF_SUFFIX}"))
@@ -154,7 +178,7 @@ impl PendingAgentContextHandoff {
 
 pub(super) fn inject_context_handoff(prompt: &str, handoff: &PendingAgentContextHandoff) -> String {
     handoff
-        .render(MAX_HANDOFF_BYTES)
+        .render(handoff.budget())
         .map(|context| crate::provider::encode_account_handoff(&context, prompt))
         .unwrap_or_else(|| prompt.to_string())
 }
@@ -236,6 +260,7 @@ impl super::KernelRuntimeOwnedState {
                     target_account_profile: target_account_profile.to_string(),
                     target_model: target_model.map(str::to_string),
                     conversation,
+                    derived: false,
                 },
             );
         }
@@ -287,6 +312,7 @@ impl super::KernelRuntimeOwnedState {
         if steering {
             return None;
         }
+        let started = std::time::Instant::now();
         if let Some(handoff) = self
             .pending_agent_context_handoffs
             .peek_matching(session_id, agent_id, target_run)
@@ -355,11 +381,12 @@ impl super::KernelRuntimeOwnedState {
             Some(latest) if holds_conversation(latest) => None,
             _ => self.agent_conversation(session_id, agent_id, Some(prompt_id)),
         };
-        let Some(conversation) = conversation else {
+        let Some(mut conversation) = conversation else {
             self.pending_agent_context_handoffs
                 .note_run_holds_conversation(session_id, agent_id, target_run.id());
             return None;
         };
+        self.add_session_facts(session_id, agent_id, prompt_id, &mut conversation);
         let latest = latest.as_ref();
         crate::logging::info_with_fields(
             "daemon.provider_context_handoff",
@@ -370,6 +397,7 @@ impl super::KernelRuntimeOwnedState {
                 "source_provider_run_id": latest.and_then(|latest| latest.provider_run_id.as_deref()),
                 "source_provider_session_id": latest.and_then(|latest| latest.provider_session_id.as_deref()),
                 "target_provider_run_id": target_run.id(),
+                "derive_ms": started.elapsed().as_millis() as u64,
             }),
         );
         Some(PendingAgentContextHandoff {
@@ -384,7 +412,54 @@ impl super::KernelRuntimeOwnedState {
             target_account_profile: target_run.account_profile().to_string(),
             target_model: Some(target_run.model().to_string()),
             conversation,
+            derived: true,
         })
+    }
+
+    /// The agent's stored handoff brief, its open interactions and the
+    /// prompts queued behind `prompt_id`.
+    fn add_session_facts(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        conversation: &mut AgentConversation,
+    ) {
+        conversation.brief = self
+            .operational_history_store
+            .load_agent_handoff_brief(session_id, agent_id)
+            .inspect_err(|error| {
+                crate::logging::warn_with_fields(
+                    "daemon.provider_context_handoff",
+                    "failed to load the agent's handoff brief",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "agent_id": agent_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            })
+            .ok()
+            .flatten()
+            .map(|stored| stored.brief);
+        let Ok(session) = self.session_store.get_session(session_id) else {
+            return;
+        };
+        conversation.facts.open_interactions = session
+            .active_interactions()
+            .iter()
+            .filter(|interaction| interaction.agent_id() == Some(agent_id))
+            .map(|interaction| match interaction.title() {
+                Some(title) => format!("{title}: {}", interaction.message()),
+                None => interaction.message().to_string(),
+            })
+            .collect();
+        let (_, queued) = self.prompt_state_owner.state_parts(&session, agent_id);
+        conversation.facts.queued_prompts = queued
+            .iter()
+            .filter(|queued| queued.id() != prompt_id)
+            .map(|queued| queued.prompt().to_string())
+            .collect();
     }
 
     pub(super) fn prompt_with_pending_context_handoff(
@@ -435,6 +510,7 @@ fn model_label(model: Option<&str>) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use super::builder::MAX_HANDOFF_BYTES;
     use super::*;
     use crate::runtime::state::KernelRuntimeState;
     use std::sync::Arc;
@@ -526,6 +602,7 @@ mod tests {
                 target_account_profile: "default".to_string(),
                 target_model: Some("model-new".to_string()),
                 conversation: conversation("prior context"),
+                derived: false,
             },
         );
 
@@ -981,7 +1058,7 @@ mod tests {
         for room in [0, 100, 1_000, 9_000, 18_000, 48_000] {
             let hidden = handoff.render_hidden(room);
             assert!(
-                hidden.len() <= room.min(MAX_HANDOFF_BYTES),
+                hidden.len() <= room.min(handoff.budget()),
                 "{} > {room}",
                 hidden.len()
             );
@@ -1043,6 +1120,48 @@ mod tests {
         assert!(!handoff.contains("try again on claude"), "{handoff}");
     }
 
+    #[tokio::test]
+    async fn a_switch_carries_the_stored_brief_and_the_packet_fits_the_target_window() {
+        let fixture = DerivedHandoffFixture::new().await;
+        fixture.user(1, "remember the codename amber-kestrel");
+        fixture.output(2, "run-old", "codex", Some("thread-old"), "OK");
+        fixture
+            .history
+            .save_agent_handoff_brief(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &crate::history::AgentHandoffBrief {
+                    brief: "## Goal\nShip amber-kestrel.\n## Next Steps\nTest.".to_string(),
+                    covered_through_sequence: 2,
+                },
+            )
+            .unwrap();
+
+        let handoff = fixture
+            .runtime
+            .owned
+            .context_handoff_for_dispatch(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.run("run-new", "claude", None),
+                "prompt-next",
+                false,
+            )
+            .expect("the new session receives the conversation");
+
+        assert!(handoff.derived);
+        assert_eq!(handoff.budget(), 90_000);
+        assert!(handoff
+            .render(handoff.budget())
+            .unwrap()
+            .contains("Ship amber-kestrel."));
+        let codex = PendingAgentContextHandoff {
+            target_provider: "codex".to_string(),
+            ..handoff
+        };
+        assert_eq!(codex.budget(), 116_280);
+    }
+
     fn test_run_in_session(
         run_id: &str,
         agent_id: &str,
@@ -1078,6 +1197,7 @@ mod tests {
                 target_account_profile: "default".to_string(),
                 target_model: None,
                 conversation: conversation("workflow context"),
+                derived: false,
             },
         );
 
@@ -1102,6 +1222,7 @@ mod tests {
             target_account_profile: "default".to_string(),
             target_model: Some("claude-opus-4-7".to_string()),
             conversation: conversation("prior context"),
+            derived: false,
         };
         let hidden = handoff.render_hidden(MAX_HANDOFF_BYTES);
 
@@ -1128,6 +1249,7 @@ mod tests {
                 target_account_profile: "default".to_string(),
                 target_model: Some("gpt-5".to_string()),
                 conversation: conversation("prior context"),
+                derived: false,
             },
         );
 

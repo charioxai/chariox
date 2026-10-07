@@ -74,6 +74,8 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry("history.archive.archive_before_delete", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Archive-before-delete flag; deletion flow does not currently consume it."),
         entry("history.archive.delete_operational_after_verified_archive", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Delete-after-archive flag; no archive cleanup flow currently consumes it."),
         entry("history.archive.require_durable_acceptance", "bool", &["true", "false"], true, true, "none", "live", "Require durable archive acceptance for history events."),
+        entry("history.handoff.codex_brief_model", "string", &[], true, true, "none", "live", "Model that writes provider-switch handoff briefs on Codex; unset uses the source or target model."),
+        entry("history.handoff.claude_brief_model", "string", &[], true, true, "none", "live", "Model that writes provider-switch handoff briefs on Claude; unset uses the source or target model."),
         entry("artifacts.operational.backend", "enum", &["filesystem"], true, false, "none", "live", "Operational artifact storage backend."),
         entry("artifacts.operational.root", "string", &[], true, true, "none", "live", "Operational artifact filesystem root."),
         entry("artifacts.operational.index_path", "string", &[], true, true, "none", "live", "Operational artifact SQLite index path."),
