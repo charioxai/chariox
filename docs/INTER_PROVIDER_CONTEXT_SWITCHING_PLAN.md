@@ -2,48 +2,45 @@
 
 ## Goal
 
-When a user changes an agent from one provider/model to another, Chariox should carry enough recent context into the new provider session for the next provider-bound prompt to make sense. The handoff must be deterministic, bounded, and must not call an LLM unless the user explicitly asks for the provider switch and we later add an opt-in summary path.
+When a user changes an agent's provider, model, or account, the agent keeps its conversation. The kernel owns that continuity, never calls an LLM for it, and survives kernel restarts.
 
 ## Policy
 
-The kernel owns the handoff. On a successful provider launch, if the previous active run belonged to the same agent and the provider or model changed, the kernel builds a one-shot context packet from operational history and stores it in memory for that session/agent.
+A model or effort change within the same provider and account keeps the provider's native session: Codex resumes the thread with `thread/resume` and the new `model`, Claude launches with `--resume <session> --model <model>`, and OpenCode resumes its session. The provider keeps the whole conversation and compacts it for the new model's window itself. `ProviderResumeState::after_profile_change` is the single rule for local, home-remote, and worker-leased profile updates.
 
-The packet is injected only into the next prompt sent to that agent, including workflow prompts. Stored user history, prompt queues, and terminal echoes remain the original user text.
+A provider or account change cannot reuse the native session, which lives in the other provider's or account's store, so the kernel transfers the conversation. The handoff is derived from operational history at dispatch: a prompt carries it when the run's native session has never answered this agent. The operational history store records each provider session that answered an agent, so history retention cannot erase it. The kernel keeps no handoff state of its own. The rule therefore applies equally when the switch happened without a live run, across a kernel restart, or after a provider could not resume its session. Run ids restart with the kernel, so an answer is a run's own only when it was given since that run started. A conversation that no provider ever answered still transfers its prompts and errors.
 
-The context packet is bounded and prioritized:
+The handoff goes out once per new session. After the run receives it, later prompts to that run skip it, including queued prompts and the next prompt after a failed first turn. Steering prompts join the turn that already carried it. A source answer recorded without a provider session ID still transfers. Workflow fresh-context runs and turn substitutes never receive it this way.
 
-1. Current/latest turn gets detail: latest user prompt, assistant output/status/error, and tool details from that turn.
-2. Older turns get only user prompts plus assistant output summaries/snippets.
-3. Stable facts and status/error details are included only for the latest turn.
-4. Tool use is included only for the latest turn. Older tool output is excluded.
+Fork targets and turn substitutes start outside the agent's own conversation and keep an explicit one-shot handoff, consumed when the provider accepts the turn.
 
-## Phases
+Stored user history, prompt queues, and terminal echoes remain the original user text.
 
-### Phase 1: Deterministic Handoff Builder
+## Handoff contents
 
-Add a pure builder over operational history events. It partitions events at the last `user_prompt`, formats prior turns compactly, formats the latest turn with detail, and enforces a fixed character budget.
+The packet is deterministic, and its byte budget is strict:
 
-### Phase 2: Provider Switch Capture
+- Codex and Claude `-p` turns allow up to 24 KB.
+- Claude native turns take whatever room the turn's other hidden context leaves under the 48 KB hook transport, capped at 24 KB. A switch therefore never fails the turn.
 
-On provider launch success, detect same-agent provider/model switches. Load the agent's operational history, build the handoff packet, and save it in a pending in-memory store keyed by session and agent.
+The packet fills its budget in this order, and the earlier items give way last:
 
-### Phase 3: One-Shot Prompt Injection
+1. The latest completed turn in detail: user prompt, assistant output, and its tool, status, and error details. A retried request instead carries its interrupted attempt's output and provider details here, with its duplicated user line removed. Kernel notices alone do not make a dispatching request an interrupted attempt. The prompt being dispatched is the request itself and is never part of the packet.
+2. Every prior user prompt, newest first, because prompts carry the requests, facts, and decisions.
+3. Prior assistant answers, newest first, in the remaining budget.
+4. Turns that do not fit are named with a pointer to the `chariox.search_recall` tool.
 
-At prompt dispatch time, after liveness checks and before provider input is written, consume any pending handoff for the session/agent and prepend it to the provider prompt. This applies to user prompts and workflow prompts because both need provider-session continuity after a switch.
+## Validation
 
-### Phase 4: Validation Drills
-
-Run targeted tests and manual drills to verify:
-
-1. Switching providers after prior work injects past user prompts and assistant snippets.
-2. Latest-turn tool/error details are included.
-3. Older tool output is not included.
-4. The handoff is consumed once and not repeated on the second prompt.
-5. Budget pressure drops older context before the latest turn.
-6. Workflow prompts receive the handoff when they are the first prompt after a provider switch.
-
-Implemented kernel drills:
-
-- `runtime::state::context_handoff::tests::older_tool_output_is_excluded_but_latest_tool_output_is_included`
-- `runtime::state::context_handoff::tests::handoff_is_bounded_under_large_history`
-- `runtime::state::context_handoff::tests::pending_handoff_is_consumed_once`
+- `runtime::state::context_handoff::tests::new_provider_session_receives_the_conversation_until_it_answers`
+- `runtime::state::context_handoff::tests::a_new_session_receives_the_conversation_once`
+- `runtime::state::context_handoff::tests::a_resumed_session_keeps_its_conversation_after_history_retention`
+- `app::provider_output_claude_native::tests::claude_native_handoff_takes_only_the_room_its_turn_leaves`
+- `runtime::state::context_handoff::builder::tests::handoff_shrinks_to_any_budget_and_keeps_the_latest_request_longest`
+- `runtime::state::context_handoff::builder::tests::early_user_facts_survive_a_conversation_of_ordinary_turns`
+- `runtime::state::context_handoff::builder::tests::handoff_is_bounded_under_large_history`
+- `provider::launch_contract::tests::provider_resume_state_keeps_the_native_session_across_a_model_change`
+- `runtime::state::context_handoff::builder::tests::the_dispatching_prompt_leaves_the_last_completed_turn_latest`
+- `runtime::state::context_handoff::builder::tests::claude_text_blocks_separated_by_thinking_stay_apart`
+- `runtime::state::agent_config_runtime_state::tests::automatic_substitutes::the_substitute_and_the_next_primary_turn_see_the_conversation` (tool row, provider error and a single request)
+- Live drill: `apps/cli/scripts/live-model-switch-context-drill.mjs` plants facts, optionally adds filler turns or restarts the kernel before or after the switch, changes the agent profile, and probes recall without tools.

@@ -1288,12 +1288,14 @@ impl DaemonApp {
         provider_run_id: &str,
         provider_run: &RuntimeProviderRun,
         dispatch: &crate::app::KernelPromptDispatch,
+        context_handoff: &dyn Fn(usize) -> String,
     ) -> Result<crate::app::ClaudeNativeDispatchAttempt, DaemonError> {
         ProviderOutputClaudeNativeBridge::new(self).process_prompt_dispatch_attempt(
             session_id,
             provider_run_id,
             provider_run,
             dispatch,
+            context_handoff,
         )
     }
 
