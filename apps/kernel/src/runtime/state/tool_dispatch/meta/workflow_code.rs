@@ -877,10 +877,8 @@ impl KernelRuntimeState {
 fn meta_workflow_code_node_path(
     node_path: Option<String>,
 ) -> Result<std::path::PathBuf, DaemonError> {
-    node_path
-        .map(std::path::PathBuf::from)
-        .map(Ok)
-        .unwrap_or_else(crate::workflow_code::discover_workflow_code_node_path)
+    let _ = node_path; // MP-08/MP-11: operator configuration selects the compiler.
+    crate::workflow_code::discover_workflow_code_node_path()
 }
 
 fn meta_workflow_code_source(
