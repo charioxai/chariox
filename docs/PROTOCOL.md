@@ -538,7 +538,7 @@ can instead use a dedicated loopback carrier that has no authority of its own:
    earlier of 30 seconds on the kernel clock and the identity's expiry, which
    every relay dispatch also requires; a kernel clock ahead of Cloud shortens
    each lease by the same amount, and direct mode tolerates up to about 15
-   seconds of it. The session uses that freshly verified identity for
+   seconds of it (about 10 seconds when one renewal is also lost). The session uses that freshly verified identity for
    subsequent dispatch, allowing continuous renewal across identity expiry.
    Thus even a cached authorization issued before Cloud revocation cannot
    extend the session beyond its expiry. The browser
