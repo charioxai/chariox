@@ -868,7 +868,7 @@ fn app_error(error: crate::durable_state::app_tools::AppToolsError) -> BrowserAp
 fn view_caller(binding: &AppViewBinding, session_id: &str) -> CallerContext {
     CallerContext {
         actor: Actor::Human(binding.owner.clone()),
-        room_id: Some(session_id.into()),
+        room_id: session_id.into(),
         operation_id: format!("app-operation-{:016x}", rand::random::<u64>()),
         task_id: None,
         turn_id: None,
@@ -1008,7 +1008,7 @@ mod tests {
         };
         let caller = view_caller(&binding, "session-1");
         assert!(matches!(&caller.actor, Actor::Human(owner) if owner == "alice"));
-        assert_eq!(caller.room_id.as_deref(), Some("session-1"));
+        assert_eq!(caller.room_id, "session-1");
         assert!(caller.task_id.is_none() && caller.turn_id.is_none());
     }
 

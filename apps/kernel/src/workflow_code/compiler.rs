@@ -225,8 +225,14 @@ pub(crate) mod compile_gate_for_test {
 }
 
 pub fn discover_workflow_code_node_path() -> Result<PathBuf, crate::DaemonError> {
+    discover_node_path(env::var_os("NODE"))
+}
+
+fn discover_node_path(
+    configured: Option<std::ffi::OsString>,
+) -> Result<PathBuf, crate::DaemonError> {
     let mut candidates = Vec::new();
-    if let Some(path) = env::var_os("NODE") {
+    if let Some(path) = configured {
         candidates.push(PathBuf::from(path));
     }
     candidates.extend([
@@ -263,11 +269,10 @@ pub fn discover_workflow_code_node_path() -> Result<PathBuf, crate::DaemonError>
 #[test]
 fn node_discovery_preserves_the_explicit_runtime_override() {
     use std::os::unix::fs::PermissionsExt;
-    let _environment = crate::env_lock::lock();
+    // Never set the process-wide NODE: parallel compiler tests discover Node too.
     let worktree = crate::test_support::TestWorktree::new("node-discovery-override");
     let node = worktree.path().join("configured-node");
     std::fs::write(&node, "#!/bin/sh\nexit 0\n").unwrap();
     std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o700)).unwrap();
-    std::env::set_var("NODE", &node);
-    assert_eq!(discover_workflow_code_node_path().unwrap(), node);
+    assert_eq!(discover_node_path(Some(node.clone().into())).unwrap(), node);
 }
