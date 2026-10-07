@@ -72,7 +72,7 @@ PID, bus names and object paths remain internal. Both the JS adapter and Python
 action helper revalidate the tree before dispatch. Mutation retires handles;
 stale denial requires rediscovery, never blind mutation replay. MP-11: protection policy participates in cache revisions, policy updates clear observers, and actions recheck current target protection. Missing or
 incomplete accessibility coverage reports OCR fallback. MP-08 / MP-11: the
-public projection is bounded to 64 nodes and 14 KiB of node JSON, prioritizing
+public projection is bounded to 64 nodes and a 3 KiB serialized-node budget, prioritizing
 visible actionable or editable controls. Pruning reports incomplete coverage
 and OCR fallback. The complete private tree still fences actions and
 observation protection, including changes in omitted nodes.
@@ -83,7 +83,7 @@ widgets cause full-desktop black PNG and withheld OCR/clipboard. An owned
 window without AT-SPI (e.g. xterm) instead blacks out only its frame, minus
 parts covered by owned AT-SPI windows stacked above it per
 `_NET_CLIENT_LIST_STACKING` (whole frame without stacking data), plus every
-viewable override-redirect popup. Snapshots list these regions as `masked`
+viewable override-redirect popup. Snapshots list at most 16 of these regions as `masked`
 `[x,y,w,h]` so agents know the black window still takes input; coverage stays
 incomplete and clipboard read stays closed while one is visible. Coverage is
 checked before and after capture or clipboard read; a changed tree or mask
