@@ -14,6 +14,7 @@
 //   [--keep-session]  leave the drill session for inspection instead of deleting it
 //   [--bulk-turns N --bulk-kb K]  scripted long session: N turns that each paste K KB of
 //     notes and ask for a summary, so the history outgrows any fixed handoff
+//   [--kernel-ref REF | --slice-ref REF]  home-owned leased or slice agent
 //   [--rich-probes]  also probe an answer-only fact, a superseded decision, the current
 //     task and next step, a file a tool created, and the latest tool result
 //   [--allow-recall]  let the recall turn use the chariox.search_recall tool
@@ -26,6 +27,8 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import process from "node:process"
 import { setTimeout as sleep } from "node:timers/promises"
+
+import { agentSnapshot, assertContinuedPlacement, evidenceName, placementRequest, scoreFacts, scoreSummary } from "./lib/model-switch-coverage.mjs"
 
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
@@ -83,6 +86,8 @@ const kernelUrl = option("kernel-url")
 const workspace = path.resolve(option("workspace", process.cwd()))
 const from = profile(option("from", ""))
 const to = profile(option("to", ""))
+const placement = { kernelRef: option("kernel-ref"), sliceRef: option("slice-ref") }
+if (placement.kernelRef && placement.sliceRef) throw new Error("select either --kernel-ref or --slice-ref")
 const timeoutMs = Number(option("timeout-ms", "300000"))
 const fillerTurns = Number(option("filler-turns", "0"))
 const recallAttachmentBytes = Number(option("recall-attachment-bytes", "0"))
@@ -111,7 +116,7 @@ const notes = (turn) => {
   }
   return lines.join("\n")
 }
-const evidence = { from, to, facts, started_at_ms: Date.now(), turns: [] }
+const evidence = { from, to, placement, facts, started_at_ms: Date.now(), turns: [] }
 const client = new LocalIpcClient(kernelUrl)
 let sessionId = null
 let scratch = null
@@ -121,7 +126,13 @@ try {
     execution_mode: "build", permission_level: "yolo",
   })), "SessionCreated")
   sessionId = created.session.id
-  const agentId = created.agent.id
+  const agent = placement.kernelRef || placement.sliceRef
+    ? variant(await client.send(placementRequest(sessionId, from, placement)), "AgentSpawned").agent
+    : created.agent
+  const agentId = agent.id
+  evidence.source_agent = agentSnapshot(agent)
+  assertContinuedPlacement(evidence.source_agent, evidence.source_agent, placement)
+
   // The drill does not subscribe to events, so the kernel may reap an idle
   // attachment between turns (or drop it on restart); attach for each prompt.
   const attach = async () => variant(await client.send(attachToSessionRequest(sessionId, `ctxswitch-drill-${process.pid}`)), "SessionAttached").attachment
@@ -182,7 +193,8 @@ try {
   const switched = variant(await client.send(updateAgentProfileRequest({
     sessionId, agentId, provider: to.provider, model: to.model, effort: to.effort, accountProfile: to.accountProfile,
   })), "AgentProfileUpdated").agent
-  evidence.switched_agent = { provider: switched.provider, model: switched.model, effort: switched.effort, account_profile: switched.account_profile }
+  evidence.switched_agent = agentSnapshot(switched)
+  assertContinuedPlacement(evidence.source_agent, evidence.switched_agent, placement)
   hook("after-switch-cmd")
 
   const files = []
@@ -206,11 +218,7 @@ try {
   const probe = async (label, files = [], followUp = null) => {
     const keys = Object.keys(facts)
     const recall = await ask(label, `${tools}, answer from our conversation so far: ${keys.map(key => questions[key]).join("; ")}. Reply on one line exactly as ${keys.map(key => `${key}=<value>`).join(" ")}, writing UNKNOWN for anything you were not told.`, files, followUp)
-    // Score each key on its own answer: the value up to the next key must
-    // contain the fact as a whole token.
-    const line = recall.text.split("\n").find(line => line.includes("=")) ?? ""
-    const answers = Object.fromEntries([...line.matchAll(/([a-z_]+)=(.*?)(?=\s+[a-z_]+=|$)/g)].map(([, key, value]) => [key, value.toLowerCase()]))
-    return Object.fromEntries(Object.entries(facts).map(([key, value]) => [key, (answers[key] ?? "").split(/[\s,;`'"]+/).map(token => token.replace(/\.$/, "")).includes(String(value).toLowerCase())]))
+    return scoreFacts(recall.text, facts)
   }
   evidence.recalled = await probe("recall", files,
     process.argv.includes("--queued-follow-up") ? "Without using tools, reply with just the word DONE." : null)
@@ -218,11 +226,14 @@ try {
   if (process.argv.includes("--round-trip")) {
     facts.colour = `${pick()}-blue`
     await ask("fact-4", `One more thing to remember: my favourite colour is ${facts.colour}. Do not use tools. Reply with just OK.`)
-    variant(await client.send(updateAgentProfileRequest({
+    const returned = variant(await client.send(updateAgentProfileRequest({
       sessionId, agentId, provider: from.provider, model: from.model, effort: from.effort, accountProfile: from.accountProfile,
-    })), "AgentProfileUpdated")
+    })), "AgentProfileUpdated").agent
+    evidence.returned_agent = agentSnapshot(returned)
+    assertContinuedPlacement(evidence.source_agent, evidence.returned_agent, placement)
     evidence.recalled_after_return = await probe("recall-return")
   }
+  evidence.scores = { after_switch: scoreSummary(evidence.recalled), after_return: evidence.recalled_after_return && scoreSummary(evidence.recalled_after_return) }
   evidence.passed = [evidence.recalled, evidence.recalled_after_return ?? {}].every(recalled => Object.values(recalled).every(Boolean))
   assert.ok(evidence.passed, `facts lost after switch: ${JSON.stringify([evidence.recalled, evidence.recalled_after_return])}`)
 } catch (error) {
@@ -240,6 +251,6 @@ try {
 }
 
 await mkdir(evidenceRoot, { recursive: true })
-const evidencePath = path.join(evidenceRoot, `${from.provider}-${from.model}-to-${to.provider}-${to.model}-${Date.now()}.json`)
+const evidencePath = path.join(evidenceRoot, evidenceName(from, to, Date.now()))
 await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8")
 console.log(`model switch drill ${evidence.passed ? "passed" : "failed"}: ${JSON.stringify(evidence.recalled ?? evidence.failure)}; evidence: ${evidencePath}`)
