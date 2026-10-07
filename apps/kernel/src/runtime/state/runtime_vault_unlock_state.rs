@@ -243,18 +243,38 @@ impl KernelRuntimeState {
         agent_id: Option<&str>,
         operation: &'static str,
     ) -> Result<VaultUnlockGuard, DaemonError> {
+        let Some((session_id, agent_id)) = self
+            .preflight_vault_unlock_for_command_context(command, session_id, agent_id, operation)
+            .await?
+        else {
+            return Ok(VaultUnlockGuard::not_required());
+        };
+        self.ensure_vault_unlocked_for_agent(&session_id, &agent_id, operation)
+            .await
+    }
+
+    /// Validate where an unlock interaction can be shown without acquiring a
+    /// Vault lease. Verification of caller-supplied input can then run while
+    /// the Vault stays locked; the actual write repeats this same preflight.
+    pub(crate) async fn preflight_vault_unlock_for_command_context(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+        session_id: Option<&str>,
+        agent_id: Option<&str>,
+        operation: &'static str,
+    ) -> Result<Option<(String, String)>, DaemonError> {
         let user_config = self.owned.config_projection.snapshot().user_config;
         if user_config.credential_vault.backend
             != crate::config::CredentialVaultBackend::CharioxEncrypted
         {
-            return Ok(VaultUnlockGuard::not_required());
+            return Ok(None);
         }
         let vault_path = expand_vault_path(&user_config.credential_vault.path);
         if user_config.credential_vault.unlock_policy
             != crate::config::CredentialVaultUnlockPolicy::Always
             && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked
         {
-            return Ok(VaultUnlockGuard::unlocked_until_expiry());
+            return Ok(None);
         }
         let session_id = session_id
             .or(command.session_id.as_deref())
@@ -271,8 +291,7 @@ impl KernelRuntimeState {
                 operation,
             )
             .await?;
-        self.ensure_vault_unlocked_for_agent(session_id, &agent_id, operation)
-            .await
+        Ok(Some((session_id.to_owned(), agent_id)))
     }
 
     /// The unlock popup is an agent's runtime interaction. Without a named
@@ -1240,9 +1259,18 @@ mod mp11_always_tests {
                     },
                 )
                 .await;
+            // MP-11: this refusal must precede any provider invocation. A
+            // regression must fail locally, never call an installed real CLI.
+            let previous_claude_bin = std::env::var_os("CHARIOX_CLAUDE_BIN");
+            std::env::set_var("CHARIOX_CLAUDE_BIN", root.join("must-not-execute-claude"));
             let provider = crate::runtime::user_config_executor::execute_set_provider_account_credential_request(projection, &state, &command,
                 crate::local::SetProviderAccountCredentialRequest { session_id: None, agent_id: None, provider: "claude".into(), account_profile: profile.profile_id,
                     value: "synthetic-value".into(), run: false, overwrite: true }).await;
+            if let Some(previous) = previous_claude_bin {
+                std::env::set_var("CHARIOX_CLAUDE_BIN", previous);
+            } else {
+                std::env::remove_var("CHARIOX_CLAUDE_BIN");
+            }
             let refused = [set, delete, provider].into_iter().all(|result| {
                 result.is_err_and(|error| error.to_string().contains("requires a session_id"))
             });
