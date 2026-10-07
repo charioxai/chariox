@@ -221,7 +221,7 @@ fn passkey_prompts_and_their_popup_event_are_versioned() {
 }
 
 #[test]
-fn process_bound_access_protocol_404_has_metadata_but_no_bearer() {
+fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
     use crate::local::{
         KernelAccessGrant, ListKernelAccessGrantsRequest, RequestKernelAccessRequest,
         RevokeKernelAccessGrantRequest,
@@ -229,7 +229,6 @@ fn process_bound_access_protocol_404_has_metadata_but_no_bearer() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 462);
     let grant = KernelAccessGrant {
         grant_id: "g".into(),
-        session_id: "s".into(),
         owner_user_id: "local".into(),
         holder_pid: 42,
         holder_executable: "/usr/bin/agent".into(),
@@ -238,7 +237,6 @@ fn process_bound_access_protocol_404_has_metadata_but_no_bearer() {
     };
     let requests = [
         LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
-            session_id: "s".into(),
             holder_pid: 42,
             lifetime_minutes: Some(30),
         }),
@@ -259,6 +257,9 @@ fn process_bound_access_protocol_404_has_metadata_but_no_bearer() {
             sudo_turns: vec![],
         },
         LocalDaemonResponse::KernelAccessRevoked { revoked: 1 },
+        LocalDaemonResponse::KernelAccessDecisionResponded {
+            interaction_id: "g-grant".into(),
+        },
     ];
     for request in &requests {
         assert_eq!(
@@ -274,12 +275,19 @@ fn process_bound_access_protocol_404_has_metadata_but_no_bearer() {
             *response
         );
     }
+    assert!(
+        serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({"RequestKernelAccess": {
+            "holder_pid": 42, "session_id": "obsolete"
+        }}))
+        .is_err(),
+        "451 rejects session-scoped clients"
+    );
     let snapshot = serde_json::json!({ "requests": requests, "responses": responses,
         "kinds": [PasskeyPromptKind::AccessGrant, PasskeyPromptKind::AccessExtension] });
     let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "328c2b79aca163f32a42062d5fa47cd81221f9134052e286c96e051b6a7b09f0"
+        "2e0ccb5c1c904a48d996076f62a500b3dcdab528ab6f1f8c9bbabc275c90f2c1"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(
         serde_json::json!({"RequestKernelAccess": {

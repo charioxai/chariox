@@ -810,8 +810,30 @@ async fn sudo_restart_discards_queue_and_records_notice_without_prompt_content()
 }
 
 #[tokio::test]
-async fn sudo_runtime_mcp_uses_shared_router_and_removes_tool_at_yield() {
+async fn sudo_runtime_mcp_catalog_is_stable_but_authority_ends_at_yield() {
     let f = fixture();
+    // Official harnesses cache discovery before the first turn. The interface
+    // must already exist then, without granting an ordinary turn authority.
+    let initial_catalog = f
+        .router
+        .runtime_tool_specs_for_auth_token("sudo-fixture-bearer");
+    assert!(!f
+        .router
+        .runtime_tool_specs_for_auth_token("unknown-token")
+        .iter()
+        .any(|spec| spec.name == "chariox_kernel_request"));
+    assert!(initial_catalog
+        .iter()
+        .any(|spec| spec.name == "chariox_kernel_request"));
+    assert!(f
+        .router
+        .dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            "chariox_kernel_request",
+            serde_json::json!({"request": {"ListSessions": null}})
+        )
+        .await
+        .is_err());
     let turn = running(&f);
     assert!(f
         .router
@@ -906,7 +928,7 @@ async fn sudo_runtime_mcp_uses_shared_router_and_removes_tool_at_yield() {
         .prompt_state_owner
         .cancel_active_prompt_only(&session, &turn.agent_id)
         .unwrap();
-    assert!(!f
+    assert!(f
         .router
         .runtime_tool_specs_for_auth_token("sudo-fixture-bearer")
         .iter()
@@ -1168,7 +1190,7 @@ async fn external_sudo_revoked_holder_cancels_popup_and_busy_queue() {
 }
 
 #[tokio::test]
-async fn external_sudo_only_granted_target_is_allowed_and_terminal_cannot_request() {
+async fn external_sudo_cross_session_request_is_allowed_and_terminal_cannot_request() {
     let f = fixture();
     let request = external_request(&f);
     assert!(f
@@ -1179,15 +1201,13 @@ async fn external_sudo_only_granted_target_is_allowed_and_terminal_cannot_reques
     let other = crate::session::RuntimeSession::new("ungranted", None, "w", "wt", "m", "k");
     f.state.owned.session_store.write().restore_session(other);
     let grant = f.state.insert_access_grant_for_test("ungranted");
-    assert!(!f.state.external_request_in_session(
-        "ungranted",
-        &LocalDaemonRequest::RequestKernelSudo(request.clone())
-    ));
     assert!(f
         .state
-        .request_kernel_sudo(&grant, request.clone())
-        .await
-        .is_err());
+        .authorize_external_request(
+            &grant,
+            &LocalDaemonRequest::RequestKernelSudo(request.clone())
+        )
+        .is_ok());
     let request = LocalDaemonRequest::RequestKernelSudo(request);
     let mut command = crate::runtime::command::KernelCommand::from_local_request(
         "external-sudo-tcp",

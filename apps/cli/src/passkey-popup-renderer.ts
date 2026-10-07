@@ -117,9 +117,10 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       body.add(text(prompt.title || "Critical approval", { accent: true, bold: true }))
       body.add(text(prompt.message))
       panel.add(body)
+      const kernelScope = prompt.session_id === "kernel-access" && (prompt.kind === "access_grant" || prompt.kind === "access_extension")
       section(text(new StyledText([
-        { __isChunk: true, text: prompt.session_id ? `Session: ${prompt.session_alias || prompt.session_id}` : "User domain", fg: theme.text },
-        { __isChunk: true, text: `${prompt.session_id && prompt.session_alias ? ` (${prompt.session_id})` : ""} · expires ${expiry(prompt.expires_at_ms)}`, fg: theme.textMuted },
+        { __isChunk: true, text: kernelScope ? "Local kernel" : prompt.session_id ? `Session: ${prompt.session_alias || prompt.session_id}` : "User domain", fg: theme.text },
+        { __isChunk: true, text: `${!kernelScope && prompt.session_id && prompt.session_alias ? ` (${prompt.session_id})` : ""} · expires ${expiry(prompt.expires_at_ms)}`, fg: theme.textMuted },
       ])))
       if (!view.open) {
         section(button("Review · F8", true, actions.show), text("F8 reviews · Esc hides · typing stays in composer", { muted: true }))

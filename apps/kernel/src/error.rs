@@ -29,6 +29,10 @@ pub enum DaemonError {
     KernelAccessRefused,
     #[error("owner request expired")]
     OwnerRequestExpired,
+    /// MP-08 / MP-11: preserve mapped executor semantics for external grants
+    /// and sudo without retaining any diagnostic values or source error.
+    #[error("external request failed; details are available only in the host terminal")]
+    ExternalRequestFailed { code: String, retryable: bool },
     #[error(
         "relay transport `{operation}` failed with code `{code}` (retryable={retryable}): {message}"
     )]

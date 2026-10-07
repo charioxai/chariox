@@ -162,6 +162,7 @@ export type PasskeyPrompt = {
   kind: "critical_approval" | "access_grant" | "access_extension" | "sudo"
   lifetime_minutes?: number | null
   max_lifetime_minutes?: number | null
+  /** Protocol 451: access decisions use the kernel-wide routing id `kernel-access`. */
   session_id: string
   session_alias?: string | null
   interaction_id: string
@@ -441,7 +442,6 @@ export type RuntimeAttachment = {
 
 export type KernelAccessGrant = {
   grant_id: string
-  session_id: string
   owner_user_id: string
   holder_pid: number
   holder_executable: string
@@ -450,6 +450,7 @@ export type KernelAccessGrant = {
 }
 export type KernelAccessGrantedResponse = { KernelAccessGranted: { grant: KernelAccessGrant } }
 export type KernelAccessGrantsListedResponse = { KernelAccessGrantsListed: { grants: KernelAccessGrant[]; sudo_turns: KernelSudoTurn[] } }
+export type KernelAccessDecisionRespondedResponse = { KernelAccessDecisionResponded: { interaction_id: string } }
 export type KernelAccessRevokedResponse = { KernelAccessRevoked: { revoked: number } }
 
 export type KernelSudoTurn = {

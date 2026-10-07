@@ -51,6 +51,7 @@ fn kernel_access_config_mutations_validate_and_unset_to_defaults() {
         "grant_max_minutes = 1441",
         "grant_extend_notice_minutes = 480",
         "request_timeout_minutes = 0",
+        "grant_max_minutes = 1441",
     ] {
         let config =
             toml::from_str::<CharioxUserConfig>(&format!("[kernel_access]\n{payload}")).unwrap();

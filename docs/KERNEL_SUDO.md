@@ -73,7 +73,7 @@ A sudo turn's `chariox_kernel_request` takes one serialized
 {"request":{"ListSessions":null}}
 ```
 
-External agents holding a process-bound session grant can request a window
+External agents holding a process-bound local-kernel grant can request a window
 over that kernel's Unix socket:
 
 ```sh
@@ -83,11 +83,22 @@ chariox sudo request --agent <agent-id> --prompt "<full prompt>" [--socket /abso
 The host's popup names the grant holder's OS executable and PID, the target
 agent and session, and the full requester-supplied prompt. Only the host's
 terminals can answer it; the external client never sends or receives the
-passkey. TCP, relay, ungranted peers and targets outside the granted session
-are refused, and the window ends when the requester's grant ends. Shell CLI
-calls use the tracked provider's OS process tree; descendants that existed
-before the window are excluded. Leased sudo execution remains a separate leg.
+passkey. TCP, relay and ungranted peers are refused; any local session's agent
+may be targeted and each request needs a fresh host passkey. The window ends
+when the requester's grant ends. Shell CLI calls use the tracked provider's OS
+process tree; descendants that existed before the window are excluded. Leased
+sudo execution remains a separate leg.
 
 Run `scripts/kernel-access-sudo-drill.sh` on the Linux builder for the source
 regression drill; real acceptance uses the built TUI, kernel and an official
 provider (see the lane evidence).
+
+MP-08 / MP-10 / MP-11: the shared router also filters every response to a
+local grant or sudo MCP caller. Credential read and mutation replies redact
+literal injection values. Raw MCP/connector configuration, native login
+output/codes, pairing/Cloud admission credentials and enrollment callbacks
+are withheld; inspect those through the host terminal. An operation can complete
+while its reply is withheld; check host-terminal state before retrying. Executor failures use
+a value-free error because parser/provider diagnostics can echo secrets. Exact
+constant refusal, expiry and revocation diagnostics remain available.
+This preserves normal workspace/history authority and is not a file sandbox.
