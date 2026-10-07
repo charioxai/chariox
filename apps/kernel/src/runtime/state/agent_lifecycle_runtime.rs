@@ -364,6 +364,9 @@ impl KernelRuntimeState {
             return Ok(());
         }
         let now = crate::session::unix_epoch_ms();
+        if let Err(error) = self.sweep_agent_wakes(now).await {
+            tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: wake dead-man check retained");
+        }
         let mut blocked = Vec::new();
         for task in self.owned.durable_state_store.agent_tasks(None, None)? {
             let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {
@@ -520,7 +523,12 @@ impl KernelRuntimeState {
                             || task.pending_prompt_id.as_deref() == Some(p.id())
                     })
                 });
-            if ledger::lacks_live_executor(&task, now, active, queued) {
+            if ledger::lacks_live_executor(&task, now, active, queued)
+                && !self
+                    .owned
+                    .durable_state_store
+                    .agent_has_live_wake_admission(&task, crate::session::unix_epoch_ms)?
+            {
                 if let Outcome::Task(task) = self.owned.durable_state_store.agent_lifecycle(Operation::Block{task:task.task_id,prompt:task.prompt_id,reason:"No live provider turn or confirmed wake delivery; owner must reconcile and resume".into()})? {
                     blocked.push(task);
                 }

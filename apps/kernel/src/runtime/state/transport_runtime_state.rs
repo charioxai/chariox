@@ -58,14 +58,26 @@ impl KernelRuntimeState {
             return;
         }
         let now = crate::session::unix_epoch_ms();
-        let next = self.owned.next_agent_lifecycle_sweep_ms.load(Ordering::Acquire);
+        let next = self
+            .owned
+            .next_agent_lifecycle_sweep_ms
+            .load(Ordering::Acquire);
         if next > now.saturating_add(crate::durable_state::agent_lifecycle::SWEEP_MS) {
-            let _ = self.owned.next_agent_lifecycle_sweep_ms.compare_exchange(next,0,Ordering::AcqRel,Ordering::Acquire);
+            let _ = self.owned.next_agent_lifecycle_sweep_ms.compare_exchange(
+                next,
+                0,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
         }
-        if claim_periodic_sweep(&self.owned.next_agent_lifecycle_sweep_ms, now, crate::durable_state::agent_lifecycle::SWEEP_MS) {
-        if let Err(error) = self.sweep_agent_lifecycle().await {
-            tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: agent lifecycle sweep failed; retained intents need reconciliation");
-        }
+        if claim_periodic_sweep(
+            &self.owned.next_agent_lifecycle_sweep_ms,
+            now,
+            crate::durable_state::agent_lifecycle::SWEEP_MS,
+        ) {
+            if let Err(error) = self.sweep_agent_lifecycle().await {
+                tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: agent lifecycle sweep failed; retained intents need reconciliation");
+            }
         }
         self.owned.sweep_kernel_operation_interactions(false);
         self.owned.withdraw_stale_agent_interactions();
@@ -460,6 +472,8 @@ impl KernelRuntimeState {
                     message,
                 })
             });
+        let wakes = self.owned.agent_wakes.clone();
+        let _ = tokio::task::spawn_blocking(move || wakes.processes.shutdown()).await;
         let sessions = self.owned.session_store.read().list_sessions();
         for session in sessions {
             self.owned.withdraw_agent_interactions(session.id(), None)?;

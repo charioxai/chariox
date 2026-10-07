@@ -4,8 +4,8 @@ use crate::durable_state::agent_lifecycle::{
     AgentObligation, AgentTaskExecution, AgentWait, ExecutionState,
 };
 #[test]
-fn agent_task_projection_shape_is_bound_to_protocol452() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 452);
+fn agent_task_projection_shape_is_bound_to_protocol459() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
     let task = AgentTaskExecution {
         task_id: "task".into(),
         room_id: "room".into(),
@@ -58,5 +58,56 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
     assert_eq!(
         format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
         "1200a129c1634205e402b26eed546a5418aca143b91457f416e67438959e96af"
+    );
+}
+
+#[test]
+fn agent_wake_projection_shape_is_bound_to_protocol459() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    let wake = crate::durable_state::agent_lifecycle::AgentWake {
+        id: "wake".into(),
+        task_id: "task".into(),
+        room_id: "room".into(),
+        agent_id: "agent".into(),
+        registration_id: "completion-wake".into(),
+        kind: "timer".into(),
+        label: "check-in".into(),
+        state: "scheduled".into(),
+        created_at_ms: 1,
+        verified_at_ms: Some(2),
+        next_due_ms: Some(60_001),
+        interval_ms: Some(60_000),
+        command: vec![],
+        match_text: None,
+        matched_at_ms: None,
+        pid: None,
+        exit_code: None,
+        fire_count: 1,
+        missed_fires: 0,
+        last_fired_at_ms: Some(3),
+        last_sequence: Some(4),
+        last_delivery: Some("accepted".into()),
+        last_delivered_at_ms: Some(5),
+        last_acknowledged_at_ms: None,
+        alerted_sequence: None,
+    };
+    let mut session = crate::session::RuntimeSession::new(
+        "room",
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "daemon",
+    );
+    session.set_agent_wakes(vec![wake.clone()]);
+    let value = serde_json::to_value(wake).unwrap();
+    assert_eq!(
+        serde_json::to_value(&session).unwrap()["agent_wakes"],
+        serde_json::json!([value.clone()])
+    );
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
+        "6c53bc5bc2450a64e83266d837cfc7a00ced03affeb07697841e1f220d067462"
     );
 }

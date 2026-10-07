@@ -73,6 +73,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             // Every admitted attempt gets its full receipt window.
             e.attempted_at_ms = Some(now);
             save_event(tx, &e)?;
+            super::wakes::record_delivery(tx, &e)?;
             // Wake retains the original task. Progress is not an ACK/cursor or deadline edit.
             for mut t in tasks(tx)? {
                 if t.room_id == room
@@ -107,6 +108,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             e.state = "expired".into();
             save_event(tx, &e)?;
+            super::wakes::record_delivery(tx, &e)?;
             Ok(Outcome::Event(e))
         }
         Operation::Defer {
@@ -123,6 +125,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             // prevents repeated steering, but is not an admitted-attempt clock.
             e.attempted_at_ms.get_or_insert(now);
             save_event(tx, &e)?;
+            super::wakes::record_delivery(tx, &e)?;
             Ok(Outcome::Event(e))
         }
         Operation::BindAttempt {
@@ -195,6 +198,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 e.submit_epoch = None;
             }
             save_event(tx, &e)?;
+            super::wakes::record_delivery(tx, &e)?;
             replies::reconcile_event(tx, &e)?;
             Ok(Outcome::Event(e))
         }
@@ -216,7 +220,14 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             e.state = if handled { "handled" } else { "acknowledged" }.into();
             save_event(tx, &e)?;
-            if handled && matches!(e.kind.as_str(), "source_completed" | "source_lost") {
+            super::wakes::record_delivery(tx, &e)?;
+            // A handled recurring check-in is the progress its timer exists for.
+            if handled
+                && matches!(
+                    e.kind.as_str(),
+                    "source_completed" | "source_lost" | "timer_fired"
+                )
+            {
                 for mut t in tasks(tx)? {
                     if t.room_id != room || t.agent_id != agent {
                         continue;

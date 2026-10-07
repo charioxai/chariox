@@ -400,6 +400,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::Sweep { .. }
         | Operation::CancelTask { .. }
         | Operation::OwnerResponse { .. }) => super::supervision::apply(tx, op),
+        op @ (Operation::CreateWake { .. }
+        | Operation::VerifyWakes { .. }
+        | Operation::FireWakes { .. }
+        | Operation::ProcessStarted { .. }
+        | Operation::ProcessMatched { .. }
+        | Operation::ProcessExited { .. }
+        | Operation::CancelWake { .. }
+        | Operation::WakeAlerted { .. }
+        | Operation::RetireWakes { .. }) => super::wakes::apply(tx, op),
     }
 }
 

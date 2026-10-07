@@ -81,7 +81,15 @@ impl KernelRuntimeOwnedState {
         let mut session = self.session_store.get_session(session_id)?;
         let agents = self.agent_store.get_session_agents(session_id);
         session.set_agents(agents);
-        session.set_agent_tasks(self.durable_state_store.agent_tasks(Some(session_id), None)?);
+        session.set_agent_tasks(
+            self.durable_state_store
+                .agent_tasks(Some(session_id), None)?,
+        );
+        session.set_agent_wakes(super::agent_wake_scheduler::visible_wakes(
+            self.durable_state_store
+                .agent_wakes(Some(session_id), None)?,
+            crate::session::unix_epoch_ms(),
+        ));
         self.project_session_runtime_view(&mut session);
         Ok(session)
     }
@@ -383,6 +391,7 @@ impl KernelRuntimeOwnedState {
         for agent in self.agent_store.get_session_agents(session_id) {
             self.kernel_browser_host.revoke_agent(agent.id());
         }
+        self.cancel_owned_agent_wakes(session_id, None);
         self.withdraw_agent_interactions(session_id, None)?;
 
         if session.status() == crate::session::SessionStatus::Ended {
