@@ -57,12 +57,7 @@ impl AgentConversation {
             .is_some_and(|turn| turn.prompt_id.as_deref() == Some(prompt_id))
         {
             let turn = self.turns.last_mut().unwrap();
-            if turn
-                .assistant_outputs
-                .iter()
-                .any(|output| !output.trim().is_empty())
-                || !turn.latest_details.is_empty()
-            {
+            if turn.has_provider_attempt {
                 // The retry supplies the request, but needs the half-applied work
                 // and the failure that interrupted it.
                 turn.user_prompt.clear();
@@ -120,6 +115,8 @@ struct HandoffTurn {
     /// The merge key of the item the last output row extended.
     output_item: Option<Option<String>>,
     latest_details: Vec<String>,
+    // Notices are attributed by sequence and do not prove this request ran.
+    has_provider_attempt: bool,
 }
 
 impl HandoffTurn {
@@ -157,12 +154,14 @@ fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
                         assistant_outputs: Vec::new(),
                         output_item: None,
                         latest_details: Vec::new(),
+                        has_provider_attempt: false,
                     });
                 }
             }
             HistoryEventKind::ProviderOutput => {
                 // Answers stream as deltas whose spacing is part of the text.
                 if let (Some(turn), Some(content)) = (turns.last_mut(), event.content.as_ref()) {
+                    turn.has_provider_attempt |= !content.trim().is_empty();
                     turn.push_output(&event, content);
                 }
             }
@@ -174,6 +173,7 @@ fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
                     if event.kind == HistoryEventKind::ProviderTool {
                         turn.output_item = None;
                     }
+                    turn.has_provider_attempt |= event.kind != HistoryEventKind::Notice;
                     turn.latest_details.push(format!(
                         "{}: {}",
                         event_kind_label(event.kind),
@@ -463,6 +463,12 @@ mod tests {
                 "auth failed: quota exhausted",
             ),
             active,
+            {
+                let mut notice =
+                    error_event(6, "session", "agent", "run-1", "advanced queued backlog");
+                notice.kind = HistoryEventKind::Notice;
+                notice
+            },
         ];
 
         let handoff = AgentConversation::from_events(&events)

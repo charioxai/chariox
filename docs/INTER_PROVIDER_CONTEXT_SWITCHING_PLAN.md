@@ -25,7 +25,7 @@ The packet is deterministic, and its byte budget is strict:
 
 The packet fills its budget in this order, and the earlier items give way last:
 
-1. The latest completed turn in detail: user prompt, assistant output, and its tool, status, and error details. The prompt being dispatched is the request itself and is never part of the packet.
+1. The latest completed turn in detail: user prompt, assistant output, and its tool, status, and error details. A retried request instead carries its interrupted attempt's output and provider details here, with its duplicated user line removed. Kernel notices alone do not make a dispatching request an interrupted attempt. The prompt being dispatched is the request itself and is never part of the packet.
 2. Every prior user prompt, newest first, because prompts carry the requests, facts, and decisions.
 3. Prior assistant answers, newest first, in the remaining budget.
 4. Turns that do not fit are named with a pointer to the `chariox.search_recall` tool.
@@ -40,4 +40,7 @@ The packet fills its budget in this order, and the earlier items give way last:
 - `runtime::state::context_handoff::builder::tests::early_user_facts_survive_a_conversation_of_ordinary_turns`
 - `runtime::state::context_handoff::builder::tests::handoff_is_bounded_under_large_history`
 - `provider::launch_contract::tests::provider_resume_state_keeps_the_native_session_across_a_model_change`
+- `runtime::state::context_handoff::builder::tests::the_dispatching_prompt_leaves_the_last_completed_turn_latest`
+- `runtime::state::context_handoff::builder::tests::claude_text_blocks_separated_by_thinking_stay_apart`
+- `runtime::state::agent_config_runtime_state::tests::automatic_substitutes::the_substitute_and_the_next_primary_turn_see_the_conversation` (tool row, provider error and a single request)
 - Live drill: `apps/cli/scripts/live-model-switch-context-drill.mjs` plants facts, optionally adds filler turns or restarts the kernel before or after the switch, changes the agent profile, and probes recall without tools.
