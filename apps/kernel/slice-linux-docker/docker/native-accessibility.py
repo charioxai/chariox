@@ -132,16 +132,27 @@ def snapshot(processes):
             if error.name != 'Xlib': raise
             from selkies.Xlib import X, display
         connection=display.Display()
+        active_window=None
         try:
             root=connection.screen().root
+            active=root.get_full_property(connection.intern_atom('_NET_ACTIVE_WINDOW'),X.AnyPropertyType)
+            active_id=int(active.value[0]) if active is not None and len(active.value) else None
             clients=root.get_full_property(connection.intern_atom('_NET_CLIENT_LIST'),X.AnyPropertyType)
             for window_id in clients.value if clients is not None else []:
                 window=connection.create_resource_object('window',int(window_id))
                 if window.get_attributes().map_state!=X.IsViewable:continue
                 pid=window.get_full_property(connection.intern_atom('_NET_WM_PID'),X.AnyPropertyType)
                 if pid is None or not len(pid.value) or int(pid.value[0]) not in seen:complete=False
+                elif int(window_id)==active_id:
+                    owned_pid=int(pid.value[0])
+                    title=window.get_full_property(connection.intern_atom('_NET_WM_NAME'),X.AnyPropertyType)
+                    name=bytes(title.value).decode('utf-8',errors='replace') if title is not None else window.get_wm_name()
+                    frames=[node for node in nodes if node['pid']==owned_pid and node['role'] in ('frame','window','dialog') and node['name']==name]
+                    if len(frames)==1:
+                        frame=frames[0]
+                        active_window={key:frame[key] for key in ('pid','started','path')}
         finally:connection.close()
-        return {'available':True,'complete':complete,'nodes':nodes,'protected':protected}
+        return {'available':True,'complete':complete,'nodes':nodes,'protected':protected,'active_window':active_window}
     except Exception:
         # Partial traversal cannot establish native password/pixel coverage.
         return {'available':False,'complete':False,'nodes':[],'protected':True}

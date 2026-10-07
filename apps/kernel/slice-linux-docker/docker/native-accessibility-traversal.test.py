@@ -58,12 +58,12 @@ class TraversalTest(unittest.TestCase):
         atspi.ROLE_TABLE = 2
         atspi.ROLE_TABLE_CELL = 3
         atspi.STATE_MANAGES_DESCENDANTS = 2
-        connection = types.SimpleNamespace(
+        self.connection = types.SimpleNamespace(
             screen=lambda: types.SimpleNamespace(root=types.SimpleNamespace(get_full_property=lambda *args: None)),
             intern_atom=lambda value: value, close=lambda: None)
         xlib = types.ModuleType('Xlib')
-        xlib.X = types.SimpleNamespace(AnyPropertyType=0)
-        xlib.display = types.SimpleNamespace(Display=lambda: connection)
+        xlib.X = types.SimpleNamespace(AnyPropertyType=0, IsViewable=2)
+        xlib.display = types.SimpleNamespace(Display=lambda: self.connection)
         self.saved = {name: sys.modules.get(name) for name in ['pyatspi', 'Xlib']}
         sys.modules.update(pyatspi=atspi, Xlib=xlib)
         spec = importlib.util.spec_from_file_location('native_accessibility', pathlib.Path(__file__).with_name('native-accessibility.py'))
@@ -79,6 +79,29 @@ class TraversalTest(unittest.TestCase):
     def snapshot(self, applications):
         self.desktop = Node('Desktop', 'desktop', applications)
         return self.driver.snapshot([{'pid': 200, 'started': '1'}, {'pid': 201, 'started': '2'}])
+
+    def foreground(self, pid=200, name='Writer'):
+        window = types.SimpleNamespace(get_attributes=lambda: types.SimpleNamespace(map_state=2),
+            get_full_property=lambda atom, kind: types.SimpleNamespace(value=[pid] if atom=='_NET_WM_PID' else name.encode()))
+        root = types.SimpleNamespace(get_full_property=lambda atom, kind: types.SimpleNamespace(value=[9]))
+        self.connection.screen = lambda: types.SimpleNamespace(root=root)
+        self.connection.create_resource_object = lambda kind, value: window
+
+    def test_mp08_foreground_binds_exact_owned_frame(self):
+        self.foreground()
+        tree=self.snapshot([Node('Office','application',[Node('Writer','frame')])])
+        self.assertEqual(tree['active_window'],{'pid':200,'started':'1','path':[0]})
+
+    def test_mp11_foreign_foreground_does_not_select_owned_frame(self):
+        self.foreground(pid=999)
+        tree=self.snapshot([Node('Office','application',[Node('Writer','frame')])])
+        self.assertIsNone(tree['active_window'])
+        self.assertFalse(tree['complete'])
+
+    def test_mp11_ambiguous_foreground_does_not_select_a_frame(self):
+        self.foreground()
+        tree=self.snapshot([Node('Office','application',[Node('Writer','frame'),Node('Writer','frame')])])
+        self.assertIsNone(tree['active_window'])
 
     def test_mp08_other_window_before_deep_hidden_menu_budget(self):
         self.driver.MAX_NODES = 512

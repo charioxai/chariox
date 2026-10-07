@@ -29,7 +29,13 @@ export class NativeAccessibility {
     const priority=node=>node.states?.includes('showing')
       ? (node.states.includes('focused') || ['frame','window','dialog'].includes(node.role)
         ? 0 : node.actions?.length || node.states.includes('editable') ? 1 : 2) : 3;
-    const candidates=(tree.nodes??[]).slice(0,512).sort((a,b)=>priority(a)-priority(b));
+    // MP-08 / MP-11: AT-SPI browser descendants can retain focused/showing
+    // states after minimization. The private X11 selector binds the actual
+    // owned foreground frame; rank its subtree before applying public limits.
+    const active=tree.active_window;
+    const foreground=node=>Boolean(active?.path?.length && node.pid===active.pid && node.started===active.started
+      && active.path.every((part,index)=>node.path?.[index]===part));
+    const candidates=(tree.nodes??[]).slice().sort((a,b)=>Number(foreground(b))-Number(foreground(a)) || priority(a)-priority(b)).slice(0,512);
     const nodes=[];let bytes=0;
     for(const node of candidates){
       if(nodes.length>=64)break;

@@ -4,6 +4,18 @@ import assert from 'node:assert/strict';
 import { NativeAccessibility } from './native-accessibility.mjs';
 const binding={surface_id:'s',generation:'g',width:1280,height:800,environment:{},ownedProcesses:async()=>[{pid:200,started:'1'}]};
 const tree={available:true,complete:true,nodes:[{pid:200,started:'1',path:[0],role:'push button',name:'Public',bounds:[1,2,3,4],actions:['click'],states:[]}],protected:false};
+test('MP-08 / MP-11 foreground application survives browser action and traversal budgets',async()=>{
+ const current={...tree,active_window:{pid:300,started:'2',path:[0]},nodes:Array.from({length:600},(_,i)=>({...tree.nodes[0],path:[i],name:'Browser panel '+i,states:['showing','focused'],actions:['doDefault']}))};
+ current.nodes.push({...tree.nodes[0],pid:300,started:'2',path:[0],role:'frame',name:'meeting.odt - LibreOffice Writer',states:['showing'],actions:[]});
+ current.nodes.push({...tree.nodes[0],pid:300,started:'2',path:[0,1],name:'File',states:['showing','enabled'],actions:['click']});
+ const native=new NativeAccessibility({binding:()=>binding,execute:async()=>structuredClone(current)});
+ const seen=await native.snapshot('agent:a',{});
+ assert(seen.nodes.some(n=>n.name==='File'&&n.actions.includes('click')));
+ assert(seen.nodes.some(n=>n.name==='meeting.odt - LibreOffice Writer'));
+ assert.equal(seen.active_window,undefined,'MP-11 private process/frame selector never enters public protocol');
+ const file=seen.nodes.find(n=>n.name==='File');current.active_window={pid:200,started:'1',path:[0]};
+ await assert.rejects(native.action('agent:a',{target_id:file.target_id,tree_revision:seen.tree_revision,action:'click'},{}),e=>e.code==='user_domain_stale_reference');
+});
 test('MP-11 handles are scoped to observer, surface, app identity and current revision',async()=>{
  let current=structuredClone(tree),actions=0;
  const native=new NativeAccessibility({binding:()=>binding,execute:async request=>{if(request.op==='accessibility_action'){actions++;return {applied:true};}return current;}});
