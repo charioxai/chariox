@@ -564,7 +564,7 @@ mod tests {
         std::fs::write(root.join("source/rootfs/marker"), "release").expect("marker");
         // Incompressible, so a truncated archive fails after extracting the marker.
         let noise: Vec<u8> = (0..1_000_000u32)
-            .map(|index| (index.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .map(|index| (index.wrapping_mul(2_654_443_761) >> 13) as u8)
             .collect();
         std::fs::write(root.join("source/rootfs/noise"), noise).expect("noise");
         std::fs::write(

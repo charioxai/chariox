@@ -10,14 +10,21 @@ use crate::local::{
 
 impl CommandRouter {
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-    pub(super) async fn dispatch_app_event_request(
-        &self,
-        command: &crate::runtime::command::KernelCommand,
-        request: &LocalDaemonRequest,
-        caller_user_id: &str,
-    ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
+    // MD-4: select the App event branch before reserving its validation future.
+    pub(super) fn dispatch_app_event_request<'a>(
+        &'a self,
+        command: &'a crate::runtime::command::KernelCommand,
+        request: &'a LocalDaemonRequest,
+        caller_user_id: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Option<LocalDaemonResponse>, DaemonError>>
+                + Send
+                + 'a,
+        >,
+    > {
         match request {
-            LocalDaemonRequest::CreateAppInboxRoute(route) => {
+            LocalDaemonRequest::CreateAppInboxRoute(route) => Box::pin(async move {
                 let Some(connection) = &route.connection else {
                     return Ok(None);
                 };
@@ -25,33 +32,34 @@ impl CommandRouter {
                     .event_connection_lanes
                     .lock(caller_user_id, &connection.connection_id)
                     .await;
-                self.check_app_route(caller_user_id, route, connection)
-                    .await?;
+                Box::pin(self.check_app_route(caller_user_id, route, connection)).await?;
                 Ok(self
                     .runtime_state
                     .execute_app_control_request(command, request)
                     .await)
-            }
-            LocalDaemonRequest::GrantAppConnection(grant) => {
+            }),
+            LocalDaemonRequest::GrantAppConnection(grant) => Box::pin(async move {
                 let _connection_guard = self
                     .event_connection_lanes
                     .lock(caller_user_id, &grant.connection_id)
                     .await;
-                crate::runtime::event_catalog_control::validate_event_connection(
-                    &self.runtime_state,
-                    &self.config_projection,
-                    &self.aegs_management_http_client,
-                    caller_user_id,
-                    &grant.generator_id,
-                    &grant.connection_id,
+                Box::pin(
+                    crate::runtime::event_catalog_control::validate_event_connection(
+                        &self.runtime_state,
+                        &self.config_projection,
+                        &self.aegs_management_http_client,
+                        caller_user_id,
+                        &grant.generator_id,
+                        &grant.connection_id,
+                    ),
                 )
                 .await?;
                 Ok(self
                     .runtime_state
                     .execute_app_control_request(command, request)
                     .await)
-            }
-            _ => Ok(None),
+            }),
+            _ => Box::pin(async { Ok(None) }),
         }
     }
 

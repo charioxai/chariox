@@ -22,6 +22,7 @@ pub(super) struct RelaySubscriber {
 pub(super) struct RelaySubscriptionTask {
     pub(super) relay_subscription_id: String,
     pub(super) client_public_key: String,
+    pub(super) display_id: Option<String>,
     pub(super) handle: JoinHandle<()>,
 }
 
@@ -85,6 +86,23 @@ pub(super) async fn handle_relay_subscribe(
             return Ok(());
         }
     };
+    if subscription_scope.as_deref() == Some("kernel_browser_display") {
+        return super::browser_display::handle_subscribe(
+            router,
+            outgoing_tx,
+            subscription_tasks,
+            super::browser_display::DisplaySubscription {
+                request_id: relay_request_id,
+                relay_id: relay_subscription_id,
+                display_id: session_id,
+                generation: attachment_id,
+                identity: caller_identity,
+                public_key: client_public_key,
+                resume: resume_from_event_id,
+            },
+        )
+        .await;
+    }
     let subscriber = RelaySubscriber {
         caller: crate::runtime::command::KernelCaller::for_relay_request(caller_identity.clone()),
         user_id: if paired {
@@ -303,6 +321,7 @@ pub(super) async fn handle_relay_subscribe(
     subscription_tasks.lock().await.insert(
         task_key,
         RelaySubscriptionTask {
+            display_id: None,
             relay_subscription_id,
             client_public_key,
             handle: task,
@@ -1198,6 +1217,7 @@ mod tests {
         tasks.lock().await.insert(
             first_key.clone(),
             RelaySubscriptionTask {
+                display_id: None,
                 relay_subscription_id: "relay-subscription-1".to_string(),
                 client_public_key: "client-public-key-1".to_string(),
                 handle: first_handle,
@@ -1210,6 +1230,7 @@ mod tests {
         tasks.lock().await.insert(
             second_key,
             RelaySubscriptionTask {
+                display_id: None,
                 relay_subscription_id: "relay-subscription-2".to_string(),
                 client_public_key: "client-public-key-2".to_string(),
                 handle: second_handle,
@@ -1255,6 +1276,7 @@ mod tests {
             sleep(Duration::from_secs(60)).await;
         });
         let task = RelaySubscriptionTask {
+            display_id: None,
             relay_subscription_id: "relay-subscription-1".to_string(),
             client_public_key: "client-public-key-1".to_string(),
             handle,

@@ -1,3 +1,5 @@
+import { userAppViewsPrototypeEnabled } from "./user-app-views-flag.js"
+import { answerUserDomainInteraction } from "./user-domain-interaction-api.js"
 import type { BoxRenderable, CliRenderer } from "@opentui/core"
 import { createEffect, onCleanup } from "solid-js"
 import type { RuntimeSession } from "./cli-types.js"
@@ -31,6 +33,13 @@ export function createCliKernelApprovalComposition(deps: {
   applySession(session: RuntimeSession): void
   notify(message: string): void
 }) {
+  const actualClient = () => (deps.client as LocalIpcClient & {currentClient?(): LocalIpcClient}).currentClient?.() ?? deps.client
+  const userPromptClients = new Map<string, LocalIpcClient>()
+  const respondUserPrompt = (id: string, choice: string, proof?: import("./ipc-requests.js").InteractionPasskeyProof) => {
+    const source = userPromptClients.get(id)
+    if (!source || source !== actualClient()) throw new Error("The App approval belongs to the previous kernel")
+    return answerUserDomainInteraction(source, id, choice, proof)
+  }
   let savedFocus: CliDialogFocusTarget | null = null
   let dialogs = 0
   let terminalFocused = true
@@ -56,7 +65,9 @@ export function createCliKernelApprovalComposition(deps: {
     onClose: closed,
     scroll: popupSurface.scroll,
     respond: (prompt, choiceId, proof) =>
-      respondToInteraction(deps.client, prompt.session_id, prompt.interaction_id, choiceId, null, proof),
+      (prompt.session_id === "" && userAppViewsPrototypeEnabled()
+        ? respondUserPrompt(prompt.interaction_id, choiceId, proof)
+        : respondToInteraction(deps.client, prompt.session_id, prompt.interaction_id, choiceId, null, proof)),
     notify: deps.notify,
     attentionAllowed: () => terminalFocused,
   })
@@ -85,7 +96,10 @@ export function createCliKernelApprovalComposition(deps: {
   })
   onCleanup(deps.client.onKernelEvent((event) => {
     if (event.event === "passkey_prompts_changed") {
-      popup.apply(passkeyPromptsFromEvent(event.prompts))
+      const prompts = passkeyPromptsFromEvent(event.prompts, userAppViewsPrototypeEnabled())
+      userPromptClients.clear()
+      for (const prompt of prompts) if (prompt.session_id === "") userPromptClients.set(prompt.interaction_id, actualClient())
+      popup.apply(prompts)
       controller.sync()
     }
   }))

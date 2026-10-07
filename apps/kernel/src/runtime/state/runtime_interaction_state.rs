@@ -323,6 +323,20 @@ impl KernelRuntimeState {
                 message: "Only a Chariox terminal can answer a credential prompt".into(),
             });
         }
+        if connection_class
+            .is_some_and(|class| class != crate::local::KernelConnectionClass::Terminal)
+            && self
+                .owned
+                .pending_interactions
+                .write()
+                .get(interaction_id)
+                .is_some_and(|pending| pending.user_domain_interaction.is_some())
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime interaction",
+                message: "Only a Chariox terminal can answer a user-domain decision".into(),
+            });
+        }
         let authorization = self
             .authorize_critical_approval(
                 session_id,

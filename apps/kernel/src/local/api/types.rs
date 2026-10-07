@@ -24,9 +24,11 @@ mod event_publication;
 mod external_provider_session;
 mod history;
 mod kernel_access;
+mod kernel_browser;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
+mod notes;
 mod project_environment_manifest;
 mod project_environment_setup;
 mod prompt_control;
@@ -37,10 +39,12 @@ mod request;
 mod resource_telemetry;
 mod response;
 mod room_environment;
+mod screenshot;
 mod session_control;
 mod slice;
 mod terminal_command_catalog;
 mod terminal_interaction;
+mod user_domain_access;
 mod waiting_room;
 mod workflow;
 mod workflow_notification;
@@ -60,9 +64,11 @@ pub use event_publication::*;
 pub use external_provider_session::*;
 pub use history::*;
 pub use kernel_access::*;
+pub use kernel_browser::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
+pub use notes::*;
 pub use project_environment_manifest::*;
 pub use project_environment_setup::*;
 pub use prompt_control::*;
@@ -73,10 +79,12 @@ pub use request::*;
 pub use resource_telemetry::*;
 pub use response::*;
 pub use room_environment::*;
+pub use screenshot::*;
 pub use session_control::*;
 pub use slice::*;
 pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
+pub use user_domain_access::*;
 pub use waiting_room::*;
 pub use workflow::*;
 pub use workflow_notification::*;
@@ -255,8 +263,8 @@ pub use workspace::*;
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
 /// Version 435 combines Apps, Browser artifacts, bounded Computer holds, and
 /// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
-/// Version 436 adds opt-in terminal Cloud device-login denial outcomes.
-/// Version 437 adds kernel-emitted, owner-private workflow notifications.
-/// Version 439 also includes Room workflow inventory and captured run controls.
-/// Version 439 adds Cloud-free kernel-owned key-bound terminal admission.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 439;
+/// Version 463 is integration candidate 1: the union of main 435 with the
+/// next/integration2 queue (436-439), multidomain round 2 (443), display
+/// (447), Linux computer use (461), the agent model (450/452/453), kernel
+/// access scope (451), login copies (455) and same-machine direct (456).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 463;

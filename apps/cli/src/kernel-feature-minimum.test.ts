@@ -51,3 +51,12 @@ test("Cloud owner control and terminal pivots require protocol 438", () => {
     assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 438))
   }
 })
+
+
+test("MD-stack user App and browser surfaces require union protocol 443", () => {
+  for (const name of ["OpenUserAppView", "ListUserAppViews", "CloseUserAppView", "GetUserAppViewFrontend", "CallUserAppView", "SubscribeUserAppViews", "AnswerUserDomainInteraction"]) {
+    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 417), /443/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 443))
+  }
+  assert.throws(() => requireKernelFeatureProtocol({KernelBrowser: {command:{op:"input"}}},416), /443/)
+})
