@@ -738,7 +738,11 @@ impl SessionService {
         let mut queued = session
             .workflow_queued_prompts()
             .iter()
-            .filter(|item| item.status() == WorkflowQueuedPromptStatus::Queued)
+            .filter(|item| {
+                item.status() == WorkflowQueuedPromptStatus::Queued
+                    && !item.notification_injection_pending()
+                    && !item.notification_expired_at(crate::session::types::unix_epoch_ms())
+            })
             .filter_map(|item| {
                 let queue = session.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
                 queue

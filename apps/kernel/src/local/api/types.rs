@@ -43,6 +43,7 @@ mod terminal_command_catalog;
 mod terminal_interaction;
 mod waiting_room;
 mod workflow;
+mod workflow_notification;
 mod workspace;
 
 pub use agent_lifecycle::*;
@@ -78,6 +79,7 @@ pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
 pub use waiting_room::*;
 pub use workflow::*;
+pub use workflow_notification::*;
 pub use workspace::*;
 
 /// Version 319 adds Git credential enrollment for an existing managed environment.
@@ -255,4 +257,6 @@ pub use workspace::*;
 /// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
 /// Version 450 adds immutable room spawn/object creators and regular room tools
 /// behind the transitional room-agent-tools flag (MP-08/MP-10/MP-11 A01).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 450;
+/// Version 437 adds kernel-emitted workflow notifications.
+/// Version 452 adds durable agent events and enforced turn dispositions (MP-08/09/10/11 A02).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 452;

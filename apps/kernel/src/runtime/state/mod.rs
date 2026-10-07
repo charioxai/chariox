@@ -264,6 +264,7 @@ struct KernelRuntimeOwnedState {
     runtime_tool_call_activity: RuntimeToolCallActivity,
     next_provider_process_gc_at_ms: Arc<AtomicU64>,
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
+    notification_inventory_projection: crate::runtime::projection::RemoteRelayInventoryProjectionStore,
     remote_prompt_projection_drains:
         remote_prompt_claim_runtime::RemotePromptProjectionDrainClaimStore,
     remote_prompt_recoveries: remote_prompt_claim_runtime::RemotePromptRecoveryClaimStore,
@@ -478,6 +479,9 @@ mod workflow_prompt_dispatches;
 mod workflow_prompt_queue_owned_state;
 mod workflow_queue_durable;
 use workflow_prompt_dispatches::*;
+pub(crate) mod notification_delivery;
+mod workflow_notification_peers;
+mod workflow_notification_router;
 mod workflow_prompt_failure_owned_state;
 pub(crate) mod workflow_publication_endpoint_runtime;
 mod workflow_publication_owned_state;
@@ -613,6 +617,7 @@ impl KernelRuntimeState {
             provider_process_projection,
             provider_launch_failure_retries,
             relay_state,
+            notification_inventory_projection,
             legacy_workflow_history,
             agent_runtime_projection,
             app_control,
@@ -627,6 +632,7 @@ impl KernelRuntimeState {
                         app.provider_process_projection_store(),
                         app.provider_launch_failure_retry_store(),
                         app.relay_client_state(),
+                        app.remote_relay_inventory_projection_store(),
                         app.legacy_workflow_history_store(),
                         app.agent_runtime_projection_store(),
                         app.app_control_service(),
@@ -872,6 +878,7 @@ impl KernelRuntimeState {
                 runtime_tool_call_activity,
                 next_provider_process_gc_at_ms: Arc::new(AtomicU64::new(0)),
                 relay_state,
+                notification_inventory_projection,
                 remote_prompt_projection_drains: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 remote_prompt_recoveries: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 remote_steer_receipt_reconciliations: Arc::new(std::sync::Mutex::new(

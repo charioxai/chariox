@@ -1064,6 +1064,14 @@ impl RuntimeSession {
         queued_prompt
     }
 
+    pub(crate) fn notification_prompt_mut(
+        &mut self,
+        id: &str,
+    ) -> Option<&mut WorkflowQueuedPrompt> {
+        self.workflow_queued_prompts
+            .iter_mut()
+            .find(|item| item.id() == id)
+    }
     pub fn update_queued_workflow_prompt(
         &mut self,
         queue_item_id: &str,
@@ -1128,12 +1136,29 @@ impl RuntimeSession {
         removed
     }
 
+    pub(crate) fn expire_workflow_notification_prompts(&mut self, now: u64) -> bool {
+        let mut changed = false;
+        for item in &mut self.workflow_queued_prompts {
+            if item.status() == WorkflowQueuedPromptStatus::Queued
+                && item.notification_expired_at(now)
+            {
+                item.mark_cancelled();
+                changed = true;
+            }
+        }
+        changed
+    }
+
     pub fn pop_next_workflow_queued_prompt(&mut self) -> Option<WorkflowQueuedPrompt> {
         let best = self
             .workflow_queued_prompts
             .iter()
             .enumerate()
-            .filter(|(_, item)| item.status() == WorkflowQueuedPromptStatus::Queued)
+            .filter(|(_, item)| {
+                item.status() == WorkflowQueuedPromptStatus::Queued
+                    && !item.notification_injection_pending()
+                    && !item.notification_expired_at(super::super::types::unix_epoch_ms())
+            })
             .filter_map(|(index, item)| {
                 let queue = self.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
                 if !queue.enabled() {
@@ -1159,7 +1184,11 @@ impl RuntimeSession {
             .workflow_queued_prompts
             .iter()
             .enumerate()
-            .filter(|(_, item)| item.status() == WorkflowQueuedPromptStatus::Queued)
+            .filter(|(_, item)| {
+                item.status() == WorkflowQueuedPromptStatus::Queued
+                    && !item.notification_injection_pending()
+                    && !item.notification_expired_at(super::super::types::unix_epoch_ms())
+            })
             .filter_map(|(index, item)| {
                 let queue = self.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
                 if !queue.enabled() {
@@ -1195,7 +1224,11 @@ impl RuntimeSession {
     pub fn next_dispatchable_workflow_queued_prompt_created_at_ms(&self) -> Option<u64> {
         self.workflow_queued_prompts
             .iter()
-            .filter(|item| item.status() == WorkflowQueuedPromptStatus::Queued)
+            .filter(|item| {
+                item.status() == WorkflowQueuedPromptStatus::Queued
+                    && !item.notification_injection_pending()
+                    && !item.notification_expired_at(super::super::types::unix_epoch_ms())
+            })
             .filter_map(|item| {
                 let queue = self.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
                 let workflow = self.workflow(item.workflow_id())?;
@@ -1215,7 +1248,11 @@ impl RuntimeSession {
     pub fn next_workflow_queued_prompt_created_at_ms(&self) -> Option<u64> {
         self.workflow_queued_prompts
             .iter()
-            .filter(|item| item.status() == WorkflowQueuedPromptStatus::Queued)
+            .filter(|item| {
+                item.status() == WorkflowQueuedPromptStatus::Queued
+                    && !item.notification_injection_pending()
+                    && !item.notification_expired_at(super::super::types::unix_epoch_ms())
+            })
             .filter_map(|item| {
                 let queue = self.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
                 queue
