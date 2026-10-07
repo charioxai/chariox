@@ -4,37 +4,46 @@ pub(super) const CANARY: &str = "MP-11-worker-admission-test-only";
 
 async fn snapshot<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     socket: &mut WebSocketStream<S>,
-    owner: bool,
+    reply_id: &str,
+    replay_id: Option<u64>,
 ) -> Value {
     timeout(Duration::from_secs(10), async {
+        let mut acknowledged = false;
+        let mut snapshot = None;
         loop {
             match socket.next().await {
                 Some(Ok(Message::Text(text))) => {
                     let value: Value = serde_json::from_str(&text).unwrap();
-                    if !owner {
+                    assert!(
+                        !text.contains(CANARY),
+                        "MP-11 credential escaped client delivery"
+                    );
+                    if value["type"] == "response" && value["request_id"] == reply_id {
                         assert!(
-                            !text.contains(CANARY),
-                            "MP-11 credential escaped external delivery"
+                            value["error"].is_null(),
+                            "MP-11 subscription operation must succeed"
                         );
+                        acknowledged = true;
                     }
                     if value["event"]["event"] == "session_snapshot" {
-                        assert_eq!(
-                            text.contains(CANARY),
-                            false,
-                            "MP-11 client serialization protects owner and external delivery"
-                        );
                         assert_eq!(value["event"]["session"]["id"], "credential-session");
                         let agents = value["event"]["session"]["agents"].as_array().unwrap();
                         assert!(agents
                             .iter()
                             .any(|a| a["remote_execution"]["worker_kernel_id"] == "worker"));
-                        return value;
+                        if replay_id.is_none_or(|id| value["event_id"].as_u64() == Some(id)) {
+                            snapshot = Some(value);
+                        }
                     }
                 }
                 Some(Ok(Message::Ping(data))) => {
                     socket.send(Message::Pong(data)).await.unwrap();
                 }
                 other => panic!("MP-11 expected snapshot: {other:?}"),
+            }
+            // Watcher events and command replies may arrive in either order.
+            if acknowledged && snapshot.is_some() {
+                return snapshot.unwrap();
             }
         }
     })
@@ -67,8 +76,7 @@ pub(super) async fn check_subscription(root: &str) {
         .send(Message::Text(subscribe(None).to_string().into()))
         .await
         .unwrap();
-    assert!(response(&mut socket, "sub").await["error"].is_null());
-    let initial = snapshot(&mut socket, false).await;
+    let initial = snapshot(&mut socket, "sub", None).await;
     let cursor = initial["event_id"].as_u64().unwrap() - 1;
     // Change agent structure so the watcher emits a new complete snapshot.
     socket
@@ -81,8 +89,7 @@ pub(super) async fn check_subscription(root: &str) {
         ))
         .await
         .unwrap();
-    assert!(response(&mut socket, "request").await["error"].is_null());
-    let updated = snapshot(&mut socket, false).await;
+    let updated = snapshot(&mut socket, "request", None).await;
     socket
         .send(Message::Text(
             serde_json::json!({"type":"unsubscribe","request_id":"unsub"})
@@ -96,13 +103,12 @@ pub(super) async fn check_subscription(root: &str) {
         .send(Message::Text(subscribe(Some(cursor)).to_string().into()))
         .await
         .unwrap();
-    // Replay is enqueued before its ack but the event lane drains after priority.
-    assert!(response(&mut socket, "sub").await["error"].is_null());
-    let replay = snapshot(&mut socket, false).await;
+    let replay = snapshot(&mut socket, "sub", updated["event_id"].as_u64()).await;
     assert_eq!(
         replay["event_id"], updated["event_id"],
         "MP-11 must exercise retained replay"
     );
+    eprintln!("MP-11 Unix initial/update/retained replay delivered without credentials");
 }
 
 #[tokio::test]
@@ -144,8 +150,7 @@ async fn kernel_access_subscription_initial_updated_replay_hide_worker_credentia
         ))
         .await
         .unwrap();
-    assert!(response(&mut kernel.tcp, "owner-sub").await["error"].is_null());
-    snapshot(&mut kernel.tcp, true).await;
+    snapshot(&mut kernel.tcp, "owner-sub", None).await;
     holder.command("credential-subscribe");
     assert_eq!(holder.result()["credential_subscription"], true);
     let owner = kernel
