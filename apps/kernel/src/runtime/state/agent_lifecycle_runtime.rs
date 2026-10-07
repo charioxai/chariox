@@ -232,6 +232,34 @@ impl KernelRuntimeState {
                 .list_session_attachment_ids(&task.room_id),
             message,
         );
+        let public_answer = if task.state == ExecutionState::Done {
+            let entries = self
+                .owned
+                .operational_history_store
+                .load_session_history_entries(&task.room_id, Some(&task.agent_id))?;
+            let excerpt = entries
+                .iter()
+                .rev()
+                .take_while(|e| e.kind != crate::history::SessionHistoryEntryKind::UserPrompt)
+                .filter(|e| {
+                    e.kind == crate::history::SessionHistoryEntryKind::ProviderOutput
+                        && e.provider_run_id == task.provider_run_id
+                })
+                .map(|e| e.text.as_str())
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n")
+                .chars()
+                .take(1_024)
+                .collect::<String>();
+            Some(
+                serde_json::json!({"agent_id":task.agent_id,"task_id":task.task_id,"prompt_id":task.prompt_id,"excerpt":excerpt}),
+            )
+        } else {
+            None
+        };
         if task.state == ExecutionState::Cancelled {
             Box::pin(self.cancel_agent_task_resources(&task)).await?;
         }
@@ -260,6 +288,7 @@ impl KernelRuntimeState {
                 self.owned
                     .durable_state_store
                     .agent_lifecycle(Operation::SourceOutcome {
+                        public_answer: public_answer.clone(),
                         room: task.room_id.clone(),
                         source: task.agent_id.clone(),
                         occurrence: format!("task-terminal-{}", task.task_id),
@@ -270,6 +299,7 @@ impl KernelRuntimeState {
             self.owned
                 .durable_state_store
                 .agent_lifecycle(Operation::SourceOutcome {
+                    public_answer: public_answer.clone(),
                     room: task.room_id.clone(),
                     source: task.prompt_id.clone(),
                     occurrence: format!("task-terminal-{}", task.task_id),
@@ -283,6 +313,7 @@ impl KernelRuntimeState {
             self.owned
                 .durable_state_store
                 .agent_lifecycle(Operation::SourceOutcome {
+                    public_answer: public_answer.clone(),
                     room: task.room_id.clone(),
                     source: task.task_id.clone(),
                     occurrence: format!("task-terminal-{}", task.task_id),
@@ -408,6 +439,7 @@ impl KernelRuntimeState {
                     self.owned
                         .durable_state_store
                         .agent_lifecycle(Operation::SourceOutcome {
+                            public_answer: None,
                             room: task.room_id.clone(),
                             source: obligation.completion_source().unwrap_or(source).into(),
                             occurrence: format!("source-terminal-{source}"),

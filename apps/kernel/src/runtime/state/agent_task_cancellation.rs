@@ -70,6 +70,7 @@ impl KernelRuntimeState {
                             Err(_) => {
                                 self.owned.durable_state_store.agent_lifecycle(
                                     Operation::SourceOutcome {
+                                        public_answer: None,
                                         room: task.room_id.clone(),
                                         source: obligation
                                             .completion_source()
@@ -132,6 +133,7 @@ impl KernelRuntimeState {
                         {
                             self.owned.durable_state_store.agent_lifecycle(
                                 Operation::SourceOutcome {
+                                    public_answer: None,
                                     room: task.room_id.clone(),
                                     source: resource.clone(),
                                     occurrence: format!("cancel-unused-{}", obligation.id),
@@ -170,6 +172,7 @@ impl KernelRuntimeState {
                 self.owned
                     .durable_state_store
                     .agent_lifecycle(Operation::SourceOutcome {
+                        public_answer: None,
                         room: task.room_id.clone(),
                         source: task.task_id.clone(),
                         occurrence: format!("task-terminal-{}", task.task_id),

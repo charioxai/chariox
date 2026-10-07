@@ -120,6 +120,7 @@ fn a02_yield_commits_at_native_settlement_and_recovers_racing_result() {
     f.yield_now();
     assert_eq!(f.task().state, ExecutionState::Working);
     f.apply(Operation::SourceOutcome {
+        public_answer: None,
         room: "room".into(),
         source: "child".into(),
         occurrence: "result".into(),
@@ -412,6 +413,7 @@ fn a02_source_occurrence_preceding_subscription_is_recovered() {
     let f = Fixture::new();
     f.begin("p");
     f.apply(Operation::SourceOutcome {
+        public_answer: None,
         room: "room".into(),
         source: "peer".into(),
         occurrence: "answer".into(),
@@ -690,6 +692,7 @@ fn a02_first_delegate_task_binding_is_not_replaced_by_independent_work() {
         "first-child-task"
     );
     f.apply(Operation::SourceOutcome {
+        public_answer: None,
         room: "room".into(),
         source: "independent-child-task".into(),
         occurrence: "other-result".into(),
@@ -698,6 +701,7 @@ fn a02_first_delegate_task_binding_is_not_replaced_by_independent_work() {
     });
     assert_eq!(f.task().obligations[0].status, "open");
     f.apply(Operation::SourceOutcome {
+        public_answer: None,
         room: "room".into(),
         source: "first-child-task".into(),
         occurrence: "result".into(),
@@ -722,6 +726,7 @@ fn a02_owner_cancel_closes_sources_without_faking_physical_completion() {
     assert_eq!(f.task().obligations[0].dispatch_state, "cancel_requested");
     assert!(!f.store.agent_registrations("p").unwrap()[0].live);
     f.apply(Operation::SourceOutcome {
+        public_answer: None,
         room: "room".into(),
         source: "child".into(),
         occurrence: "physical-cancellation".into(),
@@ -781,6 +786,7 @@ fn a02_one_source_occurrence_reaches_multiple_tasks_without_conflict() {
         });
     }
     f.apply(Operation::SourceOutcome {
+        public_answer: None,
         room: "room".into(),
         source: "peer".into(),
         occurrence: "one-result".into(),
@@ -794,6 +800,7 @@ fn a02_one_source_occurrence_reaches_multiple_tasks_without_conflict() {
         serde_json::json!(["p", "second"])
     );
     f.apply(Operation::SourceOutcome {
+        public_answer: None,
         room: "room".into(),
         source: "peer".into(),
         occurrence: "one-result".into(),

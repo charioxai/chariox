@@ -306,7 +306,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"));
                 let valid_wait = if let Some(w) = &t.wait {
                     let regs = registrations(tx, &t.task_id)?;
-                    let pending:i64 = tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND json_extract(payload,'$.payload.task_id')=?4",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
+                    let pending:i64 = tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND (json_extract(payload,'$.payload.task_id')=?4 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?4))",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
                     w.deadline_ms > now
                         && !w.registration_ids.is_empty()
                         && w.registration_ids
@@ -361,13 +361,20 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::Receipt { .. }
         | Operation::Ack { .. }) => super::delivery::apply(tx, op),
         Operation::SourceOutcome {
+            mut public_answer,
             room,
             source,
             occurrence: id,
             success,
             now: _,
         } => {
-            tx.execute("INSERT INTO agent_source_occurrences(room_id,source_id,occurrence_id,success) VALUES(?1,?2,?3,?4) ON CONFLICT(room_id,source_id,occurrence_id) DO NOTHING",params![room,source,id,success]).map_err(sql)?;
+            if let Some(answer) = public_answer.as_mut() {
+                crate::secret_redaction::redact_json_secrets(answer);
+                if encode(answer)?.len() > 8_192 {
+                    return Err(error("public answer excerpt limit"));
+                }
+            }
+            tx.execute("INSERT INTO agent_source_occurrences(room_id,source_id,occurrence_id,success,public_answer) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(room_id,source_id,occurrence_id) DO NOTHING",params![room,source,id,success,public_answer.as_ref().map(encode).transpose()?]).map_err(sql)?;
             for mut t in tasks(tx)? {
                 if t.room_id != room {
                     continue;
@@ -408,7 +415,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         } else {
                             "source_lost"
                         },
-                        serde_json::json!({"task_id":t.task_id,"source_id":source,"public_history_ref":source,"occurrence_id":id,"success":success}),
+                        serde_json::json!({"task_id":t.task_id,"source_id":source,"public_history_ref":source,"occurrence_id":id,"success":success,"public_answer":public_answer}),
                     );
                     event(tx, e)?;
                     t.revision += 1;
@@ -626,8 +633,11 @@ fn recover_source(
     task: &mut AgentTaskExecution,
     mut registration: Registration,
 ) -> Result<(), DaemonError> {
-    let source: Option<(i64,String,bool)> = tx.query_row("SELECT sequence,occurrence_id,success FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2 AND sequence>?3 ORDER BY sequence DESC LIMIT 1",params![task.room_id,registration.source_id,sql_integer(registration.source_cursor)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(sql)?;
-    if let Some((seq, id, success)) = source {
+    let source: Option<(i64,String,bool,Option<String>)> = tx.query_row("SELECT sequence,occurrence_id,success,public_answer FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2 AND sequence>?3 ORDER BY sequence DESC LIMIT 1",params![task.room_id,registration.source_id,sql_integer(registration.source_cursor)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
+    if let Some((seq, id, success, answer)) = source {
+        let public_answer = answer
+            .map(|v| decode::<serde_json::Value>(&v))
+            .transpose()?;
         event(
             tx,
             occurrence(
@@ -640,7 +650,7 @@ fn recover_source(
                 } else {
                     "source_lost"
                 },
-                serde_json::json!({"task_id":task.task_id,"source_id":registration.source_id,"public_history_ref":registration.source_id,"occurrence_id":id,"success":success}),
+                serde_json::json!({"task_id":task.task_id,"source_id":registration.source_id,"public_history_ref":registration.source_id,"occurrence_id":id,"success":success,"public_answer":public_answer}),
             ),
         )?;
         registration.live = false;
