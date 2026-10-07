@@ -130,8 +130,10 @@ the fresh product quota. `--resume-admission` archives only a clean
 runtime/profile admission failure before any task prompt, usage or verifier.
 `--resume-interrupted` continues a runner exception that left no unrecorded
 Harbor job. The memory/disk reserve stops only a started Harbor job; while
-queued for the compile slot the runner waits. SWE campaigns archive clean quota attempts automatically
-on re-invocation. Each invocation retains its own runner identity. Benchmark
+queued for the compile slot the runner waits. On re-invocation, SWE campaigns archive every
+cleanup-complete unsettled attempt (quota, admission, unmeasured or unprojected
+turn) with its evidence, prediction and workspace, then rerun it from a fresh
+pinned checkout. No SWE score exists until all predictions are complete. Each invocation retains its own runner identity. Benchmark
 measurements select the submitted agent/prompt; descendants require explicit
 agent/prompt bindings. The real TUI session aggregate is validated separately.
 

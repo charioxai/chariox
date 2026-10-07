@@ -15,22 +15,23 @@ from turn import preflight, resource_sample
 
 
 
-def archive_quota_attempt(result, prediction):
-    """MP-08 / MP-10 / MP-11: fresh retry rechecks product quota; keep prior evidence."""
+def archive_unsettled_attempt(result, prediction, workspace=None):
+    """MP-08 / MP-10 / MP-11: a re-invocation retries an unscored attempt; keep its evidence."""
     if not result.exists():return False
     measurement=json.loads(result.read_text())
-    if measurement.get('status')!='quota_exhausted':return False
+    if settled_measurement(measurement):return False
     if not measurement.get('cleanup_complete'):
-        raise RuntimeError('MP-11: quota attempt cleanup incomplete')
-    if prediction.exists():
-        raise RuntimeError('MP-08 / MP-10: quota admission unexpectedly produced a prediction')
-    archive=result.parent/'quota-attempts'/uuid4().hex
+        raise RuntimeError('MP-11: unsettled attempt cleanup incomplete')
+    kind='quota-attempts' if measurement.get('status')=='quota_exhausted' else 'unsettled-attempts'
+    archive=result.parent/kind/uuid4().hex
     archive.mkdir(parents=True,mode=0o700)
-    evidence=result.with_suffix('.evidence')
-    if evidence.exists():evidence.rename(archive/evidence.name)
-    log=result.with_suffix('.runner.log')
-    if log.exists():log.rename(archive/log.name)
-    result.rename(archive/result.name)
+    for path in [result.with_suffix('.evidence'),result.with_suffix('.runner.log'),prediction,result]:
+        if path.exists():path.rename(archive/path.name)
+    if workspace is not None and workspace.exists():
+        # Unscored solver edits stay inspectable; the retry starts from a fresh pinned checkout.
+        target=workspace.parent/'unsettled-attempts'/archive.name
+        target.mkdir(parents=True,mode=0o700)
+        workspace.rename(target/workspace.name)
     return True
 
 def main():
@@ -75,7 +76,7 @@ def main():
         workspace = args.workspace_root / instance
         result = args.output_root / (instance + '.json')
         prediction = args.output_root / (instance + '.prediction.jsonl')
-        archive_quota_attempt(result, prediction)
+        archive_unsettled_attempt(result, prediction, workspace)
         if not result.exists():
             if not workspace.exists():
                 subprocess.run(['git', 'init', str(workspace)], check=True, stdout=subprocess.DEVNULL)
