@@ -1,7 +1,10 @@
 # M0 owner-attended session
 
 Budget 15 minutes. macOS 14+; use the public fixture and one owner-selected
-real app window, both with synthetic text.
+real TextEdit window, both with synthetic text. Owner mode and `--list-windows`
+admit only `com.apple.TextEdit` whose running PID satisfies the code requirement
+`identifier "com.apple.TextEdit" and anchor apple`. Other apps and TextEdit
+impostors refuse before capture, AX or input.
 Nothing in this guide has been run against the desktop. This helper is disabled
 without `--enable-fixture` or `--enable-owner-window` and a separate operation flag. It exits after each
 batch, has no network listener, and is not integrated into the kernel.
@@ -51,7 +54,7 @@ These are public identity facts, not production pairing credentials.
 For the later kernel attribution test, have the disposable kernel's supervisor
 launch the same installed bundle and the same `--identity` command through
 LaunchServices. Set its `CHARIOX_HOME` to a fresh absolute directory below
-`/Users/miguel/.chariox/dev/cumac/`, with no owner credentials. Record its launch
+`$HOME/.chariox/dev/cumac/`, with no owner credentials. Record its launch
 receipt and helper identity together. LaunchServices may parent the helper to
 launchd, so parent PID alone cannot prove the kernel initiated the launch.
 M0 provides no supervisor command or normal Computer Action/grant API; M1 must

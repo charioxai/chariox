@@ -5,8 +5,17 @@ final class FakeSource: NativeSource {
     var calls = 0
     var typed: [UInt16] = []
     var secureInput = false
+    var bundleIdentifier: String? = "com.apple.TextEdit"
+    var appleSigned = true
     func validateTarget(_ request: Request) throws {
         guard request.pid == 42, request.window == 1 else { throw Refusal.target }
+        if request.ownerWindow {
+            try checkOwnerTarget(bundleIdentifier: bundleIdentifier, pid: request.pid) { pid, requirement in
+                precondition(pid == request.pid)
+                precondition(requirement == "identifier \"com.apple.TextEdit\" and anchor apple")
+                return appleSigned
+            }
+        }
         guard !secureInput else { throw Refusal.secure }
     }
     func perform(_ operation: Operation, request: Request) async throws -> String {
@@ -24,6 +33,42 @@ final class FakeSource: NativeSource {
             _ = try textUnits(String(repeating: "😀", count: 11))
             print("FAIL 22-unit emoji payload admitted"); exit(1)
         } catch Refusal.text { }
+        var identityFailures = 0
+        for (bundle, signed) in [("com.apple.Safari", true), ("com.apple.TextEdit", false)] {
+            let refused = FakeSource()
+            refused.bundleIdentifier = bundle; refused.appleSigned = signed
+            do {
+                _ = try await run(Request(enabled: true, ownerWindow: true, pid: 42, window: 1,
+                                          target: "focused", operations: [.capture("unused"), .text("public")]), source: refused)
+                print("FAIL owner target admitted bundle=\(bundle) appleSigned=\(signed)")
+                identityFailures += 1
+            } catch Refusal.target {
+                precondition(refused.calls == 0)
+            }
+        }
+        if identityFailures > 0 { exit(1) }
+        for bundle in [nil, "com.apple.Safari"] as [String?] {
+            do {
+                try checkOwnerTarget(bundleIdentifier: bundle, pid: 42) { _, _ in
+                    preconditionFailure("non-allowlisted bundle reached signing check")
+                }
+                print("FAIL discovery identity admitted"); exit(1)
+            } catch Refusal.target { }
+        }
+        // The test process is not Apple TextEdit, even if a caller supplies its bundle ID.
+        do {
+            try checkOwnerTarget(bundleIdentifier: "com.apple.TextEdit", pid: getpid())
+            print("FAIL test process passed Apple TextEdit code requirement"); exit(1)
+        } catch Refusal.target { }
+        var signingChecks = 0
+        try checkOwnerTarget(bundleIdentifier: "com.apple.TextEdit", pid: 42) { pid, requirement in
+            precondition(pid == 42 && requirement == "identifier \"com.apple.TextEdit\" and anchor apple")
+            signingChecks += 1
+            return true
+        }
+        precondition(signingChecks == 1)
+        print("PASS shared owner/discovery allowlist requires TextEdit bundle and running Apple code")
+        print("PASS owner operations refuse other bundles and TextEdit impostors before dispatch")
         let source = FakeSource()
         do {
             let owner = try Request.parse(["--enable-owner-window", "--owner-pid", "42", "--window-id", "1", "--target", "focused", "--text", "public"])
@@ -62,17 +107,17 @@ final class FakeSource: NativeSource {
         } catch Refusal.text { }
         precondition(longOwner.calls == 0)
         print("PASS mixed scopes, secure input and invalid owner batches refuse before dispatch")
-        try checkWindowBinding(pid: 42, ownerPID: 42, frontmostPID: 42, axMatches: 1, cgMatches: 1, focused: true)
-        for facts in [(43 as Int32, 42 as Int32?, 1, 1, true), (42, 43, 1, 1, true),
-                      (42, nil, 1, 1, true), (42, 42, 0, 1, true), (42, 42, 2, 1, true),
-                      (42, 42, 1, 2, true), (42, 42, 1, 1, false)] {
+        try checkWindowBinding(pid: 42, frontmostPID: 42, axMatches: 1, cgMatches: 1, focused: true)
+        for facts in [(43 as Int32?, 1, 1, true), (nil, 1, 1, true),
+                      (42, 0, 1, true), (42, 2, 1, true),
+                      (42, 1, 0, true), (42, 1, 2, true), (42, 1, 1, false)] {
             do {
-                try checkWindowBinding(pid: 42, ownerPID: facts.0, frontmostPID: facts.1,
-                                       axMatches: facts.2, cgMatches: facts.3, focused: facts.4)
+                try checkWindowBinding(pid: 42, frontmostPID: facts.0,
+                                       axMatches: facts.1, cgMatches: facts.2, focused: facts.3)
                 print("FAIL unsafe window binding admitted"); exit(1)
             } catch Refusal.target { }
         }
-        print("PASS window ownership, frontmost, unique geometry and AX window focus fences")
+        print("PASS frontmost, unique geometry and AX window focus fences")
         let twentyUnits = try textUnits(String(repeating: "😀", count: 10))
         precondition(twentyUnits == Array(String(repeating: "😀", count: 10).utf16))
         for text in [String(repeating: "a", count: 19) + "😀", String(repeating: "👩‍💻", count: 5), "a" + String(repeating: "\u{301}", count: 20)] {

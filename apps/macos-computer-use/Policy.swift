@@ -73,8 +73,8 @@ func textUnits(_ text: String) throws -> [UInt16] {
     return units
 }
 
-func checkWindowBinding(pid: Int32, ownerPID: Int32, frontmostPID: Int32?,
+func checkWindowBinding(pid: Int32, frontmostPID: Int32?,
                         axMatches: Int, cgMatches: Int, focused: Bool) throws {
-    guard pid > 0, ownerPID == pid, frontmostPID == pid,
+    guard pid > 0, frontmostPID == pid,
           axMatches == 1, cgMatches == 1, focused else { throw Refusal.target }
 }

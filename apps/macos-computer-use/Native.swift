@@ -7,7 +7,9 @@ import Security
 struct MacSource: NativeSource {
     func validateTarget(_ request: Request) throws {
         guard let app = NSRunningApplication(processIdentifier: request.pid), !app.isTerminated else { throw Refusal.target }
-        if !request.ownerWindow {
+        if request.ownerWindow {
+            try checkOwnerTarget(bundleIdentifier: app.bundleIdentifier, pid: request.pid)
+        } else {
             let expected = Bundle.main.bundleURL.deletingLastPathComponent()
                 .appendingPathComponent("Chariox Computer Fixture.app/Contents/MacOS/fixture").resolvingSymlinksInPath()
             guard app.bundleIdentifier == "ai.chariox.computer-fixture",
@@ -70,8 +72,6 @@ struct MacSource: NativeSource {
         guard let windows = try attribute(app, kAXWindowsAttribute) as? [AXUIElement], windows.count <= 32 else { throw Refusal.target }
         // Public AX exposes geometry, not a CG window ID. Refuse ambiguous matches.
         let matches = try windows.filter { try bounds($0) == rect }
-        guard matches.count == 1, let window = matches.first,
-              CFEqual(try attribute(app, kAXFocusedWindowAttribute), window) else { throw Refusal.target }
         // Another CG window at the same bounds would make the AX binding ambiguous.
         guard let all = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { throw Refusal.target }
         let same = all.filter {
@@ -79,12 +79,12 @@ struct MacSource: NativeSource {
                   let value = $0[kCGWindowBounds as String] as? [String: Any] else { return false }
             return CGRect(dictionaryRepresentation: value as CFDictionary) == rect
         }
+        let focusedWindow = try attribute(app, kAXFocusedWindowAttribute)
         try checkWindowBinding(pid: request.pid,
-                               ownerPID: Int32(same.first?[kCGWindowOwnerPID as String] as? Int ?? 0),
                                frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
                                axMatches: matches.count, cgMatches: same.count,
-                               focused: CFEqual(try attribute(app, kAXFocusedWindowAttribute), window))
-        return window
+                               focused: matches.first.map { CFEqual(focusedWindow, $0) } ?? false)
+        return matches[0]
     }
     func focusedElement(app: AXUIElement, window: AXUIElement) throws -> AXUIElement {
         let focused = try attribute(app, kAXFocusedUIElementAttribute)
@@ -103,7 +103,6 @@ struct MacSource: NativeSource {
     }
     func fence(_ request: Request, element: AXUIElement, typing: Bool) throws {
         try validateTarget(request)
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == request.pid else { throw Refusal.target }
         let app = AXUIElementCreateApplication(request.pid)
         let window = try selectedWindow(request, app: app)
         let focused = try focusedElement(app: app, window: window)
@@ -201,7 +200,7 @@ struct MacSource: NativeSource {
     }
 }
 
-// Owner-only discovery, no capture, AX reads, window titles or automatic selection.
+// TextEdit-only discovery, no capture, AX reads, window titles or automatic selection.
 func ownerWindowChoices() throws -> [[String: Any]] {
     guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { throw Refusal.native }
     return windows.compactMap { info in
@@ -209,7 +208,9 @@ func ownerWindowChoices() throws -> [[String: Any]] {
               let id = info[kCGWindowNumber as String] as? UInt32,
               info[kCGWindowLayer as String] as? Int == 0,
               let app = NSRunningApplication(processIdentifier: Int32(pid)),
-              let bundle = app.bundleIdentifier else { return nil }
+              !app.isTerminated, let bundle = app.bundleIdentifier,
+              (try? checkOwnerTarget(bundleIdentifier: bundle, pid: Int32(pid))) != nil
+        else { return nil }
         return ["pid": pid, "windowID": id, "bundle": bundle]
     }
 }

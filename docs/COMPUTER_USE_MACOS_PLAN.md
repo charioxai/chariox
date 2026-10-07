@@ -372,7 +372,10 @@ do not put authentication bytes in argv. Bind both ends to the expected UID,
 kernel/helper PID and process start identity, and verify the installed helper's
 code-signing requirement. Production helper admission must authenticate the
 expected kernel too, not merely any same-UID caller. Unsigned drill pairing needs
-an explicit fixture-only allowlist. Transport discovery alone grants nothing.
+an explicit drill-only allowlist. M0 admits the signed sibling public fixture
+in fixture mode. Owner mode and window discovery admit only `com.apple.TextEdit`,
+with that bundle ID and the running PID's SecCode satisfying
+`identifier "com.apple.TextEdit" and anchor apple`. Transport discovery alone grants nothing.
 Same-UID arbitrary code can already attack an unsandboxed user session; this
 helper is an admission boundary, not a sandbox against a compromised owner.
 Requests carry a cancellable kernel operation and current epochs, with bounded
@@ -467,14 +470,14 @@ M2/M3 must remain feature-disabled until M4's protection gates pass. Every
 implementation PR includes its own focused tests, rollback and exact ownership
 cleanup. Allocate protocol changes in the shared contract PR rather than one
 number per OS module. Local `[skip ci]` checkpoints precede final-head review/CI
-when the feature is fully ready. M0 is published as draft PR #920; its review-fix
-checkpoint is local only, with no push or GitHub CI.
+when the feature is fully ready. M0 and its round-2 review-fix checkpoint are
+published as draft PR #920, with GitHub CI skipped.
 
 ## Minimal feasibility prototype, implemented M0 and owner-attended gates
 
 M0's standalone helper is implemented but unattended. Follow
 `apps/macos-computer-use/OWNER_SETUP.md` with the owner present for the fixture
-regression checks and one explicitly selected real app window. M0 uses per-PID
+regression checks and one explicitly selected real TextEdit window. M0 uses per-PID
 CGEvent delivery only. It does not prove session/HID posting, system cursor
 movement, session-tap observation or self-tagging. Text requests admit at most
 20 UTF-16 units and refuse whole overflowing strings without splitting a
