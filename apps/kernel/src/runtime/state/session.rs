@@ -81,7 +81,11 @@ impl KernelRuntimeOwnedState {
         let mut session = self.session_store.get_session(session_id)?;
         let agents = self.agent_store.get_session_agents(session_id);
         session.set_agents(agents);
-        session.set_agent_tasks(self.durable_state_store.agent_tasks(Some(session_id), None)?);
+        session.set_agent_tasks(
+            self.durable_state_store
+                .agent_tasks(Some(session_id), None)?,
+        );
+        session.set_sudo_windows(self.sudo_windows_for_session(session_id));
         self.project_session_runtime_view(&mut session);
         Ok(session)
     }

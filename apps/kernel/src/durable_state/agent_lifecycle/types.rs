@@ -160,6 +160,8 @@ pub(crate) enum Operation {
         target: Option<String>,
         run: Option<String>,
         now: u64,
+        /// A04: an elevated task whose correlated wakes pass deferred events.
+        work: Option<String>,
     },
     Expire {
         room: String,

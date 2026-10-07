@@ -4,8 +4,8 @@ use crate::runtime::state::{critical_approval_audit_payload, PASSKEY_ALREADY_ANS
 use crate::transport::kernel_protocol::KernelEvent;
 
 #[test]
-fn sudo_protocol_415_attributes_one_turn_to_its_human_entry() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 452);
+fn sudo_protocol_460_window_extension_and_session_status_shapes() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 460);
     let turn = crate::local::KernelSudoTurn {
         entry_id: "sudo:one".into(),
         session_id: "s".into(),
@@ -15,21 +15,44 @@ fn sudo_protocol_415_attributes_one_turn_to_its_human_entry() {
         requester: None,
         prompt_id: Some("turn-one".into()),
         provider_run_id: Some("run-one".into()),
+        task_id: Some("sudo:one".into()),
+        duration_minutes: 120,
+        expires_at_ms: Some(7_200_000),
+        revision: 2,
+        warning_sent: false,
+        deadline: Some(std::time::Instant::now()),
     };
-    let snapshot = serde_json::json!({"kind": PasskeyPromptKind::Sudo, "turn":turn,
-        "receipt":crate::runtime::state::sudo_approval_receipt(&turn, "other", "critical", "approve")});
+    let extend = LocalDaemonRequest::ExtendKernelSudo(crate::local::ExtendKernelSudoRequest {
+        session_id: "s".into(),
+        attachment_id: "terminal".into(),
+        entry_id: "sudo:one".into(),
+        revision: 2,
+    });
+    let mut session = crate::session::RuntimeSession::new(
+        "s",
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "daemon",
+    );
+    session.set_sudo_windows(vec![turn.clone()]);
+    let snapshot = serde_json::json!({"kind": PasskeyPromptKind::Sudo, "turn": turn, "extend": extend,
+        "extended": LocalDaemonResponse::KernelSudoExtended { turn: turn.clone() },
+        "sudo_windows": serde_json::to_value(&session).unwrap()["sudo_windows"]});
+    // The monotonic deadline is kernel memory only and never serialized.
+    assert!(snapshot["turn"].get("deadline").is_none());
+    assert!(snapshot["turn"].get("token").is_none());
     let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "8f52a7b4c7bdf054826de5653268cf097b60b1ce0ed8aee9da0ee4aec664d83d"
+        "256bc3e160c1813a1255ad56fbf2ab952598b25e81d9e7db13933eaec552f956"
     );
-    assert!(snapshot["turn"].get("expires_at_ms").is_none());
-    assert!(snapshot["turn"].get("token").is_none());
 }
 
 #[test]
 fn kernel_access_lifetime_config_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 452);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 460);
     let response = LocalDaemonResponse::UserConfig {
         path: "/state/config.toml".into(),
         config: crate::config::CharioxUserConfig::default(),
@@ -39,8 +62,8 @@ fn kernel_access_lifetime_config_is_versioned() {
     assert_eq!(
         lifetimes,
         &serde_json::json!({
-            "grant_default_minutes": 30,
-            "grant_max_minutes": 240,
+            "grant_default_minutes": 480,
+            "grant_max_minutes": 1440,
             "grant_extend_notice_minutes": 5,
             "request_timeout_minutes": 10,
         })
@@ -48,7 +71,7 @@ fn kernel_access_lifetime_config_is_versioned() {
     let digest = Sha256::digest(serde_json::to_vec(lifetimes).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "d1286fb0a2b6dd753fa9691cdc9c1338b823fd1d0c8c8df115108edf30fbd012"
+        "f8aaa273db488ebb9318507d59428ede59b5a75e8b2bb560ca2122a556a6c369"
     );
 }
 
@@ -66,7 +89,7 @@ fn wire_name(class: KernelConnectionClass) -> &'static str {
 
 #[test]
 fn kernel_connection_classes_and_their_audit_attribution_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 452);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 460);
     let classes = [
         KernelConnectionClass::Terminal,
         KernelConnectionClass::ExternalAgent,
@@ -122,7 +145,7 @@ fn kernel_connection_classes_and_their_audit_attribution_are_versioned() {
 
 #[test]
 fn passkey_prompts_and_their_popup_event_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 452);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 460);
     let prompt = |session_alias: Option<&str>, interaction_id: &str| PasskeyPrompt {
         kind: PasskeyPromptKind::CriticalApproval,
         session_id: "session-1".into(),
@@ -203,7 +226,7 @@ fn process_bound_access_protocol_404_has_metadata_but_no_bearer() {
         KernelAccessGrant, ListKernelAccessGrantsRequest, RequestKernelAccessRequest,
         RevokeKernelAccessGrantRequest,
     };
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 452);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 460);
     let grant = KernelAccessGrant {
         grant_id: "g".into(),
         session_id: "s".into(),
@@ -268,7 +291,7 @@ fn process_bound_access_protocol_404_has_metadata_but_no_bearer() {
 
 #[test]
 fn external_sudo_protocol_415_is_versioned_and_accepts_no_credentials() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 452);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 460);
     let request = LocalDaemonRequest::RequestKernelSudo(crate::local::RequestKernelSudoRequest {
         agent_id: "a".into(),
         prompt: "full\nprompt".into(),
@@ -293,13 +316,13 @@ fn external_sudo_protocol_415_is_versioned_and_accepts_no_credentials() {
 
 #[test]
 fn external_sudo_requester_and_host_terminal_attribution_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 452);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 460);
     let turn: crate::local::KernelSudoTurn = serde_json::from_value(serde_json::json!({"entry_id":"sudo:external","session_id":"s","agent_id":"a","owner_user_id":"local","terminal_id":"host-terminal","prompt_id":"prompt","provider_run_id":"run","requester":{"grant_id":"grant","session_id":"s","owner_user_id":"local","holder_pid":123,"holder_executable":"/fixture/external","lifetime_minutes":30,"expires_at_ms":123456}})).unwrap();
     assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&serde_json::to_value(&turn).unwrap()).unwrap())
         ),
-        "03d835d6424136bce70c39991d068f8664f8c32d05427c01cb779e010fc5b021"
+        "2066da8a5ceeea5bd31b4cdfc618b16e6fd79f428223f92a003e3a0880ed20b8"
     );
 }

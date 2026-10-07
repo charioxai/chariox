@@ -270,6 +270,7 @@ fn a02_uncertain_attempt_blocks_fifo_and_ack_never_repairs_it() {
         target: Some("p".into()),
         run: Some("run".into()),
         now: 10,
+        work: None,
     });
     f.apply(Operation::Receipt {
         room: "room".into(),
@@ -296,7 +297,8 @@ fn a02_uncertain_attempt_blocks_fifo_and_ack_never_repairs_it() {
             prompt: "second".into(),
             target: None,
             run: None,
-            now: 12
+            now: 12,
+            work: None,
         })
         .is_err());
     f.apply(Operation::Sweep {
@@ -386,6 +388,7 @@ fn a02_no_progress_blocks_on_third_wake_and_durable_counter_survives_reopen() {
             target: None,
             run: None,
             now: 10 + n,
+            work: None,
         });
         f.apply(Operation::Receipt {
             room: "room".into(),
@@ -510,6 +513,7 @@ fn a02_cancel_independent_task_preserves_uncertain_recipient_delivery() {
             target: target.map(str::to_owned),
             run: Some("run".into()),
             now: 1,
+            work: None,
         });
         f.apply(Operation::Sweep {
             now: DELIVERY_TIMEOUT_MS + 1,
@@ -579,6 +583,7 @@ fn a02_exact_late_receipt_unlocks_owner_resume_and_cancel_abandons_without_repla
             target: Some("p".into()),
             run: Some("run".into()),
             now: 1,
+            work: None,
         });
         f.apply(Operation::Sweep {
             now: DELIVERY_TIMEOUT_MS + 1,
@@ -668,6 +673,7 @@ fn a02_named_wake_keeps_independent_waits_separate() {
         target: None,
         run: None,
         now: 3,
+        work: None,
     });
     let tasks = f.store.agent_tasks(Some("room"), Some("parent")).unwrap();
     assert_eq!(tasks[0].state, ExecutionState::Waiting);
@@ -883,6 +889,7 @@ fn a02_default_message_does_not_replace_an_independent_wait() {
         target: None,
         run: None,
         now: 4,
+        work: None,
     });
     assert_eq!(f.task().state, ExecutionState::Waiting);
     assert_eq!(f.task().no_progress_wakes, 0);
@@ -957,6 +964,7 @@ fn a02_artifact_receipt_resets_guard_once_and_survives_restart() {
         target: None,
         run: None,
         now: 10,
+        work: None,
     });
     f.apply(Operation::Receipt {
         room: "room".into(),
@@ -1135,6 +1143,7 @@ fn a02_urgent_steers_past_nonurgent_queue_but_never_uncertain_receipts() {
         target: Some("running".into()),
         run: Some("run".into()),
         now: 1,
+        work: None,
     });
     f.apply(Operation::Receipt {
         room: "room".into(),
@@ -1172,6 +1181,7 @@ fn a02_urgent_steers_past_nonurgent_queue_but_never_uncertain_receipts() {
             target: Some("running".into()),
             run: Some("run".into()),
             now: 2,
+            work: None,
         })
         .is_err());
     f.apply(Operation::Receipt {
@@ -1235,6 +1245,7 @@ fn a02_urgent_reply_tracks_corrected_task_and_late_exact_acceptance() {
         target: Some("q".into()),
         run: Some("child-run".into()),
         now: 2,
+        work: None,
     });
     let Outcome::Settled { task, correction } = f.apply(Operation::Settle {
         room: "room".into(),
@@ -1341,6 +1352,7 @@ fn a02_every_delivery_receipt_has_client_visible_text() {
             target: target.map(Into::into),
             run: Some("run".into()),
             now: 1,
+            work: None,
         });
     };
     let mut steer = occurrence(
@@ -1435,6 +1447,7 @@ fn waiting_with_deadline_wake(f: &Fixture) -> InboxEvent {
         target: None,
         run: None,
         now: 4,
+        work: None,
     });
     assert_eq!(f.task().state, ExecutionState::Working);
     e
@@ -1652,6 +1665,7 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
             target: None,
             run: None,
             now,
+            work: None,
         });
         f.apply(Operation::Receipt {
             room: "room".into(),
@@ -1722,6 +1736,7 @@ fn a02_review_timed_out_delivery_blocks_only_its_own_task() {
         target: None,
         run: Some("run".into()),
         now: 10,
+        work: None,
     });
     f.apply(Operation::Sweep {
         now: 10 + DELIVERY_TIMEOUT_MS,

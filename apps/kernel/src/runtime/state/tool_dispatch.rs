@@ -5,8 +5,8 @@
 
 use super::*;
 
-mod agent_messaging;
 mod agent_events;
+mod agent_messaging;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app;
 mod capability_registry;
@@ -164,10 +164,10 @@ impl KernelRuntimeState {
         {
             specs.push(crate::transport::runtime_tools::permission_prompt_runtime_tool_spec());
         }
-        if self.sudo_for_auth_token(auth_token).is_ok() {
+        if self.sudo_window_open_for_auth_token(auth_token) {
             specs.push(crate::transport::runtime_tools::RuntimeToolSpec {
                 name: "chariox_kernel_request".into(),
-                description: "Act as the host on this kernel for this sudo turn. Submit a LocalDaemonRequest in request. Can answer critical approvals across sessions. Cannot grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at yield or revocation.".into(),
+                description: "Act as the host on this kernel during your sudo window, for the owner-authorized task only. Submit a LocalDaemonRequest in request. Cannot answer approvals, grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at expiry, task end or revocation; regular work continues.".into(),
                 input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"}},"additionalProperties":false}),
             });
         }
@@ -330,7 +330,9 @@ impl KernelRuntimeState {
                     .dispatch_permission_prompt_runtime_tool_call(run, arguments)
                     .await;
             }
-            if let Some(name) = crate::transport::runtime_tools::canonical_agent_event_tool_name(tool_name) {
+            if let Some(name) =
+                crate::transport::runtime_tools::canonical_agent_event_tool_name(tool_name)
+            {
                 let run = unambiguous_runtime_tool_provider_run(&provider_runs, name)?;
                 return self.dispatch_agent_event_tool(run, name, arguments).await;
             }
@@ -565,7 +567,6 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL
                     | crate::transport::runtime_tools::META_WORKFLOW_CODE_SOURCE_EXPORT_DIRECTORY_TOOL
                     | crate::transport::runtime_tools::META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL
-                    | crate::transport::runtime_tools::META_RESOLVE_RUNTIME_INTERACTION_TOOL
             ) {
                 if let Some(result) = self
                     .try_dispatch_remote_meta_runtime_tool_call(

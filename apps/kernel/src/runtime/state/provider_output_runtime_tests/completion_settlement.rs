@@ -295,6 +295,7 @@ async fn a02_r3_taskless_rejection_timeout_projects_owner_action() {
             target: None,
             run: None,
             now: crate::session::unix_epoch_ms() - DELIVERY_TIMEOUT_MS,
+            work: None,
         })
         .unwrap();
     store

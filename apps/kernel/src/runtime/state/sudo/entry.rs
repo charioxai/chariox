@@ -74,6 +74,12 @@ impl KernelRuntimeState {
             requester,
             prompt_id: None,
             provider_run_id: None,
+            task_id: None,
+            duration_minutes: 0,
+            expires_at_ms: None,
+            revision: 0,
+            warning_sent: false,
+            deadline: None,
         };
         {
             let mut access = self.owned.sudo_turns.lock().expect("access state poisoned");
@@ -108,17 +114,19 @@ impl KernelRuntimeState {
             guard.armed = false;
         }
         if result.is_err() {
+            // Drop the writer before projecting the end to clients: snapshots
+            // read this store, including when provider dispatch has failed.
             let ended = self
                 .owned
                 .sudo_turns
                 .lock()
                 .expect("access state poisoned")
-                .remove(&entry.entry_id)
-                .unwrap_or_else(|| entry.clone());
-            let _ = self
-                .owned
-                .timeout_runtime_interaction(&entry.session_id, &entry.entry_id);
-            let _ = self.record_sudo_end(&ended, "refused_or_cancelled");
+                .remove(&entry.entry_id);
+            if let Some(ended) = ended {
+                let _ = self.finish_sudo_window(&ended, "refused_or_cancelled");
+            }
+            // A window that never started leaves no supervised task behind.
+            let _ = self.owned.withdraw_agent_task(&entry.entry_id);
         }
         result
     }
@@ -144,8 +152,8 @@ impl KernelRuntimeState {
             ),
             None => format!("Terminal {}", entry.terminal_id),
         };
-        let interaction = RuntimeInteraction::for_kernel_operation(&entry.entry_id, &entry.entry_id, "Authorize one sudo turn",
-            format!("{} requests one sudo turn for agent {} in session {}. It may answer critical approvals across this kernel until it yields. Requester-supplied prompt:\n{}", requester, entry.agent_id, entry.session_id, prompt),
+        let interaction = RuntimeInteraction::for_kernel_operation(&entry.entry_id, &entry.entry_id, "Authorize sudo window",
+            format!("{} requests a sudo window for agent {} in session {}: one hour by default, up to 8 hours. It covers only this owner-authorized work and its kernel-correlated continuations, never unrelated prompts or messages, and it never answers approvals. Session inventory is included; each additional typed host operation requires fresh passkey authorization of its exact parameters. Restart, revoke or passkey rotation ends it. Requester-supplied prompt:\n{}", requester, entry.agent_id, entry.session_id, prompt),
             vec![RuntimeInteractionChoice::new("refuse", "Refuse", "refuse", None), RuntimeInteractionChoice::new("approve", "Approve", "approve", None).requiring_passkey()]).with_timeout_sec(seconds);
         let rx = self
             .create_kernel_operation_interaction(
@@ -177,17 +185,30 @@ impl KernelRuntimeState {
         if answer.choice_id.as_deref() != Some("approve") {
             return Err(error("sudo request refused"));
         }
-        // The winning terminal answer records its identity before waking us.
+        let minutes = super::sudo_window_minutes(answer.reply.as_deref())?;
+        let verified = self
+            .owned
+            .sudo_verified_at
+            .lock()
+            .expect("sudo verification clocks poisoned")
+            .remove(&entry.entry_id)
+            .ok_or_else(|| error("sudo authorization has no fresh verification clock"))?;
+        // The winning terminal answer records its identity before waking us;
+        // the window starts at that fresh verification.
         let entry = self
             .owned
             .sudo_turns
             .lock()
             .expect("access state poisoned")
-            .get(&entry.entry_id)
-            .cloned()
+            .get_mut(&entry.entry_id)
+            .map(|current| {
+                super::window::open_window_at(current, minutes, verified);
+                current.clone()
+            })
             .ok_or_else(|| error("sudo request revoked"))?;
         let entry = &entry;
         self.audit_sudo(entry, "authorized")?;
+        self.arm_sudo_timer(&entry.entry_id, entry.revision);
         let attachments = crate::runtime::agent_actor::prompt_attachment_materialization::materialize_inline_prompt_attachments(&entry.session_id, &entry.agent_id, request.attachments.clone())?;
         // A cold launch uses the normal provider path. No elevated authority is
         // usable until admission installs the exact prompt and run identity.
@@ -246,6 +267,18 @@ impl KernelRuntimeState {
             return Err(error("queued sudo was revoked"));
         }
         let session = self.owned.session_store.get_session(&entry.session_id)?;
+        let durable_work = self.owned.config_projection.snapshot().room_agent_tools;
+        if durable_work {
+            // Hold the agent so no other prompt takes the turn the owner
+            // authorized; only this work's correlated prompts start until the
+            // window ends.
+            self.owned.prompt_state_owner.hold_sudo_work(
+                &session,
+                &entry.agent_id,
+                &entry.entry_id,
+                &entry.entry_id,
+            );
+        }
         if self
             .owned
             .prompt_state_owner
@@ -257,9 +290,12 @@ impl KernelRuntimeState {
         let prepared = crate::app::KernelPreparedPromptSubmission {
             session_id: entry.session_id.clone(),
             prompt: PromptQueueItem::new(&entry.entry_id, &request.attachment_id, &entry.agent_id, text, PromptStatus::Queued)
-                .with_hidden_system_context("This is a human-authorized sudo turn. Use chariox_kernel_request for kernel operations; sudo ends when this turn yields. Never ask for or accept a passkey in agent output.")
+                .with_hidden_system_context("This is a human-authorized sudo window for this task only. Use chariox_kernel_request for kernel operations while it is live; it continues across your waits and correlated continuations of this task until it expires, the task ends or the owner revokes it. It never covers unrelated prompts or messages and cannot answer approvals. Never ask for or accept a passkey in agent output.")
                 .with_attachments(attachments.to_vec()), force_queue: false, refresh_projection: true,
         };
+        if durable_work {
+            self.owned.admit_agent_task(&prepared)?;
+        }
         // Provider launch and concurrent ordinary submissions can leave the
         // target busy. Retry without ever admitting a durable queued prompt.
         let submission = match self
@@ -269,9 +305,19 @@ impl KernelRuntimeState {
             Err(DaemonError::LocalTransport { message, .. })
                 if message == "target agent is busy; retry when its provider is ready" =>
             {
-                return Ok(None)
+                if durable_work {
+                    let _ = self.owned.withdraw_agent_task(&entry.entry_id);
+                }
+                return Ok(None);
             }
-            result => result?.ok_or_else(|| error("provider unavailable for sudo"))?,
+            Ok(Some(submission)) => submission,
+            result => {
+                if durable_work {
+                    let _ = self.owned.withdraw_agent_task(&entry.entry_id);
+                }
+                result?;
+                return Err(error("provider unavailable for sudo"));
+            }
         };
         let PromptSubmissionOutcome::Started { prompt } = &submission.outcome else {
             return Err(error("sudo must start a fresh turn"));
@@ -283,6 +329,7 @@ impl KernelRuntimeState {
         let mut turn = entry.clone();
         turn.prompt_id = Some(prompt.id().into());
         turn.provider_run_id = Some(dispatch.provider_run_id.clone());
+        turn.task_id = durable_work.then(|| prompt.id().into());
         let bound = self.owned.prompt_state_owner.bind_sudo_turn(
             &session,
             &entry.agent_id,
@@ -323,7 +370,9 @@ impl KernelRuntimeState {
             .expect("access state poisoned");
         let mut access = self.owned.sudo_turns.lock().expect("access state poisoned");
         if !bound
-            || access.get(&entry.entry_id) != Some(entry)
+            || access.get(&entry.entry_id).is_none_or(|current| {
+                current.revision != entry.revision || current.prompt_id.is_some()
+            })
             || !policy::requester_grant_live(entry, &grants)
         {
             return Err(error("sudo authorization revoked before dispatch"));

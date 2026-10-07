@@ -35,6 +35,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::CancelBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::ExtendKernelSudo(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::OpenAppView(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),

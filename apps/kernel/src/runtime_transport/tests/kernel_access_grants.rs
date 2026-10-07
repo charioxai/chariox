@@ -602,7 +602,7 @@ async fn grant_for_holder(kernel: &mut Kernel, holder: &mut Client, holder_pid: 
         )),
         "{message}"
     );
-    assert!(message.contains(SESSION) && message.contains("30 minutes"));
+    assert!(message.contains(SESSION) && message.contains("480 minutes"));
     assert!(message.contains(
         std::env::current_exe()
             .unwrap()

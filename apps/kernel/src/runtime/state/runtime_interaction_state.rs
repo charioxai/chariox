@@ -209,6 +209,7 @@ impl KernelRuntimeState {
         Ok(rx)
     }
 
+    #[cfg(test)]
     pub(crate) async fn resolve_runtime_interaction(
         &self,
         session_id: &str,

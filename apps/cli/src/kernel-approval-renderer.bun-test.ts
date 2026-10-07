@@ -268,7 +268,7 @@ test("shared approval command opener handles waiting room, empty session and pen
     return createCliKernelApprovalComposition({
       client: { onKernelEvent: () => () => {} } as never, renderer: h.renderer,
       session: () => ({ id: "session", agents: [], active_interactions: interactions }) as unknown as RuntimeSession,
-      connected: () => true, attached: () => attached, kernelConnected: () => true, notify() {},
+      connected: () => true, attached: () => attached, kernelConnected: () => true, notify() {}, attachmentId: () => null,
       flashFooter: (message, tone) => flashes.push(`${tone}:${message}`),
       dimensions: () => ({ width: 80, height: 24 }), themeRevision: () => 0,
       currentFocus: () => prompt, promptFocus: () => prompt,

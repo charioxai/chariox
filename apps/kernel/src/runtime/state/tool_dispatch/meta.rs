@@ -11,13 +11,13 @@ use crate::transport::runtime_tools::{
     MetaAckEventArgs, MetaCommandListArgs, MetaCommandSearchArgs, MetaCompleteTaskArgs,
     MetaGuideListArgs, MetaGuideSearchArgs, MetaListEventsArgs, MetaMarkBlockedArgs,
     MetaPollTraceArgs, MetaReadEventArgs, MetaReadGuideArgs, MetaReadPlanArgs, MetaReadTaskArgs,
-    MetaResolveRuntimeInteractionArgs, MetaSessionOverviewArgs, MetaSubscribeEventsArgs,
-    MetaSubscribeTraceArgs, MetaTurnBlobArgs, MetaTurnOverviewArgs, MetaUnsubscribeEventsArgs,
-    MetaUnsubscribeTraceArgs, MetaUpdatePlanArgs, MetaUpdateTaskArgs, MetaWorkflowCodeApplyArgs,
-    MetaWorkflowCodeCanvasContractArgs, MetaWorkflowCodeCreateArgs, MetaWorkflowCodeDeleteArgs,
-    MetaWorkflowCodeExportArgs, MetaWorkflowCodeImportArgs, MetaWorkflowCodeListArgs,
-    MetaWorkflowCodePackageExportArgs, MetaWorkflowCodePackageImportArgs, MetaWorkflowCodeReadArgs,
-    MetaWorkflowCodeRunArgs, MetaWorkflowCodeSourceExportArgs, MetaWorkflowCodeSourceExportDirArgs,
+    MetaSessionOverviewArgs, MetaSubscribeEventsArgs, MetaSubscribeTraceArgs, MetaTurnBlobArgs,
+    MetaTurnOverviewArgs, MetaUnsubscribeEventsArgs, MetaUnsubscribeTraceArgs, MetaUpdatePlanArgs,
+    MetaUpdateTaskArgs, MetaWorkflowCodeApplyArgs, MetaWorkflowCodeCanvasContractArgs,
+    MetaWorkflowCodeCreateArgs, MetaWorkflowCodeDeleteArgs, MetaWorkflowCodeExportArgs,
+    MetaWorkflowCodeImportArgs, MetaWorkflowCodeListArgs, MetaWorkflowCodePackageExportArgs,
+    MetaWorkflowCodePackageImportArgs, MetaWorkflowCodeReadArgs, MetaWorkflowCodeRunArgs,
+    MetaWorkflowCodeSourceExportArgs, MetaWorkflowCodeSourceExportDirArgs,
     MetaWorkflowCodeUpdateArgs, MetaWorkflowCodeValidateArgs, MetaWorkflowRegistryAddArgs,
     MetaWorkflowRegistryAddFromWorkflowArgs, MetaWorkflowRegistryDeleteArgs,
     MetaWorkflowRegistryGetArgs, MetaWorkflowRegistryListArgs, MetaWorkflowRegistryLoadArgs,
@@ -25,12 +25,11 @@ use crate::transport::runtime_tools::{
     META_COMPLETE_TASK_TOOL, META_EVENT_KINDS, META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL,
     META_LIST_GUIDES_TOOL, META_LIST_SUBSCRIPTIONS_TOOL, META_MARK_BLOCKED_TOOL,
     META_POLL_TRACE_TOOL, META_READ_EVENT_TOOL, META_READ_GUIDE_TOOL, META_READ_PLAN_TOOL,
-    META_READ_TASK_TOOL, META_RESOLVE_RUNTIME_INTERACTION_TOOL, META_RUN_COMMAND_TOOL,
-    META_SEARCH_COMMANDS_TOOL, META_SEARCH_GUIDES_TOOL, META_SESSION_OVERVIEW_TOOL,
-    META_SUBSCRIBE_EVENTS_TOOL, META_SUBSCRIBE_TRACE_TOOL, META_TURN_BLOB_TOOL,
-    META_TURN_OVERVIEW_TOOL, META_UNSUBSCRIBE_EVENTS_TOOL, META_UNSUBSCRIBE_TRACE_TOOL,
-    META_UPDATE_PLAN_TOOL, META_UPDATE_TASK_TOOL, META_WAIT_TRACE_TOOL,
-    META_WORKFLOW_CODE_APPLY_TOOL, META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL,
+    META_READ_TASK_TOOL, META_RUN_COMMAND_TOOL, META_SEARCH_COMMANDS_TOOL, META_SEARCH_GUIDES_TOOL,
+    META_SESSION_OVERVIEW_TOOL, META_SUBSCRIBE_EVENTS_TOOL, META_SUBSCRIBE_TRACE_TOOL,
+    META_TURN_BLOB_TOOL, META_TURN_OVERVIEW_TOOL, META_UNSUBSCRIBE_EVENTS_TOOL,
+    META_UNSUBSCRIBE_TRACE_TOOL, META_UPDATE_PLAN_TOOL, META_UPDATE_TASK_TOOL,
+    META_WAIT_TRACE_TOOL, META_WORKFLOW_CODE_APPLY_TOOL, META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL,
     META_WORKFLOW_CODE_CREATE_TOOL, META_WORKFLOW_CODE_DELETE_TOOL, META_WORKFLOW_CODE_EXPORT_TOOL,
     META_WORKFLOW_CODE_IMPORT_TOOL, META_WORKFLOW_CODE_LIST_TOOL,
     META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL, META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL,
@@ -701,12 +700,6 @@ impl KernelRuntimeState {
                     .map_err(invalid_meta_args)?;
                 self.meta_workflow_registry_run(session, agent, args).await
             }
-            META_RESOLVE_RUNTIME_INTERACTION_TOOL => {
-                let args = serde_json::from_value::<MetaResolveRuntimeInteractionArgs>(arguments)
-                    .map_err(invalid_meta_args)?;
-                self.meta_resolve_runtime_interaction(session, agent, args)
-                    .await
-            }
             _ => Err(DaemonError::LocalTransport {
                 operation: "runtime_tool_meta",
                 message: format!("unsupported metaagent tool `{tool_name}`"),
@@ -760,57 +753,6 @@ impl KernelRuntimeState {
                     "kind": kind,
                     "subscription_id": &subscription.subscription_id,
                     "metaagent_id": &subscription.metaagent_id,
-                    "error": error.to_string(),
-                }),
-            );
-        }
-    }
-
-    fn persist_metaagent_interaction_resolution(
-        &self,
-        session: &crate::session::RuntimeSession,
-        metaagent: &crate::agent::AgentInstance,
-        target: &crate::agent::AgentInstance,
-        interaction: &crate::session::RuntimeInteraction,
-        choice_id: &str,
-        custom_reply: Option<&str>,
-        provider_run_id: Option<&str>,
-    ) {
-        let correlation_id = format!(
-            "metaagent:{}:runtime-interaction:{}",
-            metaagent.id(),
-            interaction.id()
-        );
-        if let Err(error) = self.owned.durable_state_store.append_event(
-            "metaagent.interaction.resolved",
-            Some(interaction.id().to_string()),
-            serde_json::json!({
-                "session_id": session.id(),
-                "user_id": metaagent.owner_user_id(),
-                "metaagent_id": metaagent.id(),
-                "target_agent_id": target.id(),
-                "interaction_id": interaction.id(),
-                "interaction_kind": format!("{:?}", interaction.kind()),
-                "choice_id": choice_id,
-                "input": custom_reply.map(|reply| serde_json::json!({
-                    "kind": "custom",
-                    "char_count": reply.chars().count(),
-                })),
-                "provider_run_id": provider_run_id,
-                "causation_id": interaction.id(),
-                "correlation_id": correlation_id,
-                "timestamp_ms": crate::session::unix_epoch_ms(),
-            }),
-        ) {
-            crate::logging::warn_with_fields(
-                "metaagent.audit",
-                "failed to persist metaagent interaction resolution audit",
-                serde_json::json!({
-                    "session_id": session.id(),
-                    "metaagent_id": metaagent.id(),
-                    "target_agent_id": target.id(),
-                    "interaction_id": interaction.id(),
-                    "choice_id": choice_id,
                     "error": error.to_string(),
                 }),
             );
