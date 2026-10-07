@@ -223,8 +223,7 @@ impl RemoteLeaseRuntime<'_> {
         &self,
         profile: ProviderAccountProfile,
     ) -> Result<ProviderAccountProfile, DaemonError> {
-        if !remote_provider_account_requires_auth_validation(&profile.provider, profile.auth_state)
-        {
+        if profile.auth_state == ProviderAccountAuthState::Authenticated {
             return Ok(profile);
         }
         let registry = self.app.provider_account_profile_registry();
@@ -249,14 +248,6 @@ impl RemoteLeaseRuntime<'_> {
             "ensure remote provider account",
         )
     }
-}
-
-fn remote_provider_account_requires_auth_validation(
-    provider: &str,
-    auth_state: ProviderAccountAuthState,
-) -> bool {
-    let _ = provider;
-    auth_state != ProviderAccountAuthState::Authenticated
 }
 
 #[cfg(test)]
@@ -528,22 +519,6 @@ exit 2
             b"worker-state"
         );
         let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn remote_auth_validation_policy_preserves_codex_and_claude_handoffs() {
-        assert!(remote_provider_account_requires_auth_validation(
-            "codex",
-            ProviderAccountAuthState::Unknown,
-        ));
-        assert!(!remote_provider_account_requires_auth_validation(
-            "codex",
-            ProviderAccountAuthState::Authenticated,
-        ));
-        assert!(remote_provider_account_requires_auth_validation(
-            "claude",
-            ProviderAccountAuthState::Unknown,
-        ));
     }
 
     #[cfg(unix)]

@@ -1580,20 +1580,40 @@ impl ProviderAccountProfileRegistry {
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let provider = normalize_provider(provider)?;
         let mut document = self.write_document()?;
+        let pruned = status
+            .copy
+            .as_ref()
+            .filter(|copy| copy.auth_state != ProviderAccountCopyAuthState::Removed)
+            .is_some_and(|copy| {
+                copy_notice::prune_superseded_tombstones(
+                    &mut document,
+                    owner_user_id,
+                    provider,
+                    copy,
+                )
+            });
         let profile =
             resolve_stored_profile_mut(&mut document, owner_user_id, provider, profile_id)?;
-        if let Some(existing) = profile.public.materializations.iter_mut().find(|existing| {
-            existing.target_kind == status.target_kind && existing.target_ref == status.target_ref
-        }) {
+        let changed = if let Some(existing) =
+            profile.public.materializations.iter_mut().find(|existing| {
+                existing.target_kind == status.target_kind
+                    && existing.target_ref == status.target_ref
+            }) {
             if status.copy.is_none() {
                 status.copy = existing.copy.clone();
             }
+            let changed = *existing != status;
             *existing = status;
+            changed
         } else {
             profile.public.materializations.push(status);
-        }
+            true
+        };
         let result = profile.public.clone();
-        self.persist_locked(&document)?;
+        // Leased projections repeat unchanged observations; only persist real changes.
+        if changed || pruned {
+            self.persist_locked(&document)?;
+        }
         Ok(result)
     }
 

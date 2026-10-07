@@ -109,14 +109,9 @@ impl ProviderAccountProfileRegistry {
         Ok(observations)
     }
 
-    pub(crate) fn copied_login_artifact_missing(
-        &self,
-        owner: &str,
-        provider: &str,
-        profile_id: &str,
-    ) -> Result<bool, DaemonError> {
-        let profile = self.get(owner, provider, profile_id)?;
-        let incoming = self.copy_identity.as_ref().is_some_and(|identity| {
+    /// The profile received a renewable login copy that this kernel still holds.
+    fn holds_incoming_copy(&self, profile: &ProviderAccountProfile) -> bool {
+        self.copy_identity.as_ref().is_some_and(|identity| {
             profile
                 .materializations
                 .iter()
@@ -127,11 +122,39 @@ impl ProviderAccountProfileRegistry {
                         && copy.auth_state != ProviderAccountCopyAuthState::Removed
                         && !copy.renewable_services.is_empty()
                 })
-        });
-        Ok(incoming
-            && self
-                .export_materialization(owner, provider, profile_id)
-                .is_ok_and(|materialization| materialization.files.is_empty()))
+        })
+    }
+
+    /// Probes the official credential path without reading credential bytes. Claude
+    /// keeps the content check: portability filtering and Keychain fallback need it.
+    fn credential_artifact_missing(&self, owner: &str, provider: &str, profile_id: &str) -> bool {
+        let Ok(provider) = normalize_provider(provider) else {
+            return false;
+        };
+        let Ok(document) = self.read_document() else {
+            return false;
+        };
+        let Ok(stored) = resolve_stored_profile(&document, owner, provider, profile_id) else {
+            return false;
+        };
+        match &stored.locator {
+            ProviderAccountLocator::Codex { codex_home } => !codex_home.join("auth.json").is_file(),
+            ProviderAccountLocator::Opencode { xdg_data_home, .. } => {
+                !xdg_data_home.join("opencode/auth.json").is_file()
+            }
+            locator => materialization_files(locator).is_ok_and(|files| files.is_empty()),
+        }
+    }
+
+    pub(crate) fn copied_login_artifact_missing(
+        &self,
+        owner: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let profile = self.get(owner, provider, profile_id)?;
+        Ok(self.holds_incoming_copy(&profile)
+            && self.credential_artifact_missing(owner, provider, profile_id))
     }
 
     pub(crate) fn copied_login_needs_login(
@@ -147,25 +170,11 @@ impl ProviderAccountProfileRegistry {
         let Some(profile) = self.find(owner, provider, profile_id)? else {
             return Ok(false);
         };
-        Ok(
-            (self.copied_login_artifact_missing(owner, provider, profile_id)?
-                || matches!(
-                    profile.auth_state,
-                    ProviderAccountAuthState::NotConfigured | ProviderAccountAuthState::Expired
-                ))
-                && self.copy_identity.as_ref().is_some_and(|identity| {
-                    profile
-                        .materializations
-                        .iter()
-                        .filter_map(|status| status.copy.as_ref())
-                        .any(|copy| {
-                            copy.target_kernel_id == identity.kernel_id
-                                && copy.target_account_id == profile.profile_id
-                                && copy.auth_state != ProviderAccountCopyAuthState::Removed
-                                && !copy.renewable_services.is_empty()
-                        })
-                }),
-        )
+        Ok(self.holds_incoming_copy(&profile)
+            && (matches!(
+                profile.auth_state,
+                ProviderAccountAuthState::NotConfigured | ProviderAccountAuthState::Expired
+            ) || self.credential_artifact_missing(owner, provider, profile_id)))
     }
 
     pub(crate) fn has_renewable_login(
@@ -370,6 +379,7 @@ impl ProviderAccountProfileRegistry {
     ) -> Result<(), DaemonError> {
         let provider = normalize_provider(provider)?;
         let mut document = self.write_document()?;
+        let mut changed = false;
         for profile in &mut document.profiles {
             if profile.public.owner_user_id != owner_user_id || profile.public.provider != provider
             {
@@ -377,9 +387,12 @@ impl ProviderAccountProfileRegistry {
             }
             for status in &mut profile.public.materializations {
                 if let Some(copy) = &mut status.copy {
+                    // Provider activity reports the same state repeatedly; record transitions only.
                     if copy.target_kernel_id == target_kernel_id
                         && copy.target_account_id == target_account_id
+                        && copy.auth_state != state
                     {
+                        changed = true;
                         copy.auth_state = state.clone();
                         status.observed_at_ms = crate::session::unix_epoch_ms();
                         status.state = if state == ProviderAccountCopyAuthState::Authenticated {
@@ -391,7 +404,10 @@ impl ProviderAccountProfileRegistry {
                 }
             }
         }
-        self.persist_locked(&document)
+        if changed {
+            self.persist_locked(&document)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn take_credential_copy_notice(
@@ -546,6 +562,142 @@ mod tests {
         assert!(!registry
             .copied_login_needs_login("owner", "codex", "default")
             .unwrap());
+        drop(registry);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mp08_mp10_mp11_unchanged_copy_observation_does_not_rewrite_registry() {
+        use std::os::unix::fs::MetadataExt;
+        let root =
+            std::env::temp_dir().join(format!("chariox-copy-observe-{}", rand::random::<u64>()));
+        let path = root.join("registry.json");
+        let registry = ProviderAccountProfileRegistry::open(&path).unwrap();
+        let profile = registry.create_managed("owner", "codex", "Source").unwrap();
+        let status = ProviderAccountMaterializationStatus {
+            copy: Some(ProviderAccountCopyMetadata {
+                source_machine_id: "home-machine".into(),
+                source_kernel_id: "home-kernel".into(),
+                source_account_id: profile.profile_id.clone(),
+                target_machine_id: "worker-machine".into(),
+                target_kernel_id: "worker-kernel".into(),
+                target_account_id: "worker-account".into(),
+                renewable_services: vec!["codex".into()],
+                auth_state: ProviderAccountCopyAuthState::NeedsLogin,
+                copied_at_ms: 1,
+                warning_seen: false,
+            }),
+            target_kind: ProviderAccountMaterializationTargetKind::Worker,
+            target_ref: "worker-kernel".into(),
+            state: ProviderAccountMaterializationState::Stale,
+            observed_at_ms: 2,
+            last_error: None,
+        };
+        let inode = || fs::metadata(&path).unwrap().ino();
+        registry
+            .update_materialization_status("owner", "codex", &profile.profile_id, status.clone())
+            .unwrap();
+        let written = inode();
+        // Leased projections repeat the same observations on every event.
+        registry
+            .update_materialization_status("owner", "codex", &profile.profile_id, status)
+            .unwrap();
+        registry
+            .observe_target_copy(
+                "owner",
+                "codex",
+                "worker-kernel",
+                "worker-account",
+                ProviderAccountCopyAuthState::NeedsLogin,
+            )
+            .unwrap();
+        assert_eq!(inode(), written);
+        registry
+            .observe_target_copy(
+                "owner",
+                "codex",
+                "worker-kernel",
+                "worker-account",
+                ProviderAccountCopyAuthState::Authenticated,
+            )
+            .unwrap();
+        assert_ne!(inode(), written);
+        let copy = registry
+            .get("owner", "codex", &profile.profile_id)
+            .unwrap()
+            .materializations[0]
+            .copy
+            .clone()
+            .unwrap();
+        assert_eq!(copy.auth_state, ProviderAccountCopyAuthState::Authenticated);
+        drop(registry);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mp08_mp10_mp11_reimport_supersedes_removal_tombstones() {
+        let root =
+            std::env::temp_dir().join(format!("chariox-copy-tombstone-{}", rand::random::<u64>()));
+        let registry = ProviderAccountProfileRegistry::open(root.join("registry.json"))
+            .unwrap()
+            .with_machine_identity("worker-machine", "worker-kernel");
+        let import = |label: &str| {
+            let profile = registry.create_managed("owner", "codex", label).unwrap();
+            let materialization = ProviderAccountMaterialization {
+                copy_source: Some(ProviderAccountCopySource {
+                    machine_id: "source-machine".into(),
+                    kernel_id: "source-kernel".into(),
+                }),
+                profile: ProviderAccountReplicaMetadata {
+                    owner_user_id: "owner".into(),
+                    provider: "codex".into(),
+                    profile_id: "source-account".into(),
+                    label: "Source".into(),
+                    origin: profile.origin,
+                    is_default: false,
+                },
+                files: vec![ProviderAccountMaterializationFile {
+                    relative_path: "auth.json".into(),
+                    contents_base64: base64::engine::general_purpose::STANDARD
+                        .encode(br#"{"tokens":{"refresh_token":"synthetic"}}"#),
+                }],
+                generated_at_ms: 1,
+            };
+            registry
+                .record_received_account_copy(
+                    "owner",
+                    &materialization,
+                    &profile.profile_id,
+                    ProviderAccountMaterializationTargetKind::Worker,
+                )
+                .unwrap();
+            profile.profile_id
+        };
+        let removed_states = || {
+            registry
+                .received_copy_observations("owner", "source-kernel")
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.status.copy.unwrap().auth_state)
+                .collect::<Vec<_>>()
+        };
+        let first = import("First");
+        registry
+            .remove_registration("owner", "codex", &first)
+            .unwrap();
+        let second = import("Second");
+        registry
+            .remove_registration("owner", "codex", &second)
+            .unwrap();
+        assert_eq!(
+            removed_states(),
+            vec![ProviderAccountCopyAuthState::Removed]
+        );
+        import("Third");
+        assert!(removed_states()
+            .iter()
+            .all(|state| *state != ProviderAccountCopyAuthState::Removed));
         drop(registry);
         fs::remove_dir_all(root).unwrap();
     }
@@ -752,6 +904,12 @@ pub(super) fn retire_received_copies(
     for mut status in profile.materializations.clone() {
         if let Some(copy) = &mut status.copy {
             if identity.is_some_and(|identity| identity.kernel_id == copy.target_kernel_id) {
+                prune_superseded_tombstones(
+                    document,
+                    &profile.owner_user_id,
+                    &profile.provider,
+                    copy,
+                );
                 copy.auth_state = ProviderAccountCopyAuthState::Removed;
                 status.state = ProviderAccountMaterializationState::Stale;
                 status.observed_at_ms = crate::session::unix_epoch_ms();
@@ -767,4 +925,30 @@ pub(super) fn retire_received_copies(
             }
         }
     }
+}
+
+/// One tombstone per copy slot: a newer removal or a current copy supersedes it.
+/// The home keys copies by source account and receiving kernel.
+pub(super) fn prune_superseded_tombstones(
+    document: &mut RegistryDocument,
+    owner_user_id: &str,
+    provider: &str,
+    copy: &ProviderAccountCopyMetadata,
+) -> bool {
+    let before = document.retired_account_copies.len();
+    document.retired_account_copies.retain(|entry| {
+        !(entry.owner_user_id == owner_user_id
+            && entry.observation.provider == provider
+            && entry
+                .observation
+                .status
+                .copy
+                .as_ref()
+                .is_some_and(|retired| {
+                    retired.source_kernel_id == copy.source_kernel_id
+                        && retired.source_account_id == copy.source_account_id
+                        && retired.target_kernel_id == copy.target_kernel_id
+                }))
+    });
+    document.retired_account_copies.len() != before
 }
