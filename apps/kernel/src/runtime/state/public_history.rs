@@ -64,7 +64,7 @@ impl room_secret_observation::RoomSecretObservations {
         } else {
             text
         };
-        Some(PublicHistoryDocument {
+        let document = PublicHistoryDocument {
             event_ref: event.event_id.clone(),
             sequence: event.sequence,
             timestamp_ms: event.timestamp_ms,
@@ -75,7 +75,11 @@ impl room_secret_observation::RoomSecretObservations {
             turn_id: event.turn_id.clone().or_else(|| event.prompt_id.clone()),
             truncated: text.chars().count() > 64 * 1024,
             text: text.chars().take(64 * 1024).collect(),
-        })
+        };
+        // Canonical scope/reference fields are internal authority, never rewritten
+        // into another identity. A secret collision excludes the entire document.
+        let scrubbed = self.scrub(room, document.clone()).ok()?;
+        (scrubbed == document).then_some(document)
     }
 }
 
@@ -103,6 +107,10 @@ fn private_tool(value: &serde_json::Value) -> bool {
                 || values.values().any(private_tool)
         }
         serde_json::Value::Array(values) => values.iter().any(private_tool),
+        serde_json::Value::String(text) => serde_json::from_str::<serde_json::Value>(text)
+            .ok()
+            .filter(|v| v.is_object() || v.is_array())
+            .is_some_and(|v| private_tool(&v)),
         _ => false,
     }
 }
@@ -403,12 +411,24 @@ mod tests {
             HistoryEventKind::UserPrompt,
             "public_prompt_marker sensitive_canary",
         );
+        append(
+            HistoryEventKind::ProviderTool,
+            r#"{"tool":"shell","arguments":"{\"password\":\"nested_private_canary\",\"command\":\"cargo check\"}","output":"safe_nested_result"}"#,
+        );
+
+        append(
+            HistoryEventKind::ProviderTool,
+            r#"{"output":"{\"tool\":\"vault.read\",\"output\":\"nested_auth_canary\"}"}"#,
+        );
+
         let _guard = store.lock_public_history().unwrap();
         for query in [
             "sensitive_canary",
             "private_reasoning_canary",
             "credential_canary",
             "private_argument_canary",
+            "nested_private_canary",
+            "nested_auth_canary",
         ] {
             assert!(store
                 .search_public_history_locked("owner", "room", None, query, 50, None)

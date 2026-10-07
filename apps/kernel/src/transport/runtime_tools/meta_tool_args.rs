@@ -101,6 +101,7 @@ pub struct MetaAckEventArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct MetaTurnOverviewArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_ref: Option<String>,
@@ -113,6 +114,7 @@ pub struct MetaTurnOverviewArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MetaTurnBlobArgs {
     #[serde(alias = "event_ref")]
     pub blob_id: String,

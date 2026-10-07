@@ -216,6 +216,8 @@ fn public_history_interrupted_rebuild_resumes_sanitized_source_after_restart() {
         assert!(result.coverage.rebuilding);
         assert!(!result.coverage.complete);
         assert_eq!(result.coverage.rebuild_cursor, 257);
+        assert_eq!(result.coverage.indexed_events, 257);
+        assert!(result.next_cursor.is_none());
     }
     {
         let _guard = reopened.lock_public_history().unwrap();
@@ -297,4 +299,19 @@ fn public_history_protocol_453_result_shape_hash() {
         hash,
         "748f93a9b607e3cae05d4e5a566df6612a51cef874e7f28297a367512e599962"
     );
+}
+
+#[test]
+fn public_history_rebuild_coverage_never_exposes_foreign_progress() {
+    let f = Fixture::new();
+    let local = f.append("room", "local compiler");
+    for _ in 0..300 {
+        f.append("foreign", "foreign compiler");
+    }
+    f.store.begin_public_history_rebuild().unwrap();
+    let local_result = f.search("room", "compiler", 1, None).unwrap();
+    assert_eq!(local_result.coverage.indexed_events, 1);
+    assert_eq!(local_result.coverage.rebuild_cursor, local.sequence);
+    assert!(!local_result.coverage.rebuilding);
+    assert!(local_result.coverage.complete);
 }

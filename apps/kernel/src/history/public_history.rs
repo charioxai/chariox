@@ -225,7 +225,7 @@ impl OperationalHistoryStore {
             .map_err(public_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(public_error)?;
-        let next_cursor = if hits.len() > limit {
+        let next_cursor = if hits.len() > limit && !coverage.rebuilding {
             hits.truncate(limit);
             Some(
                 URL_SAFE_NO_PAD.encode(
@@ -241,6 +241,7 @@ impl OperationalHistoryStore {
         } else {
             None
         };
+        hits.truncate(limit);
         Ok(PublicHistorySearchResult {
             hits,
             next_cursor,
@@ -351,18 +352,22 @@ fn coverage(
     owner: &str,
     room: &str,
 ) -> Result<PublicHistoryCoverage, DaemonError> {
-    let (indexed_events, through_sequence): (u64,u64) = connection.query_row(
-        "SELECT count(*),COALESCE(max(sequence),0) FROM public_history WHERE owner_user_id=?1 AND session_id=?2", params![owner,room],|r|Ok((read_u64(r,0)?,read_u64(r,1)?))).map_err(public_error)?;
-    let excluded_events: u64=connection.query_row("SELECT count(*) FROM history_events h WHERE h.session_id=?1
-        AND h.kind IN ('user_prompt','provider_output','provider_tool','provider_error')
-        AND NOT EXISTS(SELECT 1 FROM public_history p WHERE p.event_ref=h.event_id AND p.owner_user_id=?2)",params![room,owner],|r|read_u64(r,0)).map_err(public_error)?;
-    let (rebuild_cursor, finished): (u64, bool) = connection
+    let (build_cursor, globally_finished): (u64, bool) = connection
         .query_row(
             "SELECT cursor,complete FROM public_history_build",
             [],
             |r| Ok((read_u64(r, 0)?, r.get(1)?)),
         )
         .map_err(public_error)?;
+    // Build bookkeeping is global internally; expose only this authorized room's
+    // progress/counts, never another room's cursor or remaining document count.
+    let (indexed_events, through_sequence, rebuild_cursor, pending): (u64,u64,u64,u64) = connection.query_row(
+        "SELECT COALESCE(sum(CASE WHEN ?3 OR sequence<=?4 THEN 1 ELSE 0 END),0),COALESCE(max(sequence),0),COALESCE(max(CASE WHEN ?3 OR sequence<=?4 THEN sequence ELSE 0 END),0),COALESCE(sum(CASE WHEN NOT ?3 AND sequence>?4 THEN 1 ELSE 0 END),0) FROM public_history WHERE owner_user_id=?1 AND session_id=?2",
+        params![owner,room,globally_finished,build_cursor as i64],|r|Ok((read_u64(r,0)?,read_u64(r,1)?,read_u64(r,2)?,read_u64(r,3)?))).map_err(public_error)?;
+    let finished = pending == 0;
+    let excluded_events: u64=connection.query_row("SELECT count(*) FROM history_events h WHERE h.session_id=?1
+        AND h.kind IN ('user_prompt','provider_output','provider_tool','provider_error')
+        AND NOT EXISTS(SELECT 1 FROM public_history p WHERE p.event_ref=h.event_id AND p.owner_user_id=?2)",params![room,owner],|r|read_u64(r,0)).map_err(public_error)?;
     let retention_gap_events:u64=connection.query_row("SELECT COALESCE((SELECT deleted_events FROM public_history_retention WHERE session_id=?1),0)",[room],|r|read_u64(r,0)).map_err(public_error)?;
     let truncated_events:u64=connection.query_row("SELECT count(*) FROM public_history WHERE owner_user_id=?1 AND session_id=?2 AND json_extract(document_json,'$.truncated')=1",params![owner,room],|r|read_u64(r,0)).map_err(public_error)?;
     Ok(PublicHistoryCoverage {

@@ -9,7 +9,9 @@ room agents use `chariox.history.search` with literal task terms:
 
 Results contain bounded `hits`, opaque `event_ref` values, an optional
 `next_cursor`, and `coverage`. Pass the unchanged cursor with the same query
-and agent/session scope to paginate. Results are newest first; ranking never
+and agent/session scope to paginate. Pagination is available after the authorized
+room finishes rebuilding; retry the initial query while `coverage.rebuilding=true`.
+Rebuild progress and counts are restricted to that room. Results are newest first; ranking never
 uses another room's corpus statistics. Read a result with
 `chariox.history.read({"event_ref":"<returned reference>"})`. Room turn reads
 also use this public projection. Event references never resolve filesystem
