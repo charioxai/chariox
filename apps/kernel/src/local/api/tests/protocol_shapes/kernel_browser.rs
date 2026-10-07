@@ -1,4 +1,4 @@
-//! MD-2: protocol 446 sessionless host-browser snapshots.
+//! MD-2: protocol 461 sessionless host-browser snapshots.
 use super::*;
 use crate::local::{
     KernelBrowserCommand as Command, KernelBrowserInput as Input, KernelBrowserRequest,

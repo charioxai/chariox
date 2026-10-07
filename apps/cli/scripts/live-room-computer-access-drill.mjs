@@ -76,29 +76,34 @@ function automation(socket, action, fields = {}) {
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'chariox-room-computer-access-'));
 const home = path.join(root, 'home'), workspace = path.join(root, 'workspace'), socket = path.join(root, 'tui.sock');
-await mkdir(home, { mode: 0o700 }); await mkdir(workspace);
-const port = await freePort();
-const env = {
-  PATH: process.env.PATH, LANG: 'C.UTF-8', TERM: 'xterm-256color', HOME: home, TMPDIR: root,
-  CHARIOX_HOME: path.join(home, 'runtime'), CHARIOX_LOG_DIR: path.join(root, 'logs'), CHARIOX_DAEMON_SOCKET: path.join(root, 'kernel.sock'),
-  CHARIOX_KERNEL_PORT: String(port), CHARIOX_MCP_PORT: String(await freePort()), CHARIOX_CODEX_PORT: String(await freePort()),
-  CHARIOX_OPENCODE_PORT: String(await freePort()), CHARIOX_RELAY_URL: `ws://127.0.0.1:${await freePort()}`, CHARIOX_RELAY_TOKEN: 'disposable-room-computer-access',
-  CHARIOX_DAEMON_ID: `room-computer-access-${process.pid}`, CHARIOX_DAEMON_ALIAS: 'room-computer-access', CHARIOX_PROVIDER_DEV_STUB: '1',
-};
-const kernelLog = createWriteStream(path.join(evidence, 'kernel.log'), { mode: 0o600 });
 const ptyLog = path.join(evidence, 'tui-pty.log');
-const tuiLog = createWriteStream(ptyLog, { mode: 0o600 });
-let kernel, tui, client;
+let kernel, tui, client, kernelLog, tuiLog;
 const hashFile = async file => createHash('sha256').update(await readFile(file)).digest('hex');
-const report = { source_commit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim(),
-  source_patch_sha256: createHash('sha256').update(execFileSync('git', ['diff', 'HEAD'], { cwd: repo })).digest('hex'),
-  kernel_sha256: await hashFile(kernelBinary), tui_sha256: await hashFile(args.tui ? tuiCommand[0] : tuiCommand[1]), items: ['MP-08', 'MP-10', 'MP-11'], kernel: kernelBinary, tui: tuiCommand.join(' '), status: 'FAIL', started_at: new Date().toISOString() };
+const report = { items: ['MP-08', 'MP-10', 'MP-11'], kernel: kernelBinary, tui: tuiCommand.join(' '),
+  status: 'FAIL', started_at: new Date().toISOString(), resources: [] };
 const resources = () => ({ at: new Date().toISOString(),
   memory_available_bytes: Number(execFileSync('awk', ['/MemAvailable/ {print $2}', '/proc/meminfo'], { encoding: 'utf8' }).trim()) * 1024,
   disk_available_bytes: Number(execFileSync('df', ['-B1', '--output=avail', '/'], { encoding: 'utf8' }).trim().split('\n').at(-1)) });
-report.resources = [resources()];
 try {
+  report.source_commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  report.source_patch_sha256 = createHash('sha256').update(execFileSync('git', ['diff', 'HEAD'], { cwd: repo })).digest('hex');
+  assert.equal(process.platform, 'linux', 'MP-08 / MP-10 / MP-11: Linux-only drill (requires /proc and util-linux script -c)');
+  report.kernel_sha256 = await hashFile(kernelBinary);
+  report.tui_sha256 = await hashFile(args.tui ? tuiCommand[0] : tuiCommand[1]);
+  report.resources.push(resources());
   assert.ok(report.resources[0].memory_available_bytes >= 9 * 2 ** 30 && report.resources[0].disk_available_bytes >= 10 * 2 ** 30, 'MP-11 resource floor');
+  execFileSync('script', ['-q', '-c', 'true', '/dev/null']);
+  await mkdir(home, { mode: 0o700 }); await mkdir(workspace);
+  const port = await freePort();
+  const env = {
+    PATH: process.env.PATH, LANG: 'C.UTF-8', TERM: 'xterm-256color', HOME: home, TMPDIR: root,
+    CHARIOX_HOME: path.join(home, 'runtime'), CHARIOX_LOG_DIR: path.join(root, 'logs'), CHARIOX_DAEMON_SOCKET: path.join(root, 'kernel.sock'),
+    CHARIOX_KERNEL_PORT: String(port), CHARIOX_MCP_PORT: String(await freePort()), CHARIOX_CODEX_PORT: String(await freePort()),
+    CHARIOX_OPENCODE_PORT: String(await freePort()), CHARIOX_RELAY_URL: `ws://127.0.0.1:${await freePort()}`, CHARIOX_RELAY_TOKEN: 'disposable-room-computer-access',
+    CHARIOX_DAEMON_ID: `room-computer-access-${process.pid}`, CHARIOX_DAEMON_ALIAS: 'room-computer-access', CHARIOX_PROVIDER_DEV_STUB: '1',
+  };
+  kernelLog = createWriteStream(path.join(evidence, 'kernel.log'), { mode: 0o600 });
+  tuiLog = createWriteStream(ptyLog, { mode: 0o600 });
   kernel = spawn(kernelBinary, [], { cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'] });
   kernel.stdout.pipe(kernelLog, { end: false }); kernel.stderr.pipe(kernelLog, { end: false });
   client = await waitFor(async () => {
@@ -146,19 +151,23 @@ try {
   await stop(tui);
   // The kernel may prewarm provider servers; tear them down through the product before stopping it.
   await client?.send(request.teardownProviderProcessesRequest(null, true)).catch(() => {});
-  report.processes_before_kernel_stop = await runProcesses();
+  report.processes_before_kernel_stop = kernel || tui ? await runProcesses() : [];
   await client?.close().catch(() => {});
   await stop(kernel);
-  kernelLog.end(); tuiLog.end();
+  kernelLog?.end(); tuiLog?.end();
   // Known kernel issue: a codex app-server can start during kernel shutdown and outlive it.
-  report.residue_settled = await runProcesses(true);
-  await sleep(2000);
-  report.residue_after_settle = await runProcesses();
+  report.residue_settled = kernel || tui ? await runProcesses(true) : [];
+  if (kernel || tui) await sleep(2000);
+  report.residue_after_settle = kernel || tui ? await runProcesses() : [];
   if (report.residue_after_settle.length) { report.status = 'FAIL'; report.failure ??= 'drill processes survived cleanup'; process.exitCode = 1; }
   await cp(path.join(root, 'logs'), path.join(evidence, 'kernel-logs'), { recursive: true }).catch(() => {});
   await rm(root, { recursive: true, force: true });
-  report.cleanup = 'TUI exited through automation; providers torn down; kernel stopped; residue audited; disposable state removed.';
-  report.resources.push(resources());
+  report.cleanup = kernel || tui
+    ? 'TUI exited through automation; providers torn down; kernel stopped; residue audited; disposable state removed.'
+    : 'Preflight failed before runtime launch; disposable state removed.';
+  if (process.platform === 'linux') {
+    try { report.resources.push(resources()); } catch (error) { report.resource_sample_failure = error.message.slice(0, 2000); }
+  }
   report.finished_at = new Date().toISOString();
   await writeFile(path.join(evidence, 'result.json'), JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
   console.log(`${report.status} room computer bulk access drill` + (report.failure ? `: ${report.failure}` : '')

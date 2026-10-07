@@ -299,7 +299,8 @@ and bounded to 60 seconds.
 ## Room Computer bulk access drill
 
 Use this after changing `revoke_grants`/`grant_room_computer` or the TUI
-`/access` command (local 461):
+`/access` command (local 461). This drill is Linux-only: it requires `/proc`
+and util-linux `script -c`:
 
 ```bash
 node apps/cli/scripts/live-room-computer-access-drill.mjs --evidence <dir outside the repo> \
