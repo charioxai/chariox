@@ -182,11 +182,13 @@ class TraversalTest(unittest.TestCase):
             self.assertFalse(tree['complete'])
 
 
-    def terminal(self, pid):
+    def terminal(self, pid, popups=()):
         # An owned xterm: visible, reparented into a WM frame, without an AT-SPI app.
         root = types.SimpleNamespace(id=1, get_full_property=lambda atom, kind: types.SimpleNamespace(value=[9]))
         frame = types.SimpleNamespace(id=8, query_tree=lambda: types.SimpleNamespace(parent=root),
+            get_attributes=lambda: types.SimpleNamespace(map_state=2, override_redirect=0),
             get_geometry=lambda: types.SimpleNamespace(x=20, y=30, width=244, height=150, border_width=1))
+        root.query_tree = lambda: types.SimpleNamespace(children=[frame, *popups])
         window = types.SimpleNamespace(id=9, query_tree=lambda: types.SimpleNamespace(parent=frame),
             get_attributes=lambda: types.SimpleNamespace(map_state=2),
             get_full_property=lambda atom, kind: types.SimpleNamespace(value=[pid] if atom=='_NET_WM_PID' else b'xterm'))
@@ -200,6 +202,17 @@ class TraversalTest(unittest.TestCase):
         self.assertTrue(tree['complete'])
         self.assertFalse(tree['protected'])
         self.assertEqual(tree['uncovered'], [[20, 30, 246, 152]])
+
+    def test_mp11_override_redirect_popups_are_masked_while_an_owned_window_is_uncovered(self):
+        # Menus, completion lists and tooltips are outside _NET_CLIENT_LIST.
+        popup = lambda x, map_state: types.SimpleNamespace(
+            get_attributes=lambda: types.SimpleNamespace(map_state=map_state, override_redirect=1),
+            get_geometry=lambda: types.SimpleNamespace(x=x, y=40, width=100, height=60, border_width=1))
+        self.terminal(201, [popup(300, 2), popup(500, 0)])
+        tree = self.snapshot([Node('Office', 'application', [Node('Writer', 'frame')])])
+        self.assertTrue(tree['complete'])
+        self.assertFalse(tree['protected'])
+        self.assertEqual(tree['uncovered'], [[20, 30, 246, 152], [300, 40, 102, 62]])
 
     def test_mp11_foreign_or_unattributed_window_still_masks_the_desktop(self):
         for pid in [999, None]:

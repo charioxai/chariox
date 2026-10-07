@@ -165,6 +165,15 @@ def snapshot(processes):
                     if len(frames)==1:
                         frame=frames[0]
                         active_window={key:frame[key] for key in ('pid','started','path')}
+            if uncovered:
+                # MP-08 / MP-11: menus, completion lists and tooltips are
+                # override-redirect root children outside _NET_CLIENT_LIST with no
+                # reliable owner. Mask every viewable one (over-masking is accepted).
+                for child in root.query_tree().children:
+                    attributes=child.get_attributes()
+                    if attributes.override_redirect and attributes.map_state==X.IsViewable:
+                        geometry=child.get_geometry()
+                        uncovered.append([geometry.x,geometry.y,geometry.width+2*geometry.border_width,geometry.height+2*geometry.border_width])
         finally:connection.close()
         return {'available':True,'complete':complete,'nodes':nodes,'protected':protected,'active_window':active_window,'uncovered':uncovered}
     except Exception:

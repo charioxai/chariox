@@ -7,8 +7,10 @@ pub enum KernelBrowserCommand {
     Computer {
         command: KernelComputerCommand,
     },
-    /// MP-08 / MP-11 (local 461): `None` restores every owned agent after "revoke all".
+    /// MP-08 / MP-11 (local 461): explicit `null` restores every owned agent after
+    /// "revoke all"; the field is required so an omitted agent cannot restore everyone.
     GrantRoomComputer {
+        #[serde(deserialize_with = "Option::deserialize")]
         agent_id: Option<String>,
     },
     ListGrants,

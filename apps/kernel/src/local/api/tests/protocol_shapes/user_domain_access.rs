@@ -89,4 +89,9 @@ fn mdaccess_protocol_461_grant_shapes_and_hash() {
         serde_json::json!({"command":{"op":"revoke_grants","agent_id":null,"owner":"forged"}})
     )
     .is_err());
+    // Bulk restore needs an explicit null; an omitted agent must not restore everyone.
+    assert!(serde_json::from_value::<KernelBrowserRequest>(
+        serde_json::json!({"command":{"op":"grant_room_computer"}})
+    )
+    .is_err());
 }
