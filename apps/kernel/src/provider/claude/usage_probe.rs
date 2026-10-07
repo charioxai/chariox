@@ -35,7 +35,13 @@ fn probe_claude_account_usage_with_timeout(
     environment: &BTreeMap<String, String>,
     timeout: Duration,
 ) -> Result<ProviderAccountUsageSnapshot, DaemonError> {
-    let (status, result) = run_claude_print(executable, environment, &["/usage"], timeout)?;
+    let (status, result) = run_claude_print(
+        executable,
+        environment,
+        &["/usage"],
+        timeout,
+        "Claude usage probe",
+    )?;
     if !status.success() {
         return Err(probe_error(format!(
             "Claude exited before reporting usage ({status})"
@@ -87,6 +93,7 @@ fn verify_claude_account_credential_with_timeout(
         environment,
         &["Reply with OK.", "--model", "haiku"],
         timeout,
+        "Claude credential check",
     )
     .map_err(|error| ClaudeCredentialCheckError::Inconclusive(error.to_string()))?;
     let result = result.unwrap_or_default();
@@ -96,6 +103,33 @@ fn verify_claude_account_credential_with_timeout(
             .and_then(serde_json::Value::as_u64),
         Some(401 | 403)
     ) {
+        return Err(ClaudeCredentialCheckError::Rejected);
+    }
+    // Older official CLI results expose the API status only in their error
+    // text. Restrict fallback matching to failed result envelopes; never treat
+    // a successful model's quoted error as a rejected credential.
+    let failed_result = result.get("type").and_then(serde_json::Value::as_str) == Some("result")
+        && result.get("is_error").and_then(serde_json::Value::as_bool) == Some(true);
+    let rejected_text = |text: &str| {
+        text.split_once("API Error: ")
+            .and_then(|(_, status)| status.split_whitespace().next())
+            .is_some_and(|status| matches!(status.trim_end_matches(':'), "401" | "403"))
+    };
+    if failed_result
+        && (result
+            .get("result")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(rejected_text)
+            || result
+                .get("errors")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|errors| {
+                    errors
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .any(rejected_text)
+                }))
+    {
         return Err(ClaudeCredentialCheckError::Rejected);
     }
     let succeeded = result.get("type").and_then(serde_json::Value::as_str) == Some("result")
@@ -116,22 +150,27 @@ fn run_claude_print(
     environment: &BTreeMap<String, String>,
     args: &[&str],
     timeout: Duration,
+    label: &'static str,
 ) -> Result<(std::process::ExitStatus, Option<serde_json::Value>), DaemonError> {
+    let print_error = |message: String| DaemonError::LocalTransport {
+        operation: label,
+        message,
+    };
     validate_claude_probe_environment(environment, linux_profile_home_is_supported())?;
     let root = create_claude_runtime_files_root()?;
-    let stdout_path = root.path().join("usage-result.json");
-    let stderr_path = root.path().join("usage-stderr.log");
+    let stdout_path = root.path().join("print-result.json");
+    let stderr_path = root.path().join("print-stderr.log");
     let stdout = private_probe_file(&stdout_path)
-        .map_err(|error| probe_error(format!("failed to prepare Claude stdout: {error}")))?;
+        .map_err(|error| print_error(format!("failed to prepare Claude stdout: {error}")))?;
     let stderr = private_probe_file(&stderr_path)
-        .map_err(|error| probe_error(format!("failed to prepare Claude stderr: {error}")))?;
+        .map_err(|error| print_error(format!("failed to prepare Claude stderr: {error}")))?;
 
     let mut stdout_metadata = stdout
         .try_clone()
-        .map_err(|_| probe_error("failed to pin Claude stdout".into()))?;
+        .map_err(|_| print_error("failed to pin Claude stdout".into()))?;
     let stderr_metadata = stderr
         .try_clone()
-        .map_err(|_| probe_error("failed to pin Claude stderr".into()))?;
+        .map_err(|_| print_error("failed to pin Claude stderr".into()))?;
     let mut command = Command::new(executable);
     command.arg("-p").arg(args[0]).args([
         "--output-format",
@@ -181,7 +220,7 @@ fn run_claude_print(
 
     let mut child = command
         .spawn()
-        .map_err(|error| probe_error(format!("failed to start Claude: {error}")))?;
+        .map_err(|error| print_error(format!("failed to start Claude: {error}")))?;
     let deadline = std::time::Instant::now() + timeout;
     let status = loop {
         let overflow = [&stdout_metadata, &stderr_metadata]
@@ -193,19 +232,19 @@ fn run_claude_print(
             });
         if overflow {
             stop_claude_probe(&mut child);
-            return Err(probe_error("Claude usage output limit exceeded".into()));
+            return Err(print_error(format!("{label} output limit exceeded")));
         }
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
             stop_claude_probe(&mut child);
-            return Err(probe_error("Claude usage probe timed out".into()));
+            return Err(print_error(format!("{label} timed out")));
         }
         match child.wait_timeout(remaining.min(Duration::from_millis(50))) {
             Ok(Some(status)) => break status,
             Ok(None) => {}
             Err(_) => {
                 stop_claude_probe(&mut child);
-                return Err(probe_error("failed to wait for Claude usage".into()));
+                return Err(print_error(format!("failed to wait for {label}")));
             }
         }
     };
@@ -217,18 +256,18 @@ fn run_claude_print(
             })
         })
     {
-        return Err(probe_error("Claude usage output limit exceeded".into()));
+        return Err(print_error(format!("{label} output limit exceeded")));
     }
     let mut output = Vec::new();
     stdout_metadata
         .rewind()
-        .map_err(|_| probe_error("failed to rewind Claude usage".into()))?;
+        .map_err(|_| print_error(format!("failed to rewind {label} output")))?;
     stdout_metadata
         .take(CLAUDE_USAGE_PROBE_OUTPUT_BYTES + 1)
         .read_to_end(&mut output)
-        .map_err(|_| probe_error("failed to read Claude usage".into()))?;
+        .map_err(|_| print_error(format!("failed to read {label} output")))?;
     if output.len() as u64 > CLAUDE_USAGE_PROBE_OUTPUT_BYTES {
-        return Err(probe_error("Claude usage output limit exceeded".into()));
+        return Err(print_error(format!("{label} output limit exceeded")));
     }
     Ok((status, serde_json::from_slice(&output).ok()))
 }
@@ -483,6 +522,98 @@ process.stdout.write(JSON.stringify({
             "the non-interactive probe must not mutate Claude profile state"
         );
         let _ = fs::remove_dir_all(fixture);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn credential_check_classifies_legacy_api_rejections_and_transient_errors() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile_fixture_root();
+        let executable = root.join("claude");
+        let environment = BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".into(),
+            root.join("profile").display().to_string(),
+        )]);
+        for (result, exit, rejected) in [
+            (
+                serde_json::json!({"type":"result", "is_error":true, "result":"API Error: 401 OAuth token is invalid"}),
+                1,
+                true,
+            ),
+            (
+                serde_json::json!({"type":"result", "is_error":true, "errors":["API Error: 403 access denied"]}),
+                1,
+                true,
+            ),
+            (
+                serde_json::json!({"type":"result", "is_error":true, "result":"API Error: 503 service unavailable"}),
+                1,
+                false,
+            ),
+            (
+                serde_json::json!({"type":"result", "is_error":true, "result":"connection timed out"}),
+                1,
+                false,
+            ),
+            (
+                serde_json::json!({"type":"result", "is_error":false, "result":"API Error: 401 quoted by model"}),
+                0,
+                false,
+            ),
+        ] {
+            fs::write(
+                &executable,
+                format!("#!/bin/sh\nprintf '%s\\n' '{}'\nexit {exit}\n", result),
+            )
+            .unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+            let checked = verify_claude_account_credential_with_timeout(
+                &executable,
+                &environment,
+                Duration::from_secs(2),
+            );
+            assert_eq!(
+                checked == Err(ClaudeCredentialCheckError::Rejected),
+                rejected,
+                "{result}: {checked:?}"
+            );
+            if exit == 0 {
+                assert_eq!(checked, Ok(()));
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn credential_check_timeout_names_the_check() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile_fixture_root();
+        let executable = root.join("claude");
+        fs::write(&executable, "#!/bin/sh\nexec sleep 10\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let environment = BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".into(),
+            root.join("profile").display().to_string(),
+        )]);
+        let error = verify_claude_account_credential_with_timeout(
+            &executable,
+            &environment,
+            Duration::from_millis(100),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, ClaudeCredentialCheckError::Inconclusive(ref message) if message.contains("credential check timed out") && !message.contains("usage"))
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn tempfile_fixture_root() -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("claude-check-{:016x}", rand::random::<u64>()));
+        fs::create_dir_all(&root).unwrap();
+        root
     }
 
     #[test]

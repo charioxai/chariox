@@ -315,7 +315,11 @@ pub(crate) fn refresh_provider_account_profile_response(
         }
         Some("claude") => {
             let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
-            if claude_vault_token_status(owner_user_id, &profile, &status)?.is_some() {
+            if let Some(kept) = claude_vault_token_status(owner_user_id, &profile, &status)? {
+                if auth_state_from_status(&kept.auth_state) != profile.auth_state {
+                    update_profile_auth_observation(registry, owner_user_id, &kept)?;
+                    return registry.get(owner_user_id, provider, &profile.profile_id);
+                }
                 return Ok(profile);
             }
             let usage = if status.auth_state == "authenticated" {
@@ -385,14 +389,18 @@ fn claude_vault_token_status(
             ProviderAccountAuthState::Authenticated => "authenticated",
             ProviderAccountAuthState::Expired => "expired",
             ProviderAccountAuthState::Error => "error",
-            ProviderAccountAuthState::NotConfigured => "not_logged_in",
+            ProviderAccountAuthState::NotConfigured => "unknown",
             ProviderAccountAuthState::Unknown => "unknown",
         }
         .to_string(),
         identity_summary: profile.identity_summary.clone(),
         plan: profile.plan.clone(),
         login_hint: Some(
-            "This account runs agents with its Chariox Vault setup token. To replace it, run `provider setup-token claude <account-profile> --replace`.".to_string(),
+            if profile.auth_state == ProviderAccountAuthState::Authenticated {
+                "This account runs agents with its verified Chariox Vault setup token. To replace it, run `provider setup-token claude <account-profile> --replace`.".to_string()
+            } else {
+                "This account has a Chariox Vault setup token, but it has not been verified or its last verification failed. Re-store it with `provider setup-token claude <account-profile> --replace` to verify it.".to_string()
+            },
         ),
         ..native.clone()
     }))
