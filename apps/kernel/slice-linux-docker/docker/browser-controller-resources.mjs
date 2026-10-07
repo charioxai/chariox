@@ -47,7 +47,7 @@ export async function observeBrowserResources({
     let args;
     try {
       const commandLine = await fs.readFile(path.join(procRoot, String(entry), "cmdline"), "utf8");
-      args = String(commandLine).split("\0").filter(Boolean);
+      args = processArguments(commandLine);
     } catch (error) {
       if (error?.code === "ENOENT" || error?.code === "ESRCH") continue;
       throw new BrowserResourceInventoryError(
@@ -137,9 +137,21 @@ function identityArray(value, label) {
   return identities;
 }
 
+// MP-08 / MP-10 / MP-11: Chromium may replace NUL-delimited argv with a
+// space-joined process title. Split flag clauses, preserving spaces in values;
+// this is data parsing only, never shell evaluation.
+function processArguments(commandLine) {
+  const args = String(commandLine).split("\0").filter(Boolean);
+  if (args.length !== 1) return args;
+  return args[0].split(/\s+(?=--[a-z][a-z0-9_-]*(?:=|\s|$))/i).flatMap((clause) => {
+    const separate = clause.match(/^(--[^=\s]+)\s+(.+)$/);
+    return separate ? [separate[1], separate[2]] : [clause];
+  });
+}
+
 function isBrowserMainProcess(args) {
   const executable = path.basename(args[0] ?? "").toLowerCase();
-  return BROWSER_EXECUTABLES.has(executable) && !args.some((arg) => arg.startsWith("--type="));
+  return BROWSER_EXECUTABLES.has(executable) && !args.some((arg) => arg === "--type" || arg.startsWith("--type="));
 }
 
 function profilePathFromArguments(args) {
