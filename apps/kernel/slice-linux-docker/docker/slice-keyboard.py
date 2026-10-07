@@ -238,6 +238,9 @@ def hold_input(kind, value, duration_ms, x=None, y=None):
                        "escape": "Escape", "tab": "Tab", "space": "space",
                        "backspace": "BackSpace", "delete": "Delete", "left": "Left",
                        "right": "Right", "up": "Up", "down": "Down", "home": "Home",
+                       # Shared Browser surface key names.
+                       "arrowleft": "Left", "arrowright": "Right", "arrowup": "Up",
+                       "arrowdown": "Down",
                        "end": "End", "pageup": "Prior", "pagedown": "Next"}
             codes = []
             for name in value.split("+"):

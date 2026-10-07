@@ -156,6 +156,12 @@ class PhysicalChordTests(unittest.TestCase):
             with patch.object(m.xtest,'fake_input') as inject, patch.object(m.time,'sleep'), patch.object(m.signal,'signal'):
                 m.hold_input('key',name,1)
             self.assertEqual([x.args[1:] for x in inject.call_args_list],[(2,code),(3,code)])
+    def test_mp08_shared_browser_arrow_names_dispatch_real_base_keys(self):
+        for name in ('ArrowDown','ARROWDOWN'):
+            m,c=self.native()
+            with patch.object(m.xtest,'fake_input') as inject, patch.object(m.time,'sleep'), patch.object(m.signal,'signal'):
+                m.hold_input('key',name,1)
+            self.assertEqual([x.args[1:] for x in inject.call_args_list],[(2,116),(3,116)])
     def test_mp11_unknown_key_never_reports_applied(self):
         m,c=self.native()
         with patch.object(m.xtest,'fake_input') as inject, patch.object(m.signal,'signal'):
