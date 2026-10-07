@@ -50,6 +50,15 @@ function observeGuardResponse(value) {
   }
   visit(value)
 }
+function toolCall(text) {
+  try { return JSON.parse(text.slice(text.indexOf('{'))) } catch { return null }
+}
+// The room agent's compile request reached the workflow-code validator and the
+// isolated compiler refused host access.
+function refusedCompile(call) {
+  const name = String(call?.tool ?? '').replace(/^mcp__chariox__/, '').replaceAll('.', '_')
+  return name === 'chariox_workflow_code_validate' && /not defined|script failed/.test(`${call.output ?? ''}\n${call.error ?? ''}`)
+}
 async function freePort() {
   const server = createServer()
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -205,15 +214,20 @@ workflow.endpoint(worker,{handle:'entry'});`)
   await client.send(requests.submitPromptRequest(sessionId, attached.attachmentId, agentId, prompt, []))
   await until(async () => {
     const result = await client.send(requests.getSessionHistoryOutlineRequest(sessionId, [agentId], 5))
-    const outline = result.SessionHistoryOutline
-    for (const turn of outline?.agents?.flatMap((agent) => agent.turns) ?? []) {
+    const turns = result.SessionHistoryOutline?.agents?.flatMap((agent) => agent.turns) ?? []
+    // Sanitized diagnostics only: lifecycle, tool identifiers and verdict flags.
+    report.guardTurnLifecycles = turns.map((turn) => turn.lifecycle)
+    report.guardToolCalls = []
+    for (const turn of turns) {
       for (const blob of turn.blobs.filter((blob) => blob.kind === 'provider_tool')) {
         const content = await client.send(requests.getSessionHistoryBlobContentRequest(sessionId, agentId, blob.blob_id))
-        const entries = content.SessionHistoryBlobContent?.entries ?? []
-        const text = entries.map((entry) => entry.entry.text).join('\n')
-        if (text.includes('workflow_code') && text.includes('validate') && /not defined|script failed/.test(text)) {
-          report.roomAgentId = agentId
-          return true
+        for (const { entry, fragment_end, total_chars } of content.SessionHistoryBlobContent?.entries ?? []) {
+          const call = toolCall(entry.text)
+          report.guardToolCalls.push({ tool: call?.tool ?? null, status: call?.status ?? null, truncated: fragment_end < total_chars, refused: refusedCompile(call) })
+          if (refusedCompile(call)) {
+            report.roomAgentId = agentId
+            return true
+          }
         }
       }
     }

@@ -1,5 +1,9 @@
 use super::*;
 
+/// MP-08/MP-11: amaro 1.1.5, byte-identical to official Node 22.22.1's type
+/// stripper. It runs inside the isolated compiler for every Node build.
+pub(super) const TYPESCRIPT_STRIPPER: &str = include_str!("../../vendor/amaro/index.js");
+
 pub fn compile_workflow_code_javascript(
     node_path: impl AsRef<Path>,
     source: &str,
@@ -70,6 +74,8 @@ pub fn compile_workflow_code_source_with_parameters_and_schema_import_root(
     parameters: &BTreeMap<String, Value>,
     schema_import_root: Option<&Path>,
 ) -> Result<WorkflowCodeCompileResult, crate::DaemonError> {
+    #[cfg(test)]
+    compile_gate_for_test::pause(source);
     let mut imports = super::compiler_isolation::SchemaImports::new(schema_import_root)?;
     let started = std::time::Instant::now();
     let total_timeout = Duration::from_millis(limits.script_timeout_ms);
@@ -107,6 +113,8 @@ pub fn compile_workflow_code_source_with_parameters_and_schema_import_root(
             parameters,
             schema_files: imports.files.as_ref(),
             schema_errors: &imports.errors,
+            typescript_stripper: (language == WorkflowCodeLanguage::TypeScript)
+                .then_some(TYPESCRIPT_STRIPPER),
         })
         .map_err(|error| crate::DaemonError::LocalTransport {
             operation: "workflow_code.compile",
@@ -178,6 +186,42 @@ pub fn compile_workflow_code_source_with_parameters_and_schema_import_root(
         operation: "workflow_code.compile",
         message: "schema imports exceed configured resolution limit".into(),
     })
+}
+
+/// Holds a compilation whose source contains an installed marker until the test
+/// releases it, so authority rechecks after a compiler wait are deterministic.
+#[cfg(test)]
+pub(crate) mod compile_gate_for_test {
+    use std::sync::{mpsc, Mutex};
+    use tokio::sync::oneshot;
+
+    type Gate = (String, oneshot::Sender<()>, mpsc::Receiver<()>);
+    static GATES: Mutex<Vec<Gate>> = Mutex::new(Vec::new());
+
+    /// Returns a started signal and the release handle (dropping it also releases).
+    pub(crate) fn install(marker: &str) -> (oneshot::Receiver<()>, mpsc::Sender<()>) {
+        let (started, started_rx) = oneshot::channel();
+        let (release, release_rx) = mpsc::channel();
+        GATES
+            .lock()
+            .unwrap()
+            .push((marker.to_string(), started, release_rx));
+        (started_rx, release)
+    }
+
+    pub(super) fn pause(source: &str) {
+        let gate = {
+            let mut gates = GATES.lock().unwrap();
+            let index = gates
+                .iter()
+                .position(|(marker, ..)| source.contains(marker.as_str()));
+            index.map(|index| gates.remove(index))
+        };
+        if let Some((_, started, release)) = gate {
+            let _ = started.send(());
+            let _ = release.recv();
+        }
+    }
 }
 
 pub fn discover_workflow_code_node_path() -> Result<PathBuf, crate::DaemonError> {
