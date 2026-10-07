@@ -21,11 +21,7 @@ impl KernelRuntimeState {
         );
         let state = self.clone();
         tokio::spawn(async move {
-            if !state
-                .owned
-                .ensure_prompt_dispatch_matches_active_prompt(&dispatch)
-                .unwrap_or(false)
-            {
+            if !state.owned.handoff_brief_dispatch_is_current(&dispatch) {
                 return;
             }
             let handoff = state
@@ -36,8 +32,18 @@ impl KernelRuntimeState {
                     &dispatch.agent_id,
                     &dispatch.prompt_id,
                     &provider_run,
+                    || state.owned.handoff_brief_dispatch_is_current(&dispatch),
                 )
                 .await;
+            // Order the final ownership/cancellation check and Submit with Abort.
+            // No lane is held while the brief utility runs.
+            let _permit = state
+                .provider_runtime_lanes
+                .acquire(&dispatch.provider_run_id)
+                .await;
+            if !state.owned.handoff_brief_dispatch_is_current(&dispatch) {
+                return;
+            }
             match state.submit_structured_prompt_with_handoff(
                 &dispatch,
                 &provider_run,
@@ -122,5 +128,22 @@ impl KernelRuntimeState {
             dispatch.steering,
         );
         result.map(|()| true)
+    }
+}
+
+impl KernelRuntimeOwnedState {
+    fn handoff_brief_dispatch_is_current(
+        &self,
+        dispatch: &crate::app::KernelPromptDispatch,
+    ) -> bool {
+        self.ensure_prompt_dispatch_matches_active_prompt(dispatch)
+            .unwrap_or(false)
+            && self
+                .provider_store
+                .get_run_for_agent(&dispatch.session_id, &dispatch.agent_id)
+                .is_some_and(|run| {
+                    run.id() == dispatch.provider_run_id
+                        && run.state() == crate::provider::ProviderRunState::Running
+                })
     }
 }

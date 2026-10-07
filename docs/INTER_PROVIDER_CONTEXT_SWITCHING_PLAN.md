@@ -51,7 +51,7 @@ The kernel stores it per agent in operational history, with the history sequence
 
 How it is written:
 
-- **When.** Before a provider-switch handoff is dispatched to a Codex or Chariox Claude run, a detached dispatch continuation folds history after the watermark into the stored brief. The output pumps remain available, and session clients see “Preparing handoff brief…”. A deterministic packet that already preserves every turn needs no refresh. It never runs for an intra-provider switch, which keeps the native session.
+- **When.** Before a provider-switch handoff is dispatched to a Codex or Chariox Claude run, a detached dispatch continuation folds history after the watermark into the stored brief. The output pumps remain available, and session clients see “Preparing handoff brief…”. After preparation, the continuation takes the run's operation lane and checks prompt ownership and cancellation immediately before submission. Cancelled preparations never submit the request or save a completed fold. A deterministic packet that already preserves every turn needs no refresh. It never runs for an intra-provider switch, which keeps the native session.
 - **Engine.** One utility call on the target run's official harness. It runs in a fresh, metadata-only session: no tools, no MCP, no prior thread, and a private empty working directory.
 - **Update rules.** The call applies PRESERVE / ADD / UPDATE rules to the previous brief.
 - **Long histories.** History is read oldest first, in transcript chunks of up to 160 KB. Tool calls are reduced to their command, outcome and a short output excerpt; the full output stays in history for recall.
@@ -84,6 +84,7 @@ The update passes the remaining part of its 120-second deadline into each utilit
 - `runtime::state::context_handoff::facts::tests::facts_come_from_codex_and_claude_tool_calls_and_commits`
 - `runtime::state::context_handoff::brief::tests::long_history_is_read_oldest_first_in_bounded_chunks`
 - `runtime::state::context_handoff::tests::a_switch_carries_the_stored_brief_and_the_packet_fits_the_target_window`
+- `runtime::state::local_prompt_dispatch_runtime::tests::cancelling_during_handoff_brief_never_submits_or_saves_the_cancelled_fold`
 - `history::handoff_brief::tests::a_stored_brief_never_moves_its_watermark_back`
 - Live drill: `apps/cli/scripts/live-model-switch-context-drill.mjs`. It plants facts and can add filler turns or restart the kernel before or after the switch. It then changes the agent profile and probes recall without tools. For long sessions:
   - `--bulk-turns N --bulk-kb K` scripts a session that outgrows the target window;

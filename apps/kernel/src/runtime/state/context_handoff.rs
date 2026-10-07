@@ -1196,6 +1196,7 @@ mod tests {
                 &fixture.agent_id,
                 "prompt-next",
                 &fixture.run("run-new", "claude", None),
+                || true,
             )
             .await;
         assert!(handoff.derived);
@@ -1322,6 +1323,7 @@ mod tests {
                 &fixture.agent_id,
                 "prompt-next",
                 &target,
+                || true,
             )
             .await;
         assert_eq!(handoff.conversation.brief.as_deref(), Some(brief));

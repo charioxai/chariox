@@ -28,6 +28,7 @@ impl KernelRuntimeState {
     /// `handoff` with its brief brought up to date through the history before
     /// the dispatching prompt, when it is a provider-switch handoff whose
     /// target harness can write one.
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::runtime::state) async fn with_current_handoff_brief(
         &self,
         owned: &KernelRuntimeOwnedState,
@@ -36,18 +37,22 @@ impl KernelRuntimeState {
         agent_id: &str,
         prompt_id: &str,
         target_run: &RuntimeProviderRun,
+        prompt_is_current: impl Fn() -> bool + Send + Sync,
     ) -> PendingAgentContextHandoff {
         if !handoff.derived || !writes_handoff_briefs(target_run) {
-            return handoff;
-        }
-        if !handoff.needs_brief() {
-            handoff.conversation.brief = owned.stored_handoff_brief(session_id, agent_id);
             return handoff;
         }
         let started = Instant::now();
         let update = self
             .update_handoff_brief(
-                owned, &handoff, session_id, agent_id, prompt_id, target_run, started,
+                owned,
+                &handoff,
+                session_id,
+                agent_id,
+                prompt_id,
+                target_run,
+                started,
+                &prompt_is_current,
             )
             .await;
         let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -98,6 +103,7 @@ impl KernelRuntimeState {
         prompt_id: &str,
         target_run: &RuntimeProviderRun,
         started: Instant,
+        prompt_is_current: &(impl Fn() -> bool + Sync),
     ) -> Result<(Option<String>, usize), DaemonError> {
         let history = &owned.operational_history_store;
         let stored = history.load_agent_handoff_brief(session_id, agent_id)?;
@@ -150,6 +156,9 @@ impl KernelRuntimeState {
         utility_run.set_metadata_only_discovery(scratch.0.clone());
         let mut calls = 0;
         for (part, chunk) in chunks.iter().enumerate() {
+            if !prompt_is_current() {
+                return Ok((brief, calls));
+            }
             if !chunk.text.is_empty() {
                 let (output, part_calls) = call_with_model_fallback(
                     &owned.pending_agent_context_handoffs,
@@ -157,10 +166,20 @@ impl KernelRuntimeState {
                     target_run,
                     brief_prompt(brief.as_deref(), chunk, part, chunks.len()),
                     calls == 0,
-                    |run, prompt| async move { self.brief_call(&run, prompt, started).await },
+                    |run, prompt| async move {
+                        if !prompt_is_current() {
+                            return Err(brief_error("the dispatching prompt is no longer active"));
+                        }
+                        self.brief_call(&run, prompt, started).await
+                    },
                 )
                 .await?;
                 calls += part_calls;
+                // An in-flight utility may finish after cancellation. Its fold
+                // must not race a later prompt's shared brief and watermark.
+                if !prompt_is_current() {
+                    return Ok((brief, calls));
+                }
                 brief = Some(
                     parse_brief(&output)
                         .ok_or_else(|| brief_error("the utility answer is not a handoff brief"))?,

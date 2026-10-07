@@ -5,6 +5,13 @@
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PromptDispatchAcceptance {
+    Submitted,
+    PreparingBrief,
+    Dropped,
+}
+
 const CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const CLAUDE_HEADLESS_PROMPT_ACK_OPERATION: &str = "acknowledge Claude headless prompt";
 
@@ -93,6 +100,7 @@ impl KernelRuntimeOwnedState {
                 );
             }
             prompt.id() == dispatch.prompt_id
+                && prompt.status() != crate::session::PromptStatus::Cancelling
         };
         Ok(self
             .prompt_state_owner
@@ -1266,6 +1274,20 @@ mod tests {
         String,
         String,
     ) {
+        runtime_with_active_prompt_and_history(None).await
+    }
+
+    async fn runtime_with_active_prompt_and_history(
+        prior: Option<&str>,
+    ) -> (
+        crate::test_support::TestWorktree,
+        KernelRuntimeState,
+        String,
+        String,
+        String,
+        String,
+        String,
+    ) {
         let worktree = crate::test_support::TestWorktree::new("local-prompt-active");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = KernelSessionService::new(&mut app)
@@ -1298,6 +1320,23 @@ mod tests {
             "active prompt",
             PromptStatus::Queued,
         );
+        if let Some(prior) = prior {
+            app.operational_history_store()
+                .append(&crate::history::HistoryEvent::transcript(
+                    100,
+                    &crate::history::SessionHistoryEntry::user_prompt(
+                        session.id(),
+                        "prior",
+                        agent.id(),
+                        prior,
+                    ),
+                    crate::history::HistoryEventTurnContext {
+                        prompt_id: Some("prior".into()),
+                        ..Default::default()
+                    },
+                ))
+                .unwrap();
+        }
         let PromptSubmissionOutcome::Started { prompt } = app
             .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
             .expect("active prompt should submit")
@@ -1802,6 +1841,122 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelling_during_handoff_brief_never_submits_or_saves_the_cancelled_fold() {
+        let (root, runtime, session_id, agent_id, attachment_id, prompt_id, _) =
+            runtime_with_active_prompt_and_history(Some(&format!(
+                "remember amber {}",
+                "notes ".repeat(2_000)
+            )))
+            .await;
+        let started = root.path().join("brief-started");
+        let release = root.path().join("brief-release");
+        let finished = root.path().join("brief-finished");
+        let submitted = root.path().join("cancelled-submit");
+        let brief = "## Goal\nRemember amber\n## Constraints & Preferences\nNone\n## Progress\nDone\n## Key Decisions\nNone\n## Next Steps\nRecall\n## Critical Context\namber";
+        let answer = serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":brief}]}}).to_string();
+        let script = format!(
+            "while IFS= read -r line; do case \"$line\" in *'Update the handoff brief'*) touch '{}'; n=0; while [ ! -f '{}' ] && [ $n -lt 200 ]; do sleep .01; n=$((n+1)); done; printf '%s\\n' '{}'; touch '{}' ;; *) touch '{}' ;; esac; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done",
+            started.display(), release.display(), answer, finished.display(), submitted.display()
+        );
+        let executable = root.path().join("brief-cli-fixture");
+        std::fs::write(&executable, format!("#!/bin/sh\n{script}\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let request =
+            LaunchProviderRequest::new(&session_id, "claude", "claude", "default", "sonnet")
+                .with_agent_id(&agent_id);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "cancel-brief-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "fixture".into(),
+                pty_target: None,
+                pty_program: Some(executable.display().to_string()),
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run.clone());
+        runtime
+            .owned
+            .provider_store
+            .initialize_runtime(&run)
+            .unwrap();
+        runtime.owned.provider_run_projection.update(run.clone());
+        let dispatch = dispatch(
+            &session_id,
+            &agent_id,
+            &attachment_id,
+            run.id(),
+            &prompt_id,
+            "cancelled request",
+            None,
+            false,
+        );
+        runtime.enqueue_prompt_dispatch(&dispatch).await.unwrap();
+        for _ in 0..200 {
+            if started.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            started.exists(),
+            "fixture must reach the real brief utility"
+        );
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        runtime
+            .owned
+            .prompt_state_owner
+            .begin_cancelling_prompt_if_matches(&session, &agent_id, Some(&prompt_id))
+            .unwrap();
+        std::fs::write(&release, "").unwrap();
+        for _ in 0..200 {
+            if finished.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(finished.exists(), "fixture utility must finish");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let submitted = submitted.exists();
+        let stored = runtime
+            .owned
+            .operational_history_store
+            .load_agent_handoff_brief(&session_id, &agent_id)
+            .unwrap();
+        runtime
+            .owned
+            .provider_store
+            .terminate_run_provider_only(&session_id, run.id())
+            .unwrap();
+        assert!(
+            !submitted,
+            "a cancelled request reached the provider actor after the brief"
+        );
+        assert!(
+            stored.is_none(),
+            "a cancelled fold must not overwrite the shared stored brief"
+        );
+    }
+
+    #[tokio::test]
     async fn handoff_dispatch_returns_to_the_pump_before_preparing_the_brief() {
         let (_worktree, runtime, session_id, agent_id, observer_id, _run_id, mut dispatch) =
             runtime_with_admitted_prompt().await;
@@ -1851,10 +2006,13 @@ mod tests {
             .unwrap();
         // A current-thread executor cannot run the continuation until this test yields.
         // The missing Claude actor makes a synchronous dispatch fail immediately.
-        assert!(runtime
-            .enqueue_prompt_dispatch_after_liveness_with_acceptance(&dispatch, &runtime.owned)
-            .await
-            .unwrap());
+        assert_eq!(
+            runtime
+                .enqueue_prompt_dispatch_after_liveness_with_acceptance(&dispatch, &runtime.owned)
+                .await
+                .unwrap(),
+            PromptDispatchAcceptance::PreparingBrief
+        );
         let records = runtime
             .owned
             .terminal_stream
@@ -3537,14 +3695,17 @@ impl KernelRuntimeState {
             let result = self
                 .enqueue_prompt_dispatch_after_liveness_with_acceptance(dispatch, owned)
                 .await;
-            if result.as_ref().is_ok_and(|accepted| *accepted) {
+            if result
+                .as_ref()
+                .is_ok_and(|accepted| *accepted == PromptDispatchAcceptance::Submitted)
+            {
                 owned.update_metaagent_event_prompt_delivery_for_prompt(
                     &dispatch.prompt_id,
                     crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Delivered,
                     None,
                 );
             }
-            result
+            result.map(|acceptance| acceptance != PromptDispatchAcceptance::Dropped)
         }
     }
 
@@ -3611,9 +3772,9 @@ impl KernelRuntimeState {
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
         owned: &KernelRuntimeOwnedState,
-    ) -> Result<bool, DaemonError> {
+    ) -> Result<PromptDispatchAcceptance, DaemonError> {
         if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
-            return Ok(false);
+            return Ok(PromptDispatchAcceptance::Dropped);
         }
         if let Some(rerouted) = self.dispatch_off_finished_turn_substitute(dispatch).await? {
             return Box::pin(
@@ -3677,14 +3838,22 @@ impl KernelRuntimeState {
                     handoff.unwrap(),
                     hidden_system_context,
                 );
-                return Ok(true);
+                return Ok(PromptDispatchAcceptance::PreparingBrief);
             }
-            return self.submit_structured_prompt_with_handoff(
-                dispatch,
-                &provider_run,
-                handoff,
-                &hidden_system_context,
-            );
+            return self
+                .submit_structured_prompt_with_handoff(
+                    dispatch,
+                    &provider_run,
+                    handoff,
+                    &hidden_system_context,
+                )
+                .map(|submitted| {
+                    if submitted {
+                        PromptDispatchAcceptance::Submitted
+                    } else {
+                        PromptDispatchAcceptance::Dropped
+                    }
+                });
         }
         if !internal_recovery
             && !crate::scheduler::runtime::is_workflow_prompt_attachment(
@@ -3775,7 +3944,7 @@ impl KernelRuntimeState {
         }
         if !has_managed_process {
             if dispatch.steering {
-                return Ok(false);
+                return Ok(PromptDispatchAcceptance::Dropped);
             }
             if !dispatch.steering {
                 let session = owned.session_store.get_session(&dispatch.session_id)?;
@@ -3788,7 +3957,7 @@ impl KernelRuntimeState {
                         &dispatch.provider_run_id,
                     )
                 else {
-                    return Ok(false);
+                    return Ok(PromptDispatchAcceptance::Dropped);
                 };
                 owned.note_prompt_started(&dispatch.provider_run_id);
                 owned.mark_active_prompt_delivery(
@@ -3801,7 +3970,7 @@ impl KernelRuntimeState {
                 )?;
                 owned.consume_failed_requests(&dispatch.agent_id, &dispatch.prompt_id);
             }
-            return Ok(true);
+            return Ok(PromptDispatchAcceptance::Submitted);
         }
         if uses_claude_native_bridge {
             let native_dispatch = crate::app::KernelPromptDispatch {
@@ -3896,7 +4065,7 @@ impl KernelRuntimeState {
                         &dispatch.provider_run_id,
                     )
                 else {
-                    return Ok(false);
+                    return Ok(PromptDispatchAcceptance::Dropped);
                 };
                 owned.note_prompt_started(&dispatch.provider_run_id);
                 owned.mark_active_prompt_delivery(
@@ -3908,7 +4077,7 @@ impl KernelRuntimeState {
                     provider_run.provider_session_id().map(str::to_string),
                 )?;
             }
-            return Ok(true);
+            return Ok(PromptDispatchAcceptance::Submitted);
         }
         let provider_run_id = dispatch.provider_run_id.clone();
         let writer = self
@@ -3955,7 +4124,7 @@ impl KernelRuntimeState {
                     &dispatch.provider_run_id,
                 )
             else {
-                return Ok(false);
+                return Ok(PromptDispatchAcceptance::Dropped);
             };
             owned.note_prompt_started(&dispatch.provider_run_id);
             owned.mark_active_prompt_delivery(
@@ -3967,7 +4136,7 @@ impl KernelRuntimeState {
                 provider_run.provider_session_id().map(str::to_string),
             )?;
         }
-        Ok(true)
+        Ok(PromptDispatchAcceptance::Submitted)
     }
 
     pub(super) async fn fail_prompt_dispatch(
