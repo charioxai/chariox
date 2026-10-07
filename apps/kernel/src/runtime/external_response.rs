@@ -120,6 +120,7 @@ response_policies! {
         EventConnectionAuthorizationObserved,
     ],
     Public => [
+        CloudRelayLoggedOut,
         KernelSudoRequested,
         KernelAccessGranted,
         KernelAccessGrantsListed,
@@ -472,6 +473,14 @@ fn project(response: LocalDaemonResponse) -> Result<LocalDaemonResponse, DaemonE
     serde_json::from_value(value).map_err(|_| denied())
 }
 pub(crate) fn project_response_value(value: &mut serde_json::Value) -> Result<(), DaemonError> {
+    // MP-11: serde encodes unit variants as strings. Deserialize only this
+    // closed shape and reuse the exhaustive typed policy rather than allowing
+    // arbitrary strings to bypass classification.
+    if value.is_string() {
+        let response: LocalDaemonResponse =
+            serde_json::from_value(value.clone()).map_err(|_| denied())?;
+        return project_response_body(value, response_policy(&response));
+    }
     let fields = value
         .as_object()
         .filter(|f| f.len() == 1)

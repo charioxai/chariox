@@ -126,6 +126,14 @@ fn outbound_credential_mutations_and_unknown_payloads_fail_closed() {
 
 #[test]
 fn outbound_preserves_terminal_bytes_and_closed_transport_acknowledgments() {
+    let unit = serde_json::json!({"type":"response","request_id":"logout",
+        "response":"CloudRelayLoggedOut","error":null});
+    assert_eq!(project_payload(unit.clone()).unwrap(), unit);
+    assert!(
+        project_payload(serde_json::json!({"type":"response","request_id":"future",
+        "response":"FutureSecretResponse","error":null}))
+        .is_err()
+    );
     let input = serde_json::json!({"type":"event","event_id":7,"event":{"event":"terminal_output",
         "records":[{"bytes":[27,91,51,49,109,240,159,146,187],"text":"user transcript"}]}});
     assert_eq!(project_payload(input.clone()).unwrap(), input);

@@ -201,7 +201,10 @@ fn external_response_redacts_nested_remote_bindings_without_scanning_history() {
         .get("relay_token")
         .is_none());
     assert_eq!(value["history_text"], CANARY);
-    assert_eq!(value["nested_credential"]["injection"]["value"], "[REDACTED]");
+    assert_eq!(
+        value["nested_credential"]["injection"]["value"],
+        "[REDACTED]"
+    );
 }
 
 #[tokio::test]
