@@ -694,6 +694,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     closeOtherDialog: () => { userAppViews?.hide(); closeActiveDialogOverlay() },
     applySession: applySessionState,
     notify: (message) => flashFooter(message, "info"),
+    attachmentId: () => attachmentState()?.id ?? null,
   })
 
   userAppViews = createCliUserAppViewsComposition({
@@ -1076,6 +1077,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       assignDialogOverlayBox={assignDialogOverlayBox}
       assignKernelApprovalBox={kernelApprovals.assignBox}
       assignKernelApprovalBanner={kernelApprovals.assignBanner}
+      assignSudoBand={kernelApprovals.assignSudoBand}
       assignPasskeyPopupBox={kernelApprovals.assignPopupBox}
       kernelApprovalOwnsInput={() => kernelApprovals.ownsInput() || Boolean(userAppViews?.ownsInput())}
       handlePromptKeyDown={handlePromptKeyDown}

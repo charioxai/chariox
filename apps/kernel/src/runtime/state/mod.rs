@@ -88,7 +88,8 @@ mod user_app_view_browser;
 mod user_app_view_runtime;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
-pub(crate) use sudo::{is_sudo_prompt, sudo_approval_receipt};
+pub(crate) use sudo::SudoWindowProjection;
+pub(crate) use sudo::{is_sudo_prompt, sudo_window_minutes};
 mod passkey_prompts;
 #[cfg(test)]
 pub(crate) use passkey_prompts::PASSKEY_ALREADY_ANSWERED;
@@ -176,6 +177,12 @@ struct KernelRuntimeOwnedState {
     kernel_access: crate::runtime::kernel_access::AccessStore,
     sudo_turns: sudo::SudoStore,
     sudo_process_cutoffs: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
+    /// Window timer proof of life: entry -> (armed revision, alerted revision).
+    sudo_timers: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
+    sudo_scopes: Arc<std::sync::Mutex<BTreeMap<String, std::collections::BTreeSet<String>>>>,
+    sudo_timer_changes: Arc<RuntimeChangeSignal>,
+    sudo_end_wakes: Arc<std::sync::Mutex<BTreeMap<String, (crate::local::KernelSudoTurn, String)>>>,
+    sudo_verified_at: Arc<std::sync::Mutex<BTreeMap<String, (std::time::Instant, u64)>>>,
     config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
     session_store: SessionStateStore,
     agent_store: AgentServiceStore,
@@ -652,6 +659,7 @@ impl KernelRuntimeState {
             runtime_tool_call_activity,
             kernel_browser_host,
             room_computer_revoked,
+            sudo_windows,
         ) = {
             let started = Instant::now();
             loop {
@@ -669,6 +677,7 @@ impl KernelRuntimeState {
                         app.runtime_tool_call_activity.clone(),
                         app.kernel_browser_host.clone(),
                         app.room_computer_revoked.clone(),
+                        app.sudo_window_projection(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -819,8 +828,13 @@ impl KernelRuntimeState {
                     ),
                 passkey_prompts: Arc::default(),
                 kernel_access: Default::default(),
-                sudo_turns: Default::default(),
+                sudo_turns: sudo_windows.store(),
                 sudo_process_cutoffs: Default::default(),
+                sudo_timers: Default::default(),
+                sudo_scopes: Default::default(),
+                sudo_timer_changes: Default::default(),
+                sudo_verified_at: Default::default(),
+                sudo_end_wakes: Default::default(),
                 config_projection,
                 session_store,
                 agent_store,

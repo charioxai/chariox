@@ -148,22 +148,6 @@ impl KernelRuntimeState {
             if !matches!(request.target, Some(crate::local::WorkflowCodePackageExportTarget::Workflow { .. })))
             || matches!(request, LocalDaemonRequest::ExportWorkflowCodeSource(request)
                 if matches!(request.target, crate::local::WorkflowCodeSourceExportTarget::Artifact { .. }));
-        // Responding to routine agent questions is allowed; kernel decisions, even denials, remain human owned.
-        let forbidden = if let LocalDaemonRequest::RespondToInteraction(response) = request {
-            response.passkey.is_some()
-                || response.passkey_remember_minutes.is_some()
-                || self
-                    .owned
-                    .pending_interactions
-                    .write()
-                    .get(&response.interaction_id)
-                    .is_none_or(|pending| {
-                        pending.kernel_operation_owner.is_some()
-                            || pending.terminal_credential_owner.is_some()
-                    })
-        } else {
-            forbidden
-        };
         if !permitted || forbidden {
             let mut state = self
                 .owned

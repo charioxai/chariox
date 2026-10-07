@@ -99,7 +99,13 @@ async fn kernel_access_external_holder_cannot_manage_vault_or_choose_new_passkey
             .is_null()
     );
     kernel.control("agent-question").await;
-    assert!(holder.request(answer("routine-access-question", "continue", None))["error"].is_null());
+    assert!(
+        holder.request(answer("routine-access-question", "continue", None))["error"].is_object()
+    );
+    assert!(kernel
+        .request(answer("routine-access-question", "continue", None))
+        .await["error"]
+        .is_null());
 }
 
 #[tokio::test]

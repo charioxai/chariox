@@ -93,7 +93,7 @@ import {
   validateScript,
   testConnector,
 } from "./extension-api.js"
-import { deleteKernel, exportDebugBundle, getDaemonHealth, listKernelAccessGrants, revokeKernelAccessGrant } from "./kernel-api.js"
+import { deleteKernel, exportDebugBundle, extendKernelSudo, getDaemonHealth, listKernelAccessGrants, revokeKernelAccessGrant } from "./kernel-api.js"
 import {
   mergeRelayCloudProfile,
   mergeUiPreferences,
@@ -526,6 +526,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getDaemonHealth: () => getDaemonHealth(client),
     listKernelAccessGrants: () => listKernelAccessGrants(client),
     revokeKernelAccessGrant: (id) => revokeKernelAccessGrant(client, id),
+    sendExtendKernelSudo: (request) => extendKernelSudo(client, request),
     exportDebugBundle: (sessionId, label) => exportDebugBundle(client, sessionId, label),
     assignSessionAlias: (sessionId, alias) => aliasSession(client, sessionId, alias),
     aliasAgent: (sessionId, agentId, alias) => aliasAgent(client, sessionId, agentId, alias),

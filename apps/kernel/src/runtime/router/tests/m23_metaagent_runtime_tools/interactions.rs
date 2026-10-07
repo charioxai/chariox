@@ -1,14 +1,14 @@
 use super::*;
 
 #[test]
-fn metaagent_can_resolve_owned_regular_agent_interactions_but_not_its_own() {
+fn metaagent_lists_interaction_events_but_cannot_resolve_them() {
     run_large_stack_async_test(
-        "metaagent-can-resolve-owned-regular-agent-interactions-but-not-its-own",
-        metaagent_can_resolve_owned_regular_agent_interactions_but_not_its_own_inner,
+        "metaagent-lists-interaction-events-but-cannot-resolve-them",
+        metaagent_lists_interaction_events_but_cannot_resolve_them_inner,
     );
 }
 
-async fn metaagent_can_resolve_owned_regular_agent_interactions_but_not_its_own_inner() {
+async fn metaagent_lists_interaction_events_but_cannot_resolve_them_inner() {
     let env = TestMetaRuntimeEnv::new("interaction");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -35,7 +35,7 @@ async fn metaagent_can_resolve_owned_regular_agent_interactions_but_not_its_own_
         "dev-stub",
         "meta-model",
     );
-    let worker_run = launch_test_provider(
+    let _worker_run = launch_test_provider(
         &mut app,
         session.id(),
         worker.id(),
@@ -141,183 +141,30 @@ async fn metaagent_can_resolve_owned_regular_agent_interactions_but_not_its_own_
         Some(worker.id())
     );
 
-    let resolved = router
-        .dispatch_authenticated_runtime_tool_call(
-            &meta_auth_token,
-            crate::transport::runtime_tools::META_RESOLVE_RUNTIME_INTERACTION_TOOL,
-            serde_json::json!({
-                "interaction_id": "interaction-worker",
-                "choice_id": "allow_once"
-            }),
-        )
-        .await
-        .expect("meta interaction resolution should dispatch");
-    assert!(resolved.ok, "{:?}", resolved.payload);
-    let resolution = tokio::time::timeout(std::time::Duration::from_secs(1), worker_resolution)
-        .await
-        .expect("resolution should be delivered")
-        .expect("interaction responder should receive resolution");
-    assert_eq!(resolution.choice_id.as_deref(), Some("allow_once"));
-    assert_eq!(resolution.reply.as_deref(), Some("allow"));
-    let audit_events = app
-        .lock()
-        .await
-        .durable_state_store()
-        .load_events_after(0)
-        .expect("durable audit events should load");
-    let resolution_audit = audit_events
-        .iter()
-        .find(|event| {
-            event.kind == "metaagent.interaction.resolved"
-                && event.payload["session_id"] == session.id()
-                && event.payload["metaagent_id"] == metaagent.id()
-                && event.payload["target_agent_id"] == worker.id()
-                && event.payload["interaction_id"] == "interaction-worker"
-                && event.payload["choice_id"] == "allow_once"
-                && event.payload["causation_id"] == "interaction-worker"
-                && event.payload["correlation_id"]
-                    == format!(
-                        "metaagent:{}:runtime-interaction:interaction-worker",
-                        metaagent.id()
-                    )
-        })
-        .expect("metaagent interaction resolution should include durable provenance");
-    assert_eq!(resolution_audit.payload["provider_run_id"], worker_run.id());
+    // MP-08 / MP-10 / MP-11 A04: approvals belong to the user. The legacy
+    // resolver is gone under every alias; the interaction stays pending.
+    for name in [
+        "chariox.meta.resolve_runtime_interaction",
+        "chariox_meta_resolve_runtime_interaction",
+        "mcp__chariox__meta_resolve_runtime_interaction",
+    ] {
+        let refused = router
+            .dispatch_authenticated_runtime_tool_call(
+                &meta_auth_token,
+                name,
+                serde_json::json!({"interaction_id": "interaction-worker", "choice_id": "allow_once"}),
+            )
+            .await;
+        assert!(
+            refused.is_err() || refused.is_ok_and(|result| !result.ok),
+            "{name}"
+        );
+    }
     assert!(
-        resolution_audit
-            .payload
-            .get("timestamp_ms")
-            .and_then(serde_json::Value::as_u64)
-            .is_some(),
-        "{:?}",
-        resolution_audit.payload
-    );
-    assert_eq!(resolution_audit.payload["input"], serde_json::Value::Null);
-
-    let custom_interaction = RuntimeInteraction::new(
-        "interaction-custom-worker",
-        worker.id(),
-        RuntimeInteractionKind::Choice,
-        RuntimeInteractionLevel::Warning,
-        Some("Explain approval".to_string()),
-        "Explain approval",
-        vec![RuntimeInteractionChoice::new(
-            "cancel",
-            "Cancel",
-            "cancel",
-            Some(RuntimeInteractionChoiceStyle::Danger),
-        )],
-        Some(crate::session::RuntimeInteractionCustomChoice::new(
-            "custom_reason",
-            "Custom reason",
-            Some("Reason".to_string()),
-            Some(3),
-            Some(256),
-        )),
-        None,
-        None,
-    );
-    let custom_resolution = router
-        .runtime_state
-        .create_runtime_interaction(session.id(), custom_interaction)
-        .await
-        .expect("custom worker interaction should register");
-    let custom_reply = "ship after checking logs";
-    let custom_resolved = router
-        .dispatch_authenticated_runtime_tool_call(
-            &meta_auth_token,
-            crate::transport::runtime_tools::META_RESOLVE_RUNTIME_INTERACTION_TOOL,
-            serde_json::json!({
-                "interaction_id": "interaction-custom-worker",
-                "choice_id": "custom_reason",
-                "input": custom_reply
-            }),
-        )
-        .await
-        .expect("custom meta interaction resolution should dispatch");
-    assert!(custom_resolved.ok, "{:?}", custom_resolved.payload);
-    let custom_runtime_resolution =
-        tokio::time::timeout(std::time::Duration::from_secs(1), custom_resolution)
+        tokio::time::timeout(std::time::Duration::from_millis(200), worker_resolution)
             .await
-            .expect("custom resolution should be delivered")
-            .expect("custom interaction responder should receive resolution");
-    assert_eq!(
-        custom_runtime_resolution.choice_id.as_deref(),
-        Some("custom_reason")
-    );
-    assert_eq!(
-        custom_runtime_resolution.reply.as_deref(),
-        Some(custom_reply)
-    );
-    let custom_audit_events = app
-        .lock()
-        .await
-        .durable_state_store()
-        .load_events_after(0)
-        .expect("durable audit events should load");
-    let custom_audit = custom_audit_events
-        .iter()
-        .find(|event| {
-            event.kind == "metaagent.interaction.resolved"
-                && event.payload["interaction_id"] == "interaction-custom-worker"
-        })
-        .expect("custom interaction resolution should include durable provenance");
-    assert_eq!(custom_audit.payload["provider_run_id"], worker_run.id());
-    assert_eq!(
-        custom_audit.payload.pointer("/input/kind"),
-        Some(&serde_json::json!("custom"))
-    );
-    assert_eq!(
-        custom_audit.payload.pointer("/input/char_count"),
-        Some(&serde_json::json!(custom_reply.chars().count()))
-    );
-    assert_eq!(
-        custom_audit.payload["input"]["reply"],
-        serde_json::Value::Null
-    );
-
-    let self_interaction = RuntimeInteraction::new(
-        "interaction-meta",
-        metaagent.id(),
-        RuntimeInteractionKind::Permission,
-        RuntimeInteractionLevel::Warning,
-        Some("Allow self?".to_string()),
-        "Allow self?",
-        vec![RuntimeInteractionChoice::new(
-            "allow_once",
-            "Allow once",
-            "allow",
-            Some(RuntimeInteractionChoiceStyle::Primary),
-        )],
-        None,
-        None,
-        None,
-    );
-    let _self_resolution = router
-        .runtime_state
-        .create_runtime_interaction(session.id(), self_interaction)
-        .await
-        .expect("self interaction should register");
-    let denied = router
-        .dispatch_authenticated_runtime_tool_call(
-            &meta_auth_token,
-            crate::transport::runtime_tools::META_RESOLVE_RUNTIME_INTERACTION_TOOL,
-            serde_json::json!({
-                "interaction_id": "interaction-meta",
-                "choice_id": "allow_once"
-            }),
-        )
-        .await
-        .expect("self resolution denial should dispatch");
-    assert!(!denied.ok);
-    assert!(
-        denied
-            .payload
-            .get("error")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|message| message.contains("cannot resolve their own")),
-        "{:?}",
-        denied.payload
+            .is_err(),
+        "no agent may answer the worker's approval"
     );
 }
 

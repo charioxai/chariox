@@ -194,10 +194,12 @@ fn a02_deadline_occurrence_and_long_notice_coalesce() {
     f.apply(Operation::Sweep {
         now: LONG_WAIT_MS + 1,
         busy_recipients: Vec::new(),
+        held_work: Vec::new(),
     });
     f.apply(Operation::Sweep {
         now: LONG_WAIT_MS + 2,
         busy_recipients: Vec::new(),
+        held_work: Vec::new(),
     });
     assert!(f.task().wait.unwrap().long_wait_notified);
     assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap().len(), 1);
@@ -272,6 +274,7 @@ fn a02_uncertain_attempt_blocks_fifo_and_ack_never_repairs_it() {
         target: Some("p".into()),
         run: Some("run".into()),
         now: 10,
+        work: None,
     });
     f.apply(Operation::Receipt {
         room: "room".into(),
@@ -299,12 +302,14 @@ fn a02_uncertain_attempt_blocks_fifo_and_ack_never_repairs_it() {
             prompt: "second".into(),
             target: None,
             run: None,
-            now: 12
+            now: 12,
+            work: None,
         })
         .is_err());
     f.apply(Operation::Sweep {
         now: DELIVERY_TIMEOUT_MS + 10,
         busy_recipients: Vec::new(),
+        held_work: Vec::new(),
     });
     assert_eq!(f.task().state, ExecutionState::Blocked);
 }
@@ -390,6 +395,7 @@ fn a02_no_progress_blocks_on_third_wake_and_durable_counter_survives_reopen() {
             target: None,
             run: None,
             now: 10 + n,
+            work: None,
         });
         f.apply(Operation::Receipt {
             room: "room".into(),
@@ -444,6 +450,7 @@ fn a02_corrupt_delivery_is_quarantined_without_replay() {
     f.apply(Operation::Sweep {
         now: 10,
         busy_recipients: Vec::new(),
+        held_work: Vec::new(),
     });
     let row = f
         .store
@@ -518,10 +525,12 @@ fn a02_cancel_independent_task_preserves_uncertain_recipient_delivery() {
             target: target.map(str::to_owned),
             run: Some("run".into()),
             now: 1,
+            work: None,
         });
         f.apply(Operation::Sweep {
             now: DELIVERY_TIMEOUT_MS + 1,
             busy_recipients: Vec::new(),
+            held_work: Vec::new(),
         });
         let task = f
             .store
@@ -588,10 +597,12 @@ fn a02_exact_late_receipt_unlocks_owner_resume_and_cancel_abandons_without_repla
             target: Some("p".into()),
             run: Some("run".into()),
             now: 1,
+            work: None,
         });
         f.apply(Operation::Sweep {
             now: DELIVERY_TIMEOUT_MS + 1,
             busy_recipients: Vec::new(),
+            held_work: Vec::new(),
         });
         let blocked = f.task();
         assert_eq!(blocked.state, ExecutionState::Blocked);
@@ -679,6 +690,7 @@ fn a02_named_wake_keeps_independent_waits_separate() {
         target: None,
         run: None,
         now: 3,
+        work: None,
     });
     let tasks = f.store.agent_tasks(Some("room"), Some("parent")).unwrap();
     assert_eq!(tasks[0].state, ExecutionState::Waiting);
@@ -751,10 +763,12 @@ fn a02_clock_rollback_wakes_after_a_persisted_sweep() {
     f.apply(Operation::Sweep {
         now: 20,
         busy_recipients: Vec::new(),
+        held_work: Vec::new(),
     });
     f.apply(Operation::Sweep {
         now: 10,
         busy_recipients: Vec::new(),
+        held_work: Vec::new(),
     });
     let inbox = f.store.agent_inbox("room", "parent", 0).unwrap();
     assert_eq!(inbox.len(), 1);
@@ -900,6 +914,7 @@ fn a02_default_message_does_not_replace_an_independent_wait() {
         target: None,
         run: None,
         now: 4,
+        work: None,
     });
     assert_eq!(f.task().state, ExecutionState::Waiting);
     assert_eq!(f.task().no_progress_wakes, 0);
@@ -974,6 +989,7 @@ fn a02_artifact_receipt_resets_guard_once_and_survives_restart() {
         target: None,
         run: None,
         now: 10,
+        work: None,
     });
     f.apply(Operation::Receipt {
         room: "room".into(),
@@ -1153,6 +1169,7 @@ fn a02_urgent_steers_past_nonurgent_queue_but_never_uncertain_receipts() {
         target: Some("running".into()),
         run: Some("run".into()),
         now: 1,
+        work: None,
     });
     f.apply(Operation::Receipt {
         room: "room".into(),
@@ -1191,6 +1208,7 @@ fn a02_urgent_steers_past_nonurgent_queue_but_never_uncertain_receipts() {
             target: Some("running".into()),
             run: Some("run".into()),
             now: 2,
+            work: None,
         })
         .is_err());
     f.apply(Operation::Receipt {
@@ -1255,6 +1273,7 @@ fn a02_urgent_reply_tracks_corrected_task_and_late_exact_acceptance() {
         target: Some("q".into()),
         run: Some("child-run".into()),
         now: 2,
+        work: None,
     });
     let Outcome::Settled { task, correction } = f.apply(Operation::Settle {
         room: "room".into(),
@@ -1363,6 +1382,7 @@ fn a02_every_delivery_receipt_has_client_visible_text() {
             target: target.map(Into::into),
             run: Some("run".into()),
             now: 1,
+            work: None,
         });
     };
     let mut steer = occurrence(
@@ -1457,6 +1477,7 @@ fn waiting_with_deadline_wake(f: &Fixture) -> InboxEvent {
         target: None,
         run: None,
         now: 4,
+        work: None,
     });
     assert_eq!(f.task().state, ExecutionState::Working);
     e
@@ -1675,6 +1696,7 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
             target: None,
             run: None,
             now,
+            work: None,
         });
         f.apply(Operation::Receipt {
             room: "room".into(),
@@ -1687,6 +1709,7 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
         let Outcome::Swept(changed) = f.apply(Operation::Sweep {
             now,
             busy_recipients: Vec::new(),
+            held_work: Vec::new(),
         }) else {
             panic!()
         };
@@ -1695,6 +1718,7 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
     let Outcome::Swept(changed) = f.apply(Operation::Sweep {
         now: 10 + DELIVERY_TIMEOUT_MS,
         busy_recipients: Vec::new(),
+        held_work: Vec::new(),
     }) else {
         panic!()
     };
@@ -1716,6 +1740,7 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
     let Outcome::Swept(changed) = f.apply(Operation::Sweep {
         now: 10 + DELIVERY_TIMEOUT_MS + SWEEP_MS,
         busy_recipients: Vec::new(),
+        held_work: Vec::new(),
     }) else {
         panic!()
     };
@@ -1751,10 +1776,12 @@ fn a02_review_timed_out_delivery_blocks_only_its_own_task() {
         target: None,
         run: Some("run".into()),
         now: 10,
+        work: None,
     });
     f.apply(Operation::Sweep {
         now: 10 + DELIVERY_TIMEOUT_MS,
         busy_recipients: Vec::new(),
+        held_work: Vec::new(),
     });
     let tasks = f.store.agent_tasks(Some("room"), Some("parent")).unwrap();
     let waiting = tasks.iter().find(|t| t.task_id == "p").unwrap();
@@ -1818,6 +1845,7 @@ fn a02_r4_admission_after_refusal_gets_full_delivery_timeout(receipt: &str) {
             target: None,
             run: None,
             now,
+            work: None,
         });
         if now == 10 || receipt == "uncertain" {
             f.apply(Operation::Receipt {
@@ -1832,6 +1860,7 @@ fn a02_r4_admission_after_refusal_gets_full_delivery_timeout(receipt: &str) {
     f.apply(Operation::Sweep {
         now: 120_010,
         busy_recipients: Vec::new(),
+        held_work: Vec::new(),
     });
     let event = f
         .store
@@ -1846,11 +1875,13 @@ fn a02_r4_admission_after_refusal_gets_full_delivery_timeout(receipt: &str) {
     f.apply(Operation::Sweep {
         now: 90_010 + DELIVERY_TIMEOUT_MS - 1,
         busy_recipients: Vec::new(),
+        held_work: Vec::new(),
     });
     assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
     f.apply(Operation::Sweep {
         now: 90_010 + DELIVERY_TIMEOUT_MS,
         busy_recipients: Vec::new(),
+        held_work: Vec::new(),
     });
     assert_eq!(
         f.store
@@ -1902,6 +1933,7 @@ fn late_steer_rejection_retries_idle(timed_out: bool) {
         target: Some("ending-turn".into()),
         run: Some("run".into()),
         now: attempted_at,
+        work: None,
     });
     f.apply(Operation::BindAttempt {
         room: "room".into(),
@@ -1914,6 +1946,7 @@ fn late_steer_rejection_retries_idle(timed_out: bool) {
         f.apply(Operation::Sweep {
             now: attempted_at + DELIVERY_TIMEOUT_MS,
             busy_recipients: Vec::new(),
+            held_work: Vec::new(),
         });
         assert_eq!(
             f.store
@@ -1955,6 +1988,7 @@ fn late_steer_rejection_retries_idle(timed_out: bool) {
     let Outcome::Swept(changed) = f.apply(Operation::Sweep {
         now: idle_at,
         busy_recipients: Vec::new(),
+        held_work: Vec::new(),
     }) else {
         panic!()
     };
@@ -1978,6 +2012,7 @@ fn late_steer_rejection_retries_idle(timed_out: bool) {
         target: None,
         run: Some("next-run".into()),
         now: idle_at,
+        work: None,
     });
     f.apply(Operation::Receipt {
         room: "room".into(),
@@ -2014,6 +2049,7 @@ fn a02_r5_idle_refusal_clock_starts_at_receipt() {
         target: None,
         run: None,
         now: now - 100_000,
+        work: None,
     });
     f.apply(Operation::Receipt {
         room: "room".into(),
@@ -2038,6 +2074,7 @@ fn a02_r5_idle_refusal_clock_starts_at_receipt() {
     f.apply(Operation::Sweep {
         now: now + 30_000,
         busy_recipients: Vec::new(),
+        held_work: Vec::new(),
     });
     assert_eq!(
         f.store
@@ -2050,6 +2087,7 @@ fn a02_r5_idle_refusal_clock_starts_at_receipt() {
     f.apply(Operation::Sweep {
         now: at as u64 + DELIVERY_TIMEOUT_MS,
         busy_recipients: Vec::new(),
+        held_work: Vec::new(),
     });
     assert_eq!(
         f.store
@@ -2094,6 +2132,7 @@ fn damaged_refusal_clock_is_quarantined(clock: rusqlite::types::Value) {
             target: None,
             run: None,
             now: 10,
+            work: None,
         });
         f.apply(Operation::Receipt {
             room: room.into(),
@@ -2117,6 +2156,7 @@ fn damaged_refusal_clock_is_quarantined(clock: rusqlite::types::Value) {
     let Outcome::Swept(changed) = f.apply(Operation::Sweep {
         now: 120_010,
         busy_recipients: Vec::new(),
+        held_work: Vec::new(),
     }) else {
         panic!()
     };
@@ -2162,6 +2202,7 @@ fn damaged_refusal_clock_is_quarantined(clock: rusqlite::types::Value) {
     let Outcome::Swept(changed) = f.apply(Operation::Sweep {
         now: 150_010,
         busy_recipients: Vec::new(),
+        held_work: Vec::new(),
     }) else {
         panic!()
     };
@@ -2197,6 +2238,7 @@ fn a02_r6_delivery_clocks_tolerate_sweep_receipt_race() {
                 target: None,
                 run: None,
                 now: if receipt == "rejected" { now } else { at },
+                work: None,
             });
             if receipt != "submitting" {
                 f.apply(Operation::Receipt {
@@ -2210,6 +2252,7 @@ fn a02_r6_delivery_clocks_tolerate_sweep_receipt_race() {
             f.apply(Operation::Sweep {
                 now,
                 busy_recipients: Vec::new(),
+                held_work: Vec::new(),
             });
             let expected = if ahead > DELIVERY_TIMEOUT_MS {
                 "blocked"
@@ -2232,11 +2275,13 @@ fn a02_r6_delivery_clocks_tolerate_sweep_receipt_race() {
                 f.apply(Operation::Sweep {
                     now: at + DELIVERY_TIMEOUT_MS - 1,
                     busy_recipients: Vec::new(),
+                    held_work: Vec::new(),
                 });
                 assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
                 f.apply(Operation::Sweep {
                     now: at + DELIVERY_TIMEOUT_MS,
                     busy_recipients: Vec::new(),
+                    held_work: Vec::new(),
                 });
                 assert_eq!(
                     f.store
@@ -2280,10 +2325,12 @@ fn a02_r6_late_receipts_close_only_synthetic_delivery_tasks() {
             target: None,
             run: None,
             now: 10,
+            work: None,
         });
         f.apply(Operation::Sweep {
             now: 10 + DELIVERY_TIMEOUT_MS,
             busy_recipients: Vec::new(),
+            held_work: Vec::new(),
         });
         let synthetic = format!("delivery-{}", e.sequence);
         assert_eq!(
