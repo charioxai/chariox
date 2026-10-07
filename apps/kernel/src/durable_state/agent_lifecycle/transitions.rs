@@ -480,7 +480,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     }
                 }
             }
-            let mut q=tx.prepare("SELECT sequence,room_id,agent_id,source_id,occurrence_id,payload FROM agent_inbox WHERE json_valid(payload)=0 OR json_extract(payload,'$.state') IN ('submitting','uncertain')").map_err(sql)?;
+            let mut q=tx.prepare("SELECT sequence,room_id,agent_id,source_id,occurrence_id,payload FROM agent_inbox WHERE CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') NOT IN ('accepted','acknowledged','handled','expired','failed') ELSE 1 END").map_err(sql)?;
             let rows = q
                 .query_map([], |r| {
                     Ok((
@@ -498,7 +498,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             drop(q);
             let mut events = vec![];
             for (sequence, room, agent, source, id, payload) in rows {
-                match decode::<InboxEvent>(&payload) {
+                match decode_inbox(sequence, &room, &agent, &source, &id, &payload) {
                     Ok(e) => events.push(e),
                     Err(_) => {
                         quarantine::retain(tx, "delivery", &sequence.to_string(), &payload)?;
@@ -527,8 +527,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 }
             }
             for mut e in events {
-                if e.attempted_at_ms
-                    .is_some_and(|at| now < at || now.saturating_sub(at) >= DELIVERY_TIMEOUT_MS)
+                if matches!(e.state.as_str(), "submitting" | "uncertain")
+                    && e.attempted_at_ms
+                        .is_some_and(|at| now < at || now.saturating_sub(at) >= DELIVERY_TIMEOUT_MS)
                 {
                     e.state = "blocked".into();
                     save_event(tx, &e)?;

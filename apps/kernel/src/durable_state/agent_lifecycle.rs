@@ -339,8 +339,9 @@ impl DurableKernelStateStore {
         agent: &str,
     ) -> Result<Option<InboxEvent>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.front")?;
-        let row:Option<String>=db.query_row("SELECT payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') IN ('pending','submitting','uncertain','blocked') ORDER BY sequence LIMIT 1",params![room,agent],|r|r.get(0)).optional().map_err(sql)?;
-        row.map(|row| decode(&row)).transpose()
+        let row:Option<(i64,String,String,String)>=db.query_row("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('pending','submitting','uncertain','blocked') ELSE 1 END ORDER BY sequence LIMIT 1",params![room,agent],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
+        row.map(|(seq, source, id, payload)| decode_inbox(seq, room, agent, &source, &id, &payload))
+            .transpose()
     }
     pub(crate) fn agent_event_for_prompt(
         &self,
@@ -349,8 +350,9 @@ impl DurableKernelStateStore {
         prompt: &str,
     ) -> Result<Option<InboxEvent>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.receipt")?;
-        let row:Option<String>=db.query_row("SELECT payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.prompt_id')=?3",params![room,agent,prompt],|r|r.get(0)).optional().map_err(sql)?;
-        row.map(|row| decode(&row)).transpose()
+        let row:Option<(i64,String,String,String)>=db.query_row("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.prompt_id')=?3 ELSE 0 END",params![room,agent,prompt],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
+        row.map(|(seq, source, id, payload)| decode_inbox(seq, room, agent, &source, &id, &payload))
+            .transpose()
     }
     pub(crate) fn agent_inbox(
         &self,
@@ -359,13 +361,22 @@ impl DurableKernelStateStore {
         after: u64,
     ) -> Result<Vec<InboxEvent>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.inbox")?;
-        let mut q=db.prepare("SELECT payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 ORDER BY sequence LIMIT 128").map_err(sql)?;
+        let mut q=db.prepare("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 ORDER BY sequence LIMIT 128").map_err(sql)?;
         let rows = q
             .query_map(params![room, agent, sql_integer(after)?], |r| {
-                r.get::<_, String>(0)
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
             })
             .map_err(sql)?;
-        rows.map(|r| decode(&r.map_err(sql)?)).collect()
+        rows.map(|r| {
+            let (seq, source, id, payload) = r.map_err(sql)?;
+            decode_inbox(seq, room, agent, &source, &id, &payload)
+        })
+        .collect()
     }
 }
 pub(super) fn execute(db: &mut Connection, request: Request) -> bool {
@@ -605,20 +616,45 @@ fn save_event(tx: &Transaction<'_>, e: &InboxEvent) -> Result<(), DaemonError> {
     .map_err(sql)?;
     Ok(())
 }
+fn decode_inbox(
+    seq: i64,
+    room: &str,
+    agent: &str,
+    source: &str,
+    id: &str,
+    payload: &str,
+) -> Result<InboxEvent, DaemonError> {
+    let e: InboxEvent = decode(payload)?;
+    if sql_integer(e.sequence)? != seq
+        || e.room_id != room
+        || e.agent_id != agent
+        || e.source_id != source
+        || e.occurrence_id != id
+        || !matches!(
+            e.state.as_str(),
+            "pending"
+                | "submitting"
+                | "uncertain"
+                | "blocked"
+                | "accepted"
+                | "acknowledged"
+                | "handled"
+                | "expired"
+                | "failed"
+        )
+    {
+        return Err(error("inbox identity/state corrupt; quarantine required"));
+    }
+    Ok(e)
+}
 fn get_event(
     tx: &Transaction<'_>,
     room: &str,
     agent: &str,
     seq: u64,
 ) -> Result<InboxEvent, DaemonError> {
-    let s: String = tx
-        .query_row(
-            "SELECT payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence=?3",
-            params![room, agent, sql_integer(seq)?],
-            |r| r.get(0),
-        )
-        .map_err(sql)?;
-    decode(&s)
+    let (source,id,payload):(String,String,String)=tx.query_row("SELECT source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence=?3",params![room,agent,sql_integer(seq)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(sql)?;
+    decode_inbox(sql_integer(seq)?, room, agent, &source, &id, &payload)
 }
 pub(crate) fn occurrence(
     room: &str,
