@@ -324,8 +324,11 @@ impl super::KernelRuntimeOwnedState {
                 .resume_state()
                 .provider_session_id(target_run.adapter_key()),
         ];
+        // Run ids restart with the kernel, so only an answer given since this
+        // run started is its own.
         let holds_conversation = |latest: &crate::history::HistoryEvent| {
-            latest.provider_run_id.as_deref() == Some(target_run.id())
+            (latest.provider_run_id.as_deref() == Some(target_run.id())
+                && latest.timestamp_ms >= target_run.started_at_ms())
                 || run_sessions.into_iter().flatten().any(|run_session| {
                     latest.provider_session_id.as_deref() == Some(run_session)
                         || self
@@ -897,14 +900,31 @@ mod tests {
     #[tokio::test]
     async fn a_switch_from_output_without_a_session_id_still_transfers() {
         let fixture = DerivedHandoffFixture::new().await;
+        let old = fixture.run("run-old", "codex", None);
         fixture.user(1, "remember the codename amber-kestrel");
         fixture.output(2, "run-old", "codex", None, "OK");
 
-        assert_eq!(
-            fixture.prompt(&fixture.run("run-old", "codex", None)),
-            "next"
-        );
+        assert_eq!(fixture.prompt(&old), "next");
         let fresh = fixture.run("run-new", "claude", None);
+        assert!(fixture.prompt(&fresh).contains("amber-kestrel"));
+    }
+
+    #[tokio::test]
+    async fn a_run_id_reused_after_a_restart_does_not_hold_the_conversation() {
+        let fixture = DerivedHandoffFixture::new().await;
+        fixture.user(1, "remember the codename amber-kestrel");
+        // Run ids restart with the kernel: the answer came from an earlier
+        // process's `provider-run-1`, not from the run that now has that id.
+        fixture.output_at(
+            2,
+            "provider-run-1",
+            "codex",
+            Some("thread-old"),
+            "OK",
+            Some(1_000),
+        );
+
+        let fresh = fixture.run("provider-run-1", "claude", None);
         assert!(fixture.prompt(&fresh).contains("amber-kestrel"));
     }
 
