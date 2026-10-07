@@ -35,6 +35,20 @@ function stopOwned(child, signal) {
   if (!Number.isInteger(child.pid) || child.pid <= 1) throw new Error('invalid owned child PID')
   child.kill(signal)
 }
+async function exitOwned(child, name) {
+  if (!child) return
+  const ended = await Promise.race([child.exited.then(() => true), Bun.sleep(5_000).then(() => false)])
+  if (!ended) {
+    stopOwned(child, 'SIGKILL')
+    report[`forced${name}Exit`] = true
+    await child.exited
+  }
+}
+const visibleScreen = () => screen.replace(/\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b[()][0-9A-Za-z]|\x1b[=>78]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '')
+async function press(key) {
+  tui.terminal.write(key)
+  await Bun.sleep(400)
+}
 async function freePort() {
   const server = createServer()
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -88,6 +102,7 @@ try {
   await mkdir(options.home, { recursive: process.platform === 'darwin', mode: 0o700 })
   homeCreated = process.platform === 'linux'
   report.sourceCommit = (await new Response(Bun.spawn(["git", "rev-parse", "HEAD"], {cwd: repo, stdout: "pipe"}).stdout).text()).trim()
+  report.kernelSourceCommit = options['kernel-source-commit'] ?? report.sourceCommit
   workspace = await mkdtemp(path.join(options['workspace-parent'], 'capability-grant-drill-'))
   socketPath = `/tmp/chariox-capability-${process.pid}.sock`
   const port = await freePort(), mcpPort = await freePort(), codexPort = await freePort(), opencodePort = await freePort()
@@ -154,11 +169,16 @@ try {
   }, 180_000)
   requireValue(approval.agentId == null && approval.choices.some(choice => choice.id === 'deny'))
   requireValue((await grants()).length === 0)
-  await Bun.sleep(250)
+  // Kernel-owned decisions use the shared F8 approval panel. Agent interaction
+  // automation does not drive that panel, so use the actual terminal keys.
+  await press('\x1b[19~')
+  await until(async () => visibleScreen().includes('Chariox resource access'), 10_000)
   await writeFile(path.join(options.evidence, 'resource-approval-tui.ansi'), screen)
   passed(stage, {newAuthorityBeforeOwnerReply: false})
   step('owner-denies-resource-acquisition-through-tui')
-  await automation.send('interaction_submit', {choiceIndex: approval.choices.findIndex(choice => choice.id === 'deny')})
+  await press('\x1b[B')
+  await until(async () => visibleScreen().includes('Selected: Deny'), 5_000)
+  await press('\r')
   await until(async () => !(await automation.send('snapshot')).interactions.some(item => item.id === approval.id), 30_000)
   await Bun.sleep(2_000)
   requireValue((await grants()).length === 0)
@@ -183,13 +203,14 @@ try {
 } finally {
   step('cleanup-owned-processes')
   if (sessionId) await client?.send(requests.endSessionRequest(sessionId)).catch(() => {})
-  await automation?.send('exit').catch(() => {})
+  if (tui?.exitCode == null) tui?.terminal?.write('\x05')
   automation?.close()
   stopOwned(tui, 'SIGTERM')
   await client?.close().catch(() => {})
   stopOwned(kernel, 'SIGTERM')
-  if (tui) { await tui.exited; tui.terminal?.close() }
-  if (kernel) await kernel.exited
+  await exitOwned(tui, 'Tui')
+  tui?.terminal?.close()
+  await exitOwned(kernel, 'Kernel')
   if (socketPath) await rm(socketPath, {force: true})
   // Linux uses a new disposable home. Preserve macOS kernel homes under the
   // existing operator key-retention contract.
