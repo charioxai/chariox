@@ -1,4 +1,4 @@
-import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry,hostDisplayScale} from './kernel-browser-geometry.mjs';
 // MD-DISPLAY-02/04: OS-neutral capture interface: start/subscribe/sample/close.
 // Linux XDamage/XShm implementation; macOS unsupported until ScreenCaptureKit.
 import {mkdtemp,rm} from 'node:fs/promises';
@@ -50,7 +50,7 @@ export class LinuxCapture {
   try{
    this.phase='bounds';const {windowId}=await this.connection.send('Browser.getWindowForTarget',{targetId:this.tab.target_id});
    // Window bounds are native DIPs; subscriber geometry is in device pixels.
-   await this.connection.send('Browser.setWindowBounds',{windowId,bounds:{width:geometry.width*this.scale/geometry.dpr,height:geometry.height*this.scale/geometry.dpr+87}});
+   await this.connection.send('Browser.setWindowBounds',{windowId,bounds:{width:geometry.width*this.scale/hostDisplayScale,height:geometry.height*this.scale/hostDisplayScale+87}});
    await this.connection.send('Page.bringToFront',{},this.sessionId);
    const {frameTree}=await this.connection.send('Page.getFrameTree',{},this.sessionId);
    const {executionContextId}=await this.connection.send('Page.createIsolatedWorld',{frameId:frameTree.frame.id,worldName:'chariox-native-surface-fence',grantUniveralAccess:false},this.sessionId);

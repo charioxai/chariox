@@ -1,5 +1,5 @@
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
-import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry,hostDisplayScale} from './kernel-browser-geometry.mjs';
 // MD-2: sessionless host adapter over the shared controller/CDP implementation.
 import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -530,7 +530,7 @@ export class KernelBrowserHost {
       const scale = this.scales.get(tab.tab_id);
       if (scale && scale !== command.device_scale_factor) throw new Error("MD-DISPLAY: canonical tab geometry is already selected");
       const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
-      if(!scale)await connection.send("Emulation.setDeviceMetricsOverride", { width: geometry.width, height: geometry.height, deviceScaleFactor: command.device_scale_factor, scale:this.chromium.display?command.device_scale_factor/geometry.dpr:1, mobile: false }, sessionId);
+      if(!scale)await connection.send("Emulation.setDeviceMetricsOverride", { width: geometry.width, height: geometry.height, deviceScaleFactor: command.device_scale_factor, scale:this.chromium.display?command.device_scale_factor/hostDisplayScale:1, mobile: false }, sessionId);
       this.scales.set(tab.tab_id, command.device_scale_factor);
       const id = `host-display-${randomUUID()}`;
       const codec=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER&&command.codecs.includes('avc1.420033')?'avc1.420033':command.codecs.find(c=>['vp8','vp09.00.50.08','vp09.00.40.08','vp09.00.10.08','avc1.420033'].includes(c))??'png';
@@ -578,7 +578,7 @@ export class KernelBrowserHost {
         this.compositors.get(tab.tab_id)?.source?.wake?.();
       };
       try {
-        await this.sampleLane(tab).run("input", () => inputHostTab(this.browser, tab, command.input, { signal, onDispatch, coordinateScale:this.chromium?.display?(this.scales.get(tab.tab_id)??geometry.dpr)/geometry.dpr:1, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+        await this.sampleLane(tab).run("input", () => inputHostTab(this.browser, tab, command.input, { signal, onDispatch, coordinateScale:this.chromium?.display?(this.scales.get(tab.tab_id)??geometry.dpr)/hostDisplayScale:1, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
         if(dispatched)this.compositors.get(tab.tab_id)?.source?.wake?.();
         this.timing('cdp_input', at);
       }

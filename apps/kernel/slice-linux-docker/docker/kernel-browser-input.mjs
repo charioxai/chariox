@@ -8,7 +8,7 @@ const keyCodes = { Tab: 9, Enter: 13, Space: 32, Escape: 27, Backspace: 8, Delet
   ArrowLeft: 37, ArrowRight: 39, ArrowUp: 38, ArrowDown: 40, Home: 36, End: 35 };
 export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, coordinateScale = 1 } = {}) {
     assertNotCancelled(signal);
-    if(![.5,1].includes(coordinateScale))throw new Error('MD-2: unsupported native pointer scale');
+    if(![.5,1,2].includes(coordinateScale))throw new Error('MD-2: unsupported native pointer scale');
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
     const check = async () => {
       assertNotCancelled(signal);
@@ -38,7 +38,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       }
       await mirrorGuard?.();
       onDispatch?.();
-      // Headed canonical DPR1 uses Emulation.scale=.5 on the DPR2 host.
+      // Headed raster density uses Emulation.scale on the canonical DPR1 host.
       // CDP pointer positions address that scaled viewport; semantic admission
       // above always uses the original CSS coordinates. Wheel deltas stay CSS.
       const nativeParams=method==='Input.dispatchMouseEvent'&&coordinateScale!==1

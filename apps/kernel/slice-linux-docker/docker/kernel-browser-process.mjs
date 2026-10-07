@@ -1,4 +1,4 @@
-import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry,hostDisplayScale} from './kernel-browser-geometry.mjs';
 // MD-2: host Chromium lifetime. Never touches a slice or an existing Chrome.
 import { spawn } from "node:child_process";
 import { access, mkdir, readFile, readlink } from "node:fs/promises";
@@ -41,9 +41,9 @@ export function launchArguments(profile, headless, display = false) {
     `--user-data-dir=${profile}`, "--remote-debugging-pipe",
     "--no-first-run", "--no-default-browser-check",
     "--disable-session-crashed-bubble", "--disable-background-networking",
-    `--window-size=${geometry.width},${geometry.height+(display?87:0)}`, ...(headless ? ["--headless=new"] : []),
+    `--window-size=${display?geometry.width*geometry.dpr/hostDisplayScale:geometry.width},${display?geometry.height*geometry.dpr/hostDisplayScale+87:geometry.height}`, ...(headless ? ["--headless=new"] : []),
     // MP-08/MP-10: remote panels have no shared physical LCD subpixel order.
-    ...(display ? ["--disable-lcd-text", `--force-device-scale-factor=${geometry.dpr}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows"] : []), "about:blank",
+    ...(display ? ["--disable-lcd-text", `--force-device-scale-factor=${hostDisplayScale}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows"] : []), "about:blank",
   ];
 }
 

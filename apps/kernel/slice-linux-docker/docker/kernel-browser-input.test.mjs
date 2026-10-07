@@ -94,7 +94,7 @@ test('MD-454: batched wheel deltas use the live mirror fence; direct input keeps
  assert.equal(sent.filter(e=>e.method==='Input.dispatchMouseEvent').length,1);
 });
 
-for(const scale of [.5,1])test('MD-454: canonical CSS pointer is dispatched at the headed emulation scale '+scale,async()=>{
+for(const scale of [.5,1,2])test('MD-454: canonical CSS pointer is dispatched at the headed emulation scale '+scale,async()=>{
  const {browser,sent}=fixture();let guarded=0;
  await inputHostTab(browser,tab,{kind:'mirror'},{coordinateScale:scale,resolveMirror:async()=>({input:{kind:'click',x:88,y:112},guard:async()=>guarded++})});
  const clicks=sent.filter(e=>e.method==='Input.dispatchMouseEvent');assert.equal(guarded,2);
