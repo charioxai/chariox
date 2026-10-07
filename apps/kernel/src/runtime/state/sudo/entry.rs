@@ -234,17 +234,25 @@ impl KernelRuntimeState {
             app.ensure_prompt_provider_run_for_agent(&entry.session_id, &entry.agent_id)
         })
         .await?;
+        let mut relaunched = false;
         loop {
             if reload && !self.sudo_agent_busy(entry)? {
-                reload = matches!(
-                    self.reload_agent_provider_if_idle_for_reason(
+                use super::super::provider_reload::{ProviderReloadOutcome, ProviderReloadReason};
+                let outcome = self
+                    .reload_agent_provider_if_idle_for_reason(
                         &entry.session_id,
                         &entry.agent_id,
-                        &super::super::provider_reload::ProviderReloadReason::RuntimeToolCatalog,
+                        &ProviderReloadReason::RuntimeToolCatalog,
                     )
-                    .await?,
-                    super::super::provider_reload::ProviderReloadOutcome::Deferred
-                );
+                    .await?;
+                reload = matches!(outcome, ProviderReloadOutcome::Deferred);
+                relaunched = matches!(outcome, ProviderReloadOutcome::Reloaded);
+            }
+            // The relaunched provider takes the first turn once it runs again.
+            if relaunched && !self.sudo_provider_running(entry) {
+                self.live_queued_sudo(entry)?;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
             }
             let submission = self.try_start_sudo(entry, request, prompt, &attachments)?;
             if let Some(submission) = submission {
@@ -268,6 +276,27 @@ impl KernelRuntimeState {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
+    fn sudo_provider_running(&self, entry: &KernelSudoTurn) -> bool {
+        self.owned
+            .provider_store
+            .get_run_for_agent(&entry.session_id, &entry.agent_id)
+            .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Running)
+    }
+    /// The current window while its first turn has not started; Extend may
+    /// have renewed it since the caller's read.
+    fn live_queued_sudo(&self, entry: &KernelSudoTurn) -> Result<KernelSudoTurn, DaemonError> {
+        let current = self
+            .owned
+            .sudo_turns
+            .lock()
+            .expect("access state poisoned")
+            .get(&entry.entry_id)
+            .filter(|current| current.prompt_id.is_none())
+            .cloned();
+        current
+            .filter(|current| self.sudo_live(current))
+            .ok_or_else(|| error("queued sudo was revoked"))
+    }
     fn sudo_agent_busy(&self, entry: &KernelSudoTurn) -> Result<bool, DaemonError> {
         let session = self.owned.session_store.get_session(&entry.session_id)?;
         Ok(self
@@ -285,19 +314,7 @@ impl KernelRuntimeState {
     ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
         // Release sudo_turns before reading session/prompt state: interaction
         // resolution holds session_store, then prompt state, then sudo_turns.
-        // Re-read the window: Extend may have renewed it while it waited.
-        let current = self
-            .owned
-            .sudo_turns
-            .lock()
-            .expect("access state poisoned")
-            .get(&entry.entry_id)
-            .filter(|current| current.prompt_id.is_none())
-            .cloned();
-        let Some(entry) = current.filter(|current| self.sudo_live(current)) else {
-            return Err(error("queued sudo was revoked"));
-        };
-        let entry = &entry;
+        let entry = &self.live_queued_sudo(entry)?;
         let session = self.owned.session_store.get_session(&entry.session_id)?;
         let durable_work = self.owned.config_projection.snapshot().room_agent_tools;
         if durable_work {
