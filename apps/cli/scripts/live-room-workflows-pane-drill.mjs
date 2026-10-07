@@ -113,6 +113,19 @@ async function diagnostics(result) {
   await writeFile(path.join(args.output,'runtime-pump.json'),JSON.stringify({mpItems:['MP-08','MP-11'],messages:records,
     homeKernelId:result.room_workflows?.home_kernel_id,hostDaemonId:result.session.host_daemon_id,
     activity:result.agent_activity,runs:result.session.workflow_runs?.map(run=>({id:run.id,status:run.status,nodes:run.node_runs?.map(node=>({id:node.id,status:node.status,agentId:node.agent_id}))}))},null,2)+'\n',{mode:0o600})
+  // MP-08 / MP-10: retain public queue/counter projections, never URLs,
+  // provider diagnostics, prompts, credentials or the whole health response.
+  const health=unwrap(await client.send(requests.getDaemonHealthRequest()),'DaemonHealth').projection
+  await writeFile(path.join(args.output,'runtime-health.json'),JSON.stringify({mpItems:receipt.mpItems,
+    at:Date.now(),sessionLanes:health.session_command_lanes,agentLanes:health.agent_command_lanes,
+    workflowLanes:health.workflow_command_lanes,providerLanes:health.provider_runtime_lanes,
+    providerActor:health.provider_run_actor,sessionProjection:health.session_projection,
+    agentProjection:health.agent_runtime_projection,capabilities:health.capability_executor,
+    transport:{activeConnections:health.transport.active_connections,
+      outgoingQueueOverflows:health.transport.outgoing_queue_overflows,
+      slowConsumerCloses:health.transport.slow_consumer_closes,
+      overloadRejections:health.transport.inbound_overload_rejections},
+    terminalStream:health.terminal_stream},null,2)+'\n',{mode:0o600})
 }
 async function stateUntil(predicate, timeout=60000) {
   const deadline = Date.now()+timeout
@@ -393,11 +406,16 @@ try {
 } finally {
   clearInterval(resourceMonitor)
   if(tracingInterrupts) {
-    const traces=[]
+    const traces=[],queueTraces=[]
     for(const name of await readdir(path.join(state,'logs')).catch(()=>[])) {
       if(!name.endsWith('.ndjson'))continue
       for(const line of (await readFile(path.join(state,'logs',name),'utf8')).split('\n')) {
         let entry;try{entry=JSON.parse(line)}catch{continue}
+        if(entry.component==='daemon.command_latency' && !['session.state.get','daemon.health.get'].includes(entry.command_type)) {
+          queueTraces.push({at:entry.timestamp_ms,message:entry.message,commandId:entry.command_id,
+            commandType:entry.command_type,laneKind:entry.lane_kind,laneId:entry.lane_id,
+            status:entry.status,queueWaitMs:entry.queue_wait_ms,executionMs:entry.lane_execution_ms})
+        }
         if(entry.component!=='daemon.provider.codex' || !/turn (start|completion|interrupt)/.test(entry.message??''))continue
         traces.push({at:entry.timestamp_ms,message:entry.message,providerRunId:entry.provider_run_id,
           activeTurnId:entry.active_turn_id,previousTurnId:entry.previous_active_turn_id,turnId:entry.turn_id,
@@ -406,6 +424,8 @@ try {
     }
     await writeFile(path.join(args.output,'provider-turns.json'),JSON.stringify({mpItems:receipt.mpItems,traces,
       interruptEvidence:await interruptTraces(path.join(state,'logs'))},null,2)+'\n',{mode:0o600})
+    await writeFile(path.join(args.output,'command-queues.json'),JSON.stringify({mpItems:receipt.mpItems,
+      traces:queueTraces.sort((a,b)=>a.at-b.at)},null,2)+'\n',{mode:0o600})
   }
   await writeFile(path.join(args.output,'result.json'),JSON.stringify(receipt,null,2)+'\n',{mode:0o600})
   const cleanupGroups=[]
