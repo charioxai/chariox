@@ -71,6 +71,7 @@ try {
  // Chromium SingletonSocket uses TMPDIR, whose Unix path must stay short.
  // Persistent profile/CHARIOX_HOME stay below the requested LAN state root.
  shortTmp=await mkdtemp('/tmp/chariox-md-tmp-');await chmod(shortTmp,0o700);await chown(shortTmp,runUid,runGid);receipt.short_tmp_root=shortTmp;
+ await writeFile(path.join(output,'run-roots.json'),JSON.stringify({item:'MP-08/MP-10/MP-11',state_root:root,short_tmp_root:shortTmp}));
  await chmod(root,0o755);
  const home=path.join(root,'home');await mkdir(home,{mode:0o700});await chown(home,runUid,runGid);
  const copiedBinary=path.join(root,'kernel-tests');
@@ -481,11 +482,14 @@ finally {
  // Read only our non-secret, fixed-label diagnostic files before disposing state.
  const traces=[];
  async function collectTiming(directory){for(const entry of await readdir(directory,{withFileTypes:true}).catch(()=>[])){const p=path.join(directory,entry.name);if(entry.isDirectory()&&entry.name!=='profile')await collectTiming(p);else if(entry.name==='display-timing.jsonl'){const lines=(await readFile(p,'utf8')).trim().split('\n');for(const line of lines)if(line)traces.push(JSON.parse(line));}}}
- await collectTiming(path.join(root,'home','chariox'));
+ try{await collectTiming(path.join(root,'home','chariox'))}
+ catch{receipt.diagnostic_error='MP-10: invalid host timing JSON';receipt.status='RED';process.exitCode=1}
  if(process.env.MD_PROFILE==='1')for(const name of await readdir(path.join(root,'profiles')).catch(()=>[])){
   if(/^(CPU\.[\w.-]+\.cpuprofile|(?:encoder|capture)\.\d+\.prof)$/.test(name))await cp(path.join(root,'profiles',name),path.join(output,name));
  }
  receipt.host_timings=traces;receipt.kernel_timings=log.timings();
+ receipt.diagnostic_errors=log.diagnosticErrors;
+ if(receipt.diagnostic_errors.length){receipt.status='RED';receipt.error='MP-10: invalid kernel timing JSON';process.exitCode=1}
  receipt.actual_encoders=[...new Set(traces.filter(t=>t.stage.startsWith('motion_backend_')).map(t=>t.stage.slice('motion_backend_'.length)))];
  receipt.hardware_fallback=receipt.requested_hardware&&!receipt.actual_encoders.includes('vaapi');
  if(receipt.hardware_fallback){receipt.hardware_warning='MP-10: HARDWARE REQUEST FAILED — successful VAAPI packets not observed; timings describe software fallback';console.error(receipt.hardware_warning);}

@@ -12,3 +12,10 @@ test('kernel timing parsing keeps stdout out of split stderr records',()=>{
  log.record('stderr',Buffer.from(line.slice(35)));
  assert.deepEqual(log.timings(),[record]);
 });
+
+test('malformed kernel timing retains failure metadata for receipt and cleanup',()=>{
+ const log=new KernelLogCapture();
+ log.record('stderr',Buffer.from('MD-DISPLAY-TIMING {"stage":\n'));
+ assert.deepEqual(log.timings(),[]);
+ assert.deepEqual(log.diagnosticErrors,[{stream:'stderr',line:1,error:'invalid timing JSON'}]);
+});
