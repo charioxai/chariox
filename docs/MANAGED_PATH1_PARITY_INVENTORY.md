@@ -6,7 +6,8 @@ The shared compiler selects Node from kernel operator configuration and ignores
 caller-selected executable paths, including direct IPC compilation requests.
 The builder, console and promise callbacks are created inside the source realm;
 only serialized JSON crosses into or out of it. The Linux compiler process has
-a read-only root containing its executable and libraries, a size-limited private
+a read-only root containing its executable, libraries and exactly identified
+Node runtime data files (including distribution-packaged built-ins), a size-limited private
 scratch mount, isolated network/PID/IPC namespaces, no inherited environment or
 non-stdio file handles, and heap/address-space, CPU and wall-time bounds.
 Only requested approved schema data is bounded and opened beneath a held root
@@ -16,9 +17,12 @@ with that data under one total deadline; unrelated workspace JSON is never read.
 Provider launch paths are unchanged; compiler isolation adds no provider fence.
 The private compiler envelope changes no shared client shape (local450/peer73).
 
-Linux requires Bubblewrap, runtime-library discovery and the isolation syscalls.
-Other hosts fail closed until an equivalent backend is available. This platform
-limitation requires an owner rollout decision; it is not ordinary/managed parity
+Linux requires Bubblewrap, runtime-file discovery and the isolation syscalls.
+Shared libnode and ICU data libraries are discovered through linked dependencies;
+external built-in/ICU file paths are read from bounded read-only Node/libnode ELF
+data and mounted individually, never as package directories. macOS uses the
+Seatbelt backend described in `WORKFLOW_COMPILER_ISOLATION.md`; unsupported hosts
+fail closed. These shared compiler backends are not ordinary/managed parity
 acceptance. Current security-anchor semantic review and the real hosted/fresh
 managed comparison remain coordinator gates. No non-security exact-blob review
 is required by this correction. Focused and real-provider results are recorded
