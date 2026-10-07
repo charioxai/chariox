@@ -548,7 +548,8 @@ impl KernelRuntimeState {
         }
         let tasks = self.owned.durable_state_store.agent_tasks(None, None)?;
         let mut seen = BTreeSet::new();
-        for task in tasks {
+        let mut rooms = BTreeSet::new();
+        for task in tasks.clone() {
             // Recovery retains unavailable Rooms; their tasks must not halt live supervision.
             if self.owned.session_store.get_session(&task.room_id).is_err() {
                 continue;
@@ -562,6 +563,10 @@ impl KernelRuntimeState {
                     tracing::warn!(room_id=%task.room_id, agent_id=%task.agent_id, "MP-08/MP-09/MP-10/MP-11 A02: owner projection unavailable; other recipients continue");
                 }
             }
+            if rooms.insert(task.room_id.clone()) {
+                self.retract_stale_task_owner_interactions(&task.room_id, &tasks)
+                    .await;
+            }
             if seen.insert((task.room_id.clone(), task.agent_id.clone())) {
                 if let Err(error) =
                     Box::pin(self.deliver_agent_inbox(&task.room_id, &task.agent_id)).await
@@ -572,6 +577,39 @@ impl KernelRuntimeState {
             }
         }
         Ok(())
+    }
+    /// A task that left Blocked (for example cancelled with its parent) or
+    /// re-blocked at a later revision withdraws its older owner decision.
+    async fn retract_stale_task_owner_interactions(
+        &self,
+        room: &str,
+        tasks: &[AgentTaskExecution],
+    ) {
+        let Ok(session) = self.owned.session_store.get_session(room) else {
+            return;
+        };
+        let stale = session
+            .active_interactions()
+            .iter()
+            .map(|i| i.id())
+            .filter(|id| {
+                let Some(rest) = id.strip_prefix("task-blocked-") else {
+                    return false;
+                };
+                tasks.iter().any(|t| {
+                    rest.strip_prefix(t.task_id.as_str())
+                        .and_then(|r| r.strip_prefix('-'))
+                        .and_then(|r| r.parse::<u64>().ok())
+                        .is_some_and(|revision| {
+                            t.state != ExecutionState::Blocked || revision != t.blocked_revision
+                        })
+                })
+            })
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        for id in stale {
+            let _ = self.timeout_runtime_interaction(room, &id).await;
+        }
     }
     pub(super) async fn ensure_task_owner_interaction(
         &self,
