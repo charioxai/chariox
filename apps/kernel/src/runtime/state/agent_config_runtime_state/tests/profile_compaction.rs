@@ -619,7 +619,7 @@ async fn a_prompt_queued_during_compaction_reaches_the_committed_profile() {
 }
 
 #[tokio::test]
-async fn a_leased_prompt_queued_during_compaction_reaches_the_committed_profile() {
+async fn a_leased_backlog_uses_the_next_home_launch_credential_and_receipt() {
     crate::test_support::isolated_env_test!();
     assert_queued_prompt_reaches_committed_profile(true).await;
 }
@@ -628,8 +628,13 @@ async fn assert_queued_prompt_reaches_committed_profile(leased: bool) {
     let (root, app, runtime, session_id, agent_id, run, lease) =
         compact_fixture_with_lease(leased).await;
     let received = root.path().join("new-profile-input");
+    let credential_matches = root.path().join("home-credential-matches");
     let executable = root.path().join("claude-queue-fixture");
     std::fs::write(&executable, format!("#!/bin/sh\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> '{}'; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done\n", received.display())).unwrap();
+    if leased {
+        // Only a boolean is recorded; synthetic launch secrets never enter logs.
+        std::fs::write(&executable, format!("#!/bin/sh\nif [ \"$CLAUDE_CODE_OAUTH_TOKEN\" = 'synthetic-home-token' ]; then touch '{}'; fi\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> '{}'; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done\n", credential_matches.display(), received.display())).unwrap();
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -650,6 +655,8 @@ async fn assert_queued_prompt_reaches_committed_profile(leased: bool) {
         &account,
     )
     .unwrap();
+    // Deliberately give the worker a different synthetic login: queue promotion
+    // must still use the home credential, never this local account login.
     // This isolated child uses a fake CLI and never discovers a real login.
     let environment = runtime
         .owned
@@ -681,8 +688,9 @@ async fn assert_queued_prompt_reaches_committed_profile(leased: bool) {
     let state = runtime.clone();
     let session = session_id.clone();
     let agent = agent_id.clone();
+    let update_lease = lease.clone();
     let update = tokio::spawn(async move {
-        if let Some(lease) = lease {
+        if let Some(lease) = update_lease {
             state
                 .update_relay_leased_agent_profile(
                     &lease.id,
@@ -741,6 +749,87 @@ async fn assert_queued_prompt_reaches_committed_profile(leased: bool) {
         crate::session::PromptSubmissionOutcome::Queued { .. }
     ));
     assert_eq!(updated.as_deref(), Some("haiku"));
+    if let Some(lease) = &lease {
+        // Profile acknowledgements have no launch credential. A local worker
+        // account must not cause a cold launch before the home authorizes it.
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let premature = runtime
+            .owned
+            .provider_store
+            .list_runs()
+            .into_iter()
+            .filter(|candidate| {
+                candidate.agent_instance_id() == Some(agent_id.as_str())
+                    && candidate.model() == "haiku"
+            })
+            .collect::<Vec<_>>();
+        for candidate in &premature {
+            let _ = runtime
+                .owned
+                .provider_store
+                .terminate_run_provider_only(&session_id, candidate.id());
+        }
+        assert!(
+            premature.is_empty(),
+            "worker backlog must wait for a credential-bearing home launch"
+        );
+        let (launched, _) = runtime
+            .submit_relay_leased_prompt(
+                &lease.id,
+                crate::transport::relay_peer::RelayAgentExecutionProfile {
+                    provider: lease.provider.clone(),
+                    account_profile: lease.account_profile.clone(),
+                    model: Some("haiku".into()),
+                    effort: None,
+                },
+                "next home request",
+                "",
+                Vec::new(),
+                None,
+                Some(crate::transport::relay_peer::RemoteGitTurnContext {
+                    home_session_id: "home-session".into(),
+                    home_agent_id: "home-agent".into(),
+                    home_prompt_id: "next-home-prompt".into(),
+                    home_turn_id: "next-home-prompt".into(),
+                    source_attachment_id: None,
+                    workspace_live_sync_mode: None,
+                    prompt_origin: Some(crate::session::PromptOrigin::Chariox),
+                    external_provider: None,
+                    external_provider_session_id: None,
+                    external_provider_turn_id: None,
+                    prompt_summary: "next home request".into(),
+                }),
+                Vec::new(),
+                None,
+                crate::extension::RemoteExtensionManifest::default(),
+                Some(
+                    crate::transport::relay_peer::RemoteProviderLaunchCredential {
+                        provider: lease.provider.clone(),
+                        account_profile: lease.account_profile.clone(),
+                        secret_input:
+                            crate::transport::relay_peer::RemoteCredentialSecretInput::new(
+                                "synthetic-home-token".into(),
+                            ),
+                    },
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(runtime
+            .owned
+            .provider_run_projection
+            .is_leased_provider_run(&launched));
+        let receipt = runtime
+            .query_relay_leased_prompt_receipt(&lease.id, "next-home-prompt")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.worker_provider_run_id, launched);
+        assert_eq!(
+            receipt.phase,
+            crate::transport::relay_peer::LeasedPromptReceiptPhase::Active
+        );
+    }
     for _ in 0..300 {
         if received.exists() {
             break;
@@ -775,4 +864,15 @@ async fn assert_queued_prompt_reaches_committed_profile(leased: bool) {
     let current = current.unwrap();
     assert_eq!(current.model(), "haiku");
     assert_ne!(current.id(), run.id());
+    if leased {
+        assert!(
+            credential_matches.exists(),
+            "cold launch must receive the home's credential"
+        );
+        assert!(runtime
+            .owned
+            .provider_run_projection
+            .is_leased_provider_run(current.id()));
+        assert_eq!(input.matches("request after source compact").count(), 1);
+    }
 }
