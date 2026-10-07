@@ -698,7 +698,8 @@ impl KernelRuntimeState {
                 .await?;
             authorize()?;
             let admitted = self.owned.admit_agent_task(&prepared)?;
-            let submission = async {
+            // Boxed: keeps the outer submission future small on deep call stacks.
+            let submission = Box::pin(async {
                 if let Some(mut submission) =
                     owned.submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
                 {
@@ -784,7 +785,7 @@ impl KernelRuntimeState {
                         "owned prompt runtime could not admit prompt without side-effect completion"
                             .to_string(),
                 })
-            }
+            })
             .await;
             // A02: a rejected submission must not leave a task that later
             // blocks on the owner for work that never started.
