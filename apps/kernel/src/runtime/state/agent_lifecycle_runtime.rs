@@ -528,8 +528,18 @@ impl KernelRuntimeState {
         let tasks = self.owned.durable_state_store.agent_tasks(None, None)?;
         let mut seen = BTreeSet::new();
         for task in tasks {
+            // Recovery retains unavailable Rooms; their tasks must not halt live supervision.
+            if self.owned.session_store.get_session(&task.room_id).is_err() {
+                continue;
+            }
             if task.state == ExecutionState::Blocked {
-                self.ensure_task_owner_interaction(task.clone()).await?;
+                if self
+                    .ensure_task_owner_interaction(task.clone())
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!(room_id=%task.room_id, agent_id=%task.agent_id, "MP-08/MP-09/MP-10/MP-11 A02: owner projection unavailable; other recipients continue");
+                }
             }
             if seen.insert((task.room_id.clone(), task.agent_id.clone())) {
                 if let Err(error) =
