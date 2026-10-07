@@ -87,11 +87,19 @@ export class MirrorService {
           await stream.frameCustom?.release();stream.frameCustom=null;stream.pending=null;stream.previous=null;stream.observed=null;stream.epochs=[];
           throw Error('MP-11: mirror chunk policy or document changed');
         }
-        const pending=stream.pending;await stream.frameCustom?.verify();
-        if(stream.pending!==pending||pending.policy!==this.host.protection||this.host.generation!==command.generation||this.streams.get(command.subscription_id)!==stream)throw Error('MP-11: mirror chunk policy or document changed');
-        if(pending.sourceRevision!==null&&await this.evaluate(pending.world,'globalThis.__charioxMirror.epoch()')!==pending.sourceRevision)throw new MirrorFrameChanged(pending.policy);
-        if(command.after_sequence===pending.sequence&&cursor===null){await stream.frameCustom?.release();stream.frameCustom=null;stream.pending=null;}
-        else {
+        const pending=stream.pending;
+        if(command.after_sequence===pending.sequence&&cursor===null){
+          // The complete authenticated frame was already issued. Its ordinary
+          // page revision may now reflect an admitted user effect. Retire that
+          // observation and inspect a fresh one; partial transfers still settle
+          // against the exact old revision, and policy/document fences above
+          // apply even to acknowledgements.
+          if(!pending.lastIssued)throw Error('MP-11: incomplete mirror frame acknowledgement');
+          await stream.frameCustom?.release();stream.frameCustom=null;stream.pending=null;
+        } else {
+          await stream.frameCustom?.verify();
+          if(stream.pending!==pending||pending.policy!==this.host.protection||this.host.generation!==command.generation||this.streams.get(command.subscription_id)!==stream)throw Error('MP-11: mirror chunk policy or document changed');
+          if(pending.sourceRevision!==null&&await this.evaluate(pending.world,'globalThis.__charioxMirror.epoch()')!==pending.sourceRevision)throw new MirrorFrameChanged(pending.policy);
           if(command.after_sequence!==pending.base_sequence)throw Error('MP-11: invalid mirror chunk base');
           const index=cursor===null?0:cursor+1;
           if(index>=pending.chunks.length)throw Error('MP-11: invalid mirror chunk acknowledgement');

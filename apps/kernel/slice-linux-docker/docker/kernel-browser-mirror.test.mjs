@@ -446,3 +446,17 @@ test('MP-11: a pending text operation cannot acquire the no-effect wheel marker 
  const text=await service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:p.sequence,action:{kind:'text',node_id:'n1',text:'x'}},'a');let marked=false;
  await assert.rejects(text.perform(async()=>assert.fail('no text dispatch'),()=>marked=true),error=>!error.message.includes('stale mirror input epoch'));assert(marked);
 });
+
+for(const change of ['ordinary source','policy','document','incomplete'])test('MD-454: fully issued frame acknowledgement retires its old observation: '+change,async()=>{
+ const {service,state,host}=fixture();state.snapshot.revision=0
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a')
+ const packet=await service.next(next(sub.subscription_id),'a'),stream=service.streams.get(sub.subscription_id)
+ stream.pending={chunks:[{},{}],sequence:packet.sequence,base_sequence:0,document_id:'d',policy:host.protection,world:stream.frameWorld,sourceRevision:0,lastIssued:change!=='incomplete'}
+ state.snapshot.revision=change==='incomplete'?0:1;state.snapshot.nodes[1].text='Updated ordinary text'
+ if(change==='policy')host.protection={...host.protection}
+ if(change==='document')state.document='new-document'
+ if(change==='ordinary source'){
+  const fresh=await service.next(next(sub.subscription_id,packet.sequence),'a')
+  assert.equal(fresh.base_sequence,packet.sequence);assert(fresh.nodes.some(n=>n.text==='Updated ordinary text'))
+ }else await assert.rejects(service.next(next(sub.subscription_id,packet.sequence),'a'),change==='incomplete'?/incomplete mirror frame acknowledgement/:/policy or document changed/)
+})
