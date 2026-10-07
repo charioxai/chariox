@@ -94,3 +94,5 @@ fn history_page_entry(
 mod room_workflows;
 
 mod screenshot;
+
+mod agent_lifecycle;

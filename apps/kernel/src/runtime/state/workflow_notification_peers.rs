@@ -401,6 +401,18 @@ impl KernelRuntimeState {
             if sub.target_kernel_id == home {
                 continue;
             }
+            // Rotate before any check, as the local router does, so rows whose
+            // source is gone can never starve live deliveries of this window.
+            let _ = self
+                .owned
+                .durable_state_store
+                .notify(NotificationOperation::Retry {
+                    subscription_id: sub.subscription_id.clone(),
+                    source_id: sub.source_id.clone(),
+                    occurrence_id: envelope.occurrence_id.clone(),
+                    accepted: false,
+                    at: now.saturating_add(5000),
+                });
             // Deletion/transfer do not rewrite pending delivery records. They expire.
             let valid = {
                 let sessions = self.owned.session_store.read();
@@ -418,16 +430,6 @@ impl KernelRuntimeState {
             if !valid {
                 continue;
             }
-            let _ = self
-                .owned
-                .durable_state_store
-                .notify(NotificationOperation::Retry {
-                    subscription_id: sub.subscription_id.clone(),
-                    source_id: sub.source_id.clone(),
-                    occurrence_id: envelope.occurrence_id.clone(),
-                    accepted: false,
-                    at: now.saturating_add(5000),
-                });
             let runtime = self.clone();
             deliveries.spawn(async move {
                 if let Ok(RelayPeerResponse::WorkflowNotificationAccepted { .. }) = runtime

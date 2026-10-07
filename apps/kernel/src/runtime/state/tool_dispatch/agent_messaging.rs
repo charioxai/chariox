@@ -18,6 +18,7 @@ impl KernelRuntimeState {
             payload: serde_json::json!({
                 "session_id": session.id(),
                 "focused_agent_id": session.focused_agent_id(),
+                "agent_tasks": self.owned.durable_state_store.agent_tasks(Some(session.id()),None).unwrap_or_default(),
                 "agents": agents
                     .iter()
                     .map(|agent| session_agent_description(session, requester, agent))
@@ -69,6 +70,9 @@ impl KernelRuntimeState {
             operation: "runtime_tool.send_agent_message",
             message: format!("invalid send-agent-message arguments: {error}"),
         })?;
+        if self.owned.config_projection.snapshot().room_agent_tools {
+            return self.send_durable_agent_message(session, sender, args).await;
+        }
         let message = args.message.trim();
         if message.is_empty() && args.attachments.is_empty() {
             return Ok(agent_message_failure(
@@ -396,7 +400,7 @@ impl KernelRuntimeState {
         Ok(result)
     }
 
-    fn prepare_local_active_agent_message_dispatch(
+    pub(in crate::runtime::state) fn prepare_local_active_agent_message_dispatch(
         &self,
         session_id: &str,
         prompt: &crate::session::PromptQueueItem,
@@ -474,7 +478,7 @@ impl KernelRuntimeState {
         }))
     }
 
-    fn ensure_agent_message_attachment(
+    pub(in crate::runtime::state) fn ensure_agent_message_attachment(
         &self,
         session_id: &str,
         sender: &crate::agent::AgentInstance,

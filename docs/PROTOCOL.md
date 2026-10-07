@@ -457,6 +457,61 @@ Ambiguous post-commit failures retain intent;
 PR1 does not add automatic replay, settlement, yield or recovery scheduling.
 Those lifecycle semantics belong to PR2.
 
+## 3.3.5 Durable Agent Tasks and Events (MP-08 / MP-09 / MP-10 / MP-11, A02)
+
+With `CHARIOX_ROOM_AGENT_TOOLS=1`, local protocol 452 projects independent
+`agent_tasks` in the shared session snapshot. The kernel owns their SQLite
+ledger, attributed inbox, obligations and exact provider acceptance receipts.
+Task prompt IDs stay stable through admission, queueing, promotion and replay;
+provider-native settlement must reconcile the same task. New user work cannot
+hide an older incomplete task. The shared TUI status prioritizes blocked tasks
+and shows wait reason/deadline and aggregate unresolved obligations. Web and
+native clients must consume the same projection; client integration is required
+before claiming visibility on those clients.
+
+Ordinary provider runs receive `chariox.events.subscribe`, `subscriptions`,
+`unsubscribe`, `inbox`, `ack`, `yield` and `blocked`. Each requires current
+`task_id` and `origin_prompt_id`; room/run/turn fences precede resource lookup
+or mutation. A valid yield names admitted completion registrations, covers all
+unresolved obligations and has a finite future deadline. Waiting commits only
+when the official provider turn settles. Source completion/loss and overdue
+waits wake the retained task; ACK and provider acceptance remain distinct.
+
+A final answer with unresolved obligations gets one persisted corrective turn,
+then blocks if still invalid. Unfinished work without a live wake source is
+corrected or shown as blocked, never silently left idle. The kernel sweeps every
+30 seconds. Three consecutive settled wake turns without real progress block
+further automatic wakes; the third turn may still handle progress. A handled
+result or verified public artifact resets the counter; repeated status, ACK,
+cursor or deadline changes do not. Fifteen minutes waiting without progress
+produces a notice. Unconfirmed provider delivery blocks within two minutes and
+requires reconciliation of the original receipt; uncertainty never permits
+blind replay. Damaged ledger/source rows are retained and quarantined.
+MP-08/MP-10/MP-11: each admitted delivery gets a full two-minute receipt
+window. Repeated refusals while idle have a separate bounded escalation clock;
+an active recipient turn clears that clock. Unsupported or refused steering
+stays queued through long turns and retries when the recipient becomes idle.
+Steer rejections do not start the idle-refusal clock; idle refusals start it at
+receipt time. A damaged refusal clock is retained and quarantines only its
+own delivery through the owner-action path; supervision of other Rooms continues.
+
+`chariox.send_agent_message` defaults to nonurgent and no reply. Nonurgent
+messages wait behind active work; idle/yielded receivers wake. Urgent messages
+use the existing exact-turn steer path, with rejected/unsupported steering
+retained for a later wake and uncertainty pinned. Explicitly stopped receivers
+keep pending items. `reply_requested=true` creates one correlated reply
+obligation; ordinary messages must not produce courtesy feedback loops.
+
+Blocked tasks create one kernel-owned **Agent needs your action** interaction,
+projected to every session client. In the TUI, open it with F8, Ctrl+G or
+`/approvals`, explicitly select Resume or Cancel, then confirm. Resume
+revalidates the blocked revision and retained receipts; progress or reconnect
+alone cannot resume. Cancellation retains obligations until actual owned
+resource settlement. Legacy `/agent task` commands still address Meta tasks;
+they are not selectors for regular `agent_tasks`. Process/timer watcher sources
+belong to PR3 and leased delivery reconciliation to PR10; unsupported leased
+paths fail visibly instead of fabricating acceptance.
+
 ## 3.4 Workflow Coordination Semantics
 
 Multi-agent workflow coordination is a daemon-owned structured protocol concern.
@@ -2258,7 +2313,7 @@ Workflow trigger and deployment direction:
   persisted bindings and publication `event-bindings` documents that still
   carry the removed fields are read with them ignored.
 - protocol 365: direct workflow event bindings are retired. Initially events reached
-  workflows only through Apps (protocol 437 adds private workflow sources): an App inbox route (protocol 358) receives the
+  workflows only through Apps (protocol 452 adds private workflow sources): an App inbox route (protocol 358) receives the
   generator's events, and an App automation sends the App's outgoing event to
   an `event_based` publication. `CreateWorkflowEventBinding`,
   `ListWorkflowEventBindings`, `SetWorkflowEventBindingStatus`,
@@ -3194,7 +3249,7 @@ Protocol 416 adds `AppRequestFailed {code: "receipt_expired"}` for an
   rather than redispatch an expired identity after rollback; their App control
   requests report storage unavailable until a supporting kernel is restored.
 
-### Workflow completion notifications — local 437 / relay peer 82 (MP-08 / MP-10 / MP-11)
+### Workflow completion notifications — local 452 / relay peer 82 (MP-08 / MP-10 / MP-11)
 
 Private same-user workflows are a second notification source kind beside Apps.
 The kernel emits successful final output or failure bare status once per run, with
@@ -3280,3 +3335,37 @@ for host isolation, lifecycle and migration. No relay-peer shape changes.
 Room membership grants Computer control by default. The owner can revoke a specific agent's Computer control through the existing Access command (`revoke_grants`) and restore it with `grant_room_computer`. Since local 461, `grant_room_computer` requires `agent_id`: an explicit `agent_id: null` restores every owned agent after `revoke_grants` with `agent_id: null`, and an omitted `agent_id` is rejected; the TUI exposes this as `/access grant all` and prints a visible notice for both bulk revoke and bulk restore. Older kernels reject the null shape, so clients gate only the bulk restore on 461. Drill: `node apps/cli/scripts/live-room-computer-access-drill.mjs --evidence <dir>` (real kernel and TUI, dev-stub agents). Membership and Browser access remain intact. The kernel checks the restriction at input admission, queued dispatch and active cancellation; workers retain the existing authenticated Room peer binding. Access snapshots project each owned agent's Room Computer permission. Room permission changes advance the existing owner Access cursor; the kernel captures permissions and cursor together so delayed projections cannot restore stale access.
 
 Slice Computer accessibility uses the existing controller and native AT-SPI backend through bounded `chariox.slice_accessibility` snapshots and `chariox.slice_target_action` actions. Handles belong to an observer and tree revision; stale or foreign handles fail closed. The controller joins the desktop session's private D-Bus address, scopes visible processes to the desktop user, applies the current observation policy and routes target actions through the normal Room Action ledger and cancellation path. The relay remains encrypted transport only.
+
+### MP-08 / MP-09 / MP-10 / MP-11 — transitional durable agent lifecycle (A02)
+
+Local daemon protocol **452** adds `RuntimeSession.agent_tasks`; relay82 is inherited
+from #885. The transitional `CHARIOX_ROOM_AGENT_TOOLS=1` surface publishes
+`chariox.events.subscribe/subscriptions/inbox/ack/yield/blocked`. Tools require the
+current task and prompt IDs; hidden turn context supplies both. Independent
+user prompts retain separate task records. Work can be working, waiting on
+admitted named sources with a future deadline, blocked on an explicit owner
+action, done, or owner-cancelled. Cancellation is never successful completion.
+
+Obligation/registration, wait intent, event admission and delivery intent commit
+through the shared SQLite writer. Native provider settlement commits the wait;
+a result racing it remains in the inbox. Done requires public output and no
+unresolved obligation. One persisted correction is permitted; another invalid
+end blocks on one kernel-owned interaction. Provider failures also block.
+The kernel sweeps every30 seconds; three consecutive wakes without handling a
+real result block;15 minutes without progress notifies attached/reconnecting
+clients; uncertain submission escalates after2 minutes without replay.
+
+`send_agent_message` adds `urgent=false` and `reply_requested=false`. Default
+messages wait behind busy turns in the event inbox. Urgent delivery targets the
+exact running turn and rechecks after acquiring its provider lane. Rejected or
+unsupported steering defers to a later wake; uncertain attempts remain pinned
+and preserve recipient FIFO. Explicitly stopped receivers retain pending items.
+Structured delivery is accepted only by the existing exact finished-submit
+receipt; enqueue and inbox ACK never substitute for provider acceptance.
+Reply opt-in registers one correlated result obligation; ordinary messages
+request no courtesy response. Legacy PR1 dispatch intents migrate idempotently
+as blocked obligations requiring exact reconciliation, without guessing success.
+
+PR10 must supply leased event execution and receipt parity before those cells
+are accepted. PR3 supplies process/timer watcher sources. These dependencies
+and the real-provider/hosted validation matrix remain acceptance gates.

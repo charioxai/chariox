@@ -121,7 +121,7 @@ fn agent_substitute_shape_is_per_turn_only() {
 #[test]
 fn room_creator_lineage_protocol_450_snapshot() {
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 450);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 452);
     let mut agent = crate::agent::AgentInstance::new(
         "child",
         "ref",
