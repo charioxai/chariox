@@ -70,7 +70,11 @@ impl KernelRuntimeState {
         caller: &crate::runtime::command::KernelCommand,
         command: KernelComputerCommand,
     ) -> Result<serde_json::Value, DaemonError> {
-        if !cfg!(target_os = "linux") {
+        // macOS M1: the owner-configured helper seat; disabled by default.
+        if !cfg!(target_os = "linux")
+            && !(cfg!(target_os = "macos")
+                && std::env::var_os("CHARIOX_MACOS_COMPUTER_HELPER").is_some())
+        {
             return Err(host_error(
                 "MP-08: owned Computer desktop currently requires Linux".into(),
             ));
