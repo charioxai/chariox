@@ -22,7 +22,9 @@ assert.ok(Number.isInteger(interruptRaceRounds) && interruptRaceRounds >= 0 && i
 const noisyInterruptRounds = Number(args['noisy-interrupt-rounds'] ?? 0)
 assert.ok(Number.isInteger(noisyInterruptRounds) && noisyInterruptRounds >= 0 && noisyInterruptRounds <= 60)
 const reconnectRounds = new Set((args["reconnect-rounds"] ?? "").split(",").filter(Boolean).map(Number))
-const tracingInterrupts = interruptRaceRounds > 0 || noisyInterruptRounds > 0
+const busyRefusalRounds = Number(args['busy-refusal-rounds'] ?? 0)
+assert.ok(Number.isSafeInteger(busyRefusalRounds)&&busyRefusalRounds>=0&&busyRefusalRounds<=3)
+const tracingInterrupts = interruptRaceRounds > 0 || noisyInterruptRounds > 0 || busyRefusalRounds > 0
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const unwrap = (response, key) => { if (response.Error) throw new Error(response.Error.message); assert.ok(response[key], `MP-08 missing ${key}`); return response[key] }
 await mkdir(args.output, { recursive: true, mode: 0o700 })
@@ -179,9 +181,31 @@ try {
   }
   startTerminal()
   await capture('01-room-inventory',text=>text.includes(heading))
+  if (busyRefusalRounds) {
+    noiseRoot=await mkdtemp('/tmp/wfpause-busy-');receipt.ownedNoiseRoot=noiseRoot
+    for(let round=0;round<busyRefusalRounds;round++) {
+      const label=`busy-${String(round+1).padStart(2,'0')}`
+      const marker=path.join(noiseRoot,label+'-running')
+      await key('\x17')
+      await key(`Use exec_command to run printf ready > '${marker}'; sleep 120. Wait for the command before returning the workflow envelope.`)
+      await key('\r')
+      const deadline=Date.now()+60000
+      while(!(await readFile(marker,'utf8').catch(()=>''))) {assert.ok(Date.now()<deadline,'MP-08 busy guard needs a real running provider command');await sleep(100)}
+      await capture(label+'-running',text=>text.includes('1 running')&&text.includes('[Start · Enter]'))
+      await raceKey('\x10\x13')
+      await capture(label+'-refused',text=>text.includes('refused')&&text.includes('busy'))
+      await stateUntil(s=>s.room_workflows.workflows[0].paused_count===1)
+      await capture(label+'-refusal-retained',text=>text.includes('refused')&&text.includes('busy')&&text.includes('[Start · Enter]'))
+      await key('\x13')
+      await stateUntil(s=>s.room_workflows.workflows[0].paused_count===0&&s.room_workflows.workflows[0].running_count===0)
+      await capture(label+'-retry-stopped',text=>text.includes('0 running')&&text.includes('[Start · Enter]'))
+      await key('\t')
+    }
+  }
   const queuedFollowupRounds=Number(args['queued-followup-rounds']??0)
   assert.ok(Number.isSafeInteger(queuedFollowupRounds)&&queuedFollowupRounds>=0&&queuedFollowupRounds<=20)
   if (queuedFollowupRounds) {
+    if(noiseRoot)await rm(noiseRoot,{recursive:true,force:true})
     noiseRoot=await mkdtemp('/tmp/wfpause-queue-');receipt.ownedNoiseRoot=noiseRoot
     for(let round=0;round<queuedFollowupRounds;round++) {
       const label=`queue-${String(round+1).padStart(2,'0')}`
