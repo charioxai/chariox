@@ -314,6 +314,7 @@ impl BrowserControllerProcessStdioBackend {
                 "CHARIOX_BROWSER_DISPLAY_TIMING",
                 "CHARIOX_BROWSER_DISPLAY_GEOMETRY",
                 "CHARIOX_BROWSER_DISPLAY_SOFTWARE",
+                "LIBVA_DRIVER_NAME",
                 "CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER",
                 "CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER",
                 "CHARIOX_BROWSER_DISPLAY_LIBYUV",
@@ -322,6 +323,17 @@ impl BrowserControllerProcessStdioBackend {
                 if let Some(value) = std::env::var_os(key) {
                     command.env(key, value);
                 }
+            }
+        }
+        #[cfg(all(feature = "native-display", target_os = "linux"))]
+        if self.host {
+            // Production uses this exact kernel ELF. Test harnesses provide the
+            // separately built production ELF because libtest owns their entry.
+            let executable = if cfg!(test) {
+                std::env::var_os("CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER").map(PathBuf::from)
+            } else { std::env::current_exe().ok() };
+            if let Some(executable) = executable {
+                command.env("CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER", executable);
             }
         }
         // MP-08/MP-10/MP-11: a kernel-created descriptor root, never an ambient path.
@@ -392,6 +404,7 @@ impl BrowserControllerProcessStdioBackend {
             stdin: Arc::new(Mutex::new(stdin)),
             responses,
             pending_responses,
+            host_policy: None,
         });
         Ok(())
     }
@@ -463,6 +476,25 @@ impl BrowserControllerProcessStdioBackend {
         response
             .into_result(method)
             .map_err(crate::error::HostFailure::Other)
+    }
+
+    // MP-08/MP-10/MP-11: per-credit liveness never joins the controller's
+    // barrier lane. Startup still validates health; requests validate replies.
+    pub(crate) fn host_is_live(&mut self) -> Result<bool, String> {
+        self.take_exited_process()?;
+        Ok(self.process.is_some())
+    }
+
+    // Cache only successfully applied policy on this exact supervised child.
+    // A changed policy remains an RPC barrier; respawn cannot inherit the cache.
+    pub(crate) fn protect_host(&mut self, policy: serde_json::Value) -> Result<(), crate::error::HostFailure> {
+        self.take_exited_process().map_err(crate::error::HostFailure::Other)?;
+        if self.process.as_ref().is_some_and(|p|p.host_policy.as_ref()==Some(&policy)) {
+            return Ok(());
+        }
+        self.host_request_classified("host.protect",policy.clone())?;
+        if let Some(process)=self.process.as_mut() {process.host_policy=Some(policy);}
+        Ok(())
     }
 
     // MD-DISPLAY-04: host RPCs validate their own outcome. The host health RPC
@@ -1160,6 +1192,7 @@ struct BrowserControllerChild {
     stdin: Arc<Mutex<ChildStdin>>,
     responses: mpsc::Receiver<Result<BrowserControllerRpcResponse, String>>,
     pending_responses: pending_responses::PendingResponses<BrowserControllerRpcResponse>,
+    host_policy: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]

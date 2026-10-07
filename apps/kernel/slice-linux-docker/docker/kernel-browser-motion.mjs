@@ -4,11 +4,19 @@ import {displayMaskRegions,encodePng} from './kernel-browser-pixels.mjs';
 const frameBytes=frame=>JSON.stringify(frame.encoded??{}).length+(frame.encoded?.packet?.length??0)+(frame.force_lossless?frame.data_base64.length:0);
 export class MotionEncoder {
  constructor(source,encoder,{bitrate,codec,independent=false,stripes=false,valid=()=>true,shouldEncode=()=>true,timing=()=>{},now=()=>performance.now()}={}){
-  Object.assign(this,{source,encoder,bitrate,codec,independent,stripes,valid,shouldEncode,timing,now});this.frames=[];this.pending=null;this.active=null;this.key=true;this.resetRows=new Set();this.rate=new CreditBudget(bitrate,now);this.revision=0;this.lastSerial=-1;this.closed=false;
+  Object.assign(this,{source,encoder,bitrate,codec,independent,stripes,valid,shouldEncode,timing,now});this.frames=[];this.pending=null;this.active=null;this.key=true;this.resetRows=new Set();this.rate=new CreditBudget(bitrate,now);this.revision=0;this.lastSerial=-1;this.closed=false;this.readyWaiters=new Set();
   this.off=source.subscribe(sample=>this.offer(sample));this.offer(source.sample());
  }
- offer(sample){if(!sample||this.closed||!this.valid()||sample.serial<=this.lastSerial)return;this.lastSerial=sample.serial;if(!this.shouldEncode(sample))return;this.pending?.raw?.release?.();sample.raw?.retain?.();this.pending={...sample,offeredAt:this.now()};this.pump();}
- pump(){if(this.active||!this.pending||this.closed||this.frames.length>=2)return;this.active=this.run().catch(()=>{if(!this.closed)this.failure=Error('MD-DISPLAY: motion encoder failed')}).finally(()=>{this.active=null;if(this.pending&&!this.closed&&!this.failure)this.pump()});}
+ wakeReady(){for(const wake of [...this.readyWaiters])wake();}
+ waitReady(ms=20,signal){
+  if(this.frames.length||this.failure||this.closed||signal?.aborted)return Promise.resolve();
+  return new Promise(resolve=>{
+   const wake=()=>{clearTimeout(timer);signal?.removeEventListener('abort',wake);this.readyWaiters.delete(wake);resolve();};
+   const timer=setTimeout(wake,ms);this.readyWaiters.add(wake);signal?.addEventListener('abort',wake,{once:true});
+  });
+ }
+ offer(sample){if(!sample||this.closed||!this.valid()||sample.serial<=this.lastSerial)return;this.lastSerial=sample.serial;if(!this.shouldEncode(sample)){this.wakeReady();return;}this.pending?.raw?.release?.();sample.raw?.retain?.();this.pending={...sample,offeredAt:this.now()};this.pump();}
+ pump(){if(this.active||!this.pending||this.closed||this.frames.length>=2)return;this.active=this.run().catch(()=>{if(!this.closed)this.failure=Error('MD-DISPLAY: motion encoder failed')}).finally(()=>{this.active=null;if(this.failure)this.wakeReady();if(this.pending&&!this.closed&&!this.failure)this.pump()});}
  async run(){
   while(this.pending&&!this.closed&&!this.failure&&this.frames.length<2){
    const sample=this.pending;this.pending=null;const rowMode=Boolean(this.stripes&&sample.raw);if(this.rowMode!==rowMode)this.key=true;this.rowMode=rowMode;const revision=this.revision,key=this.independent||this.key;this.key=false;const reset=key?true:[...this.resetRows];this.resetRows.clear();const at=performance.timeOrigin+this.now();
@@ -20,7 +28,10 @@ export class MotionEncoder {
     this.key=true;
     if(this.closed||!this.valid()||revision!==this.revision)continue;
     let png=sample.data_base64;
-    if(sample.raw){
+    if(sample.raw?.nativeExact){
+     const raw=sample.raw,exact=await raw.nativeExact({encoder:this.encoder.nativeSession,regions:raw[displayMaskRegions]??[],limit:192000,patch:false});
+     png=exact.data_base64;
+    }else if(sample.raw){
      const raw=sample.raw,pixels=Buffer.from(raw.pixels);
      for(let i=0;i<pixels.length;i+=4){const blue=pixels[i];pixels[i]=pixels[i+2];pixels[i+2]=blue;pixels[i+3]=255;}
      png=encodePng(raw.width,raw.height,pixels);
@@ -28,9 +39,10 @@ export class MotionEncoder {
     this.timing('protected_codec_drop',performance.timeOrigin+this.now());
     const {raw,...protectedSample}=sample;
     if(png.length+this.frames.reduce((n,f)=>n+frameBytes(f),0)>1024*1024){this.invalidate(false);throw Error('MP-11: protected fallback exceeds bounded queue');}
-    this.frames.push({...protectedSample,data_base64:png,motion:false,force_lossless:true});
+    this.frames.push({...protectedSample,data_base64:png,motion:false,force_lossless:true});this.wakeReady();
     continue;
    }
+   if(this.encoder.hardwareFallback)this.timing('motion_hardware_fallback',performance.timeOrigin+this.now());
    if(['vaapi','x264','openh264','vp8','vp9','webcodecs'].includes(this.encoder.backend))this.timing('motion_backend_'+this.encoder.backend,performance.timeOrigin+this.now());
    if([1,2,4].includes(this.encoder.workers))this.timing('motion_workers_'+this.encoder.workers,performance.timeOrigin+this.now());
    if(encoded.packet)this.timing('motion_packet_native',performance.timeOrigin+this.now());
@@ -39,7 +51,7 @@ export class MotionEncoder {
    if(encoded.stripes?.length===0)continue;
    if(revision!==this.revision){this.encoder.discard?.(encoded);if(encoded.stripes&&!this.key)for(const row of encoded.stripes)this.resetRows.add(row.row);else this.key=true;continue;}
    if(this.frames.length>=2||this.frames.reduce((n,f)=>n+frameBytes(f),(JSON.stringify(encoded).length+(encoded.packet?.length??0)))>1024*1024){this.encoder.discard?.(encoded);this.invalidate();continue;}
-   this.frames.push({...sample,encoded});
+   this.frames.push({...sample,encoded});this.wakeReady();
    }finally{sample.raw?.release?.()}
   }
  }
@@ -62,7 +74,7 @@ export class MotionEncoder {
  retireUnsent(){if(this.frames.length||this.active||this.pending)this.invalidateRows(false)}
  invalidateRows(reoffer=true){if(!this.rowMode||this.frames.some(frame=>!frame.encoded?.stripes))return this.invalidate(reoffer);for(const frame of this.frames)for(const row of frame.encoded.stripes)this.resetRows.add(row.row);this.revision++;for(const frame of this.frames)this.encoder.discard?.(frame.encoded);this.frames=[];this.pending?.raw?.release?.();this.pending=null;if(reoffer){this.lastSerial=-1;if(!this.closed)this.offer(this.source.sample())}else this.lastSerial=Math.max(this.lastSerial,this.source.sample()?.serial??-1);}
  invalidate(reoffer=true){this.revision++;this.key=true;for(const frame of this.frames)this.encoder.discard?.(frame.encoded);this.frames=[];this.pending?.raw?.release?.();this.pending=null;if(reoffer){this.lastSerial=-1;if(!this.closed)this.offer(this.source.sample())}else this.lastSerial=Math.max(this.lastSerial,this.source.sample()?.serial??-1);}
- async close(){if(this.closed)return;this.closed=true;this.off?.();this.invalidate();await this.active;}
+ async close(){if(this.closed)return;this.closed=true;this.wakeReady();this.off?.();this.invalidate();await this.active;}
 }
 
 // MD-DISPLAY-02/04: credit pressure, not a bandwidth estimator. Never exceed

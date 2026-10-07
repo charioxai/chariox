@@ -26,6 +26,7 @@ pub(crate) struct KernelBrowserHost {
 struct HostState {
     browsers: BTreeMap<String, Arc<Mutex<BrowserControllerProcessStdioBackend>>>,
     stopped: bool,
+    mutation_lanes: BTreeMap<String, Arc<Mutex<()>>>,
     display_gates: BTreeMap<String, Arc<super::kernel_browser_display_gate::DisplayGate>>,
     #[cfg(test)]
     after_controller_check: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -324,6 +325,17 @@ impl KernelBrowserHost {
             return Err("MD-3: browser admission belongs to another user".into());
         }
         self.check_admission(admission)?;
+        // MP-08/MP-10/MP-11: mutations keep their existing serial admission,
+        // but never hold the shared controller lock during input/CDP waits.
+        // Takeover/cancellation use the actor model and remain independent.
+        let mutation = method == "host.secret" || (method == "host.browser"
+            && matches!(params["op"].as_str(),Some("open"|"close"|"navigate"|"input"|"stop")));
+        let mutation_lane = if mutation {
+            Some(self.inner.lock().map_err(|_|"MD-2: browser host lock poisoned")?
+                .mutation_lanes.entry(user.into()).or_default().clone())
+        } else {None};
+        let _mutation_guard = mutation_lane.as_ref().map(|lane|lane.lock())
+            .transpose().map_err(|_|"MD-3: browser mutation lane poisoned")?;
         let browser = self.backend(user)?;
         let mut backend = browser
             .lock()
@@ -358,11 +370,11 @@ impl KernelBrowserHost {
             return Ok(serde_json::json!({ "state": "stopped", "tabs": [] }));
         }
         if params["_host_generation"].is_u64() {
-            if !matches!(backend.health(), Ok(health) if health.state == BrowserControllerProcessState::Ready)
+            if !backend.host_is_live().map_err(crate::error::HostFailure::Other)?
             {
                 return Err("MD-APP: App host is no longer live".into());
             }
-        } else if !matches!(backend.health(), Ok(health) if health.state == BrowserControllerProcessState::Ready)
+        } else if !backend.host_is_live().map_err(crate::error::HostFailure::Other)?
         {
             // MP-11: state/observation reads cannot start or recover a
             // controller. Startup is explicit and uses the same grant for
@@ -408,7 +420,7 @@ impl KernelBrowserHost {
                 .into();
         }
         self.check_admission(admission)?;
-        backend.host_request_classified("host.protect", policy)?;
+        backend.protect_host(policy)?;
         self.check_admission(admission)?;
         let model = self.actor_model(user)?;
         if method == "host.browser"
@@ -481,7 +493,7 @@ impl KernelBrowserHost {
         let request_params = params.clone();
         let display = method == "host.browser" && params["op"] == "screenshot"
             && params["display_subscription_id"].is_string();
-        let mut result = if display {
+        let mut result = if display || (method == "host.browser" && params["op"] == "input") {
             let signal = cancellation.clone().unwrap_or_else(|| Arc::new(BrowserCancellation::default()));
             let pending = backend.begin_cancellable_mutation(method, &params, &signal)?;
             drop(backend);

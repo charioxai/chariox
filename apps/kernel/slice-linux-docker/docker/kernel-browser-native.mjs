@@ -12,6 +12,8 @@ import {ownsDisplay} from './kernel-browser-owned-display.mjs';
 import {decodePng,maskNativeRaster} from './kernel-browser-pixels.mjs';
 import {NativeRegionProtection,regionProtectionChanged} from './kernel-browser-region-protection.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
+import {NativeWorkerControl} from './kernel-browser-native-worker.mjs';
+import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {safeChildPid} from './kernel-browser-display.mjs';
 export async function selectNativeCapture({platform=process.platform,display,create}){
  if(platform!=='linux'||!ownsDisplay(display))return null;
@@ -53,20 +55,31 @@ export class LinuxCapture {
    await this.screenshot();
    this.regions=new NativeRegionProtection(this.connection,this.sessionId);await this.regions.refresh();
    this.poolRoot=await mkdtemp(path.join(this.display.root,'raster-'));
-   this.phase='readback';const child=spawn(process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',['-u',fileURLToPath(new URL('./kernel-browser-xshm.py',import.meta.url))],{env:{...process.env,...this.display.environment},stdio:['pipe','pipe','pipe']});this.child=child;
+   this.phase='readback';const executable=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER;
+   const child=spawn(executable||process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',executable?['--display-native-worker']:['-u',fileURLToPath(new URL('./kernel-browser-xshm.py',import.meta.url))],{env:{...process.env,...this.display.environment},stdio:['pipe','pipe','pipe']});this.child=child;if(executable)this.nativeWorker=new NativeWorkerControl(child,this.timing);
    const fail=()=>this.fence();child.on('error',fail);child.on('exit',fail);child.stdin.on('error',fail);
    child.stderr.on('data',b=>{if(/^MD-DISPLAY: native stage [a-z_]+\n$/.test(b.toString()))this.helperStage=b.toString().trim().split(' ').at(-1)});
    const raster=new NativeRaster();
    const pool=new SharedRasterPool(this.poolRoot,(slot,serial)=>{if(!child.stdin.destroyed)child.stdin.write(JSON.stringify({release:slot,serial})+'\n')});
    const pipe=new NativePipe(header=>{
+    if(header.reply!==undefined){this.nativeWorker?.validate(header);if(!this.nativeWorker)throw Error('MP-11: unexpected native reply');return;}
     if(header.width!==geometry.width*this.scale||header.height!==geometry.height*this.scale||!Number.isSafeInteger(header.serial)||header.serial<1||!Number.isFinite(header.captured_ms)||!Number.isFinite(header.capture_ms)||!/^[a-f0-9]{16}$/.test(header.signature))throw Error('raw geometry');
    },(header,pixels)=>{
+    if(header.reply!==undefined){this.nativeWorker.receive(header,pixels);return;}
     const received=performance.timeOrigin+performance.now();
+    if(Array.isArray(header.native_cpu)&&header.native_cpu.length===3)for(const [index,stage] of ['native_cpu_xshm_fence_read','native_cpu_damage_compare','native_cpu_capture_copy'].entries()){const cpu=header.native_cpu[index];if(Number.isFinite(cpu)&&cpu>=0)this.timing(stage,header.captured_ms,header.captured_ms+cpu);}
+    if(Number.isFinite(header.native_read_ms))this.timing('native_capture_compare_copy',header.captured_ms,header.native_read_ms);
     for(const [name,start,end] of [['input_wake_to_capture',header.input_wake_ms,header.captured_ms],['native_damage_coalesce',header.damage_ready_ms,header.captured_ms],['native_window_fence',header.captured_ms,header.get_image_ms],['native_xshm_get_image',header.get_image_ms,header.image_ready_ms],['native_readback_copy',header.image_ready_ms,header.readback_ms],['native_readback',header.captured_ms,header.readback_ms],['native_fingerprint',header.readback_ms,header.fingerprint_ms],['native_damage_scan',header.fingerprint_ms,header.damage_ms]]){
      if(Number.isFinite(start)&&Number.isFinite(end)&&end>=start)this.timing(name,start,end);
     }
     if(Number.isFinite(header.damage_ms))this.timing('native_pipe',header.damage_ms,received);
     const at=performance.timeOrigin+performance.now(),raw=header.slot==null?raster.apply(header,pixels):pool.apply(header);this.timing('native_raster_copy',at);
+    if(this.nativeWorker){
+     raw.nativeEncode=values=>this.nativeWorker.request('encode',{...values,serial:raw.serial});
+     raw.nativeExact=values=>this.nativeWorker.request('exact',{...values,serial:raw.serial});
+     raw.nativeDelivered=(encoder,revision)=>this.nativeWorker.delivered(encoder,revision);
+     raw.nativeCommit=encoder=>this.nativeWorker.commit(encoder,raw.serial);
+    }
     if(this.valid()){raw.format='bgr0';this.pending?.release?.();this.pending=raw;void this.publish()}else raw.release?.()
    });
    child.stdout.on('data',b=>{try{pipe.push(b)}catch{this.fence()}});
@@ -130,7 +143,7 @@ export class LinuxCapture {
  pause(){} resume(){} // CDP exact reads do not mutate the native display.
  async close(){this.fence();return this.closing}
  async cleanup(){
-  this.off?.();const child=this.child;this.child=null;
+  this.off?.();this.nativeWorker?.close();const child=this.child;this.child=null;
   if(!child||child.pid===undefined)return;safeChildPid(child);child.stdin.end();
   for(let n=0;n<50&&child.exitCode===null&&child.signalCode===null;n++)await delay(20);
   if(child.exitCode===null&&child.signalCode===null){child.kill('SIGTERM');for(let n=0;n<50&&child.exitCode===null&&child.signalCode===null;n++)await delay(20)}

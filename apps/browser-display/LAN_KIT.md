@@ -56,11 +56,13 @@ sudo env MD_GEOMETRY=1920x1080 MD_CODEC=avc1.420033 MD_SOFTWARE=0 \
 
 `/dev/dri` and advertised FFmpeg encoders establish capability only. Successful
 `motion_backend_vaapi` traces establish actual use; unavailable hardware falls
-back to software and must be reported as such. On this builder there is no GPU.
+back to software and must be reported as such. This builder has a virtio render device whose VAAPI initialization fails; no Intel GPU success is claimed. Native-feature kernels use the same masked capture/codec path for VAAPI and software. A requested hardware run without successful VAAPI packets prints HARDWARE REQUEST FAILED and records hardware_fallback=true.
 
 `MD_CHROME=/absolute/browser` selects Chromium. Builder runs set
-`MD_MEMORY_FLOOR_GIB=12`; the laptop default is 2 GiB, disk floor 10 GiB. The old
+`MD_MEMORY_FLOOR_GIB=12`; the laptop default reserves 15% of RAM (between 0.5 and 2 GiB), with a 10 GiB disk reserve. Explicit builder limits remain authoritative. These are drill reserves, not product runtime requirements. The old
 DPR2 geometry remains available with `MD_GEOMETRY=1280x800`.
+
+MP-11: kits bundle xxhash as an explicit dlopen dependency and prove capture/stripe imports in a chroot using only bundled libraries before creating the manifest. Native kits also bundle the worker ELF and invoke it with the bundled loader.
 
 Results and evidence are under the invoking user's
 `~/.chariox/dev/display-lan-<run>/`. The launcher removes only its own disposable

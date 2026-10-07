@@ -31,6 +31,8 @@ for name in sorted(set(files)):
   built=subprocess.check_output(['git','show',build_source+':'+name],cwd=checkout)
   if built!=(checkout/name).read_bytes():raise SystemExit('MP-08/MP-10: kernel asset differs from exact build source '+name)
  copy(checkout/name,kit/name)
+native_worker=os.environ.get('MD_NATIVE_WORKER')
+if native_worker:copy(Path(native_worker),kit/'runtime/native-worker')
 copy(binary,kit/'runtime/kernel-tests');subprocess.run(['strip','--strip-debug',str(kit/'runtime/kernel-tests')],check=True)
 node=install_node(os.environ['MD_NODE_ARCHIVE'],kit/'runtime/node');copy(Path(sys.executable).resolve(),kit/'runtime/python/bin/python3')
 stdlib=Path(sysconfig.get_path('stdlib'));copy(stdlib,kit/'runtime/python/lib'/stdlib.name)
@@ -40,18 +42,21 @@ for name in ['av','av.libs']:copy(pytools/name,kit/'pytools'/name)
 # Ubuntu's older glibc. Invoke that loader explicitly, never export LD_* globally.
 libs=kit/'runtime/lib';libs.mkdir()
 roots=[kit/'runtime/node',kit/'runtime/kernel-tests',kit/'runtime/python/bin/python3']+list((kit/'runtime/python').rglob('*.so'))+list((kit/'pytools').rglob('*.so'))
-roots += [Path('/usr/lib/x86_64-linux-gnu')/n for n in ['libX11.so.6','libXext.so.6','libXdamage.so.1','libXcomposite.so.1']]
+if native_worker:roots.append(kit/'runtime/native-worker')
+roots += [Path('/usr/lib/x86_64-linux-gnu')/n for n in ['libX11.so.6','libXext.so.6','libXdamage.so.1','libXcomposite.so.1','libxxhash.so.0']]
 for root in roots:
  text=subprocess.run(['ldd',str(root)],capture_output=True,text=True,check=False).stdout
  for name in re.findall(r'(?:=>\s+|^\s*)(/[^\s]+)',text,re.M):
   p=Path(name)
   if p.exists() and not (libs/p.name).exists():copy(p.resolve(),libs/p.name)
-# Include the dlopened X libs themselves as well as their ldd dependencies.
-for root in roots[-4:]:copy(root.resolve(),libs/root.name)
+# MP-11: Python dlopens xxhash as well as the X libraries; ldd cannot
+# discover those imports. Bundle each root and its resolved dependencies.
+for root in roots[-5:]:copy(root.resolve(),libs/root.name)
+subprocess.run([sys.executable,str(checkout/'apps/browser-display/check-lan-kit.py'),str(kit)],check=True)
 loader=libs/'ld-linux-x86-64.so.2'
 if not loader.exists():raise SystemExit('MD-DISPLAY: loader missing')
 wrappers=kit/'runtime/bin';wrappers.mkdir()
-for name,program in [('node','node'),('python3','python/bin/python3')]:
+for name,program in [('node','node'),('python3','python/bin/python3')]+([('native-worker','native-worker')] if native_worker else []):
  extra='export PYTHONHOME="$base/python"\n' if name=='python3' else ''
  wrapper=f'#!/bin/sh\nset -eu\nbase=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)\n{extra}exec "$base/lib/ld-linux-x86-64.so.2" --library-path "$base/lib" "$base/{program}" "$@"\n'
  (wrappers/name).write_text(wrapper);(wrappers/name).chmod(0o755)

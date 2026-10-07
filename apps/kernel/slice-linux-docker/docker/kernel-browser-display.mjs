@@ -1,4 +1,5 @@
 // MD-DISPLAY-02/04: flag-gated codec/repair policy over the protected host seam.
+import {randomUUID} from 'node:crypto';
 import { spawn } from 'node:child_process';
 import {unlinkSync,mkdtempSync,openSync,writeSync,ftruncateSync,closeSync,rmdirSync} from 'node:fs';
 import path from 'node:path';
@@ -16,11 +17,28 @@ export function safeChildPid(child) {
   return child.pid;
 }
 export class PortableEncoder {
-  constructor() { this.child = null; this.pending = null; this.failure = null; this.packets=new Set(); }
+  constructor() { this.child = null; this.pending = null; this.failure = null; this.packets=new Set();this.nativeSession=randomUUID(); }
   async encode(png, bitrate, reset = false, codec = 'vp09.00.10.08', regions = []) {
+    if(png?.nativeEncode&&codec==='avc1.420033')return this.nativeEncode(png,bitrate,reset,false);
     return typeof png==='object' ? this.exchange({raw:png,bitrate,reset,codec}) : this.exchange({png,bitrate,reset,codec,protected_regions:regions});
   }
-  async encodeStripes(raw,bitrate,reset=false,codec='avc1.420033'){return this.exchange({raw,bitrate,reset,codec,operation:'stripes'})}
+  async encodeStripes(raw,bitrate,reset=false,codec='avc1.420033'){
+    if(raw.nativeEncode&&codec==='avc1.420033')return this.nativeEncode(raw,bitrate,reset,true);
+    return this.exchange({raw,bitrate,reset,codec,operation:'stripes'});
+  }
+    async nativeEncode(raw,bitrate,reset,stripes){
+      const reply=await raw.nativeEncode({encoder:this.nativeSession,bitrate,reset,...(!stripes?{stripes:false}:{}),regions:raw[displayMaskRegions]??[]});
+      if(!['native-x264','native-vaapi'].includes(reply.backend)||!Array.isArray(reply.stripes)&&reply.dropped!==true)throw Error('MP-11: native codec reply');
+      this.backend=reply.backend==='native-vaapi'?'vaapi':'x264';this.hardwareFallback=reply.hardware_fallback===true;this.converter='libyuv';this.workers=1;
+      if(reply.dropped)return {dropped:true};
+      if(reply.stripes.length>8||reply.stripes.some(r=>Object.hasOwn(r,'data_base64')))throw Error('MP-11: native row headers');
+      if(reply.packet){
+        if(!process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT||!/^[a-f0-9]{32}\.json$/.test(reply.packet.name)||!Number.isSafeInteger(reply.packet.length)||reply.packet.length<1||reply.packet.length>1024*1024)throw Error('MP-11: native packet bounds');
+        this.packets.add(reply.packet.name);
+      }else if(reply.stripes.length)throw Error('MP-11: native packet missing');
+      if(!stripes&&reply.stripes.length){if(reply.stripes.length!==1||reply.stripes[0].row!==0||reply.stripes[0].y!==0||reply.stripes[0].height!==raw.height||reply.whole!==true)throw Error('MP-11: native whole frame');this.nativeRevision=reply.revision;return {key:reply.stripes[0].key,packet:reply.packet,native_revision:reply.revision,native_deliver:raw.nativeDelivered};}
+      this.nativeRevision=reply.revision;return {stripes:reply.stripes,native_revision:reply.revision,native_deliver:raw.nativeDelivered,...(reply.packet?{packet:reply.packet}:{})};
+    }
   async hash(png) { return this.exchange({png,operation:'fingerprint'}); }
   async exchange(request) {
     if(request.raw)request={...request,protected_regions:request.raw[displayMaskRegions]??[]};
@@ -107,7 +125,7 @@ export class PortableEncoder {
     const name=encoded?.packet?.name;
     if(name&&this.packets.delete(name))try{unlinkSync(path.join(process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT,name))}catch(error){if(error.code!=='ENOENT')throw error}
   }
-  handedOff(encoded){if(encoded?.packet)this.packets.delete(encoded.packet.name)}
+  handedOff(encoded){if(encoded?.packet)this.packets.delete(encoded.packet.name);if(Number.isSafeInteger(encoded?.native_revision)){encoded.native_deliver?.(this.nativeSession,encoded.native_revision);this.nativeDeliveredRevision=encoded.native_revision;}}
   async close() {
     try{await this.closeChild()}finally{
       if(this.raster){const {fd,file,directory}=this.raster;this.raster=null;closeSync(fd);unlinkSync(file);rmdirSync(directory);}
@@ -142,7 +160,7 @@ export function losslessRegion(frame,x,y,width,height) {
   return {x,y,width,height,data_base64:encodePng(width,height,pixels)};
 }
 
-export const exactPatchLimit=bitrate=>Math.min(192_000,Math.max(24_000,bitrate/8*.5*.75-4096));
+export const exactPatchLimit=bitrate=>Math.floor(Math.min(192_000,Math.max(24_000,bitrate/8*.5*.75-4096)));
 
 export class DisplayStream {
   constructor(binding, { encoder = new PortableEncoder(), now = () => performance.now(), wait = delay, timing = () => {} } = {}) {
@@ -165,7 +183,7 @@ export class DisplayStream {
   }
   async buildFrame(source, documentId, afterSequence, validate, currentBinding) {
     let at = timestamp();
-    const current = source.motion || source.native_tiles ? {width:source.width,height:source.height,signature:source.data_base64,pixels:null}
+    const current = source.motion || source.native_tiles || source.native_exact ? {width:source.width,height:source.height,signature:source.data_base64,pixels:null}
       : source.pixels ?? await this.pixels.run('decode',{data:source.data_base64,scale:this.device_scale_factor});
     this.timing('png_decode', at); at = timestamp();
     // Already-admitted 419 credits may lag the delivered sequence. Eight
@@ -200,7 +218,7 @@ export class DisplayStream {
     if (source.native_tiles) payload = {kind:'tiles', base_sequence:this.sequence, tiles:source.native_tiles};
     else if (bound && (same || source.settled_verified) && (!this.exact || !this.previous?.pixels) && !source.motion) {
       const exact = full();
-      if (JSON.stringify(exact).length <= patchLimit) payload = exact;
+      if (JSON.stringify(exact).length <= patchLimit&&(!source.repair_tiles||JSON.stringify(source.repair_tiles).length+128>=JSON.stringify(exact).length)) payload = exact;
       else {
         // A verified capture may supersede the immutable RGB snapshot while
         // repair batches are still queued. Never mark its older tiles exact.
@@ -223,7 +241,7 @@ export class DisplayStream {
       else if(encoded.stripes){payload={kind:'stripes',base_sequence:this.sequence,stripes:encoded.stripes,...(encoded.packet?{native_packet:encoded.packet}:{})};}
       else {
       if(!this.dependencies && typeof encoded!=='string' && !encoded.key)throw Error('MD-DISPLAY: unnegotiated dependent frame');
-      payload = { kind:'video', codec:this.codec, ...(typeof encoded === 'string' ? {key:true,data_base64:encoded} : encoded) };
+      payload = { kind:'video', codec:this.codec, ...(typeof encoded === 'string' ? {key:true,data_base64:encoded} : encoded.packet ? {key:encoded.key,native_packet:encoded.packet} : encoded) };
       }
     }
     this.timing('select_encode', at); at = timestamp();

@@ -150,3 +150,14 @@ test('MP-11 dropped private codec output retains its lease through exact fallbac
  const m=new MotionEncoder(source,{encode:()=>new Promise(done=>release=done)},{bitrate:8000000,codec:'avc1.420033'});
  try{offer({serial:1,raw});raw.release();assert.equal(refs,1);release({dropped:true});await m.active;assert.equal(m.failure,undefined);assert.equal(m.take().force_lossless,true);assert.equal(refs,0)}finally{await m.close()}
 });
+
+test('MP-08/MP-10/MP-11 motion readiness parks a credit until encoded pixels, patchable source, cancellation or close',async()=>{
+ const f=fixture();
+ try{
+  let done=false;const ready=f.m.waitReady(1000).then(()=>done=true);await new Promise(r=>setImmediate(r));assert.equal(done,false);
+  f.offer(1);await f.m.active;await ready;assert.equal(done,true);f.m.take();
+  const abort=new AbortController();const cancelled=f.m.waitReady(1000,abort.signal);abort.abort();await cancelled;assert.equal(f.m.readyWaiters.size,0);
+  f.m.shouldEncode=()=>false;const patch=f.m.waitReady(1000);f.offer(2);await patch;
+  const closing=f.m.waitReady(1000);await f.m.close();await closing;assert.equal(f.m.readyWaiters.size,0);
+ }finally{await f.m.close()}
+});

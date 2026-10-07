@@ -49,7 +49,11 @@ const install=`(() => {
 })()`;
 export class BrowserEncoder {
  constructor(browser,targetId,fallback=new PortableEncoder()){this.worldName='chariox-kernel-display-codec-'+randomUUID();this.browser=browser;this.targetId=targetId;this.context=null;this.fallback=fallback;this.fallbackOnly=false;this.closed=false;this.busy=false;}
+ get nativeRevision(){return this.fallback.nativeRevision;}
+ get nativeDeliveredRevision(){return this.fallback.nativeDeliveredRevision;}
+ get nativeSession(){return this.fallback.nativeSession;}
  get backend(){return this.fallback.backend ?? 'webcodecs';}
+ get hardwareFallback(){return this.fallback.hardwareFallback;}
  get converter(){return this.fallback.converter;}
  get workers(){return this.fallback.workers;}
  set timing(value){this.fallback.timing=value;}

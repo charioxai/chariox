@@ -1,0 +1,190 @@
+//! MP-08/MP-10/MP-11: native pixel contracts, supplementary to live masking.
+use super::{
+    ffi::{self, Codec, Rect, RowResult},
+    raster,
+};
+#[test]
+fn mp11_native_masks_intersect_offscreen_bounds_before_pointer_arithmetic() {
+    let regions = serde_json::from_value::<Vec<raster::Region>>(serde_json::json!([
+        {"x":-100.,"y":0.,"width":20.,"height":20.},
+        {"x":-2.,"y":-2.,"width":4.,"height":4.},
+        {"x":999.,"y":999.,"width":20.,"height":20.}
+    ]))
+    .unwrap();
+    assert_eq!(
+        raster::regions(&regions, 128, 128).unwrap(),
+        vec![Rect {
+            left: 0,
+            top: 0,
+            right: 2,
+            bottom: 2
+        }]
+    );
+    let original = vec![255; 128 * 128 * 4];
+    let masked = raster::masked(
+        &original,
+        128,
+        128,
+        &raster::regions(&regions, 128, 128).unwrap(),
+    );
+    assert_eq!(&masked[..4], &[0, 0, 0, 255]);
+    assert_eq!(&masked[(127 * 128 + 127) * 4..], &[255; 4]);
+    assert_eq!(original, vec![255; 128 * 128 * 4]);
+}
+#[test]
+fn mp08_native_palette_and_rgb_fallback_preserve_every_rgb_value() {
+    for width in [128, 300] {
+        let mut raw = Vec::new();
+        for y in 0..2 {
+            for x in 0..width {
+                raw.extend_from_slice(&[(x % 256) as u8, (x / 256) as u8, y as u8, 0]);
+            }
+        }
+        let bytes = raster::png(&raw, width, 2, width as usize * 4).unwrap();
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+        decoder.set_transformations(png::Transformations::EXPAND);
+        let mut reader = decoder.read_info().unwrap();
+        let mut out = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut out).unwrap();
+        let pixels = &out[..info.buffer_size()];
+        for (source, presented) in raw.chunks_exact(4).zip(pixels.chunks_exact(3)) {
+            assert_eq!(presented, &[source[2], source[1], source[0]]);
+        }
+    }
+}
+#[test]
+fn mp11_native_codec_masks_before_conversion_and_guards_motion_settle_and_idr() {
+    let codec = Codec(unsafe { ffi::cx_codec_open(128, 128, 8000000, 8) });
+    assert!(!codec.0.is_null());
+    let regions = [Rect {
+        left: 36,
+        top: 20,
+        right: 70,
+        bottom: 48,
+    }];
+    for cycle in 0..12 {
+        let source = vec![if cycle % 2 == 0 { 220 } else { 128 }; 128 * 128 * 4];
+        let before = source.clone();
+        let mut rows = [RowResult::default(); 8];
+        let count = unsafe {
+            ffi::cx_codec_encode(
+                codec.0,
+                source.as_ptr(),
+                if cycle % 3 == 0 { 255 } else { 0 },
+                regions.as_ptr(),
+                regions.len(),
+                rows.as_mut_ptr(),
+            )
+        };
+        assert_eq!(
+            source, before,
+            "native masking must not mutate immutable capture leases"
+        );
+        assert!(
+            count >= 0,
+            "decoded-output guard must accept opaque mask across native motion/IDR"
+        );
+        assert!(rows[..count as usize]
+            .iter()
+            .all(|r| r.length > 0 && r.length < 1024 * 1024));
+        if cycle % 3 == 0 {
+            assert_eq!(count, 8);
+            assert!(rows.iter().all(|r| r.key != 0 && r.sequence == 1));
+        }
+    }
+}
+
+#[test]
+fn mp08_native_exact_repairs_colored_pixels_and_retains_only_certified_neutrals_or_overlays() {
+    for rows in [1, 8] {
+        let codec = Codec(unsafe { ffi::cx_codec_open(128, 128, 8000000, rows) });
+        assert!(!codec.0.is_null());
+        let mut raw = vec![255; 128 * 128 * 4];
+        let mut output = [RowResult::default(); 8];
+        assert_eq!(
+            unsafe {
+                ffi::cx_codec_encode(
+                    codec.0,
+                    raw.as_ptr(),
+                    255,
+                    std::ptr::null(),
+                    0,
+                    output.as_mut_ptr(),
+                )
+            },
+            rows
+        );
+        let mut bounds = [0; 4];
+        unsafe {
+            ffi::cx_codec_repair_bounds(
+                codec.0,
+                raw.as_ptr(),
+                std::ptr::null(),
+                255,
+                0,
+                0,
+                128,
+                128,
+                bounds.as_mut_ptr(),
+            );
+        }
+        assert!(
+            bounds[0] >= bounds[2] && bounds[1] >= bounds[3],
+            "literal decoded white is exact"
+        );
+        raw[(64 * 128 + 64) * 4..(64 * 128 + 64) * 4 + 3].copy_from_slice(&[11, 22, 33]);
+        unsafe {
+            ffi::cx_codec_repair_bounds(
+                codec.0,
+                raw.as_ptr(),
+                std::ptr::null(),
+                255,
+                0,
+                0,
+                128,
+                128,
+                bounds.as_mut_ptr(),
+            );
+        }
+        assert_eq!(
+            bounds,
+            [64, 64, 65, 65],
+            "uncertain RGB must receive opaque repair"
+        );
+        unsafe {
+            ffi::cx_codec_repair_bounds(
+                codec.0,
+                raw.as_ptr(),
+                raw.as_ptr(),
+                0,
+                0,
+                0,
+                128,
+                128,
+                bounds.as_mut_ptr(),
+            );
+        }
+        assert!(
+            bounds[0] >= bounds[2] && bounds[1] >= bounds[3],
+            "an identical lossless overlay is exact"
+        );
+        unsafe {
+            ffi::cx_codec_repair_bounds(
+                codec.0,
+                raw.as_ptr(),
+                std::ptr::null(),
+                0,
+                0,
+                0,
+                128,
+                128,
+                bounds.as_mut_ptr(),
+            );
+        }
+        assert_eq!(
+            bounds,
+            [0, 0, 128, 128],
+            "no delivered reference certifies nothing"
+        );
+    }
+}

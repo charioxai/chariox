@@ -154,7 +154,7 @@ impl DisplayPackets {
             || !name.bytes().take(32).all(|b| b.is_ascii_hexdigit())
             || length == 0
             || length > 1024 * 1024
-            || frame["kind"] != "stripes"
+            || !matches!(frame["kind"].as_str(), Some("stripes" | "video"))
         {
             return Err("MP-11: native packet bounds".into());
         }
@@ -202,6 +202,26 @@ impl DisplayPackets {
             let stripes: Value =
                 serde_json::from_slice(&bytes).map_err(|_| "MP-11: native stripe JSON")?;
             let rows = stripes.as_array().ok_or("MP-11: native stripe array")?;
+            if frame["kind"] == "video" {
+                // MP-08/MP-10/MP-11: one native whole-frame access unit. This
+                // private descriptor is removed before every client projection.
+                if rows.len() != 1 {
+                    return Err("MP-11: native video count".into());
+                }
+                let row = &rows[0];
+                let data = row["data_base64"].as_str().ok_or("MP-11: native video bytes")?;
+                if row["row"] != 0 || row["y"] != 0 || row["height"] != frame["height"]
+                    || row["codec"] != "avc1.420033" || row["codec"] != frame["codec"]
+                    || !row["key"].is_boolean() || row["key"] != frame["key"]
+                    || data.is_empty() || data.len() > 1024 * 1024
+                    || !data.bytes().all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b))
+                {
+                    return Err("MP-11: native video binding".into());
+                }
+                frame.as_object_mut().ok_or("MP-11: native video frame")?.remove("native_packet");
+                frame["data_base64"] = data.into();
+                return Ok(());
+            }
             let headers = frame["stripes"]
                 .as_array()
                 .ok_or("MP-11: native stripe headers")?;
@@ -489,6 +509,20 @@ mod tests {
         bad["display_frame"]["stripes"][0]["sequence"] = json!(2);
         assert!(spool.hydrate(&mut bad).is_err());
         assert!(!path.exists());
+    }
+    #[test]
+    fn mp11_native_whole_video_packets_bind_geometry_codec_and_key_before_consumption() {
+        for mismatch in [false,true] {
+            let spool=DisplayPackets::create().unwrap();
+            let (path,mut reply)=packet(&spool);
+            let row=json!({"row":0,"y":0,"height":800,"codec":"avc1.420033","key":true,"data_base64":"AA=="});
+            let bytes=serde_json::to_vec(&json!([row])).unwrap();std::fs::write(&path,&bytes).unwrap();
+            let descriptor=json!({"name":path.file_name().unwrap().to_str().unwrap(),"length":bytes.len()});
+            reply["display_frame"]=json!({"kind":"video","width":1280,"height":800,"codec":"avc1.420033","key":!mismatch,"native_packet":descriptor});
+            let result=spool.hydrate(&mut reply);
+            assert_eq!(result.is_err(),mismatch);assert!(!path.exists());
+            if !mismatch {assert!(reply["display_frame"].get("native_packet").is_none());assert_eq!(reply["display_frame"]["data_base64"],"AA==");}
+        }
     }
     #[test]
     fn mp11_native_packets_reject_traversal_symlinks_permissions_and_size() {

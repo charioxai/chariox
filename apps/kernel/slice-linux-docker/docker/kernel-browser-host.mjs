@@ -1,3 +1,4 @@
+import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-2: sessionless host adapter over the shared controller/CDP implementation.
 import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
@@ -398,9 +399,17 @@ export class KernelBrowserHost {
       this.armDisplayExpiry(stream);
       if (command.op === "display_attach") return { attached: true, generation: this.generation };
       const cachedSource=this.compositors.get(stream.tab_id)?.source;
-      if(nativeCreditEmpty(stream,cachedSource,this.protection,this.inputEpochs.get(stream.tab_id)??0,
-          this.inputChangedAt.get(stream.tab_id)??-Infinity,command.after_sequence))
-        return {generation:this.generation,frame_sent:false,display_frame:null};
+      const empty=()=>nativeCreditEmpty(stream,cachedSource,this.protection,this.inputEpochs.get(stream.tab_id)??0,
+          this.inputChangedAt.get(stream.tab_id)??-Infinity,command.after_sequence);
+      if(empty()){
+        // MP-08/MP-10/MP-11: park one serial capture credit on source/codec
+        // readiness during motion instead of exchanging hundreds of empty RPCs.
+        // This is negative-only scheduling; every pixel still takes full fences.
+        if(cachedSource.motionStreak>=2&&performance.now()-cachedSource.changedAt<50)
+          await stream.producer.waitReady(20,signal);
+        assertNotCancelled(signal);
+        if(empty())return {generation:this.generation,frame_sent:false,display_frame:null};
+      }
       const tab = await this.displayTarget({ tab_id: stream.tab_id, generation: command.generation });
       // Recreate the closure when navigation changes the loader binding. Pixels
       // and pending repairs are then invalidated by the new document as usual.
@@ -436,7 +445,7 @@ export class KernelBrowserHost {
         if(stream.previous&&(stream.document_id!==tab.document_id||!stream.acceptsCredit(command.after_sequence)))stream.invalidate();
         if(!stream.refiner||stream.refinerDocument!==tab.document_id){await stream.refiner?.close();stream.refiner=new NativeRefiner(binding=>binding.native?binding.sample:this.displayScreenshot(tab,null,false),{now:()=>performance.now(),prepareTiles:true,timing:this.timing});stream.refinerDocument=tab.document_id;}
         const policy=this.protection;
-        const binding={source:compositor,document:tab.document_id,policy,epoch,serial:sample.serial,scale:stream.device_scale_factor,native:compositor.attested===true&&Boolean(sample.raw),sample,repairLimit:exactPatchLimit(stream.bitrate)};
+        const binding={source:compositor,document:tab.document_id,policy,epoch,serial:sample.serial,scale:stream.device_scale_factor,native:compositor.attested===true&&Boolean(sample.raw),sample,repairLimit:exactPatchLimit(stream.bitrate),encoder:stream.encoder.nativeSession,nativeDelivered:stream.encoder.nativeDeliveredRevision};
         // Always run the deadline/epoch-aware verifier before unchanged reuse.
         // A lossy JPEG fingerprint cannot rule out fine native RGB damage.
         const nativeExact=binding.native&&stream.exact&&(sample.serial===stream.compositorSerial||stream.canPatchNative(sample));
@@ -445,7 +454,11 @@ export class KernelBrowserHost {
         stream.producer.feedback(Math.max(0,stream.sequence-command.after_sequence));
         const patchable=stream.canPatchNative(sample);
         const encoded=patchable ? null : stream.producer.take();
-        if(patchable){stream.producer.retireUnsent();source={...sample,motion:false,native_tiles:nativeDamageTiles(sample.raw),generation:this.generation};}
+        if(patchable){
+          stream.producer.retireUnsent();
+          const patch=sample.raw.nativeExact?await sample.raw.nativeExact({encoder:stream.encoder.nativeSession,regions:sample.raw[displayMaskRegions]??[],limit:exactPatchLimit(stream.bitrate),patch:true}):{native_tiles:nativeDamageTiles(sample.raw)};
+          source={...sample,...patch,motion:false,generation:this.generation};
+        }
         else if(encoded){source={...encoded,generation:this.generation};}
         else if(exact&&stream.previous)source={...exact,generation:this.generation};
         // The viewer already backs off empty credits. A second delay while
@@ -465,9 +478,9 @@ export class KernelBrowserHost {
       const frame = await stream.frame(source, source.document_id, command.after_sequence, async () => {
         assertNotCancelled(signal);
         await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-        return !compositor?.closed&&compositor?.regionRevision===regionRevision&&(source.motion || ((this.inputEpochs.get(tab.tab_id) ?? 0) === epoch&&(source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)));
-      },()=>!compositor?.closed&&compositor?.regionRevision===regionRevision&&this.protection===capturePolicy&&(source.motion||((this.inputEpochs.get(tab.tab_id)??0)===epoch&&(source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial))));
-      if(frame){stream.compositorSerial=source.refinement_serial ?? source.serial;if(source.input_triggered)stream.deliveredInputEpoch=epoch;}
+        return !compositor?.closed&&compositor?.regionRevision===regionRevision&&(source.motion || ((this.inputEpochs.get(tab.tab_id) ?? 0) === epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision))));
+      },()=>!compositor?.closed&&compositor?.regionRevision===regionRevision&&this.protection===capturePolicy&&(source.motion||((this.inputEpochs.get(tab.tab_id)??0)===epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision)))));
+      if(frame){stream.compositorSerial=source.refinement_serial ?? source.serial;if(source.input_triggered)stream.deliveredInputEpoch=epoch;if(stream.exact)source.raw?.nativeCommit?.(stream.encoder.nativeSession);}
       return { generation: this.generation, frame_sent: frame !== null, display_frame: frame };
     }
     if (["poll", "unsubscribe"].includes(command.op)) {
@@ -500,7 +513,7 @@ export class KernelBrowserHost {
       await connection.send("Emulation.setDeviceMetricsOverride", { width: geometry.width, height: geometry.height, deviceScaleFactor: command.device_scale_factor, mobile: false }, sessionId);
       this.scales.set(tab.tab_id, command.device_scale_factor);
       const id = `host-display-${randomUUID()}`;
-      const codec=command.codecs.find(c=>['vp8','vp09.00.50.08','vp09.00.40.08','vp09.00.10.08','avc1.420033'].includes(c))??'png';
+      const codec=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER&&command.codecs.includes('avc1.420033')?'avc1.420033':command.codecs.find(c=>['vp8','vp09.00.50.08','vp09.00.40.08','vp09.00.10.08','avc1.420033'].includes(c))??'png';
       const stream = new DisplayStream({ subscription_id: id, tab_id: tab.tab_id, observed_by: scope, bitrate: command.bitrate, device_scale_factor: command.device_scale_factor, codec, css_width:geometry.width, css_height:geometry.height, dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:command.codecs.includes('chariox-stripes-v1')&&['avc1.420033','vp8'].includes(codec) }, { timing:this.timing,encoder:new BrowserEncoder(this.browser,tab.target_id) });
       this.displays.set(id, stream);
       this.armDisplayExpiry(stream);

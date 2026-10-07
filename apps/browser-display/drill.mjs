@@ -18,6 +18,7 @@ import {CpuSampler,cpuSpan} from './drill-cpu.mjs';
 import { distribution } from './drill-metrics.mjs';
 import {MetricsWorker} from './drill-metrics-worker.mjs';
 import {sourceIdentity} from './source-identity.mjs';
+import {memoryFloorGiB} from './drill-resources.mjs';
 import { summarizeStages } from './drill-stages.mjs';
 import {stressProtection} from './drill-protection.mjs';
 import { launchOwned, waitChild, stopGroup, checkChild } from './drill-owned-process.mjs';
@@ -41,6 +42,7 @@ const quote=value=>"'"+value.replaceAll("'","'\"'\"'")+"'";
 let kernel, display, viewer, browser, server, ready, shaped, shortTmp, kernelProfiler,dynamicFixtureServed=false;
 const workload=process.env.MD_WORKLOAD||'docs';
 receipt.workload=workload;const fixtureStats=[];
+receipt.requested_hardware=process.env.MD_SOFTWARE==='0';receipt.memory_floor_gib=memoryFloorGiB(process.env.MD_MEMORY_FLOOR_GIB);
 receipt.requested_software_encoder=process.env.MD_ENCODER||'libx264';receipt.requested_converter=process.env.MD_LIBYUV?'libyuv':'auto';
 let kernelExit;
 const groups = [], errors = [], log = [];
@@ -54,7 +56,7 @@ async function resource() {
  const mem=await readFile('/proc/meminfo','utf8'), disk=await statfs('/');
  const sample={at:new Date().toISOString(),at_ms:performance.now(),mem_available_bytes:Number(mem.match(/^MemAvailable:\s+(\d+)/m)[1])*1024,disk_free_bytes:Number(disk.bavail)*Number(disk.bsize),processes:[]};
  sample.cpu=await cpu.sample();sample.processes=sample.cpu.processes;receipt.samples.push(sample);
- if(sample.mem_available_bytes<Number(process.env.MD_MEMORY_FLOOR_GIB||16)*1024**3||sample.disk_free_bytes<10*1024**3)throw Error('MD-DISPLAY: resource floor');
+ if(sample.mem_available_bytes<memoryFloorGiB(process.env.MD_MEMORY_FLOOR_GIB)*1024**3||sample.disk_free_bytes<10*1024**3)throw Error('MD-DISPLAY: resource floor');
  return sample;
 }
 async function until(check,label,timeout=20000) {const end=Date.now()+timeout;while(Date.now()<end){if(errors.length)throw errors[0];const value=await check();if(value)return value;await pause(25);}throw Error('MD-DISPLAY timeout: '+label);}
@@ -98,6 +100,26 @@ try {
   for(const name of ['chariox-openh264.so','libopenh264.so.8']){const source=path.join(directory,name),contents=await readFile(source);await cp(source,path.join(destination,name));receipt.openh264_assets.push({name,sha256:createHash('sha256').update(contents).digest('hex')});}
   openh264Adapter=path.join(destination,'chariox-openh264.so');receipt.openh264_mode='Cisco2.6.0 native SCREEN_CONTENT_REAL_TIME, verified by GetOption; externally runtime-downloaded library';
  }
+ // MP-08/MP-10: stage a public native worker with this run's UID/path access.
+ let nativeWorker;
+ if(process.env.MD_NATIVE_WORKER){
+  if(!path.isAbsolute(process.env.MD_NATIVE_WORKER))throw Error('MP-10: absolute native worker required');
+  const executable=path.join(root,'native-worker-elf');await cp(process.env.MD_NATIVE_WORKER,executable);await chmod(executable,0o755);
+  const digest=createHash('sha256');for await(const bytes of createReadStream(executable))digest.update(bytes);
+  receipt.native_worker={source_path:process.env.MD_NATIVE_WORKER,copied_sha256:digest.digest('hex')};
+  nativeWorker=executable;
+  if(process.env.MD_NATIVE_LIBYUV){
+   const directory=path.join(root,'native-libs');await mkdir(directory);await cp(process.env.MD_NATIVE_LIBYUV,path.join(directory,'libyuv.so.0'));
+   nativeWorker=path.join(root,'native-worker');await writeFile(nativeWorker,`#!/bin/sh\nLD_LIBRARY_PATH=${quote(directory)} exec ${quote(executable)} "$@"\n`,{mode:0o755});
+   receipt.native_worker.converter_sha256=createHash('sha256').update(await readFile(process.env.MD_NATIVE_LIBYUV)).digest('hex');
+  }
+  if(process.env.MD_SOURCE_ASSETS==='1'){
+   const wrapper=path.join(root,'native-controller-node');
+   await writeFile(wrapper,`#!/bin/sh\nCHARIOX_BROWSER_DISPLAY_NATIVE_WORKER=${quote(nativeWorker)} exec ${quote(process.execPath)} "$@"\n`,{mode:0o755});
+   override.CHARIOX_BROWSER_CONTROLLER_NODE=wrapper;
+   receipt.native_worker.preview='explicit Node/source override; not embedded final-kernel validation';
+  }
+ }
  const python=path.join(root,'python');await mkdir(python);
  if(process.env.MD_LIBYUV){
   const contents=await readFile(process.env.MD_LIBYUV),destination=path.join(python,'libyuv.so.0');await writeFile(destination,contents);
@@ -139,7 +161,7 @@ try {
  });
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  const origin=`http://127.0.0.1:${server.address().port}`;
- kernel=await launchOwned(process.env.MD_BINARY_LOADER || path.join(root,'kernel-tests'),[...(process.env.MD_BINARY_LOADER ? ['--library-path',process.env.MD_BINARY_LIBS,path.join(root,'kernel-tests')] : []),'--ignored','--exact','runtime::router::tests::kernel_browser::display::kernel_browser_display_protocol_drill','--nocapture'],{uid:runUid,gid:runGid,detached:true,cwd:root,env:{...override,PATH:runtimePath,HOME:home,TMPDIR:shortTmp,DISPLAY:`:${screen.trim()}`,CHARIOX_HOME:path.join(home,'chariox'),CHARIOX_LOG_DIR:path.join(home,'logs'),CHARIOX_DISPLAY_DRILL_ROOT:home,CHARIOX_DISPLAY_FIXTURE_URL:`${origin}/${workload}`,CHARIOX_KERNEL_BROWSER_EXECUTABLE:chrome,CHARIOX_KERNEL_BROWSER_DISPLAY:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_BROWSER_DISPLAY_GEOMETRY:process.env.MD_GEOMETRY,CHARIOX_BROWSER_DISPLAY_SOFTWARE:process.env.MD_SOFTWARE,CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER:process.env.MD_ENCODER,CHARIOX_BROWSER_DISPLAY_STRIPE_WORKERS:process.env.MD_STRIPE_WORKERS,CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER:openh264Adapter,CHARIOX_BROWSER_DISPLAY_PYTHON:pythonWrapper},stdio:['ignore','pipe','pipe']});groups.push(kernel.pid);await cpu.track(kernel.pid);
+ kernel=await launchOwned(process.env.MD_BINARY_LOADER || path.join(root,'kernel-tests'),[...(process.env.MD_BINARY_LOADER ? ['--library-path',process.env.MD_BINARY_LIBS,path.join(root,'kernel-tests')] : []),'--ignored','--exact','runtime::router::tests::kernel_browser::display::kernel_browser_display_protocol_drill','--nocapture'],{uid:runUid,gid:runGid,detached:true,cwd:root,env:{...override,PATH:runtimePath,HOME:home,TMPDIR:shortTmp,DISPLAY:`:${screen.trim()}`,CHARIOX_HOME:path.join(home,'chariox'),CHARIOX_LOG_DIR:path.join(home,'logs'),CHARIOX_DISPLAY_DRILL_ROOT:home,CHARIOX_DISPLAY_FIXTURE_URL:`${origin}/${workload}`,CHARIOX_KERNEL_BROWSER_EXECUTABLE:chrome,CHARIOX_KERNEL_BROWSER_DISPLAY:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_BROWSER_DISPLAY_GEOMETRY:process.env.MD_GEOMETRY,LIBVA_DRIVER_NAME:process.env.LIBVA_DRIVER_NAME,CHARIOX_BROWSER_DISPLAY_SOFTWARE:process.env.MD_SOFTWARE,CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER:process.env.MD_ENCODER,CHARIOX_BROWSER_DISPLAY_STRIPE_WORKERS:process.env.MD_STRIPE_WORKERS,CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER:openh264Adapter,CHARIOX_BROWSER_DISPLAY_PYTHON:pythonWrapper,CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER:nativeWorker},stdio:['ignore','pipe','pipe']});groups.push(kernel.pid);await cpu.track(kernel.pid);
  kernel.stdout.on('data',b=>log.push(b));kernel.stderr.on('data',b=>log.push(b));
  kernelExit=waitChild(kernel);
  ready=await until(async()=>{checkChild(kernel,'kernel');try{return JSON.parse(await readFile(path.join(home,'ready.json'),'utf8'))}catch{return null}},'focused MCP opens user-domain tab',45000);
@@ -459,6 +481,8 @@ finally {
  }
  receipt.host_timings=traces;receipt.kernel_timings=Buffer.concat(log).toString().split('\n').filter(line=>line.startsWith('MD-DISPLAY-TIMING ')).map(line=>JSON.parse(line.slice('MD-DISPLAY-TIMING '.length)));
  receipt.actual_encoders=[...new Set(traces.filter(t=>t.stage.startsWith('motion_backend_')).map(t=>t.stage.slice('motion_backend_'.length)))];
+ receipt.hardware_fallback=receipt.requested_hardware&&!receipt.actual_encoders.includes('vaapi');
+ if(receipt.hardware_fallback){receipt.hardware_warning='MP-10: HARDWARE REQUEST FAILED — successful VAAPI packets not observed; timings describe software fallback';console.error(receipt.hardware_warning);}
  receipt.actual_converters=[...new Set(traces.filter(t=>t.stage.startsWith('motion_converter_')).map(t=>t.stage.slice('motion_converter_'.length)))];
  if(receipt.status==='PASS_LOCAL_COMPONENT'&&process.env.MD_SOFTWARE==='1'&&receipt.codec!=='png'){
   const expected=receipt.codec==='vp8'?'vp8':receipt.codec?.startsWith('vp09')?'vp9':({'libx264':'x264','libopenh264':'openh264'})[receipt.requested_software_encoder];
