@@ -88,6 +88,8 @@ impl KernelRuntimeState {
 
 /// A live Chariox Claude run whose session the profile change keeps, on a
 /// smaller window that its last turn's context nearly fills or exceeds.
+/// Claude reports a turn's usage summed over its API calls, so a turn with
+/// tool calls overstates the context and compacts early.
 fn needs_compaction(
     run: &RuntimeProviderRun,
     target_provider: &str,
@@ -145,11 +147,12 @@ mod tests {
 
     #[test]
     fn only_a_session_too_large_for_the_smaller_claude_window_is_compacted_first() {
-        let large = claude_run("sonnet[1m]", Some(320_000));
+        // Claude resolves `sonnet[1m]` to its model id; the run keeps the `[1m]`.
+        let large = claude_run("claude-sonnet-5-5[1m]", Some(320_000));
 
         assert!(needs_compaction(&large, "claude", "work", "sonnet"));
         assert!(!needs_compaction(
-            &claude_run("sonnet[1m]", Some(90_000)),
+            &claude_run("claude-sonnet-5-5[1m]", Some(90_000)),
             "claude",
             "work",
             "sonnet"
