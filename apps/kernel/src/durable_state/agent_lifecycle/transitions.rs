@@ -356,6 +356,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         op @ (Operation::Send { .. }
         | Operation::Occur(_)
         | Operation::Attempt { .. }
+        | Operation::Expire { .. }
         | Operation::Defer { .. }
         | Operation::BindAttempt { .. }
         | Operation::Receipt { .. }
