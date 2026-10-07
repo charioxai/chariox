@@ -230,15 +230,26 @@ impl KernelRuntimeState {
                 self.owned.durable_state_store.agent_lifecycle(Operation::Block{task:task.task_id.clone(),prompt:task.prompt_id.clone(),reason:format!("Correction delivery failed or uncertain: {e}; reconcile before owner resume")})?;
             }
         } else if task.state == ExecutionState::Done || task.state == ExecutionState::Cancelled {
-            self.owned
+            let other_unfinished = self
+                .owned
                 .durable_state_store
-                .agent_lifecycle(Operation::SourceOutcome {
-                    room: task.room_id.clone(),
-                    source: task.agent_id.clone(),
-                    occurrence: format!("{}:{}", task.task_id, task.revision),
-                    success: task.state == ExecutionState::Done,
-                    now: crate::session::unix_epoch_ms(),
-                })?;
+                .agent_tasks(Some(&task.room_id), Some(&task.agent_id))?
+                .iter()
+                .any(|t| {
+                    t.task_id != task.task_id
+                        && !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
+                });
+            if !other_unfinished {
+                self.owned
+                    .durable_state_store
+                    .agent_lifecycle(Operation::SourceOutcome {
+                        room: task.room_id.clone(),
+                        source: task.agent_id.clone(),
+                        occurrence: format!("{}:{}", task.task_id, task.revision),
+                        success: task.state == ExecutionState::Done,
+                        now: crate::session::unix_epoch_ms(),
+                    })?;
+            }
             self.owned
                 .durable_state_store
                 .agent_lifecycle(Operation::SourceOutcome {
@@ -391,7 +402,12 @@ impl KernelRuntimeState {
                 self.ensure_task_owner_interaction(task.clone()).await?;
             }
             if seen.insert((task.room_id.clone(), task.agent_id.clone())) {
-                Box::pin(self.deliver_agent_inbox(&task.room_id, &task.agent_id)).await?;
+                if let Err(error) =
+                    Box::pin(self.deliver_agent_inbox(&task.room_id, &task.agent_id)).await
+                {
+                    tracing::warn!(%error, room_id=%task.room_id, agent_id=%task.agent_id, "MP-08/MP-09/MP-10/MP-11 A02: recipient delivery retained; other recipients continue");
+                }
+                let _ = self.owned.session_snapshot(&task.room_id);
             }
         }
         Ok(())
@@ -400,7 +416,7 @@ impl KernelRuntimeState {
         &self,
         task: AgentTaskExecution,
     ) -> Result<(), DaemonError> {
-        let id = format!("task-blocked-{}", task.task_id);
+        let id = format!("task-blocked-{}-{}", task.task_id, task.blocked_revision);
         let session = self.owned.session_store.get_session(&task.room_id)?;
         if session.active_interactions().iter().any(|i| i.id() == id) {
             return Ok(());

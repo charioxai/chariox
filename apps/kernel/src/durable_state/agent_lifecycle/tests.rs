@@ -581,3 +581,45 @@ fn a02_unsubscribe_wakes_retained_wait_and_stale_turn_is_denied() {
         "source_lost"
     );
 }
+
+#[test]
+fn a02_payload_redaction_precedes_persistence_and_deduplication() {
+    let f = Fixture::new();
+    f.begin("p");
+    let e = occurrence(
+        "room",
+        "parent",
+        "peer",
+        "redaction",
+        "message",
+        serde_json::json!({"password":"synthetic-sensitive-value","nested":{"access_token":"synthetic-sensitive-value"},"safe":"public result"}),
+    );
+    let Outcome::Event(first) = f.apply(Operation::Occur(e.clone())) else {
+        panic!()
+    };
+    let Outcome::Event(second) = f.apply(Operation::Occur(e)) else {
+        panic!()
+    };
+    assert_eq!(first.sequence, second.sequence);
+    assert!(!encode(&first)
+        .unwrap()
+        .contains("synthetic-sensitive-value"));
+    assert_eq!(first.payload["safe"], "public result");
+    assert!(!encode(&f.store.agent_inbox("room", "parent", 0).unwrap())
+        .unwrap()
+        .contains("synthetic-sensitive-value"));
+}
+#[test]
+fn a02_clock_rollback_wakes_after_a_persisted_sweep() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.yield_now();
+    f.settle("p", true);
+    f.apply(Operation::Sweep { now: 20 });
+    f.apply(Operation::Sweep { now: 10 });
+    let inbox = f.store.agent_inbox("room", "parent", 0).unwrap();
+    assert_eq!(inbox.len(), 1);
+    assert_eq!(inbox[0].kind, "deadline_reached");
+}

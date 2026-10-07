@@ -456,6 +456,7 @@ fn new_task(
     }
 }
 fn event(tx: &Transaction<'_>, mut e: InboxEvent) -> Result<InboxEvent, DaemonError> {
+    crate::secret_redaction::redact_json_secrets(&mut e.payload);
     let previous:Option<String>=tx.query_row("SELECT payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND occurrence_id=?4",params![e.room_id,e.agent_id,e.source_id,e.occurrence_id],|r|r.get(0)).optional().map_err(sql)?;
     if let Some(previous) = previous {
         let p: InboxEvent = decode(&previous)?;
