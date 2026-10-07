@@ -123,8 +123,12 @@ try {
       await writeFile(path.join(evidence, label + '-grants.json'), JSON.stringify(result, null, 2) + '\n', { mode: 0o600 });
       if (label === 'bulk-revoke') {
         // MP-11: malformed input cannot undo the owner's real TUI revocation.
-        const rejected = await client.send(request.kernelBrowserRequest({ op: 'grant_room_computer' }));
-        assert.ok(rejected.Error, 'MP-11 missing agent must be rejected');
+        await assert.rejects(
+          client.send(request.kernelBrowserRequest({ op: 'grant_room_computer' })),
+          error => error.name === 'LocalIpcError' && error.code === 'invalid_request'
+            && /invalid request: missing field `agent_id`/.test(error.message),
+          'MP-11 missing agent must be rejected at request decoding',
+        );
         const after = await list();
         assert.deepEqual(after.room_computer, result.room_computer, 'MP-11 malformed restore preserves denials');
         report.missing_agent_rejected = true;
