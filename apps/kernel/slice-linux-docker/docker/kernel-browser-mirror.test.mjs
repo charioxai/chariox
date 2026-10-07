@@ -418,3 +418,12 @@ test('MD-454: a source-only capture race resets unissued bytes and refuses input
  host.protection={...host.protection};
  await assert.rejects(service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:p.sequence,action:{kind:'key',key:'Tab'}},'a'),error=>!error.message.includes('stale mirror input epoch'));
 });
+
+test('MP-11: a pending text operation cannot acquire the no-effect wheel marker after focus',async()=>{
+ const {service,state}=fixture();state.snapshot.nodes[0].tag='input';state.snapshot.nodes[0].form={value:'',selection_start:0,selection_end:0,checked:false,disabled:false};
+ const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),p=await service.next(next(s.subscription_id),'a');
+ const stream=service.streams.get(s.subscription_id),evaluate=service.evaluate.bind(service);
+ service.evaluate=async(w,e)=>{if(e.includes('.locate('))return {x:10,y:10};if(e.includes('.focus(')){stream.geometryResetPolicy=stream.policy;stream.policy=null;stream.epochs=[];return true}return evaluate(w,e)};
+ const text=await service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:p.sequence,action:{kind:'text',node_id:'n1',text:'x'}},'a');let marked=false;
+ await assert.rejects(text.perform(async()=>assert.fail('no text dispatch'),()=>marked=true),error=>!error.message.includes('stale mirror input epoch'));assert(marked);
+});

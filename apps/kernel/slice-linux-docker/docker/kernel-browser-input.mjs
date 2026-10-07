@@ -73,7 +73,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
         if (input.kind === "click") {
           await sendInput("Input.dispatchMouseEvent", { type: "mousePressed", x: input.x, y: input.y, button: "left", clickCount: 1 });
           await sendInput("Input.dispatchMouseEvent", { type: "mouseReleased", x: input.x, y: input.y, button: "left", clickCount: 1 });
-        } else if (input.kind === "scroll" && Number.isInteger(input.delta_x) && Number.isInteger(input.delta_y) && Math.abs(input.delta_x) <= 10000 && Math.abs(input.delta_y) <= 10000) {
+        } else if (input.kind === "scroll" && Number.isInteger(input.delta_x) && Number.isInteger(input.delta_y) && Math.abs(input.delta_x) <= (mirrorGuard ? 1000000 : 10000) && Math.abs(input.delta_y) <= (mirrorGuard ? 1000000 : 10000)) {
           await sendInput("Input.dispatchMouseEvent", { type: "mouseWheel", x: input.x, y: input.y, deltaX: input.delta_x, deltaY: input.delta_y });
         } else throw new Error("MD-2: unsupported input");
       }
