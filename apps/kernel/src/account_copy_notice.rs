@@ -608,7 +608,7 @@ mod tests {
                     "codex",
                     profile_id,
                     ProviderAccountAuthState::Authenticated,
-                    Some("synthetic identity".into()),
+                    Some(format!("synthetic identity {profile_id}")),
                     None,
                     None,
                     None,
@@ -626,8 +626,8 @@ mod tests {
         let local = registry.get("owner", "codex", &local.profile_id).unwrap();
         assert_eq!(local.auth_state, ProviderAccountAuthState::Authenticated);
         assert_eq!(
-            local.identity_summary.as_deref(),
-            Some("synthetic identity")
+            local.identity_summary,
+            Some(format!("synthetic identity {}", local.profile_id))
         );
 
         // A local OpenCode login keeps all last-observed services and metadata.
