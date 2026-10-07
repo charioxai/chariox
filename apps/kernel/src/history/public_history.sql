@@ -1,6 +1,6 @@
 -- MP-08 / MP-10 / MP-11, A09: FTS only sees sanitized, versioned public text.
 CREATE TABLE IF NOT EXISTS public_history_version(version INTEGER NOT NULL);
-INSERT INTO public_history_version SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM public_history_version);
+INSERT INTO public_history_version SELECT 2 WHERE NOT EXISTS(SELECT 1 FROM public_history_version);
 CREATE TABLE IF NOT EXISTS public_history_build(id INTEGER PRIMARY KEY CHECK(id=1),cursor INTEGER NOT NULL,complete INTEGER NOT NULL,epoch INTEGER NOT NULL);
 INSERT OR IGNORE INTO public_history_build VALUES(1,0,1,0);
 CREATE TABLE IF NOT EXISTS public_history_retention(session_id TEXT PRIMARY KEY,deleted_events INTEGER NOT NULL);

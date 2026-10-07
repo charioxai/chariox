@@ -86,7 +86,10 @@ impl room_secret_observation::RoomSecretObservations {
 fn private_tool(value: &serde_json::Value) -> bool {
     match value {
         serde_json::Value::Object(values) => {
-            ["tool", "name", "tool_name"]
+            // Codex normalizes MCP server identity into `title` and retains
+            // only the unqualified tool name. Classify both identities before
+            // persisting any part of a private record.
+            ["tool", "name", "tool_name", "title", "server", "server_name"]
                 .iter()
                 .filter_map(|key| values.get(*key).and_then(|v| v.as_str()))
                 .any(|name| {

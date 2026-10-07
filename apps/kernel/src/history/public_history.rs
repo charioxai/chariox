@@ -9,7 +9,9 @@ fn read_u64(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
     u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, value))
 }
 
-pub(crate) const PUBLIC_HISTORY_VERSION: u32 = 1;
+// Version 1 may contain MCP records admitted without their private server
+// identity. The existing version fence removes those projections on upgrade.
+pub(crate) const PUBLIC_HISTORY_VERSION: u32 = 2;
 pub(crate) type PublicHistoryProjector =
     dyn Fn(&HistoryEvent) -> Option<PublicHistoryDocument> + Send + Sync;
 
