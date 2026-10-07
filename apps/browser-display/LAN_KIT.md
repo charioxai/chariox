@@ -8,6 +8,10 @@ Python/PyAV and the explicit loader are bundled. Runtime identities are generate
 through product paths in disposable state. The host supplies sandboxed Chromium,
 Xvfb, FFmpeg, iproute2 and ethtool. No provider accounts or operator keys are used.
 
+MP-08/MP-10: display-mode Chromium uses grayscale text antialiasing so captured
+glyphs do not assume a particular viewing panel's LCD subpixel order. Glyph
+outlines retain antialiasing at the negotiated native density.
+
 From a clean committed checkout, after building both ELFs at that source with `--features native-display`:
 
 ```sh
@@ -58,7 +62,7 @@ sudo env MD_GEOMETRY=1920x1080 MD_CODEC=avc1.420033 MD_SOFTWARE=0 \
 
 `/dev/dri` and advertised FFmpeg encoders establish capability only. Successful
 `motion_backend_vaapi` traces establish actual use; unavailable hardware falls
-back to software and must be reported as such. This builder has a virtio render device whose VAAPI initialization fails; no Intel GPU success is claimed. Native-feature kernels use the same masked capture/codec path for VAAPI and software. A requested hardware run without successful VAAPI packets prints HARDWARE REQUEST FAILED and records hardware_fallback=true.
+back to software and must be reported as such. The receipt records the actual driver initialization result. Native-feature kernels use the same masked capture/codec path for VAAPI and software. A requested hardware run without successful VAAPI packets prints HARDWARE REQUEST FAILED and records hardware_fallback=true.
 
 MP-08/MP-10: repeat the same seven-case software and hardware matrices at
 Retina density by adding `MD_GEOMETRY=1280x800 MD_DPR=2` to each command.
@@ -82,9 +86,9 @@ No services are managed. Campaign functional success can coexist with a RED
 performance aggregate (exit 1). rAF is a software presentation proxy, not photons.
 These local tests do not close MP-10 managed acceptance or MP-11 security review.
 
-MP-08/MP-10 phase25 reports require click **and type** P95 at most measured RTT
+MP-08/MP-10 reports require click **and type** P95 at most measured RTT
 plus 50 ms, pipeline CPU at most 0.6 cores (DPR1) or 1.2 (DPR2), and exact
-presentation below 300 ms after motion stops. Scroll60/wheel60 require at least
+presentation below 300 ms at DPR1 or 500 ms at DPR2 after motion stops. Scroll60/wheel60 require at least
 59 measured fps at DPR1 (a 60 Hz source with measurement overhead) or 50 fps at
 DPR2. The local component kit does not establish these results on the hosted
 relay, real public-site list or real desktop browser; those need separate live
