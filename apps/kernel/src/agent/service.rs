@@ -82,7 +82,9 @@ impl AgentService {
         let mut session_summary = self.store.session_summary(session.id());
         let current_count = session_summary.count;
         let new_count = requests.len();
-        if current_count + new_count > session.max_agents() as usize {
+        if requests.iter().any(|r| r.spawned_by_agent_id.is_none())
+            && current_count + new_count > session.max_agents() as usize
+        {
             return Err(DaemonError::AgentLimitReached {
                 session_id: session.id().to_string(),
                 max_agents: session.max_agents(),
@@ -129,6 +131,7 @@ impl AgentService {
                 GridPosition::new(0, 0, 1, 1),
             );
             agent.set_owner_user_id(request.owner_user_id);
+            agent.record_spawn_creator(request.spawned_by_agent_id);
             agent.set_controlled_by_metaagent_id(request.controlled_by_metaagent_id);
             agent.set_role(request.role);
             agent.set_account_profile(request.account_profile);
@@ -167,7 +170,7 @@ impl AgentService {
 
         // Check max agents limit
         let current_count = self.store.count_by_session(&request.session_id);
-        if current_count >= session.max_agents() as usize {
+        if request.spawned_by_agent_id.is_none() && current_count >= session.max_agents() as usize {
             return Err(DaemonError::AgentLimitReached {
                 session_id: request.session_id.clone(),
                 max_agents: session.max_agents(),
@@ -201,6 +204,7 @@ impl AgentService {
             position,
         );
         agent.set_owner_user_id(request.owner_user_id);
+        agent.record_spawn_creator(request.spawned_by_agent_id);
         agent.set_controlled_by_metaagent_id(request.controlled_by_metaagent_id);
         if request.role == crate::agent::AgentRole::Meta {
             return Err(DaemonError::LocalTransport {
@@ -253,6 +257,16 @@ impl AgentService {
         session_id: &str,
         worktree_id: &str,
     ) -> AgentInstance {
+        self.materialize_workflow_runtime_agent_by_agent(agent, session_id, worktree_id, None)
+    }
+
+    pub(crate) fn materialize_workflow_runtime_agent_by_agent(
+        &mut self,
+        agent: AgentInstance,
+        session_id: &str,
+        worktree_id: &str,
+        creator: Option<&str>,
+    ) -> AgentInstance {
         // A workflow instance copy must never reuse the source agent's visible
         // alias; allocate a deterministic user-facing alias by appending the
         // next available numeric suffix (e.g. `pr-reviewer` -> `pr-reviewer-2`).
@@ -266,6 +280,7 @@ impl AgentService {
             session_id,
             worktree_id,
         );
+        agent.record_spawn_creator(creator.map(str::to_string));
         if let Some(copied_alias) = copied_alias {
             agent.set_alias(Some(copied_alias));
         }

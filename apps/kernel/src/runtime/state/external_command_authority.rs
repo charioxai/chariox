@@ -64,6 +64,14 @@ impl KernelRuntimeState {
 
     pub(crate) fn authorize_current_external_command(&self) -> Result<(), DaemonError> {
         self.authorize_current_forwarded_binding()?;
+        if let Some((actor, run)) = self.room_provider_origin.as_ref() {
+            self.authorize_room_provider_epoch(Some(actor), Some(run))?;
+        }
+        if let Some((actor, request)) = self.room_request_origin.as_ref() {
+            self.authorize_room_agent_request(actor, request)?;
+            self.owned
+                .ensure_workflow_request_controlled_by_metaagent(request, actor)?;
+        }
         self.authorize_prompt_command(
             self.external_command_authority
                 .as_ref()

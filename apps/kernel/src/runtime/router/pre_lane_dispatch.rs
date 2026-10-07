@@ -33,6 +33,12 @@ impl CommandRouter {
         request: &LocalDaemonRequest,
         caller_user_id: &str,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
+        if let Some(actor) = command.caller.metaagent_id.as_deref() {
+            self.runtime_state
+                .authorize_room_provider_epoch(Some(actor), command.provider_run_id.as_deref())?;
+            self.runtime_state
+                .authorize_room_agent_request(actor, request)?;
+        }
         if let Some(response) = self
             .runtime_state
             .app_control()
@@ -434,7 +440,11 @@ impl CommandRouter {
             &self.session_projection,
             request,
             caller_user_id,
-            command.caller.metaagent_id.as_deref(),
+            command
+                .caller
+                .metaagent_id
+                .as_deref()
+                .filter(|_| !self.runtime_state.room_agent_tools_enabled()),
         ) {
             return response.map(Some);
         }

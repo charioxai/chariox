@@ -324,6 +324,21 @@ Normative rules:
 - Chariox-native or third-party agent runtimes should eventually target a canonical daemon-facing agent protocol directly
 - transport unification should happen at the kernel protocol/event model level, not by forcing every provider to mimic the same wire transport internally
 
+### 3.6.1 Regular Room Admission (MP-08 / MP-10 / MP-11, A01)
+
+The kernel authenticates provider-run actors and owns ordinary room-tool
+admission. Immutable spawn lineage permits destructive control of direct
+children only. Workflow definitions and runs retain separate immutable
+creators; observing or running a peer definition grants no edit authority.
+The same typed fence covers local, relayed and provider-native requests and
+rechecks authority after asynchronous waits. The relay remains transport.
+
+The transitional room-tool flag keeps legacy Meta compatibility while PR1
+registers durable dispatch intent before effects. Receipt failures preserve
+already admitted work and identify it to callers; known rejections are
+recorded separately. Obligation settlement, waits and recovery remain the
+following lifecycle PR's responsibility.
+
 ### 3.7 Workspace Coordination
 
 If Chariox is to orchestrate multiple top-level agents without relying on a human to manually clean up merge conflicts, workspace coordination must be kernel-owned.

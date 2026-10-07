@@ -57,12 +57,13 @@ pub(super) fn meta_command_success_result(
     command: &str,
     response: &LocalDaemonResponse,
     metaagent: &crate::agent::AgentInstance,
+    room_tools: bool,
 ) -> RuntimeToolResult {
     RuntimeToolResult {
         ok: true,
         payload: serde_json::json!({
             "command": redacted_meta_command_for_payload(command),
-            "response": summarize_meta_command_response(response, metaagent),
+            "response": summarize_meta_command_response(response, metaagent, room_tools),
         }),
     }
 }
@@ -89,6 +90,7 @@ pub(super) fn redacted_meta_command_for_payload(command: &str) -> String {
 fn summarize_meta_command_response(
     response: &LocalDaemonResponse,
     metaagent: &crate::agent::AgentInstance,
+    room_tools: bool,
 ) -> serde_json::Value {
     match response {
         LocalDaemonResponse::AgentSpawned { agent } => serde_json::json!({
@@ -112,8 +114,8 @@ fn summarize_meta_command_response(
             "agents": agents
                 .iter()
                 .filter(|agent| {
-                    !agent.is_metaagent()
-                        && agent.controlled_by_metaagent_id() == Some(metaagent.id())
+                    agent.session_id() == metaagent.session_id()
+                        && (room_tools || (!agent.is_metaagent() && agent.controlled_by_metaagent_id() == Some(metaagent.id())))
                 })
                 .map(summarize_meta_agent)
                 .collect::<Vec<_>>(),

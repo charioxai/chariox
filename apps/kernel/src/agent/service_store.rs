@@ -92,6 +92,21 @@ impl AgentServiceStore {
         self.write().remove_workflow_runtime_agent(agent_id)
     }
 
+    pub(crate) fn materialize_workflow_runtime_agent_by_agent(
+        &self,
+        agent: AgentInstance,
+        session_id: &str,
+        worktree_id: &str,
+        creator: Option<&str>,
+    ) -> AgentInstance {
+        self.write().materialize_workflow_runtime_agent_by_agent(
+            agent,
+            session_id,
+            worktree_id,
+            creator,
+        )
+    }
+
     pub(crate) fn destroy_workflow_runtime_agent(
         &self,
         agent_id: &str,

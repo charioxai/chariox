@@ -154,6 +154,8 @@ pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
     external_command_authority: Option<ExternalCommandAuthority>,
+    room_provider_origin: Option<(String, String)>,
+    room_request_origin: Option<(String, LocalDaemonRequest)>,
     relay_peer_authority: Option<crate::runtime::relay_peer_authority::RelayPeerAuthority>,
     forwarded_peer_binding: Option<forwarded_peer_authority::ForwardedPeerBinding>,
     #[cfg(test)]
@@ -785,6 +787,8 @@ impl KernelRuntimeState {
         );
         let runtime = Self {
             external_command_authority: None,
+            room_provider_origin: None,
+            room_request_origin: None,
             relay_peer_authority: None,
             forwarded_peer_binding: None,
             #[cfg(test)]
@@ -1189,3 +1193,7 @@ impl KernelRuntimeState {
 
 // MD-3: typed internal seam for display integration; public protocol remains coordinator-owned.
 pub(crate) use kernel_browser_runtime::KernelBrowserDisplayRequest;
+
+mod room_agent_admission;
+
+mod room_dispatch_obligation;

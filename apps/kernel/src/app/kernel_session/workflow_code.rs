@@ -13,6 +13,17 @@ impl<'a> KernelSessionService<'a> {
         alias_base: Option<&str>,
     ) -> Result<WorkflowCodeApplyReport, DaemonError> {
         self.authorize()?;
+        if self.app.config().room_agent_tools
+            && controlled_by_metaagent_id.is_some()
+            && definition
+                .nodes
+                .iter()
+                .any(|node| !node.extensions.is_empty())
+        {
+            return Err(crate::runtime::room_tool_admission::denied(
+                "PR1 room workflows cannot provision capability grants; use owner-admitted capabilities",
+            ));
+        }
         let validation = definition.validate_with_limits(limits);
         if !validation.ok {
             return Err(DaemonError::LocalTransport {
@@ -78,7 +89,9 @@ impl<'a> KernelSessionService<'a> {
                         request = request.with_account_profile(account_profile.to_string());
                     }
                     if let Some(metaagent_id) = controlled_by_metaagent_id.as_deref() {
-                        request = request.with_controlled_by_metaagent_id(metaagent_id.to_string());
+                        request = request
+                            .with_spawned_by_agent_id(metaagent_id)
+                            .with_controlled_by_metaagent_id(metaagent_id.to_string());
                     }
                     let created =
                         self.spawn_workflow_code_generated_agent(request, agent.alias.as_deref())?;
@@ -114,7 +127,9 @@ impl<'a> KernelSessionService<'a> {
                         });
                     }
                     if let Some(metaagent_id) = controlled_by_metaagent_id.as_deref() {
-                        if agent.controlled_by_metaagent_id() != Some(metaagent_id) {
+                        if !self.app.config().room_agent_tools
+                            && agent.controlled_by_metaagent_id() != Some(metaagent_id)
+                        {
                             return Err(DaemonError::LocalTransport {
                                 operation: "workflow_code.apply",
                                 message: format!(
@@ -495,7 +510,9 @@ impl<'a> KernelSessionService<'a> {
             .filter(|node| matches!(&node.agent, WorkflowCodeAgentBinding::Create(_)))
             .count();
         let current_agent_count = self.app.agents.get_session_agents(session_id).len();
-        if current_agent_count.saturating_add(generated_agent_count) > session.max_agents() as usize
+        if caller_metaagent_id.is_none()
+            && current_agent_count.saturating_add(generated_agent_count)
+                > session.max_agents() as usize
         {
             push_workflow_code_target_validation_error(
                 validation,
@@ -539,6 +556,17 @@ impl<'a> KernelSessionService<'a> {
             );
         }
         for node in &definition.nodes {
+            if self.app.config().room_agent_tools
+                && caller_metaagent_id.is_some()
+                && !node.extensions.is_empty()
+            {
+                push_workflow_code_target_validation_error(
+                    validation,
+                    "unauthorized_extension_provisioning",
+                    "PR1 room workflows cannot provision capability grants; use owner-admitted capabilities".to_owned(),
+                    Some(node.handle.clone()),
+                );
+            }
             match &node.agent {
                 WorkflowCodeAgentBinding::Create(agent) => {
                     let provider = agent.provider.trim();
@@ -604,7 +632,7 @@ impl<'a> KernelSessionService<'a> {
                                     ),
                                     Some(node.handle.clone()),
                                 );
-                            } else if caller_metaagent_id.is_some_and(|metaagent_id| {
+                            } else if !self.app.config().room_agent_tools && caller_metaagent_id.is_some_and(|metaagent_id| {
                                 agent.controlled_by_metaagent_id() != Some(metaagent_id)
                             }) {
                                 push_workflow_code_target_validation_error(

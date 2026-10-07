@@ -5,7 +5,13 @@ impl WorkflowRegistry {
         Self {
             workspace_root,
             user_root,
+            created_by_agent_id: None,
         }
+    }
+
+    pub(crate) fn with_creator(mut self, creator: Option<&str>) -> Self {
+        self.created_by_agent_id = creator.map(str::to_string);
+        self
     }
 
     pub fn workspace_root(workspace: impl AsRef<Path>) -> PathBuf {
@@ -241,6 +247,7 @@ impl WorkflowRegistry {
             diagnostics: workflow_registry_validation_diagnostics(&compile.validation),
         };
         let manifest = StoredWorkflowRegistryManifest {
+            created_by_agent_id: self.created_by_agent_id.clone(),
             manifest_version: WORKFLOW_REGISTRY_MANIFEST_VERSION,
             name: name.to_string(),
             source_kind: source_kind.clone(),
@@ -376,6 +383,7 @@ impl StoredWorkflowRegistryManifest {
         source_scope: WorkflowRegistrySourceScope,
     ) -> WorkflowRegistryEntryMetadata {
         WorkflowRegistryEntryMetadata {
+            created_by_agent_id: self.created_by_agent_id,
             name: self.name,
             source_scope,
             source_kind: self.source_kind,
@@ -675,6 +683,7 @@ fn single_file_workflow_registry_metadata(
         .unwrap_or("workflow")
         .to_string();
     Ok(WorkflowRegistryEntryMetadata {
+        created_by_agent_id: None,
         name,
         source_scope,
         source_kind: WorkflowRegistrySourceKind::SingleFile,
@@ -697,6 +706,7 @@ pub(super) fn builtin_workflow_registry_metadata(
     example: &WorkflowCodePatternExample,
 ) -> WorkflowRegistryEntryMetadata {
     WorkflowRegistryEntryMetadata {
+        created_by_agent_id: None,
         name: example.slug.to_string(),
         source_scope: WorkflowRegistrySourceScope::Builtin,
         source_kind: WorkflowRegistrySourceKind::SingleFile,
