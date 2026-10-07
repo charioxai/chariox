@@ -1,4 +1,4 @@
-import {MirrorFrameAssembler,type MirrorChunk} from './browser-mirror-chunks.js'
+import {readMirrorFrame,type MirrorChunk} from './browser-mirror-chunks.js'
 // MP-08/MP-10/MP-11: reference renderer for Cloud/native web clients. No origin I/O.
 import { mirrorSandboxCsp,validateMirrorPacket,mirrorTreeCanonicalJson } from './browser-mirror-security.js'
 import type { KernelBrowserMirrorAction, MirrorNode, MirrorPacket, MirrorResource, MirrorTile } from './browser-mirror-types.js'
@@ -327,19 +327,12 @@ export async function attachBrowserMirror(transport:MirrorTransport,container:HT
   return {renderer,input,
     async next(){
       if(closed||busy)throw Error('MP-08: mirror credit unavailable')
-      busy=true;const assembler=new MirrorFrameAssembler();let cursor:number|null=null
+      busy=true
       try {
-        let packet:MirrorPacket
-        while(true){
-          const value=await request({op:'mirror_next',subscription_id,generation:binding.generation,after_sequence:sequence,...(cursor===null?{}:{after_chunk:cursor}),drift_nodes:cursor===null?renderer.driftNodes():[]}) as MirrorPacket|MirrorChunk
-          if(value.subscription_id!==subscription_id||value.tab_id!==binding.tab_id||value.generation!==binding.generation)throw Error('MP-11: foreign mirror packet')
-          if('kind' in value&&value.kind==='mirror_chunk') {const complete=await assembler.push(value);if(!complete){cursor=value.index;continue}packet=complete;break}
-          if(cursor!==null)throw Error('MP-11: mirror chunk interrupted by unrelated packet')
-          packet=value as MirrorPacket;break
-        }
+        const packet=await readMirrorFrame(cursor=>request({op:'mirror_next',subscription_id,generation:binding.generation,after_sequence:sequence,...(cursor===null?{}:{after_chunk:cursor}),drift_nodes:cursor===null?renderer.driftNodes():[]}) as Promise<MirrorPacket|MirrorChunk>,subscription_id,binding.tab_id,binding.generation)
         if(closed)throw Error('MP-08: mirror closed during transfer')
         await renderer.apply(packet);sequence=packet.sequence;document_id=packet.document_id;return packet
-      }catch(error){assembler.clear();closed=true;renderer.close();await request({op:'mirror_close',subscription_id,generation:binding.generation}).catch(()=>{});throw error}finally{busy=false}
+      }catch(error){closed=true;renderer.close();await request({op:'mirror_close',subscription_id,generation:binding.generation}).catch(()=>{});throw error}finally{busy=false}
     },
     takeover:()=>request({op:'display_takeover',tab_id:binding.tab_id,generation:binding.generation}),release:()=>request({op:'display_release',tab_id:binding.tab_id,generation:binding.generation}),actors:()=>request({op:'display_actors'}),
     async close(){if(closed)return;closed=true;renderer.close();await request({op:'mirror_close',subscription_id,generation:binding.generation})}}

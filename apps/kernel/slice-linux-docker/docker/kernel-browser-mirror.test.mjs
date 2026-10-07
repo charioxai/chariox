@@ -327,7 +327,7 @@ test('MD-454: source protection/document changes during chunk delivery discard t
  const {service,state}=fixture();state.snapshot.revision=0;state.snapshot.nodes[0].children=[];
  for(let n=3;n<1203;n++){const id='n'+n;state.snapshot.nodes[0].children.push(id);state.snapshot.nodes.push({id,parent:'n1',children:[],kind:'element',tag:'p',attributes:{title:randomBytes(600).toString('base64')}})}state.snapshot.nodes=state.snapshot.nodes.filter(n=>n.id!=='n2');
  const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');const first=await service.next(next(sub.subscription_id),'a');assert(first.parts>1);state.snapshot.revision++;
- await assert.rejects(service.next({...next(sub.subscription_id),after_chunk:0},'a'),/chunk policy or document changed/);
+ await assert.rejects(service.next({...next(sub.subscription_id),after_chunk:0},'a'),/mirror frame changed before commit/);
  await assert.rejects(service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:sub.subscription_id,sequence:first.sequence,action:{kind:'key',key:'Tab'}},'a'),/stale mirror (input epoch|protection policy)/);
 });
 
@@ -396,4 +396,25 @@ test('MP-11: native paint overlays preserve public inline flow but never protect
  const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),packet=await service.next(next(sub.subscription_id),'a');
  assert.equal(packet.nodes.find(n=>n.id==='n1').tag,'label');assert.deepEqual(packet.nodes.find(n=>n.id==='n1').children,['n2','n3']);assert.equal(packet.nodes.find(n=>n.id==='n2').text,'fixture');assert.equal(packet.nodes.find(n=>n.id==='n3').kind,'mask');
  assert.equal(packet.tiles.length,1);
+});
+test('MP-11: trusted live wheel-geometry refusal never dispatches and cannot replay a click',async()=>{
+ const {service,state,host}=fixture();state.snapshot.nodes[1]={id:'n2',parent:'n1',children:[],kind:'element',tag:'p',box:{x:5,y:5,width:20,height:20}};
+ const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),p=await service.next(next(s.subscription_id),'a');
+ const evaluate=service.evaluate.bind(service);service.evaluate=(w,e)=>e.includes('.coordinateTarget(')?Promise.resolve({scroll_epoch_refused:true}):evaluate(w,e);
+ const input=kind=>service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:p.sequence,action:{kind:'coordinate',input:{kind,x:10,y:10,delta_x:0,delta_y:20}}},'a');
+ const wheel=await input('scroll');await assert.rejects(wheel.guard(),/MP-11: stale mirror input epoch/);
+ const click=await input('click');await assert.rejects(click.guard(),error=>!error.message.includes('stale mirror input epoch'));
+});
+
+test('MD-454: a source-only capture race resets unissued bytes and refuses input without native effects',async()=>{
+ const {service,state,host}=fixture();state.snapshot.revision=1;
+ const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),p=await service.next(next(s.subscription_id),'a');
+ const evaluate=service.evaluate.bind(service);let race=true;
+ service.evaluate=async(w,e)=>{if(race&&e.endsWith('.epoch()')){race=false;state.snapshot.revision++}return evaluate(w,e)};
+ await assert.rejects(service.next(next(s.subscription_id,p.sequence),'a'),/mirror frame changed before commit/);
+ const stream=service.streams.get(s.subscription_id);assert.equal(stream.previous,null);assert.equal(stream.geometryResetPolicy,host.protection);
+ service.world=async()=>assert.fail('refuse before native dispatch');
+ await assert.rejects(service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:p.sequence,action:{kind:'key',key:'Tab'}},'a'),/stale mirror input epoch/);
+ host.protection={...host.protection};
+ await assert.rejects(service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:p.sequence,action:{kind:'key',key:'Tab'}},'a'),error=>!error.message.includes('stale mirror input epoch'));
 });

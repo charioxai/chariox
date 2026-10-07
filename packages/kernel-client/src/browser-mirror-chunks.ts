@@ -35,3 +35,24 @@ export class MirrorFrameAssembler {
   }catch(error){this.clear();throw error}
  }
 }
+
+// Observation-only: no partial frame may reach the renderer or input epoch.
+export async function readMirrorFrame(read:(cursor:number|null)=>Promise<MirrorPacket|MirrorChunk>,subscription:string,tab:string,generation:number):Promise<MirrorPacket>{
+ const assembler=new MirrorFrameAssembler();let cursor:number|null=null,restarted=false
+ while(true){
+  let value:MirrorPacket|MirrorChunk
+  try{value=await read(cursor)}catch(error){
+   assembler.clear()
+   if(!restarted&&error instanceof Error&&/\bMP-11: mirror frame changed before commit\b/.test(error.message)){
+    restarted=true;cursor=null;await new Promise(resolve=>setTimeout(resolve,50));continue
+   }
+   throw error
+  }
+  if(value.subscription_id!==subscription||value.tab_id!==tab||value.generation!==generation)throw Error('MP-11: foreign mirror packet')
+  if('kind'in value&&value.kind==='mirror_chunk'){
+   const packet=await assembler.push(value);if(packet)return packet;cursor=value.index;continue
+  }
+  if(cursor!==null)throw Error('MP-11: mirror chunk interrupted by unrelated packet')
+  return value as MirrorPacket
+ }
+}

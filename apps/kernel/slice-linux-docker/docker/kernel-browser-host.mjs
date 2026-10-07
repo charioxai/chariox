@@ -15,7 +15,7 @@ import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from ".
 import { captureRegionMasks } from "./kernel-browser-region-protection.mjs";
 import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
 
-import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
+import { MirrorService, MirrorInputEpochRefusal, MirrorFrameChanged } from "./kernel-browser-mirror.mjs";
 import { DisplayStream } from "./kernel-browser-display.mjs";
 import { DisplayCapture } from './kernel-browser-display-capture.mjs';
 
@@ -483,7 +483,7 @@ export class KernelBrowserHost {
       if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }
-        return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: error instanceof MirrorInputEpochRefusal ? "MP-11: stale mirror input epoch" : "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }
+        return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: error instanceof MirrorInputEpochRefusal ? "MP-11: stale mirror input epoch" : error instanceof MirrorFrameChanged ? "MP-11: mirror frame changed before commit" : "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }
   }
 }
 

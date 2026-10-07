@@ -252,20 +252,21 @@ function installMirrorObserver(initialStyles = {},inspectCss,makeTextScanner,fon
   };
   // MP-11: an admitted older packet may not retarget an element that moved or
   // changed after the latest sample. Validate again in the real isolated world.
-  const validate = expected => {
+  const validate = (expected,scroll=false) => {
+    let geometryChanged=false;
     for(const record of expected??[]) {
       const node=live.get(record.id);
       if(!node?.isConnected||maskedNodes.has(node))throw new Error('mirror changed/protected live target');
       if(record.kind==='text'){if(node.nodeType!==3||node.data!==record.text)throw new Error('mirror changed live text');continue;}
       if(node.nodeType!==1)throw new Error('mirror changed live element');
       const current=box(node);
-      if(record.box&&Object.keys(current).some(key=>Math.abs(current[key]-record.box[key])>0.5))throw new Error('mirror changed live geometry');
+      if(record.box&&Object.keys(current).some(key=>Math.abs(current[key]-record.box[key])>0.5)){if(!scroll)throw new Error('mirror changed live geometry');geometryChanged=true;}
       for(const [key,value]of Object.entries(record.attributes??{})) {
         const actual=key==='contenteditable'?(['true','false','plaintext-only'].includes(node.contentEditable)?node.contentEditable:(node.isContentEditable?'true':'false')):node.getAttribute(key);
         if(actual!==value)throw new Error('mirror changed live attribute');
       }
     }
-    return true;
+    return !geometryChanged;
   };
   const unprotected = node => {
     for(let ancestor=node,depth=0;ancestor&&depth<128;depth++) {
@@ -303,11 +304,11 @@ function installMirrorObserver(initialStyles = {},inspectCss,makeTextScanner,fon
     const key=ids.get(node);if(!key||!live.has(key)||maskedNodes.has(node)||node.matches('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],input[type=password]')||/password|one-time-code|cc-/i.test(node.autocomplete??''))throw new Error('mirror stale/protected coordinate target');
     // MP-11: a live hit must still be the target observed at this point, and
     // its full element/frame ancestry must retain the sampled geometry.
-    if(expected.length) {
-      if(key!==expected[0].id)throw new Error('mirror changed live coordinate target');
-      validate(expected);
-    }
     unprotected(node);
+    if(expected.length) {
+      if(key!==expected[0].id){if(point.kind==='scroll')return {scroll_epoch_refused:true};throw new Error('mirror changed live coordinate target');}
+      if(!validate(expected,point.kind==='scroll'))return {scroll_epoch_refused:true};
+    }
     return key;
   };
   const activeTarget = (expected=[],editable=true) => {

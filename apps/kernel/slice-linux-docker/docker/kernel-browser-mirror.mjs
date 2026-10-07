@@ -20,9 +20,12 @@ const videoSnapshot=()=>({root:'n9007199254740991',nodes:[{id:'n9007199254740991
 export class MirrorInputEpochRefusal extends Error {
   constructor() { super('MP-11: stale mirror input epoch'); }
 }
+export class MirrorFrameChanged extends Error {
+  constructor() { super('MP-11: mirror frame changed before commit'); }
+}
 export class MirrorService {
   constructor(host) {this.host=host;this.now=()=>performance.now();this.streams=new Map();this.expiry=setInterval(()=>this.expire(),5000);this.expiry.unref?.();}
-  invalidate() {for(const stream of this.streams.values()){void stream.frameCustom?.release();stream.frameCustom=null;stream.pending=null;stream.previous=null;stream.observed=null;stream.resources.clear();stream.cache.clear();stream.policy=null;stream.epochs=[];stream.refinePending=false;}}
+  invalidate() {for(const stream of this.streams.values()){void stream.frameCustom?.release();stream.frameCustom=null;stream.pending=null;stream.previous=null;stream.observed=null;stream.resources.clear();stream.cache.clear();stream.policy=null;stream.geometryResetPolicy=null;stream.epochs=[];stream.refinePending=false;}}
   clear() {for(const stream of this.streams.values())void stream.frameCustom?.release();this.streams.clear();}
   removeTab(tabId) {for(const [id,s] of this.streams)if(s.tab_id===tabId)this.drop(id);}
   drop(id) {const stream=this.streams.get(id);void stream?.frameCustom?.release();this.streams.delete(id);}
@@ -75,12 +78,13 @@ export class MirrorService {
       if(cursor!==null&&(!Number.isSafeInteger(cursor)||cursor<0))throw Error('MP-11: invalid mirror chunk cursor');
       if(stream.pending) {
         const tab=await this.host.displayTarget({tab_id:stream.tab_id,generation:command.generation});
-        if(stream.pending.policy!==this.host.protection||stream.pending.document_id!==tab.document_id||stream.pending.sourceRevision!==null&&await this.evaluate(stream.pending.world,'globalThis.__charioxMirror.epoch()')!==stream.pending.sourceRevision) {
+        if(stream.pending.policy!==this.host.protection||stream.pending.document_id!==tab.document_id) {
           await stream.frameCustom?.release();stream.frameCustom=null;stream.pending=null;stream.previous=null;stream.observed=null;stream.epochs=[];
           throw Error('MP-11: mirror chunk policy or document changed');
         }
         const pending=stream.pending;await stream.frameCustom?.verify();
-        if(pending.sourceRevision!==null&&await this.evaluate(pending.world,'globalThis.__charioxMirror.epoch()')!==pending.sourceRevision||stream.pending!==pending||pending.policy!==this.host.protection||this.host.generation!==command.generation||this.streams.get(command.subscription_id)!==stream)throw Error('MP-11: mirror chunk policy or document changed');
+        if(stream.pending!==pending||pending.policy!==this.host.protection||this.host.generation!==command.generation||this.streams.get(command.subscription_id)!==stream)throw Error('MP-11: mirror chunk policy or document changed');
+        if(pending.sourceRevision!==null&&await this.evaluate(pending.world,'globalThis.__charioxMirror.epoch()')!==pending.sourceRevision)throw new MirrorFrameChanged();
         if(command.after_sequence===pending.sequence&&cursor===null){await stream.frameCustom?.release();stream.frameCustom=null;stream.pending=null;}
         else {
           if(command.after_sequence!==pending.base_sequence)throw Error('MP-11: invalid mirror chunk base');
@@ -104,6 +108,7 @@ export class MirrorService {
       // Any delayed native/protection fence failure revokes the retained frame,
       // including its input epochs. A later credit starts from a fresh base.
       await stream.frameCustom?.release();stream.frameCustom=null;stream.pending=null;stream.previous=null;stream.observed=null;stream.epochs=[];stream.resources.clear();stream.cache.clear();stream.policy=null;
+      stream.geometryResetPolicy=error instanceof MirrorFrameChanged?this.host.protection:null;
       throw error;
     }finally{stream.busy=false;}
   }
@@ -241,12 +246,12 @@ export class MirrorService {
     // MP-11: protection updates may interleave with awaited CDP/resource work.
     // No packet or private base captured under an old policy may escape afterward.
     const assertPolicy=()=>{if(this.host.protection!==policy||this.host.generation!==command.generation||this.streams.get(command.subscription_id)!==stream) {
-      stream.previous=null;stream.observed=null;stream.policy=null;stream.epochs=[];stream.refinePending=false;stream.resources.clear();stream.cache.clear();
+      stream.previous=null;stream.observed=null;stream.policy=null;stream.geometryResetPolicy=null;stream.epochs=[];stream.refinePending=false;stream.resources.clear();stream.cache.clear();
       throw new Error('MP-11: stale mirror protection policy or subscription');
     }}
     assertPolicy();
     const custom=stream.frameCustom;await custom.verify();stream.inputCustomFingerprint=custom.fingerprint;
-    if(sourceEpoch!==null&&await this.evaluate(world,'globalThis.__charioxMirror.epoch()')!==sourceEpoch)throw new Error('MP-11: mirror source changed during protected capture');
+    if(sourceEpoch!==null&&await this.evaluate(world,'globalThis.__charioxMirror.epoch()')!==sourceEpoch){assertPolicy();throw new MirrorFrameChanged();}
     stream.frameWorld=world;stream.frameSourceRevision=sourceEpoch;
     mark('document_fence');assertPolicy();
     const hash=stream.hasher.hash(source),reset=!stream.previous||command.after_sequence!==stream.sequence||stream.document_id!==tab.document_id;
@@ -256,7 +261,7 @@ export class MirrorService {
     const resources=[...material.resources.values()].filter(r=>reset||!stream.resources.has(r.resource_id));
     const packet={subscription_id:command.subscription_id,tab_id:tab.tab_id,generation:command.generation,document_id:tab.document_id,sequence:stream.sequence+1,base_sequence:reset?null:stream.sequence,reset,hash,root:source.root,nodes:changed,removed,fonts:source.fonts,scroll:source.scroll,focused:source.focused,selection:source.selection??null,resources,tiles:tileFrame??[],css_width:1280,css_height:800,device_scale_factor:this.host.scales.get(tab.tab_id)??1};
     if(JSON.stringify(packet).length>maxWire)throw new Error('MP-11: mirror packet exceeds bound; use display fallback');
-    stream.sequence++;stream.previous=source;stream.document_id=tab.document_id;stream.policy=policy;stream.resources=material.resources;
+    stream.geometryResetPolicy=null;stream.sequence++;stream.previous=source;stream.document_id=tab.document_id;stream.policy=policy;stream.resources=material.resources;
     // MP-11: only committed/issued epochs are eligible; no future or guessed input.
     stream.epochs.push({sequence:stream.sequence,issuedAt:this.now(),nodes:new Map(source.nodes.map(n=>[n.id,JSON.stringify(n)])),focused:source.focused,fullFallback:stream.fullFallback});
     stream.epochs=stream.epochs.filter(e=>this.now()-e.issuedAt<=2000).slice(-8);
@@ -266,6 +271,7 @@ export class MirrorService {
   async resolveInput(tab,input,scope,signal) {
     this.assertWebTab(tab);const stream=this.require(input.subscription_id,scope,this.host.generation);
     if(stream.tab_id!==tab.tab_id||stream.document_id!==tab.document_id)throw new Error('MP-11: stale mirror input document');
+    if(stream.policy===null&&stream.geometryResetPolicy===this.host.protection)throw new MirrorInputEpochRefusal();
     if(stream.policy!==this.host.protection)throw new Error('MP-11: stale mirror protection policy');
     stream.epochs=stream.epochs.filter(e=>this.now()-e.issuedAt<=2000).slice(-8);
     if(stream.pending?.sequence===input.sequence&&!stream.pending.lastIssued)throw new MirrorInputEpochRefusal();
@@ -274,7 +280,7 @@ export class MirrorService {
     // wheel may refresh changed viewport geometry here; clicks never replay.
     if(!epoch)throw new MirrorInputEpochRefusal();
     const generation=this.host.generation;
-    const assertEpoch=()=>{if(this.require(input.subscription_id,scope,generation)!==stream||stream.policy!==this.host.protection||stream.document_id!==tab.document_id||!stream.epochs.includes(epoch)||this.now()-epoch.issuedAt>2000)throw new Error('MP-11: stale mirror protection policy or admitted input');};
+    const assertEpoch=()=>{if(this.require(input.subscription_id,scope,generation)!==stream||stream.policy!==this.host.protection||stream.document_id!==tab.document_id||!stream.epochs.includes(epoch)||this.now()-epoch.issuedAt>2000){if(stream.policy===null&&stream.geometryResetPolicy===this.host.protection)throw new MirrorInputEpochRefusal();throw new Error('MP-11: stale mirror protection policy or admitted input');}};
     const action=input.action;
     if(stream.fullFallback && !['coordinate','key'].includes(action?.kind))throw new Error('MP-11: full video fallback requires coordinate input');
     if(!action||typeof action.kind!=='string'||['text','composition'].includes(action.kind)&&(typeof action.text!=='string'||action.text.length>16384)||action.kind==='composition'&&(!Number.isInteger(action.selection_start)||!Number.isInteger(action.selection_end)||action.selection_start<0||action.selection_start>action.text.length||action.selection_end<action.selection_start||action.selection_end>action.text.length))throw new Error('MP-11: invalid mirror input');
@@ -355,6 +361,7 @@ export class MirrorService {
         if(!checked&&coordinateExpected.length) {
           const id=await this.evaluate(world,`globalThis.__charioxMirror.coordinateTarget(${JSON.stringify(action.input)},${JSON.stringify([...records.values()].filter(n=>n.kind==='tile').map(n=>n.id))},${JSON.stringify(coordinateExpected)})`);
           assertNotCancelled(signal);assertEpoch();
+          if(action.input.kind==='scroll'&&id?.scroll_epoch_refused===true)throw new MirrorInputEpochRefusal();
           if(id!==coordinateExpected[0].id||!unchanged(id))throw new Error('MP-11: changed live mirror coordinate target');
           checked=true;
         }
