@@ -25,7 +25,7 @@ test('MP-11 a rejected lossy mask emits only protected exact pixels and recovers
  }finally{await m.close()}
 });
 test('MP-11 oversized exact protection fallback fails closed without retaining a frame',async()=>{
- const latest={serial:1,data_base64:'A'.repeat(1024*1024+1)},source={subscribe:()=>()=>{},sample:()=>latest};
+ const latest={serial:1,data_base64:'A'.repeat(4*1024*1024+1)},source={subscribe:()=>()=>{},sample:()=>latest};
  const m=new MotionEncoder(source,{encode:async()=>({dropped:true})},{codec:'avc1.420033',bitrate:8000000});
  try{await m.active;assert.equal(m.frames.length,0);assert.throws(()=>m.take(),/motion encoder failed/)}finally{await m.close()}
 });
