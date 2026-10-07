@@ -602,6 +602,38 @@ mod tests {
     }
 
     #[test]
+    fn a02_room_admission_keeps_task_prompt_identity() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let mut app = DaemonApp::bootstrap(config).unwrap();
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .unwrap();
+        let attachment = KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "task-client",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        let id = app.sessions.reserve_prompt_id();
+        let prompt = PromptQueueItem::new(
+            &id,
+            attachment.id(),
+            agent.id(),
+            "ordinary task",
+            PromptStatus::Queued,
+        );
+        let outcome = app
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .unwrap();
+        let PromptSubmissionOutcome::Started { prompt } = outcome else {
+            panic!()
+        };
+        assert_eq!(prompt.id(), id);
+    }
+
+    #[test]
     fn prompt_submission_refreshes_projected_prompt_timestamp() {
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon should boot");
