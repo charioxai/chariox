@@ -252,9 +252,11 @@ impl KernelRuntimeState {
             .into_iter()
             .map(|run| run.session_id().to_string())
             .collect::<std::collections::BTreeSet<_>>();
-        let mut result = match self
-            .dispatch_authenticated_runtime_tool_call_inner(auth_token, tool_name, arguments)
-            .await
+        // Boxed: the per-tool match future is large; keep it off the caller's stack.
+        let mut result = match Box::pin(self.dispatch_authenticated_runtime_tool_call_inner(
+            auth_token, tool_name, arguments,
+        ))
+        .await
         {
             Ok(result) => result,
             Err(mut error) => {
