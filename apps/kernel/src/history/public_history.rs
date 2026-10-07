@@ -267,11 +267,7 @@ impl OperationalHistoryStore {
             return Err(invalid_search());
         }
         let connection = self.lock_read_connection(Some(room))?;
-        let json: Option<String> = connection.query_row(
-            "SELECT p.document_json FROM public_history p JOIN history_events h ON h.event_id=p.event_ref AND h.sequence=p.sequence
-             WHERE p.owner_user_id=?1 AND p.session_id=?2 AND p.event_ref=?3",params![owner,room,event_ref],|r|r.get(0)).optional().map_err(public_error)?;
-        json.map(|json| serde_json::from_str(&json).map_err(|_| invalid_search()))
-            .transpose()
+        read_public_document(&connection, owner, room, event_ref)
     }
 
     pub(crate) fn public_history_turn_locked(
@@ -289,21 +285,31 @@ impl OperationalHistoryStore {
             i64::try_from(turns_back).map_err(|_| invalid_search())?
         };
         let connection = self.lock_read_connection(Some(room))?;
-        // Select from all retained, scoped public turns before limiting events.
-        // An empty selection returns no rows; a retained NULL turn is distinct.
+        // MP-08 / MP-10 / MP-11: one kernel prompt may have a different
+        // provider-native turn ID. Accept either reference, select the logical
+        // prompt first, then bound assembled messages rather than token deltas.
         let mut statement = connection.prepare(
             "WITH selected_turn AS (
-                SELECT json_extract(p.document_json,'$.turn_id') AS turn_id
+                SELECT COALESCE(h.prompt_id,json_extract(p.document_json,'$.turn_id')) AS turn_id
                 FROM public_history p JOIN history_events h ON h.event_id=p.event_ref AND h.sequence=p.sequence
                 WHERE p.owner_user_id=?1 AND p.session_id=?2 AND p.agent_id=?3
-                  AND (?4 IS NULL OR json_extract(p.document_json,'$.turn_id')=?4)
-                GROUP BY json_extract(p.document_json,'$.turn_id') ORDER BY max(p.sequence) DESC LIMIT 1 OFFSET ?5
+                  AND (?4 IS NULL OR COALESCE(h.prompt_id,json_extract(p.document_json,'$.turn_id'))=?4 OR h.turn_id=?4)
+                GROUP BY COALESCE(h.prompt_id,json_extract(p.document_json,'$.turn_id')) ORDER BY max(p.sequence) DESC LIMIT 1 OFFSET ?5
              )
-             SELECT p.document_json FROM public_history p
-             JOIN history_events h ON h.event_id=p.event_ref AND h.sequence=p.sequence
-             JOIN selected_turn t ON json_extract(p.document_json,'$.turn_id') IS t.turn_id
-             WHERE p.owner_user_id=?1 AND p.session_id=?2 AND p.agent_id=?3
-             ORDER BY p.sequence DESC LIMIT ?6"
+             , messages AS (
+                SELECT p.event_ref,p.sequence,row_number() OVER (
+                    PARTITION BY p.kind,h.provider_run_id,
+                    CASE WHEN p.kind='provider_output' AND h.merge_key IS NOT NULL
+                         AND h.provider_run_id IS NOT NULL AND t.turn_id IS NOT NULL
+                         THEN h.merge_key ELSE p.event_ref END
+                    ORDER BY p.sequence DESC
+                ) AS message_rank
+                FROM public_history p
+                JOIN history_events h ON h.event_id=p.event_ref AND h.sequence=p.sequence
+                JOIN selected_turn t ON COALESCE(h.prompt_id,json_extract(p.document_json,'$.turn_id')) IS t.turn_id
+                WHERE p.owner_user_id=?1 AND p.session_id=?2 AND p.agent_id=?3
+             )
+             SELECT event_ref FROM messages WHERE message_rank=1 ORDER BY sequence DESC LIMIT ?6"
         ).map_err(public_error)?;
         let rows = statement
             .query_map(
@@ -318,10 +324,15 @@ impl OperationalHistoryStore {
                 |r| r.get::<_, String>(0),
             )
             .map_err(public_error)?;
-        rows.map(|row| {
-            serde_json::from_str(&row.map_err(public_error)?).map_err(|_| invalid_search())
-        })
-        .collect()
+        let mut documents = Vec::new();
+        for reference in rows {
+            if let Some(document) =
+                read_public_document(&connection, owner, room, &reference.map_err(public_error)?)?
+            {
+                documents.push(document);
+            }
+        }
+        Ok(documents)
     }
 
     /// Start/resume a bounded rebuild from sanitized source, never raw rows.
@@ -377,6 +388,67 @@ impl OperationalHistoryStore {
         .map_err(public_error)?;
         tx.commit().map_err(public_error)
     }
+}
+
+// MP-08 / MP-10 / MP-11: only sanitized source text is assembled. Raw history
+// contributes non-content identity columns, never prompt/output or event_json.
+fn read_public_document(
+    connection: &Connection,
+    owner: &str,
+    room: &str,
+    reference: &str,
+) -> Result<Option<PublicHistoryDocument>, DaemonError> {
+    let row: Option<(String, Option<String>, Option<String>, Option<String>)> = connection.query_row(
+        "SELECT p.document_json,h.merge_key,h.provider_run_id,h.prompt_id
+         FROM public_history p JOIN history_events h ON h.event_id=p.event_ref AND h.sequence=p.sequence
+         WHERE p.owner_user_id=?1 AND p.session_id=?2 AND p.event_ref=?3",
+        params![owner, room, reference], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    ).optional().map_err(public_error)?;
+    let Some((json, merge_key, run, prompt)) = row else {
+        return Ok(None);
+    };
+    let mut document: PublicHistoryDocument =
+        serde_json::from_str(&json).map_err(|_| invalid_search())?;
+    document.turn_id = prompt.or(document.turn_id);
+    let key = if document.kind == HistoryEventKind::ProviderOutput {
+        merge_key
+            .zip(run)
+            .zip(document.turn_id.clone())
+            .map(|((merge_key, run), turn)| (document.agent_id.clone(), run, turn, merge_key))
+    } else {
+        None
+    };
+    if let Some((agent, run, turn, merge_key)) = &key {
+        let mut statement = connection.prepare(
+            "SELECT p.text,json_extract(p.document_json,'$.truncated')
+             FROM public_history p JOIN history_events h ON h.event_id=p.event_ref AND h.sequence=p.sequence
+             WHERE p.owner_user_id=?1 AND p.session_id=?2 AND p.agent_id=?3 AND p.kind='provider_output'
+               AND h.provider_run_id=?4 AND h.merge_key=?5
+               AND COALESCE(h.prompt_id,json_extract(p.document_json,'$.turn_id'))=?6
+             ORDER BY p.sequence"
+        ).map_err(public_error)?;
+        let parts = statement
+            .query_map(params![owner, room, agent, run, merge_key, turn], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?))
+            })
+            .map_err(public_error)?;
+        document.text.clear();
+        let mut remaining = 64 * 1024;
+        for part in parts {
+            let (text, truncated) = part.map_err(public_error)?;
+            let count = text.chars().count();
+            document.text.extend(text.chars().take(remaining));
+            document.truncated |= truncated || count > remaining;
+            remaining = remaining.saturating_sub(count);
+            if remaining == 0 {
+                // Even if the next chunk is empty, report the bounded read
+                // conservatively. Never silently claim complete oversized text.
+                document.truncated = true;
+                break;
+            }
+        }
+    }
+    Ok(Some(document))
 }
 
 fn public_error(error: rusqlite::Error) -> DaemonError {

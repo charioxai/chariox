@@ -72,7 +72,7 @@ impl room_secret_observation::RoomSecretObservations {
             session_id: room.to_owned(),
             agent_id: event.agent_id.clone()?,
             kind: event.kind,
-            turn_id: event.turn_id.clone().or_else(|| event.prompt_id.clone()),
+            turn_id: event.prompt_id.clone().or_else(|| event.turn_id.clone()),
             truncated: text.chars().count() > 64 * 1024,
             text: text.chars().take(64 * 1024).collect(),
         };
@@ -406,7 +406,15 @@ impl KernelRuntimeState {
             Ok(RuntimeToolResult {
                 ok: document.is_some(),
                 payload: match document {
-                    Some(document) => serde_json::json!({"event":document}),
+                    Some(mut document) => {
+                        // Reapply protection after joining sanitized deltas: a
+                        // protected value can straddle provider chunk boundaries.
+                        document.text = state
+                            .owned
+                            .room_secret_observations
+                            .scrub_text_or_withhold(room.id(), &document.text);
+                        serde_json::json!({"event":document})
+                    }
                     None => serde_json::json!({"error":"Public history reference is unavailable"}),
                 },
             })
@@ -439,6 +447,10 @@ impl KernelRuntimeState {
                 )?;
                 drop(_guard);
                 let _guard = state.finish_public_history_snapshot(&session, &agent, &room, None, revision)?;
+                for event in &mut events {
+                    event.text = state.owned.room_secret_observations
+                        .scrub_text_or_withhold(room.id(), &event.text);
+                }
                 events.reverse();
                 Ok(RuntimeToolResult {
                     ok: true,

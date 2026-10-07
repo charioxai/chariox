@@ -710,50 +710,213 @@ fn public_history_turn_selection_is_scoped_and_distinguishes_missing_from_null_t
 fn public_history_recalls_fragmented_peer_answer_as_one_message() {
     let f = Fixture::new();
     let append = |room: &str, agent: &str, run: &str, prompt: &str, key: &str, text: &str| {
-        f.store.append_transcript(
-            &SessionHistoryEntry::provider_output(room, run, Some(agent),
-                crate::terminal::TerminalOutputKind::ProviderOutput, Some(key.into()), text.into()),
-            HistoryEventTurnContext { session_id: Some(room.into()), agent_id: Some(agent.into()),
-                provider_run_id: Some(run.into()), prompt_id: Some(prompt.into()),
-                turn_id: Some("native-turn".into()), ..Default::default() },
-        ).unwrap()
+        f.store
+            .append_transcript(
+                &SessionHistoryEntry::provider_output(
+                    room,
+                    run,
+                    Some(agent),
+                    crate::terminal::TerminalOutputKind::ProviderOutput,
+                    Some(key.into()),
+                    text.into(),
+                ),
+                HistoryEventTurnContext {
+                    session_id: Some(room.into()),
+                    agent_id: Some(agent.into()),
+                    provider_run_id: Some(run.into()),
+                    prompt_id: Some(prompt.into()),
+                    turn_id: Some("native-turn".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
     };
     let first = append("room", "peer", "run", "prompt", "message", "The stale ");
     let middle = append("room", "peer", "run", "prompt", "message", "cursor");
-    append("room", "peer", "run", "prompt", "message", " must restart the query.");
-    append("foreign", "peer", "run", "prompt", "message", "foreign content");
-    append("room", "other-peer", "run", "prompt", "message", "other peer");
-    append("room", "peer", "other-run", "prompt", "message", "other run");
-    append("room", "peer", "run", "other-prompt", "message", "other turn");
-    append("room", "peer", "run", "prompt", "other-message", "other message");
+    append(
+        "room",
+        "peer",
+        "run",
+        "prompt",
+        "message",
+        " must restart the query.",
+    );
+    append(
+        "foreign",
+        "peer",
+        "run",
+        "prompt",
+        "message",
+        "foreign content",
+    );
+    append(
+        "room",
+        "other-peer",
+        "run",
+        "prompt",
+        "message",
+        "other peer",
+    );
+    append(
+        "room",
+        "peer",
+        "other-run",
+        "prompt",
+        "message",
+        "other run",
+    );
+    append(
+        "room",
+        "peer",
+        "run",
+        "other-prompt",
+        "message",
+        "other turn",
+    );
+    append(
+        "room",
+        "peer",
+        "run",
+        "prompt",
+        "other-message",
+        "other message",
+    );
     let page = f.search("room", "cursor", 50, None).unwrap();
     assert_eq!(page.hits.len(), 1);
     let _guard = f.store.lock_public_history().unwrap();
     for reference in [&first.event_id, &middle.event_id, &page.hits[0].event_ref] {
-        let doc = f.store.read_public_history_locked("owner", "room", reference).unwrap().unwrap();
+        let doc = f
+            .store
+            .read_public_history_locked("owner", "room", reference)
+            .unwrap()
+            .unwrap();
         assert_eq!(doc.text, "The stale cursor must restart the query.");
         assert_eq!(doc.turn_id.as_deref(), Some("prompt"));
     }
-    let turn = f.store.public_history_turn_locked("owner", "room", "peer", Some("prompt"), 0, 200).unwrap();
-    assert_eq!(turn.iter().filter(|doc| doc.text == "The stale cursor must restart the query.").count(), 1);
+    let turn = f
+        .store
+        .public_history_turn_locked("owner", "room", "peer", Some("prompt"), 0, 200)
+        .unwrap();
+    assert_eq!(
+        turn.iter()
+            .filter(|doc| doc.text == "The stale cursor must restart the query.")
+            .count(),
+        1
+    );
 }
 
 #[test]
 fn public_history_previous_turn_groups_prompt_and_native_output() {
     let f = Fixture::new();
     let append = |kind, prompt: &str, native: &str, text: &str| {
-        f.store.append_operational_event(kind, None, Some(text.into()), Default::default(),
-            HistoryEventTurnContext { session_id: Some("room".into()), agent_id: Some("peer".into()),
-                prompt_id: Some(prompt.into()), turn_id: Some(native.into()), ..Default::default() }).unwrap()
+        f.store
+            .append_operational_event(
+                kind,
+                None,
+                Some(text.into()),
+                Default::default(),
+                HistoryEventTurnContext {
+                    session_id: Some("room".into()),
+                    agent_id: Some("peer".into()),
+                    prompt_id: Some(prompt.into()),
+                    turn_id: Some(native.into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
     };
-    let previous = append(HistoryEventKind::UserPrompt, "previous", "previous", "previous task");
-    let answer = append(HistoryEventKind::ProviderOutput, "previous", "native-previous", "previous answer");
-    append(HistoryEventKind::UserPrompt, "latest", "latest", "latest task");
-    for _ in 0..225 { append(HistoryEventKind::ProviderOutput, "latest", "native-latest", "latest fragment"); }
+    let previous = append(
+        HistoryEventKind::UserPrompt,
+        "previous",
+        "previous",
+        "previous task",
+    );
+    let answer = append(
+        HistoryEventKind::ProviderOutput,
+        "previous",
+        "native-previous",
+        "previous answer",
+    );
+    append(
+        HistoryEventKind::UserPrompt,
+        "latest",
+        "latest",
+        "latest task",
+    );
+    for _ in 0..225 {
+        append(
+            HistoryEventKind::ProviderOutput,
+            "latest",
+            "native-latest",
+            "latest fragment",
+        );
+    }
     let _guard = f.store.lock_public_history().unwrap();
     for reference in [None, Some("previous"), Some("native-previous")] {
-        let turn = f.store.public_history_turn_locked("owner", "room", "peer", reference, 1, 200).unwrap();
-        assert_eq!(turn.iter().map(|doc| &doc.event_ref).collect::<Vec<_>>(), vec![&answer.event_id, &previous.event_id]);
-        assert!(turn.iter().all(|doc| doc.turn_id.as_deref() == Some("previous")));
+        let turn = f
+            .store
+            .public_history_turn_locked("owner", "room", "peer", reference, 1, 200)
+            .unwrap();
+        assert_eq!(
+            turn.iter().map(|doc| &doc.event_ref).collect::<Vec<_>>(),
+            vec![&answer.event_id, &previous.event_id]
+        );
+        assert!(turn
+            .iter()
+            .all(|doc| doc.turn_id.as_deref() == Some("previous")));
     }
+}
+
+#[test]
+fn public_history_assembled_answer_is_bounded_and_uses_only_retained_public_parts() {
+    // MP-08 / MP-10 / MP-11: bound Unicode text after joining, then prove
+    // removal of a public source chunk cannot resurrect its raw content.
+    let f = Fixture::new();
+    let append = |text: String| {
+        f.store
+            .append_transcript(
+                &SessionHistoryEntry::provider_output(
+                    "room",
+                    "run",
+                    Some("peer"),
+                    crate::terminal::TerminalOutputKind::ProviderOutput,
+                    Some("message".into()),
+                    text,
+                ),
+                HistoryEventTurnContext {
+                    session_id: Some("room".into()),
+                    agent_id: Some("peer".into()),
+                    provider_run_id: Some("run".into()),
+                    prompt_id: Some("prompt".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+    };
+    let first = append("界".repeat(40_000));
+    let second = append("界".repeat(40_000));
+    let _guard = f.store.lock_public_history().unwrap();
+    let document = f
+        .store
+        .read_public_history_locked("owner", "room", &second.event_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(document.text.chars().count(), 64 * 1024);
+    assert!(document.truncated);
+    f.store
+        .connection
+        .lock()
+        .unwrap()
+        .execute(
+            "DELETE FROM public_history WHERE event_ref=?1",
+            [&first.event_id],
+        )
+        .unwrap();
+    let document = f
+        .store
+        .read_public_history_locked("owner", "room", &second.event_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(document.text.chars().count(), 40_000);
+    assert!(!document.truncated);
 }
