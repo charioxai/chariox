@@ -343,3 +343,23 @@ fn public_history_recreated_index_rebuilds_from_sanitized_source() {
     assert!(complete.coverage.complete);
     assert_eq!(complete.coverage.indexed_events, 300);
 }
+
+#[test]
+fn public_history_protocol_453_detail_shape_hash() {
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 453);
+    let f = Fixture::new();
+    let event = f.append("room", "compiler");
+    let _guard = f.store.lock_public_history().unwrap();
+    let mut detail = f
+        .store
+        .read_public_history_locked("owner", "room", &event.event_id)
+        .unwrap()
+        .unwrap();
+    detail.event_ref = "evt_fixture".into();
+    detail.timestamp_ms = 0;
+    let wire = serde_json::to_value(detail).unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+        "b52f6eb046910ca68f1b14fb3e54747cea6f1fa8b834180c658ffc4fff71348b"
+    );
+}
