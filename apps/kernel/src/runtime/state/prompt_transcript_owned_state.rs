@@ -881,6 +881,12 @@ impl KernelRuntimeOwnedState {
         prompt: &str,
         attachments: &[crate::session::PromptAttachment],
     ) -> Result<(), DaemonError> {
+        // Resolve canonical ownership before the transcript/projection locks.
+        let public_owner = self
+            .session_store
+            .get_session(session_id)?
+            .owner_user_id()
+            .to_owned();
         let _append_guard = self.transcript_history_append_guard();
         let agent = self.agent_store.get_agent(agent_id)?;
         let (history_provider_run_id, provider_run) =
@@ -938,6 +944,7 @@ impl KernelRuntimeOwnedState {
         }
         let active_turn = self.active_turns.get(&history_provider_run_id);
         let context = crate::history::HistoryEventTurnContext {
+            public_history_owner_user_id: Some(public_owner),
             session_id: Some(session_id.to_string()),
             agent_id: Some(agent_id.to_string()),
             provider: Some(

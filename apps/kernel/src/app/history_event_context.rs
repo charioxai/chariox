@@ -84,6 +84,7 @@ impl HistoryEventContextResolver {
                 .map(|workflow_run| workflow_run.workflow_id().to_string())
         });
         HistoryEventTurnContext {
+            public_history_owner_user_id: session.as_ref().map(|s| s.owner_user_id().to_owned()),
             session_id: Some(entry.session_id.clone()),
             agent_id,
             provider: provider_run.as_ref().map(|run| run.provider().to_string()),

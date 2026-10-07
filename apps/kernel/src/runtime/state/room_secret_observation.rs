@@ -1,6 +1,7 @@
 //! MP-08/MP-10/MP-11: Room-scoped observation protection, below every client.
 //! Values use zeroizing memory and a private runtime-identity-sealed registry.
 //! Retired values are scrub-only for the Room lifetime; deletion wipes them.
+//! Vault values never inserted into the Room are scrub-only and never fence streams.
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -24,6 +25,7 @@ use crate::transport::room_browser_controller::{
 #[derive(Clone)]
 pub(super) struct RoomSecretObservations {
     root: PathBuf,
+    public_history: Option<crate::history::OperationalHistoryStore>,
     identity: Option<Arc<Zeroizing<String>>>,
     worker_room: Option<String>,
     migration_failed: bool,
@@ -38,6 +40,7 @@ pub(super) struct RoomSecretObservations {
 struct Protection {
     values: Vec<Zeroizing<String>>,
     retired_values: Vec<Zeroizing<String>>,
+    stored_values: Vec<Zeroizing<String>>,
     vault_keys: BTreeSet<String>,
     provenance_known: bool,
     unknown: bool,
@@ -47,10 +50,44 @@ struct Protection {
     history_before_ms: u64,
 }
 
+impl Protection {
+    fn value_count(&self) -> usize {
+        self.values.len() + self.retired_values.len() + self.stored_values.len()
+    }
+}
+
 impl RoomSecretObservations {
+    pub(super) fn with_public_history(
+        mut self,
+        store: crate::history::OperationalHistoryStore,
+    ) -> Self {
+        self.public_history = Some(store);
+        self
+    }
+
+    // Lock order: public projection -> observation registry -> SQLite. Held
+    // through mutation, so pending sanitized writes cannot reinsert stale tokens.
+    fn invalidate_public_history(
+        &self,
+        room: &str,
+    ) -> Result<Option<std::sync::MutexGuard<'_, ()>>, DaemonError> {
+        if let Some(store) = &self.public_history {
+            let guard = store.lock_public_history()?;
+            store.invalidate_public_history_locked(if self.worker_room.is_some() {
+                None
+            } else {
+                Some(room)
+            })?;
+            Ok(Some(guard))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub(super) fn new(root: PathBuf, recovered: BTreeSet<String>) -> Self {
         let mut store = Self {
             root,
+            public_history: None,
             identity: None,
             worker_room: None,
             migration_failed: false,
@@ -164,6 +201,54 @@ impl RoomSecretObservations {
 
     pub(super) fn register(&self, room: &str, value: &str) -> Result<(), DaemonError> {
         let room = self.room_key(room);
+        let _history_guard = self
+            .public_history
+            .as_ref()
+            .map(|store| store.lock_public_history())
+            .transpose()?;
+        self.register_with_locked_public_history(room, value, true)
+    }
+
+    // MP-08 / MP-10 / MP-11: the Vault mutation caller holds this store's
+    // public-history mutex across storage and registration, with no await gap.
+    // A stored value has not entered the Room, so it is scrub-only and the
+    // session stream stays visible. Retire matching public messages only.
+    pub(super) fn register_stored_with_locked_public_history(
+        &self,
+        room: &str,
+        value: &str,
+    ) -> Result<(), DaemonError> {
+        let room = self.room_key(room);
+        self.register_with_locked_public_history(room, value, false)
+    }
+
+    fn register_with_locked_public_history(
+        &self,
+        room: &str,
+        value: &str,
+        live: bool,
+    ) -> Result<(), DaemonError> {
+        if let Some(store) = &self.public_history {
+            store.flush_public_history_appends_locked()?;
+        }
+        let registered = self.register_value(room, value, live);
+        if let Some(store) = &self.public_history {
+            store.retain_public_history_locked(
+                if self.worker_room.is_some() {
+                    None
+                } else {
+                    Some(room)
+                },
+                &|document| {
+                    self.scrub(room, document.clone())
+                        .is_ok_and(|clean| clean == *document)
+                },
+            )?;
+        }
+        registered
+    }
+
+    fn register_value(&self, room: &str, value: &str, live: bool) -> Result<(), DaemonError> {
         let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
         if !rooms.contains_key(room) {
             rooms.insert(room.into(), self.initial(room)?);
@@ -171,27 +256,21 @@ impl RoomSecretObservations {
         let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
         // Set the memory fence even if persisting the marker fails. Input must then abort.
         protection.revision = protection.revision.saturating_add(1);
-        let known = protection
-            .values
-            .iter()
-            .any(|existing| existing.as_str() == value);
-        let retired = protection
-            .retired_values
-            .iter()
-            .any(|existing| existing.as_str() == value);
-        if value.is_empty()
-            || (!known
-                && !retired
-                && protection.values.len() + protection.retired_values.len() >= 256)
-        {
+        let has = |values: &[Zeroizing<String>]| values.iter().any(|v| v.as_str() == value);
+        let live_known = has(&protection.values);
+        let known = live_known || has(&protection.retired_values) || has(&protection.stored_values);
+        if value.is_empty() || (!known && protection.value_count() >= 256) {
             protection.unknown = true;
             return Err(protection_error());
         }
-        if !known {
-            protection
-                .retired_values
-                .retain(|existing| existing.as_str() != value);
+        if live && !live_known {
+            protection.retired_values.retain(|v| v.as_str() != value);
+            protection.stored_values.retain(|v| v.as_str() != value);
             protection.values.push(Zeroizing::new(value.to_string()));
+        } else if !live && !known {
+            protection
+                .stored_values
+                .push(Zeroizing::new(value.to_string()));
         }
         self.persist_marker(room, protection)?;
         Ok(())
@@ -316,7 +395,7 @@ impl RoomSecretObservations {
         serde_json::to_string(&serde_json::json!({
             "unknown": protection.unknown,
             "targets": protection.targets,
-            "values": protection.values.iter().chain(&protection.retired_values).map(|value| value.as_str()).collect::<Vec<_>>(),
+            "values": protection.values.iter().chain(&protection.retired_values).chain(&protection.stored_values).map(|value| value.as_str()).collect::<Vec<_>>(),
         })).map(Zeroizing::new).map_err(|_| protection_error())
     }
 
@@ -351,6 +430,7 @@ impl RoomSecretObservations {
             .values
             .iter()
             .chain(&protection.retired_values)
+            .chain(&protection.stored_values)
             .cloned()
             .collect())
     }
@@ -443,12 +523,13 @@ impl RoomSecretObservations {
         if observation && protection.unknown {
             return Err(fenced_observation_error());
         }
-        if protection.values.is_empty() && protection.retired_values.is_empty() {
+        if protection.value_count() == 0 {
             return Ok(input);
         }
         let mut value = serde_json::to_value(input).map_err(|_| protection_error())?;
         scrub_value(&mut value, &protection.values);
         scrub_value(&mut value, &protection.retired_values);
+        scrub_value(&mut value, &protection.stored_values);
         serde_json::from_value(value).map_err(|_| protection_error())
     }
 
