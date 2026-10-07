@@ -29,6 +29,7 @@ impl KernelRuntimeOwnedState {
             .into_iter()
             .find(|t| {
                 t.prompt_id == prompt.id()
+                    && t.provider_run_id.as_deref() == Some(run)
                     && t.state == ExecutionState::Working
                     && t.pending_prompt_id.is_none()
             })

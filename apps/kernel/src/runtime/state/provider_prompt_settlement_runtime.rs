@@ -336,7 +336,7 @@ impl KernelRuntimeState {
                 .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, &agent_id);
             let same_run = owned
                 .provider_store
-                .get_run_for_agent(session_id, &agent_id)
+                .get_latest_run_for_agent(session_id, &agent_id)
                 .is_some_and(|run| run.id() == provider_run_id);
             let Some(current) = current.filter(|p| p.id() == active_prompt.id() && same_run) else {
                 return Ok(crate::app::ProviderRunExitSessionSummary {
