@@ -98,3 +98,12 @@ test('MP-08 / MP-11 failed or cancelled dispatch consumes handles even with an u
   assert.equal(effects,1,'MP-11 uncertain dispatch cannot be retried with the same handle');
  }
 });
+test('MP-08 snapshot announces masked windows without accessibility so agents can still act on them',async()=>{
+ const current={...tree,uncovered:[[20,30,246,152]],masks:[[20,30,246,50],[20,80,80,102]]};
+ const native=new NativeAccessibility({binding:()=>binding,execute:async()=>structuredClone(current)});
+ const result=await native.snapshot('agent:a',{});
+ assert.deepEqual(result.masked,[[20,30,246,50],[20,80,80,102]]);
+ assert.equal(result.complete,false);assert.equal(result.fallback,'ocr');
+ const plain=await new NativeAccessibility({binding:()=>binding,execute:async()=>structuredClone(tree)}).snapshot('agent:a',{});
+ assert.deepEqual(plain.masked,[]);
+});

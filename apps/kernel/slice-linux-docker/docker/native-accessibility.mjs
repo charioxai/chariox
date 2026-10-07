@@ -48,7 +48,9 @@ export class NativeAccessibility {
       bytes+=size;nodes.push(projected);handles.set(target_id,{...node,protected:protectedNode});
     }
     const complete=Boolean(tree.complete && !tree.uncovered?.length && nodes.length===(tree.nodes??[]).length);
-    const result={surface_id:binding.surface_id,generation:binding.generation,tree_revision:revision,nodes,complete,fallback:complete?'none':'ocr'};
+    // MP-08: windows without accessibility are black in captures; announce their regions (geometry only) so agents know they exist.
+    const masked=(tree.masks??tree.uncovered??[]).slice(0,16);
+    const result={surface_id:binding.surface_id,generation:binding.generation,tree_revision:revision,nodes,masked,complete,fallback:complete?'none':'ocr'};
     this.observers.set(observer,{digest,revision,handles,public:result});return result;
   }
   async action(observer,command,policy,{signal}={}){
