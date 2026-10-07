@@ -208,3 +208,34 @@ fn outbound_projected_browser_artifacts_keep_the_shared_chunk_budget() {
         1280
     );
 }
+
+#[test]
+fn outbound_preserves_kernel_error_codes_and_retries_without_error_payloads() {
+    // MP-11: every mapped kernel code, plus explicit admission/cache errors.
+    let source = include_str!("../../transport/kernel_protocol.rs");
+    let mapped = source
+        .split("kernel_error(\"")
+        .skip(1)
+        .map(|part| part.split('"').next().unwrap());
+    for code in mapped.chain([
+        "kernel_access_denied",
+        "invalid_request",
+        "invalid_frame",
+        "kernel_request_overloaded",
+        "duplicate_command_unavailable",
+        "duplicate_command_conflict",
+    ]) {
+        for retryable in [false, true] {
+            let frame = serde_json::json!({"type":"response","request_id":"error","response":null,
+                "error":{"code":code,"message":CANARY,"retryable":retryable,"extra":CANARY}});
+            let projected = project_payload(frame).unwrap();
+            assert_eq!(projected["error"]["code"], code, "MP-11 {code}");
+            assert_eq!(projected["error"]["retryable"], retryable);
+            assert!(!projected.to_string().contains(CANARY));
+        }
+    }
+    let message = crate::runtime::kernel_access::error("sudo request refused").to_string();
+    let frame = serde_json::json!({"type":"response","request_id":"sudo","response":null,
+        "error":{"code":"local_transport_error","message":message,"retryable":true}});
+    assert_eq!(project_payload(frame.clone()).unwrap(), frame);
+}

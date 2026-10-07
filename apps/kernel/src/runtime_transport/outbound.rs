@@ -100,6 +100,52 @@ fn withheld_error() -> KernelTransportError {
     }
 }
 
+// MP-11: machine-readable kernel codes and retry flags are public protocol.
+// Provider/parser text is private unless it is an exact lifecycle constant.
+fn project_error(value: &Value) -> KernelTransportError {
+    let code = value["code"].as_str().unwrap_or_default();
+    let mut projected = withheld_error();
+    if matches!(
+        code,
+        "session_not_found"
+            | "attachment_not_found"
+            | "attachment_not_in_session"
+            | "no_active_provider_run"
+            | "provider_run_not_found"
+            | "workspace_claim_conflict"
+            | "provider_adapter_not_found"
+            | "provider_protocol_error"
+            | "credential_vault_locked"
+            | "local_transport_error"
+            | "pty_spawn_failed"
+            | "pty_cleanup_failed"
+            | "pty_write_failed"
+            | "pty_resize_failed"
+            | "kernel_request_failed"
+            | "kernel_access_denied"
+            | "invalid_request"
+            | "invalid_frame"
+            | "kernel_request_overloaded"
+            | "duplicate_command_unavailable"
+            | "duplicate_command_conflict"
+    ) {
+        projected.code = code.into();
+        projected.retryable = value["retryable"].as_bool().unwrap_or(false);
+        projected.message = match code {
+            "kernel_request_overloaded" => "kernel request admission queue overloaded",
+            "duplicate_command_unavailable" => "original duplicate command result was unavailable",
+            "duplicate_command_conflict" => "command_id was already used for a different request",
+            _ => "external request failed; details are available only in the host terminal",
+        }
+        .into();
+    }
+    let message = value["message"].as_str().unwrap_or_default();
+    if crate::runtime::external_response::public_error_message(message) {
+        projected.message = message.into();
+    }
+    projected
+}
+
 // Both representations come from one declaration. New stream events require
 // an explicit policy at compile time, not a new filtering path.
 macro_rules! public_events {
@@ -141,17 +187,8 @@ pub(super) fn project_payload(mut value: Value) -> Result<Value, DaemonError> {
     match value["type"].as_str() {
         Some("response") => {
             if !value["error"].is_null() {
-                // Parser/provider errors may echo stored values. Preserve only
-                // exact kernel authority constants, never arbitrary suffixes.
-                let message = value["error"]["message"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned();
-                let safe = crate::runtime::external_response::public_error_message(&message);
-                value["error"] = serde_json::to_value(withheld_error()).map_err(|_| deny())?;
-                if safe {
-                    value["error"]["message"] = message.into();
-                }
+                value["error"] =
+                    serde_json::to_value(project_error(&value["error"])).map_err(|_| deny())?;
             }
             if !value["response"].is_null() {
                 let body = &mut value["response"];
