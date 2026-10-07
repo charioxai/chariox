@@ -11,7 +11,8 @@ use crate::provider::{
 use crate::terminal::TerminalOutputKind;
 
 use super::input::codex_input;
-use super::prompt::{abort_codex_turn, codex_turn_id_from_start_response};
+use super::interrupt::abort_codex_turn;
+use super::prompt::codex_turn_id_from_start_response;
 use super::run_config::{codex_client_for_run, normalize_codex_model, normalize_variant};
 use super::{drain_codex_events, CodexRuntimeState};
 

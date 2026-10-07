@@ -1,3 +1,4 @@
+import { getLogger } from "./cli-runtime-singletons.js"
 import { createEffect, createSignal, onCleanup, untrack } from "solid-js"
 import { roomWorkflowInventoryPayload } from "@chariox/kernel-client/room-workflows"
 import { RoomWorkflowsPaneController } from "./room-workflows-pane-controller.js"
@@ -16,6 +17,7 @@ export function createCliRoomWorkflowsComposition(deps: {
  let lastInventory: unknown
  const closed = { ...deps.preferences.roomWorkflowPaneDismissed }
  const controller = new RoomWorkflowsPaneController({ clientId: deps.clientId, send: request => deps.client.send(request), changed: () => setRevision(value => value + 1), dismissed: key => closed[key] ?? false,
+   trace: guard => getLogger("cli.room_workflows")?.info("workflow request guard", { guard }),
    saveDismissed: (key, value) => { closed[key] = value; void saveRoomWorkflowPaneDismissed(key, value).catch(() => {}) }, manage: deps.manage })
  createEffect(() => {
    const session = deps.session(); const attached = deps.attached(); const connected = deps.connected()

@@ -5,6 +5,11 @@
 
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static AFTER_WORKFLOW_QUEUE_ADMISSION: std::cell::RefCell<Option<Box<dyn FnOnce(&str)>>> = std::cell::RefCell::new(None);
+}
+
 impl KernelRuntimeOwnedState {
     pub(super) fn retain_pending_provider_launch_credentials(
         &self,
@@ -352,6 +357,17 @@ impl KernelRuntimeOwnedState {
                 None => return Ok(dispatches),
             },
         };
+        #[cfg(test)]
+        if matches!(
+            &submission.outcome,
+            crate::session::PromptSubmissionOutcome::Queued { .. }
+        ) {
+            AFTER_WORKFLOW_QUEUE_ADMISSION.with(|hook| {
+                if let Some(hook) = hook.borrow_mut().take() {
+                    hook(workflow_provider_run_id.as_deref().unwrap_or_default());
+                }
+            });
+        }
         dispatches.mark_workflow_prompt_admitted();
         if matches!(
             &submission.outcome,
@@ -390,6 +406,23 @@ impl KernelRuntimeOwnedState {
             {
                 if run.state() == crate::provider::ProviderRunState::Starting {
                     dispatches.starting_provider_runs.push(run.id().to_string());
+                } else if run.state() == crate::provider::ProviderRunState::Running
+                    && !prepared.force_queue
+                {
+                    // MP-08 / MP-10: launch may have checked the queue before
+                    // admission committed it. Recheck after admission and wake
+                    // the existing Vault-aware promotion after claim release.
+                    let session = self.session_store.get_session(&prepared.session_id)?;
+                    if self
+                        .prompt_state_owner
+                        .active_prompt_for_agent(&session, prepared.prompt.target_agent_id())
+                        .is_none()
+                    {
+                        dispatches.project_queue_promotions.push((
+                            prepared.session_id.clone(),
+                            prepared.prompt.target_agent_id().to_string(),
+                        ));
+                    }
                 }
             }
         }
