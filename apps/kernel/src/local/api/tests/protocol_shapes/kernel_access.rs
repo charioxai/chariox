@@ -39,8 +39,8 @@ fn kernel_access_lifetime_config_is_versioned() {
     assert_eq!(
         lifetimes,
         &serde_json::json!({
-            "grant_default_minutes": 30,
-            "grant_max_minutes": 240,
+            "grant_default_minutes": 480,
+            "grant_max_minutes": 1440,
             "grant_extend_notice_minutes": 5,
             "request_timeout_minutes": 10,
         })
@@ -48,7 +48,7 @@ fn kernel_access_lifetime_config_is_versioned() {
     let digest = Sha256::digest(serde_json::to_vec(lifetimes).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "d1286fb0a2b6dd753fa9691cdc9c1338b823fd1d0c8c8df115108edf30fbd012"
+        "f8aaa273db488ebb9318507d59428ede59b5a75e8b2bb560ca2122a556a6c369"
     );
 }
 
@@ -198,7 +198,7 @@ fn passkey_prompts_and_their_popup_event_are_versioned() {
 }
 
 #[test]
-fn process_bound_access_protocol_404_has_metadata_but_no_bearer() {
+fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
     use crate::local::{
         KernelAccessGrant, ListKernelAccessGrantsRequest, RequestKernelAccessRequest,
         RevokeKernelAccessGrantRequest,
@@ -206,7 +206,6 @@ fn process_bound_access_protocol_404_has_metadata_but_no_bearer() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 461);
     let grant = KernelAccessGrant {
         grant_id: "g".into(),
-        session_id: "s".into(),
         owner_user_id: "local".into(),
         holder_pid: 42,
         holder_executable: "/usr/bin/agent".into(),
@@ -215,7 +214,6 @@ fn process_bound_access_protocol_404_has_metadata_but_no_bearer() {
     };
     let requests = [
         LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
-            session_id: "s".into(),
             holder_pid: 42,
             lifetime_minutes: Some(30),
         }),
@@ -236,6 +234,9 @@ fn process_bound_access_protocol_404_has_metadata_but_no_bearer() {
             sudo_turns: vec![],
         },
         LocalDaemonResponse::KernelAccessRevoked { revoked: 1 },
+        LocalDaemonResponse::KernelAccessDecisionResponded {
+            interaction_id: "g-grant".into(),
+        },
     ];
     for request in &requests {
         assert_eq!(
@@ -251,12 +252,19 @@ fn process_bound_access_protocol_404_has_metadata_but_no_bearer() {
             *response
         );
     }
+    assert!(
+        serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({"RequestKernelAccess": {
+            "holder_pid": 42, "session_id": "obsolete"
+        }}))
+        .is_err(),
+        "451 rejects session-scoped clients"
+    );
     let snapshot = serde_json::json!({ "requests": requests, "responses": responses,
         "kinds": [PasskeyPromptKind::AccessGrant, PasskeyPromptKind::AccessExtension] });
     let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "328c2b79aca163f32a42062d5fa47cd81221f9134052e286c96e051b6a7b09f0"
+        "2e0ccb5c1c904a48d996076f62a500b3dcdab528ab6f1f8c9bbabc275c90f2c1"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(
         serde_json::json!({"RequestKernelAccess": {
@@ -300,6 +308,6 @@ fn external_sudo_requester_and_host_terminal_attribution_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&serde_json::to_value(&turn).unwrap()).unwrap())
         ),
-        "03d835d6424136bce70c39991d068f8664f8c32d05427c01cb779e010fc5b021"
+        "1cd52d9eafdcad1f6c0e3becedbf9654e87fc4bb3805149b9f9eca72b83a25e7"
     );
 }

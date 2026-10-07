@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use futures_util::{Sink, SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore, TryAcquireError};
@@ -39,6 +39,7 @@ mod local_presence;
 mod unix_access;
 
 pub(crate) mod command_cache;
+mod outbound;
 mod outgoing;
 mod socket_options;
 mod subscriptions;
@@ -928,9 +929,8 @@ where
         watch_task: None,
     }));
 
-    let delivery_peer = peer.clone();
-    let delivery_grant = bound_grant.clone();
-    let delivery_runtime = router.runtime_state();
+    let outbound =
+        outbound::OutboundBoundary::new(router.runtime_state(), peer.clone(), bound_grant.clone());
     let writer_task = tokio::spawn(async move {
         let mut transport_ping =
             tokio::time::interval(Duration::from_millis(WEBSOCKET_PING_INTERVAL_MS));
@@ -941,40 +941,37 @@ where
                 tokio::select! {
                     biased;
                     Some(command) = close_rx.recv() => {
-                        let _ = writer.send(Message::Close(Some(CloseFrame {
+                        let _ = outbound.send(&mut writer, outbound::Payload::Control(Message::Close(Some(CloseFrame {
                             code: CloseCode::Policy,
                             reason: command.reason.into(),
-                        }))).await;
+                        })))).await;
                         break;
                     }
                     Some(payload) = pong_rx.recv() => {
-                        if writer.send(Message::Pong(payload.into())).await.is_err() {
+                        if !outbound.send(&mut writer, outbound::Payload::Control(Message::Pong(payload.into()))).await {
                             break;
                         }
                     }
                     _ = transport_ping.tick() => {
-                        if writer.send(Message::Ping(Vec::new().into())).await.is_err() {
+                        if !outbound.send(&mut writer, outbound::Payload::Control(Message::Ping(Vec::new().into()))).await {
                             break;
                         }
                     }
                     Some(frame) = priority_rx.recv() => {
-                        if !unix_access::delivery_live(&delivery_runtime, delivery_peer.as_ref(), &delivery_grant)
-                            || !send_kernel_frame(&mut writer, frame).await {
+                        if !outbound.send(&mut writer, outbound::Payload::Frame(frame)).await {
                             break;
                         }
                     }
                     Some(frame) = event_rx.recv() => {
                         if let Some(frame) = event_write_coalescer.push_event(frame, tokio::time::Instant::now()) {
-                            if !unix_access::delivery_live(&delivery_runtime, delivery_peer.as_ref(), &delivery_grant)
-                            || !send_kernel_frame(&mut writer, frame).await {
+                            if !outbound.send(&mut writer, outbound::Payload::Frame(frame)).await {
                                 break;
                             }
                         }
                     }
                     _ = tokio::time::sleep_until(ready_at) => {
                         for frame in event_write_coalescer.drain_ready() {
-                            if !unix_access::delivery_live(&delivery_runtime, delivery_peer.as_ref(), &delivery_grant)
-                            || !send_kernel_frame(&mut writer, frame).await {
+                            if !outbound.send(&mut writer, outbound::Payload::Frame(frame)).await {
                                 break 'writer_loop;
                             }
                         }
@@ -987,25 +984,24 @@ where
             tokio::select! {
                 biased;
                 Some(command) = close_rx.recv() => {
-                    let _ = writer.send(Message::Close(Some(CloseFrame {
+                    let _ = outbound.send(&mut writer, outbound::Payload::Control(Message::Close(Some(CloseFrame {
                         code: CloseCode::Policy,
                         reason: command.reason.into(),
-                    }))).await;
+                    })))).await;
                     break;
                 }
                 Some(payload) = pong_rx.recv() => {
-                    if writer.send(Message::Pong(payload.into())).await.is_err() {
+                    if !outbound.send(&mut writer, outbound::Payload::Control(Message::Pong(payload.into()))).await {
                         break;
                     }
                 }
                 _ = transport_ping.tick() => {
-                    if writer.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    if !outbound.send(&mut writer, outbound::Payload::Control(Message::Ping(Vec::new().into()))).await {
                         break;
                     }
                 }
                 Some(frame) = priority_rx.recv() => {
-                    if !unix_access::delivery_live(&delivery_runtime, delivery_peer.as_ref(), &delivery_grant)
-                        || !send_kernel_frame(&mut writer, frame).await {
+                    if !outbound.send(&mut writer, outbound::Payload::Frame(frame)).await {
                         break;
                     }
                 }
@@ -1013,8 +1009,7 @@ where
                     let Some(frame) = event_write_coalescer.push_event(frame, tokio::time::Instant::now()) else {
                         continue;
                     };
-                    if !unix_access::delivery_live(&delivery_runtime, delivery_peer.as_ref(), &delivery_grant)
-                        || !send_kernel_frame(&mut writer, frame).await {
+                    if !outbound.send(&mut writer, outbound::Payload::Frame(frame)).await {
                         break;
                     }
                 }
@@ -1185,17 +1180,6 @@ async fn record_connection_subscription_heartbeat(
             }),
         );
     }
-}
-
-async fn send_kernel_frame<S>(writer: &mut S, frame: KernelOutgoingFrame) -> bool
-where
-    S: Sink<Message> + Unpin,
-{
-    let payload = match serialize_frame(&frame) {
-        Ok(payload) => payload,
-        Err(_) => return false,
-    };
-    writer.send(Message::Text(payload.into())).await.is_ok()
 }
 
 /// Builds the error reply for a frame that failed typed decoding. When the

@@ -33,7 +33,7 @@ const client = new LocalIpcClient(endpoint, { controlRequestRetryDeadlineMs: 0, 
 const emit = value => console.log(JSON.stringify({ mp: ["MP-08", "MP-10", "MP-11"], at: new Date().toISOString(), pid: process.pid, ...value }))
 const fields = (value, names) => Object.fromEntries(names.filter(key => value?.[key] !== undefined).map(key => [key, value[key]]))
 const turnFields = ["entry_id", "session_id", "agent_id", "terminal_id", "provider_run_id", "prompt_id"]
-const grantFields = ["grant_id", "session_id", "holder_pid", "holder_executable", "lifetime_minutes", "expires_at_ms"]
+const grantFields = ["grant_id", "holder_pid", "holder_executable", "lifetime_minutes", "expires_at_ms"]
 let attachment
 let exiting = false
 const children = new Set()
@@ -113,8 +113,8 @@ try {
   } else if (mode === "holder") {
     const minutes = Number(options.get("--minutes") || 6)
     if (!Number.isSafeInteger(minutes) || minutes < 1) throw new Error("MP-11: invalid lifetime")
-    emit({ action: "grant_requested", session_id: session, holder_pid: process.pid, minutes })
-    const result = await client.send({ RequestKernelAccess: { session_id: session, holder_pid: process.pid, lifetime_minutes: minutes } })
+    emit({ action: "grant_requested", scope: "local_kernel", holder_pid: process.pid, minutes })
+    const result = await client.send({ RequestKernelAccess: { holder_pid: process.pid, lifetime_minutes: minutes } })
     emit({ action: "granted", grant: fields(result.KernelAccessGranted?.grant, grantFields) })
   } else await probe()
   if (mode === "holder" || mode === "observe") {

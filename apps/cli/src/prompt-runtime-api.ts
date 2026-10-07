@@ -180,3 +180,15 @@ function isRecoverableProviderError(error: unknown): boolean {
   const message = describeCliError(error)
   return message.includes("has no active provider run") || message.includes("cannot perform `submit prompt` while ended")
 }
+
+/** MP-08 / MP-10 / MP-11: kernel-wide access popup; no session projection. */
+export async function respondToKernelAccessDecision(
+  client: LocalIpcClient, interactionId: string, choiceId: string,
+  proof?: InteractionPasskeyProof | null,
+): Promise<void> {
+  const response = await client.send<Record<string, unknown>>(
+    respondToInteractionRequest("kernel-access", interactionId, choiceId, null, proof),
+  )
+  const payload = expectVariant<{ interaction_id: string }>(response, "KernelAccessDecisionResponded")
+  if (payload.interaction_id !== interactionId) throw new Error("access response identity mismatch")
+}

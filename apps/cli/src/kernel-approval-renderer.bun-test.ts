@@ -9,6 +9,7 @@ import { createKernelApprovalController, type KernelApprovalView } from "./kerne
 import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
 import type { KernelEvent } from "@chariox/kernel-client/kernel-events"
 import { theme } from "./theme.js"
+import type { PasskeyPrompt } from "@chariox/kernel-client/kernel-types"
 
 const view: KernelApprovalView = {
   open: false, count: 1, criticalCount: 0, index: 0, selected: null, pending: false, connected: true, error: null,
@@ -18,6 +19,56 @@ const view: KernelApprovalView = {
     choices: [{ id: "deny", label: "Deny", reply: "deny" }, { id: "allow", label: "Allow", reply: "allow" }],
     requested_at_ms: 1,
   },
+}
+
+for (const kind of ["access_grant", "access_extension"] as const) {
+  for (const sessionId of ["legacy-session", "kernel-access"]) {
+    for (const approve of [false, true]) {
+      test(`access popup ${kind} ${approve ? "approval" : "refusal"} preserves ${sessionId} contract`, async () => {
+        const h = await createTestRenderer({ width: 100, height: 36, useThread: false })
+        let listener!: (event: unknown) => void
+        const requests: Record<string, any>[] = []
+        const notices: string[] = []
+        const client = {
+          onKernelEvent(callback: typeof listener) { listener = callback; return () => {} },
+          async send(request: Record<string, any>) {
+            requests.push(request)
+            return sessionId === "kernel-access"
+              ? { KernelAccessDecisionResponded: { interaction_id: "access-test" } }
+              : { InteractionResponded: { interaction_id: "access-test", session: { id: sessionId, agents: [] } } }
+          },
+        }
+        let dispose!: () => void
+        const composition = createRoot(cleanup => {
+          dispose = cleanup
+          return createCliKernelApprovalComposition({
+            client: client as never, renderer: h.renderer,
+            session: () => ({ id: sessionId, agents: [] }) as unknown as RuntimeSession,
+            connected: () => true, attached: () => true, kernelConnected: () => true,
+            flashFooter() {}, dimensions: () => ({ width: 100, height: 36 }), themeRevision: () => 0,
+            currentFocus: () => null, promptFocus: () => null, closeOtherDialog() {}, applySession() {},
+            notify(message) { notices.push(message) },
+          })
+        })
+        try {
+          const prompt: PasskeyPrompt = {
+            kind, session_id: sessionId, interaction_id: "access-test", title: "External access", message: "Review access",
+            approve_choice_id: "approve", refuse_choice_id: "refuse", requested_at_ms: 1, expires_at_ms: 300_001,
+          }
+          listener({ event: "passkey_prompts_changed", prompts: [prompt] })
+          const key = (name: string, extra = {}) => composition.handleKey({ name, preventDefault() {}, stopPropagation() {}, ...extra })
+          key("f8")
+          if (approve) { for (const sequence of "test-proof") key(sequence, { sequence }); key("return") }
+          else key("r", { ctrl: true })
+          await new Promise(resolve => setTimeout(resolve, 0))
+          assert.equal(requests.length, 1)
+          assert.equal(requests[0]?.RespondToInteraction.session_id, sessionId)
+          assert.equal(requests[0]?.RespondToInteraction.choice_id, approve ? "approve" : "refuse")
+          assert.deepEqual(notices, [])
+        } finally { dispose(); h.renderer.destroy() }
+      })
+    }
+  }
 }
 
 const shortcutCases = [
