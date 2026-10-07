@@ -553,7 +553,6 @@ impl KernelRuntimeState {
             );
         }
         let tasks = self.owned.durable_state_store.agent_tasks(None, None)?;
-        let mut seen = BTreeSet::new();
         let mut rooms = BTreeSet::new();
         for task in tasks.clone() {
             // Recovery retains unavailable Rooms; their tasks must not halt live supervision.
@@ -573,14 +572,21 @@ impl KernelRuntimeState {
                 self.retract_stale_task_owner_interactions(&task.room_id, &tasks)
                     .await;
             }
-            if seen.insert((task.room_id.clone(), task.agent_id.clone())) {
-                if let Err(error) =
-                    Box::pin(self.deliver_agent_inbox(&task.room_id, &task.agent_id)).await
-                {
-                    tracing::warn!(%error, room_id=%task.room_id, agent_id=%task.agent_id, "MP-08/MP-09/MP-10/MP-11 A02: recipient delivery retained; other recipients continue");
-                }
-                let _ = self.owned.session_snapshot(&task.room_id);
+        }
+        // A rejected cold submission withdraws its fresh task. The inbox still
+        // owns the work and must retry even when this recipient has no tasks.
+        for (room, agent) in self
+            .owned
+            .durable_state_store
+            .agent_pending_inbox_recipients()?
+        {
+            if self.owned.session_store.get_session(&room).is_err() {
+                continue;
             }
+            if let Err(error) = Box::pin(self.deliver_agent_inbox(&room, &agent)).await {
+                tracing::warn!(%error, room_id=%room, agent_id=%agent, "MP-08/MP-10/MP-11 A02: recipient delivery retained; other recipients continue");
+            }
+            let _ = self.owned.session_snapshot(&room);
         }
         Ok(())
     }

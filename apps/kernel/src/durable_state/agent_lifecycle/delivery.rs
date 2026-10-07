@@ -70,7 +70,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             e.prompt_id = Some(prompt.clone());
             e.target_prompt_id = target;
             e.provider_run_id = run;
-            e.attempted_at_ms = Some(now);
+            // Retrying a refused delivery must not renew its supervision deadline.
+            e.attempted_at_ms.get_or_insert(now);
             save_event(tx, &e)?;
             // Wake retains the original task. Progress is not an ACK/cursor or deadline edit.
             for mut t in tasks(tx)? {
@@ -118,7 +119,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if e.state != "pending" {
                 return Err(error("cannot defer an admitted attempt"));
             }
-            e.attempted_at_ms = Some(now);
+            // Retrying a refused delivery must not renew its supervision deadline.
+            e.attempted_at_ms.get_or_insert(now);
             save_event(tx, &e)?;
             Ok(Outcome::Event(e))
         }

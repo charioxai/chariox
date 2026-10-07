@@ -129,6 +129,17 @@ impl DurableKernelStateStore {
         row.map(|(seq, source, id, payload)| decode_inbox(seq, room, agent, &source, &id, &payload))
             .transpose()
     }
+    /// Pending inbox rows, rather than task existence, own periodic delivery retries.
+    pub(crate) fn agent_pending_inbox_recipients(
+        &self,
+    ) -> Result<Vec<(String, String)>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.pending_recipients")?;
+        let mut q = db.prepare("SELECT DISTINCT room_id,agent_id FROM agent_inbox WHERE json_valid(payload) AND json_extract(payload,'$.state')='pending' ORDER BY room_id,agent_id").map_err(sql)?;
+        let rows = q
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(sql)?;
+        rows.collect::<Result<_, _>>().map_err(sql)
+    }
     pub(crate) fn agent_event_for_prompt(
         &self,
         room: &str,

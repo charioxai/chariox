@@ -454,9 +454,10 @@ fn bind_first_delegate_task(
     tx: &Transaction<'_>,
     child: &AgentTaskExecution,
 ) -> Result<(), DaemonError> {
-    // One child task completes exactly one delegation, the oldest unbound one;
-    // repeated Begin calls for the same child task bind nothing new.
-    let parents = tasks(tx)?;
+    // One child task completes the oldest unbound delegation by registration
+    // sequence, independent of parent task creation or wall-clock ordering.
+    // Repeated admission/dispatch Begin calls bind nothing new.
+    let mut parents = tasks(tx)?;
     if parents.iter().any(|p| {
         p.obligations
             .iter()
@@ -464,22 +465,35 @@ fn bind_first_delegate_task(
     }) {
         return Ok(());
     }
-    for mut parent in parents {
+    let mut oldest: Option<(i64, usize, usize)> = None;
+    for (parent_index, parent) in parents.iter().enumerate() {
         if parent.room_id != child.room_id
             || parent.owner_user_id.is_empty()
             || parent.owner_user_id != child.owner_user_id
         {
             continue;
         }
-        let Some(obligation) = parent.obligations.iter_mut().find(|o| {
-            o.kind == "delegate"
-                && o.status == "open"
-                && o.dispatch_state == "accepted"
-                && o.resource_id.as_deref() == Some(&child.agent_id)
-                && o.completion_task_id.is_none()
-        }) else {
-            continue;
-        };
+        for (obligation_index, obligation) in
+            parent.obligations.iter().enumerate().filter(|(_, o)| {
+                o.kind == "delegate"
+                    && o.status == "open"
+                    && o.dispatch_state == "accepted"
+                    && o.resource_id.as_deref() == Some(&child.agent_id)
+                    && o.completion_task_id.is_none()
+            })
+        {
+            let sequence: i64 = tx.query_row(
+                "SELECT sequence FROM durable_state_events WHERE kind='room.obligation.registered' AND subject_id=?1 ORDER BY sequence LIMIT 1",
+                [&obligation.id], |r| r.get(0),
+            ).map_err(sql)?;
+            if oldest.is_none_or(|(previous, _, _)| sequence < previous) {
+                oldest = Some((sequence, parent_index, obligation_index));
+            }
+        }
+    }
+    if let Some((_, parent_index, obligation_index)) = oldest {
+        let parent = &mut parents[parent_index];
+        let obligation = &mut parent.obligations[obligation_index];
         obligation.completion_task_id = Some(child.task_id.clone());
         let id = format!("completion-{}", obligation.id);
         for mut registration in registrations(tx, &parent.task_id)?
@@ -494,8 +508,7 @@ fn bind_first_delegate_task(
             .map_err(sql)?;
         }
         parent.revision += 1;
-        save(tx, &parent)?;
-        return Ok(());
+        save(tx, parent)?;
     }
     Ok(())
 }

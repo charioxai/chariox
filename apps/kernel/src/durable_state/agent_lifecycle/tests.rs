@@ -1570,6 +1570,132 @@ fn a02_review_two_parents_delegating_to_one_child_bind_distinct_child_tasks() {
     assert_eq!(bound("parent2").as_deref(), Some("child-task-2"));
 }
 
+// MP-08/MP-10/MP-11 #914 round 3: task creation is not delegation order.
+#[test]
+fn a02_r3_reverse_parent_creation_binds_in_delegation_order() {
+    let f = Fixture::new();
+    for parent in ["older", "newer"] {
+        f.apply(Operation::Begin {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: parent.into(),
+            prompt: format!("{parent}-turn"),
+            run: Some(format!("{parent}-run")),
+            now: 1,
+        });
+    }
+    for parent in ["newer", "older"] {
+        f.apply(Operation::RegisterObligation {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: parent.into(),
+            prompt: format!("{parent}-turn"),
+            run: Some(format!("{parent}-run")),
+            id: format!("{parent}-delegate"),
+            kind: "delegate".into(),
+            resource: Some("child".into()),
+            now: 2,
+        });
+        f.apply(Operation::DispatchReceipt {
+            id: format!("{parent}-delegate"),
+            accepted: true,
+            resource: Some("child".into()),
+        });
+    }
+    for prompt in ["first-child", "second-child"] {
+        // Repeat Begin just as admission and dispatch do: never consume two parents.
+        for _ in 0..2 {
+            f.apply(Operation::Begin {
+                owner: "owner".into(),
+                room: "room".into(),
+                agent: "child".into(),
+                prompt: prompt.into(),
+                run: Some("child-run".into()),
+                now: 3,
+            });
+        }
+    }
+    for (parent, prompt) in [("newer", "first-child"), ("older", "second-child")] {
+        let t = f
+            .store
+            .agent_tasks(Some("room"), Some(parent))
+            .unwrap()
+            .remove(0);
+        assert_eq!(t.obligations[0].completion_task_id.as_deref(), Some(prompt));
+        assert_eq!(
+            f.store.agent_registrations(&t.task_id).unwrap()[0].source_id,
+            prompt
+        );
+    }
+}
+
+// MP-08/MP-10/MP-11: rejected attempts must not renew their timeout indefinitely.
+#[test]
+fn a02_r3_rejected_first_message_escalates_without_task_rows() {
+    let f = Fixture::new();
+    let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
+        "room",
+        "child",
+        "parent",
+        "first-message",
+        "message",
+        serde_json::json!({"message":"work"}),
+    ))) else {
+        panic!()
+    };
+    for now in [10, 10 + SWEEP_MS, 10 + DELIVERY_TIMEOUT_MS - 1] {
+        f.apply(Operation::Attempt {
+            room: "room".into(),
+            agent: "child".into(),
+            sequence: e.sequence,
+            prompt: "rejected".into(),
+            target: None,
+            run: None,
+            now,
+        });
+        f.apply(Operation::Receipt {
+            room: "room".into(),
+            agent: "child".into(),
+            sequence: e.sequence,
+            state: "rejected".into(),
+        });
+        assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
+        let Outcome::Swept(changed) = f.apply(Operation::Sweep { now }) else {
+            panic!()
+        };
+        assert!(changed.is_empty());
+    }
+    let Outcome::Swept(changed) = f.apply(Operation::Sweep {
+        now: 10 + DELIVERY_TIMEOUT_MS,
+    }) else {
+        panic!()
+    };
+    assert_eq!(
+        changed.len(),
+        1,
+        "a repeatedly refused message must reach the owner"
+    );
+    assert_eq!(changed[0].state, ExecutionState::Blocked);
+    assert_eq!(changed[0].task_id, format!("delivery-{}", e.sequence));
+    assert_eq!(
+        f.store
+            .agent_delivery_front("room", "child")
+            .unwrap()
+            .unwrap()
+            .state,
+        "blocked"
+    );
+    let Outcome::Swept(changed) = f.apply(Operation::Sweep {
+        now: 10 + DELIVERY_TIMEOUT_MS + SWEEP_MS,
+    }) else {
+        panic!()
+    };
+    assert!(
+        changed.is_empty(),
+        "one timeout must emit one owner transition"
+    );
+}
+
 #[test]
 fn a02_review_timed_out_delivery_blocks_only_its_own_task() {
     let f = Fixture::new();

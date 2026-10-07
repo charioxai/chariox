@@ -211,7 +211,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 }
             }
             for mut e in events {
-                if matches!(e.state.as_str(), "submitting" | "uncertain")
+                if matches!(e.state.as_str(), "pending" | "submitting" | "uncertain")
                     && e.attempted_at_ms
                         .is_some_and(|at| now < at || now.saturating_sub(at) >= DELIVERY_TIMEOUT_MS)
                 {

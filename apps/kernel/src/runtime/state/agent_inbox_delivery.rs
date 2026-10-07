@@ -238,6 +238,11 @@ impl KernelRuntimeState {
         else {
             unreachable!()
         };
+        // A refused pre-I/O attempt remains retryable; only acceptance or an
+        // uncertain receipt needs a client notice. Sweep surfaces bounded failures.
+        if event.state == "pending" {
+            return Ok(());
+        }
         self.owned.record_notice_for_agent(
             room,
             None,

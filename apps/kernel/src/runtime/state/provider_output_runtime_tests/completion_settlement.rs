@@ -164,6 +164,177 @@ async fn a02_review_non_structured_delivery_is_accepted_not_escalated() {
     assert_eq!(delivered.state, "accepted");
 }
 
+// MP-08/MP-10/MP-11 #914 round 3: exercise admission, withdrawal and periodic retry.
+#[tokio::test]
+async fn a02_r3_pre_io_rejection_retries_without_tasks_or_client_notice() {
+    use crate::durable_state::agent_lifecycle::{occurrence, Operation, Outcome};
+    let worktree = crate::test_support::TestWorktree::new("am2-r3-rejected-message");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            worktree.session_request().with_agent_defaults(
+                crate::session::SessionAgentDefaults::new("codex")
+                    .with_account_profile("am2-r3-unlinked"),
+            ),
+        )
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "am2-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    let Outcome::Event(e) = store
+        .agent_lifecycle(Operation::Occur(occurrence(
+            session.id(),
+            agent.id(),
+            "peer",
+            "first-message",
+            "message",
+            serde_json::json!({"message":"Review the rejected launch"}),
+        )))
+        .unwrap()
+    else {
+        panic!()
+    };
+    // This official Codex profile is unauthenticated in the isolated test home.
+    assert!(runtime
+        .deliver_agent_inbox(session.id(), agent.id())
+        .await
+        .is_err());
+    assert!(store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap()
+        .is_empty());
+    let rejected = store
+        .agent_delivery_front(session.id(), agent.id())
+        .unwrap()
+        .unwrap();
+    assert_eq!(rejected.state, "pending");
+    assert_eq!(rejected.sequence, e.sequence);
+    let quiet = runtime
+        .owned
+        .terminal_stream
+        .drain_notice_records(session.id(), attachment.id())
+        .iter()
+        .all(|r| !r.message.contains("not accepted now"));
+    // Make provider availability change, with no task rows to drive the retry.
+    app.lock()
+        .await
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    runtime.sweep_agent_lifecycle().await.unwrap();
+    let retried = store
+        .agent_inbox(session.id(), agent.id(), 0)
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        (retried.state.as_str(), quiet),
+        ("accepted", true),
+        "periodic sweep must retry taskless recipients without a rejection notice"
+    );
+}
+
+// MP-08/MP-10/MP-11: a refused, taskless delivery reaches an attached owner's interaction.
+#[tokio::test]
+async fn a02_r3_taskless_rejection_timeout_projects_owner_action() {
+    use crate::durable_state::agent_lifecycle::{
+        occurrence, ExecutionState, Operation, Outcome, DELIVERY_TIMEOUT_MS,
+    };
+    let worktree = crate::test_support::TestWorktree::new("am2-r3-rejected-timeout");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "am2-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    let Outcome::Event(e) = store
+        .agent_lifecycle(Operation::Occur(occurrence(
+            session.id(),
+            agent.id(),
+            "peer",
+            "timed-out-message",
+            "message",
+            serde_json::json!({"message":"Review the rejected launch"}),
+        )))
+        .unwrap()
+    else {
+        panic!()
+    };
+    store
+        .agent_lifecycle(Operation::Attempt {
+            room: session.id().into(),
+            agent: agent.id().into(),
+            sequence: e.sequence,
+            prompt: "refused-prompt".into(),
+            target: None,
+            run: None,
+            now: crate::session::unix_epoch_ms() - DELIVERY_TIMEOUT_MS,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Receipt {
+            room: session.id().into(),
+            agent: agent.id().into(),
+            sequence: e.sequence,
+            state: "rejected".into(),
+        })
+        .unwrap();
+    assert!(store.agent_tasks(None, None).unwrap().is_empty());
+    runtime.sweep_agent_lifecycle().await.unwrap();
+    let tasks = store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap();
+    assert_eq!(tasks.len(), 1, "taskless failure must become supervised");
+    assert_eq!(tasks[0].state, ExecutionState::Blocked);
+    let interaction = format!(
+        "task-blocked-{}-{}",
+        tasks[0].task_id, tasks[0].blocked_revision
+    );
+    assert!(runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .any(|i| i.id() == interaction));
+    assert!(
+        runtime
+            .owned
+            .terminal_stream
+            .drain_notice_records(session.id(), attachment.id())
+            .iter()
+            .any(|r| r.message.contains("Blocked:")),
+        "the timeout must emit a notice to the attached client"
+    );
+}
+
 #[tokio::test]
 async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable() {
     let worktree = crate::test_support::TestWorktree::new("output-settlement-managed");
