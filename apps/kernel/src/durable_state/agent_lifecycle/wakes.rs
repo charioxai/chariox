@@ -6,12 +6,34 @@ use types::AgentWake;
 
 /// Per-agent bound on armed wakes; an agent cancels before arming more.
 pub(crate) const MAX_ACTIVE_WAKES: i64 = 32;
+/// Per-agent bound on retained finished wakes (the projection shows 64).
+const FINISHED_WAKES_RETAINED: i64 = 64;
+const ARMED: &[&str] = &["scheduled", "starting", "running", "cancelling"];
+const FINISHED: &str = "('fired','exited','lost','cancelled')";
 
 pub(super) fn initialize(db: &Connection) -> Result<(), DaemonError> {
     super::wake_receipts::initialize(db)?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS agent_wakes(id TEXT PRIMARY KEY,task_id TEXT NOT NULL,room_id TEXT NOT NULL,agent_id TEXT NOT NULL,payload TEXT NOT NULL);
-    CREATE INDEX IF NOT EXISTS agent_wakes_recipient ON agent_wakes(room_id,agent_id);")
+    CREATE INDEX IF NOT EXISTS agent_wakes_recipient ON agent_wakes(room_id,agent_id);
+    CREATE INDEX IF NOT EXISTS agent_wakes_state ON agent_wakes(json_extract(payload,'$.state'));")
         .map_err(sql)
+}
+
+/// Keeps the newest finished wakes of one agent and drops older ones with
+/// their receipts, so wake history cannot grow without bound.
+fn retain_finished(tx: &Transaction<'_>, room: &str, agent: &str) -> Result<(), DaemonError> {
+    let expired = format!("SELECT id FROM agent_wakes WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') IN {FINISHED} ORDER BY rowid DESC LIMIT -1 OFFSET ?3");
+    tx.execute(
+        &format!("DELETE FROM agent_wake_receipts WHERE wake_id IN ({expired})"),
+        params![room, agent, FINISHED_WAKES_RETAINED],
+    )
+    .map_err(sql)?;
+    tx.execute(
+        &format!("DELETE FROM agent_wakes WHERE id IN ({expired})"),
+        params![room, agent, FINISHED_WAKES_RETAINED],
+    )
+    .map_err(sql)?;
+    Ok(())
 }
 
 impl DurableKernelStateStore {
@@ -29,7 +51,7 @@ impl DurableKernelStateStore {
     }
     pub(crate) fn agent_armed_timers(&self) -> Result<Vec<AgentWake>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.timers")?;
-        let mut q = db.prepare("SELECT payload FROM agent_wakes WHERE json_extract(payload,'$.kind')='timer' AND json_extract(payload,'$.state')='scheduled'").map_err(sql)?;
+        let mut q = db.prepare("SELECT payload FROM agent_wakes WHERE json_extract(payload,'$.state')='scheduled' AND json_extract(payload,'$.kind')='timer'").map_err(sql)?;
         let rows = q.query_map([], |r| r.get::<_, String>(0)).map_err(sql)?;
         rows.map(|row| decode(&row.map_err(sql)?)).collect()
     }
@@ -55,12 +77,17 @@ fn save_wake(tx: &Transaction<'_>, wake: &AgentWake) -> Result<(), DaemonError> 
     Ok(())
 }
 
+/// Reads only wakes in `states` through the state index; finished history
+/// is never decoded by the scheduler.
 fn wakes_in(tx: &Transaction<'_>, states: &[&str]) -> Result<Vec<AgentWake>, DaemonError> {
     let mut q = tx
-        .prepare("SELECT payload FROM agent_wakes ORDER BY rowid")
+        .prepare("SELECT payload FROM agent_wakes WHERE json_extract(payload,'$.state') IN (SELECT value FROM json_each(?1)) ORDER BY rowid")
         .map_err(sql)?;
     let rows = q
-        .query_map([], |r| r.get::<_, String>(0))
+        .query_map(
+            [serde_json::to_string(states).map_err(|e| error(e.to_string()))?],
+            |r| r.get::<_, String>(0),
+        )
         .map_err(sql)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(sql)?;
@@ -99,6 +126,7 @@ fn record_fire(
 }
 
 /// A terminal source outcome reuses the A02 obligation/registration path.
+/// Only a real occurrence (`fired`) is recorded as a fire with receipts.
 fn settle_source(
     tx: &Transaction<'_>,
     wake: &mut AgentWake,
@@ -106,6 +134,7 @@ fn settle_source(
     success: bool,
     answer: serde_json::Value,
     now: u64,
+    fired: bool,
 ) -> Result<(), DaemonError> {
     super::supervision::apply(
         tx,
@@ -120,7 +149,7 @@ fn settle_source(
     )?;
     let row:Option<(i64,String,String)>=tx.query_row("SELECT sequence,source_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND occurrence_id=?4",params![wake.room_id,wake.agent_id,wake.id,occurrence],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(sql)?;
     match row {
-        Some((seq, source, payload)) => {
+        Some((seq, source, payload)) if fired => {
             let event = decode_inbox(
                 seq,
                 &wake.room_id,
@@ -131,8 +160,9 @@ fn settle_source(
             )?;
             record_fire(tx, wake, &event, now)
         }
-        // No live registration remained; the outcome stays recoverable by cursor.
-        None => save_wake(tx, wake),
+        // A cancellation, or no live registration remained; the outcome
+        // stays recoverable by cursor.
+        _ => save_wake(tx, wake),
     }
 }
 
@@ -147,6 +177,7 @@ fn cancel_settle(tx: &Transaction<'_>, wake: &mut AgentWake, now: u64) -> Result
         false,
         answer,
         now,
+        false,
     )
 }
 
@@ -229,6 +260,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             t.revision += 1;
             save(tx, &t)?;
             save_wake(tx, &wake)?;
+            retain_finished(tx, &wake.room_id, &wake.agent_id)?;
             Ok(Outcome::Wakes(vec![wake]))
         }
         Operation::VerifyWakes { now } => {
@@ -276,7 +308,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 } else {
                     wake.state = "fired".into();
                     wake.next_due_ms = None;
-                    settle_source(tx, &mut wake, occurrence_id, true, payload, now)?;
+                    settle_source(tx, &mut wake, occurrence_id, true, payload, now, true)?;
                 }
                 fired.push(wake);
             }
@@ -361,6 +393,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 exit_code == Some(0),
                 answer,
                 now,
+                true,
             )?;
             Ok(Outcome::Wakes(vec![wake]))
         }
@@ -433,6 +466,22 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             save_wake(tx, &wake)?;
             Ok(Outcome::Wakes(vec![wake]))
+        }
+        Operation::RetireWakes { room, agent, now } => {
+            let mut retired = vec![];
+            for mut wake in wakes_in(tx, ARMED)? {
+                if wake.room_id != room || agent.as_ref().is_some_and(|a| *a != wake.agent_id) {
+                    continue;
+                }
+                if wake.kind == "timer" {
+                    cancel_settle(tx, &mut wake, now)?;
+                } else if wake.state != "cancelling" {
+                    wake.state = "cancelling".into();
+                    save_wake(tx, &wake)?;
+                }
+                retired.push(wake);
+            }
+            Ok(Outcome::Wakes(retired))
         }
         _ => Err(error("invalid wake operation")),
     }

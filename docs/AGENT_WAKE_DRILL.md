@@ -20,7 +20,9 @@ profile without reading or copying its credentials.
    delivery and acknowledgement, and the agent's final disposition.
 4. Repeat with a one-minute recurring check-in, missing several intervals
    across restart. Verify one coalesced fire, its missed count, the next due
-   time, and independent receipts for each fire. Cancel it explicitly.
+   time, and independent receipts for each fire. Let at least four handled
+   check-ins pass without other progress; the task must stay waiting, not
+   blocked. Cancel it explicitly; the cancellation is not shown as a fire.
 5. Disconnect the TUI during a wait and reconnect. `/agent wakes` must show
    the same registrations, next fire, last fire and last receipt. A future
    timer alone must not count as active managed work.
@@ -45,7 +47,9 @@ absolute lane-owned path outside the repository before starting the kernel.
 
 The current process tool requires a local unrestricted agent on Linux. It
 fails closed on other hosts until native process ownership can be verified.
-Timer scheduling does not have this platform restriction.
+Timer scheduling does not have this platform restriction. On a managed kernel
+the command runs inside the same managed provider isolation as every other
+agent-launched command, or is refused when that isolation is unavailable.
 
 1. Ask the agent to run its actual repository test/build command through
    `chariox.events.process`, watch meaningful output and exit, schedule a
@@ -58,8 +62,13 @@ Timer scheduling does not have this platform restriction.
    Verify that every owned descendant settles and no unrelated process changes.
 4. Lose a watched process, then separately restart the kernel while watching.
    Both must produce an explicit failure wake without automatically relaunching
-   the command. The agent must re-evaluate or become visibly blocked.
-5. Supplement the real command runs with tests of protected output, unknown
+   the command. The agent must re-evaluate or become visibly blocked. Include a
+   descendant that leaves the process session: a graceful kernel stop settles
+   it before exit; after a hard kernel kill the restarted kernel stops it and
+   reports the count in the lost answer.
+5. End the Room or delete the agent while wakes are armed and an unowned
+   (delivery-blocked) task exists. Teardown must complete and retire the wakes.
+6. Supplement the real command runs with tests of protected output, unknown
    protection state, bounded drains, stale process ownership, reserved signal
    targets, and resisting descendants. Report these as security regressions.
 

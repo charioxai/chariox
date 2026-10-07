@@ -34,25 +34,40 @@ fn member(pid: u32) -> io::Result<Member> {
     })
 }
 
+/// A process that exits between listing and reading /proc is simply gone.
 #[cfg(target_os = "linux")]
-fn members(pid: u32, birth: u64) -> io::Result<Vec<Member>> {
+fn vanished(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
+}
+
+#[cfg(target_os = "linux")]
+fn process_ids() -> io::Result<impl Iterator<Item = u32>> {
+    Ok(std::fs::read_dir("/proc")?.filter_map(|entry| {
+        entry
+            .ok()?
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u32>().ok())
+    }))
+}
+
+#[cfg(target_os = "linux")]
+fn leader(pid: u32, birth: u64) -> io::Result<Member> {
     let leader = member(pid)?;
     if leader.group != pid || leader.session != pid || birth == 0 || leader.start != birth {
         return Err(io::Error::other("process has no isolated owned session"));
     }
+    Ok(leader)
+}
+
+#[cfg(target_os = "linux")]
+fn members(pid: u32, birth: u64) -> io::Result<Vec<Member>> {
+    let leader = leader(pid, birth)?;
     let mut members = Vec::new();
-    for entry in std::fs::read_dir("/proc")? {
-        let entry = entry?;
-        let Some(id) = entry
-            .file_name()
-            .to_str()
-            .and_then(|s| s.parse::<u32>().ok())
-        else {
-            continue;
-        };
+    for id in process_ids()? {
         let current = match member(id) {
             Ok(current) => current,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) if vanished(&e) => continue,
             Err(e) => return Err(e),
         };
         if current.session != pid {
@@ -93,7 +108,7 @@ fn pin_member(current: &Member) -> io::Result<Option<std::os::fd::OwnedFd>> {
     let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw as libc::c_int) };
     let verified = match member(current.pid) {
         Ok(verified) => verified,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if vanished(&error) => return Ok(None),
         Err(error) => return Err(error),
     };
     if verified.start != current.start || verified.session != current.session {
@@ -149,10 +164,11 @@ pub(super) fn poll_exit(
     child: &mut std::process::Child,
     birth: u64,
 ) -> io::Result<Option<std::process::ExitStatus>> {
-    let group = members(child.id(), birth)?;
-    if !group.iter().any(|m| m.pid == child.id() && m.exited) {
+    // Only the leader is read while it runs; the session scan starts at its exit.
+    if !leader(child.id(), birth)?.exited {
         return Ok(None);
     }
+    let group = members(child.id(), birth)?;
     if group.iter().any(|m| !m.exited) {
         if !signal_session(child.id(), birth, libc::SIGKILL) {
             return Err(io::Error::other("owned descendants could not be settled"));
@@ -182,4 +198,79 @@ pub(super) fn birth(_pid: u32) -> io::Result<u64> {
     Err(io::Error::other(
         "process ownership verification requires Linux",
     ))
+}
+
+/// Inherited by every watched process so descendants that outlive a crashed
+/// kernel stay attributable to their wake after the session leader is gone.
+pub(super) const WAKE_MARKER_ENV: &str = "CHARIOX_AGENT_WAKE_ID";
+
+#[cfg(target_os = "linux")]
+fn wake_marker(pid: u32) -> Option<String> {
+    let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    let prefix = format!("{WAKE_MARKER_ENV}=");
+    environ.split(|b| *b == 0).find_map(|entry| {
+        entry
+            .strip_prefix(prefix.as_bytes())
+            .and_then(|id| String::from_utf8(id.to_vec()).ok())
+    })
+}
+
+/// Stops executing processes still carrying the marker of one of `wakes`
+/// (descendants orphaned by an earlier kernel). Each target is pinned by a
+/// pidfd and its identity and marker are re-read before SIGKILL. Returns the
+/// number of processes stopped per wake.
+#[cfg(target_os = "linux")]
+pub(super) fn reap_orphans(
+    wakes: &std::collections::BTreeSet<String>,
+) -> std::collections::BTreeMap<String, usize> {
+    use std::os::fd::AsRawFd;
+    let mut stopped = std::collections::BTreeMap::new();
+    let Ok(ids) = process_ids() else {
+        return stopped;
+    };
+    for pid in ids.filter(|pid| *pid > 1 && *pid != std::process::id()) {
+        let Some(wake) = wake_marker(pid).filter(|w| wakes.contains(w)) else {
+            continue;
+        };
+        let Ok(current) = member(pid) else { continue };
+        if current.exited {
+            continue;
+        }
+        let Ok(Some(fd)) = pin_member(&current) else {
+            continue;
+        };
+        if wake_marker(pid).as_ref() != Some(&wake) {
+            continue;
+        }
+        if unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                fd.as_raw_fd(),
+                libc::SIGKILL,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        } == 0
+        {
+            *stopped.entry(wake).or_insert(0) += 1;
+        }
+    }
+    stopped
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(super) fn reap_orphans(
+    _wakes: &std::collections::BTreeSet<String>,
+) -> std::collections::BTreeMap<String, usize> {
+    Default::default()
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(super) fn marked_count_for_test(wake: &str) -> usize {
+    process_ids()
+        .unwrap()
+        .filter(|pid| {
+            wake_marker(*pid).as_deref() == Some(wake) && member(*pid).is_ok_and(|m| !m.exited)
+        })
+        .count()
 }

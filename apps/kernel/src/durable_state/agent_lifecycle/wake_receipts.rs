@@ -67,12 +67,16 @@ fn save(tx: &Transaction<'_>, r: &WakeFireReceipt) -> Result<(), DaemonError> {
     Ok(())
 }
 
+/// Per-wake bound on settled receipts; undelivered ones are always kept.
+const SETTLED_RECEIPTS_RETAINED: i64 = 64;
+
 pub(super) fn fire(
     tx: &Transaction<'_>,
     wake: &AgentWake,
     e: &InboxEvent,
     now: u64,
 ) -> Result<(), DaemonError> {
+    tx.execute("DELETE FROM agent_wake_receipts WHERE wake_id=?1 AND sequence IN (SELECT sequence FROM agent_wake_receipts WHERE wake_id=?1 AND (json_extract(payload,'$.delivered_at_ms') IS NOT NULL OR json_extract(payload,'$.delivery') IN ('expired','failed')) ORDER BY sequence DESC LIMIT -1 OFFSET ?2)", params![wake.id, SETTLED_RECEIPTS_RETAINED - 1]).map_err(sql)?;
     save(
         tx,
         &WakeFireReceipt {

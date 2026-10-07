@@ -388,7 +388,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
     ) -> Result<(crate::session::RuntimeSession, Vec<String>), DaemonError> {
         let session = self.session_store.get_session(session_id)?;
-        self.cancel_owned_agent_wakes(session_id, None)?;
+        self.cancel_owned_agent_wakes(session_id, None);
         self.withdraw_agent_interactions(session_id, None)?;
 
         if session.status() == crate::session::SessionStatus::Ended {

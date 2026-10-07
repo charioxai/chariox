@@ -299,6 +299,13 @@ pub(crate) enum Operation {
         id: String,
         sequence: u64,
     },
+    /// Kernel teardown of a Room (`agent: None`) or agent: settles its armed
+    /// wakes without owner authority; processes settle on physical exit.
+    RetireWakes {
+        room: String,
+        agent: Option<String>,
+        now: u64,
+    },
 }
 #[derive(Debug)]
 pub(crate) enum Outcome {

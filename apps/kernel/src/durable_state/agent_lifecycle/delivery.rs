@@ -221,7 +221,13 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             e.state = if handled { "handled" } else { "acknowledged" }.into();
             save_event(tx, &e)?;
             super::wakes::record_delivery(tx, &e)?;
-            if handled && matches!(e.kind.as_str(), "source_completed" | "source_lost") {
+            // A handled recurring check-in is the progress its timer exists for.
+            if handled
+                && matches!(
+                    e.kind.as_str(),
+                    "source_completed" | "source_lost" | "timer_fired"
+                )
+            {
                 for mut t in tasks(tx)? {
                     if t.room_id != room || t.agent_id != agent {
                         continue;

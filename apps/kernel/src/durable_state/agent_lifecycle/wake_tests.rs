@@ -246,6 +246,7 @@ fn a03_one_shot_timer_fires_once_wakes_the_wait_and_records_receipts() {
         agent: "agent".into(),
         sequence: e.sequence,
         state: "accepted".into(),
+        now: 1_600,
     });
     let wake = f.wake("t1");
     assert!(wake.last_delivered_at_ms.is_some() && wake.last_acknowledged_at_ms.is_none());
@@ -545,23 +546,213 @@ fn a03_wake_admission_survives_more_than_one_page_of_handled_history() {
             provider_run_id: None,
             attempted_at_ms: None,
             submit_epoch: None,
-        })) else { panic!("expected historical event") };
+        })) else {
+            panic!("expected historical event")
+        };
         f.apply(Operation::Ack {
-            room: "room".into(), agent: "agent".into(),
-            sequence: event.sequence, handled: true, now: 100,
+            room: "room".into(),
+            agent: "agent".into(),
+            sequence: event.sequence,
+            handled: true,
+            now: 100,
         });
     }
     f.apply(Operation::ProcessExited {
-        id: "process".into(), exit_code: None,
-        tail: "process_lost".into(), now: 300_000,
+        id: "process".into(),
+        exit_code: None,
+        tail: "process_lost".into(),
+        now: 300_000,
     });
     let event = f.store.agent_inbox("room", "agent", 128).unwrap().remove(0);
     assert!(event.sequence > 128);
     f.apply(Operation::Attempt {
-        room: "room".into(), agent: "agent".into(),
-        sequence: event.sequence, prompt: "fresh-wake".into(),
-        target: None, run: None, now: 300_001,
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: event.sequence,
+        prompt: "fresh-wake".into(),
+        target: None,
+        run: None,
+        now: 300_001,
     });
-    assert!(f.store.agent_has_live_wake_admission(&f.task(), || 300_002).unwrap(),
-        "handled inbox history must not hide the exact new wake admission");
+    assert!(
+        f.store
+            .agent_has_live_wake_admission(&f.task(), || 300_002)
+            .unwrap(),
+        "handled inbox history must not hide the exact new wake admission"
+    );
+}
+
+#[test]
+fn a03_recurring_timer_check_ins_never_block_their_task() {
+    let f = Fixture::new();
+    f.create("t1", "timer", Some(60_000), Some(60_000));
+    f.wait_on(&["t1"]);
+    // Wake -> inspect -> nothing changed -> ack -> wait again, five times.
+    for n in 1..=5u64 {
+        let now = n * 60_000;
+        assert_eq!(f.wakes(Operation::FireWakes { now }).len(), 1);
+        let e = f.inbox().pop().unwrap();
+        assert_eq!(e.kind, "timer_fired");
+        let prompt = format!("check-in-{n}");
+        f.apply(Operation::Attempt {
+            room: "room".into(),
+            agent: "agent".into(),
+            sequence: e.sequence,
+            prompt: prompt.clone(),
+            target: None,
+            run: Some("run".into()),
+            now: now + 1,
+        });
+        f.apply(Operation::Receipt {
+            room: "room".into(),
+            agent: "agent".into(),
+            sequence: e.sequence,
+            state: "accepted".into(),
+            now: now + 1,
+        });
+        f.apply(Operation::Begin {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: "agent".into(),
+            prompt: prompt.clone(),
+            run: Some("run".into()),
+            now: now + 2,
+        });
+        f.apply(Operation::Ack {
+            room: "room".into(),
+            agent: "agent".into(),
+            sequence: e.sequence,
+            handled: true,
+            now: now + 3,
+        });
+        f.apply(Operation::Yield {
+            task: "p".into(),
+            prompt: prompt.clone(),
+            registrations: vec!["completion-t1".into()],
+            cursor: e.sequence,
+            deadline: 10_000_000,
+            reason: "next check-in".into(),
+            now: now + 4,
+        });
+        f.apply(Operation::Settle {
+            room: "room".into(),
+            agent: "agent".into(),
+            prompt,
+            run: "run".into(),
+            has_answer: true,
+            cancelled: false,
+            now: now + 5,
+        });
+        assert_eq!(
+            f.task().state,
+            ExecutionState::Waiting,
+            "handled check-in {n} is progress, not a no-progress strike"
+        );
+    }
+}
+
+#[test]
+fn a03_cancellation_is_not_recorded_as_a_fire() {
+    let f = Fixture::new();
+    f.create("t1", "timer", Some(1_000), None);
+    f.apply(Operation::CancelTask {
+        task: "p".into(),
+        owner: "owner".into(),
+        revision: f.task().revision,
+    });
+    f.apply(Operation::FireWakes { now: 5_000 });
+    let wake = f.wake("t1");
+    assert_eq!(wake.state, "cancelled");
+    assert_eq!(
+        (wake.fire_count, wake.last_fired_at_ms, wake.last_sequence),
+        (0, None, None),
+        "a timer that never fired shows no fire"
+    );
+    assert!(f.store.agent_wake_receipts(None, None).unwrap().is_empty());
+}
+
+#[test]
+fn a03_teardown_retires_wakes_without_owner_authority() {
+    let f = Fixture::new();
+    f.create("t1", "timer", Some(1_000), Some(60_000));
+    f.create("process", "process", None, None);
+    f.apply(Operation::ProcessStarted {
+        id: "process".into(),
+        pid: 42,
+        now: 20,
+    });
+    // A Sweep/Settle-admitted task has no owner; owner cancellation refuses it.
+    f.apply(Operation::Begin {
+        owner: String::new(),
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: "unowned".into(),
+        run: None,
+        now: 25,
+    });
+    let retired = f.wakes(Operation::RetireWakes {
+        room: "room".into(),
+        agent: Some("agent".into()),
+        now: 30,
+    });
+    assert_eq!(retired.len(), 2);
+    assert_eq!(f.wake("t1").state, "cancelled");
+    assert_eq!(
+        f.wake("process").state,
+        "cancelling",
+        "a process settles only on its physical exit"
+    );
+    assert!(f.wakes(Operation::FireWakes { now: 120_000 }).is_empty());
+    f.apply(Operation::ProcessExited {
+        id: "process".into(),
+        exit_code: Some(143),
+        tail: String::new(),
+        now: 40,
+    });
+    assert_eq!(f.wake("process").state, "cancelled");
+}
+
+#[test]
+fn a03_wake_history_and_receipts_are_bounded() {
+    let f = Fixture::new();
+    f.create("interval", "timer", Some(60_000), Some(60_000));
+    for n in 1..=100u64 {
+        f.apply(Operation::FireWakes { now: n * 60_000 });
+        let e = f.inbox().pop().unwrap();
+        f.apply(Operation::Ack {
+            room: "room".into(),
+            agent: "agent".into(),
+            sequence: e.sequence,
+            handled: true,
+            now: n * 60_000 + 1,
+        });
+    }
+    let receipts = f.store.agent_wake_receipts(None, None).unwrap();
+    assert!(receipts.len() <= 64, "{} receipts retained", receipts.len());
+    assert_eq!(
+        receipts.last().map(|r| r.sequence),
+        f.wake("interval").last_sequence,
+        "the newest receipt is kept"
+    );
+    for n in 0..100 {
+        let id = format!("finished-{n}");
+        f.create(&id, "process", None, None);
+        f.apply(Operation::ProcessExited {
+            id,
+            exit_code: None,
+            tail: String::new(),
+            now: 50,
+        });
+    }
+    let wakes = f.store.agent_wakes(None, None).unwrap();
+    assert!(
+        wakes.len() <= 66,
+        "finished wakes are bounded per agent, {} retained",
+        wakes.len()
+    );
+    assert!(
+        wakes.iter().any(|w| w.id == "interval"),
+        "armed wakes are kept"
+    );
+    assert!(wakes.iter().any(|w| w.id == "finished-99"));
 }

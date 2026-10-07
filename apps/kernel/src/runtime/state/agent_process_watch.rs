@@ -33,12 +33,18 @@ const ENV_ALLOW: &[&str] = &[
 struct OwnedChild {
     child: Child,
     birth: u64,
+    /// Set once the leader is reaped after every session member settled.
+    status: Option<std::process::ExitStatus>,
 }
 
 impl OwnedChild {
     fn new(mut child: Child) -> std::io::Result<Self> {
         match super::agent_process_group::birth(child.id()) {
-            Ok(birth) => Ok(Self { child, birth }),
+            Ok(birth) => Ok(Self {
+                child,
+                birth,
+                status: None,
+            }),
             Err(error) => {
                 // The freshly spawned positive child handle is owned even
                 // when group inspection failed. Do not signal a group.
@@ -49,6 +55,12 @@ impl OwnedChild {
                 Err(error)
             }
         }
+    }
+    fn poll(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        if self.status.is_none() {
+            self.status = super::agent_process_group::poll_exit(&mut self.child, self.birth)?;
+        }
+        Ok(self.status)
     }
 }
 
@@ -68,54 +80,129 @@ impl WatchedProcesses {
     }
     /// Signals the owned session only while its leader is unreaped, so the
     /// group id cannot have been reused; SIGKILL follows after a grace period.
+    /// A transient ownership-check failure is retried rather than dropped.
     pub(super) fn terminate(&self, id: &str) -> bool {
         let Some(child) = self.live.lock().ok().and_then(|l| l.get(id).cloned()) else {
             return false;
         };
-        if !signal_owned_session(&child, libc::SIGTERM) {
+        if settled(&child) {
             return false;
         }
         std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_secs(3));
-            signal_owned_session(&child, libc::SIGKILL);
+            let grace = Instant::now() + Duration::from_secs(3);
+            let mut asked = false;
+            while Instant::now() < grace && !settled(&child) {
+                asked = asked || signal_owned_session(&child, libc::SIGTERM);
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            for _ in 0..50 {
+                if settled(&child) || signal_owned_session(&child, libc::SIGKILL) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
         });
         true
     }
+    /// Kernel shutdown: no watched session outlives its supervisor.
+    pub(super) fn shutdown(&self) {
+        let owned: Vec<_> = match self.live.lock() {
+            Ok(live) => live.keys().cloned().collect(),
+            Err(_) => return,
+        };
+        for id in &owned {
+            self.terminate(id);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline
+            && self
+                .live
+                .lock()
+                .is_ok_and(|live| live.values().any(|child| !settled_now(child)))
+        {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+fn settled(child: &Owned) -> bool {
+    child.lock().map_or(true, |c| c.status.is_some())
+}
+
+/// Reaps a settled session so shutdown does not wait on the supervisor thread.
+fn settled_now(child: &Owned) -> bool {
+    child
+        .lock()
+        .map_or(true, |mut c| matches!(c.poll(), Ok(Some(_))))
 }
 
 fn signal_owned_session(child: &Owned, signal: libc::c_int) -> bool {
     let Ok(child) = child.lock() else {
         return false;
     };
-    signal_session(child.child.id(), child.birth, signal)
+    child.status.is_none() && signal_session(child.child.id(), child.birth, signal)
+}
+
+/// Builds the launch through the same managed isolation every other
+/// agent-launched command uses, then adds kernel session ownership.
+fn command(
+    wake: &str,
+    argv: &[String],
+    cwd: &Path,
+    env: &BTreeMap<String, String>,
+    removed: &[String],
+) -> std::io::Result<Command> {
+    let mut environment = BTreeMap::new();
+    for key in ENV_ALLOW {
+        if removed.iter().any(|r| r == key) {
+            continue;
+        }
+        if let Some(value) = env.get(*key).cloned().or_else(|| std::env::var(key).ok()) {
+            environment.insert(key.to_string(), value);
+        }
+    }
+    environment.insert(
+        super::agent_process_group::WAKE_MARKER_ENV.into(),
+        wake.into(),
+    );
+    let launch = crate::provider::managed_isolated_utility_launch(
+        argv[0].clone(),
+        argv[1..].to_vec(),
+        environment,
+        Some(cwd.to_path_buf()),
+        "agent-watched-process",
+    )
+    .map_err(std::io::Error::other)?;
+    let program = launch
+        .pty_program
+        .ok_or_else(|| std::io::Error::other("watched process launch has no executable"))?;
+    let mut command = Command::new(program);
+    command
+        .args(launch.pty_args)
+        .env_clear()
+        .envs(
+            launch
+                .pty_env
+                .into_iter()
+                .filter(|(key, _)| !launch.pty_env_remove.contains(key)),
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(directory) = launch.working_directory {
+        command.current_dir(directory);
+    }
+    Ok(command)
 }
 
 fn spawn(
+    wake: &str,
     argv: &[String],
     cwd: &Path,
     env: &BTreeMap<String, String>,
     removed: &[String],
 ) -> std::io::Result<Child> {
-    let mut command = Command::new(&argv[0]);
-    command
-        .args(&argv[1..])
-        .current_dir(cwd)
-        .env_clear()
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    for key in ENV_ALLOW {
-        if removed.iter().any(|r| r == key) {
-            continue;
-        }
-        if let Some(value) = env
-            .get(*key)
-            .map(std::ffi::OsString::from)
-            .or_else(|| std::env::var_os(key))
-        {
-            command.env(key, value);
-        }
-    }
+    let mut command = command(wake, argv, cwd, env, removed)?;
     use std::os::unix::process::CommandExt;
     #[cfg(target_os = "linux")]
     // SAFETY: prctl is async-signal-safe; the child dies with the kernel.
@@ -156,7 +243,7 @@ impl KernelRuntimeState {
             );
             return Err(error);
         }
-        let mut child = match spawn(&argv, &cwd, run.pty_env(), run.pty_env_remove()) {
+        let mut child = match spawn(&wake.id, &argv, &cwd, run.pty_env(), run.pty_env_remove()) {
             Ok(child) => child,
             Err(e) => {
                 self.settle_failed_process_launch(&wake, format!("launch failed: {e}"));
@@ -218,10 +305,7 @@ impl KernelRuntimeState {
         std::thread::spawn(move || {
             let mut alerted = false;
             let code = loop {
-                match owned.lock().map(|mut c| {
-                    let birth = c.birth;
-                    super::agent_process_group::poll_exit(&mut c.child, birth)
-                }) {
+                match owned.lock().map(|mut c| c.poll()) {
                     Ok(Ok(Some(status))) => {
                         break status
                             .code()
@@ -389,6 +473,143 @@ mod tests {
         );
     }
 
+    /// Managed isolation configured for one env-isolated test process.
+    #[cfg(target_os = "linux")]
+    fn managed_isolation_fixture() -> (PathBuf, PathBuf, PathBuf) {
+        let scratch = std::env::temp_dir().join(format!("chariox-a03-iso-{}", std::process::id()));
+        let (home, provider, workspace) = (
+            scratch.join("chariox-home"),
+            scratch.join("provider-home"),
+            scratch.join("workspace"),
+        );
+        for dir in [&home.join("state"), &provider, &workspace] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(home.join("state/vault"), "protected").unwrap();
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION", "1");
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_HOME", &provider);
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_BWRAP", "/usr/bin/bwrap");
+        std::env::set_var("CHARIOX_HOME", &home);
+        (scratch, home, workspace.canonicalize().unwrap())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a03_watched_process_launches_through_managed_isolation() {
+        crate::test_support::isolated_env_test!();
+        let (scratch, _home, workspace) = managed_isolation_fixture();
+        let argv: Vec<String> = vec!["/bin/sh".into(), "-c".into(), "true".into()];
+        let removed: Vec<String> = ENV_ALLOW.iter().map(|k| k.to_string()).collect();
+        let watched = command("w", &argv, &workspace, &BTreeMap::new(), &removed).unwrap();
+        let managed = crate::provider::managed_isolated_utility_command(
+            "/bin/sh",
+            argv[1..].to_vec(),
+            BTreeMap::from([(
+                super::super::agent_process_group::WAKE_MARKER_ENV.to_string(),
+                "w".to_string(),
+            )]),
+            Some(workspace.clone()),
+            "managed-command",
+        )
+        .unwrap();
+        std::env::remove_var("CHARIOX_MANAGED_PROVIDER_ISOLATION");
+        let _ = std::fs::remove_dir_all(&scratch);
+        assert_eq!(watched.get_program(), "/usr/bin/bwrap");
+        assert_eq!(
+            watched.get_args().collect::<Vec<_>>(),
+            managed.get_args().collect::<Vec<_>>(),
+            "a watched process gets exactly the managed command isolation boundary"
+        );
+        assert_eq!(watched.get_current_dir(), managed.get_current_dir());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a03_managed_watched_process_is_isolated_and_settles_its_namespace() {
+        use std::io::BufRead;
+        crate::test_support::isolated_env_test!();
+        let (scratch, home, workspace) = managed_isolation_fixture();
+        let vault = home.join("state/vault");
+        let script = format!(
+            "test -e {} && echo exposed || echo isolated; sleep 30 & sleep 31",
+            vault.display()
+        );
+        let wake = format!("a03-iso-{}", std::process::id());
+        let mut child = spawn(
+            &wake,
+            &["/bin/sh".into(), "-c".into(), script],
+            &workspace,
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let processes = WatchedProcesses::default();
+        let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child).unwrap()));
+        processes
+            .live
+            .lock()
+            .unwrap()
+            .insert(wake.clone(), owned.clone());
+        let marked = || super::super::agent_process_group::marked_count_for_test(&wake);
+        let running = marked();
+        assert!(processes.terminate(&wake));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while owned.lock().unwrap().poll().ok().flatten().is_none() {
+            assert!(Instant::now() < deadline, "isolated session must settle");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let survivors = marked();
+        let _ = std::fs::remove_dir_all(&scratch);
+        assert_eq!(line.trim(), "isolated", "protected state is hidden");
+        assert!(running >= 2, "the workload ran inside the sandbox");
+        assert_eq!(survivors, 0, "no sandboxed descendant outlives the session");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a03_restart_reaps_descendants_orphaned_by_a_crashed_kernel() {
+        use super::super::agent_process_group::{marked_count_for_test, reap_orphans};
+        use std::io::BufRead;
+        let wake = format!("a03-orphan-{}", std::process::id());
+        // The descendant leaves the session and process group, as a daemon would.
+        let script = "import os, signal\np=os.fork()\nif p==0:\n os.setsid()\n signal.signal(signal.SIGTERM,signal.SIG_IGN)\n while True: signal.pause()\nprint(p,flush=True)\nwhile True: signal.pause()";
+        let mut child = spawn(
+            &wake,
+            &["python3".into(), "-c".into(), script.into()],
+            &std::env::temp_dir(),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        // Kernel crash: PDEATHSIG kills only the leader; init reaps it.
+        assert!(child.id() > 1);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while marked_count_for_test(&wake) != 1 {
+            assert!(
+                Instant::now() < deadline,
+                "orphaned descendant keeps running"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(reap_orphans(&BTreeSet::from(["other-wake".to_string()])).is_empty());
+        let stopped = reap_orphans(&BTreeSet::from([wake.clone()]));
+        while marked_count_for_test(&wake) != 0 {
+            assert!(Instant::now() < deadline, "restart must stop the orphan");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(stopped.get(&wake), Some(&1));
+    }
+
     #[test]
     fn a03_signal_guard_rejects_reserved_and_invalid_targets() {
         for pid in [0, 1, u32::MAX, (i32::MAX as u32) + 1] {
@@ -401,8 +622,9 @@ mod tests {
     fn a03_terminate_settles_the_owned_group_only_while_unreaped() {
         let processes = WatchedProcesses::default();
         let child = spawn(
+            "w",
             &["sleep".into(), "30".into()],
-            Path::new("/"),
+            &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
         )
@@ -414,7 +636,14 @@ mod tests {
             .unwrap()
             .insert("w".into(), owned.clone());
         assert!(processes.terminate("w"));
-        let status = owned.lock().unwrap().child.wait().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = owned.lock().unwrap().poll().unwrap() {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "terminated session must settle");
+            std::thread::sleep(Duration::from_millis(20));
+        };
         assert_eq!(status.signal(), Some(libc::SIGTERM));
         assert!(
             !processes.terminate("w"),
@@ -427,8 +656,9 @@ mod tests {
     #[test]
     fn a03_signal_guard_rejects_a_stale_birth_identity() {
         let child = spawn(
+            "w",
             &["sleep".into(), "30".into()],
-            Path::new("/"),
+            &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
         )
@@ -470,8 +700,9 @@ mod tests {
             script.into()
         };
         let mut child = spawn(
+            "w",
             &["python3".into(), "-c".into(), script.into()],
-            Path::new("/"),
+            &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
         )
@@ -492,10 +723,7 @@ mod tests {
         let mut status = None;
         while Instant::now() < deadline {
             let mut child = owned.lock().unwrap();
-            let birth = child.birth;
-            status = super::super::agent_process_group::poll_exit(&mut child.child, birth)
-                .ok()
-                .flatten();
+            status = child.poll().ok().flatten();
             if status.is_some() {
                 break;
             }

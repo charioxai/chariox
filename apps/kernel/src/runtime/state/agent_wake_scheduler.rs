@@ -292,24 +292,41 @@ impl KernelRuntimeState {
     }
 
     /// After a restart no process from an earlier kernel is supervised; it is
-    /// reported lost and never relaunched.
+    /// reported lost and never relaunched. Descendants it left running are
+    /// identified by their wake marker and stopped.
     fn recover_lost_agent_processes(&self, now: u64) -> Result<(), DaemonError> {
         let monitor = &self.owned.agent_wakes;
-        for wake in self.owned.durable_state_store.agent_wakes(None, None)? {
-            if wake.kind == "process"
-                && matches!(wake.state.as_str(), "starting" | "running" | "cancelling")
-                && wake.created_at_ms < monitor.started_at_ms
-                && !monitor.processes.contains(&wake.id)
-            {
-                self.owned.durable_state_store.agent_lifecycle(Operation::ProcessExited {
-                    id: wake.id.clone(),
-                    exit_code: None,
-                    tail: "process_lost: the kernel restarted; it is not supervised and is not relaunched".into(),
-                    now,
-                })?;
-                self.wake_notice(&wake, format!("Wake alert: watched process '{}' was lost when the kernel restarted; it is not relaunched", wake.label));
-                self.schedule_wake_delivery(&wake);
-            }
+        let lost: Vec<_> = self
+            .owned
+            .durable_state_store
+            .agent_wakes(None, None)?
+            .into_iter()
+            .filter(|wake| {
+                wake.kind == "process"
+                    && matches!(wake.state.as_str(), "starting" | "running" | "cancelling")
+                    && wake.created_at_ms < monitor.started_at_ms
+                    && !monitor.processes.contains(&wake.id)
+            })
+            .collect();
+        if lost.is_empty() {
+            return Ok(());
+        }
+        let stopped = super::agent_process_group::reap_orphans(
+            &lost.iter().map(|wake| wake.id.clone()).collect(),
+        );
+        for wake in lost {
+            let orphans = match stopped.get(&wake.id) {
+                Some(count) => format!("; {count} process(es) it left running were stopped"),
+                None => String::new(),
+            };
+            self.owned.durable_state_store.agent_lifecycle(Operation::ProcessExited {
+                id: wake.id.clone(),
+                exit_code: None,
+                tail: format!("process_lost: the kernel restarted; it is not supervised and is not relaunched{orphans}"),
+                now,
+            })?;
+            self.wake_notice(&wake, format!("Wake alert: watched process '{}' was lost when the kernel restarted; it is not relaunched{orphans}", wake.label));
+            self.schedule_wake_delivery(&wake);
         }
         Ok(())
     }
