@@ -521,11 +521,12 @@ fn a02_cancel_independent_task_preserves_uncertain_recipient_delivery() {
             .into_iter()
             .find(|t| t.task_id == "independent")
             .unwrap();
-        f.apply(Operation::OwnerResponse {
+        // #914 review 6: unrelated work is not blocked by another turn's receipt.
+        assert_eq!(task.state, ExecutionState::Working);
+        f.apply(Operation::CancelTask {
             task: task.task_id,
-            revision: task.blocked_revision,
-            resume: false,
-            now: DELIVERY_TIMEOUT_MS + 2,
+            owner: "owner".into(),
+            revision: task.revision,
         });
         assert_eq!(
             f.store.agent_inbox("room", "parent", 0).unwrap()[0].state,

@@ -492,31 +492,37 @@ pub(crate) fn delivery_receipt_state(
 ) -> &'static str {
     match submitted {
         Some(Ok(true)) if structured => "submitting",
-        Some(Ok(true)) => "uncertain",
-        Some(Ok(false) | Err(DaemonError::ProviderPromptSteerRejected { .. })) => "rejected",
-        Some(Err(_)) | None => "uncertain",
+        // A non-structured adapter write is its only acceptance receipt.
+        Some(Ok(true)) => "accepted",
+        Some(Ok(false) | Err(DaemonError::ProviderPromptSteerRejected { .. })) | None => "rejected",
+        Some(Err(_)) => "uncertain",
     }
 }
 
-/// MP-08/MP-09/MP-10/MP-11: a Working task with no live executor blocks
-/// after the delivery timeout.
+/// MP-08/MP-09/MP-10/MP-11: a Working task whose prompt is neither active
+/// nor queued blocks after the delivery timeout.
 pub(crate) fn lacks_live_executor(
     task: &AgentTaskExecution,
     now: u64,
     active: bool,
-    _queued: bool,
+    queued: bool,
 ) -> bool {
     task.state == ExecutionState::Working
         && now.saturating_sub(task.last_progress_at_ms) >= DELIVERY_TIMEOUT_MS
         && !active
+        && !queued
 }
 
-/// MP-08/MP-09/MP-10/MP-11: a failed provider turn blocks its task.
+/// MP-08/MP-09/MP-10/MP-11: a failed provider turn blocks a Working task;
+/// an already blocked/terminal task keeps its disposition.
 pub(crate) fn block_failed_turn(
     store: &DurableKernelStateStore,
     task: &AgentTaskExecution,
     reason: String,
 ) -> Result<(), DaemonError> {
+    if task.state != ExecutionState::Working {
+        return Ok(());
+    }
     store.agent_lifecycle(Operation::Block {
         task: task.task_id.clone(),
         prompt: task.prompt_id.clone(),

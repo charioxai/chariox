@@ -217,13 +217,19 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 {
                     e.state = "blocked".into();
                     save_event(tx, &e)?;
+                    // Only the task this delivery belongs to waits on its
+                    // reconciliation; unrelated work of the recipient continues.
                     let mut matched = false;
                     for mut t in tasks(tx)? {
                         if t.room_id == e.room_id
                             && t.agent_id == e.agent_id
                             && !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
+                            && delivery_belongs_to_task(tx, &e, &t)?
                         {
-                            matched |= delivery_belongs_to_task(tx, &e, &t)?;
+                            matched = true;
+                            if t.state == ExecutionState::Blocked {
+                                continue;
+                            }
                             t.state = ExecutionState::Blocked;
                             t.blocked_revision = t.revision + 1;
                             t.reason=format!("Unconfirmed delivery {}: owner must reconcile the original attempt",e.sequence);

@@ -148,9 +148,12 @@ impl KernelRuntimeState {
                             session.workflow_runs().iter().find(|r| r.id() == resource)
                         {
                             if run.created_by_agent_id() != Some(&task.agent_id) {
-                                return Err(crate::durable_state::agent_lifecycle::error(
-                                    "workflow cancellation creator binding changed",
-                                ));
+                                first_error.get_or_insert(
+                                    crate::durable_state::agent_lifecycle::error(
+                                        "workflow cancellation creator binding changed",
+                                    ),
+                                );
+                                continue;
                             }
                             let (result, _) = self
                                 .execute_workflow_cancel_run_request(

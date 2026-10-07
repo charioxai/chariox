@@ -27,7 +27,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     t.prompt_id = prompt;
                     t.pending_prompt_id = None;
                     t.state = ExecutionState::Working;
-                    t.wait = None;
                     t.provider_run_id = None;
                     t.revision += 1;
                     t
@@ -40,6 +39,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             // admission alone is not authority to run it later.
             if run.is_some() && task.state != ExecutionState::Working {
                 return Err(error("non-working task cannot dispatch a provider turn"));
+            }
+            // The retained wait is consumed only by an actual provider dispatch;
+            // a refused wake before that returns the task to this wait.
+            if run.is_some() {
+                task.wait = None;
             }
             if task.owner_user_id.is_empty() {
                 task.owner_user_id = owner;
@@ -110,6 +114,13 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         } => {
             for mut task in tasks(tx)? {
                 if let Some(o) = task.obligations.iter_mut().find(|o| o.id == id) {
+                    // Receipts are monotonic: a duplicate or late receipt for a
+                    // settled obligation cannot rewrite its outcome.
+                    if o.status != "open"
+                        || matches!(o.dispatch_state.as_str(), "accepted" | "rejected")
+                    {
+                        return Ok(Outcome::Task(task));
+                    }
                     migration::audit(
                         tx,
                         "room.obligation.dispatch_receipt",
@@ -443,41 +454,48 @@ fn bind_first_delegate_task(
     tx: &Transaction<'_>,
     child: &AgentTaskExecution,
 ) -> Result<(), DaemonError> {
-    for mut parent in tasks(tx)? {
+    // One child task completes exactly one delegation, the oldest unbound one;
+    // repeated Begin calls for the same child task bind nothing new.
+    let parents = tasks(tx)?;
+    if parents.iter().any(|p| {
+        p.obligations
+            .iter()
+            .any(|o| o.completion_task_id.as_deref() == Some(child.task_id.as_str()))
+    }) {
+        return Ok(());
+    }
+    for mut parent in parents {
         if parent.room_id != child.room_id
             || parent.owner_user_id.is_empty()
             || parent.owner_user_id != child.owner_user_id
         {
             continue;
         }
-        let mut changed = false;
-        for obligation in &mut parent.obligations {
-            if obligation.kind == "delegate"
-                && obligation.status == "open"
-                && obligation.dispatch_state == "accepted"
-                && obligation.resource_id.as_deref() == Some(&child.agent_id)
-                && obligation.completion_task_id.is_none()
-            {
-                obligation.completion_task_id = Some(child.task_id.clone());
-                let id = format!("completion-{}", obligation.id);
-                for mut registration in registrations(tx, &parent.task_id)?
-                    .into_iter()
-                    .filter(|r| r.id == id || r.obligation_id.as_deref() == Some(&obligation.id))
-                {
-                    registration.source_id = child.task_id.clone();
-                    tx.execute(
-                        "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
-                        params![registration.id, encode(&registration)?],
-                    )
-                    .map_err(sql)?;
-                }
-                changed = true;
-            }
+        let Some(obligation) = parent.obligations.iter_mut().find(|o| {
+            o.kind == "delegate"
+                && o.status == "open"
+                && o.dispatch_state == "accepted"
+                && o.resource_id.as_deref() == Some(&child.agent_id)
+                && o.completion_task_id.is_none()
+        }) else {
+            continue;
+        };
+        obligation.completion_task_id = Some(child.task_id.clone());
+        let id = format!("completion-{}", obligation.id);
+        for mut registration in registrations(tx, &parent.task_id)?
+            .into_iter()
+            .filter(|r| r.id == id || r.obligation_id.as_deref() == Some(&obligation.id))
+        {
+            registration.source_id = child.task_id.clone();
+            tx.execute(
+                "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
+                params![registration.id, encode(&registration)?],
+            )
+            .map_err(sql)?;
         }
-        if changed {
-            parent.revision += 1;
-            save(tx, &parent)?;
-        }
+        parent.revision += 1;
+        save(tx, &parent)?;
+        return Ok(());
     }
     Ok(())
 }
