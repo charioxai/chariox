@@ -42,22 +42,17 @@ impl KernelRuntimeState {
         } else {
             None
         };
-        let resume_queue = claim.is_some();
         let result = self
             .with_app_side_effect(move |app| {
                 crate::app::RemoteLeaseRuntime::new(app).commit_leased_agent_profile(prepared)
             })
             .await;
         drop(claim);
-        if resume_queue {
-            // Commit/rejection precedes promotion. Project/provider preparation
-            // runs off the acknowledgement path, as it does for local updates.
-            let promotion =
-                self.spawn_project_queued_prompt_after_profile_transition(&session_id, &agent_id);
-            if result.is_ok() {
-                promotion?;
-            }
-        }
+        // The operation guard excludes relay prompt admission during compaction.
+        // A backing backlog must wait for the home's credential-bearing leased
+        // submission: profile updates carry no launch credential. That launch
+        // marks the run leased and promotes queued work when it becomes ready.
+        // Never cold-launch this backlog through the worker's local account.
         result
     }
 }
