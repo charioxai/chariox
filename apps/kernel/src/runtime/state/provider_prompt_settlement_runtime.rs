@@ -44,7 +44,7 @@ impl KernelRuntimeState {
         let active_prompt = owned
             .prompt_state_owner
             .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, &agent_id);
-        let Some(active_prompt) = active_prompt else {
+        let Some(mut active_prompt) = active_prompt else {
             if !force && !prompt_completed {
                 crate::logging::debug_with_fields(
                     "daemon.provider",
@@ -326,6 +326,36 @@ impl KernelRuntimeState {
             });
         }
 
+        if owned.config_projection.snapshot().room_agent_tools {
+            self.observe_git_after_prompt_completion(provider_run_id, &active_prompt)
+                .await;
+            // Git observation yields to cancellation and run replacement. Revalidate
+            // before crediting progress or settling the captured turn.
+            let current = owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, &agent_id);
+            let same_run = owned
+                .provider_store
+                .get_run_for_agent(session_id, &agent_id)
+                .is_some_and(|run| run.id() == provider_run_id);
+            let Some(current) = current.filter(|p| p.id() == active_prompt.id() && same_run) else {
+                return Ok(crate::app::ProviderRunExitSessionSummary {
+                    had_active_prompt: false,
+                    cancelled_prompt: false,
+                    started_next_prompt: false,
+                });
+            };
+            active_prompt = current;
+            if active_prompt.status() != crate::session::PromptStatus::Cancelling {
+                owned.record_agent_artifact_progress(
+                    session_id,
+                    &agent_id,
+                    &active_prompt,
+                    provider_run_id,
+                )?;
+            }
+        }
+
         if active_prompt.status() == crate::session::PromptStatus::Cancelling {
             if !force && completion_recorded && saw_settlement_blocking_activity {
                 owned.note_prompt_settlement_requested(provider_run_id);
@@ -403,16 +433,6 @@ impl KernelRuntimeState {
         // complete (for example, when a managed provider socket is replaced during recovery).
         // Keep this fact so the common completion path can create a replacement run for queued
         // work instead of leaving the queue parked behind the ended run.
-        if owned.config_projection.snapshot().room_agent_tools {
-            self.observe_git_after_prompt_completion(provider_run_id, &active_prompt)
-                .await;
-            owned.record_agent_artifact_progress(
-                session_id,
-                &agent_id,
-                &active_prompt,
-                provider_run_id,
-            )?;
-        }
         let task_settlement = owned.settle_agent_task(
             session_id,
             &agent_id,

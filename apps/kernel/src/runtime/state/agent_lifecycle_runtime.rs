@@ -521,11 +521,13 @@ impl KernelRuntimeState {
         if let Some(existing) = session.active_interactions().iter().find(|i| i.id() == id) {
             let message=format!("Task {}: {}. {} obligations remain supervised. Progress does not resume this task; resolve the cause, then resume or cancel.",task.task_id,task.reason,task.obligations.iter().filter(|o|matches!(o.status.as_str(),"open"|"settling"|"failed")).count());
             if existing.message() != message {
+                let mutation = self.owned.begin_managed_activity_mutation();
                 let mut sessions = self.owned.session_store.write();
                 let mut latest = sessions.get_session(&task.room_id)?;
                 if let Some(current) = latest.remove_active_interaction(&id) {
                     latest.add_active_interaction(current.with_message(message));
                     sessions.restore_session(latest);
+                    mutation.record();
                 }
                 drop(sessions);
                 self.owned.session_snapshot(&task.room_id)?;

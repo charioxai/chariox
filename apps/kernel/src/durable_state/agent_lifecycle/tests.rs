@@ -809,3 +809,71 @@ fn a02_one_source_occurrence_reaches_multiple_tasks_without_conflict() {
     });
     assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap().len(), 1);
 }
+
+#[test]
+fn a02_artifact_receipt_resets_guard_once_and_survives_restart() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.yield_now();
+    f.settle("p", true);
+    let Outcome::Event(event) = f.apply(Operation::Occur(occurrence(
+        "room",
+        "parent",
+        "timer",
+        "tick",
+        "deadline_reached",
+        serde_json::json!({"task_id":"p"}),
+    ))) else {
+        panic!()
+    };
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: event.sequence,
+        prompt: "wake".into(),
+        target: None,
+        run: None,
+        now: 10,
+    });
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: event.sequence,
+        state: "accepted".into(),
+    });
+    f.begin("wake");
+    assert_eq!(f.task().no_progress_wakes, 1);
+    assert!(f
+        .store
+        .agent_lifecycle(Operation::Progress {
+            task: "p".into(),
+            prompt: "p".into(),
+            receipt: "artifact-1".into(),
+            now: 11,
+        })
+        .is_err());
+    f.apply(Operation::Progress {
+        task: "p".into(),
+        prompt: "wake".into(),
+        receipt: "artifact-1".into(),
+        now: 12,
+    });
+    let recorded = f.task();
+    assert_eq!(recorded.no_progress_wakes, 0);
+    assert_eq!(recorded.last_progress_at_ms, 12);
+    let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
+    reopened
+        .agent_lifecycle(Operation::Progress {
+            task: "p".into(),
+            prompt: "wake".into(),
+            receipt: "artifact-1".into(),
+            now: 999,
+        })
+        .unwrap();
+    assert_eq!(
+        reopened.agent_tasks(Some("room"), Some("parent")).unwrap()[0],
+        recorded
+    );
+}
