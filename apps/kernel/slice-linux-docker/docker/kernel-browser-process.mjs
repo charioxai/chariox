@@ -1,8 +1,10 @@
+import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-2: host Chromium lifetime. Never touches a slice or an existing Chrome.
 import { spawn } from "node:child_process";
 import { access, mkdir, readlink } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import {OwnedDisplay} from "./kernel-browser-owned-display.mjs";
 import * as linux from "./kernel-browser-linux.mjs";
 import * as macos from "./kernel-browser-macos.mjs";
 import { connectCdpPipe } from './kernel-browser-cdp-pipe.mjs';
@@ -29,8 +31,9 @@ export function launchArguments(profile, headless, display = false) {
     `--user-data-dir=${profile}`, "--remote-debugging-pipe",
     "--no-first-run", "--no-default-browser-check",
     "--disable-session-crashed-bubble", "--disable-background-networking",
-    "--window-size=1280,800", ...(headless ? ["--headless=new"] : []),
-    ...(display ? ["--disable-frame-rate-limit"] : []), "about:blank",
+    `--window-size=${geometry.width},${geometry.height+(display?87:0)}`, ...(headless ? ["--headless=new"] : []),
+    // MP-08/MP-10: remote panels have no shared physical LCD subpixel order.
+    ...(display ? ["--disable-lcd-text", `--force-device-scale-factor=${geometry.dpr}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows"] : []), "about:blank",
   ];
 }
 
@@ -45,7 +48,8 @@ export class HostChromium {
       if (this.connection?.isOpen()) return this.connection;
       await this.stop();
     }
-    const environment = platformPolicy(process.platform).launchEnvironment(this.environment);
+    await this.display?.close();this.display=null;
+    let environment = platformPolicy(process.platform).launchEnvironment(this.environment);
     const profile = path.join(this.root, "profile");
     await mkdir(profile, { recursive: true, mode: 0o700 });
     // Refuse a live profile owner before launching Chromium. Never
@@ -63,7 +67,13 @@ export class HostChromium {
       }
       if (alive) throw new Error("MD-2: browser profile is already owned by a live process");
     }
-    const child = spawn(await executable(environment), launchArguments(profile,
+    const binary=await executable(environment);
+    if(process.platform==='linux'&&environment.CHARIOX_KERNEL_BROWSER_DISPLAY==='1'&&environment.CHARIOX_KERNEL_BROWSER_HEADLESS!=='1'){
+      // MP-11: the kernel reclaims this transient root even after supervisor SIGKILL.
+      this.display=new OwnedDisplay(environment.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT || this.root);
+      try{environment={...environment,...await this.display.start()};}catch{this.display=null;}
+    }
+    const child = spawn(binary, launchArguments(profile,
       environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1"), {
       stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env: environment,
     });
@@ -82,6 +92,7 @@ export class HostChromium {
     this.child = null;
     this.connection = null;
     if (!Number.isSafeInteger(child?.pid) || child.pid <= 1) {
+      await this.display?.close();this.display=null;
       if (child?.pid !== undefined) throw new Error("MD-2: refusing unsafe browser process ID");
       return;
     }
@@ -99,5 +110,6 @@ export class HostChromium {
     }
     if (!exited()) await new Promise(resolve => child.once("exit", resolve));
     await connection?.close();
+    await this.display?.close();this.display=null;
   }
 }

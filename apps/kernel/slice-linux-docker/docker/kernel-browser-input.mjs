@@ -1,7 +1,8 @@
+import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-3: document-bound physical input, sharing Room cancellation and document checks.
 import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { assertCurrentDocument, assertNotCancelled } from "./browser-controller-actions.mjs";
-const viewport = { css_width: 1280, css_height: 800 };
+const viewport = { css_width: geometry.width, css_height: geometry.height };
 // MP-08: Chromium uses virtual key codes for native caret/editing commands.
 const keyCodes = { Tab: 9, Enter: 13, Escape: 27, Backspace: 8, Delete: 46,
   ArrowLeft: 37, ArrowRight: 39, ArrowUp: 38, ArrowDown: 40, Home: 36, End: 35 };
