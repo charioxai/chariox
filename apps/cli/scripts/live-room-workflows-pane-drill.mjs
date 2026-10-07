@@ -168,12 +168,16 @@ try {
     delete terminalEnv.CHARIOX_RELAY_TOKEN
     receipt.relay={connected:status.connected,targetDaemonId:status.daemon_id,terminalId:pairing.terminal_id}
   }
-  terminal=spawnOwned('python3',[path.join(repo,'apps/cli/scripts/lib/room-workflows-tui-pty.py'),path.join(repo,'apps/kernel/slice-linux-docker'),
-    'bun',args.client,...connectionArgs,'--session',sessionId,'--workspace',workspace,'--worktree',workspace,
-    '--provider','codex','--model',model,'--account-profile',profile.profile_id],{cwd:repo,env:terminalEnv,stdio:['pipe','pipe','pipe'],detached:true})
-  terminal.stdout.on('data', chunk=> {buffer+=chunk;while(buffer.includes('\n')){const i=buffer.indexOf('\n');const message=JSON.parse(buffer.slice(0,i));buffer=buffer.slice(i+1);const waiter=pending.get(message.id);pending.delete(message.id);if(message.error)waiter?.reject(new Error(message.error));else waiter?.resolve(message.result)}})
-  terminal.stderr.on('data', chunk=> { /* Only fixture diagnostics; no provider stdout is connected here. */ receipt.terminalError=String(chunk).slice(-1000) })
-  terminal.on('close',()=>{for(const waiter of pending.values())waiter.reject(new Error('MP-08 terminal driver exited'));pending.clear()})
+  const startTerminal = () => {
+    buffer=''
+    terminal=spawnOwned('python3',[path.join(repo,'apps/cli/scripts/lib/room-workflows-tui-pty.py'),path.join(repo,'apps/kernel/slice-linux-docker'),
+      'bun',args.client,...connectionArgs,'--session',sessionId,'--workspace',workspace,'--worktree',workspace,
+      '--provider','codex','--model',model,'--account-profile',profile.profile_id],{cwd:repo,env:terminalEnv,stdio:['pipe','pipe','pipe'],detached:true})
+    terminal.stdout.on('data', chunk=> {buffer+=chunk;while(buffer.includes('\n')){const i=buffer.indexOf('\n');const message=JSON.parse(buffer.slice(0,i));buffer=buffer.slice(i+1);const waiter=pending.get(message.id);pending.delete(message.id);if(message.error)waiter?.reject(new Error(message.error));else waiter?.resolve(message.result)}})
+    terminal.stderr.on('data', chunk=> { /* Only fixture diagnostics; no provider stdout is connected here. */ receipt.terminalError=String(chunk).slice(-1000) })
+    terminal.on('close',()=>{for(const waiter of pending.values())waiter.reject(new Error('MP-08 terminal driver exited'));pending.clear()})
+  }
+  startTerminal()
   await capture('01-room-inventory',text=>text.includes(heading))
   const queuedFollowupRounds=Number(args['queued-followup-rounds']??0)
   assert.ok(Number.isSafeInteger(queuedFollowupRounds)&&queuedFollowupRounds>=0&&queuedFollowupRounds<=20)
@@ -233,7 +237,18 @@ try {
       await diagnostics(await stateUntil(()=>true))
       assert.ok(progress >= 8192 && output.length, 'MP-08 real noisy command must be running and emitting provider socket deltas')
       await capture(label+'-command-running',text=>text.includes('1 running')&&text.includes('[Start · Enter]'))
-      if (reconnectRounds.has(round+1)) {
+      if (reconnectRounds.has(round+1) && !relayTransport) {
+        // MP-08 / MP-11: reconnect the owned real TUI, leaving its provider run alive.
+        const closed = new Promise(resolve=>terminal.once('close',resolve))
+        terminal.stdin.write(JSON.stringify({id:++nextId,action:'close'})+'\n')
+        await Promise.race([closed,sleep(10000).then(()=>{throw new Error('MP-11 owned TUI did not close for reconnect')})])
+        receipt.steps.push({step:label+'-local-disconnected',status:'GREEN'})
+        startTerminal()
+        await capture(label+'-local-reattached',text=>text.includes(heading)&&text.includes('1 running'),30000)
+        await key('\x17')
+        await capture(label+'-local-reconnected',text=>text.includes('1 running')&&text.includes('[Start · Enter]'))
+      }
+      if (reconnectRounds.has(round+1) && relayTransport) {
         // MP-08/MP-11: interrupt only the exact relay owned by this run.
         const exited = new Promise(resolve=>relay.once('exit',resolve))
         signalOwnedProcess(relay,'SIGTERM'); await exited
