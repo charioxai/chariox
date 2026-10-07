@@ -1,15 +1,15 @@
-//! MP-08/MP-10/MP-11: protocol 443 mirroring shape and rejection contract.
+//! MP-08/MP-10/MP-11: protocol 454 mirroring shape and rejection contract.
 use super::*;
 use crate::local::{
     KernelBrowserCommand as C, KernelBrowserInput, KernelBrowserMirrorAction as A,
     KernelBrowserRequest,
 };
 #[test]
-fn browser_mirror_protocol_443_shapes_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 443);
+fn browser_mirror_protocol_454_shapes_and_hash() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 454);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        86
+        94
     );
     let binding = |action| C::MirrorInput {
         tab_id: "t".into(),
@@ -29,6 +29,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             subscription_id: "s".into(),
             generation: 2,
             after_sequence: 3,
+            after_chunk: Some(0),
             drift_nodes: vec!["n1".into()],
         },
         C::MirrorClose {
@@ -80,17 +81,18 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
         assert!(serde_json::from_value::<LocalDaemonRequest>(value.clone()).is_ok());
     }
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("browser-mirror-443.json")).unwrap();
+        serde_json::from_str(include_str!("browser-mirror-454.json")).unwrap();
     assert_eq!(serde_json::json!(values), expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&values).unwrap())),
-        "132d2e5e41482d79c1aadf1b6b89b80f5185163f540eb7ebbffb17efc29ad5f8"
+        "b20d3e46ff8f61078202d8874a6c74bc6d3db2c6a733e53df5e541c7475d6d4a"
     );
     let next = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
         command: C::MirrorNext {
             subscription_id: "s".into(),
             generation: 2,
             after_sequence: 3,
+            after_chunk: Some(0),
             drift_nodes: vec![],
         },
     });

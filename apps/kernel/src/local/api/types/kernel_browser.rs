@@ -21,6 +21,8 @@ pub enum KernelBrowserCommand {
         subscription_id: String,
         generation: u64,
         after_sequence: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_chunk: Option<u32>,
         drift_nodes: Vec<String>,
     },
     MirrorClose {

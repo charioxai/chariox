@@ -260,6 +260,7 @@ async fn mdnotes_two_local_connections_child() {
                 subscription_id: subscription.clone(),
                 generation,
                 after_sequence: 0,
+                after_chunk: None,
                 drift_nodes: vec![],
             },
         )
@@ -279,6 +280,7 @@ async fn mdnotes_two_local_connections_child() {
                     subscription_id: subscription.clone(),
                     generation,
                     after_sequence: 0,
+                    after_chunk: None,
                     drift_nodes: vec![],
                 },
             )
@@ -304,6 +306,7 @@ async fn mdnotes_two_local_connections_child() {
                     subscription_id: subscription.clone(),
                     generation,
                     after_sequence: 1,
+                    after_chunk: None,
                     drift_nodes: vec![],
                 },
             )
@@ -352,6 +355,7 @@ async fn mdnotes_two_local_connections_child() {
                     subscription_id: b_subscription.clone(),
                     generation,
                     after_sequence: 0,
+                    after_chunk: None,
                     drift_nodes: vec![],
                 },
             )

@@ -1,3 +1,4 @@
+import {LoadedMirrorFonts} from './browser-controller-mirror-fonts.mjs';
 import { observeBrowserNote } from "./browser-controller-notes.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { BrowserInputCapture } from "./browser-controller-input.mjs";
@@ -122,6 +123,7 @@ export class BrowserCdpClient {
     this.protectedValues = new Set();
     this.dialogDefaults = new BrowserDialogDefaults();
     this.networkRequestsBySession = new Map();
+    this.mirrorFonts = new LoadedMirrorFonts();
     this.cookieWriterFence = null;
     this.cookieWriterFenceInUse = false;
     this.inputCapture = new BrowserInputCapture();
@@ -230,6 +232,7 @@ export class BrowserCdpClient {
         this.documentIdsByTarget.clear();
         this.dialogDefaults.clear();
         this.networkRequestsBySession.clear();
+    this.mirrorFonts.clear();
         this.cookieWriterFence = null;
         this.cookieWriterFenceInUse = false;
       }
@@ -257,6 +260,7 @@ export class BrowserCdpClient {
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
     this.networkRequestsBySession.clear();
+    this.mirrorFonts.clear();
     this.cookieWriterFence = null;
     this.cookieWriterFenceInUse = false;
     if (connection) {
@@ -374,6 +378,7 @@ export class BrowserCdpClient {
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
     this.networkRequestsBySession.clear();
+    this.mirrorFonts.clear();
     this.cookieWriterFence = null;
     this.cookieWriterFenceInUse = false;
     // A relaunched Chromium numbers its windows from 1 again.
@@ -1038,6 +1043,7 @@ export class BrowserCdpClient {
   }
 
   recordConnectionEvent(message) {
+    this.mirrorFonts.observe(message);
     if (message?.method === "Network.requestWillBeSent" && typeof message.sessionId === "string"
         && typeof message.params?.requestId === "string") {
       const requests = this.networkRequestsBySession.get(message.sessionId) ?? new Set();
@@ -1059,6 +1065,7 @@ export class BrowserCdpClient {
       if (typeof sessionId === "string") {
         this.targetsBySession.delete(sessionId);
         this.networkRequestsBySession.delete(sessionId);
+        this.mirrorFonts.removeSession(sessionId);
       }
       if (typeof targetId === "string") {
         this.appliedViewport = null;

@@ -1,9 +1,10 @@
+import {MirrorFrameAssembler,type MirrorChunk} from './browser-mirror-chunks.js'
 // MP-08/MP-10/MP-11: reference renderer for Cloud/native web clients. No origin I/O.
 import { mirrorSandboxCsp,validateMirrorPacket,mirrorTreeCanonicalJson } from './browser-mirror-security.js'
 import type { KernelBrowserMirrorAction, MirrorNode, MirrorPacket, MirrorResource, MirrorTile } from './browser-mirror-types.js'
 export * from './browser-mirror-types.js'
 export { mirrorSandboxCsp } from './browser-mirror-security.js'
-export const browserMirrorMinimumProtocolVersion = 443
+export const browserMirrorMinimumProtocolVersion = 454
 export interface MirrorTransport { protocolVersion: number; request(request: unknown): Promise<unknown> }
 type TileRaster = {tile:MirrorTile;url:string;image?:HTMLImageElement;placement?:string}
 type Binding = { tab_id: string; generation: number; device_scale_factor: 1 | 2 }
@@ -133,8 +134,8 @@ export class BrowserMirrorRenderer {
     // MP-10: child/text changes do not invalidate unchanged sanitized styles.
     if(!previous||JSON.stringify(previous.style??{})!==JSON.stringify(record.style??{}))this.style(element,record.style??{},previous?.style)
     if(record.kind==='mask'){element.style.boxSizing='border-box';if(record.tag==='div'&&(!record.style?.display||record.style.display==='inline'))element.style.display='inline-block';element.style.appearance='none';element.style.borderStyle='solid';element.style.boxShadow='none';element.style.borderRadius='0';if(record.tag==='input'||record.tag==='textarea'){(element as HTMLInputElement).readOnly=true;(element as HTMLInputElement).disabled=true}element.style.background='black';element.style.color='transparent';element.style.borderColor='black';element.setAttribute('aria-label','Protected content')}
-    if(record.kind==='tile'||record.kind==='mask') {
-      element.style.boxSizing='border-box';element.style.width=`${record.box?.width??0}px`;element.style.height=`${record.box?.height??0}px`;element.style.position='relative';element.style.overflow='hidden';element.style.background='black'
+    if(record.kind==='mask'||record.kind==='tile'&&record.reason!=='native_control') {
+      element.style.boxSizing='border-box';element.style.width=record.style?.width??`${record.box?.width??0}px`;element.style.height=record.style?.height??`${record.box?.height??0}px`;element.style.overflow='hidden';element.style.background='black'
     }
     if(record.kind==='tile'&&record.reason==='observer_bounds_or_unavailable') {
       element.contentEditable='plaintext-only';element.style.color='transparent';element.style.caretColor='transparent'
@@ -312,7 +313,7 @@ export class BrowserMirrorRenderer {
   close():void {this.disposed=true;this.releaseDocuments(new Set());this.localFocus=null;this.nativeFocus=null;this.doc=null;this.clearResources();this.dom.clear();this.records.clear();this.overlays=[];this.frame.remove()}
 }
 export async function attachBrowserMirror(transport:MirrorTransport,container:HTMLElement,binding:Binding,onFailure:(error:unknown)=>void):Promise<{next():Promise<MirrorPacket>;input(action:KernelBrowserMirrorAction):Promise<unknown>;takeover():Promise<unknown>;release():Promise<unknown>;actors():Promise<unknown>;close():Promise<void>;renderer:BrowserMirrorRenderer}> {
-  if(!Number.isInteger(transport.protocolVersion)||transport.protocolVersion<browserMirrorMinimumProtocolVersion)throw Error('MP-08: DOM mirroring requires protocol 443')
+  if(!Number.isInteger(transport.protocolVersion)||transport.protocolVersion<browserMirrorMinimumProtocolVersion)throw Error('MP-08: DOM mirroring requires protocol 454')
   const request=async(command:unknown):Promise<any>=>{const response=await transport.request({KernelBrowser:{command}}) as {KernelBrowser?:{result?:unknown}};if(!response.KernelBrowser?.result)throw Error('MP-08: invalid mirror response');return response.KernelBrowser.result}
   const subscribed=await request({op:'mirror_subscribe',...binding});const subscription_id=subscribed.subscription_id as string
   let sequence=0,document_id='',closed=false,busy=false
@@ -320,7 +321,22 @@ export async function attachBrowserMirror(transport:MirrorTransport,container:HT
   const renderer=new BrowserMirrorRenderer(container,input,onFailure)
   try{await renderer.ready()}catch(error){renderer.close();await request({op:'mirror_close',subscription_id,generation:binding.generation}).catch(()=>{});throw error}
   return {renderer,input,
-    async next(){if(closed||busy)throw Error('MP-08: mirror credit unavailable');busy=true;try{const packet=await request({op:'mirror_next',subscription_id,generation:binding.generation,after_sequence:sequence,drift_nodes:renderer.driftNodes()}) as MirrorPacket;if(packet.subscription_id!==subscription_id||packet.tab_id!==binding.tab_id||packet.generation!==binding.generation)throw Error('MP-11: foreign mirror packet');await renderer.apply(packet);sequence=packet.sequence;document_id=packet.document_id;return packet}catch(error){closed=true;renderer.close();await request({op:'mirror_close',subscription_id,generation:binding.generation}).catch(()=>{});throw error}finally{busy=false}},
+    async next(){
+      if(closed||busy)throw Error('MP-08: mirror credit unavailable')
+      busy=true;const assembler=new MirrorFrameAssembler();let cursor:number|null=null
+      try {
+        let packet:MirrorPacket
+        while(true){
+          const value=await request({op:'mirror_next',subscription_id,generation:binding.generation,after_sequence:sequence,...(cursor===null?{}:{after_chunk:cursor}),drift_nodes:cursor===null?renderer.driftNodes():[]}) as MirrorPacket|MirrorChunk
+          if(value.subscription_id!==subscription_id||value.tab_id!==binding.tab_id||value.generation!==binding.generation)throw Error('MP-11: foreign mirror packet')
+          if('kind' in value&&value.kind==='mirror_chunk') {const complete=await assembler.push(value);if(!complete){cursor=value.index;continue}packet=complete;break}
+          if(cursor!==null)throw Error('MP-11: mirror chunk interrupted by unrelated packet')
+          packet=value as MirrorPacket;break
+        }
+        if(closed)throw Error('MP-08: mirror closed during transfer')
+        await renderer.apply(packet);sequence=packet.sequence;document_id=packet.document_id;return packet
+      }catch(error){assembler.clear();closed=true;renderer.close();await request({op:'mirror_close',subscription_id,generation:binding.generation}).catch(()=>{});throw error}finally{busy=false}
+    },
     takeover:()=>request({op:'display_takeover',tab_id:binding.tab_id,generation:binding.generation}),release:()=>request({op:'display_release',tab_id:binding.tab_id,generation:binding.generation}),actors:()=>request({op:'display_actors'}),
     async close(){if(closed)return;closed=true;renderer.close();await request({op:'mirror_close',subscription_id,generation:binding.generation})}}
 }

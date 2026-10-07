@@ -1,0 +1,48 @@
+{
+  "local_protocol": 454,
+  "relay_peer": 94,
+  "chunk": {
+    "kind": "mirror_chunk",
+    "subscription_id": "s",
+    "tab_id": "t",
+    "generation": 2,
+    "document_id": "d",
+    "sequence": 3,
+    "index": 0,
+    "parts": "<integer>",
+    "frame_bytes": "<integer>",
+    "encoding": "gzip",
+    "transfer_bytes": "<integer>",
+    "frame_sha256": "982166da12e76f488a2134f82b5e26ebeed18de3aa61031186c4a6714a9b02ad",
+    "payload_base64": "<base64>"
+  },
+  "frame_fields": [
+    "base_sequence",
+    "css_height",
+    "css_width",
+    "device_scale_factor",
+    "document_id",
+    "focused",
+    "fonts",
+    "generation",
+    "hash",
+    "nodes",
+    "removed",
+    "reset",
+    "resources",
+    "root",
+    "scroll",
+    "selection",
+    "sequence",
+    "styles",
+    "subscription_id",
+    "tab_id",
+    "tiles"
+  ],
+  "style_ref": 0,
+  "styles": [
+    {
+      "color": "black"
+    }
+  ]
+}

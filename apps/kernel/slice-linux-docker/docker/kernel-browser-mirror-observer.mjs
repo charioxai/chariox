@@ -1,13 +1,18 @@
+import {protectedTextScanner} from './kernel-browser-mirror-protected-text.mjs';
+import {mirrorCssFingerprint} from './kernel-browser-mirror-css.mjs';
 // MP-08/MP-10/MP-11: install only in the controller's #607 isolated world.
 // Raw mutation records and page code never cross the mirror boundary.
-export const mirrorObserverExpression = initial => `(${installMirrorObserver.toString()})(${JSON.stringify(initial)})`;
-function installMirrorObserver(initialStyles = {}) {
+export const mirrorObserverExpression = initial => `(${installMirrorObserver.toString()})(${JSON.stringify(initial)},${mirrorCssFingerprint.toString()},${protectedTextScanner.toString()})`;
+function installMirrorObserver(initialStyles = {},inspectCss,makeTextScanner) {
   if (globalThis.__charioxMirror) return true;
-  const ids = new WeakMap();let observed = new WeakSet();
+  const nativeCustom=new WeakMap();
+  const ids = new WeakMap(),eventRoots=new WeakSet();let observed = new WeakSet(),cssCache=new WeakMap(),cssFingerprint=null;
+  let lastCssRoots=new Set(),lastCssForms=[],lastCssCustom=[];
   let serial = 0, live = new Map(), revision = 0, protectedVariants=[], maskedNodes=new WeakSet();
   const observer = new MutationObserver(() => { revision++; });
   const watch = root => {
     if (observed.has(root)) return;
+    if(!eventRoots.has(root)){eventRoots.add(root);for(const event of ['focusin','focusout','pointerover','pointerout','pointerdown','pointerup','input','change','scroll','keydown','keyup','selectionchange','beforetoggle','toggle','fullscreenchange','load','error','resize'])root.addEventListener(event,()=>{revision++},true)}
     observed.add(root); observer.observe(root, { subtree:true, childList:true, attributes:true, characterData:true });
   };
   const id = node => { if (!ids.has(node)) ids.set(node, `n${++serial}`); return ids.get(node); };
@@ -22,25 +27,29 @@ function installMirrorObserver(initialStyles = {}) {
   };
   const snapshots = new Map();
   const read = (variants = [], opaqueRegions = [], subscription = null, reset = false) => {
+    if(observer.takeRecords().length)revision++;
     observer.disconnect();observed=new WeakSet();
     protectedVariants=variants;
     const records = [], resources = [], fonts = [], nextLive = new Map(), marked = new WeakSet();
-    const serializedRecords=new Map();
-    let wireSize=0;const done=record=>{const serialized=JSON.stringify(record);serializedRecords.set(record.id,serialized);wireSize+=serialized.length;if(wireSize>3*1024*1024)throw new Error('mirror snapshot bounds');return record.id;};
-    let textSize = 0, textNodes = [], text = '', visited = 0;
+    const serializedRecords=new Map(),accountedStyles=new Set(),viewportAncestors=new WeakSet(),styleRoots=new Set([document]),formNodes=[],customNodes=[];
+    let wireSize=0;const done=record=>{const serialized=JSON.stringify(record);serializedRecords.set(record.id,serialized);const {style,...rest}=record;wireSize+=JSON.stringify(rest).length;if(style){const key=JSON.stringify(style);if(!accountedStyles.has(key)){accountedStyles.add(key);wireSize+=key.length}}if(wireSize>32*1024*1024)throw new Error('mirror snapshot bounds');return record.id;};
+    let textSize=0,visited=0;
+    const scanText=makeTextScanner(variants,marked);
     const tainted = value => typeof value==='string' && variants.some(secret => value.includes(secret));
     // Match unsplit text BEFORE truncation, including split-node/shadow/frame echoes.
     const scan = (node,depth=0) => {
-      if (depth>128 || ++visited>24000) throw new Error('mirror bounds');
-      if (node.nodeType===3) { textNodes.push({node,start:text.length}); text+=node.data; if (text.length>2097152) throw new Error('mirror text bounds'); }
+      if (depth>128 || ++visited>400000) throw new Error('mirror bounds');
+      // Viewport projection is independent of protection: scan the ENTIRE source
+      // first, including deferred/shadow/frame text. Retain any ancestor of a
+      // visible descendant so fixed/sticky or overflowing children cannot vanish
+      // merely because their flow parent's own rectangle is offscreen.
+      if(node.nodeType===1){if(['input','textarea','select','option'].includes(node.localName))formNodes.push(node);if(node.localName.includes('-'))customNodes.push(node);const r=node.getBoundingClientRect();if(r.width>0&&r.height>0&&r.x<innerWidth+800&&r.x+r.width>-800&&r.y<innerHeight+800&&r.y+r.height>-800){for(let ancestor=node;ancestor;ancestor=ancestor.parentElement??ancestor.getRootNode()?.host??ancestor.ownerDocument?.defaultView?.frameElement)viewportAncestors.add(ancestor)}}
+      if(node.nodeType===3)scanText(node);
       for (const child of node.childNodes) scan(child,depth+1);
-      if (node.shadowRoot) scan(node.shadowRoot,depth+1);
-      if (node.localName==='iframe') {let nested;try{nested=node.contentDocument;}catch{}if(nested)scan(nested,depth+1);}
+      if (node.shadowRoot) {styleRoots.add(node.shadowRoot);scan(node.shadowRoot,depth+1);}
+      if (node.localName==='iframe') {let nested;try{nested=node.contentDocument;}catch{}if(nested){styleRoots.add(nested);scan(nested,depth+1);}}
     };
     scan(document.documentElement);
-    for (const value of variants) for(let at=text.indexOf(value);at>=0;at=text.indexOf(value,at+1)) {
-      for (const item of textNodes) if(item.start<at+value.length && item.start+item.node.length>at) marked.add(item.node);
-    }
     const secret = node => node.nodeType===1 && (node.matches('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],input[type=password]') || /password|one-time-code|cc-/i.test(node.autocomplete??'') || tainted(node.value) || [...node.attributes].some(a=>tainted(a.value)));
     // MP-08/MP-10/MP-11: exact same-read CSS sharing for plain leaf paragraphs.
     // Same parent, tag, raw attributes, box size and complete selector match set
@@ -56,20 +65,29 @@ function installMirrorObserver(initialStyles = {}) {
         selectors.push(rule.selectorText);
       }
     }catch{selectors=null;}
+    // Persistent CSS reuse is admitted only when EVERY contributing sheet is
+    // inspectable and its exact CSSOM/media state, DOM revision, source viewport,
+    // interaction and form pseudo-state match. Never reuse across animation,
+    // opaque CSS, policy changes or a changed stylesheet. Geometry/protection
+    // still resample the full source on every credit.
+    let reusableCss=true;lastCssRoots=styleRoots;lastCssForms=formNodes;lastCssCustom=customNodes;
+    try{const fingerprint=inspectCss(styleRoots,formNodes,customNodes,revision,variants,id);if(fingerprint!==cssFingerprint){cssCache=new WeakMap();cssFingerprint=fingerprint}}catch{reusableCss=false;cssCache=new WeakMap();cssFingerprint=null}
     const sharedStyles=new Map();
     const safeStyle = (element,pseudo=null,resourcesAllowed=true,bounds=null) => {
-      const computed=getComputedStyle(element,pseudo), out={all:'initial'};
+      const computed=getComputedStyle(element,pseudo),cached=reusableCss?cssCache.get(element)?.get(pseudo):null;
+      const out=cached?{...cached}:{all:'initial'};
       let sharedKey=null;
       if(selectors&&!pseudo&&bounds&&element.ownerDocument===document&&element.getRootNode()===document&&element.localName==='p'&&element.attributes.length<=16&&[...element.attributes].every(a=>a.value.length<=2048)&&element.childNodes.length===1&&element.firstChild.nodeType===3&&computed.backgroundImage==='none') {
         sharedKey=JSON.stringify([id(element.parentNode),element.localName,[...element.attributes].map(a=>[a.name,a.value]),bounds.width,bounds.height,selectors.map(selector=>element.matches(selector))]);
         if(sharedStyles.has(sharedKey))return {...sharedStyles.get(sharedKey)};
       }
-      for (const property of computed) {
+      if(!cached)for (const property of computed) {
         if(property.startsWith('--') || property.startsWith('animation') || property.startsWith('transition') || ['content','cursor'].includes(property)) continue;
         const value=computed.getPropertyValue(property);
         if(value===initialStyles[property] && !['direction','unicode-bidi','color','background-color','border-top-color','border-right-color','border-bottom-color','border-left-color'].includes(property))continue;
         if(value.length<=2048 && !forbiddenCss.test(value) && !tainted(value)) out[property]=value;
       }
+      if(reusableCss&&!cached){let entries=cssCache.get(element);if(!entries){entries=new Map();cssCache.set(element,entries)}entries.set(pseudo,{...out})}
       // Inline URLs are never shipped. Computed image URLs become kernel resource refs.
       if (!pseudo && !variants.length && resourcesAllowed) {
         const value=computed.backgroundImage, match=/^url\("([^"\n]+)"\)$/.exec(value);
@@ -79,7 +97,7 @@ function installMirrorObserver(initialStyles = {}) {
       return out;
     };
     const visit = (node,parent=null,depth=0) => {
-      if(depth>128 || records.length>=12000) throw new Error('mirror node bounds');
+      if(depth>128 || records.length>=100000) throw new Error('mirror node bounds');
       if(![1,3,9,11].includes(node.nodeType)) return null;
       if(node.nodeType===1 && active.has(node.localName)) return null;
       const record={id:id(node),parent,children:[],kind:'element'};
@@ -99,11 +117,15 @@ function installMirrorObserver(initialStyles = {}) {
           return done(record);
         }
         record.style=safeStyle(node,null,true,record.box);
-        // MP-08/MP-10: viewport first. Offscreen simple flow blocks retain their
-        // layout but hydrate descendants on the following bounded credit.
-        // Source scan/protection precedes this deferral; user scrolling affects
-        // only the source until the next packet restores the real subtree.
-        if(reset&&record.box.y>=innerHeight&&['p','pre','li'].includes(tag)&&record.style.display==='block'&&(record.style.position??'static')==='static'&&!node.shadowRoot) {
+        // CSS Display/Position: display:none suppresses shadow-inclusive descendants,
+        // including top-layer boxes. Full protection scan precedes this omission.
+        if(record.style.display==='none')return done(record);
+        // Bound the live DOM working set by the source viewport, not page size.
+        // Flow placeholders retain resolved CSS dimensions. Moving the source
+        // viewport hydrates newly visible descendants and evicts old offscreen
+        // subtrees through the ordinary authenticated delta/removal path.
+        // Pseudo paint/effects may extend beyond element bounds: do not defer it.
+        if(!viewportAncestors.has(node)&&record.box.width>0&&record.box.height>0&&['div','section','article','main','aside','p','pre','li','ul','ol'].includes(tag)&&['block','list-item'].includes(record.style.display)&&['static','relative'].includes(record.style.position??'static')&&!node.shadowRoot&&getComputedStyle(node).filter==='none'&&getComputedStyle(node).boxShadow==='none'&&getComputedStyle(node).textShadow==='none'&&['::before','::after'].every(p=>['none','normal','""'].includes(getComputedStyle(node,p).content))) {
           record.kind='tile';record.reason='viewport_deferred';return done(record);
         }
         record.attributes={};
@@ -116,7 +138,7 @@ function installMirrorObserver(initialStyles = {}) {
         if(tag==='input' || tag==='textarea' || tag==='select') record.form={value:(node.value??'').slice(0,16384),checked:!!node.checked,selected_index:node.selectedIndex??-1,selection_start:node.selectionStart??null,selection_end:node.selectionEnd??null};
         record.scroll={x:node.scrollLeft,y:node.scrollTop};
         if(['button','input','textarea','select'].includes(tag) && getComputedStyle(node).appearance!=='none'){record.kind='tile';record.reason='native_control';return done(record);}
-        if(media.has(tag) || tag.includes('-') && !node.shadowRoot) {record.kind='tile';record.tag='img';record.reason=tag.includes('-')?'opaque_shadow':'opaque_media';return done(record);}
+        if(media.has(tag) || tag.includes('-') && !node.shadowRoot&&nativeCustom.get(node)!=='light') {record.kind='tile';record.tag='img';record.reason=tag.includes('-')?'opaque_shadow':'opaque_media';return done(record);}
         if(tag==='iframe') {
           try {
             const nested=node.contentDocument;
@@ -176,7 +198,7 @@ function installMirrorObserver(initialStyles = {}) {
     // sanitized CSS maps privately; public packet/hash shapes remain unchanged.
     const styles=[],styleIds=new Map();
     nodes=nodes.map(node=>{if(!node.style)return node;const key=JSON.stringify(node.style);if(!styleIds.has(key)){styleIds.set(key,styles.length);styles.push(node.style)}const {style,...packed}=node;return {...packed,style_index:styleIds.get(key)};});
-    return {root,nodes,styles,removed,incremental,resources,fonts,scroll:{x:scrollX,y:scrollY},revision,selection,focused:ids.get(focused)??null};
+    return {animating:[...styleRoots].some(root=>(root.ownerDocument??root).getAnimations().length>0),root,nodes,styles,removed,incremental,resources,fonts,scroll:{x:scrollX,y:scrollY},revision,selection,focused:ids.get(focused)??null};
   };
   // MP-11: an admitted older packet may not retarget an element that moved or
   // changed after the latest sample. Validate again in the real isolated world.
@@ -264,5 +286,6 @@ function installMirrorObserver(initialStyles = {}) {
     if(!Array.isArray(keys)||keys.length>12000)throw new Error('mirror geometry bounds');
     return keys.map(key=>{const node=live.get(key);if(!node?.isConnected||node.nodeType!==3||maskedNodes.has(node))throw new Error('mirror unavailable text geometry');const range=node.ownerDocument.createRange();range.selectNodeContents(node);return {id:key,rects:[...range.getClientRects()].map(r=>({x:r.x,y:r.y,width:r.width,height:r.height}))};});
   };
-  globalThis.__charioxMirror=Object.freeze({read,locate,focus,select,validate,coordinateTarget,activeTarget,textRuns});return true;
+  const customHosts=()=>{const hosts=[],pending=[document.documentElement];let visited=0;while(pending.length){if(++visited>400000)throw Error('mirror custom host memory budget');const node=pending.pop();if(node.nodeType===1&&node.localName.includes('-'))hosts.push(node);pending.push(...node.children??[]);if(node.shadowRoot)pending.push(node.shadowRoot);if(node.localName==='iframe'){let nested;try{nested=node.contentDocument}catch{}if(nested?.documentElement)pending.push(nested.documentElement)}}return hosts.length?hosts:null};
+  globalThis.__charioxMirror=Object.freeze({read,customHosts,admitCustomHost:(node,closed)=>nativeCustom.set(node,closed?'closed':'light'),epoch:()=>{if(observer.takeRecords().length)revision++;if(cssFingerprint!==null){try{if(inspectCss(lastCssRoots,lastCssForms,lastCssCustom,revision,protectedVariants,id)!==cssFingerprint)revision++}catch{revision++}}return revision},locate,focus,select,validate,coordinateTarget,activeTarget,textRuns});return true;
 }

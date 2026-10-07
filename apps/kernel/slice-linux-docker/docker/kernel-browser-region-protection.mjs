@@ -16,10 +16,10 @@ async function regions(connection, sessionId, mirrorStructured = false) {
     if(frameTree)admit(frameTree);
   }
   const nodes = [...nodeIds], pending = [root], exposedFrames=new Set(), explicitlyProtected=new Set();
-  let visited = 0;
+  let visited = 0;const parents=new Map(),metadata=new Map();
   while (pending.length) {
     if (++visited > 100_000) throw new Error("Capture protection tree limit exceeded");
-    const node = pending.pop();
+    const node = pending.pop();metadata.set(node.nodeId,node);for(const child of [...(node.children??[]),...(node.shadowRoots??[]),...(node.contentDocument?[node.contentDocument]:[])])parents.set(child.nodeId,node.nodeId);
     const pageRoots = (node.shadowRoots ?? []).filter(root => root.shadowRootType !== 'user-agent');
     if (pageRoots.length) {
       if (!mirrorStructured || pageRoots.some(root => root.shadowRootType !== 'open')) nodes.push(node.nodeId);
@@ -38,8 +38,25 @@ async function regions(connection, sessionId, mirrorStructured = false) {
   }
   if (nodes.length > 1024) throw new Error("Capture protection limit exceeded");
   const result = [];
+  const nonPainting=async nodeId=>{
+    // No page JS or "zero box" guess: display:none on a shadow-inclusive
+    // ancestor suppresses even top-layer descendants. display:contents can
+    // still paint children and is deliberately NOT admitted here.
+    await connection.send('CSS.enable',{},sessionId);
+    for(let current=nodeId,depth=0;current!==undefined&&depth<128;current=parents.get(current),depth++){
+      const node=metadata.get(current);if(!node||node.nodeType!==1)continue;
+      const {computedStyle}=await connection.send('CSS.getComputedStyleForNode',{nodeId:current},sessionId);
+      if(!Array.isArray(computedStyle))throw Error('Capture protection CSS unavailable');
+      if(computedStyle.some(p=>p.name==='display'&&p.value==='none'))return true;
+    }
+    return false;
+  };
   for (const nodeId of new Set(nodes.filter(id=>!exposedFrames.has(id)||explicitlyProtected.has(id)))) {
-    const { model } = await connection.send("DOM.getBoxModel", { nodeId }, sessionId);
+    let model;
+    try{({model}=await connection.send("DOM.getBoxModel",{nodeId},sessionId))}catch(error){
+      if(await nonPainting(nodeId))continue;
+      throw error;
+    }
     const quad = model?.border;
     if (!Array.isArray(quad) || quad.length !== 8 || quad.some(n => !Number.isFinite(n))) {
       throw new Error("Capture protection bounds unavailable");
