@@ -168,3 +168,7 @@ pub(crate) mod kernel_access;
 pub(crate) mod relay_peer_authority;
 pub(crate) mod self_host_terminal_grants;
 mod user_app_views;
+
+pub(crate) mod room_tool_admission;
+
+pub(crate) mod room_dispatch_registration;

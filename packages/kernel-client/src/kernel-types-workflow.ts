@@ -3,6 +3,7 @@ import type { RuntimeSession } from "./kernel-types-session.js"
 import type { AgentInstance } from "./kernel-types-runtime.js"
 
 export type WorkflowDefinition = {
+  created_by_agent_id?: string | null
   id: string
   alias: string | null
   prompt?: string | null
@@ -389,6 +390,7 @@ export type WorkflowRegistryEntrySummary = {
 }
 
 export type WorkflowRegistryEntryMetadata = {
+  created_by_agent_id?: string | null
   name: string
   source_scope: WorkflowRegistrySourceScope
   source_kind: WorkflowRegistrySourceKind
@@ -913,6 +915,7 @@ export type WorkflowPromptQueueDefinition = {
 }
 
 export type WorkflowQueuedPrompt = {
+  created_by_agent_id?: string | null
   id: string
   queue_id: string
   workflow_id: string
@@ -1029,6 +1032,7 @@ export type WorkflowFailureEvent = {
 }
 
 export type WorkflowRun = {
+  created_by_agent_id?: string | null
   id: string
   workflow_id: string
   workflow_revision?: number

@@ -11,7 +11,7 @@ private resume payloads, launch manifests and free-form diagnostics. Native TUI
 structured endpoints are projected only when the URL has no userinfo, query or
 fragment. Internal persistence and authenticated worker launch/projection
 contracts retain `RuntimeProviderRun`; no relay-peer shape changes in this
-revision (peer protocol remains 70 on this branch).
+revision (peer protocol remains 73 on this branch).
 
 The focused synthetic protocol drill is
 `apps/cli/scripts/public-provider-run-protocol-drill.mjs`. It runs the Rust DTO,
@@ -416,6 +416,46 @@ ordering per metaagent. Optional workflow subscriptions may share the same
 visible prompt mechanism, but filtering and durable inbox state remain
 kernel-owned. A missing provider run or delivery failure must be surfaced in
 the event status and retry path rather than being silently dropped.
+
+## 3.3.4 Regular Agent Room Tools (MP-08 / MP-10 / MP-11, A01)
+
+PR1 is enabled with `CHARIOX_ROOM_AGENT_TOOLS=1`. Ordinary provider runs receive
+`chariox.room.*`, command/guide discovery, public room history/trace, and the
+existing workflow-code/registry tools. Legacy `/meta` remains available during
+migration. Aliases share the kernel admission path; they do not create another
+prompt or authority path.
+
+Local daemon protocol 450 adds immutable `spawned_by_agent_id` to agent
+projections and `created_by_agent_id` to workflows, runs and queued workflow
+prompts. Missing legacy creators decode as unknown; controller identity never
+backfills creator authority. Spawn creator is derived from the authenticated
+provider actor, not accepted from a client command. Relay peer shapes are
+unchanged in this PR.
+
+Agents may spawn without room agent-count limits, message any current room
+agent, create workflows, and observe/run peers' workflows. Agent rename/delete
+requires the caller's direct spawned child in the same room; self, peers,
+parents and grandchildren are denied. Workflow mutations require the caller
+or its direct child as immutable object creator. A peer workflow invocation
+creates a separately caller-owned run, without changing definition ownership.
+Running a peer's saved source may create a caller-owned definition/run; it
+does not rewrite the peer artifact's provenance or application history.
+PR1 agent-authored workflow declarations cannot provision extension grants;
+owner-admitted capability paths remain separate until the capability-grants PR.
+Current room, run/lease and creator fences apply after waits before effects;
+a replaced provider run cannot receive an asynchronous room-tool result.
+
+Before delegation, message submission or workflow invocation, the kernel
+persists `room.obligation.registered` with actor/room/run/prompt, kind and
+resource reference. A dispatch receipt records accepted resource identity or
+a proven pre-admission rejection. Receipt-write failure after admission must
+preserve dispatch and return the obligation/resource IDs so callers inspect
+existing work before retrying. The receipt transaction finishes before newly
+admitted provider dispatches are spawned, including when the receipt fails,
+so a failing receipt cannot batch-roll back those startup writes.
+Ambiguous post-commit failures retain intent;
+PR1 does not add automatic replay, settlement, yield or recovery scheduling.
+Those lifecycle semantics belong to PR2.
 
 ## 3.4 Workflow Coordination Semantics
 

@@ -62,6 +62,26 @@ impl SessionRuntimeStore {
             None,
         )
     }
+    pub(super) fn authorize_room_provider_epoch(
+        &self,
+        actor: Option<&str>,
+        run: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        self.state.authorize_room_provider_epoch(actor, run)
+    }
+
+    pub(super) fn with_room_request_origin(
+        &self,
+        actor: Option<&str>,
+        request: &LocalDaemonRequest,
+    ) -> Self {
+        Self::new(self.state.with_room_request_origin(actor, request))
+    }
+
+    pub(super) fn with_room_provider_origin(&self, actor: Option<&str>, run: Option<&str>) -> Self {
+        Self::new(self.state.with_room_provider_origin(actor, run))
+    }
+
     pub(crate) fn new(state: KernelRuntimeState) -> Self {
         Self { state }
     }
@@ -505,6 +525,14 @@ impl SessionRuntimeStore {
         (result, None)
     }
 
+    pub(super) fn authorize_room_agent_request(
+        &self,
+        actor_id: &str,
+        request: &LocalDaemonRequest,
+    ) -> Result<(), DaemonError> {
+        self.state.authorize_room_agent_request(actor_id, request)
+    }
+
     pub(super) async fn verify_metaagent_caller(
         &self,
         session_id: &str,
@@ -515,7 +543,7 @@ impl SessionRuntimeStore {
             agent.id() == metaagent_id
                 && agent.session_id() == session_id
                 && agent.owner_user_id() == caller_user_id
-                && agent.is_metaagent()
+                && (agent.is_metaagent() || self.state.room_agent_tools_enabled())
         }) else {
             return Err(DaemonError::LocalTransport {
                 operation: "dispatch session metaagent command",

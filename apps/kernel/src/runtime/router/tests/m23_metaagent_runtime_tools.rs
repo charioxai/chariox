@@ -273,3 +273,5 @@ mod task_scope;
 mod trace_projection;
 mod workflow_code_crud;
 mod workflow_code_patterns;
+
+mod room_admission;

@@ -551,6 +551,7 @@ impl KernelRuntimeState {
                     .config_projection
                     .snapshot()
                     .workflow_code_artifact_root(),
+                self.room_agent_tools_enabled(),
                 name,
             )?;
             let provider_rebindings = args.provider_rebindings;
@@ -587,6 +588,7 @@ impl KernelRuntimeState {
                 .config_projection
                 .snapshot()
                 .workflow_code_artifact_root(),
+            self.room_agent_tools_enabled(),
             args.name,
             args.source,
         )?;
@@ -638,6 +640,7 @@ impl KernelRuntimeState {
                     .config_projection
                     .snapshot()
                     .workflow_code_artifact_root(),
+                self.room_agent_tools_enabled(),
                 args.name,
                 args.source,
             )?;
@@ -703,6 +706,7 @@ impl KernelRuntimeState {
                     .config_projection
                     .snapshot()
                     .workflow_code_artifact_root(),
+                self.room_agent_tools_enabled(),
                 args.name,
                 args.source,
             )?;
@@ -847,7 +851,12 @@ impl KernelRuntimeState {
             .config_projection
             .snapshot()
             .workflow_code_artifact_root();
-        match meta_workflow_code_artifact_registry(session, machine_root).and_then(|registry| {
+        match meta_workflow_code_artifact_registry(
+            session,
+            machine_root,
+            self.room_agent_tools_enabled(),
+        )
+        .and_then(|registry| {
             registry.record_apply_history(artifact_name, actor, action, apply_report)
         }) {
             Ok(_) => {}
@@ -868,27 +877,28 @@ impl KernelRuntimeState {
 fn meta_workflow_code_node_path(
     node_path: Option<String>,
 ) -> Result<std::path::PathBuf, DaemonError> {
-    node_path
-        .map(std::path::PathBuf::from)
-        .map(Ok)
-        .unwrap_or_else(crate::workflow_code::discover_workflow_code_node_path)
+    let _ = node_path; // MP-08/MP-11: operator configuration selects the compiler.
+    crate::workflow_code::discover_workflow_code_node_path()
 }
 
 fn meta_workflow_code_source(
     session: &crate::session::RuntimeSession,
     machine_root: std::path::PathBuf,
+    room_tools: bool,
     name: Option<String>,
     source: Option<String>,
 ) -> Result<String, DaemonError> {
     match (name, source) {
         (None, Some(source)) => Ok(source),
-        (Some(name), None) => meta_workflow_code_artifact_registry(session, machine_root)?
-            .get(&name)?
-            .map(|artifact| artifact.source)
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "meta.workflow_code",
-                message: format!("workflow-code artifact `{name}` is not saved"),
-            }),
+        (Some(name), None) => {
+            meta_workflow_code_artifact_registry(session, machine_root, room_tools)?
+                .get(&name)?
+                .map(|artifact| artifact.source)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "meta.workflow_code",
+                    message: format!("workflow-code artifact `{name}` is not saved"),
+                })
+        }
         (Some(_), Some(_)) => Err(DaemonError::LocalTransport {
             operation: "meta.workflow_code",
             message: "pass either name or source, not both".to_string(),
@@ -903,9 +913,10 @@ fn meta_workflow_code_source(
 fn meta_workflow_code_artifact(
     session: &crate::session::RuntimeSession,
     machine_root: std::path::PathBuf,
+    room_tools: bool,
     name: &str,
 ) -> Result<crate::workflow_code::WorkflowCodeArtifact, DaemonError> {
-    meta_workflow_code_artifact_registry(session, machine_root)?
+    meta_workflow_code_artifact_registry(session, machine_root, room_tools)?
         .get(name)?
         .ok_or_else(|| DaemonError::LocalTransport {
             operation: "meta.workflow_code",
@@ -946,7 +957,13 @@ fn meta_workflow_code_run_audit_payload(
 fn meta_workflow_code_artifact_registry(
     session: &crate::session::RuntimeSession,
     machine_root: std::path::PathBuf,
+    room_tools: bool,
 ) -> Result<crate::workflow_code::WorkflowCodeArtifactRegistry, DaemonError> {
+    if room_tools {
+        return Ok(crate::workflow_code::WorkflowCodeArtifactRegistry::new(
+            vec![machine_root.join("rooms").join(session.id())],
+        ));
+    }
     let mut roots = vec![machine_root];
     if let Some(root) = crate::workflow_code::WorkflowCodeArtifactRegistry::user_root() {
         if !roots.contains(&root) {

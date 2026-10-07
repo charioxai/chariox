@@ -206,11 +206,21 @@ impl SessionRuntimeStore {
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
         };
         let defaults = session.agent_defaults();
-        let model = request.model.or_else(|| defaults.model.clone());
-        let effort = request.effort.or_else(|| defaults.effort.clone());
-        let account_profile = request
-            .account_profile
-            .or_else(|| defaults.account_profile.clone());
+        let same_provider = request
+            .provider
+            .as_deref()
+            .is_none_or(|provider| provider == defaults.provider);
+        let model = request
+            .model
+            .or_else(|| same_provider.then(|| defaults.model.clone()).flatten());
+        let effort = request
+            .effort
+            .or_else(|| same_provider.then(|| defaults.effort.clone()).flatten());
+        let account_profile = request.account_profile.or_else(|| {
+            same_provider
+                .then(|| defaults.account_profile.clone())
+                .flatten()
+        });
         let execution_mode = request.execution_mode.or(defaults.execution_mode);
         let permission_level = request.permission_level.or(defaults.permission_level);
         let create_request = CreateAgentRequest::new(
@@ -222,9 +232,9 @@ impl SessionRuntimeStore {
         .with_owner_user_id(caller_user_id);
         let create_request = create_request;
         let create_request = match caller_metaagent_id.as_deref() {
-            Some(metaagent_id) if !request.metaagent => {
-                create_request.with_controlled_by_metaagent_id(metaagent_id)
-            }
+            Some(metaagent_id) if !request.metaagent => create_request
+                .with_spawned_by_agent_id(metaagent_id)
+                .with_controlled_by_metaagent_id(metaagent_id),
             _ => create_request,
         };
         let create_request = if let Some(alias) = request.alias {
@@ -368,7 +378,7 @@ impl SessionRuntimeStore {
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        if request.agents.len() > Self::MAX_BATCH_SPAWN_AGENTS {
+        if caller_metaagent_id.is_none() && request.agents.len() > Self::MAX_BATCH_SPAWN_AGENTS {
             return self
                 .with_session_projection_action_result(Err(DaemonError::LocalTransport {
                     operation: "agents.spawn",
@@ -442,8 +452,16 @@ impl SessionRuntimeStore {
                     }))
                     .await;
             }
-            let model = item.model.or_else(|| default_model.clone());
-            let effort = item.effort.or_else(|| default_effort.clone());
+            let same_provider = item
+                .provider
+                .as_deref()
+                .is_none_or(|provider| provider == default_provider);
+            let model = item
+                .model
+                .or_else(|| same_provider.then(|| default_model.clone()).flatten());
+            let effort = item
+                .effort
+                .or_else(|| same_provider.then(|| default_effort.clone()).flatten());
             let execution_mode = item.execution_mode.or(default_execution_mode);
             let permission_level = item.permission_level.or(default_permission_level);
             let requested_worktree_for_scope = item.worktree_id.clone();
@@ -490,7 +508,9 @@ impl SessionRuntimeStore {
             )
             .with_owner_user_id(caller_user_id.clone());
             if let Some(metaagent_id) = caller_metaagent_id.as_deref() {
-                create_request = create_request.with_controlled_by_metaagent_id(metaagent_id);
+                create_request = create_request
+                    .with_spawned_by_agent_id(metaagent_id)
+                    .with_controlled_by_metaagent_id(metaagent_id);
             }
             if let Some(alias) = item.alias {
                 create_request = create_request.with_alias(alias);
@@ -501,10 +521,11 @@ impl SessionRuntimeStore {
             if let Some(effort) = effort {
                 create_request = create_request.with_effort(effort);
             }
-            if let Some(account_profile) = item
-                .account_profile
-                .or_else(|| default_account_profile.clone())
-            {
+            if let Some(account_profile) = item.account_profile.or_else(|| {
+                same_provider
+                    .then(|| default_account_profile.clone())
+                    .flatten()
+            }) {
                 create_request = create_request.with_account_profile(account_profile);
             }
             if let Some(execution_mode) = execution_mode {

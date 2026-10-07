@@ -57,10 +57,13 @@ impl KernelRuntimeState {
     pub(super) async fn execute_workflow_registry_add_request(
         &self,
         request: crate::local::AddWorkflowRegistryEntryRequest,
+        caller_agent_id: Option<&str>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let caller_agent_id = caller_agent_id.map(str::to_string);
         self.with_authorized_app_side_effect(move |app| {
             let limits = app.config().workflow_code_limits();
-            let registry = workflow_registry_for_session(app, &request.session_id)?;
+            let registry = workflow_registry_for_session(app, &request.session_id)?
+                .with_creator(caller_agent_id.as_deref());
             let scope = workflow_registry_write_scope(app, &request.session_id, request.scope)?;
             let entry = registry.add(
                 &request.name,
@@ -82,7 +85,9 @@ impl KernelRuntimeState {
     pub(super) async fn execute_workflow_registry_add_from_workflow_request(
         &self,
         request: crate::local::AddWorkflowRegistryEntryFromWorkflowRequest,
+        caller_agent_id: Option<&str>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let caller_agent_id = caller_agent_id.map(str::to_string);
         self.with_authorized_app_side_effect(move |app| {
             let limits = app.config().workflow_code_limits();
             let session = crate::app::KernelSessionReadService::new(app)
@@ -93,7 +98,8 @@ impl KernelRuntimeState {
                 crate::workflow_code::WorkflowCodeSourceExportFormat::Inline,
                 request.agent_mode,
             )?;
-            let registry = workflow_registry_for_session(app, &request.session_id)?;
+            let registry = workflow_registry_for_session(app, &request.session_id)?
+                .with_creator(caller_agent_id.as_deref());
             let scope = workflow_registry_write_scope(app, &request.session_id, request.scope)?;
             let node_path = crate::workflow_code::discover_workflow_code_node_path()?;
             let entry = registry.add_from_export(
@@ -246,6 +252,7 @@ impl KernelRuntimeState {
                     publication_invocation: None,
                 },
                 &caller_user_id,
+                caller_metaagent_id,
             )
             .await;
         let result = match invoke_response {
