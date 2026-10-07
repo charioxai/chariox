@@ -73,7 +73,7 @@ owned cleanup are required; these fixture runs remain supplementary evidence.
 `MD_MEMORY_FLOOR_GIB=12`; the laptop default reserves 15% of RAM (between 0.5 and 2 GiB), with a 10 GiB disk reserve. Explicit builder limits remain authoritative. These are drill reserves, not product runtime requirements. The old
 DPR2 geometry remains available with `MD_GEOMETRY=1280x800`.
 
-MP-11: kits bundle xxhash as an explicit dlopen dependency and prove capture/stripe imports in a chroot using only bundled libraries before creating the manifest. Native kits also bundle the worker ELF and invoke it with the bundled loader.
+MP-11: kits bundle xxhash as an explicit dlopen dependency and prove capture/stripe imports in a chroot using only bundled libraries before creating the manifest. Native kits bundle the worker ELF. The drill preflights the system loader and system libraries first so the stock iHD driver uses its host libva/glibc stack; an incompatible host falls back to bundled libraries with exact loader errors in `native_worker.failures`. Each requested hardware failure records bounded render-device and libva initialization messages in `hardware_diagnostics`. A successful loader preflight is not evidence of hardware encoding; require `motion_backend_vaapi` receipts on the target.
 
 Results and evidence are under the invoking user's
 `~/.chariox/dev/display-lan-<run>/`. The launcher removes only its own disposable
