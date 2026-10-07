@@ -128,3 +128,8 @@ export function semanticSearchRecallRequest(
     },
   }
 }
+
+// MP-08 / MP-10 / MP-11, local448.
+export function getSessionUsageRequest(sessionId: string) {
+  return { GetSessionUsage: { session_id: sessionId } }
+}

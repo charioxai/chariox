@@ -839,3 +839,128 @@ fn native_completion_correlation_distinguishes_durable_and_native_prompts() {
     assert_eq!(completions.len(), 1);
     assert_eq!(completions[0].message_id, "native-completion");
 }
+
+#[test]
+fn mp08_mp10_mp11_leased_completion_persists_home_bound_usage() {
+    let worktree = crate::test_support::TestWorktree::new("mp08-leased-usage");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            worktree
+                .session_request()
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+        )
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(AttachRequest::new(
+            session.id(),
+            "client",
+            ClientCapabilityLevel::InteractiveStructured,
+        ))
+        .unwrap();
+    let PromptSubmissionOutcome::Started { prompt } = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "usage task",
+            Vec::new(),
+        )
+        .unwrap()
+    else {
+        panic!("prompt starts")
+    };
+    bind_projection_test_worker(&app, agent.id(), "worker-run");
+    let request = LaunchProviderRequest::new(
+        "worker-session",
+        "managed-dev-stub",
+        "managed-dev-stub",
+        "default",
+        "default",
+    )
+    .with_agent_id("worker-agent");
+    let mut run = RuntimeProviderRun::new(
+        "worker-run",
+        &request,
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "usage-fixture".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    let usage = crate::usage_accounting::codex_usage(&serde_json::json!({"inputTokens":30,"cachedInputTokens":10,"outputTokens":7,"reasoningOutputTokens":2})).unwrap();
+    run.set_usage(crate::provider::ProviderRunTokenUsage {
+        accounting: Some(usage),
+        turn_accounting: Some(usage),
+        ..Default::default()
+    });
+    let event = crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+        home_session_id: session.id().into(),
+        home_agent_id: agent.id().into(),
+        provider_run_id: "worker-run".into(),
+        provider_run: Some(run),
+        prompts: Vec::new(),
+        output_chunks: Vec::new(),
+        notices: Vec::new(),
+        completions: vec![RelayProjectedCompletion {
+            message_id: "usage-completion".into(),
+            completed_at_ms: 1234,
+            home_prompt_id: Some(prompt.id().into()),
+            provider_termination: None,
+        }],
+    };
+    RemoteLeaseRuntime::new(&mut app)
+        .project_remote_runtime_projection(
+            crate::runtime::relay_peer_authority::test_projection_authority("foreign-worker"),
+            event.clone(),
+        )
+        .unwrap();
+    assert!(
+        crate::usage_accounting::report::load(&app.operational_history_store(), session.id())
+            .unwrap()
+            .turns
+            .iter()
+            .all(|t| t.provider_run_id
+                != crate::provider::projected_leased_provider_run_id(agent.id(), "worker-run"))
+    );
+    RemoteLeaseRuntime::new(&mut app)
+        .project_remote_runtime_projection(
+            crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
+            event.clone(),
+        )
+        .unwrap();
+    let report =
+        crate::usage_accounting::report::load(&app.operational_history_store(), session.id())
+            .unwrap();
+    let turn = report
+        .turns
+        .iter()
+        .find(|t| {
+            t.prompt_id == prompt.id()
+                && t.provider_run_id
+                    == crate::provider::projected_leased_provider_run_id(agent.id(), "worker-run")
+        })
+        .expect("home usage must be measured");
+    assert_eq!(turn.session_id, session.id());
+    assert_eq!(turn.agent_id, agent.id());
+    assert!(turn.completed);
+    assert_eq!(turn.usage, Some(usage));
+    let before = report.clone();
+    RemoteLeaseRuntime::new(&mut app)
+        .project_remote_runtime_projection(
+            crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
+            event,
+        )
+        .unwrap();
+    assert_eq!(
+        crate::usage_accounting::report::load(&app.operational_history_store(), session.id())
+            .unwrap(),
+        before
+    );
+}

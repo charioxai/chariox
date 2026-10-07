@@ -30,5 +30,7 @@ test("MP-11 F7 protocol drill refuses missing/mismatched tests and suppresses pr
   }
   const report = runPublicProviderRunProtocolDrill("/synthetic/test", () => ({ status: 0, stdout: "test result: ok. 1 passed; 0 failed;" }))
   assert.equal(report.passed, true)
+  assert.equal(report.localProtocol, 448)
+  assert.match(report.results[0].check, /protocol_448_snapshot$/)
   assert.equal(report.results.length, 3)
 })

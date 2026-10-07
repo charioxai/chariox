@@ -78,6 +78,17 @@ impl<'a> ProviderOutputPump<'a> {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn apply_structured_output_metadata_for_tests(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        batch: ProviderPromptSignalBatch,
+    ) -> Result<(), DaemonError> {
+        self.context
+            .apply_structured_output_metadata(session_id, provider_run_id, &batch)
+    }
+
     pub(crate) fn pump_provider_output(
         &mut self,
         request: ProviderOutputPumpRequest<'_>,
@@ -844,6 +855,36 @@ impl<'a> ProviderOutputPumpContext<'a> {
         Ok(poll_result)
     }
 
+    fn apply_structured_output_metadata(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        poll_result: &ProviderPromptSignalBatch,
+    ) -> Result<(), DaemonError> {
+        // MP-08 / MP-10: leased drains use this pump too. Persist the current
+        // batch's prompt-bound usage before applying metadata or settling it.
+        if crate::usage_accounting::record::should_record(poll_result) {
+            let run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+            if let Some(agent_id) = run.agent_instance_id() {
+                if let Some(prompt) = self
+                    .app
+                    .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+                {
+                    crate::usage_accounting::record::provider_batch(
+                        &self.app.operational_history,
+                        &run,
+                        &self.app.agents.get_agent(agent_id)?,
+                        &prompt,
+                        poll_result,
+                    )?;
+                }
+            }
+        }
+        self.provider_store
+            .apply_structured_output_metadata(provider_run_id, poll_result)?;
+        Ok(())
+    }
+
     fn apply_prepared_structured_output_batch(
         &mut self,
         session_id: &str,
@@ -851,8 +892,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
         recipient_attachment_ids: Vec<String>,
         poll_result: ProviderPromptSignalBatch,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
-        self.provider_store
-            .apply_structured_output_metadata(provider_run_id, &poll_result)?;
+        self.apply_structured_output_metadata(session_id, provider_run_id, &poll_result)?;
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
         self.mark_resolved_external_provider_session_attached(&provider_run);
         self.app

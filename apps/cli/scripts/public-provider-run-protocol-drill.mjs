@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url"
 export function runPublicProviderRunProtocolDrill(binary, run = spawnSync) {
   if (!binary) throw new Error("MP-11 F7 requires --test-binary pointing to a prebuilt kernel lib-test executable")
   const checks = [
-    "provider::public_run::tests::mp11_f7_public_provider_run_protocol_435_snapshot",
+    "provider::public_run::tests::mp11_f7_public_provider_run_protocol_448_snapshot",
     "provider::public_run::tests::mp11_f7_public_run_responses_and_events_never_emit_launch_secrets",
     "provider::public_run::tests::mp11_f7_native_endpoint_rejects_embedded_credentials",
   ]
@@ -21,7 +21,7 @@ export function runPublicProviderRunProtocolDrill(binary, run = spawnSync) {
     const passed = result.status === 0 && /test result: ok\. 1 passed; 0 failed;/.test(result.stdout ?? "")
     return { check, passed, exitCode: result.status }
   })
-  return { mpItem: "MP-11", finding: "F7", localProtocol: 435, scope: "synthetic public DTO/response/event serialization and private persistence", results, passed: results.every(result => result.passed) }
+  return { mpItem: "MP-11", finding: "F7", localProtocol: 448, scope: "synthetic public DTO/response/event serialization and private persistence", results, passed: results.every(result => result.passed) }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

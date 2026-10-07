@@ -314,6 +314,8 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
             _ => None,
         };
         (context_tokens.is_some() || context_window.is_some()).then_some(ProviderRunTokenUsage {
+            accounting: None,
+            turn_accounting: None,
             total_tokens: context_tokens,
             last_tokens: context_tokens,
             context_tokens: context_tokens_with_window,

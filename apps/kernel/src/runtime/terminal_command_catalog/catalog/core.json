@@ -128,6 +128,14 @@
         ]
       },
       {
+        "id": "session-usage",
+        "label": "usage",
+        "description": "Inspect durable tokens and API-equivalent cost",
+        "value": "/session usage",
+        "surfaces": ["session"],
+        "executionTarget": "terminal_local"
+      },
+      {
         "id": "session-delete",
         "label": "delete",
         "description": "Delete the current or referenced session",

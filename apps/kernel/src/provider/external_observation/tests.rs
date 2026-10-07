@@ -123,6 +123,8 @@ fn codex_token_count_status_projects_provider_run_usage() {
             " Codex token_count\n{\"info\":{\"total_token_usage\":{\"total_tokens\":42000},\"model_context_window\":128000}}"
         ),
         Some(ProviderRunTokenUsage {
+            accounting: None,
+            turn_accounting: None,
             total_tokens: Some(42_000),
             last_tokens: Some(42_000),
             context_tokens: Some(42_000),
@@ -134,6 +136,8 @@ fn codex_token_count_status_projects_provider_run_usage() {
             "codex token_count\n{\"last\":{\"totalTokens\":160000},\"modelContextWindow\":128000}"
         ),
         Some(ProviderRunTokenUsage {
+            accounting: None,
+            turn_accounting: None,
             total_tokens: Some(160_000),
             last_tokens: Some(160_000),
             context_tokens: None,

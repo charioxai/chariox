@@ -686,23 +686,11 @@ impl KernelRuntimeState {
                     }
                     return Err(error);
                 }
-                let replayed = runtime.replay_active_leased_prompt_submission(
+                runtime.replay_and_accept_leased_prompt(
                     &replay_leased_agent_id,
                     replay_git_context.as_ref(),
-                )?;
-                if profile_receipt_is_new {
-                    if let (Some(home_prompt_id), Some((worker_provider_run_id, _))) =
-                        (profile_home_prompt_id.as_deref(), replayed.as_ref())
-                    {
-                        runtime.update_leased_prompt_receipt(
-                            &replay_leased_agent_id,
-                            home_prompt_id,
-                            WorkerPromptReceiptPhase::Accepted,
-                            Some(worker_provider_run_id.as_str()),
-                        )?;
-                    }
-                }
-                Ok(replayed)
+                    profile_receipt_is_new,
+                )
             })
             .await?;
         if let Some(replayed) = profile_replay {

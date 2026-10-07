@@ -277,6 +277,7 @@ pub enum LocalDaemonRequest {
     LogoutProvider(LogoutProviderRequest),
     ListProviderProcesses(ListProviderProcessesRequest),
     TeardownProviderProcesses(TeardownProviderProcessesRequest),
+    GetSessionUsage(GetSessionUsageRequest),
     GetSessionHistoryOutline(GetSessionHistoryOutlineRequest),
     GetSessionHistoryBlobContent(GetSessionHistoryBlobContentRequest),
     GetPromptInputHistory(GetPromptInputHistoryRequest),

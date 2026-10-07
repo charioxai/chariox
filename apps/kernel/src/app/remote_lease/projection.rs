@@ -12,6 +12,7 @@ use crate::transport::relay_peer::{
 use chariox_relay::protocol::ClientTarget;
 
 use super::RemoteLeaseRuntime;
+mod usage;
 
 #[cfg(test)]
 mod history_tests;
@@ -423,7 +424,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let current_batch_has_provider_output = output_chunks
             .iter()
             .any(|chunk| chunk.kind == TerminalOutputKind::ProviderOutput);
-        let provider_run = self.app.providers.get_run(provider_run_id).ok();
+        let mut provider_run = self.app.providers.get_run(provider_run_id).ok();
         let provider_run_projection = provider_run
             .as_ref()
             .map(|run| (run.id().to_string(), run.state()));
@@ -728,6 +729,17 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 agent.projected_provider_run = provider_run_projection;
             }
         }
+        // MP-08 / MP-10: resolve every projected counter snapshot from the exact
+        // worker prompt, including output-only workflow settlement and replay.
+        if let Some(run) = provider_run.as_mut() {
+            self.bind_worker_turn_usage(
+                &leased_agent,
+                provider_run_id,
+                &completions,
+                backing_active_prompt.as_ref().map(|prompt| prompt.id()),
+                run,
+            )?;
+        }
         Ok(Some((
             lease.home_kernel_id,
             RelayPeerEvent::LeasedRuntimeProjection {
@@ -963,6 +975,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .unwrap_or_else(|| agent_id.to_string());
         let projected_provider_run_id =
             crate::provider::projected_leased_provider_run_id(&leased_agent_id, provider_run_id);
+        let projected_usage = provider_run.as_ref().map(|run| run.usage());
         if let Some(provider_run) = provider_run {
             let projected_run = provider_run.projected_for_home_agent_with_id(
                 projected_provider_run_id.clone(),
@@ -1098,6 +1111,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
             if !saw_completion && !workflow_output_ready {
                 return Ok(outcome);
             }
+            self.persist_home_turn_usage(
+                session_id,
+                agent_id,
+                active_prompt.id(),
+                &projected_provider_run_id,
+                projected_usage,
+            )?;
             if active_prompt.workflow_run_id().is_some() && !workflow_output_ready {
                 if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
                     active_prompt.workflow_run_id(),

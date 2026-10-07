@@ -266,6 +266,25 @@ pub(super) fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotific
         }),
         "thread/tokenUsage/updated" => {
             let token_usage = params.get("tokenUsage")?;
+            // MP-08 / MP-10 / MP-11: numeric official counters only. Never log
+            // an arbitrary provider payload, prompt, or account material.
+            if let Some(total) = token_usage.get("total") {
+                let counters = [
+                    "inputTokens",
+                    "cachedInputTokens",
+                    "outputTokens",
+                    "reasoningOutputTokens",
+                    "totalTokens",
+                ]
+                .into_iter()
+                .filter_map(|key| total.get(key).and_then(Value::as_u64).map(|n| (key, n)))
+                .collect::<std::collections::BTreeMap<_, _>>();
+                crate::logging::debug_with_fields(
+                    "daemon.provider.codex",
+                    "official cumulative usage counters",
+                    serde_json::json!({"counters": counters}),
+                );
+            }
             Some(CodexNotification::TokenUsageUpdated {
                 thread_id: params
                     .get("threadId")
@@ -298,6 +317,10 @@ pub(super) fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotific
                     };
 
                     ProviderRunTokenUsage {
+                        accounting: token_usage
+                            .get("total")
+                            .and_then(crate::usage_accounting::codex_usage),
+                        turn_accounting: None,
                         total_tokens,
                         last_tokens,
                         context_tokens,

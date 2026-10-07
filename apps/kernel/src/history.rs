@@ -18,6 +18,7 @@ pub(crate) mod leased_projection;
 mod operational_archive;
 mod operational_legacy_import;
 mod operational_query;
+mod operational_usage;
 mod operational_retention;
 mod operational_session;
 mod session_log;
@@ -1180,6 +1181,9 @@ CREATE TABLE IF NOT EXISTS history_events (
 
 CREATE INDEX IF NOT EXISTS idx_history_events_session_sequence
     ON history_events(session_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_history_events_turn_usage
+    ON history_events(session_id, prompt_id, provider_run_id, sequence DESC)
+    WHERE json_extract(event_json, '$.metadata.provider_usage_accounting_v1') IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_history_events_agent_sequence
     ON history_events(agent_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_history_events_provider_model

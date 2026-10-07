@@ -119,6 +119,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 execution_lease_id: leased_agent.lease_id,
                 phase: WorkerPromptReceiptPhase::Dispatching,
             },
+            worker_prompt_id: None,
             caller,
         };
         self.app.worker_prompt_receipts.persist(record)?;
@@ -649,6 +650,37 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )))
     }
 
+    /// MP-08 / MP-10: a fresh receipt for an already active home prompt
+    /// accepts the replayed worker submission and binds its accounting prompt.
+    pub(crate) fn replay_and_accept_leased_prompt(
+        &mut self,
+        leased_agent_id: &str,
+        git_context: Option<&RemoteGitTurnContext>,
+        new_receipt: bool,
+    ) -> Result<Option<(String, PromptSubmissionOutcome)>, DaemonError> {
+        let replayed = self.replay_active_leased_prompt_submission(leased_agent_id, git_context)?;
+        if let (true, Some(context), Some((worker_provider_run_id, outcome))) =
+            (new_receipt, git_context, replayed.as_ref())
+        {
+            let (PromptSubmissionOutcome::Started { prompt }
+            | PromptSubmissionOutcome::Queued { prompt }) = outcome;
+            let mut record = self
+                .app
+                .worker_prompt_receipts
+                .get(leased_agent_id, &context.home_prompt_id)
+                .cloned()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "accept replayed leased prompt",
+                    message: "worker prompt admission receipt is missing".to_string(),
+                })?;
+            record.receipt.phase = WorkerPromptReceiptPhase::Accepted;
+            record.receipt.worker_provider_run_id = Some(worker_provider_run_id.clone());
+            record.worker_prompt_id = Some(prompt.id().to_string());
+            self.app.worker_prompt_receipts.persist(record)?;
+        }
+        Ok(replayed)
+    }
+
     pub(crate) fn prepare_leased_prompt_submission(
         &mut self,
         leased_agent_id: &str,
@@ -766,6 +798,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
             PromptSubmissionOutcome::Started { prompt }
             | PromptSubmissionOutcome::Queued { prompt } => prompt,
         };
+        // MP-08 / MP-10: bind reusable-run accounting to the admitted worker prompt.
+        // The public relay receipt keeps its existing shape; this identity is worker-local.
+        if let Some(home_prompt_id) = home_prompt_id.as_deref() {
+            if let Some(mut record) = self
+                .app
+                .worker_prompt_receipts
+                .get(&leased_agent.id, home_prompt_id)
+                .cloned()
+            {
+                record.worker_prompt_id = Some(accepted_prompt.id().to_string());
+                record.receipt.worker_provider_run_id = Some(provider_run_id.clone());
+                self.app.worker_prompt_receipts.persist(record)?;
+            }
+        }
         let backing_active = self.app.prompt_owner_active_prompt_for_agent(
             &leased_agent.backing_session_id,
             &leased_agent.backing_agent_id,

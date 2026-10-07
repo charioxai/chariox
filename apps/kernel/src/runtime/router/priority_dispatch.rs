@@ -564,7 +564,8 @@ impl CommandRouter {
                 )
                 .await
             }),
-            request @ (LocalDaemonRequest::GetSessionHistoryOutline(_)
+            request @ (LocalDaemonRequest::GetSessionUsage(_)
+            | LocalDaemonRequest::GetSessionHistoryOutline(_)
             | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
             | LocalDaemonRequest::QueryRecall(_)
             | LocalDaemonRequest::SearchRecall(_)

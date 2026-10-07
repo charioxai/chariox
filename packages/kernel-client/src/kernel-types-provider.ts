@@ -19,6 +19,8 @@ export type RuntimeProviderRun = {
   variant: string | null
   usage_tokens_total: number | null
   usage?: {
+    accounting?: ProviderTokenAccounting | null
+    turn_accounting?: ProviderTokenAccounting | null
     total_tokens?: number | null
     last_tokens?: number | null
     context_tokens?: number | null
@@ -344,4 +346,29 @@ export type QueuedPromptUpdatedPayload = {
   session: RuntimeSession
   agent_activity: Record<string, AgentRuntimeActivity>
   agent_activity_revision: number
+}
+
+// MP-08 / MP-10 / MP-11, allocated local448 / peer91.
+export type ProviderTokenAccounting = {
+  input_tokens: number | null
+  cached_input_tokens: number | null
+  cache_write: number | null
+  cache_write_5m: number | null
+  cache_write_1h: number | null
+  output_tokens: number | null
+  reasoning_tokens: number | null
+}
+export type ProviderTurnUsage = {
+  session_id: string; agent_id: string; parent_agent_id: string | null; prompt_id: string
+  provider_run_id: string; provider: string; model: string; completed: boolean
+  usage: ProviderTokenAccounting | null; provider_counters: ProviderTokenAccounting | null
+  api_equivalent_nanodollars: string | null; price_table_version: number; price_table_date: string
+}
+export type ProviderUsageTotals = {
+  turns: number; unavailable_turns: number; usage: ProviderTokenAccounting
+  api_equivalent_nanodollars: string | null
+}
+export type SessionUsageReport = {
+  session_id: string; turns: ProviderTurnUsage[]; total: ProviderUsageTotals
+  agents: Record<string, ProviderUsageTotals>; delegation_trees: Record<string, ProviderUsageTotals>
 }

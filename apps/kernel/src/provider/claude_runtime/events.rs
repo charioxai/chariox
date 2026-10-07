@@ -282,7 +282,11 @@ fn apply_result_message(
     if let Some(session_id) = string_field(value, "session_id") {
         record_claude_session_id(state, batch, session_id);
     }
-    if let Some(usage) = value.get("usage").and_then(usage_from_value) {
+    if let Some(mut usage) = value.get("usage").and_then(usage_from_value) {
+        usage.turn_accounting = value
+            .get("usage")
+            .and_then(crate::usage_accounting::claude_usage);
+        usage.accounting = usage.turn_accounting;
         batch.resolved_usage_tokens_total = usage.total_tokens;
         batch.resolved_usage = Some(usage);
     }
@@ -525,6 +529,8 @@ fn usage_from_value(value: &Value) -> Option<ProviderRunTokenUsage> {
     let total = u64_field(value, "total_tokens")
         .unwrap_or_else(|| input + output + cache_create + cache_read);
     (total > 0).then_some(ProviderRunTokenUsage {
+        accounting: None,
+        turn_accounting: None,
         total_tokens: Some(total),
         last_tokens: Some(output),
         context_tokens: Some(input + cache_create + cache_read),

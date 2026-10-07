@@ -90,6 +90,8 @@ fn session_snapshot_projection_uses_projected_provider_run_fallback() {
     );
     provider_run.mark_running();
     provider_run.set_usage(crate::provider::ProviderRunTokenUsage {
+        accounting: None,
+        turn_accounting: None,
         total_tokens: Some(42),
         last_tokens: Some(42),
         context_tokens: Some(42),

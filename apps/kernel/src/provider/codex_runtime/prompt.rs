@@ -126,6 +126,7 @@ pub fn submit_codex_prompt(
         envelope.steering,
     );
     if active_steering_turn_id.is_none() {
+        state.usage_baseline = state.usage_total;
         state.authoritative_backfill_gate.reset();
     }
     crate::logging::debug_with_fields(

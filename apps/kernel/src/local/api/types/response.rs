@@ -303,6 +303,7 @@ pub enum LocalDaemonResponse {
     ProviderAccountCredentialStored { provider: String, account_profile: String, credential_id: String, replaced: bool, },
     ProviderProcessesListed { processes: Vec<ProviderProcessInfo>, },
     ProviderProcessesTornDown { processes: Vec<ProviderProcessInfo>, },
+    SessionUsage { report: crate::usage_accounting::report::SessionUsageReport },
     SessionHistoryOutline { agents: Vec<SessionHistoryOutlineAgent>, },
     SessionHistoryBlobContent { blob_id: String, entries: Vec<SessionHistoryPageEntry>, },
     PromptInputHistory { entries: Vec<PromptInputHistoryEntry>, },

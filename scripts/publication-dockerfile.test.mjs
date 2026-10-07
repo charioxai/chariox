@@ -18,6 +18,13 @@ const toolchainLock = JSON.parse(await readFile(
   "utf8",
 ))
 
+test("MP-08/MP-10 publication protocol defaults match the shared kernel contract", () => {
+  const version = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+)/)?.[1])
+  const defaults = [...dockerfile.matchAll(/^ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=(\d+)$/gm)]
+  assert.equal(defaults.length, 2)
+  assert.deepEqual(defaults.map(match => Number(match[1])), [version, version])
+})
+
 test("publication image copies compile-time workflow examples before building the kernel", () => {
   assert.match(workflowCode, /include_str!\("\.\.\/\.\.\/\.\.\/examples\/workflow-code\//)
 
