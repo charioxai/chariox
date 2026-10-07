@@ -372,6 +372,7 @@ pub(crate) use browser_controller_action_execution_runtime_state::BrowserControl
 mod browser_configuration_runtime_state;
 mod browser_controller_runtime_state;
 mod browser_download_cancellation_runtime_state;
+mod browser_snapshot_observation_runtime_state;
 mod browser_upload_runtime_state;
 mod capability_owned_state;
 mod detached_provider_run_owned_state;
