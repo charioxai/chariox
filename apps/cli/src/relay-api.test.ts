@@ -3,7 +3,7 @@ import test from "node:test"
 
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client/kernel-types"
 
-import { issueKernelCloudRelayClientToken, joinKernelTerminalPairingLink } from "./relay-api.js"
+import { issueKernelCloudRelayClientToken, joinKernelTerminalPairingLink, logoutCloudRelay } from "./relay-api.js"
 import type { LocalIpcClient } from "./ipc.js"
 
 function fakeClient(send: (request: unknown) => Promise<unknown>): LocalIpcClient {
@@ -114,4 +114,20 @@ test("alias-scoped and ambiguous client tokens preserve the requested alias", as
     )
     assert.equal(issued.targetDaemonId, undefined)
   }
+})
+
+test("MP-08 Cloud logout accepts the kernel's unit-variant acknowledgement", async () => {
+  const requests: unknown[] = []
+  const client = {
+    send: async (request: unknown) => {
+      requests.push(request)
+      return "CloudRelayLoggedOut"
+    },
+  } as unknown as LocalIpcClient
+
+  await logoutCloudRelay(client)
+
+  assert.equal(requests.length, 1)
+  const unexpected = { send: async () => "SomethingElse" } as unknown as LocalIpcClient
+  await assert.rejects(logoutCloudRelay(unexpected), /expected CloudRelayLoggedOut/)
 })
