@@ -26,6 +26,16 @@ fn protect_error(error: DaemonError) -> DaemonError {
     {
         return error;
     }
+    // Integration candidate 1: the typed owner-decision outcomes from the
+    // next/integration2 queue carry only kernel constants; keep them too.
+    if matches!(
+        &error,
+        DaemonError::KernelSudoRefused
+            | DaemonError::KernelAccessRefused
+            | DaemonError::OwnerRequestExpired
+    ) {
+        return error;
+    }
     let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
     DaemonError::ExternalRequestFailed {
         code: mapped.code,
