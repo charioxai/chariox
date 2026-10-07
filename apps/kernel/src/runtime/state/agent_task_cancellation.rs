@@ -65,14 +65,34 @@ impl KernelRuntimeState {
                 };
                 match obligation.kind.as_str() {
                     "delegate" => {
-                        let child = self.owned.agent_store.get_agent(resource)?;
+                        let child = match self.owned.agent_store.get_agent(resource) {
+                            Ok(child) => child,
+                            Err(_) => {
+                                self.owned.durable_state_store.agent_lifecycle(
+                                    Operation::SourceOutcome {
+                                        room: task.room_id.clone(),
+                                        source: obligation
+                                            .completion_source()
+                                            .unwrap_or(resource)
+                                            .into(),
+                                        occurrence: format!("cancel-missing-{}", obligation.id),
+                                        success: false,
+                                        now: crate::session::unix_epoch_ms(),
+                                    },
+                                )?;
+                                continue;
+                            }
+                        };
                         if child.session_id() != task.room_id
                             || child.owner_user_id() != session.owner_user_id()
                             || child.spawned_by_agent_id() != Some(&task.agent_id)
                         {
-                            return Err(crate::durable_state::agent_lifecycle::error(
-                                "delegate cancellation creator binding changed",
-                            ));
+                            first_error.get_or_insert_with(|| {
+                                crate::durable_state::agent_lifecycle::error(
+                                    "delegate cancellation creator binding changed",
+                                )
+                            });
+                            continue;
                         }
                         if let Some(id) = &obligation.completion_task_id {
                             if let Some(child_task) = self
@@ -101,6 +121,14 @@ impl KernelRuntimeState {
                             .durable_state_store
                             .agent_tasks(Some(&task.room_id), Some(resource))?
                             .is_empty()
+                            && self
+                                .owned
+                                .prompt_state_owner
+                                .active_prompt_for_agent(&session, resource)
+                                .is_none()
+                            && session
+                                .queued_prompts_for_agent(resource)
+                                .is_none_or(|q| q.is_empty())
                         {
                             self.owned.durable_state_store.agent_lifecycle(
                                 Operation::SourceOutcome {

@@ -699,7 +699,9 @@ fn cancel_intent(tx: &Transaction<'_>, task: &mut AgentTaskExecution) -> Result<
         "Owner cancelled; owned resource cancellation remains supervised until physical settlement"
             .into();
     for obligation in &mut task.obligations {
-        if obligation.status == "failed" {
+        if matches!(obligation.status.as_str(), "failed" | "settling")
+            || matches!(obligation.kind.as_str(), "reply" | "message")
+        {
             obligation.status = "cancelled".into();
         } else if matches!(obligation.status.as_str(), "open" | "settling") {
             obligation.dispatch_state = "cancel_requested".into();

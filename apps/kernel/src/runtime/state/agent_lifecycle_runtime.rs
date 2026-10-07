@@ -345,7 +345,22 @@ impl KernelRuntimeState {
                 };
                 let outcome = match obligation.kind.as_str() {
                     "delegate" => match self.owned.agent_store.get_agent(source) {
-                        Ok(agent) if agent.state() != crate::agent::AgentState::Error => None,
+                        Ok(agent) if agent.state() != crate::agent::AgentState::Error => {
+                            if let Some(id) = &obligation.completion_task_id {
+                                self.owned
+                                    .durable_state_store
+                                    .agent_tasks(Some(&task.room_id), Some(source))?
+                                    .into_iter()
+                                    .find(|t| &t.task_id == id)
+                                    .and_then(|t| match t.state {
+                                        ExecutionState::Done => Some(true),
+                                        ExecutionState::Cancelled => Some(false),
+                                        _ => None,
+                                    })
+                            } else {
+                                None
+                            }
+                        }
                         _ => Some(false),
                     },
                     "workflow" => session
@@ -366,7 +381,7 @@ impl KernelRuntimeState {
                         .durable_state_store
                         .agent_lifecycle(Operation::SourceOutcome {
                             room: task.room_id.clone(),
-                            source: source.clone(),
+                            source: obligation.completion_source().unwrap_or(source).into(),
                             occurrence: format!("source-terminal-{source}"),
                             success,
                             now,
