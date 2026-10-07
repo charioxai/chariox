@@ -93,3 +93,12 @@ test('MD-454: batched wheel deltas use the live mirror fence; direct input keeps
  await assert.rejects(inputHostTab(browser,tab,{kind:'mirror'},{resolveMirror:async()=>({input:{...wheel,delta_y:1000001},guard:async()=>guarded++})}),/unsupported input/);
  assert.equal(sent.filter(e=>e.method==='Input.dispatchMouseEvent').length,1);
 });
+
+for(const scale of [.5,1])test('MD-454: canonical CSS pointer is dispatched at the headed emulation scale '+scale,async()=>{
+ const {browser,sent}=fixture();let guarded=0;
+ await inputHostTab(browser,tab,{kind:'mirror'},{coordinateScale:scale,resolveMirror:async()=>({input:{kind:'click',x:88,y:112},guard:async()=>guarded++})});
+ const clicks=sent.filter(e=>e.method==='Input.dispatchMouseEvent');assert.equal(guarded,2);
+ assert.deepEqual(clicks.map(e=>[e.params.x,e.params.y]),[[88*scale,112*scale],[88*scale,112*scale]]);
+ await inputHostTab(browser,tab,{kind:'scroll',x:88,y:112,delta_x:3,delta_y:8000},{coordinateScale:scale});
+ const wheel=sent.at(-1).params;assert.equal(wheel.x,88*scale);assert.equal(wheel.y,112*scale);assert.equal(wheel.deltaY,8000,'Wheel distances remain in CSS pixels');
+});

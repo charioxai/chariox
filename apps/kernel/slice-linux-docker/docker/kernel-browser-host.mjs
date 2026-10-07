@@ -573,7 +573,7 @@ export class KernelBrowserHost {
         this.compositors.get(tab.tab_id)?.source?.wake?.();
       };
       try {
-        await this.sampleLane(tab).run("input", () => inputHostTab(this.browser, tab, command.input, { signal, onDispatch, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+        await this.sampleLane(tab).run("input", () => inputHostTab(this.browser, tab, command.input, { signal, onDispatch, coordinateScale:this.chromium?.display?(this.scales.get(tab.tab_id)??geometry.dpr)/geometry.dpr:1, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
         if(dispatched)this.compositors.get(tab.tab_id)?.source?.wake?.();
         this.timing('cdp_input', at);
       }
