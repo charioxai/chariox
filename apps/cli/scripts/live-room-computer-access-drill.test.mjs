@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,6 +8,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const drill = fileURLToPath(new URL('./live-room-computer-access-drill.mjs', import.meta.url));
+const which = tool => process.env.PATH.split(path.delimiter).map(dir => path.join(dir, tool)).find(file => existsSync(file)) ?? assert.fail(`missing ${tool}`);
 
 for (const seam of ['kernel', 'tui', 'platform', 'resources', 'pty']) {
   test(`MP-08 / MP-10 / MP-11: ${seam} preflight failure reports and removes disposable state`, {
@@ -19,12 +21,10 @@ for (const seam of ['kernel', 'tui', 'platform', 'resources', 'pty']) {
       const missing = path.join(sandbox, 'unbuilt-binary');
       let toolPath = process.env.PATH;
       if (seam === 'resources' || seam === 'pty') {
+        // Tools resolve from the parent PATH; pty fails before the host-dependent resource floor.
         toolPath = path.join(sandbox, 'bin');
         await mkdir(toolPath);
-        await symlink('/usr/bin/git', path.join(toolPath, 'git'));
-        if (seam === 'pty') {
-          for (const tool of ['awk', 'df']) await symlink(`/usr/bin/${tool}`, path.join(toolPath, tool));
-        }
+        for (const tool of seam === 'resources' ? ['git', 'script'] : ['git']) await symlink(which(tool), path.join(toolPath, tool));
       }
       const nodeArgs = [];
       if (seam === 'platform') {

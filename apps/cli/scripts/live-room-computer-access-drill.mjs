@@ -90,9 +90,10 @@ try {
   assert.equal(process.platform, 'linux', 'MP-08 / MP-10 / MP-11: Linux-only drill (requires /proc and util-linux script -c)');
   report.kernel_sha256 = await hashFile(kernelBinary);
   report.tui_sha256 = await hashFile(args.tui ? tuiCommand[0] : tuiCommand[1]);
+  // Probe required tools before the host-dependent resource floor.
+  execFileSync('script', ['-q', '-c', 'true', '/dev/null']);
   report.resources.push(resources());
   assert.ok(report.resources[0].memory_available_bytes >= 9 * 2 ** 30 && report.resources[0].disk_available_bytes >= 10 * 2 ** 30, 'MP-11 resource floor');
-  execFileSync('script', ['-q', '-c', 'true', '/dev/null']);
   await mkdir(home, { mode: 0o700 }); await mkdir(workspace);
   const port = await freePort();
   const env = {
