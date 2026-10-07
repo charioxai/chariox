@@ -7,7 +7,7 @@ const frameBytes=frame=>JSON.stringify(frame.encoded??{}).length+(frame.encoded?
 // that path; sparse rows still keep their independent bounded references.
 // The private exact row span selects codec mode only, never cropped pixels.
 const motionHeight=raw=>Number.isSafeInteger(raw.motion_height)&&raw.motion_height>=0&&raw.motion_height<=raw.height?raw.motion_height:raw.height;
-const denseNative=raw=>raw?.nativeEncode&&Array.isArray(raw.damage)&&raw.damage.length===4&&
+const denseNative=raw=>raw?.nativeEncode&&!raw[displayMaskRegions]?.length&&Array.isArray(raw.damage)&&raw.damage.length===4&&
  (raw.damage[2]-raw.damage[0])*(raw.damage[3]-raw.damage[1])>raw.width*raw.height/2&&motionHeight(raw)>=raw.height*.75;
 export class MotionEncoder {
  constructor(source,encoder,{bitrate,codec,independent=false,stripes=false,valid=()=>true,shouldEncode=()=>true,timing=()=>{},now=()=>performance.now()}={}){
@@ -45,7 +45,9 @@ export class MotionEncoder {
     }
     this.timing('protected_codec_drop',performance.timeOrigin+this.now());
     const {raw,...protectedSample}=sample;
-    if(png.length+this.frames.reduce((n,f)=>n+frameBytes(f),0)>1024*1024){this.invalidate(false);throw Error('MP-11: protected fallback exceeds bounded queue');}
+    // MP-11: exact fallback uses the bounded PNG budget. The smaller video
+    // packet budget must not prevent a safe Retina raster from settling.
+    if(png.length+this.frames.reduce((n,f)=>n+frameBytes(f),0)>4*1024*1024){this.invalidate(false);throw Error('MP-11: protected fallback exceeds bounded queue');}
     this.frames.push({...protectedSample,data_base64:png,motion:false,force_lossless:true});this.wakeReady();
     continue;
    }
