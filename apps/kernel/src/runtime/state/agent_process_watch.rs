@@ -33,16 +33,18 @@ const ENV_ALLOW: &[&str] = &[
 struct OwnedChild {
     child: Child,
     birth: u64,
+    wake: String,
     /// Set once the leader is reaped after every session member settled.
     status: Option<std::process::ExitStatus>,
 }
 
 impl OwnedChild {
-    fn new(mut child: Child) -> std::io::Result<Self> {
+    fn new(mut child: Child, wake: &str) -> std::io::Result<Self> {
         match super::agent_process_group::birth(child.id()) {
             Ok(birth) => Ok(Self {
                 child,
                 birth,
+                wake: wake.into(),
                 status: None,
             }),
             Err(error) => {
@@ -59,6 +61,10 @@ impl OwnedChild {
     fn poll(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
         if self.status.is_none() {
             self.status = super::agent_process_group::poll_exit(&mut self.child, self.birth)?;
+            if self.status.is_some() {
+                // Descendants that left the session still carry the wake marker.
+                super::agent_process_group::reap_orphans(&[self.wake.clone()].into());
+            }
         }
         Ok(self.status)
     }
@@ -277,18 +283,20 @@ impl KernelRuntimeState {
         })
         .collect::<Vec<_>>();
         let pid = child.id();
-        let owned: Owned = Arc::new(std::sync::Mutex::new(match OwnedChild::new(child) {
-            Ok(child) => child,
-            Err(_) => {
-                self.settle_failed_process_launch(
-                    &wake,
-                    "process ownership could not be verified; the new child was stopped".into(),
-                );
-                return Err(crate::durable_state::agent_lifecycle::error(
-                    "new process ownership could not be verified",
-                ));
-            }
-        }));
+        let owned: Owned = Arc::new(std::sync::Mutex::new(
+            match OwnedChild::new(child, &wake.id) {
+                Ok(child) => child,
+                Err(_) => {
+                    self.settle_failed_process_launch(
+                        &wake,
+                        "process ownership could not be verified; the new child was stopped".into(),
+                    );
+                    return Err(crate::durable_state::agent_lifecycle::error(
+                        "new process ownership could not be verified",
+                    ));
+                }
+            },
+        ));
         let started = store.agent_lifecycle(Operation::ProcessStarted {
             id: wake.id.clone(),
             pid,
@@ -452,6 +460,15 @@ impl KernelRuntimeState {
 mod tests {
     use super::*;
 
+    /// Wake markers are host-wide; concurrent tests must not share one.
+    fn w() -> String {
+        format!(
+            "a03-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        )
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn a03_signal_guard_rejects_a_group_outside_the_owned_session() {
@@ -461,7 +478,7 @@ mod tests {
             .process_group(0)
             .spawn()
             .unwrap();
-        let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child).unwrap()));
+        let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child, &w()).unwrap()));
         let refused = !signal_owned_session(&owned, 0);
         let mut child = owned.lock().unwrap();
         assert!(child.child.id() > 1);
@@ -500,13 +517,13 @@ mod tests {
         let (scratch, _home, workspace) = managed_isolation_fixture();
         let argv: Vec<String> = vec!["/bin/sh".into(), "-c".into(), "true".into()];
         let removed: Vec<String> = ENV_ALLOW.iter().map(|k| k.to_string()).collect();
-        let watched = command("w", &argv, &workspace, &BTreeMap::new(), &removed).unwrap();
+        let watched = command(&w(), &argv, &workspace, &BTreeMap::new(), &removed).unwrap();
         let managed = crate::provider::managed_isolated_utility_command(
             "/bin/sh",
             argv[1..].to_vec(),
             BTreeMap::from([(
                 super::super::agent_process_group::WAKE_MARKER_ENV.to_string(),
-                "w".to_string(),
+                w(),
             )]),
             Some(workspace.clone()),
             "managed-command",
@@ -548,7 +565,9 @@ mod tests {
             .read_line(&mut line)
             .unwrap();
         let processes = WatchedProcesses::default();
-        let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child).unwrap()));
+        let owned: Owned = Arc::new(std::sync::Mutex::new(
+            OwnedChild::new(child, &wake).unwrap(),
+        ));
         processes
             .live
             .lock()
@@ -610,6 +629,48 @@ mod tests {
         assert_eq!(stopped.get(&wake), Some(&1));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a03_termination_stops_a_descendant_that_left_the_session() {
+        use super::super::agent_process_group::marked_count_for_test;
+        let wake = format!("a03-escaped-{}", std::process::id());
+        let script = "import os, signal\nif os.fork()==0:\n os.setsid()\n signal.signal(signal.SIGTERM,signal.SIG_IGN)\n print('ready',flush=True)\n while True: signal.pause()\nwhile True: signal.pause()";
+        let mut child = spawn(
+            &wake,
+            &["python3".into(), "-c".into(), script.into()],
+            &std::env::temp_dir(),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(child.stdout.take().unwrap()),
+            &mut line,
+        )
+        .unwrap();
+        let processes = WatchedProcesses::default();
+        let owned: Owned = Arc::new(std::sync::Mutex::new(
+            OwnedChild::new(child, &wake).unwrap(),
+        ));
+        processes
+            .live
+            .lock()
+            .unwrap()
+            .insert(wake.clone(), owned.clone());
+        assert_eq!(marked_count_for_test(&wake), 2);
+        processes.shutdown();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while marked_count_for_test(&wake) != 0 {
+            assert!(
+                Instant::now() < deadline,
+                "a descendant that left the session outlived its watched process"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(owned.lock().unwrap().status.is_some());
+    }
+
     #[test]
     fn a03_signal_guard_rejects_reserved_and_invalid_targets() {
         for pid in [0, 1, u32::MAX, (i32::MAX as u32) + 1] {
@@ -622,20 +683,16 @@ mod tests {
     fn a03_terminate_settles_the_owned_group_only_while_unreaped() {
         let processes = WatchedProcesses::default();
         let child = spawn(
-            "w",
+            &w(),
             &["sleep".into(), "30".into()],
             &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
         )
         .unwrap();
-        let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child).unwrap()));
-        processes
-            .live
-            .lock()
-            .unwrap()
-            .insert("w".into(), owned.clone());
-        assert!(processes.terminate("w"));
+        let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child, &w()).unwrap()));
+        processes.live.lock().unwrap().insert(w(), owned.clone());
+        assert!(processes.terminate(&w()));
         let deadline = Instant::now() + Duration::from_secs(5);
         let status = loop {
             if let Some(status) = owned.lock().unwrap().poll().unwrap() {
@@ -646,7 +703,7 @@ mod tests {
         };
         assert_eq!(status.signal(), Some(libc::SIGTERM));
         assert!(
-            !processes.terminate("w"),
+            !processes.terminate(&w()),
             "a reaped leader is never signalled"
         );
         assert!(!processes.terminate("unknown"));
@@ -656,14 +713,14 @@ mod tests {
     #[test]
     fn a03_signal_guard_rejects_a_stale_birth_identity() {
         let child = spawn(
-            "w",
+            &w(),
             &["sleep".into(), "30".into()],
             &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
         )
         .unwrap();
-        let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child).unwrap()));
+        let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child, &w()).unwrap()));
         owned.lock().unwrap().birth += 1;
         assert!(
             !signal_owned_session(&owned, 0),
@@ -700,7 +757,7 @@ mod tests {
             script.into()
         };
         let mut child = spawn(
-            "w",
+            &w(),
             &["python3".into(), "-c".into(), script.into()],
             &std::env::temp_dir(),
             &BTreeMap::new(),
@@ -717,7 +774,7 @@ mod tests {
         // assertion fails; never use an unverified PID or group fallback.
         let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, descendant, 0) as libc::c_int };
         assert!(fd >= 0);
-        let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child).unwrap()));
+        let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child, &w()).unwrap()));
         assert!(signal_owned_session(&owned, libc::SIGTERM));
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut status = None;
