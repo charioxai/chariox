@@ -56,6 +56,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     CREATE TABLE IF NOT EXISTS agent_lifecycle_quarantine(kind TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,at_ms INTEGER NOT NULL,PRIMARY KEY(kind,id));
     CREATE TABLE IF NOT EXISTS agent_source_occurrences(sequence INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL,source_id TEXT NOT NULL,occurrence_id TEXT NOT NULL,success INTEGER NOT NULL,public_answer TEXT,UNIQUE(room_id,source_id,occurrence_id));
     CREATE TABLE IF NOT EXISTS agent_inbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL,agent_id TEXT NOT NULL,source_id TEXT NOT NULL,occurrence_id TEXT NOT NULL,payload TEXT NOT NULL,UNIQUE(room_id,agent_id,source_id,occurrence_id));
+    CREATE TABLE IF NOT EXISTS agent_inbox_refusals(sequence INTEGER PRIMARY KEY,first_refused_at_ms INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS agent_inbox_recipient ON agent_inbox(room_id,agent_id,sequence);").map_err(sql)?;
     let columns: Vec<String> = db
         .prepare("PRAGMA table_info(agent_source_occurrences)")
@@ -133,6 +134,17 @@ impl DurableKernelStateStore {
         let row:Option<(i64,String,String,String)>=db.query_row("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.urgent')=1 AND json_extract(payload,'$.attempted_at_ms') IS NULL) ELSE 1 END ORDER BY CASE WHEN json_valid(payload) AND json_extract(payload,'$.state')='pending' THEN 1 ELSE 0 END,sequence LIMIT 1",params![room,agent],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
         row.map(|(seq, source, id, payload)| decode_inbox(seq, room, agent, &source, &id, &payload))
             .transpose()
+    }
+    /// Pending inbox rows, rather than task existence, own periodic delivery retries.
+    pub(crate) fn agent_pending_inbox_recipients(
+        &self,
+    ) -> Result<Vec<(String, String)>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.pending_recipients")?;
+        let mut q = db.prepare("SELECT DISTINCT room_id,agent_id FROM agent_inbox WHERE json_valid(payload) AND json_extract(payload,'$.state')='pending' ORDER BY room_id,agent_id").map_err(sql)?;
+        let rows = q
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(sql)?;
+        rows.collect::<Result<_, _>>().map_err(sql)
     }
     pub(crate) fn agent_event_for_prompt(
         &self,
@@ -420,6 +432,13 @@ fn save_event(tx: &Transaction<'_>, e: &InboxEvent) -> Result<(), DaemonError> {
         params![sql_integer(e.sequence)?, encode(e)?],
     )
     .map_err(sql)?;
+    if !matches!(e.state.as_str(), "pending" | "submitting") {
+        tx.execute(
+            "DELETE FROM agent_inbox_refusals WHERE sequence=?1",
+            [sql_integer(e.sequence)?],
+        )
+        .map_err(sql)?;
+    }
     Ok(())
 }
 fn decode_inbox(
@@ -595,6 +614,7 @@ pub(crate) fn finish_provider_event_submit(
         agent: finished.agent_id.clone(),
         sequence: event.sequence,
         state: state.into(),
+        now: crate::session::unix_epoch_ms(),
     })? {
         Outcome::Event(settled) => Ok(Some(EventSubmitReceipt {
             steered,
