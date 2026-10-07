@@ -688,6 +688,7 @@ impl KernelRuntimeState {
                 )
                 .await?;
             authorize()?;
+            self.owned.admit_agent_task(&prepared)?;
             if let Some(mut submission) =
                 owned.submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
             {

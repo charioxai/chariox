@@ -336,12 +336,14 @@ impl KernelRuntimeState {
                     started_next_prompt: false,
                 });
             }
+            let task_settlement = owned.settle_agent_task(session_id, &agent_id, &active_prompt, provider_run_id, true)?;
             let cancellation = owned.finalize_local_prompt_cancellation_with_queued_advance(
                 session_id,
                 &agent_id,
                 Some(provider_run_id),
             )?;
             owned.workflow_cancel_prompt(session_id, &cancellation.cancellation.prompt)?;
+            Box::pin(self.finish_agent_task_settlement(task_settlement, &active_prompt)).await?;
             if cancellation.released_claim {
                 self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
             }
@@ -395,6 +397,7 @@ impl KernelRuntimeState {
         // complete (for example, when a managed provider socket is replaced during recovery).
         // Keep this fact so the common completion path can create a replacement run for queued
         // work instead of leaving the queue parked behind the ended run.
+        let task_settlement = owned.settle_agent_task(session_id, &agent_id, &active_prompt, provider_run_id, false)?;
         let provider_run_was_running =
             provider_run.state() == crate::provider::ProviderRunState::Running;
         let next_queued_prompt_candidate = if provider_run_was_running {
@@ -598,6 +601,7 @@ impl KernelRuntimeState {
             };
             (completion, None)
         };
+        Box::pin(self.finish_agent_task_settlement(task_settlement, &active_prompt)).await?;
         self.observe_git_after_prompt_completion(provider_run_id, &completion.completion.completed)
             .await;
         crate::logging::debug_with_fields(
