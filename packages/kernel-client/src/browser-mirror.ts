@@ -334,7 +334,7 @@ export async function attachBrowserMirror(transport:MirrorTransport,container:HT
   const request=async(command:unknown):Promise<any>=>{const response=await transport.request({KernelBrowser:{command}}) as {KernelBrowser?:{result?:unknown}};if(!response.KernelBrowser?.result)throw Error('MP-08: invalid mirror response');return response.KernelBrowser.result}
   const subscribed=await request({op:'mirror_subscribe',...binding});const subscription_id=subscribed.subscription_id as string
   let sequence=0,document_id='',closed=false,busy=false
-  const input=(action:KernelBrowserMirrorAction,epoch?:{sequence:number;document_id:string}):Promise<unknown>=>{if(closed||!document_id)throw Error('MP-08: mirror has no observed document');return request({op:'mirror_input',...binding,document_id:epoch?.document_id??document_id,subscription_id,sequence:epoch?.sequence??sequence,action})}
+  const input=(action:KernelBrowserMirrorAction,epoch?:{sequence:number;document_id:string}):Promise<unknown>=>{if(closed||!(epoch?.document_id??document_id))throw Error('MP-08: mirror has no observed document');return request({op:'mirror_input',...binding,document_id:epoch?.document_id??document_id,subscription_id,sequence:epoch?.sequence??sequence,action})}
   const renderer=new BrowserMirrorRenderer(container,input,onFailure)
   try{await renderer.ready()}catch(error){renderer.close();await request({op:'mirror_close',subscription_id,generation:binding.generation}).catch(()=>{});throw error}
   return {renderer,input,

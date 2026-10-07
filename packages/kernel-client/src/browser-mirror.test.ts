@@ -106,3 +106,17 @@ test('MP-08/MP-11: keys following native focus progress use the guarded native i
  event('click',{});event('keydown',{key:'ArrowRight'});await renderer.inputChain;
  assert.deepEqual(actions.slice(-2),[{kind:'click',node_id:'n1'},{kind:'key',key:'ArrowRight'}],'explicit pointer progress clears native keyboard mode');
 });
+
+test('MD-454: visible initial paint forwards its exact renderer epoch before next settles',async t=>{
+ const frame={setAttribute(){},style:{},addEventListener(){},remove(){}};
+ const container={ownerDocument:{createElement(){return frame}},append(){}} as unknown as HTMLElement;
+ t.mock.method(BrowserMirrorRenderer.prototype,'ready',async()=>{});
+ t.mock.method(BrowserMirrorRenderer.prototype,'close',()=>{});
+ const sent:any[]=[];
+ const attachment=await attachBrowserMirror({protocolVersion:454,request:async r=>{sent.push(r);return {KernelBrowser:{result:{subscription_id:'s'}}}}},container,{tab_id:'t',generation:1,device_scale_factor:1},()=>{});
+ try{
+  await assert.rejects(async()=>attachment.input({kind:'click',node_id:'n1'}),/no observed document/);
+  await Reflect.get(attachment.renderer,'input')({kind:'click',node_id:'n1'},{sequence:1,document_id:'d'});
+  assert.deepEqual(sent.at(-1).KernelBrowser.command,{op:'mirror_input',tab_id:'t',generation:1,device_scale_factor:1,document_id:'d',subscription_id:'s',sequence:1,action:{kind:'click',node_id:'n1'}});
+ }finally{await attachment.close()}
+});
