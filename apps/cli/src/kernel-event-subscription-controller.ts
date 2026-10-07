@@ -46,52 +46,72 @@ export function createKernelEventSubscriptionController(
     attachmentId,
   })
 
-  return {
-    async sync() {
-      if (!options.supportsKernelEventStream()) {
+  // MP-08: overlapping syncs must not race two subscribes for one stream;
+  // a sync requested while one runs re-evaluates once afterwards.
+  let running: Promise<void> | null = null
+  let rerun = false
+  const sync = (): Promise<void> => {
+    if (running) {
+      rerun = true
+      return running
+    }
+    running = (async () => {
+      do {
+        rerun = false
+        await syncOnce()
+      } while (rerun)
+    })().finally(() => { running = null })
+    return running
+  }
+
+  const syncOnce = async (): Promise<void> => {
+    if (!options.supportsKernelEventStream()) {
+      return
+    }
+
+    const attachment = options.getAttachment()
+    const nextSessionId = attachment ? options.getSessionId() : null
+    const nextAttachmentId = attachment?.id ?? null
+    options.onEvaluate({
+      ...state(),
+      nextSessionId,
+      nextAttachmentId,
+      attached: Boolean(attachment),
+    })
+
+    if (!attachment || !nextSessionId) {
+      if (scope === "waiting-room") {
         return
       }
-
-      const attachment = options.getAttachment()
-      const nextSessionId = attachment ? options.getSessionId() : null
-      const nextAttachmentId = attachment?.id ?? null
-      options.onEvaluate({
-        ...state(),
-        nextSessionId,
-        nextAttachmentId,
-        attached: Boolean(attachment),
-      })
-
-      if (!attachment || !nextSessionId) {
-        if (scope === "waiting-room") {
-          return
-        }
-        try {
-          await options.subscribeToWaitingRoomInventory()
-          scope = "waiting-room"
-          attachmentId = null
-          sessionId = null
-          options.onWaitingRoomSubscribed()
-        } catch (error) {
-          options.onWaitingRoomSubscriptionFailed(error)
-        }
-        return
-      }
-
-      if (scope === "session" && attachmentId === attachment.id && sessionId === nextSessionId) {
-        return
-      }
-
       try {
-        await options.subscribeToKernelEvents(nextSessionId, attachment.id)
-        scope = "session"
-        attachmentId = attachment.id
-        sessionId = nextSessionId
-        options.onSessionSubscribed(nextSessionId, attachment.id)
+        await options.subscribeToWaitingRoomInventory()
+        scope = "waiting-room"
+        attachmentId = null
+        sessionId = null
+        options.onWaitingRoomSubscribed()
       } catch (error) {
-        options.onSessionSubscriptionFailed(nextSessionId, attachment.id, error)
+        options.onWaitingRoomSubscriptionFailed(error)
       }
-    },
+      return
+    }
+
+    if (scope === "session" && attachmentId === attachment.id && sessionId === nextSessionId) {
+      return
+    }
+
+    try {
+      await options.subscribeToKernelEvents(nextSessionId, attachment.id)
+      scope = "session"
+      attachmentId = attachment.id
+      sessionId = nextSessionId
+      options.onSessionSubscribed(nextSessionId, attachment.id)
+    } catch (error) {
+      options.onSessionSubscriptionFailed(nextSessionId, attachment.id, error)
+    }
+  }
+
+  return {
+    sync,
     reset() {
       scope = null
       attachmentId = null

@@ -153,3 +153,34 @@ test("sync is idle when kernel event streams are unavailable", async () => {
     attachmentId: null,
   })
 })
+
+test("MP-08 overlapping syncs share one waiting-room subscription", async () => {
+  let waitingRoomSubscriptions = 0
+  const releases: (() => void)[] = []
+  const controller = createKernelEventSubscriptionController({
+    supportsKernelEventStream: () => true,
+    getAttachment: () => null,
+    getSessionId: () => "session-1",
+    subscribeToWaitingRoomInventory: () => {
+      waitingRoomSubscriptions += 1
+      return new Promise<void>((resolve) => { releases.push(resolve) })
+    },
+    subscribeToKernelEvents: async () => {
+      throw new Error("unexpected session subscription")
+    },
+    onEvaluate: () => {},
+    onWaitingRoomSubscribed: () => {},
+    onSessionSubscribed: () => {},
+    onWaitingRoomSubscriptionFailed: () => {},
+    onSessionSubscriptionFailed: () => {},
+  })
+
+  const first = controller.sync()
+  const second = controller.sync()
+  await new Promise((resolve) => setImmediate(resolve))
+  for (const release of releases) release()
+  await Promise.all([first, second])
+
+  assert.equal(waitingRoomSubscriptions, 1)
+  assert.equal(controller.state().scope, "waiting-room")
+})

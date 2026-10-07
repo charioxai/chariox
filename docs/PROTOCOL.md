@@ -520,10 +520,12 @@ can instead use a dedicated loopback carrier that has no authority of its own:
    admitting relay identity, so command ids, replay cursors and authorization are
    identical on both carriers.
 5. MP-08/MP-11: admission starts a lease ending at the grant's expiry, at
-   most 30 seconds. Every 10 seconds the web client forces an authenticated
-   Cloud bootstrap and uses its separate 30-second `localLeaseRelayToken`
-   over the encrypted relay carrier to request `local_browser_renew` with the
-   redeemed grant and a strictly increasing one-use `sequence` starting at 1.
+   most 30 seconds. Every 10 seconds per kernel the web client obtains one
+   30-second relay token from Cloud's lightweight
+   `POST /browser/relay-kernel/local-lease` (it also mints grants with it) and,
+   over one encrypted relay connection, requests `local_browser_renew` for each
+   of that kernel's redeemed grants with a strictly increasing one-use
+   `sequence` starting at 1, whatever the number of lanes and clients.
    Every attempt spends its sequence; the kernel accepts any sequence at or
    above the next expected one and returns `LocalBrowserLeaseRenewed` with
    `expires_at_ms` and `next_sequence` (the accepted sequence plus one), so a
