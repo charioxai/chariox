@@ -1,11 +1,3 @@
-// Existing kernel profile and placement contracts; no additional prompt path.
-export function placementRequest(sessionId, profile, { kernelRef = null, sliceRef = null }) {
-  if (kernelRef && sliceRef) throw new Error("select one placement")
-  return { SpawnAgent: { session_id: sessionId, alias: "ctxswitch-coverage", provider: profile.provider,
-    model: profile.model, effort: profile.effort, account_profile: profile.accountProfile,
-    execution_mode: "build", permission_level: "yolo", worktree_id: null,
-    kernel_ref: kernelRef, slice_ref: sliceRef, worktree_placement: null } }
-}
 export function evidenceName(from, to, stamp) {
   const safe = value => String(value).replace(/[^a-zA-Z0-9._-]+/g, "-")
   return `${safe(from.provider)}-${safe(from.model)}-to-${safe(to.provider)}-${safe(to.model)}-${stamp}.json`
@@ -18,10 +10,10 @@ export function scoreFacts(text, facts) {
 export function scoreSummary(recalled) {
   return { correct: Object.values(recalled).filter(Boolean).length, total: Object.keys(recalled).length }
 }
-export function roundTripMatrix(profiles) {
-  return Object.entries(profiles).flatMap(([source, from]) => Object.entries(profiles).map(([target, profile]) => ({
-    id: `${source}-to-${target}-to-${source}`, from: from.primary, to: source === target ? profile.alternate : profile.primary,
-  })))
+export function assertToolProbe(result, expected, label) {
+  if (result.lifecycle !== "completed" || !result.tool_rows?.length || !result.text.includes(expected)) {
+    throw new Error(`${label} needs a completed tool call and verified output ${expected}`)
+  }
 }
 
 export function agentSnapshot(agent) {
