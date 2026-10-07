@@ -53,12 +53,15 @@ for case in campaign['cases']:
  row['latency']=data.get('latency');row['exact_settled']=data.get('settled',{}).get('fidelity',{}).get('lossless',False)
  row['functional_pass']=case.get('code')==0 and not case.get('signal') and not case.get('remaining_namespace_pids') and data['status']=='PASS_LOCAL_COMPONENT'
  row['latency_target_p95_ms']=data['network']['rtt']+50
- row['latency_pass']=bool(row['latency']) and row['latency']['p95_ms']<=row['latency_target_p95_ms']
+ row['type_latency']=data.get('type_latency')
+ row['latency_pass']=bool(row['latency']) and bool(row['type_latency']) and max(row['latency']['p95_ms'],row['type_latency']['p95_ms'])<=row['latency_target_p95_ms']
  row['click_stages']={k:{n:v[n] for n in ('n','p50_ms','p95_ms')} for k,v in data.get('stage_breakdown',{}).get('stages',{}).items()}
  motion=data.get('motion');row['motion']=None
  if motion:
   row['motion']={k:motion.get(k) for k in ('effective_fps','event_mbps','application_mbps','settle_ms','settle_present_ms','wheel_stats')}
-  row['motion'].update(exact=motion['settled_fidelity']['lossless'],fps_pass=motion['effective_fps']>=30,settle_pass=bool(data['network']['rtt']) or motion.get('settle_present_ms',motion['settle_ms'])<=500,
+  target_fps=(50 if data['dpr']==2 else 59) if row['workload'] in ['scroll60','wheel60'] else 30
+  settle_target=500 if data['dpr']==2 else 300
+  row['motion'].update(exact=motion['settled_fidelity']['lossless'],fps_target=target_fps,fps_pass=motion['effective_fps']>=target_fps,settle_target_ms=settle_target,settle_pass=motion.get('settle_present_ms',motion.get('settle_ms',float('inf')))<settle_target,
    live_psnr_db=[p['psnr_db'] for p in motion.get('live_pairs',[])])
   spans={}
   if motion['samples']:
@@ -69,6 +72,11 @@ for case in campaign['cases']:
   for k,v in spans.items():
    v.sort();row['motion_stages'][k]={'n':len(v),'p50_ms':v[(len(v)-1)//2],'p95_ms':v[int((len(v)-1)*.95)]}
  row['fixture_statistics']=data.get('fixture_statistics',[])
+ # MP-08/MP-10: the laptop receipt must expose the phase25 CPU/type/refinement
+ # gates. Functional success alone cannot produce a performance PASS.
+ measured_cpu=(motion or {}).get('cpu',data.get('type_cpu',{})).get('cores',{}).get('pipeline')
+ row['pipeline_cores']=measured_cpu;row['pipeline_core_target']=1.2 if data['dpr']==2 else .6
+ row['cpu_pass']=measured_cpu is not None and measured_cpu<=row['pipeline_core_target']
  row['cpu_percent']=data.get('observed_owned_cpu_percent')
  row['min_mem_available_gib']=min(s['mem_available_bytes'] for s in data['samples'])/1024**3
  row['min_disk_free_gib']=min(s['disk_free_bytes'] for s in data['samples'])/1024**3
@@ -77,7 +85,7 @@ report['functional_cases_passed']=sum(r.get('functional_pass',False) for r in re
 report['latency_cases_passed']=sum(r.get('latency_pass',False) for r in report['cases'])
 report['motion_cases_passed']=sum(bool(r.get('motion') and r['motion']['fps_pass']) for r in report['cases'])
 functional=report['functional_cases_passed']==len(report['cases']) and campaign.get('exit_code')==0
-performance=functional and all(r['latency_pass'] and (not r['motion'] or r['motion']['fps_pass'] and r['motion']['settle_pass']) for r in report['cases'])
+performance=functional and all(r['latency_pass'] and r['cpu_pass'] and (not r['motion'] or r['motion']['fps_pass'] and r['motion']['settle_pass']) for r in report['cases'])
 report['status']='PASS_PERFORMANCE_COMPONENT' if performance else 'RED_PERFORMANCE' if functional else 'RED_FUNCTIONAL'
 output.mkdir(parents=True,exist_ok=True);(output/'report.json').write_text(json.dumps(report,indent=2)+'\n')
 print(json.dumps({k:report[k] for k in ('item','status','execution_source','functional_cases_passed','latency_cases_passed','motion_cases_passed')}))

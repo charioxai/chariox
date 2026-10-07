@@ -33,8 +33,11 @@ pub(super) struct Exact {
     pub encoder: String,
     pub serial: u64,
     pub regions: Vec<Region>,
-    pub limit: usize,
     pub patch: bool,
+    #[serde(default)]
+    pub adjacent: bool,
+    #[serde(default)]
+    pub repair_only: bool,
 }
 struct Session {
     codec: Codec,
@@ -251,7 +254,11 @@ impl Sessions {
         if count == -2 {
             session.dirty = 255;
             session.exact = false;
-            return Ok(json!({"dropped":true,"backend":"native-x264","converter":"libyuv"}));
+            // MP-10: a protected packet rejection must retain the actual
+            // hardware init outcome even when no video bytes are admitted.
+            return Ok(
+                json!({"dropped":true,"backend":if unsafe {ffi::cx_codec_backend(session.codec.0)}==1 {"native-vaapi"}else{"native-x264"},"hardware_fallback":unsafe {ffi::cx_codec_backend(session.codec.0)}==2,"hardware_diagnostic":unsafe {std::ffi::CStr::from_ptr(ffi::cx_codec_diagnostic(session.codec.0))}.to_string_lossy(),"converter":"libyuv"}),
+            );
         }
         if !(0..=8).contains(&count) {
             return Err("MP-11: native encode unavailable".into());
@@ -303,25 +310,29 @@ impl Sessions {
         };
         spans.push(json!(["codec_packetize", encoded_at, epoch()]));
         Ok(
-            json!({"stripes":headers,"packet":descriptor,"backend":if unsafe {ffi::cx_codec_backend(session.codec.0)}==1 {"native-vaapi"}else{"native-x264"},"hardware_fallback":unsafe {ffi::cx_codec_backend(session.codec.0)}==2,"converter":"libyuv","workers":1,"timings":spans,"whole":!q.stripes,"revision":session.revision}),
+            json!({"stripes":headers,"packet":descriptor,"backend":if unsafe {ffi::cx_codec_backend(session.codec.0)}==1 {"native-vaapi"}else{"native-x264"},"hardware_fallback":unsafe {ffi::cx_codec_backend(session.codec.0)}==2,"hardware_diagnostic":unsafe {std::ffi::CStr::from_ptr(ffi::cx_codec_diagnostic(session.codec.0))}.to_string_lossy(),"converter":"libyuv","workers":1,"timings":spans,"whole":!q.stripes,"revision":session.revision}),
         )
     }
     pub fn exact(&mut self, q: Exact, slot: &Slot) -> Result<ExactPlan, String> {
         let (w, h) = (self.w, self.h);
         let started = epoch();
         session_name(&q.encoder)?;
-        if q.limit < 24000 || q.limit > 192000 {
-            return Err("MP-11: native repair budget".into());
-        }
         let regions = raster::regions(&q.regions, w, h)?;
         let pixels = raster::masked(slot.bytes(), w, h, &regions);
         let mut rectangles = Vec::new();
         if q.patch {
-            if let Some(rects) = &slot.tiles {
+            if let Some(rects) = if q.adjacent {
+                &slot.adjacent
+            } else {
+                &slot.tiles
+            } {
                 for rect in rects {
                     rectangles.extend(clips(&pixels, w, h, *rect, 32, 255, None));
                 }
             } else {
+                if q.adjacent {
+                    return Err("MP-11: adjacent patch unavailable".into());
+                }
                 if (slot.bounds[2] - slot.bounds[0]) * (slot.bounds[3] - slot.bounds[1]) > 32768 {
                     return Err("MP-11: native patch bound".into());
                 }
@@ -345,6 +356,7 @@ impl Sessions {
             w,
             h,
             patch: q.patch,
+            repair_only: q.repair_only,
             revision,
             started,
         })

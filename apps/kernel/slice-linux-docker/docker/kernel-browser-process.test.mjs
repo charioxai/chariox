@@ -24,3 +24,11 @@ test('MP-08/MP-10 source browser keeps normal animation cadence rather than outr
  const {launchArguments}=await import('./kernel-browser-process.mjs');
  assert(!launchArguments('/private',false,true).includes('--disable-frame-rate-limit'));
 });
+
+// MP-08/MP-10: LCD stripes are tied to a physical panel, whereas these
+// captured pixels are shown on arbitrary remote panels at either DPR.
+test('MP-08/MP-10 remote display requests grayscale text antialiasing while ordinary browser launch stays native',async()=>{
+ const {launchArguments}=await import('./kernel-browser-process.mjs');
+ assert(launchArguments('/private',false,true).includes('--disable-lcd-text'));
+ assert(!launchArguments('/private',false,false).includes('--disable-lcd-text'));
+});

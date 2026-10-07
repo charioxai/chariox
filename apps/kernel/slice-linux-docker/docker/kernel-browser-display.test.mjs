@@ -2,12 +2,31 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { DisplayStream, PortableEncoder, safeChildPid, dirtyTiles } from './kernel-browser-display.mjs';
-import { encodePng, decodePng, maskPng } from './kernel-browser-pixels.mjs';
+import { encodePng, decodePng, maskPng, displayMaskRegions } from './kernel-browser-pixels.mjs';
 function fixture(value = 255) {
   const pixels = Buffer.alloc(256 * 256 * 4, 255); pixels[0] = value;
   return { generation: 1, data_base64: encodePng(256, 256, pixels) };
 }
 const binding = { subscription_id: 's', tab_id: 't', device_scale_factor: 2, bitrate: 2_000_000, codec: 'vp09.00.10.08', dependencies:true };
+test('MP-08/MP-10/MP-11 contiguous small input patches a lossy canvas without certifying the whole viewport',async()=>{
+ const stream=new DisplayStream(binding,{now:()=>0,wait:async()=>{},encoder:{close:async()=>{}}});
+ const raw={nativeExact:async()=>{},format:'bgr0',width:1280,height:800,length:1280*800*4,pixels:Buffer.alloc(1280*800*4),damage:[0,0,1280,800],base_serial:1,serial:11,adjacent_damage_tiles:[[0,0,32,32]]};
+ stream.sequence=7;stream.document_id='d';stream.previous={signature:'lossy'};stream.compositorSerial=10;stream.compositorMasks='[]';
+ try{
+  assert.equal(stream.canPatchNative({serial:11,raw}),true,'a delivered contiguous lossy source supports opaque small damage');
+  assert.equal(stream.canPatchNative({serial:12,raw:{...raw,serial:12}}),false,'dropped capture cannot authorize adjacent reuse');
+  assert.equal(stream.canPatchNative({serial:11,raw:{...raw,adjacent_damage_tiles:[[0,0,1280,800]]}}),false,'dense motion still uses video');
+  stream.compositorMasks='changed';assert.equal(stream.canPatchNative({serial:11,raw}),false,'changed protection cannot reuse the canvas');stream.compositorMasks='[]';
+  const frame=await stream.frame({generation:1,width:1280,height:800,data_base64:'new',native_tiles:[{x:0,y:0,width:1,height:1,data_base64:encodePng(1,1,Buffer.from([1,2,3,255]))}]},'d',7);
+  assert.equal(frame.kind,'tiles');assert.equal(stream.exact,false,'an opaque input echo does not make untouched lossy pixels exact');
+ }finally{await stream.close()}
+});
+test('MP-08/MP-10/MP-11 tile-only refinement never treats its source serial as a full PNG',async()=>{
+ const stream=new DisplayStream(binding,{now:()=>0,wait:async()=>{},encoder:{close:async()=>{}}});
+ stream.sequence=1;stream.document_id='d';stream.previous={signature:'motion'};
+ const source={generation:1,width:1280,height:800,native_exact:true,native_repair:true,data_base64:'serial',settled_verified:true,refinement_serial:3,repair_tiles:[{x:0,y:0,width:1,height:1,data_base64:encodePng(1,1,Buffer.from([1,2,3,255]))}]};
+ try{assert.equal((await stream.frame(source,'d',1)).kind,'tiles');assert.equal(stream.exact,true);assert.equal(await stream.frame(source,'other',2),null,'a tile-only repair cannot bootstrap a different document');}finally{await stream.close()}
+});
 test('MD-DISPLAY unsafe process IDs rejected without signals', () => {
   for (const pid of [undefined, NaN, 0, 1, -1, -50, 2.5]) assert.throws(() => safeChildPid({ pid }));
   assert.equal(safeChildPid({ pid: 42 }), 42);
@@ -324,4 +343,42 @@ test('MP-08/MP-10/MP-11 private encoder snapshot is stable across source mutatio
   pixels.fill(0);const recover=await encoder.encodeStripes(raw,8000000,true);assert(recover.stripes.every(row=>row.key));encoder.discard(recover);
   await encoder.close();assert.deepEqual(await readdir(root),[],'owned handoff and packet artifacts must settle');
  }finally{await encoder.close();if(previous===undefined)delete process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT;else process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT=previous;await rm(root,{recursive:true,force:true})}
+});
+
+test('MP-08 Retina input preserves a bounded fourfold physical sparse budget',async()=>{
+ const stream=new DisplayStream({subscription_id:'s',tab_id:'t',bitrate:8000000,device_scale_factor:2,codec:'avc1.420033'},{encoder:{close:async()=>{}},now:()=>0,wait:async()=>{}});
+ try{
+  stream.previous={};stream.exact=false;stream.compositorSerial=10;stream.compositorMasks='[]';
+  const tiles=Array.from({length:96},(_,n)=>{const x=n%32*32,y=Math.floor(n/32)*32;return [x,y,x+32,y+32]});
+  const raw={nativeExact:async()=>{},format:'bgr0',width:2560,height:1600,length:2560*1600*4,pixels:Buffer.alloc(2560*1600*4),damage:[0,0,2560,1600],serial:11,base_serial:1,adjacent_damage_tiles:tiles,[displayMaskRegions]:[]};
+  assert.equal(stream.canPatchNative({serial:11,raw}),true);
+  assert.equal(stream.canPatchNative({serial:12,raw:{...raw,serial:12}}),false);
+  assert.equal(stream.canPatchNative({serial:11,raw:{...raw,adjacent_damage_tiles:Array(129).fill([0,0,32,32])}}),false);
+  assert.equal(stream.canPatchNative({serial:11,raw:{...raw,width:1280,height:800,length:1280*800*4,pixels:Buffer.alloc(1280*800*4)}}),false);
+ }finally{await stream.close();}
+});
+
+test('MP-11 protected codec rejection bootstraps a bounded opaque base before exact repairs',async()=>{
+ const width=600,height=600,pixels=randomBytes(width*height*4);
+ for(let n=3;n<pixels.length;n+=4)pixels[n]=255;
+ const source={generation:1,force_lossless:true,data_base64:encodePng(width,height,pixels),repair_tiles:[]};
+ let retired=0,refinements=0;
+ const stream=new DisplayStream({...binding,device_scale_factor:1,css_width:width,css_height:height},{now:()=>0,wait:async()=>{},encoder:{nativeSession:'fixture',nativeRevision:17,nativeDeliveredRevision:17,nativeRetire:()=>retired++,close:async()=>{}}});
+ stream.refiner={invalidate:()=>refinements++,close:async()=>{}};
+ try{
+  const first=await stream.frame(source,'d',0);
+  assert.equal(first.kind,'png');assert.ok(JSON.stringify(first).length<1024*1024);
+  const restored=decodePng(first.data_base64).pixels;
+  const black=Buffer.alloc(restored.length);for(let n=3;n<black.length;n+=4)black[n]=255;
+  assert.deepEqual(restored,black,'bootstrap exposes only opaque black');
+  assert.equal(restored[0],0);assert.equal(restored[3],255);assert.equal(stream.exact,false);
+  assert.ok(stream.repair?.length);assert.equal(retired,1,'bootstrap retires video certificates');assert.ok(refinements>0,'pending repairs of the replaced canvas retire');assert.equal(stream.encoder.nativeRevision,undefined);
+  for(let n=0;!stream.exact&&n<100;n++){
+   const frame=await stream.frame(source,'d',stream.sequence);
+   assert.equal(frame.kind,'tiles');assert.ok(JSON.stringify(frame).length<1024*1024);
+   for(const tile of frame.tiles){const decoded=decodePng(tile.data_base64);for(let y=0;y<tile.height;y++)decoded.pixels.copy(restored,((tile.y+y)*width+tile.x)*4,y*tile.width*4,(y+1)*tile.width*4);}
+  }
+  assert.equal(stream.exact,true);assert.deepEqual(restored,pixels);
+  stream.invalidate();assert.equal((await stream.frame(source,'other',stream.sequence)).kind,'png');assert.equal(stream.exact,false);
+ }finally{await stream.close()}
 });

@@ -130,7 +130,7 @@ export function maskNativeRaster(raw, regions, previousRegions, previous) {
     if(masks.length>50000||masks.some(r=>![r.x,r.y,r.width,r.height].every(Number.isFinite)||r.width<0||r.height<0))throw Error('MP-11: native mask geometry');
     Object.freeze(masks);
     let snapshot;
-    const result={...raw,[displayMaskRegions]:masks,damage:stable?raw.damage:[0,0,width,height],damage_tiles:stable?raw.damage_tiles:null,signature:`masked-${raw.serial}`,
+    const result={...raw,[displayMaskRegions]:masks,damage:stable?raw.damage:[0,0,width,height],damage_tiles:stable?raw.damage_tiles:null,adjacent_damage_tiles:stable?raw.adjacent_damage_tiles:null,signature:`masked-${raw.serial}`,
       retain:()=>raw.retain(),release:()=>raw.release()};
     delete result.shared;delete result.copyPixels;
     Object.defineProperties(result,{

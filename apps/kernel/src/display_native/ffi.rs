@@ -43,12 +43,15 @@ extern "C" {
         height: i32,
         bounds: *mut i32,
         tiles: *mut i32,
+        motion_height: *mut i32,
     ) -> i32;
 
     pub(super) fn cx_capture_open(owner: libc::c_ulong, width: i32, height: i32) -> *mut c_void;
     pub(super) fn cx_capture_close(c: *mut c_void);
     pub(super) fn cx_capture_admit(c: *mut c_void, pixels: *const u8);
     pub(super) fn cx_capture_tiles(c: *mut c_void, out: *mut i32) -> i32;
+    pub(super) fn cx_capture_adjacent_tiles(c: *mut c_void, out: *mut i32) -> i32;
+    pub(super) fn cx_capture_motion_height(c: *mut c_void) -> i32;
     pub(super) fn cx_capture_cpu(c: *mut c_void, out: *mut f64);
     pub(super) fn cx_capture_fd(c: *mut c_void) -> i32;
     pub(super) fn cx_capture_damage(c: *mut c_void) -> i32;
@@ -70,6 +73,7 @@ extern "C" {
         h: i32,
         bounds: *mut i32,
     );
+    pub(super) fn cx_codec_diagnostic(c: *mut c_void) -> *const std::ffi::c_char;
     pub(super) fn cx_codec_backend(c: *mut c_void) -> i32;
     pub(super) fn cx_codec_cpu(c: *mut c_void, out: *mut f64);
     pub(super) fn cx_codec_close(c: *mut c_void);

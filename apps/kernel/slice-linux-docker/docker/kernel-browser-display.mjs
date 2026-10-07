@@ -31,6 +31,7 @@ export class PortableEncoder {
       const reply=await raw.nativeEncode({encoder:this.nativeSession,bitrate,reset,...(!stripes?{stripes:false}:{}),regions:raw[displayMaskRegions]??[]});
       if(!['native-x264','native-vaapi'].includes(reply.backend)||!Array.isArray(reply.stripes)&&reply.dropped!==true)throw Error('MP-11: native codec reply');
       this.backend=reply.backend==='native-vaapi'?'vaapi':'x264';this.hardwareFallback=reply.hardware_fallback===true;this.converter='libyuv';this.workers=1;
+      if(this.hardwareFallback&&typeof reply.hardware_diagnostic==='string'&&reply.hardware_diagnostic.length<=4096&&reply.hardware_diagnostic!==this.hardwareDiagnostic){this.hardwareDiagnostic=reply.hardware_diagnostic;this.timing?.hardware?.(reply.hardware_diagnostic);}
       if(reply.dropped)return {dropped:true};
       if(reply.stripes.length>8||reply.stripes.some(r=>Object.hasOwn(r,'data_base64')))throw Error('MP-11: native row headers');
       if(reply.packet){
@@ -173,8 +174,11 @@ export class DisplayStream {
     this.encoder.timing = timing;
   }
   canPatchNative(sample) {
-    return Boolean(this.previous) && !this.repair && (Number.isSafeInteger(sample.raw?.base_serial)?this.exact&&sample.raw.base_serial===this.compositorSerial:sample.serial===this.compositorSerial+1) &&
-      nativeDamageTiles(sample.raw, true) !== null;
+    if(!this.previous||this.repair)return false;
+    const raw=sample.raw;
+    if(raw?.nativeExact&&sample.serial===this.compositorSerial+1&&
+       this.compositorMasks===JSON.stringify(raw[displayMaskRegions]??[])&&nativeDamageTiles(raw,true,true)!==null)return true;
+    return (Number.isSafeInteger(raw?.base_serial)?this.exact&&raw.base_serial===this.compositorSerial:sample.serial===this.compositorSerial+1)&&nativeDamageTiles(raw,true)!==null;
   }
   acceptsCredit(after) { return Number.isSafeInteger(after) && after >= Math.max(0,this.sequence-8) && after <= this.sequence; }
   invalidate() { this.motionActive=false;this.compositorSerial=null;this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null; this.capture?.invalidate();this.refiner?.invalidate();this.producer?.invalidate(); }
@@ -190,6 +194,9 @@ export class DisplayStream {
     // Already-admitted 419 credits may lag the delivered sequence. Eight
     // frames is the hard recovery window; clients still validate every base.
     const bound = documentId === this.document_id && this.acceptsCredit(afterSequence);
+    // MP-11: tile-only native work belongs to an existing compositor base.
+    // Its serial is a scheduling hint and can never become a full PNG.
+    if(source.native_repair&&(!bound||!this.previous)){this.invalidate();return null;}
     if (source.native_tiles && !bound) throw Error('MD-DISPLAY: native patch base lost');
     const wasExact = this.exact;
     if (!bound) {
@@ -215,11 +222,14 @@ export class DisplayStream {
     // Half a second of negotiated frame budget, including outer base64. One
     // credit remains outstanding; narrow links reduce batch size/cadence.
     const patchLimit = exactPatchLimit(this.bitrate);
-    let payload, repair = null;
+    // MP-11: a safe codec fallback can exceed the wire PNG budget. Repair
+    // only an admitted base in credited tiles; never bootstrap from a patch.
+    const safeFallback = source.force_lossless && bound && this.previous;
+    let payload, repair = null, bootstrap = false;
     if (source.native_tiles) payload = {kind:'tiles', base_sequence:this.sequence, tiles:source.native_tiles};
-    else if (bound && (same || source.settled_verified) && (!this.exact || !this.previous?.pixels) && !source.motion) {
-      const exact = full();
-      if (JSON.stringify(exact).length <= patchLimit&&(!source.repair_tiles||JSON.stringify(source.repair_tiles).length+128>=JSON.stringify(exact).length)) payload = exact;
+    else if (bound && (same || source.settled_verified || safeFallback) && (!this.exact || !this.previous?.pixels || safeFallback) && !source.motion) {
+      const exact = source.native_repair?null:full();
+      if (exact&&JSON.stringify(exact).length <= patchLimit&&(!source.repair_tiles||JSON.stringify(source.repair_tiles).length+128>=JSON.stringify(exact).length)) payload = exact;
       else {
         // A verified capture may supersede the immutable RGB snapshot while
         // repair batches are still queued. Never mark its older tiles exact.
@@ -244,6 +254,21 @@ export class DisplayStream {
       if(!this.dependencies && typeof encoded!=='string' && !encoded.key)throw Error('MD-DISPLAY: unnegotiated dependent frame');
       payload = { kind:'video', codec:this.codec, ...(typeof encoded === 'string' ? {key:true,data_base64:encoded} : encoded.packet ? {key:encoded.key,native_packet:encoded.packet} : encoded) };
       }
+    }
+    // MP-11: a rejected first codec frame may have no compositor base and
+    // its protected PNG may exceed the wire bound. Admit an opaque black PNG
+    // first, then repair the SAME protected raster with ordinary tile credits.
+    // No lossy pixels or partial canvas can authorize this bootstrap.
+    if (payload.kind === 'png' && JSON.stringify(payload).length > 700_000) {
+      // Existing repair certificates belong to the replaced video canvas,
+      // not this new black base. Bootstrap must cover EVERY protected pixel.
+      const raster=current.pixels?current:await this.pixels.run('decode',{data:payload.data_base64,scale:this.device_scale_factor});
+      const remaining=await this.pixels.run('tiles',{previous:null,current:raster,all:true});
+      const black = Buffer.alloc(current.width*current.height*4);
+      for(let n=3;n<black.length;n+=4)black[n]=255;
+      payload={kind:'png',data_base64:encodePng(current.width,current.height,black)};
+      repair=remaining;
+      bootstrap=true;
     }
     this.timing('select_encode', at); at = timestamp();
     const packet = { ...payload, subscription_id: this.subscription_id, tab_id: this.tab_id,
@@ -277,6 +302,11 @@ export class DisplayStream {
     this.tokens = Math.max(urgent?-32768:0,this.tokens); this.refillAt = this.now();
     this.timing('pacing', at);
     if (!await validate()) { if(['video','stripes'].includes(payload.kind))this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}this.encoder.discard?.(source.encoded);return null; }
+    if(bootstrap){
+      this.producer?.retireUnsent();this.refiner?.invalidate();
+      this.encoder.nativeRetire?.(this.encoder.nativeSession);
+      this.encoder.nativeRevision=undefined;this.encoder.nativeDeliveredRevision=undefined;
+    }
     this.encoder.handedOff?.(source.encoded);
     this.document_id = documentId; this.previous = current; this.repair = repair?.length ? repair : null;this.repairSerial=source.refinement_serial;
     // A small exact patch can acknowledge input over a lossy video base. It

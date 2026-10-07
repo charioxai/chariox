@@ -1,5 +1,16 @@
 // MD-DISPLAY-02/04: stalled encode does not own input/credit; loss resets deltas.
 import test from 'node:test';import assert from 'node:assert/strict';import{MotionEncoder,CreditBudget}from'./kernel-browser-motion.mjs';
+test('MP-08/MP-10/MP-11 dense native motion reuses one full-height codec; switching to sparse rows forces independent recovery',async()=>{
+ let latest,offer;const calls=[];const source={subscribe:f=>{offer=f;return()=>{}},sample:()=>latest};
+ const encoder={async encode(raw,b,key){calls.push(['whole',key]);return{key,data_base64:'AA=='}},async encodeStripes(raw,b,reset){calls.push(['rows',reset]);return{stripes:[{row:0,key:reset===true,data_base64:'AA=='}]}}};
+ const m=new MotionEncoder(source,encoder,{stripes:true,codec:'avc1.420033',bitrate:8000000});
+ try{
+  for(const [serial,damage] of [[1,[0,0,1280,800]],[2,[0,0,1280,800]],[3,[0,0,32,32]]]){
+   latest={serial,raw:{width:1280,height:800,damage,nativeEncode(){}}};offer(latest);await m.active;m.take();
+  }
+  assert.deepEqual(calls,[['whole',true],['whole',false],['rows',true]]);
+ }finally{await m.close()}
+});
 test('MP-11 a rejected lossy mask emits only protected exact pixels and recovers with a key',async()=>{
  const {decodePng}=await import('./kernel-browser-pixels.mjs');
  let latest,offer;const calls=[];
@@ -14,7 +25,7 @@ test('MP-11 a rejected lossy mask emits only protected exact pixels and recovers
  }finally{await m.close()}
 });
 test('MP-11 oversized exact protection fallback fails closed without retaining a frame',async()=>{
- const latest={serial:1,data_base64:'A'.repeat(1024*1024+1)},source={subscribe:()=>()=>{},sample:()=>latest};
+ const latest={serial:1,data_base64:'A'.repeat(4*1024*1024+1)},source={subscribe:()=>()=>{},sample:()=>latest};
  const m=new MotionEncoder(source,{encode:async()=>({dropped:true})},{codec:'avc1.420033',bitrate:8000000});
  try{await m.active;assert.equal(m.frames.length,0);assert.throws(()=>m.take(),/motion encoder failed/)}finally{await m.close()}
 });
@@ -160,4 +171,14 @@ test('MP-08/MP-10/MP-11 motion readiness parks a credit until encoded pixels, pa
   f.m.shouldEncode=()=>false;const patch=f.m.waitReady(1000);f.offer(2);await patch;
   const closing=f.m.waitReady(1000);await f.m.close();await closing;assert.equal(f.m.readyWaiters.size,0);
  }finally{await f.m.close()}
+});
+
+test('MP-08 limited vertical native motion keeps row reuse; malformed hints take conservative whole video',async()=>{
+ let latest,offer;const calls=[],source={subscribe:f=>{offer=f;return()=>{}},sample:()=>latest};
+ const encoder={async encode(raw,b,key){calls.push(['whole',key]);return{key,data_base64:'AA=='}},async encodeStripes(raw,b,key){calls.push(['rows',key]);return{stripes:[{row:0,key:key===true,data_base64:'AA=='}]}}};
+ const motion=new MotionEncoder(source,encoder,{stripes:true,codec:'avc1.420033',bitrate:8000000});
+ try{
+  let serial=0;for(const height of [420,800,-1,801,undefined]){latest={serial:++serial,raw:{width:1280,height:800,damage:[0,0,1280,800],motion_height:height,nativeEncode(){}}};offer(latest);await motion.active;motion.take();}
+  assert.deepEqual(calls,[['rows',true],['whole',true],['whole',false],['whole',false],['whole',false]]);
+ }finally{await motion.close();}
 });

@@ -28,6 +28,11 @@ export function displayTiming(root) {
     if(process.env.CHARIOX_BROWSER_DISPLAY_TIMING!=='1')return;
     for(const [stage,start,end]of spans)timing(stage,start,end);
   };
+  // MP-10/MP-11: private fixed-label driver diagnostics, never frame transport.
+  timing.hardware = diagnostic => {
+    if(process.env.CHARIOX_BROWSER_DISPLAY_TIMING!=='1'||typeof diagnostic!=='string'||diagnostic.length>4096)return;
+    appendFileSync(path.join(root,'display-hardware.jsonl'),JSON.stringify({diagnostic})+'\n',{mode:0o600});
+  };
   timing.flush=flush;
   return timing;
 }

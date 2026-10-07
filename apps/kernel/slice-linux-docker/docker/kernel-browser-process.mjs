@@ -42,7 +42,8 @@ export function launchArguments(profile, headless, display = false) {
     "--no-first-run", "--no-default-browser-check",
     "--disable-session-crashed-bubble", "--disable-background-networking",
     `--window-size=${geometry.width},${geometry.height+(display?87:0)}`, ...(headless ? ["--headless=new"] : []),
-    ...(display ? [`--force-device-scale-factor=${geometry.dpr}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows"] : []), "about:blank",
+    // MP-08/MP-10: remote panels have no shared physical LCD subpixel order.
+    ...(display ? ["--disable-lcd-text", `--force-device-scale-factor=${geometry.dpr}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows"] : []), "about:blank",
   ];
 }
 

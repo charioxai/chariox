@@ -113,7 +113,21 @@ impl OwnedProcessGroup {
                     #[cfg(target_os = "linux")]
                     seen: BTreeSet::new(),
                 };
+                #[cfg(target_os = "linux")]
+                let mut allocated = None;
                 while !stop.load(Ordering::Acquire) {
+                    // MP-08/MP-11: a new descendant needs a newly allocated PID.
+                    // Skip the full /proc walk only when none was allocated
+                    // since the value read before the previous walk.
+                    #[cfg(target_os = "linux")]
+                    {
+                        let current = last_allocated_pid();
+                        if current.is_none() || current != allocated {
+                            observer.refresh();
+                            allocated = current;
+                        }
+                    }
+                    #[cfg(not(target_os = "linux"))]
                     observer.refresh();
                     std::thread::park_timeout(Duration::from_millis(
                         if cfg!(target_os = "linux") { 25 } else { 250 },
@@ -157,6 +171,15 @@ impl Drop for OwnedProcessGroup {
     fn drop(&mut self) {
         self.stop_tracking()
     }
+}
+
+#[cfg(target_os = "linux")]
+fn last_allocated_pid() -> Option<String> {
+    std::fs::read_to_string("/proc/loadavg")
+        .ok()?
+        .split_whitespace()
+        .nth(4)
+        .map(str::to_owned)
 }
 
 #[cfg(target_os = "linux")]
@@ -343,6 +366,13 @@ mod tests {
         assert_eq!(process.group, 42);
         assert_eq!(process.started, "12345");
         assert!(linux_identity("42 (broken) S 2").is_none());
+        let before = last_allocated_pid().unwrap();
+        std::process::Command::new("true").status().unwrap();
+        assert_ne!(
+            last_allocated_pid().unwrap(),
+            before,
+            "a new process allocates a PID"
+        );
         for root in [0, 1, u32::MAX] {
             assert!(snapshot(root).is_none());
         }

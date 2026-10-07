@@ -66,13 +66,13 @@ test('MP-08/MP-10/MP-11 an unchanged admitted native credit performs no CDP obse
   const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
   const sample={serial:1,document_id:tab.document_id,tab_id:tab.tab_id,raw:{},motion:true};
   const source={attested:true,closed:false,policy:host.protection,changedAt:performance.now(),valid:()=>true,allowed:()=>true,sample:()=>sample,close:async()=>{}};
-  const stream=new DisplayStream({subscription_id:'empty',tab_id:tab.tab_id,observed_by:'adapter',codec:'avc1.420033',device_scale_factor:1,bitrate:8000000},{encoder:{close:async()=>{}}});
+  let parked=0;const stream=new DisplayStream({subscription_id:'empty',tab_id:tab.tab_id,observed_by:'adapter',codec:'avc1.420033',device_scale_factor:1,bitrate:8000000},{encoder:{close:async()=>{}}});
   Object.assign(stream,{document_id:tab.document_id,previous:{signature:'base'},compositorSerial:1,creditEpoch:0,refinerDocument:tab.document_id,
-   refiner:{quietMs:300,request:()=>null,invalidate(){},close:async()=>{}},producer:{source,frames:[],take:()=>null,feedback(){},invalidate(){},close:async()=>{}}});
+   refiner:{quietMs:300,request:()=>null,invalidate(){},close:async()=>{}},producer:{source,frames:[],waitReady:async()=>{parked++;},take:()=>null,feedback(){},invalidate(){},close:async()=>{}}});
   host.compositors.set(tab.tab_id,{document:tab.document_id,source,ready:Promise.resolve(source)});host.displays.set(stream.subscription_id,stream);
   const before=sent.length;
   const result=await host.request({op:'screenshot',display_subscription_id:'empty',generation:opened.generation,after_sequence:0});
-  assert.equal(result.frame_sent,false);assert.equal(sent.length,before,'empty native credits cannot repeat CDP observation');
+  assert.equal(parked,1,'unchanged native credit parks on source readiness');assert.equal(result.frame_sent,false);assert.equal(sent.length,before,'empty native credits cannot repeat CDP observation');
  }finally{if(old===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=old}
 }));
 

@@ -2,13 +2,13 @@
 import {readFile,readdir} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
 export class CpuCounter {
- constructor(hz){this.hz=hz;this.entries=new Map();}
- observe(records){for(const r of records){const key=r.pid+':'+r.start;const previous=this.entries.get(key);this.entries.set(key,{...r,ticks:Math.max(previous?.ticks??0,r.ticks)});}return this.totals();}
- totals(){const result={source:0,pipeline:0,viewer:0,harness:0};for(const r of this.entries.values())result[r.role]+=r.ticks/this.hz;return result;}
+ constructor(hz){this.hz=hz;this.entries=new Map();this.seconds={source:0,pipeline:0,viewer:0,harness:0};}
+ observe(records){for(const r of records){const key=r.pid+':'+r.start;const previous=this.entries.get(key),ticks=Math.max(previous?.ticks??0,r.ticks);this.seconds[r.role]+=(ticks-(previous?.ticks??0))/this.hz;this.entries.set(key,{...r,ticks});}return this.totals();}
+ totals(){return {...this.seconds};}
 }
 export function cpuSpan(before,after){const seconds=(after.at_ms-before.at_ms)/1000;const cores={};for(const role of ['source','pipeline','viewer','harness'])cores[role]=(after.cpu_seconds[role]-before.cpu_seconds[role])/seconds;return {duration_ms:seconds*1000,cores,source_plus_pipeline_cores:cores.source+cores.pipeline};}
 export class CpuSampler {
- constructor({root,viewerRoot,harnessPid=process.pid}){this.root=root;this.viewerRoot=viewerRoot;this.harnessPid=harnessPid;this.counter=new CpuCounter(Number(execFileSync('getconf',['CLK_TCK'],{encoding:'utf8'})));this.known=new Map();this.components=new Map();this.samples=[];this.roots=new Map();this.seen=new Set();}
+ constructor({root,viewerRoot,harnessPid=process.pid}){this.root=root;this.viewerRoot=viewerRoot;this.harnessPid=harnessPid;this.counter=new CpuCounter(Number(execFileSync('getconf',['CLK_TCK'],{encoding:'utf8'})));this.known=new Map();this.components=new Map();this.programs=new Map();this.samples=[];this.roots=new Map();this.seen=new Set();}
  async track(pid,role='pipeline'){
   if(!Number.isSafeInteger(pid)||pid<=1||!['source','pipeline','viewer'].includes(role))throw Error('MP-10 invalid owned CPU root');
   const s=await readFile(`/proc/${pid}/stat`,'utf8'),f=s.slice(s.lastIndexOf(')')+2).split(' ');this.roots.set(pid,{start:f[19],role});
@@ -22,12 +22,15 @@ export class CpuSampler {
    const s=await readFile(`/proc/${pid}/stat`,'utf8'),f=s.slice(s.lastIndexOf(')')+2).split(' '),start=f[19];
    let role=this.known.get(pid+':'+start),root=this.roots.get(pid);
    if(root?.start===start)role=root.role;
-   const command=role?'':await readFile(`/proc/${pid}/cmdline`,'utf8');
+   // MP-10: a source launcher may exec Chromium without changing PID/start.
+   const key=pid+':'+start,program=s.slice(s.indexOf('(')+1,s.lastIndexOf(')')),changed=this.programs.get(key)!==program;
+   const command=role&&!changed||root?.start===start?'':await readFile(`/proc/${pid}/cmdline`,'utf8');
+   this.programs.set(key,program);
    if(pid===this.harnessPid)role='harness';
    else if(command.includes(this.viewerRoot))role='viewer';
    else if(command.includes(this.root))role=/chrome|chromium/.test(command.split('\0')[0])?'source':'pipeline';
    // MP-10: process names only, never raw command lines or environment values.
-   let component=this.components.get(pid+':'+start)??s.slice(s.indexOf('(')+1,s.lastIndexOf(')'));
+   let component=(changed?program:this.components.get(key))??program;
    if(component==='python3'){
     const args=command||await readFile(`/proc/${pid}/cmdline`,'utf8');
     for(const script of ['kernel-browser-xshm.py','kernel-browser-encoder.py'])if(args.split('\0').some(a=>a.endsWith('/'+script)))component=script;

@@ -14,6 +14,10 @@ static double cpu_ms(void) {struct timespec t;clock_gettime(CLOCK_THREAD_CPUTIME
 #include <libavutil/frame.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/opt.h>
+#include <libavutil/log.h>
+#include <libavutil/error.h>
+#include <stdarg.h>
+#include <pthread.h>
 
 struct Rect { int left,top,right,bottom; };
 struct RowResult { int row,y,height,key; uint64_t sequence,reference; const uint8_t *bytes; size_t length; };
@@ -28,8 +32,27 @@ struct Row {
     uint8_t *previous,*packet,*rgb;
     size_t packet_capacity;
     uint64_t sequence;
+    /* x264 reconstruction (NV12) of the last encoded frame: bit-exact with
+     * normative H.264 decoding; valid until this row's next encode/close. */
+    const uint8_t *recon_y,*recon_uv;
+    int recon_y_stride,recon_uv_stride;
 };
-struct Codec { int width,height,bitrate,row_count; struct Row rows[8]; uint8_t *masked; double cpu[6]; AVBufferRef *device; int hardware_requested,fallback; };
+struct Codec { int width,height,bitrate,row_count; struct Row rows[8]; uint8_t *masked; double cpu[6]; AVBufferRef *device; int hardware_requested,fallback; char diagnostic[4096]; };
+/* MP-10/MP-11: bounded driver-only logs; never page content or pixels. */
+static _Thread_local struct Codec *diagnosing;
+static pthread_once_t diagnostic_once=PTHREAD_ONCE_INIT;
+static void diagnostic_append(struct Codec *c,const char *text) {
+    size_t used=strlen(c->diagnostic);if(used<sizeof(c->diagnostic)-1)snprintf(c->diagnostic+used,sizeof(c->diagnostic)-used,"%s",text);
+}
+static void hardware_log(void *context,int level,const char *format,va_list args) {
+    if(diagnosing&&level<=AV_LOG_WARNING){char text[1024];va_list copy;va_copy(copy,args);vsnprintf(text,sizeof(text),format,copy);va_end(copy);diagnostic_append(diagnosing,text);}
+    av_log_default_callback(context,level,format,args);
+}
+static void diagnostic_install(void){av_log_set_callback(hardware_log);}
+static void diagnostic_status(struct Codec *c,const char *stage,int status) {
+    char error[AV_ERROR_MAX_STRING_SIZE],text[256];av_strerror(status,error,sizeof(error));snprintf(text,sizeof(text),"%s: %s (%d)\n",stage,error,status);diagnostic_append(c,text);
+}
+const char *cx_codec_diagnostic(struct Codec *c){return c->diagnostic;}
 void cx_codec_cpu(struct Codec *c,double *out) {memcpy(out,c->cpu,sizeof(c->cpu));}
 static void row_close(struct Row *row) {
     if (row->codec) x264_encoder_close(row->codec);
@@ -49,7 +72,15 @@ struct Codec *cx_codec_open(int width,int height,int bitrate,int row_count) {
     if (!c) return NULL;
     c->hardware_requested=!getenv("CHARIOX_BROWSER_DISPLAY_SOFTWARE")||strcmp(getenv("CHARIOX_BROWSER_DISPLAY_SOFTWARE"),"1");
     if(c->hardware_requested) {
-        for(int n=128;n<144&&!c->device;n++){char path[64];snprintf(path,sizeof(path),"/dev/dri/renderD%d",n);if(access(path,R_OK|W_OK)==0)av_hwdevice_ctx_create(&c->device,AV_HWDEVICE_TYPE_VAAPI,path,NULL,0);}
+        pthread_once(&diagnostic_once,diagnostic_install);
+        for(int n=128;n<144&&!c->device;n++){
+            char path[64];snprintf(path,sizeof(path),"/dev/dri/renderD%d",n);
+            if(access(path,R_OK|W_OK)!=0)continue;
+            diagnostic_append(c,path);diagnostic_append(c,": VAAPI device init\n");diagnosing=c;
+            int status=av_hwdevice_ctx_create(&c->device,AV_HWDEVICE_TYPE_VAAPI,path,NULL,0);diagnosing=NULL;
+            if(status<0)diagnostic_status(c,"av_hwdevice_ctx_create",status);
+        }
+        if(!c->device&&!c->diagnostic[0])diagnostic_append(c,"No accessible VAAPI render device /dev/dri/renderD128..143\n");
         if(!c->device)c->fallback=1;
     }
     c->width=width;c->height=height;c->bitrate=bitrate;c->row_count=row_count;
@@ -68,12 +99,12 @@ static int hardware_open(struct Codec *c,struct Row *row,int h,int rate) {
     AVBufferRef *frames=av_hwframe_ctx_alloc(c->device);if(!frames)return -1;
     AVHWFramesContext *pool=(AVHWFramesContext*)frames->data;
     pool->format=AV_PIX_FMT_VAAPI;pool->sw_format=AV_PIX_FMT_NV12;pool->width=(c->width+15)&~15;pool->height=(h+15)&~15;pool->initial_pool_size=4;
-    if(av_hwframe_ctx_init(frames)<0){av_buffer_unref(&frames);return -1;}
+    int pool_status=av_hwframe_ctx_init(frames);if(pool_status<0){av_buffer_unref(&frames);return pool_status;}
     AVCodecContext *ctx=row->hardware;
     ctx->hw_frames_ctx=frames;ctx->width=c->width;ctx->height=h;ctx->pix_fmt=AV_PIX_FMT_VAAPI;ctx->time_base=(AVRational){1,60};ctx->framerate=(AVRational){60,1};ctx->gop_size=120;ctx->max_b_frames=0;
     ctx->profile=AV_PROFILE_H264_CONSTRAINED_BASELINE;ctx->level=51;ctx->bit_rate=(int64_t)rate*1000;ctx->rc_max_rate=ctx->bit_rate;ctx->rc_buffer_size=rate*50;ctx->thread_count=1;ctx->color_range=AVCOL_RANGE_MPEG;
     AVDictionary *options=NULL;av_dict_set(&options,"rc_mode","VBR",0);av_dict_set(&options,"async_depth","1",0);
-    int status=avcodec_open2(ctx,encoder,&options);av_dict_free(&options);if(status<0)return -1;
+    int status=avcodec_open2(ctx,encoder,&options);av_dict_free(&options);if(status<0)return status;
     row->staging=av_frame_alloc();if(!row->staging)return -1;
     row->staging->format=AV_PIX_FMT_NV12;row->staging->width=c->width;row->staging->height=h;
     return av_frame_get_buffer(row->staging,32);
@@ -83,19 +114,27 @@ static int row_open(struct Codec *c,struct Row *row,int h,int protected) {
     if (x264_param_default_preset(&p,"ultrafast","zerolatency")) return -1;
     p.i_width=c->width;p.i_height=h;p.i_csp=X264_CSP_I420;
     p.i_threads=1;p.i_lookahead_threads=1;p.b_sliced_threads=0;
+    p.b_full_recon=1; /* Exact certificates require the complete output raster. */
     p.i_fps_num=60;p.i_fps_den=1;p.i_timebase_num=1;p.i_timebase_den=60;
     p.i_keyint_max=120;p.i_scenecut_threshold=0;p.i_bframe=0;p.b_repeat_headers=1;p.b_annexb=1;p.i_log_level=X264_LOG_NONE;
-    p.vui.b_fullrange=0;p.i_level_idc=51;p.rc.i_rc_method=X264_RC_CRF;p.rc.f_rf_constant=23;
+    p.vui.b_fullrange=0;p.i_level_idc=51;
     int rate=(int)((double)c->bitrate*.45*h/c->height/1000);
     if (rate<16)rate=16;
-    p.rc.i_bitrate=rate;p.rc.i_vbv_max_bitrate=rate;p.rc.i_vbv_buffer_size=rate/20<16?16:rate/20;
+    /* MP-08/MP-10: bound recovery keys as well as deltas. CQP clamps
+     * per-picture quantizers and cannot honor the paced link budget. */
+    p.rc.i_rc_method=X264_RC_CRF;p.rc.f_rf_constant=23;
+    p.rc.i_bitrate=rate;p.rc.i_vbv_max_bitrate=rate;
+    p.rc.i_vbv_buffer_size=rate/20<16?16:rate/20;
     if (x264_param_apply_profile(&p,"baseline")) return -1;
-    if(c->device&&!c->fallback&&hardware_open(c,row,h,rate)<0){c->fallback=2;avcodec_free_context(&row->hardware);av_frame_free(&row->staging);}
+    if(c->device&&!c->fallback){diagnosing=c;int status=hardware_open(c,row,h,rate);diagnosing=NULL;if(status<0){diagnostic_status(c,"h264_vaapi encoder init",status);c->fallback=2;avcodec_free_context(&row->hardware);av_frame_free(&row->staging);}}
     if(!row->hardware)row->codec=x264_encoder_open(&p);
     if ((!row->codec&&!row->hardware) || x264_picture_alloc(&row->picture,X264_CSP_I420,c->width,h)) return -1;
-    row->allocated=1;row->previous=malloc((size_t)c->width*h*4);
-    if (!row->previous) return -1;
-    {
+    row->allocated=1;
+    if (c->row_count>1&&!(row->previous=malloc((size_t)c->width*h*4))) return -1;
+    /* MP-11: protected rows keep an INDEPENDENT decode of every packet; the
+     * hardware path has no reconstruction. Software rows certify repairs
+     * from x264's own reconstruction instead of decoding twice. */
+    if (protected||row->hardware) {
         row->decoder=avcodec_alloc_context3(avcodec_find_decoder(AV_CODEC_ID_H264));
         row->decoded=av_frame_alloc(); row->rgb=protected?malloc((size_t)c->width*h*4):NULL;
         if (!row->decoder || !row->decoded || (protected&&!row->rgb)) return -1;
@@ -171,8 +210,10 @@ int cx_codec_encode(struct Codec *c,const uint8_t *source,unsigned resets,const 
         const uint8_t *data=pixels+(size_t)y*c->width*4;
         size_t size=(size_t)h*c->width*4;
         struct Row *row=&c->rows[r];
+        /* Whole-frame motion only receives new capture serials; the unchanged
+         * shortcut (and its reference copy) serves sparse stripe rows. */
         at=cpu_ms();
-        int same=!(resets&(1u<<r)) && (row->codec||row->hardware) && row->sequence && !memcmp(row->previous,data,size);
+        int same=c->row_count>1 && !(resets&(1u<<r)) && (row->codec||row->hardware) && row->sequence && !memcmp(row->previous,data,size);
         c->cpu[1]+=cpu_ms()-at;
         if (same)continue;
         int protected=0;
@@ -186,10 +227,15 @@ int cx_codec_encode(struct Codec *c,const uint8_t *source,unsigned resets,const 
         at=cpu_ms();
         AVPacket *hardware_packet=NULL;int length;
         if(row->hardware) {
-            hardware_packet=hardware_encode(c,row,h);
+            diagnosing=c;hardware_packet=hardware_encode(c,row,h);diagnosing=NULL;
+            if(!hardware_packet)diagnostic_append(c,"h264_vaapi encode/transfer failed; restarting masked software stream\n");
             if(!hardware_packet){for(int i=0;i<8;i++)row_close(&c->rows[i]);c->fallback=3;return cx_codec_encode(c,source,255,regions,count,results);}
             length=hardware_packet->size;
-        }else length=x264_encoder_encode(row->codec,&nals,&n,&row->picture,&out);
+        }else {
+            length=x264_encoder_encode(row->codec,&nals,&n,&row->picture,&out);
+            if(length>0&&out.img.i_csp==X264_CSP_NV12&&out.img.i_plane==2){row->recon_y=out.img.plane[0];row->recon_uv=out.img.plane[1];row->recon_y_stride=out.img.i_stride[0];row->recon_uv_stride=out.img.i_stride[1];}
+            else row->recon_y=row->recon_uv=NULL;
+        }
         c->cpu[3]+=cpu_ms()-at;
         if (length<=0 || length>1024*1024 || (!hardware_packet&&n<1)){av_packet_free(&hardware_packet);return -1;}
         if (row->packet_capacity<(size_t)length) {
@@ -206,7 +252,7 @@ int cx_codec_encode(struct Codec *c,const uint8_t *source,unsigned resets,const 
         c->cpu[4]+=cpu_ms()-at;
         if (safe<=0) { for(int i=0;i<8;i++)row_close(&c->rows[i]);return safe==0?-2:-1; }
         uint64_t reference=row->sequence;row->sequence++;
-        at=cpu_ms();memcpy(row->previous,data,size);c->cpu[5]+=cpu_ms()-at;
+        if (c->row_count>1) {at=cpu_ms();memcpy(row->previous,data,size);c->cpu[5]+=cpu_ms()-at;}
         results[total++]=(struct RowResult){r,y,h,key,row->sequence,reference,row->packet,(size_t)length};
     }
     return total;
@@ -224,16 +270,20 @@ void cx_codec_repair_bounds(struct Codec *c,const uint8_t *source,const uint8_t 
         int r=0;while (r+1<c->row_count && dy>=2*((c->height/2*(r+1))/c->row_count))r++;
         int row_y=2*((c->height/2*r)/c->row_count),local=dy-row_y;
         int video=(video_rows&(c->row_count==1?255:(1u<<r)))!=0;
-        AVFrame *f=c->rows[r].decoded;
-        int available=f&&f->data[0]&&f->format==AV_PIX_FMT_YUV420P&&(f->color_range==AVCOL_RANGE_MPEG||f->color_range==AVCOL_RANGE_UNSPECIFIED);
+        const struct Row *row=&c->rows[r];AVFrame *f=row->decoded;
+        /* Planar decode (hardware/protected) or interleaved x264 NV12 recon. */
+        const uint8_t *luma=NULL,*cb=NULL,*cr=NULL;int step=1;
+        if (row->recon_y&&row->recon_uv&&!row->hardware) {
+            luma=row->recon_y+(size_t)local*row->recon_y_stride;cb=row->recon_uv+(size_t)(local/2)*row->recon_uv_stride;cr=cb+1;step=2;
+        } else if (f&&f->data[0]&&f->format==AV_PIX_FMT_YUV420P&&(f->color_range==AVCOL_RANGE_MPEG||f->color_range==AVCOL_RANGE_UNSPECIFIED)) {
+            luma=f->data[0]+(size_t)local*f->linesize[0];cb=f->data[1]+(size_t)(local/2)*f->linesize[1];cr=f->data[2]+(size_t)(local/2)*f->linesize[2];
+        }
         for (int dx=x;dx<x+w;dx++) {
             size_t offset=((size_t)dy*c->width+dx)*4;
             const uint8_t *p=source+offset;int exact=0;
             if (!video&&overlay)exact=!memcmp(p,overlay+offset,3);
-            else if (video&&available&&p[0]==p[1]&&p[1]==p[2]&&(p[0]==0||p[0]==255)) {
-                exact=f->data[0][local*f->linesize[0]+dx]==(p[0]?235:16)
-                    &&f->data[1][local/2*f->linesize[1]+dx/2]==128
-                    &&f->data[2][local/2*f->linesize[2]+dx/2]==128;
+            else if (video&&luma&&p[0]==p[1]&&p[1]==p[2]&&(p[0]==0||p[0]==255)) {
+                exact=luma[dx]==(p[0]?235:16)&&cb[dx/2*step]==128&&cr[dx/2*step]==128;
             }
             if (!exact) {if (dx<left)left=dx;if (dy<top)top=dy;if (dx+1>right)right=dx+1;if (dy+1>bottom)bottom=dy+1;}
         }

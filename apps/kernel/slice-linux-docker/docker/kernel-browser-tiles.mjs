@@ -29,14 +29,17 @@ export function dirtyTiles(previous, current, region = null, all = false) {
 
 // MD-DISPLAY-02/04: exact small native damage, only on a contiguous serial
 // following a complete exact frame. No approximation or reduced raster.
-export function nativeDamageTiles(raw, checkOnly = false) {
+export function nativeDamageTiles(raw, checkOnly = false, adjacent = false) {
   if(!raw || (raw.shared&&typeof raw.readRegion!=='function') || raw.format!=='bgr0' || !Number.isSafeInteger(raw.width) || !Number.isSafeInteger(raw.height) ||
     raw.width<1 || raw.width>2560 || raw.height<1 || raw.height>1600 ||
     (typeof raw.readRegion==='function'?raw.length:raw.pixels?.length)!==raw.width*raw.height*4 || !Array.isArray(raw.damage) || raw.damage.length!==4) return null;
   // MP-08/MP-10/MP-11: only the native helper's exact byte-proved sparse set.
-  if(raw.nativeExact&&Array.isArray(raw.damage_tiles)){
-    const tiles=raw.damage_tiles;
-    if(!tiles.length||tiles.length>32||tiles.some(r=>!Array.isArray(r)||r.length!==4||!r.every(Number.isSafeInteger)||r[0]<0||r[1]<0||r[2]<=r[0]||r[3]<=r[1]||r[2]>raw.width||r[3]>raw.height||(r[2]-r[0])*(r[3]-r[1])>1024)||tiles.reduce((n,r)=>n+(r[2]-r[0])*(r[3]-r[1]),0)>32768)return null;
+  if(raw.nativeExact&&(adjacent||Array.isArray(raw.damage_tiles))){
+    const tiles=adjacent?raw.adjacent_damage_tiles:raw.damage_tiles;
+    if(!Array.isArray(tiles))return null;
+    // MP-08/MP-10: Retina quadruples physical pixels, with the same CSS input bound.
+    const limit=raw.width===2560&&raw.height===1600?128:32;
+    if(!tiles.length||tiles.length>limit||tiles.some(r=>!Array.isArray(r)||r.length!==4||!r.every(Number.isSafeInteger)||r[0]<0||r[1]<0||r[2]<=r[0]||r[3]<=r[1]||r[2]>raw.width||r[3]>raw.height||(r[2]-r[0])*(r[3]-r[1])>1024)||tiles.reduce((n,r)=>n+(r[2]-r[0])*(r[3]-r[1]),0)>limit*1024)return null;
     if(checkOnly)return true;throw Error('MP-11: native sparse tiles require native exact preparation');
   }
   const [left,top,right,bottom]=raw.damage;
