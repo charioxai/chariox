@@ -223,7 +223,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             && t.agent_id == e.agent_id
                             && !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
                         {
-                            matched = true;
+                            matched |= delivery_belongs_to_task(tx, &e, &t)?;
                             t.state = ExecutionState::Blocked;
                             t.blocked_revision = t.revision + 1;
                             t.reason=format!("Unconfirmed delivery {}: owner must reconcile the original attempt",e.sequence);
@@ -278,9 +278,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if resume {
                 registrations(tx, &t.task_id)?;
             }
-            let mut q = tx.prepare("SELECT payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') IN ('blocked','submitting','uncertain')").map_err(sql)?;
+            let mut q = tx.prepare("SELECT sequence FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') IN ('blocked','submitting','uncertain')").map_err(sql)?;
             let deliveries = q
-                .query_map(params![t.room_id, t.agent_id], |r| r.get::<_, String>(0))
+                .query_map(params![t.room_id, t.agent_id], |r| r.get::<_, i64>(0))
                 .map_err(sql)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(sql)?;
@@ -289,10 +289,17 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Err(error("unconfirmed delivery must receive its exact provider receipt or be explicitly cancelled before resume"));
             }
             if !resume {
-                for payload in deliveries {
-                    let mut event: InboxEvent = decode(&payload)?;
-                    event.state = "failed".into();
-                    save_event(tx, &event)?;
+                for sequence in deliveries {
+                    let mut event = get_event(
+                        tx,
+                        &t.room_id,
+                        &t.agent_id,
+                        u64::try_from(sequence).map_err(|_| error("corrupt delivery sequence"))?,
+                    )?;
+                    if delivery_belongs_to_task(tx, &event, &t)? {
+                        event.state = "failed".into();
+                        save_event(tx, &event)?;
+                    }
                 }
             }
             t.state = if resume {
@@ -357,4 +364,44 @@ pub(super) fn cancel_intent(
         .map_err(sql)?;
     }
     Ok(())
+}
+
+// An uncertain receipt blocks recipient dispatch, but abandoning it is an
+// exact task disposition. Cancelling unrelated work cannot release this fence.
+fn delivery_belongs_to_task(
+    tx: &Transaction<'_>,
+    event: &InboxEvent,
+    task: &AgentTaskExecution,
+) -> Result<bool, DaemonError> {
+    if task.task_id == format!("delivery-{}", event.sequence)
+        || event
+            .payload
+            .get("task_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(task.task_id.as_str())
+        || event
+            .payload
+            .get("task_ids")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|ids| {
+                ids.iter()
+                    .any(|id| id.as_str() == Some(task.task_id.as_str()))
+            })
+    {
+        return Ok(true);
+    }
+    for prompt in [
+        event.target_prompt_id.as_deref(),
+        event.prompt_id.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if for_turn(tx, &event.room_id, &event.agent_id, prompt)?
+            .is_some_and(|bound| bound.task_id == task.task_id)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }

@@ -288,10 +288,22 @@ impl KernelRuntimeState {
                     now: crate::session::unix_epoch_ms(),
                 })?;
         }
-        Box::pin(self.sweep_agent_lifecycle()).await?;
+        self.schedule_agent_lifecycle_sweep();
         Ok(())
     }
-    async fn dispatch_task_continuation(
+    fn schedule_agent_lifecycle_sweep(&self) {
+        // Output settlement may hold one or every provider lane. Dispatch
+        // completion wakes after it returns so a recipient cannot reacquire
+        // a lane held by this same call stack.
+        let state = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = state.sweep_agent_lifecycle().await {
+                tracing::warn!(error=%crate::secret_redaction::redact_secrets(&error.to_string()),
+                    "MP-08/MP-09/MP-10/MP-11 A02: completion sweep retained for periodic reconciliation");
+            }
+        });
+    }
+    pub(super) async fn dispatch_task_continuation(
         &self,
         task: &AgentTaskExecution,
         attachment: &str,
@@ -570,46 +582,7 @@ impl KernelRuntimeState {
                     return;
                 }
                 let resume = answer.choice_id.as_deref() == Some("resume");
-                if let Ok(Outcome::Task(next)) =
-                    state
-                        .owned
-                        .durable_state_store
-                        .agent_lifecycle(Operation::OwnerResponse {
-                            task: task.task_id,
-                            revision: task.blocked_revision,
-                            resume,
-                            now: crate::session::unix_epoch_ms(),
-                        })
-                {
-                    if !resume {
-                        if let Err(error) = Box::pin(state.cancel_agent_task_resources(&next)).await
-                        {
-                            state.owned.record_notice_for_agent(
-                                &next.room_id,
-                                None,
-                                Some(&next.agent_id),
-                                state
-                                    .owned
-                                    .attachment_store
-                                    .list_session_attachment_ids(&next.room_id),
-                                format!(
-                                    "Cancellation remains supervised: {}",
-                                    crate::secret_redaction::redact_secrets(&error.to_string())
-                                ),
-                            );
-                        }
-                    }
-                    if resume {
-                        if let Ok(agent) = state.owned.agent_store.get_agent(&next.agent_id) {
-                            if let Ok(attachment) =
-                                state.ensure_agent_message_attachment(&next.room_id, &agent)
-                            {
-                                let _=Box::pin(state.dispatch_task_continuation(&next,&attachment,"Owner explicitly resumed this task. Reconcile retained obligations before continuing.".into())).await;
-                            }
-                        }
-                    }
-                    let _ = state.owned.session_snapshot(&next.room_id);
-                }
+                state.resolve_agent_task_owner_action(&task, resume).await;
             }
         });
         Ok(())
