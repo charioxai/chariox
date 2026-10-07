@@ -243,6 +243,8 @@ class TraversalTest(unittest.TestCase):
         self.assertEqual(tree['uncovered'], [[20, 30, 246, 152]])
         # Writer frame 100,80 300x200 covers the xterm's lower right; only the rest is blacked out.
         self.assertEqual(tree['masks'], [[20, 30, 246, 50], [20, 80, 80, 102]])
+        # Masking an owned window below must not unbind the focused Writer frame.
+        self.assertEqual(tree['active_window'], {'pid': 200, 'started': '1', 'path': [0]})
 
     def test_mp11_owned_window_above_or_unknown_stacking_masks_its_whole_frame(self):
         for order, stacking in [([10, 9], True), ([9, 10], False)]:

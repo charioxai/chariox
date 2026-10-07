@@ -78,10 +78,16 @@ and OCR fallback. The complete private tree still fences actions and
 observation protection, including changes in omitted nodes.
 
 Password roles expose no text/actions. Protected registry values/targets,
-unknown visible windows, incomplete AT-SPI coverage or password widgets cause
-full-desktop black PNG and withheld OCR/clipboard. Coverage is checked before
-and after capture or clipboard read; a changed tree rejects the observation. This conservative
-policy avoids claiming precise non-browser secret masks. Agents cannot operate
+foreign or unattributed visible windows, incomplete AT-SPI coverage or password
+widgets cause full-desktop black PNG and withheld OCR/clipboard. An owned
+window without AT-SPI (e.g. xterm) instead blacks out only its frame, minus
+parts covered by owned AT-SPI windows stacked above it per
+`_NET_CLIENT_LIST_STACKING` (whole frame without stacking data), plus every
+viewable override-redirect popup. Snapshots list these regions as `masked`
+`[x,y,w,h]` so agents know the black window still takes input; coverage stays
+incomplete and clipboard read stays closed while one is visible. Coverage is
+checked before and after capture or clipboard read; a changed tree or mask
+rejects the observation. Agents cannot operate
 or observe through Computer while human App views are open, preventing bypass
 of App human-channel admission before the display lane provides a mapping.
 MCP screenshots use the existing native image block, without a duplicate base64

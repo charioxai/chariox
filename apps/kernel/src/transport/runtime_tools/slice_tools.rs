@@ -2,7 +2,7 @@ use super::*;
 
 pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     let canonical = vec![
-        RuntimeToolSpec { name: SLICE_ACCESSIBILITY_TOOL.into(), description: "MP-08: bounded native AT-SPI desktop snapshot. Prefer showing actionable nodes. Opaque target_id and tree_revision are observer-bound; fallback OCR if text is absent.".into(), input_schema: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}) },
+        RuntimeToolSpec { name: SLICE_ACCESSIBILITY_TOOL.into(), description: "MP-08: bounded native AT-SPI desktop snapshot. Prefer showing actionable nodes. Opaque target_id and tree_revision are observer-bound; fallback OCR if text is absent. Windows without accessibility (e.g. terminals) are black in captures and listed in masked as [x,y,w,h], yet still take input.".into(), input_schema: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}) },
         RuntimeToolSpec { name: SLICE_TARGET_ACTION_TOOL.into(), description: "MP-08 / MP-11: perform one advertised native action using target_id/tree_revision from slice_accessibility. Room takeover, membership and Computer revocation apply. Handles expire after action or tree/protection change.".into(), input_schema: serde_json::json!({"type":"object","properties":{"tree_revision":{"type":"integer","minimum":1},"target_id":{"type":"string","maxLength":128},"action":{"type":"string","maxLength":64}},"required":["tree_revision","target_id","action"],"additionalProperties":false}) },
         RuntimeToolSpec {
             name: SLICE_SCREEN_STATUS_TOOL.to_string(),

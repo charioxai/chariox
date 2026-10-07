@@ -174,14 +174,17 @@ def snapshot(processes):
                 if pid in allowed and pid not in seen:
                     uncovered.append(frame_rect(root,window));masks.append(uncovered[-1])
                 elif pid not in seen:complete=False
-                elif stacked and masks:masks=[part for rect in masks for part in subtract(rect,frame_rect(root,window))]
-                elif int(window_id)==active_id:
-                    title=window.get_full_property(connection.intern_atom('_NET_WM_NAME'),X.AnyPropertyType)
-                    name=bytes(title.value).decode('utf-8',errors='replace') if title is not None else window.get_wm_name()
-                    frames=[node for node in nodes if node['pid']==pid and node['role'] in ('frame','window','dialog') and node['name']==name]
-                    if len(frames)==1:
-                        frame=frames[0]
-                        active_window={key:frame[key] for key in ('pid','started','path')}
+                else:
+                    if stacked and masks:
+                        cover=frame_rect(root,window)
+                        masks=[part for rect in masks for part in subtract(rect,cover)]
+                    if int(window_id)==active_id:
+                        title=window.get_full_property(connection.intern_atom('_NET_WM_NAME'),X.AnyPropertyType)
+                        name=bytes(title.value).decode('utf-8',errors='replace') if title is not None else window.get_wm_name()
+                        frames=[node for node in nodes if node['pid']==pid and node['role'] in ('frame','window','dialog') and node['name']==name]
+                        if len(frames)==1:
+                            frame=frames[0]
+                            active_window={key:frame[key] for key in ('pid','started','path')}
             if uncovered:
                 # MP-08 / MP-11: menus, completion lists and tooltips are
                 # override-redirect root children outside _NET_CLIENT_LIST with no
