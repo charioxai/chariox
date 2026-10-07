@@ -265,6 +265,11 @@ export class BrowserMirrorRenderer {
       }
       for(const overlay of previousOverlays)if(!this.overlays.includes(overlay))overlay.remove()
       this.tileCache=new Map(newTiles.map(entry=>[entry.tile.node_id,entry]))
+      // The native packet owns scroll. Client font/image settlement must not
+      // move the inert document through an independent scroll-anchor update.
+      this.doc.documentElement.style.overflowAnchor='none'
+      this.doc.documentElement.style.scrollBehavior='auto'
+      for(const {element}of scrolls){element.style.overflowAnchor='none';element.style.scrollBehavior='auto'}
       for(const {element,x,y}of scrolls){if(element.scrollLeft!==x)element.scrollLeft=x;if(element.scrollTop!==y)element.scrollTop=y}
       this.frame.contentWindow!.scrollTo(packet.scroll.x,packet.scroll.y)
       const retainedTileUrls=new Set(newTiles.map(t=>t.url));for(const url of this.tileUrls)if(!retainedTileUrls.has(url))URL.revokeObjectURL(url);this.tileUrls=[...retainedTileUrls]
@@ -281,6 +286,7 @@ export class BrowserMirrorRenderer {
     await this.doc.fonts.ready
     const images=[...this.dom.values(),...this.overlays].filter((node):node is HTMLImageElement=>node.nodeType===1&&(node as Element).tagName==='IMG')
     await Promise.all(images.filter(image=>image.getAttribute('src')&&!(image.complete&&image.naturalWidth>0)).map(image=>image.decode()))
+    if(!this.disposed&&this.doc)this.frame.contentWindow!.scrollTo(packet.scroll.x,packet.scroll.y)
     this.timed('font_image_ready',at);this.timed('apply_total',started)
   }
   private async addResource(resource:MirrorResource):Promise<void> {
